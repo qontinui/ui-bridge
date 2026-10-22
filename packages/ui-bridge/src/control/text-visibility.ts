@@ -53,9 +53,19 @@
  *    `-webkit-text-fill-color` or `text-shadow` explicitly keeps it (a CSS
  *    limit: an inline style cannot reach a pseudo-element).
  *
- * Elements added while text is hidden are hidden too, and an app that
- * rewrites a hidden element's `style` has its new values adopted as the ones
- * to restore, then the hide re-asserted (a `MutationObserver`).
+ * NOT COVERED, by the same token: a shadow root attached AFTER the hide (no
+ * mutation announces `attachShadow`), closed shadow roots (unreachable from
+ * outside), and iframes (another document). Text in any of them stays
+ * visible in frame B.
+ *
+ * Elements added while text is hidden are hidden too (counted as
+ * `coverage.lateAdded`). Their pins are read with every hidden ancestor's
+ * `color` put back for that read, synchronously, so no frame paints it: an
+ * inherited `currentColor` would otherwise already read transparent. A body
+ * the app swaps in while text is hidden (Turbo, `body.replaceWith`) is hidden
+ * on arrival, and a repeated hide re-checks it. An app that rewrites a hidden
+ * element's `style` has its new values adopted as the ones to restore, then
+ * the hide re-asserted (a `MutationObserver`).
  *
  * GUARANTEES
  *
@@ -68,6 +78,10 @@
  *    of the app's write is left alone; that restore is reported as
  *    property-level, and a property the app changed after the last re-assert
  *    is left as the app set it and reported as `drift`, never verified.
+ *  - An element that left the document while text was hidden (a closed modal,
+ *    a pooled list row, a kept-alive panel) is restored and verified all the
+ *    same, and counted as `detached`: re-inserted later, it shows its own
+ *    style, not the hide.
  *  - The restore is not caught mid-fade either: every value comes back under
  *    `transition-property: none`, styles are flushed, and only then is the
  *    transition itself restored.
@@ -75,9 +89,23 @@
  *    frames cannot leave the page with its text hidden.
  *  - Idempotent: hiding hidden text writes nothing and re-arms the TTL;
  *    showing shown text writes nothing and reports the last restore.
+ *  - A hide that throws part-way is rolled back before it answers
+ *    (`HIDE_FAILED` with `rolledBack`); the state and the TTL are in place
+ *    before the first write, so nothing it wrote is left unowned.
+ *  - One state per page, not per SDK copy: it lives on `globalThis` under a
+ *    `Symbol.for` key, as the dev-controls gate does, so with an app bundle
+ *    and the injected runtime in one page a show through either restores a
+ *    hide made through the other.
  *
  * It is a DEV CONTROL (`core/dev-controls.ts`): the command handlers answer
- * `capability_unavailable_in_build` unless the realm opted in.
+ * `capability_unavailable_in_build` unless the realm opted in. That refusal
+ * is the dispatcher's, not this module's, so it is not a
+ * {@link TextVisibilityErrorCode}. Its OUTER code differs by transport: the
+ * relay forwards the tab's own `code` (`capability_unavailable_in_build`),
+ * while the Node-side direct handlers, which have no page at all, answer
+ * `UB-CAPABILITY-UNAVAILABLE` with `data.code: capability_unavailable_in_build`
+ * (the shape the media override's direct handlers already use). Read
+ * `data.code` on the direct transport, `code` on the relay.
  *
  * Redaction: no response carries page content — counts, tags and property
  * names only.
@@ -92,23 +120,30 @@ export interface TextVisibilityRequest {
   /** `true` hides the page's glyphs, `false` restores them. */
   hidden: boolean;
   /**
-   * Auto-restore after this many ms (hide only; a repeated hide re-arms it).
-   * Default {@link DEFAULT_TEXT_VISIBILITY_TTL_MS}.
+   * Auto-restore after this many ms (hide only; a repeated hide re-arms it;
+   * ignored, not validated, on a show). Default
+   * {@link DEFAULT_TEXT_VISIBILITY_TTL_MS}.
    */
   ttlMs?: number;
 }
 
-/** Typed failure codes. */
+/**
+ * Typed failure codes this engine answers. The dev-controls refusal
+ * (`capability_unavailable_in_build`) is the dispatcher's; see the module doc.
+ */
 export type TextVisibilityErrorCode =
   | 'INVALID_REQUEST'
   /** No `document.body` to hide text in. */
   | 'NO_DOCUMENT'
-  | 'capability_unavailable_in_build';
+  /** A write threw part-way through the hide; what it wrote was rolled back. */
+  | 'HIDE_FAILED';
 
 export interface TextVisibilityFailure {
   success: false;
   code: TextVisibilityErrorCode;
   error: string;
+  /** On `HIDE_FAILED`: the rollback of what the hide had written. */
+  rolledBack?: TextVisibilityRestore;
   timestamp: number;
 }
 
@@ -126,6 +161,8 @@ export interface TextVisibilityCoverage {
   pinned: number;
   /** Open shadow roots walked. */
   shadowRoots: number;
+  /** Of `elements`, those added to the page after the hide (hidden on arrival). */
+  lateAdded: number;
 }
 
 export interface TextVisibilityHideSuccess {
@@ -148,22 +185,27 @@ export interface TextVisibilityDrift {
 }
 
 export interface TextVisibilityRestore {
-  trigger: 'request' | 'ttl';
+  /** `rollback`: a hide that threw part-way, undone before it answered. */
+  trigger: 'request' | 'ttl' | 'rollback';
   /** Elements the hide covered. */
   elements: number;
   /** Restored with the `style` attribute byte-identical to the original. */
   exact: number;
   /** Restored property by property, because the app rewrote the attribute meanwhile. */
   propertyLevel: number;
-  /** Elements that left the document while hidden (nothing to restore). */
+  /**
+   * Of `elements`, those out of the document at restore time. They are
+   * restored and verified like the rest, so one re-inserted later shows its
+   * own style.
+   */
   detached: number;
   /** Elements with drift, at most {@link DRIFT_REPORT_LIMIT} listed. */
   drift: TextVisibilityDrift[];
   driftCount: number;
   /**
-   * True only when every element still in the document reads back exactly as
-   * recorded: a byte-identical attribute, or every owned property back with
-   * nothing drifted.
+   * True only when every recorded element — in the document or not — reads
+   * back exactly as recorded: a byte-identical attribute, or every owned
+   * property back with nothing drifted.
    */
   verified: boolean;
   restoredAt: number;
@@ -195,6 +237,7 @@ export const DRIFT_REPORT_LIMIT = 20;
 
 export interface ValidatedTextVisibility {
   hidden: boolean;
+  /** The hide's TTL; on a show, the default (a show has no TTL to validate). */
   ttlMs: number;
 }
 
@@ -212,7 +255,9 @@ export function validateTextVisibilityRequest(raw: unknown): ValidatedTextVisibi
     return `hidden must be a boolean (got ${JSON.stringify(r.hidden)})`;
   }
   const ttl = r.ttlMs;
-  if (ttl === undefined) return { hidden: r.hidden, ttlMs: DEFAULT_TEXT_VISIBILITY_TTL_MS };
+  // A show has no TTL: whatever a caller sent along is ignored, not refused.
+  if (!r.hidden || ttl === undefined)
+    return { hidden: r.hidden, ttlMs: DEFAULT_TEXT_VISIBILITY_TTL_MS };
   if (
     typeof ttl !== 'number' ||
     !Number.isInteger(ttl) ||
@@ -360,9 +405,11 @@ function planFor(
 
 interface ElementRecord {
   el: Element;
+  /** The element's inline style object (live; the same object for its lifetime). */
+  style: CSSStyleDeclaration;
   /** The `style` attribute before the first write; `undefined` once the app rewrote it. */
   originalAttr: string | null | undefined;
-  /** The attribute as this control last left it. */
+  /** The attribute as this control last left it; `null` until its writes finished. */
   written: string | null;
   /** The values this control writes, by property. */
   values: Map<string, string>;
@@ -380,28 +427,64 @@ interface HiddenState {
   expiresAt: number;
   timer: ReturnType<typeof setTimeout> | null;
   observer: MutationObserver | null;
+  /** The `document.body` the hide last covered; a different one gets covered too. */
+  body: HTMLElement;
 }
 
-let state: HiddenState | null = null;
-let lastRestore: TextVisibilityRestore | null = null;
+interface TextVisibilitySlot {
+  state: HiddenState | null;
+  lastRestore: TextVisibilityRestore | null;
+}
+
+const SLOT_KEY = Symbol.for('@qontinui/ui-bridge/text-visibility');
+
+/**
+ * The page's one hide state. On `globalThis` under a `Symbol.for` key, like
+ * the dev-controls gate, so two copies of the SDK in one page (an app bundle
+ * and the injected runtime) share it: a show through either restores a hide
+ * made through the other.
+ */
+function slot(): TextVisibilitySlot {
+  const holder = globalThis as unknown as Record<symbol, TextVisibilitySlot | undefined>;
+  let s = holder[SLOT_KEY];
+  if (!s) {
+    s = { state: null, lastRestore: null };
+    holder[SLOT_KEY] = s;
+  }
+  return s;
+}
 
 // ============================================================================
 // Hide
 // ============================================================================
 
-/** Every element under `root` that can paint text, descending into open shadow roots. */
-function collectElements(root: Element, out: Element[], shadowRoots: ShadowRoot[]): void {
-  const visit = (el: Element): void => {
-    if (SKIPPED_TAGS.has(el.localName)) return;
+/**
+ * Every element under `root` that can paint text, descending into open shadow
+ * roots, in document order. Iterative (no recursion depth limit on a deep
+ * tree); an element already in `seen` is skipped with its subtree, so one
+ * batch never yields an element twice.
+ */
+function collectElements(
+  root: Element,
+  out: Element[],
+  shadowRoots: ShadowRoot[],
+  seen: Set<Element>
+): void {
+  const stack: Element[] = [root];
+  while (stack.length > 0) {
+    const el = stack.pop() as Element;
+    if (seen.has(el) || SKIPPED_TAGS.has(el.localName)) continue;
+    seen.add(el);
     out.push(el);
+    const children = Array.from(el.children);
+    for (let i = children.length - 1; i >= 0; i--) stack.push(children[i] as Element);
     const shadow = (el as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot;
     if (shadow) {
       shadowRoots.push(shadow);
-      for (const child of Array.from(shadow.children)) visit(child);
+      const inner = Array.from(shadow.children);
+      for (let i = inner.length - 1; i >= 0; i--) stack.push(inner[i] as Element);
     }
-    for (const child of Array.from(el.children)) visit(child);
-  };
-  visit(root);
+  }
 }
 
 /** The element's computed style, or null where the engine cannot give one (no pins then). */
@@ -414,33 +497,78 @@ function computedStyleOf(view: Window | null, el: Element): CSSStyleDeclaration 
   }
 }
 
+/** The parent element, or the host of the shadow root `el` sits in. */
+function parentOrHost(el: Element): Element | null {
+  if (el.parentElement) return el.parentElement;
+  const parent = el.parentNode as (Node & { host?: Element }) | null;
+  return parent && parent.nodeType === 11 && parent.host ? parent.host : null;
+}
+
+/**
+ * Run `read` with every hidden ancestor of `elements` showing its original
+ * `color`, then put the hide back byte for byte. An element added while text
+ * is hidden inherits `currentColor` from hidden ancestors, so its pins would
+ * otherwise read transparent. All of it is synchronous, so no frame paints
+ * the revealed colour.
+ */
+function withAncestorColoursRevealed<T>(
+  elements: Element[],
+  records: Map<Element, ElementRecord>,
+  read: () => T
+): T {
+  const revealed = new Set<ElementRecord>();
+  for (const el of elements) {
+    for (let p = parentOrHost(el); p; p = parentOrHost(p)) {
+      const rec = records.get(p);
+      if (!rec) continue;
+      if (revealed.has(rec)) break; // its ancestors are in already
+      revealed.add(rec);
+    }
+  }
+  for (const rec of revealed) {
+    writeInline(rec.style, 'color', rec.originals.get('color') ?? emptyInline());
+  }
+  try {
+    return read();
+  } finally {
+    for (const rec of revealed) if (rec.written !== null) rec.el.setAttribute('style', rec.written);
+  }
+}
+
 /**
  * Hide `elements`, recording each one first. All computed reads happen before
  * any write: hiding a parent changes its children's `currentColor`, so a pin
- * read after it would pin the hidden value.
+ * read after it would pin the hidden value. An element seen twice (a node
+ * moved twice, or a parent and child appended in one task) is planned once:
+ * a second plan would read the first one's hide as the element's original.
  */
-function hideElements(
-  elements: Element[],
-  records: Map<Element, ElementRecord>,
-  coverage: TextVisibilityCoverage
-): void {
+function hideElements(elements: Element[], s: HiddenState, late: boolean): void {
   const view = typeof window !== 'undefined' ? window : null;
-  const plans: Array<{
-    el: Element;
-    style: CSSStyleDeclaration;
-    plan: ReturnType<typeof planFor>;
-  }> = [];
+  const planned = new Set<Element>();
+  const targets: Array<{ el: Element; style: CSSStyleDeclaration }> = [];
   for (const el of elements) {
-    if (records.has(el)) continue;
+    if (s.records.has(el) || planned.has(el)) continue;
     const style = styleOf(el);
     if (!style) continue;
-    plans.push({ el, style, plan: planFor(el, computedStyleOf(view, el)) });
+    planned.add(el);
+    targets.push({ el, style });
   }
+  if (targets.length === 0) return;
+  const read = () =>
+    targets.map((t) => ({ ...t, plan: planFor(t.el, computedStyleOf(view, t.el)) }));
   // `plans` holds strings read off the computed styles, so the writes below
   // cannot change what was planned.
+  const plans = late
+    ? withAncestorColoursRevealed(
+        targets.map((t) => t.el),
+        s.records,
+        read
+      )
+    : read();
   for (const { el, style, plan } of plans) {
     const record: ElementRecord = {
       el,
+      style,
       originalAttr: el.getAttribute('style'),
       written: null,
       values: new Map(),
@@ -451,16 +579,19 @@ function hideElements(
       record.values.set(prop, value);
       if (!record.originals.has(prop)) record.originals.set(prop, readInline(style, prop));
     }
+    // Owned before the first write, so a write that throws leaves nothing a
+    // rollback cannot reach.
+    s.records.set(el, record);
     for (const [prop, value] of record.values) {
       style.setProperty(prop, value, IMPORTANT);
       record.ours.set(prop, readInline(style, prop));
     }
     record.written = el.getAttribute('style');
-    records.set(el, record);
-    coverage.elements += 1;
-    if (plan.svgText) coverage.svgText += 1;
-    if (plan.clipText) coverage.backgroundClipText += 1;
-    if (plan.pinned) coverage.pinned += 1;
+    s.coverage.elements += 1;
+    if (late) s.coverage.lateAdded += 1;
+    if (plan.svgText) s.coverage.svgText += 1;
+    if (plan.clipText) s.coverage.backgroundClipText += 1;
+    if (plan.pinned) s.coverage.pinned += 1;
   }
 }
 
@@ -471,9 +602,8 @@ function hideElements(
  * property-level.
  */
 function reassert(record: ElementRecord): void {
-  const style = styleOf(record.el);
-  if (!style) return;
   if (record.el.getAttribute('style') === record.written) return;
+  const style = record.style;
   for (const [prop, ours] of record.ours) {
     const now = readInline(style, prop);
     if (!sameInline(now, ours)) record.originals.set(prop, now);
@@ -486,12 +616,30 @@ function reassert(record: ElementRecord): void {
   record.written = record.el.getAttribute('style');
 }
 
+/**
+ * Cover `body` (a body the app swapped in) and watch it. Idempotent: what is
+ * already recorded is skipped.
+ */
+function coverBody(s: HiddenState, body: HTMLElement): void {
+  const elements: Element[] = [];
+  const shadowRoots: ShadowRoot[] = [];
+  collectElements(body, elements, shadowRoots, new Set());
+  hideElements(elements, s, true);
+  s.body = body;
+  if (s.observer) {
+    for (const root of [body, ...shadowRoots]) watch(s.observer, root);
+    s.observer.takeRecords();
+  }
+  s.coverage.shadowRoots += shadowRoots.length;
+}
+
 function observe(s: HiddenState, roots: Array<Node>): MutationObserver | null {
   if (typeof MutationObserver === 'undefined') return null;
   const observer = new MutationObserver((mutations) => {
-    if (state !== s) return;
+    if (slot().state !== s) return;
     const added: Element[] = [];
     const newShadowRoots: ShadowRoot[] = [];
+    const seen = new Set<Element>();
     for (const m of mutations) {
       if (m.type === 'attributes') {
         const rec = s.records.get(m.target as Element);
@@ -499,18 +647,28 @@ function observe(s: HiddenState, roots: Array<Node>): MutationObserver | null {
       } else {
         for (const node of Array.from(m.addedNodes)) {
           if (node.nodeType === 1 && (node as Element).isConnected) {
-            collectElements(node as Element, added, newShadowRoots);
+            // Already-recorded elements are walked (a moved subtree can carry
+            // new children) and skipped by hideElements.
+            collectElements(node as Element, added, newShadowRoots, seen);
           }
         }
       }
     }
-    if (added.length > 0) hideElements(added, s.records, s.coverage);
+    if (added.length > 0) hideElements(added, s, true);
     for (const root of newShadowRoots) watch(observer, root);
     s.coverage.shadowRoots += newShadowRoots.length;
+    // A body swapped in (Turbo, body.replaceWith) was hidden above; watch it.
+    if (typeof document !== 'undefined' && document.body && document.body !== s.body) {
+      coverBody(s, document.body);
+    }
     // Drop the records this callback's own writes queued.
     observer.takeRecords();
   });
   for (const root of roots) watch(observer, root);
+  // The <html> element's children, so a replaced <body> is seen arriving.
+  if (typeof document !== 'undefined' && document.documentElement) {
+    observer.observe(document.documentElement, { childList: true });
+  }
   return observer;
 }
 
@@ -528,22 +686,44 @@ function armTtl(s: HiddenState, ttlMs: number): void {
   s.ttlMs = ttlMs;
   s.expiresAt = Date.now() + ttlMs;
   s.timer = setTimeout(() => {
-    if (state !== s) return;
+    if (slot().state !== s) return;
     restore('ttl');
   }, ttlMs);
 }
 
+function hideFailed(e: unknown): TextVisibilityFailure {
+  const rolledBack = restore('rollback');
+  return {
+    success: false,
+    code: 'HIDE_FAILED',
+    error:
+      `the hide threw part-way (${e instanceof Error ? e.message : String(e)}); everything ` +
+      `it had written was restored (see rolledBack)`,
+    rolledBack,
+    timestamp: Date.now(),
+  };
+}
+
 function hide(ttlMs: number): TextVisibilityHideSuccess | TextVisibilityFailure {
-  if (state) {
-    armTtl(state, ttlMs);
-    return hideSuccess(state, false);
+  const current = slot().state;
+  if (current) {
+    let changed = false;
+    if (typeof document !== 'undefined' && document.body && document.body !== current.body) {
+      // The app replaced <body> since the hide (and no observer saw it).
+      const before = current.coverage.elements;
+      try {
+        coverBody(current, document.body);
+      } catch (e) {
+        return hideFailed(e);
+      }
+      changed = current.coverage.elements !== before;
+    }
+    armTtl(current, ttlMs);
+    return hideSuccess(current, changed);
   }
   if (typeof document === 'undefined' || !document.body) {
     return failure('NO_DOCUMENT', 'there is no document.body to hide text in');
   }
-  const elements: Element[] = [];
-  const shadowRoots: ShadowRoot[] = [];
-  collectElements(document.body, elements, shadowRoots);
   const s: HiddenState = {
     records: new Map(),
     coverage: {
@@ -552,18 +732,31 @@ function hide(ttlMs: number): TextVisibilityHideSuccess | TextVisibilityFailure 
       svgText: 0,
       backgroundClipText: 0,
       pinned: 0,
-      shadowRoots: shadowRoots.length,
+      shadowRoots: 0,
+      lateAdded: 0,
     },
     hiddenAt: Date.now(),
     ttlMs,
     expiresAt: 0,
     timer: null,
     observer: null,
+    body: document.body,
   };
-  hideElements(elements, s.records, s.coverage);
-  state = s;
-  s.observer = observe(s, [document.body, ...shadowRoots]);
+  // The state and the TTL are in place BEFORE the first write: a hide that
+  // throws part-way is rolled back below, and one whose caller vanished is
+  // restored by the TTL.
+  slot().state = s;
   armTtl(s, ttlMs);
+  try {
+    const elements: Element[] = [];
+    const shadowRoots: ShadowRoot[] = [];
+    collectElements(document.body, elements, shadowRoots, new Set());
+    s.coverage.shadowRoots = shadowRoots.length;
+    hideElements(elements, s, false);
+    s.observer = observe(s, [document.body, ...shadowRoots]);
+  } catch (e) {
+    return hideFailed(e);
+  }
   return hideSuccess(s, true);
 }
 
@@ -596,21 +789,30 @@ function writeAttr(el: Element, value: string | null): void {
 }
 
 type Decision =
-  | { kind: 'detached'; record: ElementRecord }
-  | { kind: 'exact'; record: ElementRecord; original: string | null }
-  | { kind: 'property'; record: ElementRecord; style: CSSStyleDeclaration; drifted: Set<string> };
+  | { kind: 'exact'; record: ElementRecord; connected: boolean; original: string | null }
+  | { kind: 'property'; record: ElementRecord; connected: boolean; drifted: Set<string> };
 
+/**
+ * How one element is restored. An element out of the document is restored
+ * the same way as one in it: writing a style attribute on a disconnected
+ * node is fine, and it is what it will carry when it is re-inserted.
+ */
 function decide(record: ElementRecord): Decision {
-  const style = styleOf(record.el);
-  if (!record.el.isConnected || !style) return { kind: 'detached', record };
-  if (record.originalAttr !== undefined && record.el.getAttribute('style') === record.written) {
-    return { kind: 'exact', record, original: record.originalAttr };
+  const connected = record.el.isConnected;
+  // `written === null`: a hide that threw while writing this element. Nothing
+  // but that synchronous hide can have touched it, so its original attribute
+  // goes back as it was.
+  if (
+    record.originalAttr !== undefined &&
+    (record.written === null || record.el.getAttribute('style') === record.written)
+  ) {
+    return { kind: 'exact', record, connected, original: record.originalAttr };
   }
   const drifted = new Set<string>();
   for (const [prop, ours] of record.ours) {
-    if (!sameInline(readInline(style, prop), ours)) drifted.add(prop);
+    if (!sameInline(readInline(record.style, prop), ours)) drifted.add(prop);
   }
-  return { kind: 'property', record, style, drifted };
+  return { kind: 'property', record, connected, drifted };
 }
 
 /**
@@ -618,9 +820,10 @@ function decide(record: ElementRecord): Decision {
  * comes back under `transition-property: none`, styles are flushed, then the
  * transition itself — so the text never fades back in.
  */
-function restore(trigger: 'request' | 'ttl'): TextVisibilityRestore {
-  const s = state as HiddenState;
-  state = null;
+function restore(trigger: TextVisibilityRestore['trigger']): TextVisibilityRestore {
+  const sl = slot();
+  const s = sl.state as HiddenState;
+  sl.state = null;
   if (s.timer !== null) clearTimeout(s.timer);
   if (s.observer) s.observer.disconnect();
 
@@ -630,13 +833,13 @@ function restore(trigger: 'request' | 'ttl'): TextVisibilityRestore {
   for (const d of decisions) {
     if (d.kind === 'exact') {
       writeAttr(d.record.el, d.original);
-      styleOf(d.record.el)?.setProperty(TRANSITION, 'none', IMPORTANT);
-    } else if (d.kind === 'property') {
+      d.record.style.setProperty(TRANSITION, 'none', IMPORTANT);
+    } else {
       for (const [prop, original] of d.record.originals) {
         if (prop === TRANSITION || d.drifted.has(prop)) continue;
-        writeInline(d.style, prop, original);
+        writeInline(d.record.style, prop, original);
       }
-      if (!d.drifted.has(TRANSITION)) d.style.setProperty(TRANSITION, 'none', IMPORTANT);
+      if (!d.drifted.has(TRANSITION)) d.record.style.setProperty(TRANSITION, 'none', IMPORTANT);
     }
   }
   // Flush: the restored colours become the computed style with no transition.
@@ -645,12 +848,12 @@ function restore(trigger: 'request' | 'ttl'): TextVisibilityRestore {
   // Pass 2: the transition, and the exact attribute text.
   for (const d of decisions) {
     if (d.kind === 'exact') writeAttr(d.record.el, d.original);
-    else if (d.kind === 'property' && !d.drifted.has(TRANSITION)) {
-      writeInline(d.style, TRANSITION, d.record.originals.get(TRANSITION) ?? emptyInline());
+    else if (!d.drifted.has(TRANSITION)) {
+      writeInline(d.record.style, TRANSITION, d.record.originals.get(TRANSITION) ?? emptyInline());
     }
   }
 
-  // Verify by reading back.
+  // Verify by reading back — every element, in the document or not.
   let exact = 0;
   let propertyLevel = 0;
   let detached = 0;
@@ -658,10 +861,7 @@ function restore(trigger: 'request' | 'ttl'): TextVisibilityRestore {
   const drift: TextVisibilityDrift[] = [];
   let driftCount = 0;
   for (const d of decisions) {
-    if (d.kind === 'detached') {
-      detached += 1;
-      continue;
-    }
+    if (!d.connected) detached += 1;
     if (d.kind === 'exact') {
       exact += 1;
       if (d.record.el.getAttribute('style') !== d.original) verified = false;
@@ -670,7 +870,7 @@ function restore(trigger: 'request' | 'ttl'): TextVisibilityRestore {
     propertyLevel += 1;
     for (const [prop, original] of d.record.originals) {
       if (d.drifted.has(prop)) continue;
-      if (!sameInline(readInline(d.style, prop), original)) verified = false;
+      if (!sameInline(readInline(d.record.style, prop), original)) verified = false;
     }
     if (d.drifted.size > 0) {
       verified = false;
@@ -692,7 +892,7 @@ function restore(trigger: 'request' | 'ttl'): TextVisibilityRestore {
     verified,
     restoredAt: Date.now(),
   };
-  lastRestore = result;
+  sl.lastRestore = result;
   return result;
 }
 
@@ -718,12 +918,13 @@ export function setTextVisibility(raw: unknown): TextVisibilityResult {
   const req = validateTextVisibilityRequest(raw);
   if (typeof req === 'string') return failure('INVALID_REQUEST', req);
   if (req.hidden) return hide(req.ttlMs);
-  if (!state) {
+  const sl = slot();
+  if (!sl.state) {
     return {
       success: true,
       hidden: false,
       changed: false,
-      restore: lastRestore,
+      restore: sl.lastRestore,
       timestamp: Date.now(),
     };
   }
@@ -738,11 +939,11 @@ export function setTextVisibility(raw: unknown): TextVisibilityResult {
 
 /** True while text is hidden. */
 export function textHidden(): boolean {
-  return state !== null;
+  return slot().state !== null;
 }
 
 /** Test-only: restore anything hidden and forget the last restore. */
 export function resetTextVisibilityForTest(): void {
-  if (state) restore('request');
-  lastRestore = null;
+  if (slot().state) restore('request');
+  slot().lastRestore = null;
 }

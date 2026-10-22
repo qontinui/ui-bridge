@@ -231,27 +231,69 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('text visibility (real Chromium)', () => 
       }))
     );
 
+    // An element the app adds while text is hidden, and later removes again
+    // (still hidden): it must be hidden on arrival with its currentColor
+    // border pinned to the colour it inherits, and the restore must reach it
+    // although it is out of the document by then.
+    type LatePage = { evaluate<R, A>(fn: (a: A) => R, arg: A): Promise<R> };
+    transport.register('__late', (p: unknown, ctx: unknown) =>
+      (ctx as { page: LatePage }).page.evaluate(
+        (what: string) => {
+          const w = window as unknown as { __late?: HTMLElement };
+          if (what === 'add') {
+            const el = document.createElement('div');
+            el.id = 'late';
+            el.textContent = 'late';
+            el.setAttribute(
+              'style',
+              'position:absolute;left:300px;top:120px;width:60px;height:40px;' +
+                'box-sizing:border-box;border:6px solid;font:bold 16px sans-serif'
+            );
+            document.body.appendChild(el);
+            w.__late = el;
+            return null;
+          }
+          if (what === 'remove') {
+            w.__late!.remove();
+            return null;
+          }
+          return w.__late!.getAttribute('style');
+        },
+        (p as { what: string }).what
+      )
+    );
+
     const lines: ExecLine[] = [];
     let before: unknown;
     let after: unknown;
+    let lateAfter: unknown;
     try {
       await transport.ready();
       before = await transport.dispatch('__state');
-      const anyError = await executeActions(
-        transport,
-        [
-          { action: 'getControlSnapshot', payload: {} },
-          { action: 'textVisibility', payload: { hidden: true, ttlMs: 30_000 } },
-          { action: 'getControlSnapshot', payload: {} },
-          { action: 'textVisibility', payload: { hidden: false } },
-          { action: 'getControlSnapshot', payload: {} },
-        ],
-        (position, action) =>
-          SNAPSHOT_ACTIONS.has(action) ? join(dir, `frame-${position}.png`) : null,
-        (line) => lines.push(line)
-      );
-      expect(anyError, JSON.stringify(lines.filter((l) => l.error))).toBe(false);
+      let position = 0;
+      const run = async (plan: Array<{ action: string; payload: unknown }>): Promise<void> => {
+        const anyError = await executeActions(
+          transport,
+          plan,
+          (_p, action) =>
+            SNAPSHOT_ACTIONS.has(action) ? join(dir, `frame-${++position}.png`) : null,
+          (line) => lines.push(line)
+        );
+        expect(anyError, JSON.stringify(lines.filter((l) => l.error))).toBe(false);
+      };
+      await run([
+        { action: 'getControlSnapshot', payload: {} },
+        { action: 'textVisibility', payload: { hidden: true, ttlMs: 30_000 } },
+      ]);
+      await transport.dispatch('__late', { what: 'add' });
+      await run([{ action: 'getControlSnapshot', payload: {} }]);
+      await transport.dispatch('__late', { what: 'remove' });
+      await run([
+        { action: 'textVisibility', payload: { hidden: false } },
+        { action: 'getControlSnapshot', payload: {} },
+      ]);
       after = await transport.dispatch('__state');
+      lateAfter = await transport.dispatch('__late', { what: 'style' });
     } finally {
       await transport.close().catch(() => {});
     }
@@ -267,8 +309,13 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('text visibility (real Chromium)', () => 
       success: true,
       hidden: false,
       changed: true,
-      restore: { verified: true, propertyLevel: 0, drift: [] },
+      restore: { verified: true, propertyLevel: 0, drift: [], detached: 1 },
     });
+    // The late element got its own style attribute back, though detached.
+    expect(lateAfter).toBe(
+      'position:absolute;left:300px;top:120px;width:60px;height:40px;' +
+        'box-sizing:border-box;border:6px solid;font:bold 16px sans-serif'
+    );
 
     const a = decodePng(readFileSync(snapA!.frame!.path));
     const b = decodePng(readFileSync(snapB!.frame!.path));
@@ -284,6 +331,10 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('text visibility (real Chromium)', () => 
       expect(img.rgb(12, 122)).toEqual([0, 0, 255]);
       expect(img.rgb(220, 140)).toEqual([255, 0, 0]);
     }
+    // ...and so did the late element's border (its inherited colour is
+    // black), while its own text is hidden.
+    expect(b.rgb(302, 122)).toEqual([0, 0, 0]);
+    expect(offColour(b, { x0: 308, y0: 128, x1: 352, y1: 152 }, WHITE)).toBe(0);
     // 3. Frame C is frame A, pixel for pixel: the 5 s transitions did not fade
     //    the text back in.
     let differing = 0;

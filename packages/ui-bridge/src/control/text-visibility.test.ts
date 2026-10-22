@@ -335,12 +335,166 @@ describe('an app that writes while text is hidden', () => {
     expect(li.hasAttribute('style')).toBe(false);
   });
 
-  it('an element removed while hidden is reported detached', () => {
-    document.body.innerHTML = '<p>gone</p><p>kept</p>';
+  it('an element detached while hidden is restored too, so re-inserting it shows its own style', () => {
+    document.body.innerHTML = '<p id="m" style="color: red">modal</p><p>kept</p><i>x</i>';
+    const m = document.getElementById('m')!;
+    const i = document.querySelector('i')!;
     hide();
-    document.querySelector('p')!.remove();
+    m.remove();
+    i.remove();
     const res = show();
-    expect(res.restore).toMatchObject({ detached: 1, verified: true });
+    expect(res.restore).toMatchObject({ detached: 2, verified: true });
+    document.body.appendChild(m);
+    document.body.appendChild(i);
+    expect(m.getAttribute('style')).toBe('color: red');
+    expect(i.hasAttribute('style')).toBe(false);
+  });
+
+  it('a parent and its child appended in one task are each recorded once (H1)', async () => {
+    document.body.innerHTML = '<div id="root"></div>';
+    hide();
+    const d = document.createElement('div');
+    document.getElementById('root')!.appendChild(d);
+    const span = document.createElement('span');
+    span.textContent = 'late';
+    d.appendChild(span);
+    await flushObservers();
+    expect(inline(span, 'color')).toEqual(['transparent', 'important']);
+    const res = show();
+    expect(res.restore).toMatchObject({ verified: true, drift: [] });
+    expect(span.hasAttribute('style')).toBe(false);
+    expect(d.hasAttribute('style')).toBe(false);
+  });
+
+  it('a node moved twice in one task is recorded once (H1)', async () => {
+    document.body.innerHTML = '<div id="a"></div><div id="b"></div>';
+    const first = hide();
+    const em = document.createElement('em');
+    em.textContent = 'moved';
+    document.getElementById('a')!.appendChild(em);
+    document.getElementById('b')!.appendChild(em);
+    await flushObservers();
+    const again = hide();
+    expect(again.coverage.elements).toBe(first.coverage.elements + 1);
+    expect(again.coverage.lateAdded).toBe(1);
+    show();
+    expect(em.hasAttribute('style')).toBe(false);
+  });
+
+  it('pins a late element’s currentColor border to the colour it inherits, not the hide (L1)', async () => {
+    document.head.innerHTML = '<style>.b { border: 2px solid }</style>';
+    document.body.innerHTML = '<div id="r" style="color: rgb(0, 0, 255)"></div>';
+    const r = document.getElementById('r')!;
+    hide();
+    const hiddenAttr = r.getAttribute('style');
+    const late = document.createElement('span');
+    late.className = 'b';
+    r.appendChild(late);
+    await flushObservers();
+    expect(inline(late, 'border-top-color')).toEqual(['rgb(0, 0, 255)', 'important']);
+    // The ancestor's colour was put back only for that read.
+    expect(r.getAttribute('style')).toBe(hiddenAttr);
+    const res = show();
+    expect(res.restore).toMatchObject({ exact: 3, verified: true });
+    expect(r.getAttribute('style')).toBe('color: rgb(0, 0, 255)');
+  });
+
+  it('covers a body the app swaps in while text is hidden (L3)', async () => {
+    document.body.innerHTML = '<p>old</p>';
+    hide();
+    const fresh = document.createElement('body');
+    fresh.innerHTML = '<p id="n">new</p>';
+    document.documentElement.replaceChild(fresh, document.body);
+    await flushObservers();
+    const p = document.getElementById('n')!;
+    expect(inline(p, 'color')).toEqual(['transparent', 'important']);
+    // Elements of a body added after that are seen too: the new body is watched.
+    const later = document.createElement('b');
+    fresh.appendChild(later);
+    await flushObservers();
+    expect(inline(later, 'color')).toEqual(['transparent', 'important']);
+    expect(show().restore).toMatchObject({ verified: true, detached: 2 });
+    expect(p.hasAttribute('style')).toBe(false);
+  });
+
+  it('a repeated hide covers a swapped-in body the observer has not reported yet (L3)', () => {
+    document.body.innerHTML = '<p>old</p>';
+    const first = hide();
+    const fresh = document.createElement('body');
+    fresh.innerHTML = '<p id="n">new</p>';
+    document.documentElement.replaceChild(fresh, document.body);
+    const again = hide();
+    expect(again.changed).toBe(true);
+    expect(again.coverage.elements).toBe(first.coverage.elements + 2);
+    expect(inline(document.getElementById('n')!, 'color')).toEqual(['transparent', 'important']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A hide that throws part-way (L5)
+// ---------------------------------------------------------------------------
+
+describe('a hide that throws part-way', () => {
+  it('is rolled back before it answers, and nothing is left hidden', () => {
+    document.body.innerHTML = PAGE;
+    const before = document.body.innerHTML;
+    // The prototype the elements' inline style objects actually use.
+    const proto = Object.getPrototypeOf(document.body.style) as CSSStyleDeclaration;
+    const real = proto.setProperty;
+    // Throw once, on the hide's own write to one element part-way through
+    // the page (jsdom's CSSOM also calls setProperty internally, so a plain
+    // call count does not land on one of ours).
+    const target = document.querySelector('button')!.style;
+    let thrown = false;
+    const spy = vi.spyOn(proto, 'setProperty').mockImplementation(function (
+      this: CSSStyleDeclaration,
+      ...args: Parameters<CSSStyleDeclaration['setProperty']>
+    ) {
+      if (!thrown && this === target && args[0] === 'text-shadow') {
+        thrown = true;
+        throw new Error('engine refused the write');
+      }
+      return real.apply(this, args);
+    });
+    let res: ReturnType<typeof setTextVisibility>;
+    try {
+      res = setTextVisibility({ hidden: true });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(res).toMatchObject({
+      success: false,
+      code: 'HIDE_FAILED',
+      rolledBack: { trigger: 'rollback', verified: true },
+    });
+    expect((res as TextVisibilityFailure).error).toContain('engine refused the write');
+    expect(thrown).toBe(true);
+    expect(textHidden()).toBe(false);
+    expect(document.body.innerHTML).toBe(before);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// One state per page, not per SDK copy (L2)
+// ---------------------------------------------------------------------------
+
+describe('two copies of the module in one page', () => {
+  it('a show through one copy restores a hide made through the other', async () => {
+    vi.resetModules();
+    const a = await import('./text-visibility');
+    vi.resetModules();
+    const b = await import('./text-visibility');
+    expect(a.setTextVisibility).not.toBe(b.setTextVisibility);
+    document.body.innerHTML = PAGE;
+    const before = document.body.innerHTML;
+    a.setTextVisibility({ hidden: true });
+    expect(b.textHidden()).toBe(true);
+    expect(b.setTextVisibility({ hidden: false })).toMatchObject({
+      changed: true,
+      restore: { verified: true },
+    });
+    expect(document.body.innerHTML).toBe(before);
+    expect(a.textHidden()).toBe(false);
   });
 });
 
@@ -369,9 +523,20 @@ describe('validation', () => {
       hidden: true,
       ttlMs: 1_000,
     });
-    expect(validateTextVisibilityRequest({ hidden: false, ttlMs: 600_000 })).toEqual({
-      hidden: false,
-      ttlMs: 600_000,
+  });
+
+  it('does not validate ttlMs on a show (a show has no TTL)', () => {
+    for (const ttlMs of ['x', -1, 10_000_000]) {
+      expect(validateTextVisibilityRequest({ hidden: false, ttlMs })).toEqual({
+        hidden: false,
+        ttlMs: DEFAULT_TEXT_VISIBILITY_TTL_MS,
+      });
+    }
+    document.body.innerHTML = '<p>x</p>';
+    hide();
+    expect(setTextVisibility({ hidden: false, ttlMs: 'x' })).toMatchObject({
+      success: true,
+      changed: true,
     });
   });
 });
