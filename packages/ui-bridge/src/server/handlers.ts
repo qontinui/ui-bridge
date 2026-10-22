@@ -802,11 +802,12 @@ function error<T = unknown>(message: string, code?: string): APIResponse<T> {
 }
 
 /**
- * The answer every media-override route gives on a transport with no browser
- * context: `capability_unavailable_in_build`, typed, so a caller never reads a
- * 2xx as "applied".
+ * The answer every dev-control route (the media override, text visibility)
+ * gives on a transport with no browser context:
+ * `capability_unavailable_in_build`, typed, so a caller never reads a 2xx as
+ * "applied".
  */
-function mediaOverrideUnavailable(command: string): APIResponse<unknown> {
+function devControlUnavailable(command: string): APIResponse<unknown> {
   return {
     success: false,
     error:
@@ -6326,9 +6327,10 @@ export function createHandlers(
     // The asset override rewrites the live DOM, which this Node-side handler
     // set has no handle on. A typed capability statement, never a silent
     // success: the relay handlers and the injected runtime serve it.
-    mediaOverride: async (_request) => mediaOverrideUnavailable('mediaOverride'),
-    mediaOverrideRestore: async (_request) => mediaOverrideUnavailable('mediaOverrideRestore'),
-    mediaOverrideList: async () => mediaOverrideUnavailable('mediaOverrideList'),
+    mediaOverride: async (_request) => devControlUnavailable('mediaOverride'),
+    mediaOverrideRestore: async (_request) => devControlUnavailable('mediaOverrideRestore'),
+    mediaOverrideList: async () => devControlUnavailable('mediaOverrideList'),
+    textVisibility: async (_request) => devControlUnavailable('textVisibility'),
 
     clipboardWrite: async (_request) => {
       return error(
