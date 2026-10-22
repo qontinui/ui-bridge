@@ -271,6 +271,9 @@ describe('serializeRegisteredElement — a11y projection honors §4.6', () => {
     boundary.appendChild(bare);
     container.appendChild(boundary);
     registry.registerElement('bare', bare, { type: 'generic' });
+    // `registerElement` stamps `data-ui-bridge-id`, a derived-name source;
+    // drop it so the node really never had a name.
+    bare.removeAttribute('data-ui-bridge-id');
 
     const serialized = serializeRegisteredElement(registry.findElement('bare')!);
     expect(serialized.ariaLabel).toBeUndefined();

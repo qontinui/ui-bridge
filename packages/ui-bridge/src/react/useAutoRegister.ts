@@ -82,8 +82,6 @@ export interface AutoRegisterOptions {
   mediaDiscovery?: MediaDiscoveryOptions;
   /** Log level for auto-registered elements (uses global default if not set) */
   logLevel?: ElementLogLevel;
-  /** Write data-ui-bridge-id attribute on registered elements (default: true) */
-  writeStableAttribute?: boolean;
   /**
    * If true, elements stay registered in the UI Bridge registry for the
    * entire lifetime of their mount, even when the visibility gate would
@@ -801,7 +799,6 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
     contentDiscovery,
     mediaDiscovery,
     logLevel,
-    writeStableAttribute,
     persistWhileMounted = false,
   } = options;
 
@@ -959,10 +956,9 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
         origin: 'auto',
       });
 
+      // `registerElement` stamps `data-ui-bridge-id` itself when the node has
+      // none, for every registration door.
       const finalId = registered.id;
-      if (writeStableAttribute !== false && !existingStamp) {
-        element.setAttribute('data-ui-bridge-id', finalId);
-      }
       registeredElementsRef.current.set(element, finalId);
 
       // Start lazy bbox tracking. The scanner may tag hundreds of elements
@@ -979,7 +975,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
 
       onRegister?.(finalId, element);
     },
-    [bridge, idStrategy, customGenerateId, onRegister, logLevel, writeStableAttribute]
+    [bridge, idStrategy, customGenerateId, onRegister, logLevel]
   );
 
   /**

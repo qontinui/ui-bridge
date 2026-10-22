@@ -120,6 +120,18 @@ export interface UseUIElementOptions {
    * `2026-06-03-runner-popout-terminal-windows.md` Phase 0.
    */
   windowLabel?: string;
+
+  /**
+   * The element's identifying text is PAINTED rather than held in the DOM:
+   * a canvas, a terminal, a chart. Its state carries `paintsText: true`, the
+   * occlusion hit-test samples it on a dense grid, `/control/visibility`
+   * reports any occlusion of it as hiding text (`textSource: 'painted'`), and
+   * the `<canvas>` elements inside it count as swept in the canvas census.
+   * Put it on the container of a canvas stack, not on each layer.
+   *
+   * Default: `true` when the element is a `<canvas>`, otherwise `false`.
+   */
+  paintsText?: boolean;
 }
 
 /**
@@ -194,6 +206,7 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     contextPath,
     persistWhileMounted,
     reveals,
+    paintsText,
   } = options;
 
   // Explicit option wins; otherwise inherit the nearest window provider; the
@@ -259,6 +272,7 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
       contextPath,
       reveals,
       windowLabel,
+      paintsText,
     });
     registeredRef.current = true;
     registeredElementIdRef.current = id;
@@ -285,6 +299,7 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     contextPath,
     reveals,
     windowLabel,
+    paintsText,
     startBboxTracking,
   ]);
 
