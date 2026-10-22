@@ -560,8 +560,12 @@ describe('useAutoRegister — content and media nodes survive a DOM move', () =>
     expect(byNode(card)?.category).toBe('content');
     expect(byNode(canvas)?.category).toBe('media');
 
-    // Keyed reorder: both nodes removed and re-added in one tick.
+    // Keyed reorders: both nodes removed and re-added in one tick, twice. The
+    // first lets a scanner that wrongly adopted the node record ownership;
+    // the second is where that ownership would unregister and re-register it.
     list.append(canvas, card);
+    await new Promise((r) => setTimeout(r, 700));
+    list.append(card, canvas);
     await new Promise((r) => setTimeout(r, 700));
 
     const cardEntry = byNode(card);
@@ -581,5 +585,5 @@ describe('useAutoRegister — content and media nodes survive a DOM move', () =>
     expect(byNode(canvas)).toBeUndefined();
     expect(card.hasAttribute('data-ui-bridge-id')).toBe(false);
     expect(canvas.hasAttribute('data-ui-bridge-id')).toBe(false);
-  }, 10_000);
+  }, 15_000);
 });
