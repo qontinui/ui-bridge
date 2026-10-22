@@ -613,6 +613,25 @@ describe('the registry-owned stamp', () => {
     expect(n.hasAttribute('data-ui-bridge-id')).toBe(false);
   });
 
+  // Review round 5, probe P9: clear() is a full teardown (resetGlobalRegistry
+  // runs it), so it must not leave this registry's stamps naming entries that
+  // no longer exist; and it resets the per-node id index.
+  it('clear() strips the stamps this registry wrote and resets the id index', () => {
+    const registry = new UIBridgeRegistry();
+    const n = document.createElement('div');
+    const dev = document.createElement('div');
+    dev.setAttribute('data-ui-bridge-id', 'developer-id');
+    document.body.append(n, dev);
+    registry.registerElement('a', n, { type: 'generic' });
+    registry.registerElement('developer-id', dev, { type: 'generic' });
+
+    registry.clear();
+    expect(n.hasAttribute('data-ui-bridge-id')).toBe(false);
+    expect(dev.getAttribute('data-ui-bridge-id')).toBe('developer-id');
+    const index = (registry as unknown as { idsByNode: WeakMap<Element, Set<string>> }).idsByNode;
+    expect(index.get(n)).toBeUndefined();
+  });
+
   it('the stamp is never handed across registries (pinned)', () => {
     const first = new UIBridgeRegistry();
     const second = new UIBridgeRegistry();
