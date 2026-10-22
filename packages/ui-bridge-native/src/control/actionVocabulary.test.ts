@@ -4,7 +4,7 @@
  * Phase 8). The table is asserted as LITERALS so an edited or dropped entry
  * goes red here. The same literals are asserted against `@qontinui/ui-bridge`
  * (this package keeps a package-local copy: `@qontinui/ui-bridge` is only an
- * optional peer). The runner's Phase 1 copy (in flight) mirrors this table.
+ * optional peer). The runner's Phase 1 copy (in flight) will mirror this table.
  */
 
 import { describe, it, expect } from 'vitest';
