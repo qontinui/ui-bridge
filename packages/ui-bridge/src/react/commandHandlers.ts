@@ -111,6 +111,7 @@ import {
   type ElementSnapshot,
 } from '../ai/wait-for-element';
 import { mapInternalErrorCode } from '../diagnostics';
+import { describeUnknownAction, unknownActionContext } from '../control/actionVocabulary';
 import { devControlsDisabledResponse, devControlsEnabled } from '../core/dev-controls';
 import {
   applyMediaOverride,
@@ -178,6 +179,34 @@ export interface BridgeAccess {
   registry?: RegistryAccess;
 }
 
+/**
+ * The verbs the relay's `executeElementAction` switch implements — the
+ * accepted list its unknown-action refusal names when the element advertises
+ * none (keep in step with the `switch (request.action)` cases below).
+ */
+const RELAY_ELEMENT_ACTIONS: readonly string[] = [
+  'click',
+  'hoverClick',
+  'focus',
+  'blur',
+  'hover',
+  'scrollIntoView',
+  'scroll',
+  'toggle',
+  'doubleClick',
+  'rightClick',
+  'middleClick',
+  'type',
+  'clear',
+  'setValue',
+  'select',
+  'check',
+  'uncheck',
+  'submit',
+  'reset',
+  'sendKeys',
+  'drag',
+];
 /** Browser-side global __UI_BRIDGE__ */
 interface UIBridgeGlobal {
   browserCapture?: BrowserCapture;
@@ -2192,13 +2221,22 @@ export async function executeCommand(
             );
             break;
           }
-          default:
-            return createActionFailure(
-              id,
-              'UNSUPPORTED_ACTION',
-              `Unknown action: ${request.action}`,
-              startTime
-            );
+          default: {
+            const custom = Object.keys(registered?.customActions ?? {});
+            const own = [...(registered?.actions ?? []), ...custom];
+            const hint = describeUnknownAction(request.action, {
+              elementId: registered?.id,
+              accepted: own.length > 0 ? own : [...RELAY_ELEMENT_ACTIONS, ...custom],
+            });
+            const failure = createActionFailure(id, 'UNSUPPORTED_ACTION', hint.message, startTime);
+            return {
+              ...failure,
+              failureDetails: {
+                ...failure.failureDetails,
+                context: { action: request.action, ...unknownActionContext(hint) },
+              },
+            };
+          }
         }
       } catch (err) {
         // A custom-action handler's typed throw carries its own
