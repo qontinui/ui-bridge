@@ -235,6 +235,13 @@ export interface ForcePseudoStateOptions {
    * included in the settle and the `revealed` diff.
    */
   afterMark?: (target: Element) => void;
+  /**
+   * This apply BORROWS the pointer from the hold `snapshot` describes (the
+   * design inspector): it, and the release of the hold it creates, do not
+   * count as a change of the page's pointer, so {@link reapplyIfIdle} can
+   * still put the snapshot back afterwards.
+   */
+  borrowedFrom?: ForcedPseudoHoldSnapshot;
 }
 
 /** The current hold, as {@link getForcedPseudoState} reports it. */
@@ -252,8 +259,10 @@ export interface ForcedPseudoHoldSnapshot {
   holdId: number;
   target: Element;
   state: ForcedPseudoStateName;
-  /** What was left of its TTL when the snapshot was taken. */
-  remainingMs: number;
+  /** Epoch ms at which the hold would have expired; a re-apply keeps that deadline. */
+  expiresAt: number;
+  /** The pointer generation when the snapshot was taken; see {@link reapplyIfIdle}. */
+  generation: number;
   settleTimeoutMs: number;
   registry?: ForcedPseudoElementSource;
   /** The JS half of the original hover, so a re-apply replays the enter events too. */
@@ -386,6 +395,8 @@ interface Hold {
   afterMark?: (target: Element) => void;
   /** The document and shadow roots whose sheets were scanned. */
   roots: Array<Document | ShadowRoot>;
+  /** Applied while borrowing the pointer: its apply and release leave the generation alone. */
+  borrowed: boolean;
   /** Elements whose four properties must read their before values after release. */
   verify: VerifyEntry[];
   report: ForcedPseudoReport | null;
@@ -400,7 +411,20 @@ interface ForcedPseudoGlobal {
   /** Rules currently rewritten by a hold, so a scan never rewrites one twice. */
   rewritten: WeakSet<CSSRule>;
   nextHoldId: number;
+  /**
+   * Bumped by every apply and every release of the page's hold, except those
+   * of a borrower ({@link ForcePseudoStateOptions.borrowedFrom}). A snapshot
+   * whose generation no longer matches describes a pointer someone else has
+   * moved since, and must not be put back.
+   */
+  generation: number;
 }
+
+/**
+ * The shape of the shared state object. Bump it whenever
+ * {@link ForcedPseudoGlobal} or {@link Hold} changes shape.
+ */
+export const FORCED_PSEUDO_STATE_VERSION = 4;
 
 /**
  * One pointer per PAGE. tsup emits each entry point (`index`, `control`,
@@ -408,17 +432,13 @@ interface ForcedPseudoGlobal {
  * one pointer per bundle: a hover applied through one entry could not be
  * released through another. The state lives on `globalThis` under a registered
  * symbol instead (the pattern of `getGlobalActionWindowRegistry`).
+ *
+ * The key carries the state version. Two SDK copies of DIFFERENT versions on
+ * one page (an app bundle plus an injected runtime) then never see each
+ * other's state object at all, so neither can read it through a shape it
+ * does not know; copies of the same version share it.
  */
-const GLOBAL_KEY = Symbol.for('ui-bridge.forcedPseudo');
-
-/**
- * The shape of the shared state object. Two SDK copies of DIFFERENT versions
- * on one page (an app bundle plus an injected runtime) must not read each
- * other's state through a shape they do not know: on a mismatch this copy
- * isolates itself under a version-suffixed key instead of sharing. Bump it
- * whenever {@link ForcedPseudoGlobal} or {@link Hold} changes shape.
- */
-export const FORCED_PSEUDO_STATE_VERSION = 3;
+const GLOBAL_KEY = Symbol.for(`ui-bridge.forcedPseudo@v${FORCED_PSEUDO_STATE_VERSION}`);
 
 function freshState(): ForcedPseudoGlobal {
   return {
@@ -427,25 +447,18 @@ function freshState(): ForcedPseudoGlobal {
     queue: Promise.resolve(),
     rewritten: new WeakSet(),
     nextHoldId: 1,
+    generation: 0,
   };
 }
 
 function g(): ForcedPseudoGlobal {
   const host = globalThis as unknown as Record<symbol, ForcedPseudoGlobal | undefined>;
-  const shared = host[GLOBAL_KEY];
-  if (!shared) {
-    const state = freshState();
+  let state = host[GLOBAL_KEY];
+  if (!state || state.version !== FORCED_PSEUDO_STATE_VERSION) {
+    state = freshState();
     host[GLOBAL_KEY] = state;
-    return state;
   }
-  if (shared.version === FORCED_PSEUDO_STATE_VERSION) return shared;
-  const isolatedKey = Symbol.for(`ui-bridge.forcedPseudo@v${FORCED_PSEUDO_STATE_VERSION}`);
-  let isolated = host[isolatedKey];
-  if (!isolated) {
-    isolated = freshState();
-    host[isolatedKey] = isolated;
-  }
-  return isolated;
+  return state;
 }
 
 function serialized<T>(fn: () => Promise<T>): Promise<T> {
@@ -615,18 +628,28 @@ function sheetIsLive(sheet: CSSStyleSheet, roots: Array<Document | ShadowRoot>):
  * fails any of these draws nothing and is counted as already gone.
  */
 function ruleIsAttached(rule: CSSRule, roots: Array<Document | ShadowRoot>): boolean {
+  const sheet = listedTopSheet(rule);
+  return sheet !== null && sheetIsLive(sheet, roots);
+}
+
+/**
+ * The sheet a rule is still listed in — every `parentRule` level still lists
+ * its child and the top-level rule is still in its sheet — or `null` when the
+ * rule was deleted somewhere along the chain (a deleted rule keeps its parent
+ * pointers).
+ */
+function listedTopSheet(rule: CSSRule): CSSStyleSheet | null {
   try {
     let current: CSSRule = rule;
     while (current.parentRule) {
       const parent = current.parentRule as unknown as RuleContainer;
-      if (!listHas(parent.cssRules, current)) return false;
+      if (!listHas(parent.cssRules, current)) return null;
       current = current.parentRule;
     }
     const sheet = current.parentStyleSheet;
-    if (!sheet || !listHas(sheet.cssRules, current)) return false;
-    return sheetIsLive(sheet, roots);
+    return sheet && listHas(sheet.cssRules, current) ? sheet : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -644,7 +667,9 @@ function restoreRewritten(
   const selectorDrift: ForcedPseudoSelectorDrift[] = [];
   for (const { rule, originalText, rewrittenText } of records) {
     rewritten.delete(rule);
-    if (!ruleIsAttached(rule, roots)) {
+    const sheet = listedTopSheet(rule);
+    if (!sheet) {
+      // Deleted from its parent: nothing will ever read this rule again.
       rulesAlreadyGone += 1;
       continue;
     }
@@ -655,12 +680,17 @@ function restoreRewritten(
       selectorDrift.push({ selector: current, original: originalText });
       continue;
     }
+    // Written back even when its sheet is no longer in scope (a removed
+    // `<style>`, an un-adopted sheet): writing to a dead sheet is harmless, and
+    // a sheet the app re-inserts or re-adopts must not come back forced.
     try {
       rule.selectorText = originalText;
-      rulesRestored += 1;
     } catch {
       selectorDrift.push({ selector: current, original: originalText });
+      continue;
     }
+    if (sheetIsLive(sheet, roots)) rulesRestored += 1;
+    else rulesAlreadyGone += 1;
   }
   return { rulesRestored, rulesAlreadyGone, selectorDrift };
 }
@@ -848,17 +878,19 @@ function dispatchLeave(hold: Hold): void {
 
 async function releaseHold(
   current: Hold,
-  reason: ForcedPseudoReleaseReason
+  reason: ForcedPseudoReleaseReason,
+  borrowing = false
 ): Promise<ForcedPseudoReleaseReport> {
   const s = g();
   if (current.timer !== null) clearTimeout(current.timer);
   current.timer = null;
   if (s.hold === current) s.hold = null;
+  if (!current.borrowed && !borrowing) s.generation += 1;
 
   const preexisting = runningAnimationSet(current.doc);
   const { rulesRestored, rulesAlreadyGone, selectorDrift } = restoreRewritten(
     current.rewritten,
-    current.roots
+    current.roots ?? []
   );
   let unmarkedElements = 0;
   for (const el of current.marked) {
@@ -950,21 +982,35 @@ export function forcePseudoState(
 
 /**
  * Re-apply a hold taken with {@link snapshotForcedPseudoState} — only if the
- * pointer is idle when it runs. Decided INSIDE the serialized queue, so a hold
- * applied after the snapshot always wins over the snapshot. Returns `null`
- * when it did not apply (something else is held, or the target is gone).
+ * pointer is idle when it runs and nobody but the borrower moved it since the
+ * snapshot (the generation still matches). Decided INSIDE the serialized
+ * queue, so a hold applied or released after the snapshot always wins. Returns
+ * `null` when it did not apply (the pointer moved, something is held, the
+ * target is gone, or the original deadline has passed).
  */
 export function reapplyIfIdle(
   snapshot: ForcedPseudoHoldSnapshot
 ): Promise<ForcedPseudoReport | null> {
   return serialized(async () => {
-    if (g().hold || !snapshot.target.isConnected) return null;
-    return applyNow(snapshot.target, snapshot.state, {
-      holdMs: Math.max(1, snapshot.remainingMs),
-      settleTimeoutMs: snapshot.settleTimeoutMs,
-      registry: snapshot.registry,
-      afterMark: snapshot.afterMark,
-    });
+    const s = g();
+    // Someone else applied or released the page's hold since the snapshot:
+    // the pointer has moved on, and the snapshot is history.
+    if (s.generation !== snapshot.generation) return null;
+    if (s.hold || !snapshot.target.isConnected) return null;
+    // The deadline is the original one: time spent borrowed is not given back.
+    const remainingMs = snapshot.expiresAt - Date.now();
+    if (remainingMs <= 1) return null;
+    return applyNow(
+      snapshot.target,
+      snapshot.state,
+      {
+        holdMs: remainingMs,
+        settleTimeoutMs: snapshot.settleTimeoutMs,
+        registry: snapshot.registry,
+        afterMark: snapshot.afterMark,
+      },
+      snapshot.expiresAt
+    );
   });
 }
 
@@ -972,10 +1018,13 @@ export function reapplyIfIdle(
 async function applyNow(
   target: Element,
   state: ForcedPseudoStateName,
-  options: ForcePseudoStateOptions
+  options: ForcePseudoStateOptions,
+  /** Keep this exact expiry (a re-applied snapshot's original deadline). */
+  deadline?: number
 ): Promise<ForcedPseudoReport> {
   const s = g();
-  const replaced = s.hold ? await releaseHold(s.hold, 'replaced') : undefined;
+  const borrowing = options.borrowedFrom !== undefined;
+  const replaced = s.hold ? await releaseHold(s.hold, 'replaced', borrowing) : undefined;
 
   const holdMs = clampHoldMs(options.holdMs);
   const settleTimeoutMs = clampSettleMs(options.settleTimeoutMs);
@@ -1008,21 +1057,26 @@ async function applyNow(
     rewritten: scan.rewritten,
     marked,
     appliedAt,
-    expiresAt: appliedAt + holdMs,
+    expiresAt: deadline ?? appliedAt + holdMs,
     settleTimeoutMs,
     timer: null,
     registry: options.registry,
     afterMark: options.afterMark,
     roots: scan.roots,
+    borrowed: borrowing,
     verify: [],
     report: null,
   };
   s.hold = current;
+  if (!borrowing) s.generation += 1;
   // Armed BEFORE the settle wait, so even an apply whose caller dies
   // mid-settle cannot leave the page altered.
-  const timer = setTimeout(() => {
-    void releaseIfCurrent(current, 'ttl');
-  }, holdMs);
+  const timer = setTimeout(
+    () => {
+      void releaseIfCurrent(current, 'ttl');
+    },
+    Math.max(1, current.expiresAt - appliedAt)
+  );
   (timer as { unref?: () => void }).unref?.();
   current.timer = timer;
 
@@ -1129,12 +1183,13 @@ export function releaseForcedPseudoState(
  */
 export function releaseForcedPseudoStateIfOwner(
   holdId: number,
-  reason: ForcedPseudoReleaseReason = 'explicit'
+  reason: ForcedPseudoReleaseReason = 'explicit',
+  options: { borrowedFrom?: ForcedPseudoHoldSnapshot } = {}
 ): Promise<ForcedPseudoReleaseReport> {
   return serialized(async () => {
     const current = g().hold;
     return current && current.holdId === holdId
-      ? releaseHold(current, reason)
+      ? releaseHold(current, reason, options.borrowedFrom !== undefined)
       : nothingHeld(reason);
   });
 }
@@ -1165,7 +1220,8 @@ export function snapshotForcedPseudoState(): ForcedPseudoHoldSnapshot | null {
     holdId: current.holdId,
     target: current.target,
     state: current.state,
-    remainingMs: Math.max(0, current.expiresAt - Date.now()),
+    expiresAt: current.expiresAt,
+    generation: g().generation,
     settleTimeoutMs: current.settleTimeoutMs,
     registry: current.registry,
     afterMark: current.afterMark,

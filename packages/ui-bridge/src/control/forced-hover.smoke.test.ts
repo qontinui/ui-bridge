@@ -529,11 +529,30 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('forcePseudoState (real Chromium)', () =>
       await window.FH.forcePseudoState(document.getElementById('a'), 'hover');
       // A removed <style> keeps its rule objects and their parent pointers;
       // an un-adopted sheet keeps all of them. Neither draws any more.
+      const styleRule = style.sheet!.cssRules[0] as CSSStyleRule;
       style.remove();
       document.adoptedStyleSheets = [];
-      return window.FH.releaseForcedPseudoState();
+      const release = await window.FH.releaseForcedPseudoState();
+      // Both were written back anyway: a sheet the app re-adopts (or a rule
+      // object it re-inserts) must not come back forced.
+      const styleSelector = styleRule.selectorText.replace(/\s+/g, '');
+      const adoptedSelector = (adopted.cssRules[0] as CSSStyleRule).selectorText.replace(
+        /\s+/g,
+        ''
+      );
+      document.adoptedStyleSheets = [adopted];
+      const readopted = getComputedStyle(document.getElementById('b')!).color;
+      return { release, styleSelector, adoptedSelector, readopted };
     });
-    expect(rel).toMatchObject({ rulesRestored: 0, rulesAlreadyGone: 2, restore: 'verified' });
+    expect(rel.release).toMatchObject({
+      rulesRestored: 0,
+      rulesAlreadyGone: 2,
+      restore: 'verified',
+    });
+    expect(rel.styleSelector).toBe('.a:hover.b');
+    expect(rel.adoptedSelector).toBe('.a:hover.b');
+    // Re-adopted after the release: not red, because it is not forced.
+    expect(rel.readopted).not.toBe('rgb(255, 0, 0)');
     await page.close();
   }, 30_000);
 

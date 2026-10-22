@@ -351,14 +351,14 @@ describe('the hold is one per page, not one per bundle', () => {
     await __resetForcedPseudoStateForTest();
   });
 
-  it('lives on globalThis under Symbol.for("ui-bridge.forcedPseudo"), so a second copy of the module shares it', async () => {
+  const KEY = Symbol.for(`ui-bridge.forcedPseudo@v${FORCED_PSEUDO_STATE_VERSION}`);
+
+  it('lives on globalThis under the versioned Symbol.for key, so a second copy of the module shares it', async () => {
     const el = document.createElement('span');
     document.body.appendChild(el);
     try {
       await forcePseudoState(el, 'hover');
-      const shared = (globalThis as unknown as Record<symbol, { hold: unknown }>)[
-        Symbol.for('ui-bridge.forcedPseudo')
-      ];
+      const shared = (globalThis as unknown as Record<symbol, { hold: unknown }>)[KEY];
       expect(shared.hold).not.toBeNull();
       // A separately bundled entry point is a second evaluation of this module.
       vi.resetModules();
@@ -372,7 +372,52 @@ describe('the hold is one per page, not one per bundle', () => {
     }
   });
 
-  it('reapplyIfIdle: a hold newer than the snapshot wins; an idle pointer gets the snapshot back, JS half included', async () => {
+  it('an older copy of the SDK on the page never sees this state, nor this copy its', async () => {
+    const host = globalThis as unknown as Record<symbol, unknown>;
+    const olderKeys = [
+      Symbol.for('ui-bridge.forcedPseudo'),
+      Symbol.for('ui-bridge.forcedPseudo@v3'),
+    ];
+    const saved = olderKeys.map((k) => host[k]);
+    const older = olderKeys.map(() => ({ version: 3, hold: 'older-shape' }));
+    olderKeys.forEach((k, i) => (host[k] = older[i]));
+    const el = document.createElement('span');
+    document.body.appendChild(el);
+    try {
+      await forcePseudoState(el, 'hover');
+      expect(older.map((o) => o.hold)).toEqual(['older-shape', 'older-shape']);
+      expect((host[KEY] as { hold: unknown }).hold).not.toBeNull();
+      expect((await releaseForcedPseudoState()).released).toBe(true);
+    } finally {
+      olderKeys.forEach((k, i) => {
+        if (saved[i] === undefined) delete host[k];
+        else host[k] = saved[i];
+      });
+      el.remove();
+    }
+  });
+
+  it('reapplyIfIdle: a pointer someone else moved since the snapshot is never overridden', async () => {
+    const a = document.createElement('span');
+    const b = document.createElement('i');
+    document.body.append(a, b);
+    try {
+      await forcePseudoState(a, 'hover', { holdMs: 60_000 });
+      const snap = snapshotForcedPseudoState()!;
+      // Another caller hovers b and then releases it: the pointer is idle
+      // again, but it is not the pointer the snapshot describes.
+      await forcePseudoState(b, 'hover');
+      await releaseForcedPseudoState();
+      expect(getForcedPseudoState()).toBeNull();
+      expect(await reapplyIfIdle(snap)).toBeNull();
+      expect(getForcedPseudoState()).toBeNull();
+    } finally {
+      a.remove();
+      b.remove();
+    }
+  });
+
+  it('reapplyIfIdle: a borrower gets the snapshot back, with its original deadline and JS half', async () => {
     const a = document.createElement('span');
     const b = document.createElement('i');
     document.body.append(a, b);
@@ -381,14 +426,14 @@ describe('the hold is one per page, not one per bundle', () => {
       await forcePseudoState(a, 'hover', { holdMs: 60_000, afterMark: () => (replays += 1) });
       const snap = snapshotForcedPseudoState()!;
       expect(snap).toMatchObject({ target: a, state: 'hover' });
-      await forcePseudoState(b, 'hover');
-      expect(await reapplyIfIdle(snap)).toBeNull();
-      expect(getForcedPseudoState()).toMatchObject({ target: 'i' });
-      await releaseForcedPseudoState();
+      // Borrow: suspend the agent's hold, use the pointer, give it back.
+      await releaseForcedPseudoStateIfOwner(snap.holdId, 'replaced', { borrowedFrom: snap });
+      const own = await forcePseudoState(b, 'hover', { borrowedFrom: snap });
+      await releaseForcedPseudoStateIfOwner(own.holdId);
       const back = await reapplyIfIdle(snap);
       expect(back).not.toBeNull();
       expect(getForcedPseudoState()).toMatchObject({ target: 'span' });
-      expect(back!.holdMs).toBeGreaterThan(50_000);
+      expect(Math.abs(back!.expiresAt - snap.expiresAt)).toBeLessThanOrEqual(5);
       expect(replays).toBe(2);
     } finally {
       a.remove();
@@ -396,26 +441,18 @@ describe('the hold is one per page, not one per bundle', () => {
     }
   });
 
-  it('a different state version on the page is isolated from, not shared', async () => {
-    const key = Symbol.for('ui-bridge.forcedPseudo');
-    const host = globalThis as unknown as Record<symbol, unknown>;
-    const ours = host[key];
-    const foreign = { version: FORCED_PSEUDO_STATE_VERSION - 1, hold: 'not-our-shape' };
-    host[key] = foreign;
-    const el = document.createElement('span');
-    document.body.appendChild(el);
+  it('reapplyIfIdle: a snapshot whose deadline has passed is not re-applied', async () => {
+    const a = document.createElement('span');
+    document.body.append(a);
     try {
-      await forcePseudoState(el, 'hover');
-      expect(foreign.hold).toBe('not-our-shape');
-      const isolated = host[
-        Symbol.for(`ui-bridge.forcedPseudo@v${FORCED_PSEUDO_STATE_VERSION}`)
-      ] as { hold: unknown };
-      expect(isolated.hold).not.toBeNull();
-      expect((await releaseForcedPseudoState()).released).toBe(true);
+      await forcePseudoState(a, 'hover', { holdMs: 60_000 });
+      const snap = snapshotForcedPseudoState()!;
+      await releaseForcedPseudoStateIfOwner(snap.holdId, 'replaced', { borrowedFrom: snap });
+      expect(await reapplyIfIdle({ ...snap, expiresAt: Date.now() + 1 })).toBeNull();
+      expect(await reapplyIfIdle({ ...snap, expiresAt: Date.now() - 10 })).toBeNull();
+      expect(getForcedPseudoState()).toBeNull();
     } finally {
-      host[key] = ours;
-      delete host[Symbol.for(`ui-bridge.forcedPseudo@v${FORCED_PSEUDO_STATE_VERSION}`)];
-      el.remove();
+      a.remove();
     }
   });
 

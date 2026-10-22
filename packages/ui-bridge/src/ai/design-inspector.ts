@@ -22,6 +22,7 @@ import {
   reapplyIfIdle,
   releaseForcedPseudoStateIfOwner,
   snapshotForcedPseudoState,
+  type ForcedPseudoHoldSnapshot,
 } from '../control/forced-hover';
 
 // ============================================================================
@@ -215,9 +216,13 @@ export async function captureStateVariations(
   // the TTL it had left once inspection is done. Inspection only ever releases
   // the holds it created itself (by hold id).
   const agentHold = snapshotForcedPseudoState();
-  if (agentHold) await releaseForcedPseudoStateIfOwner(agentHold.holdId, 'replaced');
+  if (agentHold) {
+    await releaseForcedPseudoStateIfOwner(agentHold.holdId, 'replaced', {
+      borrowedFrom: agentHold,
+    });
+  }
   try {
-    return await captureEachState(el, targetStates);
+    return await captureEachState(el, targetStates, agentHold ?? undefined);
   } finally {
     // Inside the serialized queue, and only if the pointer is idle: a hover
     // someone applied while inspection ran is newer, and wins. The re-apply
@@ -228,7 +233,8 @@ export async function captureStateVariations(
 
 async function captureEachState(
   el: HTMLElement,
-  targetStates: readonly InteractionStateName[]
+  targetStates: readonly InteractionStateName[],
+  borrowedFrom: ForcedPseudoHoldSnapshot | undefined
 ): Promise<StateStyles[]> {
   const defaultStyles = getExtendedComputedStyles(el);
   const results: StateStyles[] = [];
@@ -248,7 +254,7 @@ async function captureEachState(
       // Apply the state. `hover`/`active` force the real CSS pseudo-class and
       // wait for the transitions it started, so the read below is the settled
       // state appearance rather than a frame of a fade.
-      restore = await applyInteractionState(el, stateName);
+      restore = await applyInteractionState(el, stateName, borrowedFrom);
       await waitFrame();
 
       // Read styles in the new state
@@ -629,12 +635,13 @@ function computeStyleDiff(
  */
 async function applyInteractionState(
   el: HTMLElement,
-  state: InteractionStateName
+  state: InteractionStateName,
+  borrowedFrom?: ForcedPseudoHoldSnapshot
 ): Promise<() => Promise<void>> {
   switch (state) {
     case 'hover':
     case 'active': {
-      const { holdId } = await forcePseudoState(el, state);
+      const { holdId } = await forcePseudoState(el, state, { borrowedFrom });
       return async () => {
         await releaseForcedPseudoStateIfOwner(holdId, 'explicit');
       };
