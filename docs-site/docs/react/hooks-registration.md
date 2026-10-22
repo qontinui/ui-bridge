@@ -69,6 +69,7 @@ recommendation.
 | `persistWhileMounted` | `boolean` | `false` | Stay registered through visibility changes; see below |
 | `reveals` | `string[]` | — | Element ids or `*`-globs this control unhides |
 | `windowLabel` | `string` | context, then `"main"` | Registry bucket in multi-window hosts |
+| `paintsText` | `boolean` | `true` for a `<canvas>`, else `false` | The element's text is painted (canvas, terminal, chart): dense occlusion sampling, painted `hidesText`, and its canvases count as swept. See [Canvas coverage](../api/control-endpoints.md#canvas-coverage) |
 
 `variant`, `position`, `color` and `contextPath` are open-ended strings passed
 through to snapshots verbatim — they exist to let a natural-language query
