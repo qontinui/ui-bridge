@@ -871,27 +871,24 @@ interface VisibilityVerdict {
 }
 
 /**
- * Best-effort identifier for whatever is covering an element. Prefers the
+ * Best-effort identifier for whatever is covering `covered`. Prefers the
  * UI Bridge registry id, because that is the name every downstream report
  * and assertion speaks; falls back to a DOM-shaped descriptor so an
  * unregistered overlay is still NAMED rather than reported as an anonymous
  * "something".
+ *
+ * The hit is named by its closest stamped ancestor-or-self — a heading or
+ * form inside a registered dialog IS that dialog, so the expected-overlay
+ * matcher still recognises it — UNLESS that ancestor also contains the
+ * covered element. Then it is a shared container (an app shell), not the
+ * occluder, and blaming it would hide the real overlay: the hit is named by
+ * its own DOM id (`tag#id`), else a descriptor.
  */
-function describeOccluder(hit: Element): string {
-  const el = hit as HTMLElement;
-  const ownStamp = el.getAttribute('data-ui-bridge-id');
-  if (ownStamp) return ownStamp;
-  // The hit carries a DOM id of its own: that is an identity, and naming it
-  // by a registered ANCESTOR instead would blame the container for an
-  // unregistered overlay inside it (and hide a modal's `#id` from the
-  // expected-overlay matcher).
-  if (el.id) return describeDomNode(el);
-  // An anonymous piece (an <svg> path, a canvas layer) of a registered
-  // widget is that widget.
-  const registered = el.closest<HTMLElement>('[data-ui-bridge-id]');
-  const id = registered?.getAttribute('data-ui-bridge-id');
-  if (id) return id;
-  return describeDomNode(el);
+function describeOccluder(hit: Element, covered: Element): string {
+  const stamped = hit.closest<HTMLElement>('[data-ui-bridge-id]');
+  const id = stamped?.getAttribute('data-ui-bridge-id');
+  if (stamped && id && !stamped.contains(covered)) return id;
+  return describeDomNode(hit);
 }
 
 /** First entry of `byNode` at or above `node`, walking `parentElement`. */
@@ -980,7 +977,7 @@ function computeVisibilityVerdict(
     // covering us.
     if (hit.contains(element)) continue;
     covered++;
-    const who = describeOccluder(hit);
+    const who = describeOccluder(hit, element);
     blame.set(who, (blame.get(who) ?? 0) + 1);
   }
 
@@ -2146,15 +2143,17 @@ export class UIBridgeRegistry {
     // unstamped direct registration used to surface as a bare `div.x`. An
     // existing stamp is never overwritten: it is a developer-assigned id.
     //
-    // A stamp the registry writes for a non-scanner registration is
-    // remembered (`markRegistryStamp`): it does not outrank the node's own
-    // name sources (`a11y.ts`), and `unregisterElement` removes it again.
-    // The scanner (`origin: 'auto'`) always owned its stamp outright, and
-    // keeps doing so.
+    // EVERY stamp the registry writes is remembered as its own
+    // (`markRegistryStamp`), whatever the registration's origin: it does not
+    // outrank the node's own name sources (`a11y.ts`), the interactive
+    // scanner never adopts a node by it (`useAutoRegister`), and
+    // `unregisterElement` removes it again. A door that wants to own its
+    // stamp (`useUIElement`, the interactive scanner) writes it BEFORE
+    // registering, and the registry then leaves it alone.
     if (typeof element?.hasAttribute === 'function') {
       if (!element.hasAttribute('data-ui-bridge-id')) {
         element.setAttribute('data-ui-bridge-id', actualId);
-        if (registered.origin !== 'auto') markRegistryStamp(element);
+        markRegistryStamp(element);
       } else if (
         isRegistryStamp(element) &&
         element.getAttribute('data-ui-bridge-id') !== actualId
