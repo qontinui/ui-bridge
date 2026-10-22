@@ -58,7 +58,7 @@ import {
   ownsRegistryStamp,
   registryStampOwner,
 } from './bridge-stamp';
-import { NATIVE_SELECTORS } from '../modal/modal-detector';
+import { BLOCKING_DIALOG_SELECTOR, isBlockingDialog } from '../modal/modal-detector';
 import {
   computeSnapshotIdentity,
   computeMountFold,
@@ -882,8 +882,9 @@ interface VisibilityVerdict {
  * unregistered overlay is still NAMED rather than reported as an anonymous
  * "something".
  *
- * A hit inside a BLOCKING DIALOG (`dialog[open]`, `[role=dialog][aria-modal=
- * true]`, `[role=alertdialog]`: the detector's native selectors) that does not
+ * A hit inside a BLOCKING DIALOG (a `<dialog>` shown modally, i.e. `:modal`,
+ * not one opened with `show()`; `[role=dialog][aria-modal=true]`;
+ * `[role=alertdialog]`: see `isBlockingDialog` in modal-detector) that does not
  * itself hold the covered element is named by that dialog, the outermost such
  * dialog winning: its stamp, else `tag#id`, else its `data-testid` (the
  * detector's own identity order). A heading or button inside a dialog IS that
@@ -919,9 +920,6 @@ function describeOccluder(hit: Element, covered: Element): string {
 
 const STAMP_SELECTOR = '[data-ui-bridge-id]';
 
-/** The detector's dialog-shaped selectors, joined once for `closest`. */
-const BLOCKING_DIALOG_SELECTOR = NATIVE_SELECTORS.join(', ');
-
 /**
  * The outermost blocking dialog at or above `hit` that does not hold
  * `covered`. Hops dialog to dialog with `closest`, so the cost is one native
@@ -931,7 +929,7 @@ function outermostDialogNotHolding(hit: Element, covered: Element): Element | un
   let found: Element | undefined;
   let cur: Element | null = hit.closest(BLOCKING_DIALOG_SELECTOR);
   while (cur && !cur.contains(covered)) {
-    found = cur;
+    if (isBlockingDialog(cur)) found = cur;
     cur = cur.parentElement?.closest(BLOCKING_DIALOG_SELECTOR) ?? null;
   }
   return found;
