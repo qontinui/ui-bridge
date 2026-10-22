@@ -18,6 +18,7 @@ import { useUIBridgeOptional } from './UIBridgeProvider';
 import { trackElementBbox } from './bbox-tracker';
 import { classString } from '../core/class-name';
 import { isBridgeInvisible } from '../core/registry';
+import { isRegistryStamp } from '../core/bridge-stamp';
 import { isContentRedacted } from '../core/redaction';
 import { truncateCodePoints } from '../core/text';
 import {
@@ -934,12 +935,14 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
         if (existing) {
           // The element is already registered under its stamped id — nothing
           // for the scanner to register. Take ownership (so a removal
-          // unregisters it) ONLY of an entry the scanner itself made: a hook
-          // or direct `registerElement` owner manages its own lifecycle, and
-          // adopting it would let a DOM move unregister that entry and
-          // re-register it as `origin: 'auto'`, dropping its options
-          // (`paintsText`, label, actions).
-          if (existing.origin === 'auto') {
+          // unregisters it) ONLY of an entry this scanner itself made — an
+          // 'auto' entry under a stamp the scanner wrote. A hook or direct
+          // owner, and the content/media scanners (whose stamp is the
+          // registry's), manage their own lifecycle: adopting their node would
+          // let a DOM move unregister the entry and re-register it as a
+          // generic interactive element, dropping its options (`paintsText`,
+          // category, content, mediaMetadata).
+          if (existing.origin === 'auto' && !isRegistryStamp(element)) {
             registeredElementsRef.current.set(element, id);
           }
           return;
@@ -954,6 +957,10 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
         : inferActions(type);
       const label = getAccessibleLabel(element);
 
+      // The interactive scanner owns its stamp, as it always has (a re-scan of
+      // the node re-registers under it): write it before registering, so the
+      // registry does not record it as a registry-owned stamp.
+      if (!existingStamp) element.setAttribute('data-ui-bridge-id', id);
       const registered = bridge.registry.registerElement(id, element, {
         type,
         actions,
@@ -967,9 +974,10 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
         origin: 'auto',
       });
 
-      // `registerElement` stamps `data-ui-bridge-id` itself when the node has
-      // none, for every registration door.
+      // `preserveIdAcrossRemount` may hand back a different id; keep our stamp
+      // naming the entry we actually own.
       const finalId = registered.id;
+      if (!existingStamp && finalId !== id) element.setAttribute('data-ui-bridge-id', finalId);
       registeredElementsRef.current.set(element, finalId);
 
       // Start lazy bbox tracking. The scanner may tag hundreds of elements

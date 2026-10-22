@@ -292,6 +292,30 @@ describe('in-page /control/visibility reports the census', () => {
     expect(report.occlusions.map((o) => o.element)).not.toContain('zone-label');
   });
 
+  it('a heading inside a registered dialog is the dialog: still an expected overlay', async () => {
+    const registry = new UIBridgeRegistry();
+    registry.setEnrichers({ modalDetector: new ModalDetector() });
+    const label = div();
+    label.textContent = 'Zone 8';
+    registry.registerElement('zone-label', label, { type: 'generic' });
+    const dialog = document.createElement('div');
+    dialog.id = 'confirm-dialog';
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    const title = document.createElement('h2');
+    title.id = 'dialog-title';
+    title.textContent = 'Discard changes?';
+    dialog.appendChild(title);
+    document.body.appendChild(dialog);
+    registry.registerElement('confirm', dialog, { type: 'generic' });
+    // The point lands on the dialog's own (id-bearing) heading.
+    document.elementFromPoint = (() => title) as typeof document.elementFromPoint;
+
+    const report = await visibility(registry as unknown as RegistryLike);
+    expect(report.expectedOverlaysFiltered).toBe(1);
+    expect(report.occlusions.map((o) => o.element)).not.toContain('zone-label');
+  });
+
   it('a registry without the accessor is page-sdk-lacks-coverage; one that answers undefined threw', async () => {
     const live = new UIBridgeRegistry();
     live.registerElement('a', div(), { type: 'generic' });

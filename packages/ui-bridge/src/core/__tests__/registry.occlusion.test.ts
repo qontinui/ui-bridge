@@ -513,10 +513,13 @@ describe('the registry-owned stamp', () => {
 
 describe('describeOccluder prefers the hit own DOM id over a registered ancestor', () => {
   it('names an unregistered overlay inside a registered container by its own id', () => {
+    // The app shell holds BOTH the covered label and the toast: it is a
+    // shared container, not the occluder.
     const registry = new UIBridgeRegistry();
     const label = place('label', 0, 0, 100, 20, 'important');
     const container = document.createElement('div');
     document.body.appendChild(container);
+    container.appendChild(label);
     const toast = document.createElement('div');
     toast.id = 'toast';
     container.appendChild(toast);
@@ -525,6 +528,19 @@ describe('describeOccluder prefers the hit own DOM id over a registered ancestor
     registry.registerElement('app-shell', container, { type: 'generic' });
 
     expect(stateOf(registry, 'label').occludedBy).toBe('div#toast');
+  });
+
+  it('names an id-bearing child of a registered widget by the widget', () => {
+    const registry = new UIBridgeRegistry();
+    const label = place('label', 0, 0, 100, 20, 'important');
+    const minimap = place('minimap', 600, 600, 10, 10);
+    const viewport = document.createElement('div');
+    viewport.id = 'minimap-viewport';
+    minimap.appendChild(viewport);
+    boxes.push({ el: viewport, rect: { x: 0, y: 0, w: 400, h: 400 } });
+    registry.registerElement('label', label, { type: 'generic' });
+
+    expect(stateOf(registry, 'label').occludedBy).toBe('minimap');
   });
 
   it('still names an anonymous piece of a registered widget by the widget', () => {
