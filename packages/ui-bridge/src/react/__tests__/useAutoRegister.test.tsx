@@ -17,6 +17,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/react';
 import { UIBridgeRegistry } from '../../core/registry';
 import { useAutoRegister } from '../useAutoRegister';
+import { stubBox } from './media-fixture';
 import type { UIBridgeContextValue } from '../UIBridgeProvider';
 
 // Build a minimal-but-realistic bridge context: the hook only needs
@@ -508,4 +509,77 @@ describe('useAutoRegister — never adopts a direct registration', () => {
     expect(entry?.label).toBe('Terminal: zone 1');
     expect(entry?.getState().paintsText).toBe(true);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Content and media registrations are origin 'auto' too, but the stamp on
+// them is the REGISTRY's (the content/media scanners never wrote one). The
+// interactive scanner must not adopt such a node: on a keyed reorder its
+// 100ms debounce would otherwise re-register it as a generic interactive
+// element before the content (250ms) / media (200ms) scanner sees it,
+// dropping category, content and mediaMetadata.
+// ---------------------------------------------------------------------------
+
+function FullDiscoveryHarness() {
+  // Default debounces on purpose: the race is between them.
+  useAutoRegister({ enabled: true, includeHidden: true });
+  return null;
+}
+
+describe('useAutoRegister — content and media nodes survive a DOM move', () => {
+  let registry: UIBridgeRegistry;
+
+  beforeEach(() => {
+    registry = new UIBridgeRegistry();
+    mockBridge = createMockBridge(registry);
+  });
+
+  afterEach(() => {
+    cleanup();
+    mockBridge = null;
+    document.body.innerHTML = '';
+  });
+
+  it('keeps category/content after a keyed reorder, and clears the stamp on unregister', async () => {
+    const list = document.createElement('div');
+    const card = document.createElement('div');
+    card.setAttribute('data-ui-bridge-content', 'session-card');
+    card.textContent = 'Session 7: qontinui-web';
+    const canvas = document.createElement('canvas');
+    canvas.width = 300;
+    canvas.height = 150;
+    stubBox(card, 300, 40);
+    stubBox(canvas, 300, 150, 0, 40);
+    list.append(card, canvas);
+    document.body.appendChild(list);
+
+    render(<FullDiscoveryHarness />);
+    await new Promise((r) => setTimeout(r, 600));
+
+    const byNode = (node: Element) => registry.getAllElements().find((e) => e.element === node);
+    expect(byNode(card)?.category).toBe('content');
+    expect(byNode(canvas)?.category).toBe('media');
+
+    // Keyed reorder: both nodes removed and re-added in one tick.
+    list.append(canvas, card);
+    await new Promise((r) => setTimeout(r, 700));
+
+    const cardEntry = byNode(card);
+    const canvasEntry = byNode(canvas);
+    expect(cardEntry?.category).toBe('content');
+    expect(cardEntry?.content).toBe('Session 7: qontinui-web');
+    expect(canvasEntry?.category).toBe('media');
+    expect(registry.getAllElements().filter((e) => e.element === card)).toHaveLength(1);
+    expect(registry.getAllElements().filter((e) => e.element === canvas)).toHaveLength(1);
+
+    // Removed for good: the scanners unregister, and the registry takes back
+    // the stamp it wrote (d84bfa6 never stamped these nodes at all).
+    card.remove();
+    canvas.remove();
+    await new Promise((r) => setTimeout(r, 700));
+    expect(byNode(card)).toBeUndefined();
+    expect(byNode(canvas)).toBeUndefined();
+    expect(card.hasAttribute('data-ui-bridge-id')).toBe(false);
+    expect(canvas.hasAttribute('data-ui-bridge-id')).toBe(false);
+  }, 10_000);
 });
