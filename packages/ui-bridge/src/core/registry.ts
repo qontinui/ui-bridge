@@ -1278,6 +1278,13 @@ export class UIBridgeRegistry {
   private readonly stampToken: object = {};
 
   /**
+   * The ids registered on each node, so `unregisterElement` finds a stamp
+   * heir without scanning every entry (a mass unmount would be quadratic).
+   * Advisory: a candidate is confirmed against the live entry before use.
+   */
+  private readonly idsByNode = new WeakMap<Element, Set<string>>();
+
+  /**
    * Stable per-instance tag assigned at construction time. Used by
    * UI_BRIDGE_DEBUG_FIND diagnostics to detect duplicate registry instances
    * across the React-context path (`bridge.registry`) and the module-level
@@ -2209,8 +2216,19 @@ export class UIBridgeRegistry {
     const prior = bucket.get(actualId);
     if (prior) {
       this.decrementRouteCount(windowLabel, prior.route, actualId);
+      if (prior.element && prior.element !== element) {
+        this.idsByNode.get(prior.element)?.delete(actualId);
+      }
     }
     bucket.set(actualId, registered);
+    if (element) {
+      let ids = this.idsByNode.get(element);
+      if (!ids) {
+        ids = new Set();
+        this.idsByNode.set(element, ids);
+      }
+      ids.add(actualId);
+    }
     // Stamp the registry id on the node when nothing else has, so every
     // registration door — not only `useUIElement` and `useAutoRegister`,
     // which stamp their own — is NAMED when it covers something:
@@ -2495,15 +2513,23 @@ export class UIBridgeRegistry {
       // auto-scanner, which registers any `[data-ui-bridge-id]` node, does
       // not adopt it under the stale id).
       const node = registered.element;
+      const nodeIds = node ? this.idsByNode.get(node) : undefined;
+      nodeIds?.delete(id);
       if (node && ownsRegistryStamp(node, this.stampToken, id)) {
         node.removeAttribute('data-ui-bridge-id');
         clearRegistryStamp(node);
         // Another live registration of this registry on the same node still
         // answers to a stamp: hand it the stamp, so the node stays named.
-        const heir = this.allElements().find((e) => e.element === node);
+        let heir: string | undefined;
+        for (const candidate of nodeIds ?? []) {
+          if (this.findElement(candidate)?.element === node) {
+            heir = candidate;
+            break;
+          }
+        }
         if (heir) {
-          node.setAttribute('data-ui-bridge-id', heir.id);
-          markRegistryStamp(node, this.stampToken, heir.id);
+          node.setAttribute('data-ui-bridge-id', heir);
+          markRegistryStamp(node, this.stampToken, heir);
         }
       }
       // F3: drop this element from the per-window/per-route tally. Note we do
