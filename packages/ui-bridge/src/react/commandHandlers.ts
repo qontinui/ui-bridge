@@ -1258,8 +1258,11 @@ async function buildRelayChangeTracker(
     // handler argument, and the built-in `sendKeys` / `scroll` /
     // `scrollIntoView` / `rightClick` / `middleClick` / `select.byLabel` reads).
     // Carrying only the flat spread handed a custom action `undefined`, so
-    // send both. `action` is written last so a param of that name cannot
-    // retarget the verb.
+    // send both. The flat spread is deliberate: it is how `text` / `value` /
+    // `clear` reach the built-ins and how a `fromSnapshotId` param reaches the
+    // stale-snapshot gate on this path. `params` is written after the spread
+    // so a param of that name cannot replace the bag, and `action` last so a
+    // param of that name cannot retarget the verb.
     executeElementAction: async (elementId, request) =>
       executeCommand(
         'executeElementAction',

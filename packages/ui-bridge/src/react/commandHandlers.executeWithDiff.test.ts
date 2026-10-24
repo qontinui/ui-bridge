@@ -169,9 +169,11 @@ describe('relay executeWithDiff · the element action carries its params', () =>
   // read `request.params` (here `sendKeys`' `keys`) silently did the default.
   let host: HTMLElement;
   let received: unknown[];
+  let inputs: HTMLElement[];
 
   beforeEach(() => {
     received = [];
+    inputs = [];
     host = document.createElement('div');
     makeVisible(host);
     document.body.appendChild(host);
@@ -191,6 +193,7 @@ describe('relay executeWithDiff · the element action carries its params', () =>
 
   afterEach(() => {
     host.remove();
+    for (const el of inputs) el.remove();
     getGlobalRegistry().clear();
   });
 
@@ -244,10 +247,28 @@ describe('relay executeWithDiff · the element action carries its params', () =>
     expect(received).toEqual([{ action: 'click', data: 'y' }]);
   });
 
+  it('a param named `params` cannot replace the params bag', async () => {
+    const result = (await executeCommand(
+      'executeWithDiff',
+      {
+        elementAction: {
+          elementId: 'pane',
+          action: 'write',
+          params: { params: 'inner', data: 'z' },
+        },
+      },
+      emptyBridge
+    )) as Record<string, unknown>;
+
+    expect(result.actionSuccess).toBe(true);
+    expect(received).toEqual([{ params: 'inner', data: 'z' }]);
+  });
+
   it('a built-in that reads request.params (`sendKeys` keys) gets them', async () => {
     const input = document.createElement('input');
     makeVisible(input);
     document.body.appendChild(input);
+    inputs.push(input);
     getGlobalRegistry().registerElement('plain-input', input, { type: 'input' });
     const keys: string[] = [];
     input.addEventListener('keydown', (e) => keys.push((e as KeyboardEvent).key));
@@ -266,13 +287,13 @@ describe('relay executeWithDiff · the element action carries its params', () =>
 
     expect(result.actionSuccess).toBe(true);
     expect(keys).toEqual(['Enter']);
-    input.remove();
   });
 
   it('a built-in that reads the flat keys (`type` text) still works', async () => {
     const input = document.createElement('input');
     makeVisible(input);
     document.body.appendChild(input);
+    inputs.push(input);
     getGlobalRegistry().registerElement('plain-input', input, { type: 'input' });
 
     const result = (await executeCommand(
@@ -283,7 +304,6 @@ describe('relay executeWithDiff · the element action carries its params', () =>
 
     expect(result.actionSuccess).toBe(true);
     expect(input.value).toBe('hi');
-    input.remove();
   });
 });
 
