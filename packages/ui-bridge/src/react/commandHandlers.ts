@@ -1252,12 +1252,24 @@ async function buildRelayChangeTracker(
         { instruction, skipSettle: true },
         bridgeNow()
       )) as NLActionResponse,
+    // The `executeElementAction` arm reads BOTH request shapes: the flat keys
+    // (`request.text`, `request.value`, `request.clear`, `request.fromSnapshotId`)
+    // and the nested bag (`request.params` — every registered custom action's
+    // handler argument, and the built-in `sendKeys` / `scroll` /
+    // `scrollIntoView` / `rightClick` / `middleClick` / `select.byLabel` reads).
+    // Carrying only the flat spread handed a custom action `undefined`, so
+    // send both. `action` is written last so a param of that name cannot
+    // retarget the verb.
     executeElementAction: async (elementId, request) =>
       executeCommand(
         'executeElementAction',
         {
           id: elementId,
-          request: { action: request.action, ...request.params },
+          request: {
+            ...request.params,
+            ...(request.params !== undefined ? { params: request.params } : {}),
+            action: request.action,
+          },
           skipSettle: true,
         },
         bridgeNow()
