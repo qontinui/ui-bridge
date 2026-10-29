@@ -17,6 +17,21 @@ export interface InteractionInterceptorConfig {
   filterUnregistered: boolean;
   /** Keystroke coalescing window in ms (default: 100) */
   keystrokeCoalesceMs: number;
+  /**
+   * Read the value a user typed / selected into `InteractionEvent.value`
+   * (default: true — the recording session derives variable candidates from
+   * it). `false` makes the interceptor value-blind: it never reads a field's
+   * value off the DOM at all, and every emitted event has `value: undefined`.
+   * Passive capture runs with `false`, so what is typed has nowhere to enter.
+   */
+  captureValues: boolean;
+  /**
+   * Admit a DOM event before it becomes an interaction (default: admit all).
+   * Consulted only for events on a registered element. Passive capture
+   * passes `(e) => e.isTrusted`, so the synthetic events an agent's relayed
+   * action dispatches are not recorded a second time as a human's.
+   */
+  acceptEvent?: (event: Event) => boolean;
 }
 
 type InteractionCallback = (event: InteractionEvent) => void;
@@ -34,6 +49,8 @@ export class InteractionInterceptor {
   // Keystroke coalescing state
   private keystrokeTimer: ReturnType<typeof setTimeout> | null = null;
   private keystrokeBuffer = '';
+  /** Value-blind coalescing: input happened on the buffered target. */
+  private keystrokePending = false;
   private keystrokeTargetId: string | null = null;
   private keystrokeTargetElement: HTMLElement | null = null;
 
@@ -54,6 +71,8 @@ export class InteractionInterceptor {
     this.config = {
       filterUnregistered: config.filterUnregistered ?? true,
       keystrokeCoalesceMs: config.keystrokeCoalesceMs ?? 100,
+      captureValues: config.captureValues ?? true,
+      acceptEvent: config.acceptEvent,
     };
 
     // Bind handlers
@@ -90,16 +109,23 @@ export class InteractionInterceptor {
     document.removeEventListener('keydown', this.handleKeydown, { capture: true });
   }
 
-  private resolveTarget(
-    domTarget: EventTarget | null
-  ): { elementId: string; element: HTMLElement } | null {
+  private resolveTarget(event: Event): { elementId: string; element: HTMLElement } | null {
+    const domTarget = event.target;
     if (!(domTarget instanceof HTMLElement)) return null;
 
     const registered = findNearestRegisteredElement(domTarget, this.registry);
     if (!registered && this.config.filterUnregistered) return null;
     if (!registered) return null;
+    if (this.config.acceptEvent && !this.config.acceptEvent(event)) return null;
 
     return { elementId: registered.id, element: registered.element };
+  }
+
+  /** A field's scrubbed value — or nothing at all when value-blind. */
+  private readValue(
+    el: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
+  ): string | undefined {
+    return this.config.captureValues ? readScrubbedValue(el) : undefined;
   }
 
   private emit(
@@ -117,12 +143,12 @@ export class InteractionInterceptor {
       // live `<input>`. Scrub it HERE — where the element ref exists — so a
       // password/boundary value is never stored in the recorded interaction or
       // the derived variable candidate (no later DOM scrub can reach it).
-      value: scrubValueByVerdict(value, verdictOf(element)),
+      value: this.config.captureValues ? scrubValueByVerdict(value, verdictOf(element)) : undefined,
     });
   }
 
   private onClick(e: MouseEvent): void {
-    const target = this.resolveTarget(e.target);
+    const target = this.resolveTarget(e);
     if (!target) return;
 
     // Don't emit click for checkboxes/radios — handled by onChange
@@ -133,23 +159,26 @@ export class InteractionInterceptor {
   }
 
   private onInput(e: Event): void {
-    const target = this.resolveTarget(e.target);
+    const target = this.resolveTarget(e);
     if (!target) return;
 
     const el = target.element;
     if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return;
+    // A checkbox / radio also fires `input` when toggled; `onChange` records
+    // it as check / uncheck. Typing it here too recorded one toggle twice.
+    if (el instanceof HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio')) return;
 
     // Coalesce keystrokes: buffer input events and flush after a quiet period
-    if (this.keystrokeTargetId === target.elementId) {
-      // Same target — extend buffer
-      this.keystrokeBuffer = readScrubbedValue(el) ?? '';
-    } else {
+    if (this.keystrokeTargetId !== target.elementId) {
       // Different target — flush previous and start new
       this.flushKeystrokeBuffer();
       this.keystrokeTargetId = target.elementId;
       this.keystrokeTargetElement = target.element;
-      this.keystrokeBuffer = readScrubbedValue(el) ?? '';
     }
+    // Same target extends the buffer; a value-blind interceptor only notes
+    // that input happened and never reads what it was.
+    this.keystrokeBuffer = this.readValue(el) ?? '';
+    this.keystrokePending = true;
 
     // Reset coalescing timer
     if (this.keystrokeTimer) clearTimeout(this.keystrokeTimer);
@@ -165,39 +194,43 @@ export class InteractionInterceptor {
       this.keystrokeTimer = null;
     }
 
-    if (this.keystrokeTargetId && this.keystrokeTargetElement && this.keystrokeBuffer) {
+    const hasInput = this.config.captureValues
+      ? this.keystrokeBuffer !== ''
+      : this.keystrokePending;
+    if (this.keystrokeTargetId && this.keystrokeTargetElement && hasInput) {
       this.emit('type', this.keystrokeTargetId, this.keystrokeTargetElement, this.keystrokeBuffer);
     }
 
     this.keystrokeTargetId = null;
     this.keystrokeTargetElement = null;
     this.keystrokeBuffer = '';
+    this.keystrokePending = false;
   }
 
   private onChange(e: Event): void {
-    const target = this.resolveTarget(e.target);
+    const target = this.resolveTarget(e);
     if (!target) return;
 
     const el = target.element;
 
     if (el instanceof HTMLSelectElement) {
-      this.emit('select', target.elementId, target.element, readScrubbedValue(el));
+      this.emit('select', target.elementId, target.element, this.readValue(el));
     } else if (el instanceof HTMLInputElement) {
       if (el.type === 'checkbox') {
         this.emit(
           el.checked ? 'check' : 'uncheck',
           target.elementId,
           target.element,
-          String(el.checked)
+          this.config.captureValues ? String(el.checked) : undefined
         );
       } else if (el.type === 'radio') {
-        this.emit('check', target.elementId, target.element, readScrubbedValue(el));
+        this.emit('check', target.elementId, target.element, this.readValue(el));
       }
     }
   }
 
   private onSubmit(e: Event): void {
-    const target = this.resolveTarget(e.target);
+    const target = this.resolveTarget(e);
     if (!target) return;
 
     // Flush any pending keystrokes before submit
@@ -210,7 +243,7 @@ export class InteractionInterceptor {
     // Only capture Enter (as submit trigger) and Escape (as cancel)
     if (e.key !== 'Enter' && e.key !== 'Escape') return;
 
-    const target = this.resolveTarget(e.target);
+    const target = this.resolveTarget(e);
     if (!target) return;
 
     if (e.key === 'Enter') {
