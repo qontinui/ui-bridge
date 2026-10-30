@@ -463,9 +463,36 @@ class UIBridgeClient:
         """Remove focus from an element."""
         return self._execute_action(element_id, "blur")
 
-    def hover(self, element_id: str) -> ActionResponse:
-        """Hover over an element."""
-        return self._execute_action(element_id, "hover")
+    def hover(
+        self,
+        element_id: str,
+        *,
+        hold_ms: int | None = None,
+        settle_timeout_ms: int | None = None,
+    ) -> ActionResponse:
+        """
+        Hover over an element: force its real CSS ``:hover`` state (and its
+        ancestors', so ``group-hover`` rules fire) and hold it.
+
+        The hold lasts until :meth:`unhover`, the next hover, the completion
+        of a write-class action (``click``, ``type``, ...), or ``hold_ms``
+        (default 30 000, ceiling 300 000). The response's ``forced_hover``
+        reports what the hover revealed.
+        """
+        params: dict[str, Any] = {}
+        if hold_ms is not None:
+            params["holdMs"] = hold_ms
+        if settle_timeout_ms is not None:
+            params["settleTimeoutMs"] = settle_timeout_ms
+        return self._execute_action(element_id, "hover", params=params or None)
+
+    def unhover(self, element_id: str) -> ActionResponse:
+        """
+        Release the page's forced hover, whichever element holds it, and
+        verify the page is back (``forced_hover["released"]["restore"]``).
+        A no-op (``released: False``) when nothing is held.
+        """
+        return self._execute_action(element_id, "unhover")
 
     def scroll(
         self,

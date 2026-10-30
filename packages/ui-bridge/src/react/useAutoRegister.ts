@@ -258,8 +258,8 @@ function inferActions(type: ElementType): StandardAction[] {
   const baseActions: StandardAction[] = ['focus', 'blur'];
 
   const typeActions: Record<ElementType, StandardAction[]> = {
-    button: [...baseActions, 'click', 'hover', 'middleClick'],
-    link: [...baseActions, 'click', 'hover'],
+    button: [...baseActions, 'click', 'hover', 'unhover', 'middleClick'],
+    link: [...baseActions, 'click', 'hover', 'unhover'],
     input: [...baseActions, 'type', 'clear', 'click'],
     textarea: [...baseActions, 'type', 'clear', 'click'],
     textbox: [...baseActions, 'type', 'clear', 'click'],

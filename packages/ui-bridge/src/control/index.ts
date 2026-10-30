@@ -17,6 +17,43 @@ export {
   MAX_BATCH_SIZE,
 } from './action-executor';
 
+// Forced CSS pseudo-state (`hover` / `unhover` / `hoverClick`)
+export {
+  forcePseudoState,
+  releaseForcedPseudoState,
+  releaseForcedPseudoStateIfOwner,
+  getForcedPseudoState,
+  snapshotForcedPseudoState,
+  reapplyIfIdle,
+  FORCED_PSEUDO_STATE_VERSION,
+  releaseAfter,
+  releaseHeldAfterDispatch,
+  releasesForcedPseudoState,
+  rewritePseudoSelector,
+  selectorHasPseudo,
+  pseudoStateAttribute,
+  DEFAULT_HOLD_MS as FORCED_PSEUDO_DEFAULT_HOLD_MS,
+  MAX_HOLD_MS as FORCED_PSEUDO_MAX_HOLD_MS,
+  DEFAULT_SETTLE_TIMEOUT_MS as FORCED_PSEUDO_DEFAULT_SETTLE_TIMEOUT_MS,
+} from './forced-hover';
+export type {
+  ForcedPseudoStateName,
+  ForcedPseudoReleaseReason,
+  ForcedPseudoReport,
+  ForcedPseudoReleaseReport,
+  ForcedPseudoRevealed,
+  ForcedPseudoChange,
+  ForcedPseudoDrift,
+  ForcedPseudoSelectorDrift,
+  ForcedPseudoHoldSnapshot,
+  ForcedPseudoSettle,
+  ForcedHoverActionReport,
+  ForcedPseudoElementSource,
+  ForcePseudoStateOptions,
+  ForcedPseudoHoldInfo,
+  ReleaseAfterOptions,
+} from './forced-hover';
+
 // Form fill utility
 export { fillFormFields } from './fill-form';
 

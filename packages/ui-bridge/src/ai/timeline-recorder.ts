@@ -29,6 +29,7 @@
  */
 
 import type { DetectedAnimation } from '../idle/detected-animation';
+import { readRunningAnimations } from '../core/running-animations';
 import type {
   AnimationEndedTimelineEvent,
   AnimationStartedTimelineEvent,
@@ -478,32 +479,33 @@ export class TimelineRecorder {
     animations: Array<{ element: Element | null; animation: DetectedAnimation }>;
     available: boolean;
   } {
-    if (typeof document === 'undefined' || typeof document.getAnimations !== 'function') {
-      return { animations: [], available: false };
-    }
+    const read = readRunningAnimations();
+    // Reading an effect's timing can throw on an exotic animation; that makes
+    // the whole read UNKNOWN, exactly as a throwing `getAnimations` does.
     try {
-      const out: Array<{ element: Element | null; animation: DetectedAnimation }> = [];
-      for (const anim of document.getAnimations()) {
-        if (anim.playState !== 'running') continue;
-        const a = anim as Animation & { animationName?: string; transitionProperty?: string };
-        const element = (anim.effect as KeyframeEffect | null)?.target ?? null;
-        const timing = anim.effect?.getTiming?.();
-        const duration = typeof timing?.duration === 'number' ? timing.duration : undefined;
-        out.push({
-          element,
-          animation: {
-            name:
-              a.animationName ??
-              (a.transitionProperty !== undefined ? `transition:${a.transitionProperty}` : anim.id),
-            targetElement: fingerprintOf(element),
-            isInfinite: timing?.iterations === Infinity,
-            ...(duration !== undefined && Number.isFinite(duration)
-              ? { durationMs: duration }
-              : {}),
-          },
-        });
-      }
-      return { animations: out, available: true };
+      return {
+        available: read.available,
+        animations: read.animations.map(({ animation: anim, element }) => {
+          const a = anim as Animation & { animationName?: string; transitionProperty?: string };
+          const timing = anim.effect?.getTiming?.();
+          const duration = typeof timing?.duration === 'number' ? timing.duration : undefined;
+          return {
+            element,
+            animation: {
+              name:
+                a.animationName ??
+                (a.transitionProperty !== undefined
+                  ? `transition:${a.transitionProperty}`
+                  : anim.id),
+              targetElement: fingerprintOf(element),
+              isInfinite: timing?.iterations === Infinity,
+              ...(duration !== undefined && Number.isFinite(duration)
+                ? { durationMs: duration }
+                : {}),
+            },
+          };
+        }),
+      };
     } catch {
       return { animations: [], available: false };
     }

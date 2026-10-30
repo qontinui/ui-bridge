@@ -92,6 +92,41 @@ class TestUIBridgeClientActions:
 
             assert result.success is True
 
+    def test_unhover(self, client, mock_response):
+        mock_response.json.return_value = {
+            "success": True,
+            "data": {
+                "success": True,
+                "durationMs": 5.0,
+                "timestamp": 1234567890,
+                "forcedHover": {"released": {"released": True, "restore": "verified"}},
+            },
+        }
+
+        with patch.object(client._client, "request", return_value=mock_response) as req:
+            result = client.unhover("header-1")
+
+            assert result.success is True
+            assert result.forced_hover == {"released": {"released": True, "restore": "verified"}}
+            assert req.call_args[1]["json"] == {"action": "unhover"}
+
+    def test_hover_reports_forced_hover(self, client, mock_response):
+        mock_response.json.return_value = {
+            "success": True,
+            "data": {
+                "success": True,
+                "durationMs": 5.0,
+                "timestamp": 1234567890,
+                "forcedHover": {"applied": {"rulesRewritten": 2, "revealed": []}},
+            },
+        }
+
+        with patch.object(client._client, "request", return_value=mock_response) as req:
+            result = client.hover("header-1", hold_ms=1000)
+
+            assert result.forced_hover == {"applied": {"rulesRewritten": 2, "revealed": []}}
+            assert req.call_args[1]["json"] == {"action": "hover", "params": {"holdMs": 1000}}
+
     def test_focus(self, client, mock_response):
         mock_response.json.return_value = {
             "success": True,
