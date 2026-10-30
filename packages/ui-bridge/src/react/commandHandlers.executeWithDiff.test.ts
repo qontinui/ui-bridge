@@ -161,6 +161,152 @@ describe('relay executeWithDiff · the action verdict is on the payload and the 
   });
 });
 
+describe('relay executeWithDiff · the element action carries its params', () => {
+  // THE DEFECT: the relay ChangeTracker forwarded the element action as
+  // `{ action, ...params }` — the flat keys only, with `params` itself
+  // dropped. The `executeElementAction` arm hands a registered custom action
+  // `request.params`, so the handler received `undefined`; the built-ins that
+  // read `request.params` (here `sendKeys`' `keys`) silently did the default.
+  let host: HTMLElement;
+  let received: unknown[];
+  let inputs: HTMLElement[];
+
+  beforeEach(() => {
+    received = [];
+    inputs = [];
+    host = document.createElement('div');
+    makeVisible(host);
+    document.body.appendChild(host);
+    getGlobalRegistry().registerElement('pane', host, {
+      type: 'custom',
+      customActions: {
+        write: {
+          id: 'write',
+          handler: (params) => {
+            received.push(params);
+            return { ok: true };
+          },
+        },
+      },
+    });
+  });
+
+  afterEach(() => {
+    host.remove();
+    for (const el of inputs) el.remove();
+    getGlobalRegistry().clear();
+  });
+
+  it('a custom action receives its params (elementAction shape)', async () => {
+    const result = (await executeCommand(
+      'executeWithDiff',
+      { elementAction: { elementId: 'pane', action: 'write', params: { data: 'ls\r', n: 3 } } },
+      emptyBridge
+    )) as Record<string, unknown>;
+
+    expect(result.actionSuccess).toBe(true);
+    expect(received).toEqual([{ data: 'ls\r', n: 3 }]);
+  });
+
+  it('a custom action receives its params (legacy flat elementId/action/params shape)', async () => {
+    const result = (await executeCommand(
+      'executeWithDiff',
+      { elementId: 'pane', action: 'write', params: { data: 'pwd\r' } },
+      emptyBridge
+    )) as Record<string, unknown>;
+
+    expect(result.actionSuccess).toBe(true);
+    expect(received).toEqual([{ data: 'pwd\r' }]);
+  });
+
+  it('through relayCommand, the handler receives its params', async () => {
+    const handlers = createRelayHandlers(relayRunningTheDispatcher());
+
+    const result = await handlers.executeWithDiff!({
+      elementAction: { elementId: 'pane', action: 'write', params: { data: 'x' } },
+    });
+
+    expect(result.success).toBe(true);
+    expect(received).toEqual([{ data: 'x' }]);
+  });
+
+  it('a param named `action` cannot retarget the verb', async () => {
+    const result = (await executeCommand(
+      'executeWithDiff',
+      {
+        elementAction: {
+          elementId: 'pane',
+          action: 'write',
+          params: { action: 'click', data: 'y' },
+        },
+      },
+      emptyBridge
+    )) as Record<string, unknown>;
+
+    expect(result.actionSuccess).toBe(true);
+    expect(received).toEqual([{ action: 'click', data: 'y' }]);
+  });
+
+  it('a param named `params` cannot replace the params bag', async () => {
+    const result = (await executeCommand(
+      'executeWithDiff',
+      {
+        elementAction: {
+          elementId: 'pane',
+          action: 'write',
+          params: { params: 'inner', data: 'z' },
+        },
+      },
+      emptyBridge
+    )) as Record<string, unknown>;
+
+    expect(result.actionSuccess).toBe(true);
+    expect(received).toEqual([{ params: 'inner', data: 'z' }]);
+  });
+
+  it('a built-in that reads request.params (`sendKeys` keys) gets them', async () => {
+    const input = document.createElement('input');
+    makeVisible(input);
+    document.body.appendChild(input);
+    inputs.push(input);
+    getGlobalRegistry().registerElement('plain-input', input, { type: 'input' });
+    const keys: string[] = [];
+    input.addEventListener('keydown', (e) => keys.push((e as KeyboardEvent).key));
+
+    const result = (await executeCommand(
+      'executeWithDiff',
+      {
+        elementAction: {
+          elementId: 'plain-input',
+          action: 'sendKeys',
+          params: { keys: [{ key: 'Enter' }] },
+        },
+      },
+      emptyBridge
+    )) as Record<string, unknown>;
+
+    expect(result.actionSuccess).toBe(true);
+    expect(keys).toEqual(['Enter']);
+  });
+
+  it('a built-in that reads the flat keys (`type` text) still works', async () => {
+    const input = document.createElement('input');
+    makeVisible(input);
+    document.body.appendChild(input);
+    inputs.push(input);
+    getGlobalRegistry().registerElement('plain-input', input, { type: 'input' });
+
+    const result = (await executeCommand(
+      'executeWithDiff',
+      { elementAction: { elementId: 'plain-input', action: 'type', params: { text: 'hi' } } },
+      emptyBridge
+    )) as Record<string, unknown>;
+
+    expect(result.actionSuccess).toBe(true);
+    expect(input.value).toBe('hi');
+  });
+});
+
 describe('relay executeWithDiff · the same ChangeTracker result as the direct transport', () => {
   let host: HTMLElement;
 
