@@ -125,6 +125,7 @@ import {
   listMediaOverrides,
   restoreMediaOverrides,
 } from '../control/media-override';
+import { setTextVisibility } from '../control/text-visibility';
 import { listContexts } from '../specs/quality-contexts';
 import {
   captureQualityBaseline,
@@ -4246,6 +4247,12 @@ export async function executeCommand(
     case 'mediaOverrideList':
       if (!devControlsEnabled()) return devControlsDisabledResponse('mediaOverrideList');
       return listMediaOverrides();
+
+    // Text visibility (Phase 16) — the same gate: frame B of a text-over-image
+    // measurement is captured with every glyph transparent, then restored.
+    case 'textVisibility':
+      if (!devControlsEnabled()) return devControlsDisabledResponse('textVisibility');
+      return setTextVisibility(payload);
 
     case 'clipboardWrite': {
       const clipText = (payload as { text?: string })?.text ?? '';
