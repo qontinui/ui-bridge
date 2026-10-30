@@ -8,6 +8,13 @@ export type { MutationOccurredOptions, MutationOccurredResult } from './mutation
 
 export type {
   VisionRegion,
+  VisionAnnotationRequest,
+  VisionRedactRequest,
+  VisionNamedCapture,
+  VisionInlineOption,
+  VisionCaptureRequest,
+  VisionRawRequest,
+  VisionRawReason,
   VisionCaptureResult,
   VisionCaptureResponse,
   VisionDiffResponse,
