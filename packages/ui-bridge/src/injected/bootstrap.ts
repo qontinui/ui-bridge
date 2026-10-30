@@ -39,8 +39,8 @@ declare const __SDK_VERSION__: string;
 
   // The injected runtime only ever runs in a browser a DRIVER launched
   // (inject-cli, the headless/headed transports): no app ships it and no page
-  // owner serves it. So the page-altering dev controls (the media override)
-  // are on here — this is the path a design loop drives them through.
+  // owner serves it. So the page-altering dev controls (the media override,
+  // text visibility) are on here — this is the path a design loop drives them through.
   enableDevControls('injected-runtime');
 
   const registry = new UIBridgeRegistry();
