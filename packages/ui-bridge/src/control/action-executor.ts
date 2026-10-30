@@ -197,6 +197,7 @@ import type {
 } from './types';
 import { applyCanonicalFindFilter, type CanonicalFindContext } from '../core/find-filter';
 import { mediaFactsOf } from '../core/media-observation';
+import { sdkDispatch } from '../core/sdk-dispatch';
 
 /**
  * What `find()`'s DOM scan matches when the caller passes no `selector`: the
@@ -581,8 +582,12 @@ export function requestFormSubmit(form: HTMLFormElement, target: HTMLElement): s
       .map((el) => el.name || el.id || el.tagName.toLowerCase());
     return `form failed constraint validation (${invalid.join(', ') || 'unnamed field'}); submit was not dispatched`;
   }
-  if (submitter) form.requestSubmit(submitter);
-  else form.requestSubmit();
+  // The browser fires the TRUSTED `submit` synchronously inside
+  // requestSubmit — it is the SDK's, not a human's (core/sdk-dispatch.ts).
+  sdkDispatch(() => {
+    if (submitter) form.requestSubmit(submitter);
+    else form.requestSubmit();
+  });
   return null;
 }
 
@@ -2882,13 +2887,13 @@ export class DefaultActionExecutor implements ActionExecutor {
     // dispatchEvent(new MouseEvent('click')) does NOT trigger React onClick
     // because React 17+ delegates events at the root and doesn't intercept
     // programmatically dispatched events.
-    element.click();
+    sdkDispatch(() => element.click());
 
     // Anchor navigation fallback (native click already handles this,
     // but keep for elements inside anchors where element !== anchor)
     const anchor = element.closest('a');
     if (anchor && anchor !== element && anchor.hasAttribute('href')) {
-      anchor.click();
+      sdkDispatch(() => anchor.click());
     }
   }
 
@@ -3240,7 +3245,7 @@ export class DefaultActionExecutor implements ActionExecutor {
 
       const match = findDropdownOption(dropdown, selectValue);
       if (match) {
-        match.click();
+        sdkDispatch(() => match.click());
         return;
       }
     }
@@ -3399,7 +3404,7 @@ export class DefaultActionExecutor implements ActionExecutor {
       // React switch components toggle via click
       const isChecked = element.getAttribute('aria-checked') === 'true';
       if (isChecked !== checked) {
-        element.click();
+        sdkDispatch(() => element.click());
       }
     }
   }
@@ -3449,19 +3454,19 @@ export class DefaultActionExecutor implements ActionExecutor {
     if (ariaExpanded !== null) {
       const next = ariaExpanded === 'true' ? 'false' : 'true';
       element.setAttribute('aria-expanded', next);
-      element.click();
+      sdkDispatch(() => element.click());
       return;
     }
 
     // Switch role: native path — just click.
     if (element.getAttribute('role') === 'switch') {
-      element.click();
+      sdkDispatch(() => element.click());
       return;
     }
 
     // Generic fallback: a synthetic click covers the "I forgot to mark this
     // as a disclosure but the click handler does the right thing" case.
-    element.click();
+    sdkDispatch(() => element.click());
   }
 
   private performSetValue(element: HTMLElement, params?: Record<string, unknown>): void {
