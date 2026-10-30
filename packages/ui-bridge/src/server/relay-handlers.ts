@@ -1992,6 +1992,13 @@ export function createRelayHandlers(
       return relayCommand('mediaOverrideList', {}, ctxOpts(context));
     },
 
+    // Text visibility — a dev control too; the tab enforces the gate. Hide
+    // and show are synchronous on the page (no decode or load wait), so the
+    // relay's command timeout needs no budget fitting.
+    async textVisibility(request: unknown, context) {
+      return relayCommand('textVisibility', request ?? {}, ctxOpts(context));
+    },
+
     // ========================================================================
     // Annotations
     // ========================================================================

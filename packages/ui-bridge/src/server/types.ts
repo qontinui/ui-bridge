@@ -978,6 +978,12 @@ export interface UIBridgeServerHandlers {
   ) => Promise<APIResponse<unknown>>;
   /** GET /control/media/override — the overrides still active. */
   mediaOverrideList: (context?: HandlerContext) => Promise<APIResponse<unknown>>;
+  /**
+   * POST /control/text-visibility — hide every glyph (`{hidden: true, ttlMs?}`)
+   * or restore exactly (`{hidden: false}`). Dev control (see
+   * `control/text-visibility.ts`).
+   */
+  textVisibility: (request: unknown, context?: HandlerContext) => Promise<APIResponse<unknown>>;
 
   // Clipboard endpoints (browser gesture-based)
   clipboardWrite: (request: unknown, context?: HandlerContext) => Promise<APIResponse<unknown>>;
@@ -2163,6 +2169,16 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     method: 'DELETE',
     path: '/control/media/override',
     handler: 'mediaOverrideRestore',
+    bodyRequired: true,
+  },
+  // Text visibility (same plan, Phase 16): frame B of a text-over-image
+  // measurement is captured with every glyph transparent. A DEV CONTROL under
+  // the same gate; `{hidden: false}` restores exactly, and a TTL restores by
+  // itself if the caller dies between the two frames.
+  {
+    method: 'POST',
+    path: '/control/text-visibility',
+    handler: 'textVisibility',
     bodyRequired: true,
   },
 

@@ -214,6 +214,30 @@ arriving (under `--throttle`, its slow-network load) while the override still
 confirms decode before it answers. In `--capture-matrix` a relative `dir` lands
 in each cell's directory.
 
+### Text hidden for one frame: text over images on real pixels
+
+The injected runtime also serves the `textVisibility` dev control, which makes
+every glyph on the page transparent for one frame and then restores the page
+exactly. Frame A (normal) and frame B (text hidden) against one snapshot differ,
+inside each text element's box, exactly where its glyphs paint, and frame B
+shows what they sit on:
+
+```bash
+ui-bridge-inject --url http://127.0.0.1:3000/ --screenshot './frames/frame-{n}.png' \
+  --exec 'getControlSnapshot {}' \
+  --exec 'textVisibility {"hidden":true}' --exec 'getControlSnapshot {}' \
+  --exec 'textVisibility {"hidden":false}'
+```
+
+Hiding writes inline `!important` values on every element: `color`,
+`-webkit-text-fill-color` and SVG text `fill` go transparent, `text-shadow`
+goes `none` and transitions are switched off, so frame B is never caught
+mid-fade. Paint that only followed the text colour (a `currentColor` border or
+icon) is pinned to the colour it had, so only glyphs change. `{"hidden":false}`
+writes every `style` attribute back byte for byte (`restore.verified: true`),
+without the text fading back in; a TTL (`ttlMs`, default 30000) restores the
+page by itself if the run dies.
+
 #### Sourcing credentials from SSM (qontinui operators)
 
 The bins read credentials from env / flags only — they intentionally do **not**
