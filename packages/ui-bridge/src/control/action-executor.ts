@@ -159,6 +159,12 @@ import type { SemanticSnapshotManager } from '../ai/semantic-snapshot';
 import type { SemanticSnapshot } from '../ai/types';
 import type { ComponentSignatureArms, SignatureLookup } from './effect-signatures';
 import { performDragSequence } from './drag-sequence';
+import {
+  describeUnknownAction,
+  unknownActionContext,
+  UnknownActionError,
+  type UnknownActionHint,
+} from './actionVocabulary';
 import type {
   ActionParams,
   EffectSignature,
@@ -253,6 +259,26 @@ const SUPPORTED_ACTIONS = new Set<string>([
   'reset',
   'autocomplete',
 ]);
+
+/**
+ * Unknown-action refusal for one element: lists the element's own verbs
+ * (advertised `actions` + custom actions; the built-in list when it advertises
+ * none, which is then genuinely what it accepts) and a "did you mean" drawn
+ * only from that list — see `./actionVocabulary`.
+ */
+function unknownActionHintFor(
+  action: string,
+  elementId: string | undefined,
+  registered: RegisteredElement | undefined,
+  advertised: readonly string[] = registered?.actions ?? []
+): UnknownActionHint {
+  const custom = Object.keys(registered?.customActions ?? {});
+  const own = [...advertised, ...custom];
+  return describeUnknownAction(action, {
+    elementId,
+    accepted: own.length > 0 ? own : [...SUPPORTED_ACTIONS, ...custom],
+  });
+}
 
 /**
  * Default wait options
@@ -1206,13 +1232,14 @@ export class DefaultActionExecutor implements ActionExecutor {
       const registered = this.registry.getElement(elementId);
       const isCtrTarget = !registered && getGlobalCtr().has(elementId);
       if (!registered?.customActions?.[actionName] && !isCtrTarget) {
-        const message = `Unsupported action: '${actionName}'. Supported: ${Array.from(SUPPORTED_ACTIONS).join(', ')}`;
+        const hint = unknownActionHintFor(actionName, registered?.id, registered);
+        const message = hint.message;
         return {
           success: false,
           error: message,
           failureDetails: buildActionFailureDetails('UB-UNSUPPORTED-ACTION', message, {
             elementId,
-            context: { action: actionName },
+            context: { action: actionName, ...unknownActionContext(hint) },
             durationMs: performance.now() - startTime,
           }),
           durationMs: performance.now() - startTime,
@@ -1666,10 +1693,15 @@ export class DefaultActionExecutor implements ActionExecutor {
           durationMs: performance.now() - startTime,
         });
       } else {
-        failureDetails = buildActionFailureDetails('UB-ACTION-FAILED', message, {
+        // An unknown verb raised inside dispatch reports the same errorCode as
+        // the early gate (`UB-UNSUPPORTED-ACTION`), not a generic failure.
+        const errorCode =
+          error instanceof UnknownActionError ? 'UB-UNSUPPORTED-ACTION' : 'UB-ACTION-FAILED';
+        failureDetails = buildActionFailureDetails(errorCode, message, {
           elementId,
-          // The canonical `errorCode` stays `UB-ACTION-FAILED` — the handler's
-          // vocabulary is not the SDK taxonomy. Its `code` and the fields it
+          // The canonical `errorCode` stays `UB-ACTION-FAILED` (except an
+          // `UnknownActionError`, which is `UB-UNSUPPORTED-ACTION` like the
+          // early gate) — the handler's vocabulary is not the SDK taxonomy. Its `code` and the fields it
           // attached ride in `context`, which is exactly the untyped bag the
           // other failure paths already use for their discriminators.
           context: handlerError
@@ -2863,7 +2895,13 @@ export class DefaultActionExecutor implements ActionExecutor {
             signal: inertAbortSignal(),
           });
         }
-        throw new Error(`Unknown action: ${action}`);
+        const hint = unknownActionHintFor(
+          action,
+          owner?.id,
+          owner,
+          owner?.actions ?? this.inferActions(element)
+        );
+        throw new UnknownActionError(hint);
       }
     }
   }
