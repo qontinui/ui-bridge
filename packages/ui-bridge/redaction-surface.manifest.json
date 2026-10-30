@@ -199,6 +199,7 @@
     "POST /control/state/:id/deactivate -> deactivateState",
     "POST /control/states/find-path -> findPath",
     "POST /control/states/navigate -> navigateTo",
+    "POST /control/text-visibility -> textVisibility",
     "POST /control/transition/:id/execute -> executeTransition",
     "POST /control/undo -> executeUndo",
     "POST /control/viewport-constraints -> setViewportConstraints",

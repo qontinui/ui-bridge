@@ -150,3 +150,27 @@ export type {
   RestoreResult,
   ValidatedMediaOverride,
 } from './media-override';
+
+// Text visibility — a dev control (same plan, Phase 16): hide every glyph for
+// frame B of a text-over-image measurement, then restore exactly. Exported for
+// an embedded host, as the media override is.
+export {
+  setTextVisibility,
+  textHidden,
+  validateTextVisibilityRequest,
+  DEFAULT_TEXT_VISIBILITY_TTL_MS,
+  MIN_TEXT_VISIBILITY_TTL_MS,
+  MAX_TEXT_VISIBILITY_TTL_MS,
+} from './text-visibility';
+export type {
+  TextVisibilityRequest,
+  TextVisibilityErrorCode,
+  TextVisibilityFailure,
+  TextVisibilityCoverage,
+  TextVisibilityHideSuccess,
+  TextVisibilityShowSuccess,
+  TextVisibilityRestore,
+  TextVisibilityDrift,
+  TextVisibilityResult,
+  ValidatedTextVisibility,
+} from './text-visibility';
