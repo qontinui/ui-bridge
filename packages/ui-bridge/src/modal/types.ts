@@ -10,6 +10,12 @@
 export interface ModalInfo {
   /** Unique identifier (element id, or generated) */
   id: string;
+  /**
+   * The modal element's `data-ui-bridge-id`, when it has one: the name an
+   * occlusion report gives a registered occluder. Lets `/control/visibility`
+   * recognise a registered modal whose registry id differs from its DOM id.
+   */
+  bridgeId?: string;
   /** Dialog title text, if detectable */
   title?: string;
   /** Type of modal */

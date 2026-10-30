@@ -25,7 +25,7 @@ import type {
   ComponentActionPredictRequest,
   ComponentActionPredictResponse,
 } from '../control';
-import type { FillResult } from '../core/types';
+import type { CanvasCoverage, FillResult } from '../core/types';
 import type { PageHealthObservation } from './page-health';
 import type {
   VisionAnalyzeResponse,
@@ -2697,8 +2697,21 @@ export interface VisibilityOcclusionEntry {
    * not the same as nothing being an expected overlay.
    */
   isExpectedOverlay: boolean;
-  /** True when the covered element has text. Ranks above blank occlusions. */
+  /**
+   * True when the covered element shows text: DOM text, or — for an element
+   * registered `paintsText` (a terminal, a chart, a registered `<canvas>`) —
+   * painted text, which is always assumed present. Ranks above blank
+   * occlusions.
+   */
   hidesText: boolean;
+  /**
+   * Where the hidden text lives, present exactly when `hidesText` is true:
+   * `dom` — the covered element's `textContent` (echoed as `text`);
+   * `painted` — the element is registered `paintsText`, so its text is
+   * canvas pixels; `text`, when present, is only whatever DOM text it also
+   * holds.
+   */
+  textSource?: VisibilityTextSource;
   /**
    * Which probe found it. Always `hit-test` from this package — the
    * geometric z-order model lives in ui-bridge-auto, which depends on this
@@ -2736,8 +2749,30 @@ export interface VisibilityReport {
    */
   expectedOverlaysFiltered: number;
   /**
-   * `unknown_empty_registry` exists so an empty `occlusions` list from a
-   * registry with no elements cannot be read as "nothing is covered".
+   * The canvas census: which visible canvases a `paintsText` registration
+   * covers, and which none does. See `CanvasCoverage`. `unavailable` (with a
+   * reason) when no census could be taken; that withholds `clear`.
    */
-  verdict: 'clear' | 'occlusions_found' | 'unknown_empty_registry';
+  canvasCoverage: CanvasCoverage;
+  /**
+   * Decided in this order, first match wins:
+   *
+   * 1. `unknown_empty_registry` — the registry held no elements.
+   * 2. `occlusions_found` — at least one occlusion (any unswept canvas is
+   *    still listed in `canvasCoverage`).
+   * 3. `unknown_canvas` — no occlusions, but some visible canvas is
+   *    unattributed or the census is `unavailable`: text painted there can be
+   *    covered with no entry appearing.
+   * 4. `clear`.
+   *
+   * Both `unknown_*` values exist so an empty `occlusions` list cannot be read
+   * as "nothing is covered".
+   */
+  verdict: 'clear' | 'occlusions_found' | 'unknown_empty_registry' | 'unknown_canvas';
 }
+
+/** The `/control/visibility` verdict union. See `VisibilityReport.verdict`. */
+export type VisibilityVerdict = VisibilityReport['verdict'];
+
+/** Where an occlusion's hidden text lives. See `VisibilityOcclusionEntry.textSource`. */
+export type VisibilityTextSource = 'dom' | 'painted';
