@@ -66,6 +66,18 @@ const ERROR_CODE_HTTP_STATUS = new Map<string, number>([
   ['NOT_SUPPORTED', 501],
   ['NOT_FOUND', 404],
   ['METHOD_NOT_ALLOWED', 405],
+  // The sibling's device pairing codes, mirrored to keep one vocabulary. Nothing
+  // in this package answers them, so this server's behaviour does not change.
+  ['PAIRING_REQUIRED', 401],
+  ['PAIRING_UNCONFIGURED', 401],
+  ['PAIRING_NOT_ARMED', 401],
+  ['PAIRING_CODE_INVALID', 401],
+  ['PAIRING_TIMESTAMP_REFUSED', 401],
+  ['PAIRING_WS_LOOPBACK_ONLY', 403],
+  ['PAIRING_WEB_CALLER_REFUSED', 403],
+  ['PAIRING_BODY_TOO_LARGE', 413],
+  ['PAIRING_TARGET_TOO_LONG', 414],
+  ['PAIRING_UNAVAILABLE', 503],
 ]);
 
 /**

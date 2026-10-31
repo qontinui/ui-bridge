@@ -28,10 +28,18 @@ import { createNativeActionExecutor } from '../control/action-executor';
 import type { NativeActionExecutor } from '../control/types';
 import {
   createNativeServer,
+  type HTTPRequest,
   type NativeUIBridgeServer,
   type ServerAdapter,
   type WebSocketServerAdapter,
 } from '../server/http-server';
+import {
+  PairingError,
+  UNCONFIGURED_PAIRING_STATE,
+  type ArmedPairingCode,
+  type PairingState,
+  type PairingStore,
+} from '../server/pairing';
 import type { RouteProvider, KeepAwakeProvider } from '../server/types';
 import { WebSocketEventBridge } from '../server/ws-event-bridge';
 import { DeviceAnnouncer, type ZeroconfConstructor } from '../transport/DeviceAnnouncer';
@@ -78,6 +86,14 @@ export interface UIBridgeNativeContextValue {
   stopServer: () => void;
   /** Get the current navigation route (if a RouteProvider is configured) */
   getCurrentRoute: () => string | null;
+  /** Arm a 6-digit LAN pairing code to show the user. Rejects with a `PairingError`. */
+  armPairingCode: () => Promise<ArmedPairingCode>;
+  /** Cancel a live pairing code. */
+  disarmPairingCode: () => void;
+  /** What Settings shows, including the peer that consumed the last code. */
+  getPairingState: () => PairingState;
+  /** Replace the pairing token, killing every signature made with it. Rejects with a `PairingError`. */
+  revokePairing: () => Promise<void>;
 }
 
 /**
@@ -206,11 +222,24 @@ export interface UIBridgeNativeProviderProps {
    */
   zeroconf?: ZeroconfConstructor;
   /**
-   * Stable device identifier used for mDNS TXT records and cloud relay
-   * registration.  Typically sourced from expo-device or a UUID stored in
+   * Stable device identifier used for mDNS TXT records, cloud relay registration
+   * and device pairing.  Typically sourced from expo-device or a UUID stored in
    * AsyncStorage.
    */
   deviceId?: string;
+  /**
+   * Where the pairing token lives. Without one, every caller off this device
+   * gets `401 PAIRING_UNCONFIGURED`, while a cable or a local emulator keeps
+   * working. An inline object is fine: changing its identity does not restart
+   * the server, and only going from absent to present (or back) does.
+   */
+  pairingStore?: PairingStore;
+  /**
+   * Admit HTTP callers off this device with no signature. For samples and fixtures
+   * on a trusted network: anything that can reach the port can drive the app, but
+   * a web page cannot, and a WebSocket upgrade stays loopback-only regardless.
+   */
+  allowUnauthenticatedNetwork?: boolean;
 }
 
 /**
@@ -255,6 +284,34 @@ function readWindowViewport(): { width: number; height: number } {
   return { width: win.width, height: win.height };
 }
 
+/**
+ * One store object for the provider's whole life, whatever identity the host's
+ * prop has on a given render. The prop is a dependency of `startServer`, so a
+ * host writing `pairingStore={{ ... }}` would otherwise restart the server, and
+ * lose its sockets and any armed code, on every render. `useValueStable` cannot
+ * do this: a store is functions, which JSON drops. Calls go to the latest prop.
+ */
+function useStablePairingStore(store: PairingStore | undefined): PairingStore | undefined {
+  const latestRef = useRef(store);
+  useEffect(() => {
+    latestRef.current = store;
+  });
+  const hasStore = store !== undefined;
+  return useMemo(() => {
+    if (!hasStore) return undefined;
+    const current = (): PairingStore => {
+      if (!latestRef.current) throw new Error('pairingStore was removed');
+      return latestRef.current;
+    };
+    return {
+      get: () => current().get(),
+      set: (token) => current().set(token),
+      clear: () => current().clear(),
+      randomBytes: (n) => current().randomBytes(n),
+    };
+  }, [hasStore]);
+}
+
 export function UIBridgeNativeProvider({
   children,
   features: featuresProp = EMPTY_FEATURES,
@@ -269,11 +326,14 @@ export function UIBridgeNativeProvider({
   enableMdnsAnnounce,
   zeroconf,
   deviceId,
+  pairingStore: pairingStoreProp,
+  allowUnauthenticatedNetwork,
 }: UIBridgeNativeProviderProps) {
   // Identity held steady by VALUE — see `useValueStable`. Everything below,
   // including the `contextValue` memo, reads these rather than the raw props.
   const features = useValueStable(featuresProp);
   const config = useValueStable(configProp);
+  const pairingStore = useStablePairingStore(pairingStoreProp);
 
   const registryRef = useRef<NativeUIBridgeRegistry | null>(null);
   const executorRef = useRef<NativeActionExecutor | null>(null);
@@ -330,6 +390,14 @@ export function UIBridgeNativeProvider({
   const announcerRef = useRef<DeviceAnnouncer | null>(null);
   const cloudRelayRef = useRef<CloudRelayClient | null>(null);
 
+  // The device id usually loads after the server starts. Read through a ref, so
+  // that arriving does not restart the server, and forwarded by the effect below.
+  const deviceIdRef = useRef(deviceId);
+  useEffect(() => {
+    deviceIdRef.current = deviceId;
+    serverRef.current?.setDeviceId(deviceId);
+  }, [deviceId]);
+
   // Server management — uses injected serverAdapter if provided
   const startServer = useCallback(async () => {
     if (!features.server) return;
@@ -355,6 +423,9 @@ export function UIBridgeNativeProvider({
       // design handlers. Same source as the registry's clipping bounds — see
       // `readWindowViewport`.
       viewportProvider: readWindowViewport,
+      pairingStore,
+      allowUnauthenticatedNetwork,
+      deviceId: deviceIdRef.current,
     });
 
     server.setAdapter(serverAdapter);
@@ -419,8 +490,10 @@ export function UIBridgeNativeProvider({
         eventBridge.removeConnection(connId);
       };
 
+      wsAdapter.onWebSocketUpgrade = (req: HTTPRequest) => server.handleWebSocketUpgrade(req);
+
       wsAdapter.onWebSocketMessage = async (connId: string, message: string) => {
-        return server.handleWebSocketMessage(connId, message);
+        return server.handleNetworkWebSocketMessage(connId, message);
       };
 
       eventBridge.start();
@@ -430,6 +503,8 @@ export function UIBridgeNativeProvider({
     try {
       await server.start();
       serverRef.current = server;
+      // The id may have loaded during the await, when there was no ref to forward to.
+      server.setDeviceId(deviceIdRef.current);
       setServerRunning(true);
     } catch (err) {
       console.warn('[ui-bridge-native] Failed to start HTTP server:', err);
@@ -447,6 +522,8 @@ export function UIBridgeNativeProvider({
     screenshotProvider,
     keepAwakeProvider,
     routeProvider,
+    pairingStore,
+    allowUnauthenticatedNetwork,
   ]);
 
   const stopServer = useCallback(() => {
@@ -585,6 +662,29 @@ export function UIBridgeNativeProvider({
     return routeProvider?.getCurrentRoute() ?? null;
   }, [routeProvider]);
 
+  const armPairingCode = useCallback(async () => {
+    if (!serverRef.current) {
+      throw new PairingError('PAIRING_UNCONFIGURED', 'The UI Bridge server is not running.');
+    }
+    return serverRef.current.armPairingCode();
+  }, []);
+
+  const disarmPairingCode = useCallback(() => {
+    serverRef.current?.disarmPairingCode();
+  }, []);
+
+  const getPairingState = useCallback(
+    () => serverRef.current?.getPairingState() ?? UNCONFIGURED_PAIRING_STATE,
+    []
+  );
+
+  const revokePairing = useCallback(async () => {
+    if (!serverRef.current) {
+      throw new PairingError('PAIRING_UNCONFIGURED', 'The UI Bridge server is not running.');
+    }
+    await serverRef.current.revokePairing();
+  }, []);
+
   // Mark the previous route's elements offscreen when the active route changes.
   // Without this, React Navigation's persistent-mount behavior leaves stale
   // layouts in the registry for tabs the user has left. Elements on the new
@@ -656,6 +756,10 @@ export function UIBridgeNativeProvider({
       startServer,
       stopServer,
       getCurrentRoute,
+      armPairingCode,
+      disarmPairingCode,
+      getPairingState,
+      revokePairing,
     }),
     [
       features,
@@ -674,6 +778,10 @@ export function UIBridgeNativeProvider({
       startServer,
       stopServer,
       getCurrentRoute,
+      armPairingCode,
+      disarmPairingCode,
+      getPairingState,
+      revokePairing,
     ]
   );
 

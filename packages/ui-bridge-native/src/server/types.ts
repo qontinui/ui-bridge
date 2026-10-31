@@ -13,6 +13,7 @@ import type {
 import type { ComponentActionResponse, PageNavigationResponse } from '../control/types';
 import type { ElementDesignData, StateStyles, ResponsiveSnapshot } from '../design/design-types';
 import type { PageHealthObservation } from './page-health';
+import type { PairingStore } from './pairing';
 
 /**
  * Navigation provider for React Native apps.
@@ -122,6 +123,24 @@ export interface NativeServerConfig extends NativeUIBridgeConfig {
    * size is never reported as a blank screen.
    */
   viewportProvider?: () => { width: number; height: number };
+  /**
+   * Where the pairing token lives, and the app's secure random source. Without
+   * one, every non-loopback caller answers `401 PAIRING_UNCONFIGURED`. See
+   * `./pairing.ts`.
+   */
+  pairingStore?: PairingStore;
+  /**
+   * Admit non-loopback HTTP callers with no signature. For samples and fixtures
+   * on a trusted network: anything that can reach the port can drive the app, but
+   * a web page cannot, and a WebSocket upgrade stays loopback-only regardless.
+   */
+  allowUnauthenticatedNetwork?: boolean;
+  /**
+   * The device's stable id, the one mDNS publishes. Open health and the pair
+   * response return it, because the runner keys its tokens by it. Pairing
+   * answers `503 PAIRING_UNAVAILABLE` until one is known.
+   */
+  deviceId?: string;
 }
 
 /**
@@ -531,6 +550,14 @@ export const UI_BRIDGE_NATIVE_ROUTES: Record<string, RouteDefinition> = {
     path: '/ui-bridge/health',
     description: 'Health check',
   },
+
+  // Device pairing
+  PAIR: {
+    method: 'POST',
+    path: '/ui-bridge/pair',
+    description:
+      'Get the pairing token: loopback with no code, otherwise body { code }. Direct HTTP only',
+  },
 };
 
 /**
@@ -860,4 +887,8 @@ export interface NativeServerHandlers {
 
   // Health
   health: HandlerFunction<Record<string, unknown>>;
+
+  // Device pairing — always NOT_SUPPORTED here. The real route is in the
+  // server's network entry, which is the only place that knows the socket peer.
+  pair: HandlerFunction<never>;
 }

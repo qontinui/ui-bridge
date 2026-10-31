@@ -942,6 +942,18 @@ export function createServerHandlers(
     // the envelope agree; an unmounted path answers 404 instead. Each error
     // message names an in-tree mobile replacement so operators aren't left
     // guessing what to use instead.
+    // The real pairing route lives in the server's network entry, ahead of this
+    // table, because only that entry knows the socket peer. This answer is what
+    // JSON-RPC over a WebSocket and the cloud relay get, so neither can mint a
+    // token or spend a code attempt.
+    pair: async () => {
+      return error<never>(
+        'Pairing is served only on a direct HTTP connection to the device, ' +
+          'not over JSON-RPC or the cloud relay.',
+        'NOT_SUPPORTED'
+      );
+    },
+
     aiForms: async () => {
       return error<never>(
         'ai/forms (form discovery) is runner-only; mobile React Native has no DOM to walk. ' +

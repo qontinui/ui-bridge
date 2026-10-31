@@ -306,7 +306,28 @@ export {
   type RequestHandler,
   type ServerAdapter,
   type WebSocketServerAdapter,
+  type WebSocketUpgradeDecision,
 } from './server/http-server';
+
+export {
+  PairingError,
+  UI_BRIDGE_AUTH_HEADER,
+  SIGNATURE_WINDOW_MS,
+  PAIRING_CODE_TTL_MS,
+  PAIRING_CODE_MAX_ATTEMPTS,
+  SIGNED_BODY_MAX_CHARS,
+  SIGNED_METHOD_MAX_CHARS,
+  SIGNED_TARGET_MAX_CHARS,
+  canonicalSignatureInput,
+  signUIBridgeRequest,
+  isLoopbackAddress,
+  isLoopbackHost,
+  type PairingStore,
+  type PairingState,
+  type PairingDisarmReason,
+  type PairingErrorCode,
+  type ArmedPairingCode,
+} from './server/pairing';
 
 export { buildUpgradeResponse, computeAcceptKey } from './server/ws-protocol';
 export { bindWithRetry, isAddrInUseError } from './server/bind-retry';

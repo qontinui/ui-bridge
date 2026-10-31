@@ -104,11 +104,21 @@ describe('the two native HTTP surfaces share one status vocabulary', () => {
     );
   });
 
-  it('carries the three codes the mapping exists for', () => {
+  it('carries the codes the mapping exists for', () => {
     expect(parent).toEqual([
       ['METHOD_NOT_ALLOWED', 405],
       ['NOT_FOUND', 404],
       ['NOT_SUPPORTED', 501],
+      ['PAIRING_BODY_TOO_LARGE', 413],
+      ['PAIRING_CODE_INVALID', 401],
+      ['PAIRING_NOT_ARMED', 401],
+      ['PAIRING_REQUIRED', 401],
+      ['PAIRING_TARGET_TOO_LONG', 414],
+      ['PAIRING_TIMESTAMP_REFUSED', 401],
+      ['PAIRING_UNAVAILABLE', 503],
+      ['PAIRING_UNCONFIGURED', 401],
+      ['PAIRING_WEB_CALLER_REFUSED', 403],
+      ['PAIRING_WS_LOOPBACK_ONLY', 403],
     ]);
   });
 
