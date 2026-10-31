@@ -134,12 +134,9 @@ export class DeviceAnnouncer {
    * will learn the registered name.
    */
   private publishInFlight = false;
-  /** Rotated pairing token for mDNS TXT records */
-  private pairingToken: string;
 
   constructor(config: AnnouncerConfig) {
     this.config = config;
-    this.pairingToken = generateHex(16);
   }
 
   // ── mDNS ──────────────────────────────────────────────────────────────────
@@ -186,7 +183,6 @@ export class DeviceAnnouncer {
           device_id: this.config.deviceId,
           app_id: this.config.appId,
           version: this.config.version ?? 'unknown',
-          pairing_token: this.pairingToken,
         });
       } finally {
         this.publishInFlight = false;
@@ -362,17 +358,6 @@ export class DeviceAnnouncer {
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
-
-function generateHex(bytes: number): string {
-  const arr = new Uint8Array(bytes);
-  // In React Native, Math.random() is fine for a non-security pairing token
-  for (let i = 0; i < bytes; i++) {
-    arr[i] = Math.floor(Math.random() * 256);
-  }
-  return Array.from(arr)
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-}
 
 function getPlatform(): string {
   return Platform?.OS ?? 'unknown';

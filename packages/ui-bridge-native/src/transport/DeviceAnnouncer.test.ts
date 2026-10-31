@@ -234,6 +234,36 @@ describe('DeviceAnnouncer — mDNS advertisement through a Promise-returning Zer
     expect(a.getState().mdnsActive).toBe(true);
   });
 
+  it('publishes a TXT record that carries no token, and draws no randomness', async () => {
+    const random = vi.spyOn(Math, 'random');
+    const txtRecords: unknown[] = [];
+    class RecordingZeroconf {
+      publishService(...args: unknown[]): Promise<unknown> {
+        txtRecords.push(args[5]);
+        return Promise.resolve({ name: args[3] });
+      }
+      unpublishService(): Promise<unknown> {
+        return Promise.resolve(null);
+      }
+    }
+    try {
+      const a = new DeviceAnnouncer({
+        deviceId: 'abcdef0123456789',
+        appId: 'io.qontinui.mobile',
+        version: '1.2.3',
+      });
+      await a.startMdnsAdvertise(RecordingZeroconf);
+
+      // The exact record: an added field of any name fails here, not only this one.
+      expect(txtRecords).toEqual([
+        { device_id: 'abcdef0123456789', app_id: 'io.qontinui.mobile', version: '1.2.3' },
+      ]);
+      expect(random).not.toHaveBeenCalled();
+    } finally {
+      random.mockRestore();
+    }
+  });
+
   it('unpublishes the REGISTERED name, not the requested one, and drops listeners', async () => {
     const unpublished: unknown[] = [];
     let listenersRemoved = 0;
