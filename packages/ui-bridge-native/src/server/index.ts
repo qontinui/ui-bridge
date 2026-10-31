@@ -8,6 +8,7 @@ export * from './types';
 export * from './handlers';
 export * from './design-handlers';
 export * from './http-server';
+export * from './pairing';
 export * from './ws-protocol';
 export * from './ws-types';
 export { WebSocketConnection } from './ws-connection';

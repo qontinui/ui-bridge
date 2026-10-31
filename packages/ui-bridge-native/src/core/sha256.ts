@@ -1,12 +1,13 @@
 /**
- * SHA-256 over a string's UTF-8 bytes, synchronous and dependency-free.
+ * SHA-256 and HMAC-SHA256, synchronous and dependency-free.
  *
- * It exists for one consumer: `ElementMedia.src_digest`, the digest of an
- * image's source URL that vision-core compares to find duplicate images
- * (qontinui-schemas `rust-vision-core/src/element_media.rs`, `src_digest_of`).
- * Every producer must compute the SAME digest for the same URL, so this is
- * real SHA-256 — pinned against the NIST vectors and the cross-repo shared
- * vector in its tests — not a stand-in hash.
+ * Two consumers. `ElementMedia.src_digest`, the digest of an image's source URL
+ * that vision-core compares to find duplicate images (qontinui-schemas
+ * `rust-vision-core/src/element_media.rs`, `src_digest_of`). And the device
+ * pairing signature (`server/pairing.ts`), which the runner's Rust signer has
+ * to reproduce byte for byte. Every producer must compute the SAME digest for
+ * the same input, so this is real SHA-256 — pinned against the NIST vectors and
+ * the cross-repo shared vector in its tests — not a stand-in hash.
  *
  * Why not a platform API: React Native's Hermes engine ships no WebCrypto
  * (`crypto.subtle`) and no Node `crypto`, and the snapshot projection that
@@ -37,7 +38,7 @@ const H0 = [
  * build). A lone surrogate becomes U+FFFD, exactly as `TextEncoder` and Rust's
  * lossy conversion do, so a malformed string still digests the same everywhere.
  */
-function utf8Bytes(input: string): Uint8Array {
+export function utf8Bytes(input: string): Uint8Array {
   const out: number[] = [];
   for (let i = 0; i < input.length; i++) {
     let cp = input.charCodeAt(i);
@@ -72,9 +73,8 @@ function utf8Bytes(input: string): Uint8Array {
 
 const rotr = (x: number, n: number): number => (x >>> n) | (x << (32 - n));
 
-/** Lowercase hex SHA-256 of `input`'s UTF-8 bytes. */
-export function sha256Hex(input: string): string {
-  const bytes = utf8Bytes(input);
+/** SHA-256 of raw bytes, as the 32-byte digest. */
+export function sha256Bytes(bytes: Uint8Array): Uint8Array {
   // Message + the 0x80 terminator + the 64-bit length, padded to 64-byte blocks.
   const blockBytes = Math.ceil((bytes.length + 9) / 64) * 64;
   const buffer = new Uint8Array(blockBytes);
@@ -120,5 +120,53 @@ export function sha256Hex(input: string): string {
     h[6] = (h[6] + g) | 0;
     h[7] = (h[7] + hh) | 0;
   }
-  return h.map((word) => (word >>> 0).toString(16).padStart(8, '0')).join('');
+  const digest = new Uint8Array(32);
+  const digestView = new DataView(digest.buffer);
+  h.forEach((word, i) => digestView.setUint32(i * 4, word >>> 0));
+  return digest;
+}
+
+/** Lowercase hex of raw bytes. */
+export function bytesToHex(bytes: Uint8Array): string {
+  let out = '';
+  for (let i = 0; i < bytes.length; i++) out += bytes[i].toString(16).padStart(2, '0');
+  return out;
+}
+
+/** Lowercase hex SHA-256 of `input`'s UTF-8 bytes. */
+export function sha256Hex(input: string): string {
+  return bytesToHex(sha256Bytes(utf8Bytes(input)));
+}
+
+/** SHA-256's block size in bytes, which is HMAC's key-padding width (RFC 2104). */
+const SHA256_BLOCK_BYTES = 64;
+
+/**
+ * HMAC-SHA256 over raw bytes (RFC 2104), as the 32-byte tag. Bytes rather than
+ * strings because a signer in another language has to agree on them exactly.
+ */
+export function hmacSha256(key: Uint8Array, message: Uint8Array): Uint8Array {
+  const normalizedKey = key.length > SHA256_BLOCK_BYTES ? sha256Bytes(key) : key;
+  const inner = new Uint8Array(SHA256_BLOCK_BYTES + message.length);
+  const outer = new Uint8Array(SHA256_BLOCK_BYTES + 32);
+  for (let i = 0; i < SHA256_BLOCK_BYTES; i++) {
+    const keyByte = i < normalizedKey.length ? normalizedKey[i] : 0;
+    inner[i] = keyByte ^ 0x36;
+    outer[i] = keyByte ^ 0x5c;
+  }
+  inner.set(message, SHA256_BLOCK_BYTES);
+  outer.set(sha256Bytes(inner), SHA256_BLOCK_BYTES);
+  return sha256Bytes(outer);
+}
+
+/**
+ * Compare two strings without an early exit on the first differing character.
+ * A length difference does return at once: every caller compares against a
+ * fixed-width value whose width is public.
+ */
+export function constantTimeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
 }

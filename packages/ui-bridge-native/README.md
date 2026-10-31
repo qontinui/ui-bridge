@@ -55,8 +55,8 @@ function SubmitButton({ onPress }) {
 ```python
 from ui_bridge import UIBridgeClient
 
-# Connect to device (use 10.0.2.2 for Android emulator)
-client = UIBridgeClient("http://10.0.2.2:8087")
+# Over a cable or an emulator, after `adb forward tcp:8087 tcp:8087`. No token needed.
+client = UIBridgeClient("http://localhost:8087")
 
 # Find and interact with elements
 client.press("submit-button")
@@ -225,6 +225,8 @@ table:
 | GET    | `/ui-bridge/_help`    | The same list plus per-handler descriptions, actions and tips |
 
 ```bash
+# Over `adb forward`, which arrives as loopback. On a device IP this route answers
+# 401 PAIRING_REQUIRED; see "Device Pairing".
 curl -s http://localhost:8087/ui-bridge/_routes | jq '.data.routes'
 ```
 
@@ -244,12 +246,58 @@ A wrong verb on a path the bridge does publish answers **405** with an `Allow`
 header naming the verbs it accepts (and the same verbs in the JSON envelope's
 `error`); a path it does not publish answers **404**.
 
+### Device Pairing
+
+The server admits callers as follows:
+
+| Caller | Answer |
+| --- | --- |
+| Loopback peer with a loopback `Host` and nothing a web page sends (`Origin`, `Referer`, a `Sec-Fetch-Site` other than `none`) | Admitted, no token |
+| Any other caller with a valid `X-UI-Bridge-Auth` signature | Admitted |
+| Anyone, `GET /ui-bridge/health` (trimmed) | Answered |
+| Anyone but a web page, `POST /ui-bridge/pair` | Answered |
+| A web page, `POST /ui-bridge/pair` | `403 PAIRING_WEB_CALLER_REFUSED` |
+| Signature outside the 300 s window, or older than this server will accept | `401 PAIRING_TIMESTAMP_REFUSED` with `data.serverTime`: re-sync and sign again, no new pairing needed |
+| Signed body over `SIGNED_BODY_MAX_CHARS` (262,144 characters) | `413 PAIRING_BODY_TOO_LARGE` |
+| Signed method over 16 characters, or target over `SIGNED_TARGET_MAX_CHARS` (8,192) | `414 PAIRING_TARGET_TOO_LONG` |
+| Everyone else | `401 PAIRING_REQUIRED` |
+| Not loopback, on a server with no `pairingStore` | `401 PAIRING_UNCONFIGURED` |
+| WebSocket upgrade from anywhere but a trusted loopback caller, signed or not | `403 PAIRING_WS_LOOPBACK_ONLY` |
+
+`adb forward` was measured arriving as `::ffff:127.0.0.1` on an Android 11 emulator on 2026-10-31, which counts as loopback. Physical phones are unmeasured.
+
+A `curl` over a cable keeps working with nothing new. A `curl` to a device IP can reach only health, because a hand `curl` cannot sign.
+
+To accept LAN callers, pass a `pairingStore`. The app supplies persistence and secure randomness, since the SDK's only generator is `Math.random`:
+
+```tsx
+const pairingStore: PairingStore = {
+  get: () => readToken(), // throw until loaded; return null only when there is no token
+  set: (token) => writeToken(token), // pairing answers only after this settles
+  clear: () => deleteToken(),
+  randomBytes: (n) => Crypto.getRandomBytes(n),
+};
+
+<UIBridgeNativeProvider
+  serverAdapter={adapter}
+  deviceId={deviceId}
+  pairingStore={pairingStore}
+  // ...
+/>;
+```
+
+`useUIBridgeNative()` gives Settings `armPairingCode()`, `disarmPairingCode()`, `getPairingState()` and `revokePairing()`. A code lasts about 2 minutes, works once, and is disarmed by 5 wrong attempts from anyone. `getPairingState().consumedBy` names the peer that used it. A correct code is not used up when the store fails, so the user can try it again. A revoke replaces the token. No signature verifies while it runs, and one checked against the old token is not served after it.
+
+A sample on a trusted network can opt out with `allowUnauthenticatedNetwork`. Anything that can reach the port can then drive the app over HTTP, with two exceptions. A web page is refused with `403 PAIRING_WEB_CALLER_REFUSED`: anything carrying `Origin`, `Referer` or a `Sec-Fetch-Site` other than `none`, and any `Host` other than an IP address, `localhost` or a `.local` name, which is how DNS rebinding shows up. A WebSocket upgrade stays loopback-only.
+
 ### Custom Server Adapter
 
 The HTTP server requires a platform-specific adapter. See [documentation](./docs/server-adapters.md) for examples with:
 
 - `react-native-http-bridge`
 - `@aspect/react-native-http-server`
+
+An adapter must also pass what the gate reads. Fill each `HTTPRequest` with `remoteAddress` from the accepted socket, never from a header, and with `rawTarget` and `rawBody` exactly as received, because a signature covers those bytes. Without `remoteAddress` a caller is treated as not loopback. A WebSocket adapter must call `onWebSocketUpgrade(req)` before sending the 101 and answer `decision.response` when `decision.admit` is false. Messages are refused on an adapter that never calls `onWebSocketUpgrade`.
 
 ## Debug Inspector
 

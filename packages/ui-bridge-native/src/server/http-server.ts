@@ -25,6 +25,20 @@ import type {
 } from './types';
 import type { BridgeEvent } from '../core/types';
 import { createServerHandlers } from './handlers';
+import {
+  PairingAuthority,
+  PairingError,
+  SIGNED_BODY_MAX_CHARS,
+  SIGNED_TARGET_MAX_CHARS,
+  UI_BRIDGE_AUTH_HEADER,
+  UNCONFIGURED_PAIRING_STATE,
+  carriesWebContext,
+  headerValues,
+  isTrustedLoopbackRequest,
+  isWebReachableRequest,
+  type ArmedPairingCode,
+  type PairingState,
+} from './pairing';
 import { ConsoleErrorBuffer, NetworkRequestBuffer } from './observability';
 import type { WebSocketEventBridge } from './ws-event-bridge';
 import type { JsonRpcRequest, JsonRpcResponse } from './ws-types';
@@ -65,6 +79,19 @@ const ERROR_CODE_HTTP_STATUS = new Map<string, number>([
   ['NOT_SUPPORTED', 501],
   ['NOT_FOUND', 404],
   ['METHOD_NOT_ALLOWED', 405],
+  // Device pairing, all answered by the network entry. A 401 means this caller
+  // has not proved it may act; a 403 means proving it would change nothing; a 503
+  // means the phone cannot check yet.
+  ['PAIRING_REQUIRED', 401],
+  ['PAIRING_UNCONFIGURED', 401],
+  ['PAIRING_NOT_ARMED', 401],
+  ['PAIRING_CODE_INVALID', 401],
+  ['PAIRING_TIMESTAMP_REFUSED', 401],
+  ['PAIRING_WS_LOOPBACK_ONLY', 403],
+  ['PAIRING_WEB_CALLER_REFUSED', 403],
+  ['PAIRING_BODY_TOO_LARGE', 413],
+  ['PAIRING_TARGET_TOO_LONG', 414],
+  ['PAIRING_UNAVAILABLE', 503],
 ]);
 
 /**
@@ -149,6 +176,11 @@ interface WsRoute {
 const WS_ROUTES: readonly WsRoute[] = [
   // Health
   { pattern: 'health', handler: 'health', httpMethods: ['GET'] },
+
+  // Device pairing. Always NOT_SUPPORTED from this table: the real route is in
+  // `handleNetworkRequest`, because route context carries no peer, and this
+  // entry is what JSON-RPC and the relay reach instead.
+  { pattern: 'pair', handler: 'pair', httpMethods: ['POST'] },
 
   // Elements
   { pattern: 'control/elements', handler: 'getElements', httpMethods: ['GET'] },
@@ -369,6 +401,7 @@ function allowedMethodsForPath(path: string, testHooks: boolean): string[] {
  */
 const HANDLER_DESCRIPTIONS: Record<string, string> = {
   health: 'Liveness probe; returns app metadata + element count',
+  pair: 'Get the pairing token: loopback with no code, otherwise body { code }. Direct HTTP only',
   getElements: 'Flat list of registered UI elements',
   getElement: 'Single element by id',
   getElementState: 'Dynamic state (value, focused, checked) for one element',
@@ -516,6 +549,19 @@ export interface HTTPRequest {
   headers: Record<string, string>;
   query: Record<string, string>;
   body?: unknown;
+  /**
+   * The socket peer's address. Fill it from the accepted socket and never from a
+   * header. Absent reads as not loopback.
+   */
+  remoteAddress?: string;
+  /**
+   * The request target exactly as on the request line, `path?query`. A signature
+   * covers these bytes, which a parsed `path` and `query` cannot reproduce. A
+   * signed request with a query is refused without it.
+   */
+  rawTarget?: string;
+  /** The body exactly as received. A signed request with a body is refused without it. */
+  rawBody?: string;
 }
 
 /**
@@ -554,6 +600,12 @@ export interface ServerAdapter {
  * UI Bridge server handle message routing and event broadcasting.
  */
 export interface WebSocketServerAdapter extends ServerAdapter {
+  /**
+   * Called BEFORE the 101 goes out. Answer `response` instead of upgrading when
+   * `admit` is false. JSON-RPC over the socket drives everything, so this is as
+   * much a door as any HTTP route, and only a trusted loopback caller gets through.
+   */
+  onWebSocketUpgrade?: (req: HTTPRequest) => WebSocketUpgradeDecision;
   /** Called when a JSON text frame is received from a WS client. Returns response string or null. */
   onWebSocketMessage?: (connId: string, message: string) => Promise<string | null>;
   /** Called when a new WS connection is established after the HTTP 101 upgrade. */
@@ -566,11 +618,38 @@ export interface WebSocketServerAdapter extends ServerAdapter {
   broadcast?: (message: string) => void;
 }
 
+/** What `onWebSocketUpgrade` decides. */
+export type WebSocketUpgradeDecision = { admit: true } | { admit: false; response: HTTPResponse };
+
+/** Who a request was admitted as, or the answer that refuses it. */
+type Admission =
+  | { admitted: true; as: 'loopback' | 'signed' | 'unauthenticated-network' }
+  | { admitted: false; code: string; error: string; data?: Record<string, unknown> };
+
+const HEALTH_PATH = '/ui-bridge/health';
+const PAIR_PATH = '/ui-bridge/pair';
+
+/** The `id` of a raw JSON-RPC message, read the way `handleWebSocketMessage` reads it. */
+function jsonRpcIdOf(rawMessage: string): number | string {
+  try {
+    const id = (JSON.parse(rawMessage) as { id?: unknown } | null)?.id;
+    return typeof id === 'number' || typeof id === 'string' ? id : 0;
+  } catch {
+    return 0;
+  }
+}
+
 /**
  * Native UI Bridge HTTP Server
  */
 export class NativeUIBridgeServer {
   private config: NativeServerConfig;
+  /** Absent when the app configured no store: non-loopback callers then have no way in. */
+  private pairing?: PairingAuthority;
+  /** Whether this run's adapter has called `onWebSocketUpgrade` at all. */
+  private upgradeGateSeen = false;
+  /** Warned once per run rather than per request, which would flood the error ring. */
+  private warnedMissingPeer = false;
   private handlers: NativeServerHandlers;
   private adapter?: ServerAdapter;
   private running = false;
@@ -612,6 +691,9 @@ export class NativeUIBridgeServer {
       cors: true,
       ...config,
     };
+    if (this.config.pairingStore) {
+      this.pairing = new PairingAuthority(this.config.pairingStore);
+    }
     this.consoleErrorBuffer = new ConsoleErrorBuffer();
     this.networkRequestBuffer = new NetworkRequestBuffer();
     // Mirror appInfo into the registry so `createSnapshot` includes it
@@ -656,6 +738,15 @@ export class NativeUIBridgeServer {
    */
   setAdapter(adapter: ServerAdapter): void {
     this.adapter = adapter;
+  }
+
+  /**
+   * Set the device's stable id. An app usually loads it from storage after the
+   * server has started, and this spares it a restart that would drop every
+   * socket and any armed code.
+   */
+  setDeviceId(deviceId: string | undefined): void {
+    this.config.deviceId = deviceId;
   }
 
   /**
@@ -943,7 +1034,19 @@ export class NativeUIBridgeServer {
       this.networkRequestBuffer.install();
     }
 
-    await this.adapter.start(this.config.serverPort!, this.handleRequest.bind(this));
+    this.upgradeGateSeen = false;
+    this.warnedMissingPeer = false;
+    if (this.config.allowUnauthenticatedNetwork) {
+      console.warn(
+        '[ui-bridge-native] allowUnauthenticatedNetwork is on: anyone who can reach this port can drive the app over HTTP.'
+      );
+    } else if (!this.pairing) {
+      console.warn(
+        '[ui-bridge-native] No pairingStore configured: non-loopback callers are refused with PAIRING_UNCONFIGURED.'
+      );
+    }
+
+    await this.adapter.start(this.config.serverPort!, this.handleNetworkRequest.bind(this));
     this.running = true;
 
     console.log(`[ui-bridge-native] HTTP server started on port ${this.config.serverPort}`);
@@ -983,6 +1086,27 @@ export class NativeUIBridgeServer {
    */
   setEventBridge(bridge: WebSocketEventBridge): void {
     this.eventBridge = bridge;
+  }
+
+  /**
+   * The entry a socket's messages come through. An adapter that never called
+   * `onWebSocketUpgrade` admitted the socket with no check, and a message carries
+   * no peer to check now, so it is refused: the same fail-closed reading as a
+   * missing peer address. An adapter that gates sees a call before its first socket.
+   */
+  async handleNetworkWebSocketMessage(connId: string, rawMessage: string): Promise<string | null> {
+    if (!this.upgradeGateSeen) {
+      return JSON.stringify({
+        id: jsonRpcIdOf(rawMessage),
+        result: {
+          success: false,
+          error: 'This server adapter does not gate WebSocket upgrades (onWebSocketUpgrade).',
+          code: 'PAIRING_UNCONFIGURED',
+          timestamp: Date.now(),
+        },
+      } satisfies JsonRpcResponse);
+    }
+    return this.handleWebSocketMessage(connId, rawMessage);
   }
 
   /**
@@ -1603,25 +1727,306 @@ export class NativeUIBridgeServer {
     };
   }
 
+  // ── Device pairing ──────────────────────────────────────────────────────
+
   /**
-   * Handle incoming HTTP request
+   * What `start()` hands the adapter: every request off the socket comes through
+   * here, and `handleRequest` sits behind it.
+   *
+   * | Caller                                                   | Admitted |
+   * |----------------------------------------------------------|----------|
+   * | Loopback peer, no web context, loopback `Host`           | yes      |
+   * | Anyone with a valid `X-UI-Bridge-Auth` signature         | yes      |
+   * | Anyone, `GET /ui-bridge/health` (trimmed)                | yes      |
+   * | Anyone with no web context, `POST /ui-bridge/pair`       | yes      |
+   * | A web page, `POST /ui-bridge/pair`                       | 403 `PAIRING_WEB_CALLER_REFUSED` |
+   * | Signature outside the window or below the floor          | 401 `PAIRING_TIMESTAMP_REFUSED` |
+   * | Signed body over `SIGNED_BODY_MAX_CHARS`                 | 413 `PAIRING_BODY_TOO_LARGE` |
+   * | Signed method or target over its cap                     | 414 `PAIRING_TARGET_TOO_LONG` |
+   * | Everyone else                                            | 401 `PAIRING_REQUIRED` |
+   * | No store configured, not loopback                        | 401 `PAIRING_UNCONFIGURED` |
+   * | Under `allowUnauthenticatedNetwork`, a web page or a rebindable `Host` | 403 `PAIRING_WEB_CALLER_REFUSED` |
+   *
+   * The gate is here rather than in `handleRequest` because `CloudRelayClient`
+   * calls that directly and must keep working: relay access already means the
+   * same user account, checked by the backend.
+   */
+  async handleNetworkRequest(request: HTTPRequest): Promise<HTTPResponse> {
+    try {
+      if (request.method === 'POST' && request.path === PAIR_PATH) {
+        return await this.handlePair(request);
+      }
+      const admission = await this.admit(request);
+      if (request.method === 'GET' && request.path === HEALTH_PATH) {
+        return await this.handleNetworkHealth(request, admission);
+      }
+      if (!admission.admitted) {
+        return this.refusal(admission.code, admission.error, { data: admission.data });
+      }
+      return await this.handleRequest(request);
+    } catch {
+      // Fixed text, not the error's: a store's failure could quote what it held.
+      return this.refusal('INTERNAL_ERROR', 'Internal server error', { status: 500 });
+    }
+  }
+
+  /**
+   * The WebSocket door: trusted loopback or nothing, whatever else the request
+   * carries. A signature covers no upgrade intent, so one swallowed GET re-sent
+   * with `Upgrade: websocket` would become a permanent control socket, and a socket
+   * outlives the signature's window. `allowUnauthenticatedNetwork` opens HTTP only,
+   * and no runner dials a device's socket.
+   */
+  handleWebSocketUpgrade(request: HTTPRequest): WebSocketUpgradeDecision {
+    this.upgradeGateSeen = true;
+    if (this.isTrustedLoopback(request)) return { admit: true };
+    return {
+      admit: false,
+      response: this.refusal(
+        'PAIRING_WS_LOOPBACK_ONLY',
+        'WebSocket upgrades are accepted only from this machine. Use signed HTTP from anywhere else.'
+      ),
+    };
+  }
+
+  private isTrustedLoopback(request: HTTPRequest): boolean {
+    if (!request.remoteAddress && !this.warnedMissingPeer) {
+      this.warnedMissingPeer = true;
+      console.warn(
+        '[ui-bridge-native] A request arrived with no peer address and is treated as not loopback. ' +
+          'The server adapter must pass remoteAddress.'
+      );
+    }
+    return isTrustedLoopbackRequest(request);
+  }
+
+  private async admit(request: HTTPRequest): Promise<Admission> {
+    if (this.isTrustedLoopback(request)) return { admitted: true, as: 'loopback' };
+    if (this.config.allowUnauthenticatedNetwork) {
+      if (isWebReachableRequest(request)) {
+        return {
+          admitted: false,
+          code: 'PAIRING_WEB_CALLER_REFUSED',
+          error: 'A web page cannot drive this device.',
+        };
+      }
+      return { admitted: true, as: 'unauthenticated-network' };
+    }
+    if (!this.pairing) {
+      return {
+        admitted: false,
+        code: 'PAIRING_UNCONFIGURED',
+        error: 'This app has not configured device pairing, so it accepts only local callers.',
+      };
+    }
+    const required: Admission = {
+      admitted: false,
+      code: 'PAIRING_REQUIRED',
+      error:
+        'This device requires pairing. Sign the request with the token from POST /ui-bridge/pair.',
+    };
+    const signatures = headerValues(request.headers, UI_BRIDGE_AUTH_HEADER);
+    if (signatures.length !== 1) return required;
+    const verdict = await this.pairing.verifySignature(request, signatures[0]);
+    if (verdict === 'valid') return { admitted: true, as: 'signed' };
+    if (verdict === 'store_unavailable') {
+      return {
+        admitted: false,
+        code: 'PAIRING_UNAVAILABLE',
+        error: 'The pairing store is not available yet. Try again.',
+      };
+    }
+    if (verdict === 'timestamp_refused') {
+      return {
+        admitted: false,
+        code: 'PAIRING_TIMESTAMP_REFUSED',
+        error:
+          'The signature timestamp is not acceptable. Re-sync to data.serverTime and sign again.',
+        data: { serverTime: Date.now() },
+      };
+    }
+    if (verdict === 'body_too_large') {
+      return {
+        admitted: false,
+        code: 'PAIRING_BODY_TOO_LARGE',
+        error: `A signed body may be at most ${SIGNED_BODY_MAX_CHARS} characters.`,
+      };
+    }
+    if (verdict === 'target_too_long') {
+      return {
+        admitted: false,
+        code: 'PAIRING_TARGET_TOO_LONG',
+        error: `A signed target may be at most ${SIGNED_TARGET_MAX_CHARS} characters.`,
+      };
+    }
+    return required;
+  }
+
+  private corsHeaders(): Record<string, string> {
+    if (!this.config.cors) return {};
+    return {
+      'Access-Control-Allow-Origin': this.config.allowedOrigins
+        ? this.config.allowedOrigins.join(',')
+        : '*',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    };
+  }
+
+  /** No CORS header: a page must not be able to read what the gate says. */
+  private refusal(
+    code: string,
+    error: string,
+    extra: { status?: number; data?: Record<string, unknown> } = {}
+  ): HTTPResponse {
+    const body: APIResponse = {
+      success: false,
+      error,
+      code,
+      timestamp: Date.now(),
+      ...(extra.data ? { data: extra.data } : {}),
+    };
+    return {
+      status: extra.status ?? httpStatusForResponse(body),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    };
+  }
+
+  /**
+   * Open health. An admitted caller gets the full answer. Anyone else gets what
+   * discovery needs and nothing about the app's contents, and that answer is
+   * built without going through `handleRequest`, whose keep-awake auto-arm is no
+   * business of an anonymous LAN probe. It carries no CORS header, so a web page
+   * cannot read the stable device id.
+   */
+  private async handleNetworkHealth(
+    request: HTTPRequest,
+    admission: Admission
+  ): Promise<HTTPResponse> {
+    const pairing = {
+      required: !(
+        admission.admitted &&
+        (admission.as === 'loopback' || admission.as === 'unauthenticated-network')
+      ),
+      authenticated: admission.admitted && admission.as !== 'unauthenticated-network',
+    };
+    const identity = {
+      deviceId: this.config.deviceId ?? null,
+      serverTime: Date.now(),
+      pairing,
+    };
+
+    if (admission.admitted) {
+      const response = await this.handleRequest(request);
+      const parsed = JSON.parse(response.body) as APIResponse<Record<string, unknown>>;
+      if (!parsed.success || !parsed.data) return response;
+      return {
+        ...response,
+        body: JSON.stringify({ ...parsed, data: { ...parsed.data, ...identity } }),
+      };
+    }
+
+    const health = await this.handlers.health({ params: {}, query: {}, body: undefined });
+    const full = (health.data ?? {}) as { status?: unknown; uiBridge?: Record<string, unknown> };
+    const trimmed: Record<string, unknown> = { status: full.status, ...identity };
+    if (full.uiBridge) {
+      const { version, appId, appName, appType, framework } = full.uiBridge;
+      trimmed.uiBridge = { version, appId, appName, appType, framework };
+    }
+    return {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ success: true, data: trimmed, timestamp: Date.now() }),
+    };
+  }
+
+  /**
+   * `POST /ui-bridge/pair`, the only way to a token, and only ever from here.
+   * Its answer carries no CORS header, because no web page has any business
+   * reading a token, and it answers only after the store write has finished. A web
+   * page is refused first of all, so it cannot burn an attempt or the armed code.
+   */
+  private async handlePair(request: HTTPRequest): Promise<HTTPResponse> {
+    if (carriesWebContext(request)) {
+      return this.refusal('PAIRING_WEB_CALLER_REFUSED', 'A web page cannot pair with this device.');
+    }
+    if (!this.pairing) {
+      return this.refusal(
+        'PAIRING_UNCONFIGURED',
+        'This app has not configured device pairing, so it cannot issue a token.'
+      );
+    }
+    const deviceId = this.config.deviceId;
+    // Ahead of the code, so a phone that cannot pair yet does not spend one.
+    if (!deviceId) {
+      return this.refusal('PAIRING_UNAVAILABLE', 'The device id is not available yet. Try again.');
+    }
+    const outcome = await this.pairing.pair({
+      trustedLoopback: this.isTrustedLoopback(request),
+      peer: request.remoteAddress,
+      body: request.body,
+    });
+    if (!outcome.ok) return this.refusal(outcome.code, outcome.error);
+    const body: APIResponse = {
+      success: true,
+      data: { token: outcome.token, deviceId, serverTime: Date.now() },
+      timestamp: Date.now(),
+    };
+    return {
+      status: 200,
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+      body: JSON.stringify(body),
+    };
+  }
+
+  /**
+   * Arm a 6-digit code for a LAN pairing. In memory and single use. It stops
+   * working after about 2 minutes, or after 5 wrong attempts from anyone. Rejects
+   * with a `PairingError` when no store is configured or it has not loaded.
+   */
+  async armPairingCode(): Promise<ArmedPairingCode> {
+    return this.requirePairing().arm();
+  }
+
+  /** Cancel a live code. */
+  disarmPairingCode(): void {
+    this.pairing?.disarm();
+  }
+
+  /** What Settings shows, including the peer that consumed the last code. */
+  getPairingState(): PairingState {
+    return this.pairing?.getState() ?? UNCONFIGURED_PAIRING_STATE;
+  }
+
+  /**
+   * Replace the token, so every signature made with the old one stops verifying.
+   * There are no network sockets to close, because none is ever admitted.
+   */
+  async revokePairing(): Promise<void> {
+    await this.requirePairing().revoke();
+  }
+
+  private requirePairing(): PairingAuthority {
+    if (!this.pairing) {
+      throw new PairingError('PAIRING_UNCONFIGURED', 'No pairingStore is configured.');
+    }
+    return this.pairing;
+  }
+
+  /**
+   * Handle incoming HTTP request, past the gate.
    *
    * Exposed as public so that CloudRelayClient can call it directly (without
-   * loopback TCP overhead) when processing tunneled requests.
+   * loopback TCP overhead) when processing tunneled requests. Anything reached
+   * from a socket goes through `handleNetworkRequest` first.
    */
   async handleRequest(request: HTTPRequest): Promise<HTTPResponse> {
     // Add CORS headers if enabled
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
+      ...this.corsHeaders(),
     };
-
-    if (this.config.cors) {
-      headers['Access-Control-Allow-Origin'] = this.config.allowedOrigins
-        ? this.config.allowedOrigins.join(',')
-        : '*';
-      headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS';
-      headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization';
-    }
 
     // Handle CORS preflight
     if (request.method === 'OPTIONS') {
@@ -1811,6 +2216,10 @@ export function createNativeServer(
  *         headers: request.headers || {},
  *         query: parseQuery(request.url),
  *         body: request.postData ? JSON.parse(request.postData) : undefined,
+ *         // Pairing: without these, non-loopback callers cannot be admitted.
+ *         remoteAddress: request.remoteAddress,
+ *         rawTarget: request.url,
+ *         rawBody: request.postData,
  *       });
  *       httpBridge.respond(
  *         request.requestId,
