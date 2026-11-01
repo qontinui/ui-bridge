@@ -250,6 +250,16 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
     computedRef.current = options.computed;
   }, [options.actions, options.elementIds, options.state, options.computed]);
 
+  // Stable state getter: always delegates to the latest `state` option. The
+  // registry stores whatever function it is handed at register/update time,
+  // so handing it `stateRef.current` directly pins the FIRST render's closure
+  // and every later `state` change (a fresh inline `() => ({ open })` per
+  // render) is never read. Same stable-wrapper rule as the action handlers.
+  const getLatestState = useCallback((): Record<string, unknown> => {
+    const getState = stateRef.current;
+    return getState ? getState() : {};
+  }, []);
+
   // Create getComputed function from computed definitions
   const createGetComputed = useCallback(() => {
     return () => {
@@ -305,13 +315,13 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
         };
       }),
       elementIds: elementIdsRef.current,
-      getState: stateRef.current,
+      getState: stateRef.current ? getLatestState : undefined,
       getComputed: createGetComputed(),
       scope,
     });
     registeredRef.current = true;
     registeredComponentIdRef.current = id;
-  }, [bridge, id, name, description, scope, createGetComputed]);
+  }, [bridge, id, name, description, scope, createGetComputed, getLatestState]);
 
   // Unregister the component
   const unregister = useCallback(() => {
@@ -443,7 +453,7 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
         };
       }),
       elementIds: elementIdsRef.current,
-      getState: stateRef.current,
+      getState: stateRef.current ? getLatestState : undefined,
       getComputed: createGetComputed(),
       scope,
     };
