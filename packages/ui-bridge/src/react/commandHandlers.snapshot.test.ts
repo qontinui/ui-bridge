@@ -893,3 +893,34 @@ describe("executeCommand · find/discover · F3 registration readiness (plan 202
     expect(result.registration.everHadRegistrations).toBe(false);
   });
 });
+
+describe('executeCommand · getControlSnapshot · canvas census', () => {
+  beforeEach(() => {
+    resetGlobalRegistry();
+    document.body.innerHTML = '';
+  });
+
+  afterEach(() => {
+    resetGlobalRegistry();
+    document.body.innerHTML = '';
+  });
+
+  it('carries canvasCoverage measured from the page, so the relay can sweep canvases', async () => {
+    const canvas = document.createElement('canvas');
+    canvas.className = 'chart';
+    canvas.getBoundingClientRect = () =>
+      ({
+        x: 0, y: 0, width: 300, height: 150,
+        top: 0, left: 0, right: 300, bottom: 150,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    document.body.appendChild(canvas);
+
+    const snap = (await getSnapshot()) as Snapshot & {
+      canvasCoverage?: { state: string; canvases?: number; attributed?: number };
+    };
+    expect(snap.canvasCoverage?.state).toBe('measured');
+    expect(snap.canvasCoverage).toMatchObject({ canvases: 1, attributed: 0 });
+  });
+});
+

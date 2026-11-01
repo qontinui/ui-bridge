@@ -35,6 +35,8 @@ import type {
   SnapshotEnricher,
   ElementBbox,
   IREffect,
+  CanvasCoverageMeasured,
+  UnattributedCanvas,
 } from './types';
 import type { EffectSignature } from '../control/effect-types';
 import type { SnapshotModalContext } from '../modal/types';
@@ -49,6 +51,14 @@ import {
   readInteractionBlockers,
 } from './a11y';
 import { createStableRef } from './stable-ref';
+import {
+  clearRegistryStamp,
+  isRegistryStamp,
+  markRegistryStamp,
+  ownsRegistryStamp,
+  registryStampOwner,
+} from './bridge-stamp';
+import { BLOCKING_DIALOG_SELECTOR, isBlockingDialog } from '../modal/modal-detector';
 import {
   computeSnapshotIdentity,
   computeMountFold,
@@ -440,10 +450,23 @@ function captureFormControlState(
   }
 }
 
+/** Registration facts `getElementState` needs that the DOM node cannot tell it. */
+interface ElementStateOptions {
+  /** See `ElementState.paintsText`. */
+  paintsText?: boolean;
+  /**
+   * Hit-test on the dense painted-text grid. Only an EXPLICIT `paintsText:
+   * true` registration gets it: an implicit `<canvas>` (media discovery
+   * registers up to 200 of them) keeps the nine-point grid and the 48px
+   * centre-only rule, so the dense grid stays a handful per page.
+   */
+  denseSampling?: boolean;
+}
+
 /**
  * Get the current state of an element
  */
-function getElementState(element: HTMLElement): ElementState {
+function getElementState(element: HTMLElement, options: ElementStateOptions = {}): ElementState {
   const rect = element.getBoundingClientRect();
   const computedStyle = window.getComputedStyle(element);
 
@@ -492,13 +515,21 @@ function getElementState(element: HTMLElement): ElementState {
   // Occlusion is computed once here and carried on the state, so every
   // consumer — discover, snapshot, page-health, the CI style gate, the
   // vision-core projection — sees the same verdict AND the same occluder.
-  const visibility = computeVisibilityVerdict(element, rect, computedStyle, inViewport);
+  const paintsText = options.paintsText === true;
+  const visibility = computeVisibilityVerdict(
+    element,
+    rect,
+    computedStyle,
+    inViewport,
+    options.denseSampling === true
+  );
 
   const state: ElementState = {
     visible: visibility.visible,
     visibilityReason: visibility.reason,
     occludedBy: visibility.occludedBy,
     occludedPct: visibility.occludedPct,
+    ...(paintsText ? { paintsText: true as const } : {}),
     // Content width vs. box width is what makes horizontal truncation
     // MEASURABLE. Captured for every element, not just scroll containers:
     // a `truncate`d label is `overflow: hidden` with no scrollbar, so it
@@ -604,7 +635,9 @@ function getElementState(element: HTMLElement): ElementState {
 
   // All data-* attributes, keyed camelCase per `HTMLElement.dataset`
   // (data-claude-session-id → claudeSessionId), EXCLUDING the bridge's own
-  // control attributes (any data-bridge-*). Lets agents read semantic
+  // control attributes (any data-bridge-*) and its addressing stamp
+  // (`data-ui-bridge-id`, which `registerElement` writes on every registered
+  // node and the snapshot already echoes as `uiBridgeId`). Lets agents read semantic
   // markers (session ids, content labels, routes) without scraping the DOM
   // via page/evaluate. Omitted entirely inside a §4.6 redaction boundary —
   // data-* values on redacted subtrees can carry the very secrets the
@@ -617,6 +650,7 @@ function getElementState(element: HTMLElement): ElementState {
       // camelCase form of data-bridge-*: "bridge" or a "bridge" prefix
       // followed by an uppercase letter (bridgeRedact, bridgeInvisible, …).
       if (key === 'bridge' || /^bridge[A-Z]/.test(key)) continue;
+      if (key === 'uiBridgeId') continue;
       const value = element.dataset[key];
       if (value !== undefined) dataset[key] = value;
     }
@@ -737,6 +771,84 @@ const OCCLUSION_SAMPLE_POINTS: ReadonlyArray<readonly [number, number]> = [
  */
 const OCCLUSION_PERIMETER_MIN_PX = 48;
 
+/** Interior grid size, per axis, for a `paintsText` element. */
+const PAINTED_TEXT_GRID = 8;
+
+/** Edge-row inset cap: half a typical terminal text row, in CSS px. */
+const PAINTED_TEXT_EDGE_INSET_PX = 8;
+
+/**
+ * Sample points, as fractions of the element's own box, for an element
+ * whose identifying text is PAINTED (`paintsText`): an 8x8 interior grid plus
+ * one row along the top edge and one along the bottom edge.
+ *
+ * The nine-point grid probes at 6% / 50% / 94% of the height. Over a 900px
+ * terminal that leaves a 54px band at each edge unprobed, and a one-to-three
+ * row status strip parked on the bottom edge (the measured CommandBar case)
+ * falls entirely inside it. The edge rows sit `min(8px, 2% of height)` in from
+ * each edge, so they land on the first and last text row.
+ *
+ * Dense sampling is limited to EXPLICIT `paintsText: true` registrations
+ * (an implicitly painted `<canvas>` keeps the nine-point grid): a handful per page,
+ * against a hot path that refuses a blanket multiplier (see
+ * `OCCLUSION_PERIMETER_MIN_PX`). The centre stays first, like the nine-point
+ * grid's.
+ */
+function paintedTextSamplePoints(height: number): Array<readonly [number, number]> {
+  const points: Array<readonly [number, number]> = [[0.5, 0.5]];
+  for (let row = 0; row < PAINTED_TEXT_GRID; row++) {
+    for (let col = 0; col < PAINTED_TEXT_GRID; col++) {
+      points.push([(col + 0.5) / PAINTED_TEXT_GRID, (row + 0.5) / PAINTED_TEXT_GRID]);
+    }
+  }
+  // `min(8px, 2% of height)`, as a fraction of the height.
+  const edge = Math.min(PAINTED_TEXT_EDGE_INSET_PX / height, 0.02);
+  for (let col = 0; col < PAINTED_TEXT_GRID; col++) {
+    const fx = (col + 0.5) / PAINTED_TEXT_GRID;
+    points.push([fx, edge]);
+    points.push([fx, 1 - edge]);
+  }
+  return points;
+}
+
+/**
+ * True when the element is not rendered because disclosure collapsed it: a
+ * closed `<details>` ancestor (outside that `details`' own `<summary>`), or
+ * `checkVisibility({ checkVisibilityCSS: true })` answering `false`.
+ *
+ * A collapsed `<details>` child keeps a non-zero box and its own style says
+ * nothing, so without this the hit-test lands on whatever is painted beneath
+ * it and reports it OCCLUDED by that. Progressive disclosure is not
+ * occlusion.
+ *
+ * The explicit ancestor walk stays even where `checkVisibility` exists:
+ * engines (WebView2, jsdom) disagree on whether closed-`details` content reads
+ * as `content-visibility: hidden`, and the walk answers the same everywhere.
+ */
+function isCollapsedByDisclosure(element: HTMLElement): boolean {
+  if (typeof element.checkVisibility === 'function') {
+    try {
+      if (!element.checkVisibility({ checkVisibilityCSS: true })) return true;
+    } catch {
+      // An engine whose checkVisibility rejects the options bag falls through
+      // to the explicit walk below.
+    }
+  }
+  let child: Element = element;
+  let parent = element.parentElement;
+  while (parent) {
+    if (parent.tagName === 'DETAILS' && !parent.hasAttribute('open')) {
+      // Content of a closed <details> is hidden EXCEPT its own first
+      // <summary>, which is the disclosure control and stays rendered.
+      const summary = Array.from(parent.children).find((c) => c.tagName === 'SUMMARY');
+      if (child !== summary) return true;
+    }
+    child = parent;
+    parent = parent.parentElement;
+  }
+  return false;
+}
+
 /** Why an element is not visible. Mirrors `VisibilityReason` in control/. */
 type RegistryVisibilityReason = 'hidden' | 'off-screen' | 'occluded' | 'no-layout';
 
@@ -748,9 +860,7 @@ type RegistryVisibilityReason = 'hidden' | 'off-screen' | 'occluded' | 'no-layou
  */
 function safeElementFromPoint(x: number, y: number): Element | null {
   try {
-    return typeof document.elementFromPoint === 'function'
-      ? document.elementFromPoint(x, y)
-      : null;
+    return typeof document.elementFromPoint === 'function' ? document.elementFromPoint(x, y) : null;
   } catch {
     return null;
   }
@@ -766,17 +876,111 @@ interface VisibilityVerdict {
 }
 
 /**
- * Best-effort identifier for whatever is covering an element. Prefers the
+ * Best-effort identifier for whatever is covering `covered`. Prefers the
  * UI Bridge registry id, because that is the name every downstream report
  * and assertion speaks; falls back to a DOM-shaped descriptor so an
  * unregistered overlay is still NAMED rather than reported as an anonymous
  * "something".
+ *
+ * A hit inside a BLOCKING DIALOG (a `<dialog>` shown modally, i.e. `:modal`,
+ * not one opened with `show()`; `[role=dialog][aria-modal=true]`;
+ * `[role=alertdialog]`: see `isBlockingDialog` in modal-detector) that does not
+ * itself hold the covered element is named by that dialog, the outermost such
+ * dialog winning: its stamp, else `tag#id`, else its `data-testid` (the
+ * detector's own identity order). A heading or button inside a dialog IS that
+ * dialog, and the expected-overlay matcher recognises a modal only by its own
+ * identity — so this must hold when the child is itself registered, since
+ * content discovery, media discovery and direct registrations all stamp their
+ * node.
+ *
+ * It is deliberately narrow, because a wrong dialog name HIDES a real
+ * occlusion as "expected":
+ * - only the dialog-shaped selectors count. The detector's library selectors
+ *   also match non-modal UI (a docked `.MuiDrawer-root`, an open Headless UI
+ *   menu or disclosure), and custom selectors carry no blocking verdict;
+ * - it overrides only REGISTRY-written stamps between the hit and the dialog.
+ *   A developer or hook stamp names its node, as it always has.
+ *
+ * Otherwise the hit is named by its closest stamped ancestor-or-self, so a
+ * registered widget is named precisely (the minimap, not the panel holding
+ * it) — UNLESS that ancestor also contains the covered element. Then it is a
+ * shared container (an app shell), not the occluder, and blaming it would
+ * hide the real overlay: the hit is named by its own DOM id (`tag#id`), else
+ * a descriptor.
  */
-function describeOccluder(hit: Element): string {
-  const el = hit as HTMLElement;
-  const registered = el.closest<HTMLElement>('[data-ui-bridge-id]');
-  const id = registered?.getAttribute('data-ui-bridge-id');
-  if (id) return id;
+function describeOccluder(hit: Element, covered: Element): string {
+  const stamped = hit.closest<HTMLElement>(STAMP_SELECTOR);
+  const dialog = outermostDialogNotHolding(hit, covered);
+  if (dialog && onlyRegistryStampsBelow(stamped, dialog)) return dialogIdentity(dialog);
+
+  const id = stamped?.getAttribute('data-ui-bridge-id');
+  if (stamped && id && !stamped.contains(covered)) return id;
+  return describeDomNode(hit);
+}
+
+const STAMP_SELECTOR = '[data-ui-bridge-id]';
+
+/**
+ * The outermost blocking dialog at or above `hit` that does not hold
+ * `covered`. Hops dialog to dialog with `closest`, so the cost is one native
+ * query per enclosing dialog rather than a selector test per ancestor.
+ */
+function outermostDialogNotHolding(hit: Element, covered: Element): Element | undefined {
+  let found: Element | undefined;
+  let cur: Element | null = hit.closest(BLOCKING_DIALOG_SELECTOR);
+  while (cur && !cur.contains(covered)) {
+    if (isBlockingDialog(cur)) found = cur;
+    cur = cur.parentElement?.closest(BLOCKING_DIALOG_SELECTOR) ?? null;
+  }
+  return found;
+}
+
+/**
+ * True when every stamp from `stamped` up to (not including) `dialog` was
+ * written by the registry, so naming the dialog overrides no developer or
+ * hook stamp. A stamp outside the dialog, or the dialog's own, is no
+ * obstacle: the dialog is then the closer or the same name.
+ */
+function onlyRegistryStampsBelow(stamped: Element | null, dialog: Element): boolean {
+  let cur: Element | null = stamped;
+  while (cur && cur !== dialog && dialog.contains(cur)) {
+    if (!isRegistryStamp(cur)) return false;
+    cur = cur.parentElement?.closest(STAMP_SELECTOR) ?? null;
+  }
+  return true;
+}
+
+/**
+ * A dialog's name: its stamp, else `tag#id`, else `tag[data-testid="x"]`,
+ * else a descriptor. The testid form is produced ONLY here, for a blocking
+ * dialog, and cannot be mistaken for a registry id or a DOM id, so the
+ * expected-overlay matcher can admit it against the dialog's own `testId`.
+ */
+function dialogIdentity(dialog: Element): string {
+  const stamp = dialog.getAttribute('data-ui-bridge-id');
+  if (stamp) return stamp;
+  if (dialog.id) return describeDomNode(dialog);
+  const testId = dialog.getAttribute('data-testid');
+  if (testId) return `${dialog.tagName.toLowerCase()}[data-testid="${testId}"]`;
+  return describeDomNode(dialog);
+}
+
+/** First entry of `byNode` at or above `node`, walking `parentElement`. */
+function registeredAncestorIn(
+  node: Element,
+  byNode: Map<Element, RegisteredElement>
+): RegisteredElement | undefined {
+  let cur: Element | null = node;
+  while (cur) {
+    const hit = byNode.get(cur);
+    if (hit) return hit;
+    cur = cur.parentElement;
+  }
+  return undefined;
+}
+
+/** `tag#id`, else `tag.firstClass`, else the bare tag. */
+function describeDomNode(el: Element): string {
   const tag = el.tagName.toLowerCase();
   if (el.id) return `${tag}#${el.id}`;
   // `classList(el)`, never raw `.className`: an SVG element's className is an
@@ -800,12 +1004,16 @@ function computeVisibilityVerdict(
   element: HTMLElement,
   rect: DOMRect,
   style: CSSStyleDeclaration,
-  inViewport: boolean
+  inViewport: boolean,
+  denseSampling: boolean
 ): VisibilityVerdict {
   if (rect.width === 0 || rect.height === 0) return { visible: false, reason: 'no-layout' };
   if (style.display === 'none') return { visible: false, reason: 'hidden' };
   if (style.visibility === 'hidden') return { visible: false, reason: 'hidden' };
   if (parseFloat(style.opacity) === 0) return { visible: false, reason: 'hidden' };
+  // Before the hit-test: a collapsed disclosure's content is not rendered,
+  // and hit-testing its stale box would blame whatever is painted beneath.
+  if (isCollapsedByDisclosure(element)) return { visible: false, reason: 'hidden' };
   if (!inViewport) return { visible: false, reason: 'off-screen' };
 
   // Hit-test: catches elements hidden by ancestor overflow:hidden, scroll
@@ -818,11 +1026,15 @@ function computeVisibilityVerdict(
 
   // Adaptive: the centre alone for small elements, the full perimeter for
   // elements big enough to be partially covered in a way a reader would
-  // notice.
+  // notice, and the dense grid for an explicit painted-text surface (see
+  // `paintedTextSamplePoints`).
   const wide = rect.width >= OCCLUSION_PERIMETER_MIN_PX;
   const tall = rect.height >= OCCLUSION_PERIMETER_MIN_PX;
-  const points =
-    wide || tall ? OCCLUSION_SAMPLE_POINTS : OCCLUSION_SAMPLE_POINTS.slice(0, 1);
+  const points = denseSampling
+    ? paintedTextSamplePoints(rect.height)
+    : wide || tall
+      ? OCCLUSION_SAMPLE_POINTS
+      : OCCLUSION_SAMPLE_POINTS.slice(0, 1);
 
   for (const [fx, fy] of points) {
     const px = rect.left + rect.width * fx;
@@ -839,7 +1051,7 @@ function computeVisibilityVerdict(
     // covering us.
     if (hit.contains(element)) continue;
     covered++;
-    const who = describeOccluder(hit);
+    const who = describeOccluder(hit, element);
     blame.set(who, (blame.get(who) ?? 0) + 1);
   }
 
@@ -1066,6 +1278,47 @@ type UnstampedSnapshot = Omit<BridgeSnapshot, 'snapshotId' | 'signature'>;
 
 export class UIBridgeRegistry {
   /**
+   * Identifies this registry's `data-ui-bridge-id` stamps in the shared
+   * stamp record (`bridge-stamp.ts`). A plain token rather than `this`, so
+   * the module-level record never holds a registry alive.
+   */
+  private readonly stampToken: object = {};
+
+  /**
+   * The ids registered on each node, so `unregisterElement` finds a stamp
+   * heir without scanning every entry (a mass unmount would be quadratic).
+   * Advisory: a candidate is confirmed against the live entry before use.
+   */
+  private idsByNode = new WeakMap<Element, Set<string>>();
+
+  /**
+   * `id` no longer lives on `node` (unregistered, or moved to another node).
+   * Drop it from the node's id index and, when this registry's stamp on the
+   * node names `id`, take the stamp back and hand it to another live
+   * registration of this registry on the same node, so the node stays named.
+   *
+   * Multi-window corner, accepted: `findElement` resolves an id to one
+   * window's entry, so where the same id is registered in several windows a
+   * candidate living in another window can fail the live check and the node
+   * is left unstamped rather than mis-stamped.
+   */
+  private releaseStamp(node: Element, id: string): void {
+    const nodeIds = this.idsByNode.get(node);
+    nodeIds?.delete(id);
+    if (!ownsRegistryStamp(node, this.stampToken, id)) return;
+    node.removeAttribute('data-ui-bridge-id');
+    clearRegistryStamp(node);
+    for (const candidate of nodeIds ?? []) {
+      // The index is advisory: only a live entry on this node inherits.
+      if (this.findElement(candidate)?.element === node) {
+        node.setAttribute('data-ui-bridge-id', candidate);
+        markRegistryStamp(node, this.stampToken, candidate);
+        return;
+      }
+    }
+  }
+
+  /**
    * Stable per-instance tag assigned at construction time. Used by
    * UI_BRIDGE_DEBUG_FIND diagnostics to detect duplicate registry instances
    * across the React-context path (`bridge.registry`) and the module-level
@@ -1208,6 +1461,100 @@ export class UIBridgeRegistry {
     } catch (error) {
       if (this.options.verbose) {
         console.warn(`[ui-bridge] modalStack enricher threw:`, error);
+      }
+      return undefined;
+    }
+  }
+
+  /** Every registered element keyed by its DOM node, for ancestor walks. */
+  private elementsByNode(): Map<Element, RegisteredElement> {
+    const byNode = new Map<Element, RegisteredElement>();
+    for (const registered of this.allElements()) {
+      if (registered.element && !byNode.has(registered.element)) {
+        byNode.set(registered.element, registered);
+      }
+    }
+    return byNode;
+  }
+
+  /**
+   * The first registered element at or above `node`, resolved by REGISTRY
+   * MEMBERSHIP: walk `parentElement` from `node` and look each one up among
+   * the registered DOM nodes.
+   *
+   * Not by the `data-ui-bridge-id` attribute. That attribute is an output: a
+   * node can carry a stale one (unregistered, attribute left behind) or a
+   * developer stamp for an id that was never registered. Membership holds for
+   * every registration door by construction.
+   */
+  getRegisteredAncestor(node: Element): RegisteredElement | undefined {
+    return registeredAncestorIn(node, this.elementsByNode());
+  }
+
+  /**
+   * The canvas census the `/control/visibility` sweep needs to say `clear`
+   * truthfully, or `undefined` when it cannot be taken (no `document`, or it
+   * threw).
+   *
+   * The sweep hit-tests registered elements only, so text painted into a
+   * `<canvas>` that no `paintsText` registration covers is never checked and
+   * an overlay on it goes unreported. This counts every visible canvas of at
+   * least 48x48 CSS px that intersects the viewport — the hit-test's own size
+   * and viewport rules; `display`/`visibility`/`opacity` and a collapsed
+   * disclosure exclude one — and attributes each by its first registered
+   * ancestor-or-self ({@link getRegisteredAncestor}). It is swept when that
+   * element is `paintsText`; a registered `<canvas>` is implicitly so. A
+   * canvas inside a registered element WITHOUT `paintsText` is not swept:
+   * that element's hit-test would see an overlay but judge "hides text" from
+   * DOM text, which a canvas never has.
+   *
+   * `undefined` deliberately differs from {@link getModalContext}'s
+   * degrade-quietly rule. A missing modal stack only loses a filter; a missing
+   * canvas census loses the ability to say "nothing is covered", so the report
+   * turns `undefined` into coverage `unavailable`, which withholds `clear`.
+   * Do not harmonise the two.
+   */
+  getCanvasCoverage(): CanvasCoverageMeasured | undefined {
+    if (typeof document === 'undefined') return undefined;
+    try {
+      const all = Array.from(document.getElementsByTagName('canvas'));
+      if (all.length === 0)
+        return { state: 'measured', canvases: 0, attributed: 0, unattributed: [] };
+      const byNode = this.elementsByNode();
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      let canvases = 0;
+      let attributed = 0;
+      const unattributed: UnattributedCanvas[] = [];
+      for (const canvas of all) {
+        const rect = canvas.getBoundingClientRect();
+        if (rect.width < OCCLUSION_PERIMETER_MIN_PX || rect.height < OCCLUSION_PERIMETER_MIN_PX) {
+          continue;
+        }
+        if (rect.right <= 0 || rect.bottom <= 0 || rect.left >= vw || rect.top >= vh) continue;
+        const style = window.getComputedStyle(canvas);
+        if (
+          style.display === 'none' ||
+          style.visibility === 'hidden' ||
+          parseFloat(style.opacity) === 0
+        ) {
+          continue;
+        }
+        if (isCollapsedByDisclosure(canvas)) continue;
+        canvases++;
+        if (registeredAncestorIn(canvas, byNode)?.paintsText === true) {
+          attributed++;
+        } else {
+          unattributed.push({
+            descriptor: describeDomNode(canvas),
+            rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+          });
+        }
+      }
+      return { state: 'measured', canvases, attributed, unattributed };
+    } catch (error) {
+      if (this.options.verbose) {
+        console.warn(`[ui-bridge] canvas coverage threw:`, error);
       }
       return undefined;
     }
@@ -1732,9 +2079,26 @@ export class UIBridgeRegistry {
        * snapshot stays byte-identical to the pre-window-aware shape.
        */
       windowLabel?: string;
+      /**
+       * The element's identifying text is PAINTED (a canvas, a terminal, a
+       * chart) rather than held in the DOM. Its state then carries
+       * `paintsText: true`, it is hit-tested on a dense grid, the
+       * `/control/visibility` sweep reports any occlusion of it as hiding
+       * text, and every `<canvas>` inside it counts as swept in the canvas
+       * census. Register the CONTAINER of a stack of canvas layers, not each
+       * layer: layers are descendants, and a descendant hit counts as self.
+       *
+       * Defaults to `true` for a `<canvas>` element and `false` otherwise.
+       * The implicit canvas default carries the attribution and the painted
+       * `hidesText`, but NOT the dense grid: only an explicit `true` pays for
+       * 81 probes, since media discovery may register hundreds of canvases.
+       */
+      paintsText?: boolean;
     } = {}
   ): RegisteredElement {
     const type = options.type ?? inferElementType(element);
+    const paintsText = options.paintsText ?? element?.tagName === 'CANVAS';
+    const denseSampling = options.paintsText === true;
     const actions = options.actions ?? inferActions(type);
 
     // Resolve the owning window. Default ("main") elements leave the
@@ -1796,7 +2160,7 @@ export class UIBridgeRegistry {
       value: undefined,
     };
     const computeState = (): ElementState => {
-      const live = getElementState(element);
+      const live = getElementState(element, { paintsText, denseSampling });
       const overlay = stateOverridesRef.value;
       if (!overlay) return live;
       // Shallow-merge: cached overlay wins for fields the action wrote
@@ -1844,6 +2208,7 @@ export class UIBridgeRegistry {
       // Phase 3.2 — ids/globs this control reveals. Undefined for elements
       // that don't gate any visibility (the common case).
       reveals: options.reveals,
+      ...(paintsText ? { paintsText: true } : {}),
     };
     // Hidden non-enumerable hook so `refreshElement` can mutate the same
     // closure-captured ref. Stored on the entry rather than via a side map
@@ -1885,8 +2250,53 @@ export class UIBridgeRegistry {
     const prior = bucket.get(actualId);
     if (prior) {
       this.decrementRouteCount(windowLabel, prior.route, actualId);
+      if (prior.element && prior.element !== element) {
+        // The id MOVES to another node: the old node must stop naming it.
+        this.releaseStamp(prior.element, actualId);
+      }
     }
     bucket.set(actualId, registered);
+    if (element) {
+      let ids = this.idsByNode.get(element);
+      if (!ids) {
+        ids = new Set();
+        this.idsByNode.set(element, ids);
+      }
+      ids.add(actualId);
+    }
+    // Stamp the registry id on the node when nothing else has, so every
+    // registration door — not only `useUIElement` and `useAutoRegister`,
+    // which stamp their own — is NAMED when it covers something:
+    // `describeOccluder` resolves an occluder through this attribute, and an
+    // unstamped direct registration used to surface as a bare `div.x`. An
+    // existing stamp is never overwritten: it is a developer-assigned id.
+    //
+    // EVERY stamp the registry writes is remembered as its own
+    // (`markRegistryStamp`), whatever the registration's origin: it does not
+    // outrank the node's own name sources (`a11y.ts`), the interactive
+    // scanner never adopts a node by it (`useAutoRegister`), and
+    // `unregisterElement` removes it again. A door that wants to own its
+    // stamp (`useUIElement`, the interactive scanner) writes it BEFORE
+    // registering, and the registry then leaves it alone.
+    if (typeof element?.hasAttribute === 'function') {
+      const stampOwner = registryStampOwner(element);
+      if (!element.hasAttribute('data-ui-bridge-id')) {
+        element.setAttribute('data-ui-bridge-id', actualId);
+        markRegistryStamp(element, this.stampToken, actualId);
+      } else if (
+        stampOwner &&
+        stampOwner.owner === this.stampToken &&
+        stampOwner.id !== actualId &&
+        this.findElement(stampOwner.id)?.element !== element
+      ) {
+        // Our own stamp left over from an earlier registration of this node
+        // whose entry no longer holds it: re-point it at the current entry.
+        // A stamp a LIVE registration of this node still answers to is left
+        // alone, so unregistering this second id cannot strip the first's.
+        element.setAttribute('data-ui-bridge-id', actualId);
+        markRegistryStamp(element, this.stampToken, actualId);
+      }
+    }
     // F3: sticky latch + per-window/per-route tally
     this.everHadRegistrationsFlag = true;
     this.incrementRouteCount(windowLabel, route, actualId);
@@ -2133,6 +2543,12 @@ export class UIBridgeRegistry {
       }
       registered.mounted = false;
       bucket.delete(id);
+      // Take back a stamp the registry wrote for this registration, so the
+      // node stops naming an entry that no longer exists (and the
+      // auto-scanner, which registers any `[data-ui-bridge-id]` node, does
+      // not adopt it under the stale id).
+      const node = registered.element;
+      if (node) this.releaseStamp(node, id);
       // F3: drop this element from the per-window/per-route tally. Note we do
       // NOT clear `everHadRegistrationsFlag` — it's a one-way latch that stays
       // true for the rest of the registry's lifetime so callers can tell
@@ -3428,6 +3844,16 @@ export class UIBridgeRegistry {
         }
       }
     }
+    // The canvas census rides every DOM-side snapshot, so the relay's
+    // `/control/visibility` reads it from `snapshot.canvasCoverage`. Not an
+    // enricher: it needs no tracker, only the DOM. A census that threw is
+    // carried as such, so the relay can tell it from a page SDK that has none.
+    if (typeof document !== 'undefined') {
+      snapshot.canvasCoverage = this.getCanvasCoverage() ?? {
+        state: 'unavailable',
+        reason: 'accessor-threw',
+      };
+    }
     if (this.enrichers.toastCapture) {
       try {
         snapshot.toasts = this.enrichers.toastCapture.getSnapshotToastContext();
@@ -3648,6 +4074,17 @@ export class UIBridgeRegistry {
    * Clear all registrations
    */
   clear(): void {
+    // A full teardown (`resetGlobalRegistry` runs this) must not leave this
+    // registry's stamps naming entries that no longer exist. Only stamps this
+    // registry wrote, still under the id they name, are removed; a developer
+    // or hook stamp stays.
+    for (const registered of this.allElements()) {
+      const node = registered.element;
+      if (node && ownsRegistryStamp(node, this.stampToken, registered.id)) {
+        node.removeAttribute('data-ui-bridge-id');
+        clearRegistryStamp(node);
+      }
+    }
     this.elementsByWindow.clear();
     this.components.clear();
     this.workflows.clear();
@@ -3660,6 +4097,7 @@ export class UIBridgeRegistry {
     // unregister it resets the route tally AND the sticky latch, matching
     // the lifetime semantics expected after `resetGlobalRegistry()`.
     this.routeIdsByWindow.clear();
+    this.idsByNode = new WeakMap();
     this.everHadRegistrationsFlag = false;
     // Same lifetime semantics as the latch above: a full teardown means this
     // registry has never been snapshotted again, which is UNKNOWN rather than

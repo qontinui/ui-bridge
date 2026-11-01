@@ -401,10 +401,26 @@ not tell you which one the user can actually read.
     "includeExpected": false,
     "expectedOverlayDetection": "modal-stack",
     "expectedOverlaysFiltered": 0,
+    "canvasCoverage": {
+      "state": "measured",
+      "canvases": 3,
+      "attributed": 2,
+      "unattributed": [
+        {
+          "descriptor": "canvas.sparkline",
+          "rect": { "x": 912, "y": 64, "width": 240, "height": 80 }
+        }
+      ]
+    },
     "verdict": "occlusions_found"
   }
 }
 ```
+
+An occlusion of an element whose text is painted (see
+[Canvas coverage](#canvas-coverage)) carries `hidesText: true` and
+`textSource: "painted"`; one whose text is in the DOM carries
+`textSource: "dom"`. A blank element carries no `textSource`.
 
 Occlusions are sorted worst-first, with text-hiding entries ranked above blank
 ones: a covered label destroys information the reader cannot recover.
@@ -418,14 +434,83 @@ geometric z-order model needs to say which probe produced which entry.
 
 #### Verdicts
 
+The verdict is decided in this order; the first that holds wins:
+
 | `verdict` | Meaning |
 |---|---|
-| `clear` | Elements were swept and nothing (unexpected) is covered. |
-| `occlusions_found` | At least one entry in `occlusions`. |
 | `unknown_empty_registry` | The registry held no elements, so nothing could be swept. |
+| `occlusions_found` | At least one entry in `occlusions`. `canvasCoverage` still lists any unswept canvas. |
+| `unknown_canvas` | No occlusions, but a visible canvas is not swept (`canvasCoverage.unattributed` is non-empty) or the canvas census is `unavailable`. |
+| `clear` | Elements were swept, every visible canvas is attributed, and nothing (unexpected) is covered. |
 
-`unknown_empty_registry` exists so an empty `occlusions` list is never mistaken
-for a pass. **It means UNKNOWN, not "nothing is covered."**
+`unknown_empty_registry` and `unknown_canvas` exist so an empty `occlusions`
+list is never mistaken for a pass. **Both mean UNKNOWN, not "nothing is
+covered."** `unknown_canvas` is never a pass: text painted into an unswept
+canvas can be covered without any entry appearing.
+
+#### Canvas coverage
+
+The sweep hit-tests **registered elements only**, and judges `hidesText` from
+DOM text. Text painted into a `<canvas>` (a terminal, a chart) has neither: no
+registered element owns those pixels, and a canvas has no `textContent`. So an
+overlay on canvas-painted text would go unreported, and the page would read
+`clear`.
+
+A canvas surface becomes sweepable when its **container** is registered with
+`paintsText: true`:
+
+```ts
+registry.registerElement(`terminal-surface-${termId}`, containerDiv, {
+  type: 'canvas',
+  category: 'content',
+  label: `Terminal: ${zoneLabel}`,
+  paintsText: true,
+});
+// or, from React:
+useUIElement({ id: 'chart-revenue', type: 'canvas', paintsText: true });
+```
+
+Register the container of a stack of canvas layers, not each layer: layers are
+descendants, and a hit on a descendant counts as the container itself. A
+`paintsText` element:
+
+- carries `state.paintsText: true`;
+- is hit-tested on a dense grid (8×8 interior points plus a row along the top
+  and bottom edges, inset `min(8px, 2% of height)`), so a one-row status strip
+  over a tall terminal is seen;
+- reports any occlusion as `hidesText: true`, `textSource: "painted"`.
+
+A registered `<canvas>` element is implicitly `paintsText`: it attributes itself
+in the census and its occlusions read `textSource: "painted"`, but it keeps the
+ordinary nine-point grid (and the 48 px centre-only rule). Only an explicit
+`paintsText: true` pays for the dense grid, because media discovery may register
+hundreds of canvases.
+
+`canvasCoverage` is the census that keeps `clear` honest. It counts every
+visible `<canvas>` of at least 48×48 CSS px that intersects the viewport.
+A canvas is **attributed** when its first registered ancestor-or-self —
+resolved by registry membership, not by the `data-ui-bridge-id` attribute —
+is `paintsText`. A canvas inside a registered element *without* `paintsText`
+is not attributed: that element's hit-test would see an overlay but judge
+`hidesText` from DOM text.
+
+| `canvasCoverage` | Meaning |
+|---|---|
+| `{ "state": "measured", "canvases", "attributed", "unattributed": [{ "descriptor", "rect" }] }` | The census ran. `descriptor` is the canvas's own DOM descriptor (`canvas#id`, `canvas.firstClass`, `canvas`); `rect` is viewport-relative CSS px. |
+| `{ "state": "unavailable", "reason": "page-sdk-lacks-coverage" }` | Relay only: the page's SDK predates the census. Upgrade the page's `@qontinui/ui-bridge`. |
+| `{ "state": "unavailable", "reason": "accessor-threw" }` | The page has the census and it threw. |
+| `{ "state": "unavailable", "reason": "no-document" }` | The registry answering the sweep has no DOM (a server-side registry), so it cannot count canvases. |
+| `{ "state": "unavailable", "reason": "ipc-failed" }` | A host (the runner's Rust twin) could not reach the page's census. |
+
+`unavailable` withholds `clear` (the verdict reads `unknown_canvas`). This
+deliberately differs from `expectedOverlayDetection: unavailable`, which only
+disables a filter: without the canvas census the sweep cannot say an unswept
+canvas is not covered.
+
+A collapsed disclosure is not occlusion: an element inside a closed `<details>`
+(other than its `<summary>`), or one `checkVisibility()` reports as not
+rendered, reads `visible: false, visibilityReason: "hidden"` with no
+`occludedBy`, and never appears in `occlusions`.
 
 #### Expected overlays
 
@@ -435,10 +520,18 @@ expected and, by default, dropped from the response.
 
 Classification runs against the snapshot's `modalStack`, populated by the
 `modalDetector` enricher (registered automatically by `UIBridgeProvider`).
-Matching is deliberately narrow: only identity-bearing forms count — the
-occluder registered under the modal's own id, or an unregistered occluder whose
-DOM id is the modal's. Class and bare-tag descriptors are not identities and
-never match, because an entry marked expected is *removed* from the default
+Only a modal the element itself declares blocking counts (`blockingSource:
+"element"`: an `alertdialog`, `aria-modal="true"` on a `role=dialog`,
+`role=alertdialog` or `<dialog>`, or a `<dialog>` opened with `showModal()`).
+A modal judged blocking only by the backdrop heuristic, or matched only by a
+library or custom selector, is never an expected overlay; a Radix/shadcn
+Dialog, which sets no `aria-modal`, therefore over-reports. Matching is
+deliberately narrow: each kind of identity matches only its own kind — the
+modal's registry id (`bridgeId`, exactly), `<its tag>#<its real DOM id>`, or
+`<its tag>[data-testid="<its testid>"]` (the name a blocking dialog with
+neither gets). A name that is a registered element's id matches only a
+`bridgeId`, never a DOM form.
+Class and bare-tag descriptors are not identities and never match, because an entry marked expected is *removed* from the default
 response, and a loose rule would hide the very regressions this endpoint exists
 to surface.
 
@@ -477,9 +570,12 @@ prevent, and `stale` is the only thing that distinguishes the two.
 
 #### Availability
 
-This route is implemented by the **web SDK only** (`@qontinui/ui-bridge`), on
-both the in-page and relay transports. qontinui-runner does not expose it, and
-`@qontinui/ui-bridge-native` returns a route miss for it. Discover it at runtime
+The web SDK (`@qontinui/ui-bridge`) implements this route on both the in-page
+and relay transports. qontinui-runner serves a Rust twin of the same report at
+`POST /ui-bridge/control/visibility`, built from its webview's element states;
+`canvasCoverage` and `unknown_canvas` reach it with the runner release that
+moves to `@qontinui/ui-bridge` 0.36.0. `@qontinui/ui-bridge-native` returns a
+route miss for it. Discover it at runtime
 under the `diagnostics` category of `GET /capabilities` rather than assuming it
 is present.
 
