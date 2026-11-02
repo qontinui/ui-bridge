@@ -169,6 +169,16 @@ it('a promoted row keeps an id its author chose', async () => {
   expect(registry.getElement('total')?.category).not.toBe('content');
 });
 
+it('an authored content id does not rename a control that was never a content row', () => {
+  const registry = seed(
+    '<p data-content-id="total">$5</p><button data-content-id="total">Recalculate</button>'
+  );
+  const total = registry.getElement('total');
+  expect(total?.element.tagName).toBe('P');
+  const button = registry.getAllElements().find((e) => e.element.tagName === 'BUTTON');
+  expect(button?.id).not.toBe('total');
+});
+
 it('when the cap binds, a heading below a large table still gets its row', () => {
   const cells = Array.from({ length: 600 }, (_, i) => `<td>Cell ${i}</td>`).join('');
   const registry = seed(`<table><tr>${cells}</tr></table><h1>Hero heading</h1>`);

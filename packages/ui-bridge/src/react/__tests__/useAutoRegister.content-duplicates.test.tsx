@@ -129,7 +129,7 @@ describe('useAutoRegister: one content id, several elements', () => {
     render(<Harness />);
     await settle();
     // An attribute change on an ancestor rescans its descendants. Several guards
-    // overlap here, so this pins the whole path; the next test pins the holder check.
+    // overlap here, so this pins the whole path; `registering one element twice is one row` pins the holder check.
     document.body.setAttribute('class', 'rescan');
     await settle();
     expect(contentRows()).toHaveLength(1);

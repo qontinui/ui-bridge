@@ -110,8 +110,10 @@ export function seedRegistryFromDom(
     }
     if (!isActionable(item)) continue;
 
-    // A promoted row keeps an id its author chose: an assertion may name it.
-    let id = item.element.getAttribute('data-content-id') || item.id;
+    // A promoted row keeps an id its author chose: an assertion may name it. Only
+    // a promoted row: everything else this scan finds keeps the id it always had.
+    const authored = heldId !== undefined ? item.element.getAttribute('data-content-id') : null;
+    let id = authored || item.id;
     if (usedIds.has(id)) {
       let suffix = 2;
       while (usedIds.has(`${id}-${suffix}`)) suffix++;
