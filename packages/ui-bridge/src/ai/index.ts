@@ -398,11 +398,6 @@ export type { FormSnapshot, FormFieldDiff, FormDiff } from './form-diff';
 export { decomposeTarget } from './target-decomposer';
 export type { DecomposedTarget, SpatialRelation } from './target-decomposer';
 
-// Media Audits (no route serves them; Phase 8 of plan
-// 2026-10-13-image-generation-and-visual-judgment re-homes them as assertions)
-export { buildAccessibilityAudit, buildPerformanceAudit } from './media-queries';
-export type { MediaAccessibilityAudit, MediaPerformanceAudit } from './media-queries';
-
 // Media Snapshot & Visual Regression
 export {
   captureMediaSnapshot,
