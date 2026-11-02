@@ -8,7 +8,12 @@
  * - the four media find-request builders;
  * - `compareMediaSnapshots` and its `MediaComparisonResult`.
  *
- * The Phase 5 branch rewrote `media-analysis.ts` while this phase deleted it,
+ * Phase 8 retired `ai/media-queries.ts` (`buildAccessibilityAudit`,
+ * `buildPerformanceAudit` and their result types). Vision-core's L0 image
+ * assertions, such as `image_has_text_alternative`, replace them, except the
+ * audit's `decorativeWithoutEmptyAlt`: a decorative image's text is no defect.
+ *
+ * The Phase 5 branch rewrote `media-analysis.ts` while Phase 6 deleted it,
  * so merging the two is a modify/delete conflict. Keeping Phase 5's copy would
  * pass every other gate. Once the `./ai` barrel stops exporting the file,
  * nothing imports it, so the compiler, the linter and the rest of the suite
@@ -39,9 +44,16 @@ const RETIRED_VALUES = [
   'createMissingAltFindRequest',
   'createOversizedImagesFindRequest',
   'compareMediaSnapshots',
+  'buildAccessibilityAudit',
+  'buildPerformanceAudit',
 ];
 const RETIRED_CODE = new RegExp(
-  `\\b(?:${[...RETIRED_VALUES, 'MediaComparisonResult'].join('|')})\\b|/media-analysis['"]`
+  `\\b(?:${[
+    ...RETIRED_VALUES,
+    'MediaComparisonResult',
+    'MediaAccessibilityAudit',
+    'MediaPerformanceAudit',
+  ].join('|')})\\b|/media-analysis['"]`
 );
 
 /** Every production TypeScript file under `src/`, test files excluded. */
@@ -63,14 +75,14 @@ function code(path: string): string {
 describe('the retired media analysis surface', () => {
   it('has no module file', () => {
     // The directory resolves: a module that stays is found there.
-    expect(existsSync(join(here, 'media-queries.ts'))).toBe(true);
+    expect(existsSync(join(here, 'index.ts'))).toBe(true);
     expect(existsSync(join(here, 'media-analysis.ts'))).toBe(false);
+    expect(existsSync(join(here, 'media-queries.ts'))).toBe(false);
   });
 
   it('exports none of its names from ./ai', () => {
     // The barrel loaded: it exports the media names that stay.
     expect(typeof ai.captureMediaSnapshot).toBe('function');
-    expect(typeof ai.buildAccessibilityAudit).toBe('function');
     expect(RETIRED_VALUES.filter((name) => name in ai)).toEqual([]);
   });
 
