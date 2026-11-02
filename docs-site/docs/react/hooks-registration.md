@@ -221,7 +221,21 @@ function LoginForm() {
 
 Handlers are wrapped at registration time in a stable delegator that looks the
 handler up again on each call, so a handler closing over React state always sees
-current values rather than the closure captured at registration.
+current values rather than the closure captured at registration. `state` and
+`computed` are read the same way.
+
+The rest of the declaration is republished when its value changes: an action's
+`label`, `description`, `paramSchema` or `effect`, the list of actions itself,
+whether an action has a `signature`, and whether a `state` option exists. So a
+label carrying a count, or an action that exists only while a row is selected,
+reaches `/control/components` without a call to `updateActions`. Swapping one
+`signature` for another does not trigger a republish, because it holds a closure.
+
+`updateActions` installs a list the option does not declare. That list holds
+until the declared actions change value or `id` changes, and then the declared
+list wins. An action id in both lists runs whichever handler was supplied last,
+so an inline `actions` array takes over on the next render and a stable one does
+not.
 
 ### Options
 
@@ -310,10 +324,12 @@ when the executor reports failure. On success it resolves to `response.result`.
 :::warning `addElement` / `removeElement` do not update the registry
 
 Both only mutate the hook's internal `elementIds` list. The registered component
-keeps whatever `elementIds` it was registered with until something re-registers
-it — `updateActions` does (it unregisters and registers again), and so does an
-unmount/remount. If you need the registry to reflect an element-ownership
-change immediately, call `unregister()` then `register()`.
+keeps its current `elementIds` until something next publishes that list: a change
+to a published option such as an action's label, `updateActions` (it unregisters
+and registers again), or an owned element registering or unregistering. A change
+to the value of the `elementIds` option replaces what these two wrote, and a
+remount starts over from that option. If you need the registry to reflect an
+element-ownership change immediately, call `unregister()` then `register()`.
 
 :::
 

@@ -56,11 +56,14 @@ describe('useUIComponent state freshness', () => {
     const { rerender } = render(<Harness id="panel-fresh" open={false} />);
     expect(readState('panel-fresh')).toEqual({ open: false });
 
-    // Same id and name: no component-key churn, so no updateComponent call —
-    // only the stable delegating getter can see the new closure.
+    // The second render always runs the update effect: the component key moves
+    // from `null` (not registered yet when the first render computed it) to a
+    // real value. So this first assertion holds even with a pinned closure...
     rerender(<Harness id="panel-fresh" open={true} />);
     expect(readState('panel-fresh')).toEqual({ open: true });
 
+    // ...and this is the one that needs the delegating getter: same id and name,
+    // no component-key churn, no updateComponent call.
     rerender(<Harness id="panel-fresh" open={false} />);
     expect(readState('panel-fresh')).toEqual({ open: false });
   });
@@ -78,5 +81,30 @@ describe('useUIComponent state freshness', () => {
     // The registry reads `getState?.() ?? {}`; an absent getter or the delegating
     // one answering `{}` are both correct. A stale `{ open: true }` is not.
     expect(readState('panel-dropped') ?? {}).toEqual({});
+  });
+
+  it('exposes a state option that first appears on a later render', () => {
+    // Three renders with no state: past the second render's null-to-key update,
+    // which would otherwise publish the getter by accident.
+    const { rerender } = render(<Harness id="panel-late" open={false} withState={false} />);
+    rerender(<Harness id="panel-late" open={false} withState={false} />);
+    rerender(<Harness id="panel-late" open={false} withState={false} />);
+    expect(readState('panel-late') ?? {}).toEqual({});
+
+    rerender(<Harness id="panel-late" open={true} />);
+    expect(readState('panel-late')).toEqual({ open: true });
+
+    rerender(<Harness id="panel-late" open={false} />);
+    expect(readState('panel-late')).toEqual({ open: false });
+  });
+
+  it('exposes a state option again after it was dropped and restored', () => {
+    const { rerender } = render(<Harness id="panel-back" open={true} />);
+    rerender(<Harness id="panel-back" open={true} />);
+    rerender(<Harness id="panel-back" open={true} withState={false} />);
+    expect(readState('panel-back') ?? {}).toEqual({});
+
+    rerender(<Harness id="panel-back" open={false} />);
+    expect(readState('panel-back')).toEqual({ open: false });
   });
 });
