@@ -141,7 +141,7 @@ const KEY_ALIASES: Record<string, string> = {
  * `Object.prototype`, so `"constructor+a"` took `constructor` for a modifier and
  * pressed plain `a`, and `"constructor"` resolved to a function as its own alias.
  */
-function ownEntry<T>(table: Record<string, T>, name: string): T | undefined {
+function ownEntry<T>(table: Readonly<Record<string, T>>, name: string): T | undefined {
   return Object.prototype.hasOwnProperty.call(table, name) ? table[name] : undefined;
 }
 
@@ -245,7 +245,7 @@ export function keyToKeyCode(key: string): number {
   if (key.length === 1) {
     return key.toUpperCase().charCodeAt(0);
   }
-  const named = NAMED_KEY_CODES[key];
+  const named = ownEntry(NAMED_KEY_CODES, key);
   if (named !== undefined) return named;
   const fn = /^F([1-9]|1[0-9]|2[0-4])$/.exec(key);
   if (fn) return 111 + Number(fn[1]);
