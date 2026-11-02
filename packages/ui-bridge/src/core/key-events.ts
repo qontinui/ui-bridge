@@ -136,6 +136,15 @@ const KEY_ALIASES: Record<string, string> = {
   return: 'Enter',
 };
 
+/**
+ * A table entry by caller-supplied name. A plain index reads through
+ * `Object.prototype`, so `"constructor+a"` took `constructor` for a modifier and
+ * pressed plain `a`, and `"constructor"` resolved to a function as its own alias.
+ */
+function ownEntry<T>(table: Record<string, T>, name: string): T | undefined {
+  return Object.prototype.hasOwnProperty.call(table, name) ? table[name] : undefined;
+}
+
 function isKnownKeyName(key: string): boolean {
   if (key.length === 1) return true;
   if (KNOWN_KEY_NAMES.has(key)) return true;
@@ -315,7 +324,7 @@ function parseKeyCombo(token: string): KeyNormalizeResult {
   const modifiers: KeyModifiers = {};
   let key = parts[parts.length - 1];
   for (const part of parts.slice(0, -1)) {
-    const flag = MODIFIER_TOKENS[part.trim().toLowerCase()];
+    const flag = ownEntry(MODIFIER_TOKENS, part.trim().toLowerCase());
     if (!flag) {
       return {
         ok: false,
@@ -327,7 +336,7 @@ function parseKeyCombo(token: string): KeyNormalizeResult {
     modifiers[flag] = true;
   }
 
-  key = KEY_ALIASES[key.toLowerCase()] ?? key;
+  key = ownEntry(KEY_ALIASES, key.toLowerCase()) ?? key;
   if (!isKnownKeyName(key)) {
     return {
       ok: false,
