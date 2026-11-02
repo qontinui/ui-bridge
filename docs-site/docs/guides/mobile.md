@@ -48,7 +48,7 @@ export default function RootLayout() {
         debug: __DEV__,
       }}
       config={{
-        serverPort: 9876,
+        serverPort: 8087,
         verbose: __DEV__,
       }}
     >
@@ -218,7 +218,7 @@ export default function RootLayout() {
   return (
     <UIBridgeNativeProvider
       features={{ server: __DEV__, debug: __DEV__ }}
-      config={{ serverPort: 9876 }}
+      config={{ serverPort: 8087 }}
     >
       <RenderLogProvider enableOnMount={__DEV__}>
         <AppContent />
@@ -423,6 +423,12 @@ there. That entry point has no `RouteProvider`, so its snapshot carries no
 `@qontinui/ui-bridge-native`. If your app uses the `/native` entry point, import
 from there instead.
 
+:::warning The `/native` entry point has no device pairing
+Its HTTP server admits any caller that can reach the port. An app whose port is
+reachable from a network belongs on `@qontinui/ui-bridge-native`, whose
+[device pairing](#device-pairing) refuses those callers.
+:::
+
 ### The rules
 
 - **The pattern is a template, never the concrete path.** `/profile/[user]` is a
@@ -535,24 +541,58 @@ Expo Router runs on React Navigation, but an Expo app should use
 `expoRouterPattern`. Walking Expo's navigation state yields Expo's internal
 route names, not the file routes.
 
+## Device Pairing
+
+From version 0.11.0, the server in `@qontinui/ui-bridge-native` admits only
+callers on the device itself unless a request is signed:
+
+| Caller | Answer |
+| --- | --- |
+| `adb forward` or anything else on the device, with a loopback `Host` and nothing a web page sends | Admitted, no token |
+| Any other caller with a valid `X-UI-Bridge-Auth` signature | Admitted |
+| Anyone else, `GET /ui-bridge/health` | Answered with status, `serverTime`, `pairing`, `deviceId` (null until set), and `uiBridge` when the app passes `appInfo` |
+| Anyone but a web page, `POST /ui-bridge/pair` | Answered, and needs the armed code unless the caller is on the device |
+| A web page, `POST /ui-bridge/pair` | `403 PAIRING_WEB_CALLER_REFUSED` |
+| Everyone else | `401 PAIRING_REQUIRED` |
+| Off the device, on an app with no `pairingStore` | `401 PAIRING_UNCONFIGURED` |
+| WebSocket upgrade from anywhere but a trusted caller on the device, signed or not | `403 PAIRING_WS_LOOPBACK_ONLY` |
+
+So an emulator needs nothing new, and a cable should not, as long as the
+[server adapter](https://github.com/qontinui/ui-bridge/tree/main/packages/ui-bridge-native#custom-server-adapter)
+fills `remoteAddress` from the socket. Without it, every caller counts as off the
+device, including `adb forward`. A hand `curl` to a device IP can reach only health
+and, with an armed code, `POST /ui-bridge/pair`, because it cannot sign. Every `curl`
+on this page uses `adb forward tcp:8087 tcp:8087`.
+
+`adb forward` was measured arriving as `::ffff:127.0.0.1` on an Android 11
+emulator on 2026-10-31. Physical phones and the iOS forward are unmeasured.
+
+To accept callers on the network, pass a `pairingStore`, and use
+`useUIBridgeNative()` to arm a code and revoke the token from your Settings
+screen. The
+[package README](https://github.com/qontinui/ui-bridge/tree/main/packages/ui-bridge-native#device-pairing)
+has the store contract, the refusal codes and the opt-out for samples. A refusal
+with `PAIRING_TIMESTAMP_REFUSED` carries `data.serverTime`: re-sync to it and sign
+again, with no new pairing.
+
+LAN traffic is plain HTTP. The token crosses the network only in the answer to a
+code pairing, so a cable is the stronger way to pair.
+
 ## HTTP Server (Development)
 
 In development, `ui-bridge-native` can expose an HTTP server for external tools:
 
 ```bash
 # List registered elements
-curl http://localhost:9876/elements
+curl http://localhost:8087/ui-bridge/control/elements
 
 # Get element details
-curl http://localhost:9876/elements/submit-button
+curl http://localhost:8087/ui-bridge/control/element/submit-button
 
 # Execute action
-curl -X POST http://localhost:9876/elements/submit-button/action \
+curl -X POST http://localhost:8087/ui-bridge/control/element/submit-button/action \
   -H "Content-Type: application/json" \
   -d '{"action": "press"}'
-
-# Get render log
-curl http://localhost:9876/render-log
 ```
 
 ### Action body shape: `POST /control/element/:id/action`
@@ -561,11 +601,12 @@ The mobile bridge takes the **same `{ action, params }` envelope** as the
 runner/web SDK. The element id goes in the **path**; the action name goes in the
 JSON **body** under the top-level `action` field (NOT in the path, NOT under a
 nested key). The on-device bridge listens on port **8087** under the
-`/ui-bridge/` prefix:
+`/ui-bridge/` prefix, and the examples reach it over `adb forward`
+([device pairing](#device-pairing) refuses an unsigned caller on a device IP):
 
 ```bash
 # ✅ Press a button — `action` is a top-level body field
-curl -X POST http://<device-ip>:8087/ui-bridge/control/element/submit-button/action \
+curl -X POST http://localhost:8087/ui-bridge/control/element/submit-button/action \
   -H "Content-Type: application/json" \
   -d '{"action": "press"}'
 ```
@@ -590,21 +631,22 @@ actions require their argument under `params` (next section).
 :::caution Mobile requires a `params` envelope — top-level `value`/`text` is rejected
 On the mobile (`ui-bridge-native`) bridge, value-mutating actions take their
 argument **inside `params`**, not at the top level. The on-device bridge
-listens on port **8087** under the `/ui-bridge/` prefix:
+listens on port **8087** under the `/ui-bridge/` prefix, reached here over
+`adb forward`:
 
 ```bash
 # ✅ Correct — text lives under params
-curl -X POST http://<device-ip>:8087/ui-bridge/control/element/email-input/action \
+curl -X POST http://localhost:8087/ui-bridge/control/element/email-input/action \
   -H "Content-Type: application/json" \
   -d '{"action": "setValue", "params": {"text": "user@example.com"}}'
 
 # `type` uses the same envelope and supports clear:true to replace atomically
-curl -X POST http://<device-ip>:8087/ui-bridge/control/element/email-input/action \
+curl -X POST http://localhost:8087/ui-bridge/control/element/email-input/action \
   -H "Content-Type: application/json" \
   -d '{"action": "type", "params": {"text": "user@example.com", "clear": true}}'
 
 # ❌ Rejected — a top-level `value` or `text` is NOT read on mobile
-curl -X POST http://<device-ip>:8087/ui-bridge/control/element/email-input/action \
+curl -X POST http://localhost:8087/ui-bridge/control/element/email-input/action \
   -d '{"action": "setValue", "value": "user@example.com"}'   # → no value set
 ```
 
@@ -619,8 +661,9 @@ both reflect the new `state.value` synchronously — no polling needed.
 ```python
 from ui_bridge import UIBridgeClient
 
-# Connect to React Native app's HTTP server
-client = UIBridgeClient("http://192.168.1.100:9876")
+# Connect to the app's HTTP server over `adb forward`. The Python client cannot
+# sign, so a device IP answers 401 on control routes from version 0.11.0.
+client = UIBridgeClient("http://localhost:8087")
 
 # List elements
 elements = client.get_elements()
@@ -668,7 +711,7 @@ export default function RootLayout() {
       <QueryClientProvider client={queryClient}>
         <UIBridgeNativeProvider
           features={{ server: __DEV__, debug: __DEV__ }}
-          config={{ serverPort: 9876, verbose: __DEV__ }}
+          config={{ serverPort: 8087, verbose: __DEV__ }}
         >
           <RenderLogProvider enableOnMount={__DEV__} maxEntries={500}>
             <AppContent />
@@ -734,10 +777,13 @@ useAutoRegister({ enabled: __DEV__ });
 
 ### HTTP Server Not Accessible
 
-1. Check device/simulator IP address
-2. Verify port 9876 is not blocked
-3. For physical devices, ensure same network
-4. Use `adb reverse tcp:9876 tcp:9876` for Android emulator
+1. Run `adb forward tcp:8087 tcp:8087`, and check it with `adb forward --list`
+2. Check that `serverPort` matches the port you forwarded (the default is 8087)
+3. A `401` with a `PAIRING_*` code means the server is up and refused the caller.
+   Reach it over `adb forward`, or see [Device Pairing](#device-pairing)
+4. A `401` over `adb forward` usually means the server adapter passes no
+   `remoteAddress`. On a physical phone, it can also mean the forward does not
+   arrive as loopback
 
 ### Elements Not Registering
 

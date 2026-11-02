@@ -439,24 +439,28 @@ event pump.
 > **Precondition.** Installing and launching the qontinui-mobile app on a
 > phone is necessary but **not sufficient** for the runner to see the
 > device. A transport must also be active before `localhost:8087`
-> resolves to the device's UI Bridge or `GET /control/devices` returns a
-> non-empty list. Set up one of:
+> resolves to the device's UI Bridge or `GET http://localhost:9876/ui-bridge/devices`
+> returns a non-empty list. Set up one of:
 >
 > - **USB:** `adb forward tcp:8087 tcp:8087` from the host. Verify with
 >   `adb forward --list | grep tcp:8087`.
-> - **LAN/cloud relay:** pair via the in-app Connection Wizard. Verify
->   with `GET /control/devices` returning at least one entry.
+> - **LAN:** the runner has to sign its requests, which it does not do yet, so an
+>   app on `@qontinui/ui-bridge-native` 0.11.0 or later, unless it sets
+>   `allowUnauthenticatedNetwork`, refuses its control routes from the LAN with `401 PAIRING_REQUIRED`, or `PAIRING_UNCONFIGURED` on an app with no `pairingStore`. See
+>   [device pairing](../guides/mobile.md#device-pairing). Use USB.
+> - **Cloud relay:** the app connects to the relay under the same account. Verify
+>   with `GET http://localhost:9876/ui-bridge/devices` returning at least one entry.
 > - **Local dev server:** `npx expo start` with the mobile app running
 >   in dev mode. Verify the same way.
 >
-> If `/control/devices` returns `count: 0`, no transport is active —
+> If `GET http://localhost:9876/ui-bridge/devices` returns `count: 0`, no transport is active —
 > driving the mobile app via UI Bridge will fail with empty snapshots
 > regardless of how the app appears on the phone screen.
 
 `MOBILE_BASE=http://localhost:8087/ui-bridge` only works *after* a
 transport has been established. The mobile app does NOT bind to
 `localhost:8087` on the host machine on its own — it binds on the
-device, and one of three transports has to bridge that to localhost
+device, and one of the transports below has to bridge that to localhost
 before any UI Bridge endpoint becomes reachable. Skipping this step is
 the #1 cause of "the mobile app is running but I can't reach the
 bridge".
@@ -464,9 +468,9 @@ bridge".
 | Transport | Setup | When to use |
 |-----------|-------|-------------|
 | **USB** | `adb forward tcp:8087 tcp:8087` after a USB debug-enabled device is connected. Verify with `adb devices` (must show your device) and `adb forward --list` (must show the forward). | Device is wired in, fastest, most reliable. |
-| **LAN, mDNS** | Mobile app announces over mDNS; the runner's discovery service picks it up. From the host, proxy through the runner: `curl http://localhost:9876/ui-bridge/devices/<deviceId>/control/snapshot`. | Phone on the same Wi-Fi as the dev box; can't or don't want to plug in USB. |
-| **LAN, direct IP** | The mobile UI Bridge server binds `0.0.0.0:8087`, so any same-LAN host can reach it via the phone's LAN IP directly: `curl http://<phone-lan-ip>:8087/ui-bridge/control/snapshot`. Find the IP via `Get-NetNeighbor` (Windows) / `arp -a`, or fall back to a fast parallel TCP scan (`for ip in 192.168.x.{1..254}: probe :8087`) which finds the phone in seconds. No runner involvement. | Same-LAN phone when adb is dark and mDNS isn't registering — bypasses both `adb` and the runner relay entirely. |
-| **Cloud relay** | Mobile app paired via the in-app Connection Wizard. Visible in `GET http://localhost:9876/ui-bridge/devices` with `transport: "cloud"`. Proxy through the runner same as LAN. | Phone is remote (different network); use sparingly — round-trip latency dominates. |
+| **LAN, mDNS** | Mobile app announces over mDNS; the runner's discovery service picks it up. From the host, `POST http://localhost:9876/ui-bridge/devices/<deviceId>/connect` makes it the SDK target, and control routes go through the returned `proxyUrl`. On an app with `@qontinui/ui-bridge-native` 0.11.0 or later, unless it sets `allowUnauthenticatedNetwork`, those routes answer `401 PAIRING_REQUIRED`, or `PAIRING_UNCONFIGURED` on an app with no `pairingStore`, because the runner does not sign its requests yet. | Phone on the same Wi-Fi as the dev box, on an app older than that. |
+| **LAN, direct IP** | The mobile UI Bridge server binds `0.0.0.0:8087`, so a same-LAN host can reach the phone's LAN IP directly, but from `@qontinui/ui-bridge-native` 0.11.0, unless the app sets `allowUnauthenticatedNetwork`, an unsigned caller gets only `curl http://<phone-lan-ip>:8087/ui-bridge/health` and, with a code armed in the app, `POST /ui-bridge/pair`. Health reports `pairing`, `deviceId` (null until set), and `uiBridge.version` when the app passes `appInfo`. Find the IP via `Get-NetNeighbor` (Windows) / `arp -a`, or fall back to a fast parallel TCP scan (`for ip in 192.168.x.{1..254}: probe :8087`). | Finding a phone and reading its version when adb is dark. It does not drive the app. |
+| **Cloud relay** | Mobile app connected to the relay under the same account. Visible in `GET http://localhost:9876/ui-bridge/devices` with `transports[].kind: "cloud"`. Connect through the runner the same way as LAN; the relay needs no pairing, because the backend has already authenticated the account. If the phone is also on the runner's LAN, LAN outranks cloud and the connect lands on the refused route, so use USB or take the phone off that network. | Phone is remote (different network); use sparingly — round-trip latency dominates. |
 
 **One-shot detection** — which transport is active?
 
@@ -474,13 +478,18 @@ bridge".
 echo "USB:"
 adb forward --list | grep -q "tcp:8087" && echo "  forwarded — try localhost:8087" || echo "  not forwarded"
 echo "Runner-relayed (LAN or cloud):"
-curl -s http://localhost:9876/ui-bridge/devices | python -c "import sys,json; d=json.load(sys.stdin)['data']; print(f\"  {d['count']} device(s)\"); [print(f\"  - {x.get('id')} via {x.get('transport')}\") for x in d.get('devices',[])]"
+curl -s http://localhost:9876/ui-bridge/devices | python -c "import sys,json; d=json.load(sys.stdin)['data']; print(f\"  {d['count']} device(s)\"); [print(f\"  - {x['info']['id']} via {[t['kind'] for t in x['transports']]}\") for x in d.get('devices',[])]"
 ```
+
+A device whose list shows `lan` first, on `@qontinui/ui-bridge-native` 0.11.0 or
+later and without `allowUnauthenticatedNetwork`, is discoverable but cannot be
+driven, because the runner's LAN check reads only open health and the runner does
+not sign its requests yet.
 
 If both show empty: the device isn't reachable from this machine. The
 mobile app may still be running and connected to qontinui-web's
 backend (via HTTPS, not the bridge) — that login channel doesn't
-expose UI Bridge state. Either set up one of the three transports
+expose UI Bridge state. Either set up one of the transports
 above, or limit testing to server-side artifact verification (AAB
 manifest grep, `eas-cli channel:view`, backend logs).
 

@@ -226,7 +226,7 @@ table:
 
 ```bash
 # Over `adb forward`, which arrives as loopback. On a device IP this route answers
-# 401 PAIRING_REQUIRED; see "Device Pairing".
+# 401 PAIRING_REQUIRED, or PAIRING_UNCONFIGURED with no pairingStore; see "Device Pairing".
 curl -s http://localhost:8087/ui-bridge/_routes | jq '.data.routes'
 ```
 
@@ -263,6 +263,8 @@ The server admits callers as follows:
 | Everyone else | `401 PAIRING_REQUIRED` |
 | Not loopback, on a server with no `pairingStore` | `401 PAIRING_UNCONFIGURED` |
 | WebSocket upgrade from anywhere but a trusted loopback caller, signed or not | `403 PAIRING_WS_LOOPBACK_ONLY` |
+
+`POST /ui-bridge/pair` refuses in its own terms: `401 PAIRING_NOT_ARMED` with no code live, `400 PAIRING_CODE_REQUIRED` with no well-formed code, `401 PAIRING_CODE_INVALID` for a wrong one, and `503 PAIRING_UNAVAILABLE` while the store or the device id is not ready.
 
 `adb forward` was measured arriving as `::ffff:127.0.0.1` on an Android 11 emulator on 2026-10-31, which counts as loopback. Physical phones are unmeasured.
 

@@ -10,7 +10,7 @@ React comes from injected mode, not from a per-framework plugin.
 | Situation | Use |
 | --- | --- |
 | Your app is React (web) | [`@qontinui/ui-bridge/react`](../react/provider.md) |
-| Your app is React Native | `@qontinui/ui-bridge/native/react` |
+| Your app is React Native | [`@qontinui/ui-bridge-native`](../guides/mobile.md), the only entry point with [device pairing](../guides/mobile.md#device-pairing) |
 | Any other framework, or no framework, or an app you cannot modify | **Injected mode** — below |
 | You are driving from outside the browser | The HTTP + WebSocket API, which is language-agnostic |
 
