@@ -11,6 +11,8 @@
 import type { ContentType, ContentRole, ContentMetadata } from '../core/types';
 import { classString } from '../core/class-name';
 import { truncateCodePoints } from '../core/text';
+import { isContentRedacted } from '../core/redaction';
+import type { UIBridgeRegistry } from '../core/registry';
 
 // ============================================================================
 // Configuration
@@ -177,8 +179,7 @@ function isContentVisible(element: HTMLElement): boolean {
  */
 export function shouldRegisterContent(
   element: HTMLElement,
-  options: ContentDiscoveryOptions = {},
-  registeredIds: Set<string>
+  options: ContentDiscoveryOptions = {}
 ): boolean {
   const minTextLength = options.minTextLength ?? 1;
 
@@ -211,12 +212,6 @@ export function shouldRegisterContent(
 
   // Skip interactive elements that are already handled by the interactive scanner
   if (isInteractiveElement(element)) {
-    return false;
-  }
-
-  // Check if already registered
-  const id = generateContentId(element);
-  if (registeredIds.has(id)) {
     return false;
   }
 
@@ -404,7 +399,7 @@ export function inferContentMetadata(element: HTMLElement): ContentMetadata {
   }
 
   // Stable text prefix for dynamic content
-  if (metadata.dynamic) {
+  if (metadata.dynamic && !isContentRedacted(element)) {
     const text = element.textContent?.trim() || '';
     if (text.length > 10) {
       metadata.stableTextPrefix = truncateCodePoints(text, 10);
@@ -440,14 +435,20 @@ export function generateContentId(element: HTMLElement): string {
 
   const contentType = inferContentType(element);
   const tag = element.tagName.toLowerCase();
-  const contentLabel = element.getAttribute('data-content-label');
+  // An id is emitted verbatim, so inside a `data-bridge-redact` boundary no text
+  // of the element may reach it: not `textContent`, and not `data-content-label`,
+  // which `deriveContentLabel` drops there too. A collision then takes a number
+  // (`registerContentInRegistry`).
+  const redacted = isContentRedacted(element);
+  const contentLabel = redacted ? null : element.getAttribute('data-content-label');
+  const scrapedText = redacted ? '' : element.textContent?.trim() || '';
 
   // Headings: heading-{level}-{textSlug}
   if (contentType === 'heading') {
     const level =
       element.getAttribute('data-content-level') ||
       (/^h([1-6])$/.test(tag) ? tag[1] : element.getAttribute('aria-level') || '2');
-    const text = contentLabel || element.textContent?.trim() || '';
+    const text = contentLabel || scrapedText;
     const slug = slugify(text);
     return `heading-${level}-${slug || 'untitled'}`;
   }
@@ -474,8 +475,91 @@ export function generateContentId(element: HTMLElement): string {
   const siblings = parent ? Array.from(parent.querySelectorAll(`:scope > ${tag}`)) : [];
   const siblingIndex = siblings.indexOf(element);
 
-  const textSlug = slugify(contentLabel || element.textContent?.trim() || '', 20);
+  const textSlug = slugify(contentLabel || scrapedText, 20);
   const anchor = anchorId ? slugify(anchorId, 15) : textSlug;
 
   return `content-${contentType}-${anchor || 'unknown'}-${siblingIndex >= 0 ? siblingIndex : 0}`;
+}
+
+// ============================================================================
+// Registration
+// ============================================================================
+
+/**
+ * Register one content element, as the React scanner and the injected seeder
+ * both do, so a heading has one id and one set of fields in either runtime.
+ * Returns its id, or `null` when it gets no new row: this element already holds
+ * that id, or another element holds an id this one's author chose. Another element
+ * deriving the same id (three cards each headed "Featured") is another element,
+ * so it takes the next free number rather than being dropped: a text with no row
+ * is a text no check can read, and one card's contrast must not stand for all three.
+ * An AUTHORED `data-content-id` is not numbered, as `data-ui-bridge-content` is not:
+ * a suffix the author never wrote would confuse an assertion naming that id, so the
+ * later element is left without a row.
+ */
+export function registerContentInRegistry(
+  registry: UIBridgeRegistry,
+  element: HTMLElement
+): string | null {
+  const baseId = generateContentId(element);
+  let id = baseId;
+  for (let n = 2; ; n++) {
+    const holder = registry.getElement(id);
+    if (holder === undefined) break;
+    if (holder.element === element || element.getAttribute('data-content-id')) return null;
+    id = `${baseId}-${n}`;
+  }
+
+  const contentType = inferContentType(element);
+  const metadata = inferContentMetadata(element);
+  // Normalize text once and reuse for `label` (truncated 50 chars for the
+  // human-readable slot) and `content` (full normalized text for callers
+  // that need the unabridged string). Mirrors `registerSemanticContentElement`'s
+  // shape so heading/paragraph/table-cell snapshots carry the same fields
+  // as `data-ui-bridge-content` elements (B1 — manual-test remediation
+  // 2026-05-10). Without `content`, consumers couldn't distinguish e.g.
+  // `heading-2-recommendations-queue` from its sibling by text alone
+  // because the 50-char label can truncate long headings.
+  // §4.6 F7 — SOURCE gate: inside a `data-bridge-redact` boundary do not
+  // scrape `textContent` into `content`/`label` at all (defense-in-depth
+  // beside the emission scrub). `data-content-label` is developer-authored,
+  // so it survives outside the CONTENT boundary but is dropped inside one
+  // (a dev who wraps a subtree intends it hidden).
+  // Single definition of the content label derivation so the initial
+  // scrape and the `refreshScrapedText()` re-derivation cannot drift.
+  const deriveContentLabel = (el: HTMLElement): string | undefined => {
+    if (isContentRedacted(el)) return undefined;
+    const raw = el.textContent?.trim();
+    const normalized = raw ? raw.replace(/\s+/g, ' ') : undefined;
+    return (
+      el.getAttribute('data-content-label') ||
+      (normalized ? truncateCodePoints(normalized, 50) : undefined) ||
+      undefined
+    );
+  };
+  // Single definition of the content scrape so the initial read and the
+  // `refreshScrapedText()` re-derivation cannot drift — the same shape
+  // `deriveContentLabel` above uses, for the same reason.
+  const deriveContent = (el: HTMLElement): string | undefined => {
+    if (isContentRedacted(el)) return undefined;
+    const raw = el.textContent?.trim();
+    return raw ? raw.replace(/\s+/g, ' ') : undefined;
+  };
+
+  registry.registerContentElement(id, element, {
+    contentType,
+    contentMetadata: metadata,
+    label: deriveContentLabel(element),
+    // This function returns early for an element already holding its id, so the
+    // scrape below never repeats for this node — see `registerElement`'s
+    // `labelSource`.
+    labelSource: () => deriveContentLabel(element),
+    content: deriveContent(element),
+    // …and `content` froze by the identical mechanism until this closure
+    // existed: it was emitted beside a live-derived `text`, so one entry
+    // could read `content: "Waiting for coord…"` next to
+    // `text: "No work units in this window"`.
+    contentSource: () => deriveContent(element),
+  });
+  return id;
 }

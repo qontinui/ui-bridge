@@ -134,12 +134,14 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('inject settle smoke (deferred render)', 
       try {
         await transport.ready(); // ready-only: returns at DOM-ready, pre-deferred-render
         const snapshot = (await transport.dispatch('getControlSnapshot', {})) as {
-          registration?: { totalRegistered?: number };
+          elements?: Array<{ category?: string }>;
         };
         // Pre-fix behavior: the form isn't there yet at ready-only time. This
-        // documents WHY settle-gating is the default. (We assert the registry is
-        // empty rather than racing the 600ms timer for the form's absence.)
-        expect(snapshot.registration?.totalRegistered ?? 0).toBe(0);
+        // documents WHY settle-gating is the default. (We assert nothing settle
+        // counts has registered rather than racing the 600ms timer for the form's
+        // absence. The skeleton's heading is a content row, which it does not.)
+        const counted = (snapshot.elements ?? []).filter((e) => e.category !== 'content');
+        expect(counted).toEqual([]);
       } finally {
         await transport.close().catch(() => {});
       }

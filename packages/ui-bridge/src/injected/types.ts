@@ -48,7 +48,7 @@ export interface InjectedRuntimeApi {
    * first chrome that paints.
    */
   expectSelector: string | null;
-  /** Interactive elements registered as of the most recent seed pass. */
+  /** Interactive and media elements registered as of the most recent seed pass. */
   elementCount: number;
   /** SDK version the bundle was built from. */
   version: string;

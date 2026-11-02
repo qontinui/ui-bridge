@@ -31,9 +31,7 @@ import type { ContentDiscoveryOptions } from './content-discovery';
 import {
   CONTENT_SELECTORS,
   shouldRegisterContent,
-  inferContentType,
-  inferContentMetadata,
-  generateContentId,
+  registerContentInRegistry,
 } from './content-discovery';
 import type { MediaDiscoveryOptions } from './media-discovery';
 import {
@@ -1008,6 +1006,18 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
   );
 
   /**
+   * Whether a discovered element still needs a content row. It asks about the
+   * ELEMENT, not its id: another element deriving the same id takes a number on
+   * registration, so a second "Featured" heading mounted later still gets a row.
+   */
+  const contentAwaitsRegistration = useCallback(
+    (element: HTMLElement): boolean =>
+      !registeredContentElementsRef.current.has(element) &&
+      shouldRegisterContent(element, contentDiscovery),
+    [contentDiscovery]
+  );
+
+  /**
    * Register a single content element
    */
   const registerContentElement = useCallback(
@@ -1021,67 +1031,9 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
         return;
       }
 
-      const id = generateContentId(element);
-
-      // Check if ID already exists in registry
-      const existing = bridge.registry.getElement(id);
-      if (existing) {
-        return; // Content IDs are deterministic — skip duplicates
-      }
-
-      const contentType = inferContentType(element);
-      const metadata = inferContentMetadata(element);
-      // Normalize text once and reuse for `label` (truncated 50 chars for the
-      // human-readable slot) and `content` (full normalized text for callers
-      // that need the unabridged string). Mirrors `registerSemanticContentElement`'s
-      // shape so heading/paragraph/table-cell snapshots carry the same fields
-      // as `data-ui-bridge-content` elements (B1 — manual-test remediation
-      // 2026-05-10). Without `content`, consumers couldn't distinguish e.g.
-      // `heading-2-recommendations-queue` from its sibling by text alone
-      // because the 50-char label can truncate long headings.
-      // §4.6 F7 — SOURCE gate: inside a `data-bridge-redact` boundary do not
-      // scrape `textContent` into `content`/`label` at all (defense-in-depth
-      // beside the emission scrub). `data-content-label` is developer-authored,
-      // so it survives outside the CONTENT boundary but is dropped inside one
-      // (a dev who wraps a subtree intends it hidden).
-      // Single definition of the content label derivation so the initial
-      // scrape and the `refreshScrapedText()` re-derivation cannot drift.
-      const deriveContentLabel = (el: HTMLElement): string | undefined => {
-        if (isContentRedacted(el)) return undefined;
-        const raw = el.textContent?.trim();
-        const normalized = raw ? raw.replace(/\s+/g, ' ') : undefined;
-        return (
-          el.getAttribute('data-content-label') ||
-          (normalized ? truncateCodePoints(normalized, 50) : undefined) ||
-          undefined
-        );
-      };
-      // Single definition of the content scrape so the initial read and the
-      // `refreshScrapedText()` re-derivation cannot drift — the same shape
-      // `deriveContentLabel` above uses, for the same reason.
-      const deriveContent = (el: HTMLElement): string | undefined => {
-        if (isContentRedacted(el)) return undefined;
-        const raw = el.textContent?.trim();
-        return raw ? raw.replace(/\s+/g, ' ') : undefined;
-      };
-      const normalizedText = deriveContent(element);
-      const label = deriveContentLabel(element);
-
-      bridge.registry.registerContentElement(id, element, {
-        contentType,
-        contentMetadata: metadata,
-        label,
-        // Content ids are deterministic and this function returns early for an
-        // already-registered id, so the scrape below never repeats for this
-        // node — see `registerElement`'s `labelSource`.
-        labelSource: () => deriveContentLabel(element),
-        content: normalizedText,
-        // …and `content` froze by the identical mechanism until this closure
-        // existed: it was emitted beside a live-derived `text`, so one entry
-        // could read `content: "Waiting for coord…"` next to
-        // `text: "No work units in this window"`.
-        contentSource: () => deriveContent(element),
-      });
+      // null: no new row (see registerContentInRegistry).
+      const id = registerContentInRegistry(bridge.registry, element);
+      if (id === null) return;
 
       registeredContentElementsRef.current.set(element, id);
     },
@@ -1290,7 +1242,6 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
    *     before.
    */
   const processPendingContentRegistrations = useCallback(() => {
-    const registeredIds = new Set(registeredContentElementsRef.current.values());
     pendingContentRegistrationsRef.current.forEach((element) => {
       if (registeredContentElementsRef.current.has(element)) return;
       // Semantic content takes the fast path — no shouldRegisterContent()
@@ -1299,12 +1250,12 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
         registerSemanticContentElement(element);
         return;
       }
-      if (shouldRegisterContent(element, contentDiscovery, registeredIds)) {
+      if (contentAwaitsRegistration(element)) {
         registerContentElement(element);
       }
     });
     pendingContentRegistrationsRef.current.clear();
-  }, [contentDiscovery, registerContentElement, registerSemanticContentElement]);
+  }, [contentAwaitsRegistration, registerContentElement, registerSemanticContentElement]);
 
   /**
    * Process pending media registrations (debounced, separate timer)
@@ -1461,10 +1412,9 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
           ...(contentDiscovery?.includeContentSelectors || []),
         ].join(', ');
         const contentElements = rootElement.querySelectorAll<HTMLElement>(contentSelectors);
-        const registeredIds = new Set(registeredContentElementsRef.current.values());
 
         contentElements.forEach((element) => {
-          if (shouldRegisterContent(element, contentDiscovery, registeredIds)) {
+          if (contentAwaitsRegistration(element)) {
             queueContentRegistration(element);
           }
         });
@@ -1511,6 +1461,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       }
     },
     [
+      contentAwaitsRegistration,
       bridge,
       includeSelectors,
       shouldRegister,
@@ -1551,13 +1502,12 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
               ...CONTENT_SELECTORS,
               ...(contentDiscovery?.includeContentSelectors || []),
             ].join(', ');
-            const registeredIds = new Set(registeredContentElementsRef.current.values());
-            if (shouldRegisterContent(target, contentDiscovery, registeredIds)) {
+            if (contentAwaitsRegistration(target)) {
               queueContentRegistration(target);
             }
             const contentDescendants = target.querySelectorAll<HTMLElement>(contentSelectors);
             contentDescendants.forEach((descendant) => {
-              if (shouldRegisterContent(descendant, contentDiscovery, registeredIds)) {
+              if (contentAwaitsRegistration(descendant)) {
                 queueContentRegistration(descendant);
               }
             });
@@ -1629,17 +1579,16 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
                 ...CONTENT_SELECTORS,
                 ...(contentDiscovery?.includeContentSelectors || []),
               ].join(', ');
-              const registeredIds = new Set(registeredContentElementsRef.current.values());
 
               // Check the element itself
-              if (shouldRegisterContent(element, contentDiscovery, registeredIds)) {
+              if (contentAwaitsRegistration(element)) {
                 queueContentRegistration(element);
               }
 
               // Check descendants
               const contentDescendants = element.querySelectorAll<HTMLElement>(contentSelectors);
               contentDescendants.forEach((descendant) => {
-                if (shouldRegisterContent(descendant, contentDiscovery, registeredIds)) {
+                if (contentAwaitsRegistration(descendant)) {
                   queueContentRegistration(descendant);
                 }
               });
@@ -1706,6 +1655,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       });
     },
     [
+      contentAwaitsRegistration,
       shouldRegister,
       queueRegistration,
       unregisterElement,

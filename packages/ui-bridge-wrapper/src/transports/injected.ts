@@ -121,7 +121,7 @@ interface InjectedExtraOptions {
 export interface InjectedSettleState {
   /** True once the DOM has settled (gated quiet window, or the hard cap). */
   settled: boolean;
-  /** Interactive elements registered as of the most recent seed pass. */
+  /** Interactive and media elements registered as of the most recent seed pass. */
   elementCount: number;
   /** True when settle was forced by the cap rather than a clean quiet window. */
   settledByTimeout: boolean;
@@ -395,7 +395,7 @@ export class InjectedTransport extends HeadlessTransport {
 
   /**
    * Best-effort digest of the first {@link DIGEST_MAX_ELEMENTS} registered
-   * interactive elements, read through the in-page dispatcher's
+   * interactive and media elements, read through the in-page dispatcher's
    * `getControlSnapshot` action (the snapshot's per-element projection is
    * already redaction-safe — we never read raw DOM labels here). Returns
    * `null` on ANY failure or timeout: this feeds error diagnostics only, and a
@@ -423,7 +423,12 @@ export class InjectedTransport extends HeadlessTransport {
       const elements = (snapshot as { elements?: unknown }).elements;
       if (!Array.isArray(elements)) return null;
       const digest: RegisteredElementDigest[] = [];
-      for (const el of elements.slice(0, DIGEST_MAX_ELEMENTS)) {
+      // What settle counted, so the digest and `elementCount` describe one set: a
+      // page of static text is still "nothing interactive ever rendered".
+      const counted = elements.filter(
+        (el) => (el as { category?: unknown } | null)?.category !== 'content'
+      );
+      for (const el of counted.slice(0, DIGEST_MAX_ELEMENTS)) {
         if (!el || typeof el !== 'object') continue;
         const e = el as Record<string, unknown>;
         if (typeof e.id !== 'string') continue;
