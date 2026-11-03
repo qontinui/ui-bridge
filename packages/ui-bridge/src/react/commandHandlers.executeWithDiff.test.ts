@@ -532,6 +532,32 @@ describe('relay aiExecute withDiff · the shared tracker path', () => {
     }
   }, 30_000);
 
+  it('plain aiExecute: a parsed scroll direction reaches the scroll action', async () => {
+    const list = document.createElement('div');
+    list.textContent = 'Results';
+    makeVisible(list);
+    const scrollBy = vi.fn();
+    (list as unknown as { scrollBy: typeof scrollBy }).scrollBy = scrollBy;
+    document.body.appendChild(list);
+    getGlobalRegistry().registerElement('results-list', list, {
+      type: 'generic',
+      label: 'Results',
+      actions: ['scroll'],
+    });
+    try {
+      const result = (await executeCommand(
+        'aiExecute',
+        { instruction: 'scroll Results up' },
+        emptyBridge
+      )) as Record<string, unknown>;
+      expect(result.success).toBe(true);
+      expect(result.executedAction).toBe('scroll on results-list');
+      expect(scrollBy).toHaveBeenCalledWith(expect.objectContaining({ left: 0, top: -300 }));
+    } finally {
+      list.remove();
+    }
+  }, 30_000);
+
   it('plain aiExecute: a wait instruction is refused, not reported as done', async () => {
     const result = (await executeCommand(
       'aiExecute',

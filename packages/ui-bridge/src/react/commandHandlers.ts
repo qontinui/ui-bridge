@@ -3015,6 +3015,12 @@ export async function executeCommand(
                 request: {
                   action: parsed.action,
                   ...(parsed.value !== undefined ? { value: parsed.value } : {}),
+                  // `scroll` reads its direction from `params` only; without
+                  // this, "scroll up X" scrolled the handler's default (down).
+                  // Mirrors NLActionExecutor.performAction's scroll params.
+                  ...(parsed.action === 'scroll' && parsed.scrollDirection
+                    ? { params: { direction: parsed.scrollDirection } }
+                    : {}),
                 },
               },
               bridge
