@@ -15,8 +15,11 @@ interface ActionPattern {
   regex: RegExp;
   /** Action type */
   action: ParsedAction['action'];
-  /** Capture group index for target */
-  targetGroup: number;
+  /**
+   * Capture group index for target. Omitted for a pattern that names no
+   * element ("scroll down"), which leaves `targetDescription` empty.
+   */
+  targetGroup?: number;
   /** Capture group index for value (optional) */
   valueGroup?: number;
   /** Capture group index for a scroll direction (optional) */
@@ -266,9 +269,9 @@ const ACTION_PATTERNS: ActionPattern[] = [
 
   // Scroll patterns
   {
+    // Bare "scroll down" names no element: it scrolls the page.
     regex: /^scroll\s+(up|down|left|right)$/i,
     action: 'scroll',
-    targetGroup: 1,
     directionGroup: 1,
     confidence: 0.9,
   },
@@ -353,7 +356,9 @@ export function parseNLInstruction(instruction: string): ParsedAction | null {
     if (match) {
       const parsed: ParsedAction = {
         action: pattern.action,
-        targetDescription: cleanTargetDescription(match[pattern.targetGroup] || ''),
+        targetDescription: pattern.targetGroup
+          ? cleanTargetDescription(match[pattern.targetGroup] || '')
+          : '',
         rawInstruction: instruction,
         parseConfidence: pattern.confidence,
       };
@@ -538,6 +543,33 @@ export function validateParsedAction(action: ParsedAction): { valid: boolean; er
 }
 
 /**
+ * Pixels one NL page scroll moves — the element `scroll` action's own default
+ * step, so "scroll down" and "scroll the list down" move by the same amount.
+ */
+export const NL_PAGE_SCROLL_STEP = 300;
+
+/**
+ * A page-level scroll: a scroll instruction that names a direction and no
+ * element ("scroll down"). It moves the window, not an element's container.
+ */
+export function isPageScroll(action: ParsedAction): boolean {
+  return action.action === 'scroll' && !action.targetDescription && !!action.scrollDirection;
+}
+
+/**
+ * The `window.scrollBy` offsets for one NL page scroll in `direction`.
+ */
+export function pageScrollDelta(
+  direction: NonNullable<ParsedAction['scrollDirection']>,
+  step: number = NL_PAGE_SCROLL_STEP
+): { top: number; left: number } {
+  return {
+    top: direction === 'down' ? step : direction === 'up' ? -step : 0,
+    left: direction === 'right' ? step : direction === 'left' ? -step : 0,
+  };
+}
+
+/**
  * Generate a human-readable description of a parsed action
  */
 export function describeAction(action: ParsedAction): string {
@@ -566,7 +598,9 @@ export function describeAction(action: ParsedAction): string {
       return `Focus on "${action.targetDescription}"`;
     case 'scroll':
       if (action.scrollDirection) {
-        return `Scroll ${action.scrollDirection}`;
+        return action.targetDescription
+          ? `Scroll "${action.targetDescription}" ${action.scrollDirection}`
+          : `Scroll ${action.scrollDirection}`;
       }
       return `Scroll to "${action.targetDescription}"`;
     case 'wait':

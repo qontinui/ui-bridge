@@ -558,6 +558,36 @@ describe('relay aiExecute withDiff · the shared tracker path', () => {
     }
   }, 30_000);
 
+  it('plain aiExecute: a bare "scroll down" scrolls the page, not an element named "down"', async () => {
+    // A "Download" element is the fuzzy match a search for "down" would pick.
+    const dl = document.createElement('button');
+    dl.textContent = 'Download';
+    makeVisible(dl);
+    const elementScroll = vi.fn();
+    (dl as unknown as { scrollBy: typeof elementScroll }).scrollBy = elementScroll;
+    document.body.appendChild(dl);
+    getGlobalRegistry().registerElement('download-btn', dl, {
+      type: 'button',
+      label: 'Download',
+      actions: ['click', 'scroll'],
+    });
+    const windowScroll = vi.spyOn(window, 'scrollBy').mockImplementation(() => {});
+    try {
+      const result = (await executeCommand(
+        'aiExecute',
+        { instruction: 'scroll down' },
+        emptyBridge
+      )) as Record<string, unknown>;
+      expect(result.success).toBe(true);
+      expect(result.executedAction).toBe('pageScroll down');
+      expect(windowScroll).toHaveBeenCalledWith(expect.objectContaining({ top: 300, left: 0 }));
+      expect(elementScroll).not.toHaveBeenCalled();
+    } finally {
+      windowScroll.mockRestore();
+      dl.remove();
+    }
+  }, 30_000);
+
   it('plain aiExecute: "scroll to X" scrolls X into view', async () => {
     const footer = document.createElement('div');
     footer.textContent = 'Footer';

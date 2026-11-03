@@ -1903,8 +1903,7 @@ export async function executeCommand(
           case 'scrollIntoView': {
             type ScrollLogicalPos = 'start' | 'center' | 'end' | 'nearest';
             const sivParams = request.params as
-              | { smooth?: boolean; block?: ScrollLogicalPos; inline?: ScrollLogicalPos }
-              | undefined;
+              { smooth?: boolean; block?: ScrollLogicalPos; inline?: ScrollLogicalPos } | undefined;
             const sivBehavior =
               sivParams?.smooth !== false ? ('smooth' as const) : ('auto' as const);
             const sivBlock = sivParams?.block || 'center';
@@ -2956,7 +2955,8 @@ export async function executeCommand(
         return mergeNLActionWithDiff(outcome.result);
       }
       const t0 = performance.now();
-      const { parseNLInstruction, createSearchEngine } = await import('../ai');
+      const { parseNLInstruction, createSearchEngine, isPageScroll, pageScrollDelta } =
+        await import('../ai');
       const { instruction, confidenceThreshold = 0.7 } = payload as {
         instruction: string;
         confidenceThreshold?: number;
@@ -2971,6 +2971,32 @@ export async function executeCommand(
           durationMs: performance.now() - t0,
           timestamp: Date.now(),
         };
+      // "scroll down" names no element: scroll the page through the relay's
+      // own `pageScroll`, rather than fuzzy-searching for an element called
+      // "down" (which failed, or scrolled a "Download" button's container).
+      if (isPageScroll(parsed)) {
+        const scrolled = (await executeCommand(
+          'pageScroll',
+          pageScrollDelta(parsed.scrollDirection!),
+          bridge
+        )) as { success?: boolean; error?: string };
+        if (scrolled?.success !== true)
+          return {
+            success: false,
+            executedAction: instruction,
+            error: `Action failed: ${scrolled?.error ?? 'unknown error'}`,
+            errorCode: 'ACTION_REJECTED',
+            durationMs: performance.now() - t0,
+            timestamp: Date.now(),
+          };
+        return {
+          success: true,
+          executedAction: `pageScroll ${parsed.scrollDirection}`,
+          confidence: 1,
+          durationMs: performance.now() - t0,
+          timestamp: Date.now(),
+        };
+      }
       const engine = createSearchEngine({ includeHidden: true });
       engine.updateElements(elements);
       const resp = engine.search({ text: parsed.targetDescription, fuzzy: true });

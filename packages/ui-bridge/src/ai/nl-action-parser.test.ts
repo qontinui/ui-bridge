@@ -10,6 +10,8 @@ import {
   extractModifiers,
   validateParsedAction,
   describeAction,
+  isPageScroll,
+  pageScrollDelta,
 } from './nl-action-parser';
 import type { ParsedAction } from './types';
 
@@ -384,6 +386,16 @@ describe('NLActionParser', () => {
       const dropdown = parseNLInstruction('scroll the dropdown up');
       expect(dropdown?.targetDescription).toBe('dropdown');
       expect(dropdown?.scrollDirection).toBe('up');
+    });
+
+    it('leaves a bare "scroll down" with no target, so it is a page scroll', () => {
+      const result = parseNLInstruction('scroll down');
+      expect(result?.targetDescription).toBe('');
+      expect(result && isPageScroll(result)).toBe(true);
+      expect(isPageScroll(parseNLInstruction('scroll the list down')!)).toBe(false);
+      expect(isPageScroll(parseNLInstruction('scroll to the footer')!)).toBe(false);
+      expect(pageScrollDelta('up')).toEqual({ top: -300, left: 0 });
+      expect(pageScrollDelta('right')).toEqual({ top: 0, left: 300 });
     });
 
     it('does not read a direction out of a "scroll to" target', () => {

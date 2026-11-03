@@ -348,6 +348,25 @@ describe('AI Module Integration: NL Instruction Flow', () => {
       );
     });
 
+    it('should run a bare "scroll down" as a window scroll, touching no element', async () => {
+      const windowScroll = vi.spyOn(window, 'scrollBy').mockImplementation(() => {});
+      try {
+        const response = await executor.execute({ instruction: 'scroll down' });
+        expect(response.success).toBe(true);
+        expect(response.elementUsed.id).toBe('page');
+        expect(windowScroll).toHaveBeenCalledWith(expect.objectContaining({ top: 300, left: 0 }));
+        expect(mockActionExecutor.executeAction).not.toHaveBeenCalled();
+
+        const parsed = await executor.executeParsed(parseNLInstruction('scroll left')!);
+        expect(parsed.success).toBe(true);
+        expect(windowScroll).toHaveBeenLastCalledWith(
+          expect.objectContaining({ top: 0, left: -300 })
+        );
+      } finally {
+        windowScroll.mockRestore();
+      }
+    });
+
     it('should run "scroll to X" as scrollIntoView and a directed scroll with its direction', async () => {
       const toSave = await executor.execute({ instruction: 'scroll to Save Changes' });
       expect(toSave.success).toBe(true);

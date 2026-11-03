@@ -16,7 +16,13 @@ import type {
   AIErrorContext,
   SearchResult,
 } from './types';
-import { parseNLInstruction, describeAction, validateParsedAction } from './nl-action-parser';
+import {
+  parseNLInstruction,
+  describeAction,
+  validateParsedAction,
+  isPageScroll,
+  pageScrollDelta,
+} from './nl-action-parser';
 import { SearchEngine, type SearchEngineConfig } from './search-engine';
 import { createErrorContext } from './error-context';
 import { trustDeveloperContent } from '../core/redaction';
@@ -111,6 +117,10 @@ export class NLActionExecutor {
       );
     }
 
+    // "scroll down" names no element: scroll the page instead of searching
+    // for an element called "down".
+    if (isPageScroll(parsed)) return this.scrollPage(parsed, startTime);
+
     // Build search criteria from parsed action
     const searchCriteria = this.buildSearchCriteria(parsed);
 
@@ -186,6 +196,8 @@ export class NLActionExecutor {
   async executeParsed(parsed: ParsedAction, threshold?: number): Promise<NLActionResponse> {
     const startTime = performance.now();
     const confidenceThreshold = threshold ?? this.config.defaultConfidenceThreshold;
+
+    if (isPageScroll(parsed)) return this.scrollPage(parsed, startTime);
 
     // Build search criteria
     const searchCriteria = this.buildSearchCriteria(parsed);
@@ -406,6 +418,25 @@ export class NLActionExecutor {
   }
 
   /**
+   * Scroll the window for a page-level scroll ("scroll down"). No element is
+   * involved, so `elementUsed` is a `page` placeholder rather than a match.
+   */
+  private scrollPage(parsed: ParsedAction, startTime: number): NLActionResponse {
+    const { top, left } = pageScrollDelta(parsed.scrollDirection!);
+    window.scrollBy({ top, left, behavior: 'auto' });
+    const page = placeholderElement('page', 'The page (window scroll)', true);
+    return {
+      success: true,
+      executedAction: describeAction(parsed),
+      elementUsed: page,
+      confidence: 1,
+      elementState: page.state,
+      durationMs: performance.now() - startTime,
+      timestamp: Date.now(),
+    };
+  }
+
+  /**
    * Create a failure response with suggestions
    */
   private createFailureResponse(
@@ -427,26 +458,8 @@ export class NLActionExecutor {
     );
 
     // Create a dummy element for the response
-    const dummyElement: AIDiscoveredElement = nearestMatch?.element || {
-      id: 'not-found',
-      type: 'unknown',
-      tagName: 'unknown',
-      actions: [],
-      state: {
-        visible: false,
-        // A placeholder for an element that was never found: not enabled, and
-        // neither disabled signal is asserted (there is no DOM node to read).
-        enabled: false,
-        disabled: false,
-        ariaDisabled: false,
-        focused: false,
-        rect: { x: 0, y: 0, width: 0, height: 0, top: 0, right: 0, bottom: 0, left: 0 },
-      },
-      registered: false,
-      description: trustDeveloperContent('Element not found'),
-      aliases: [],
-      suggestedActions: [],
-    };
+    const dummyElement: AIDiscoveredElement =
+      nearestMatch?.element || placeholderElement('not-found', 'Element not found', false);
 
     return {
       success: false,
@@ -531,4 +544,35 @@ export class NLActionExecutor {
  */
 export function createNLActionExecutor(config?: Partial<NLActionExecutorConfig>): NLActionExecutor {
   return new NLActionExecutor(config);
+}
+
+/**
+ * A stand-in for `elementUsed` when no registered element took part: an
+ * element that was never found, or the page itself for a window scroll.
+ */
+function placeholderElement(
+  id: string,
+  description: string,
+  visible: boolean
+): AIDiscoveredElement {
+  return {
+    id,
+    type: 'unknown',
+    tagName: 'unknown',
+    actions: [],
+    state: {
+      visible,
+      // There is no DOM node to read: not enabled, and neither disabled signal
+      // is asserted.
+      enabled: false,
+      disabled: false,
+      ariaDisabled: false,
+      focused: false,
+      rect: { x: 0, y: 0, width: 0, height: 0, top: 0, right: 0, bottom: 0, left: 0 },
+    },
+    registered: false,
+    description: trustDeveloperContent(description),
+    aliases: [],
+    suggestedActions: [],
+  };
 }

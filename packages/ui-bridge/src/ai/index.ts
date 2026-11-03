@@ -228,6 +228,9 @@ export {
   extractModifiers,
   validateParsedAction,
   describeAction,
+  isPageScroll,
+  pageScrollDelta,
+  NL_PAGE_SCROLL_STEP,
 } from './nl-action-parser';
 
 // NL Action Executor
