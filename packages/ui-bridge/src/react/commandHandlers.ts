@@ -75,6 +75,7 @@ import { inertAbortSignal } from '../core/abortable';
 import type { ComponentActionRequest, DragAction, MouseAction } from '../control/types';
 import { comboboxSelect, isComboboxLike } from '../control/combobox-select';
 import { performDragSequence } from '../control/drag-sequence';
+import { pageScrollContainer } from '../control/page-scroll-container';
 import { findElementByIdentifier } from '../core/element-identifier';
 import { applyValueMutation } from '../control/value-mutation';
 import { getEventStack } from '../debug/shared-utils';
@@ -1966,9 +1967,11 @@ export async function executeCommand(
                 }
               | undefined;
             const behavior = scrollParams?.smooth ? ('smooth' as const) : ('auto' as const);
-            // Find scrollable ancestor
+            // The nearest scroll container, the element itself included —
+            // the same walk as `DefaultActionExecutor.findScrollableElement`.
             let scrollTarget: HTMLElement = dom;
-            let p = dom.parentElement;
+            let foundContainer = false;
+            let p: HTMLElement | null = dom;
             while (p && p !== document.body) {
               const st = getComputedStyle(p);
               if (
@@ -1979,12 +1982,22 @@ export async function executeCommand(
                 (p.scrollHeight > p.clientHeight || p.scrollWidth > p.clientWidth)
               ) {
                 scrollTarget = p;
+                foundContainer = true;
                 break;
               }
               p = p.parentElement;
             }
-            if (scrollTarget === dom && document.body.scrollHeight > document.body.clientHeight) {
-              scrollTarget = document.body;
+            // No scrollable ancestor and the page overflows (or the target is
+            // the page itself): scroll the page's own scroll container. That
+            // is the body only where it really scrolls itself — never merely
+            // because its content overflows it (see `pageScrollContainer`).
+            if (
+              !foundContainer &&
+              (dom === document.documentElement ||
+                dom === document.body ||
+                document.body.scrollHeight > document.body.clientHeight)
+            ) {
+              scrollTarget = pageScrollContainer();
             }
             const before = {
               scrollTop: scrollTarget.scrollTop,

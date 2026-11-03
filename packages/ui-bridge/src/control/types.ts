@@ -1429,7 +1429,15 @@ export interface ControlBatchResponse {
  * Action executor interface
  */
 export interface ActionExecutor {
-  /** Execute an action on an element */
+  /**
+   * Execute an action on an element.
+   *
+   * For a `scroll`, the virtual ids `document`, `body` and `window` name the
+   * page itself rather than a registered element: an implementation resolves
+   * them to the page's scroll container. The NL executor sends a bare
+   * "scroll down" as a `document` scroll, so an implementation without the
+   * sentinel answers that instruction with an element-not-found failure.
+   */
   executeAction(elementId: string, action: ControlActionRequest): Promise<ControlActionResponse>;
 
   /**

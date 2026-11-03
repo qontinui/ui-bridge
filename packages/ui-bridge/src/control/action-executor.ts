@@ -47,6 +47,7 @@ function getCanonicalPerformAction(): PerformActionFn | null {
   return _canonicalPerformAction;
 }
 
+import { pageScrollContainer } from './page-scroll-container';
 import type { UIBridgeRegistry } from '../core/registry';
 import { serializeRegisteredElement, serializeRegisteredComponent } from '../core/registry';
 import { serializeElementCustomActions } from '../core/element-actions';
@@ -3583,14 +3584,10 @@ export class DefaultActionExecutor implements ActionExecutor {
       if (isScrollable) return current;
       current = current.parentElement;
     }
-    // Check body first — many Tauri/SPA apps make body the scroll container
-    if (
-      document.body.scrollHeight > document.body.clientHeight ||
-      document.body.scrollWidth > document.body.clientWidth
-    ) {
-      return document.body;
-    }
-    return document.documentElement;
+    // No scrollable ancestor: the page's own scroll container. That is the
+    // body only where it really scrolls itself (the Tauri/SPA layout), never
+    // merely because its content overflows it.
+    return pageScrollContainer();
   }
 
   private performCheck(element: HTMLElement, checked: boolean): void {
