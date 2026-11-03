@@ -558,6 +558,33 @@ describe('relay aiExecute withDiff · the shared tracker path', () => {
     }
   }, 30_000);
 
+  it('plain aiExecute: "scroll to X" scrolls X into view', async () => {
+    const footer = document.createElement('div');
+    footer.textContent = 'Footer';
+    makeVisible(footer);
+    const scrollIntoView = vi.fn();
+    (footer as unknown as { scrollIntoView: typeof scrollIntoView }).scrollIntoView =
+      scrollIntoView;
+    document.body.appendChild(footer);
+    getGlobalRegistry().registerElement('page-footer', footer, {
+      type: 'generic',
+      label: 'Footer',
+      actions: ['scroll', 'scrollIntoView'],
+    });
+    try {
+      const result = (await executeCommand(
+        'aiExecute',
+        { instruction: 'scroll to the Footer' },
+        emptyBridge
+      )) as Record<string, unknown>;
+      expect(result.success).toBe(true);
+      expect(result.executedAction).toBe('scrollIntoView on page-footer');
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    } finally {
+      footer.remove();
+    }
+  }, 30_000);
+
   it('plain aiExecute: a wait instruction is refused, not reported as done', async () => {
     const result = (await executeCommand(
       'aiExecute',

@@ -3045,12 +3045,18 @@ export async function executeCommand(
             // and `unhover` releases it, exactly as the direct verb does. A
             // fall-through `break` here used to answer `success: true` for a
             // verb that was never dispatched.
+            // "scroll to X" (no direction) brings X into view, as
+            // NLActionExecutor.performAction does.
+            const elementAction =
+              parsed.action === 'scroll' && !parsed.scrollDirection
+                ? 'scrollIntoView'
+                : parsed.action;
             const delegated = (await executeCommand(
               'executeElementAction',
               {
                 id: best.element.id,
                 request: {
-                  action: parsed.action,
+                  action: elementAction,
                   ...(parsed.value !== undefined ? { value: parsed.value } : {}),
                   // `scroll` reads its direction from `params` only; without
                   // this, "scroll up X" scrolled the handler's default (down).
@@ -3076,7 +3082,7 @@ export async function executeCommand(
             }
             return {
               success: true,
-              executedAction: `${parsed.action} on ${best.element.id}`,
+              executedAction: `${elementAction} on ${best.element.id}`,
               elementUsed: best.element,
               confidence: best.confidence,
               ...(delegated.forcedHover ? { forcedHover: delegated.forcedHover } : {}),
