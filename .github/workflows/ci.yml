@@ -93,7 +93,9 @@ jobs:
   #
   # The pool label set is spelled in `--self-hosted-labels` below and in every
   # routed job's `runs-on` and `# coord-pools:` line: change them together (the
-  # router counts queued pool jobs by that EXACT set). qontinui-ci.yml,
+  # router counts queued pool jobs by that EXACT set;
+  # `scripts/check-ci-routing.py`, run by ci-integrity-selftest.yml, fails on
+  # any disagreement between them or with the router PIN). qontinui-ci.yml,
   # smoke-test.yml and ci-integrity-selftest.yml route their Linux jobs the same
   # way, with their own `route` job.
   route:

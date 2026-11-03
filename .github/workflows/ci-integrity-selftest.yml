@@ -118,3 +118,11 @@ jobs:
 
       - name: Surface differ (surface / digest / alias refusal)
         run: python3 scripts/tests/ci-integrity/test-surface.py
+
+      # The candidate-CI routing spells the pool label set and the router pin
+      # by hand in every routed workflow; this fails on any disagreement
+      # (scripts/check-ci-routing.py says what each drift would do).
+      - name: CI routing sites agree (label set, coord-pools, router pin)
+        run: |
+          python3 -B scripts/tests/ci-routing/test-check-ci-routing.py
+          python3 -B scripts/check-ci-routing.py
