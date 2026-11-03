@@ -1,5 +1,8 @@
 """Tests for ui_bridge types."""
 
+import pytest
+from pydantic import ValidationError
+
 from ui_bridge.types import (
     ActionRequest,
     ActionResponse,
@@ -10,6 +13,7 @@ from ui_bridge.types import (
     ElementState,
     FindRequest,
     FindResponse,
+    SnapshotViewportContext,
     Workflow,
     WorkflowResult,
     WorkflowStep,
@@ -241,6 +245,33 @@ class TestElementState:
         assert state.scroll_info.can_scroll_down is True
         assert state.redaction is not None
         assert state.redaction.content is True
+
+
+class TestSnapshotViewportContext:
+    """The snapshot viewport carries which container the scroll was read from."""
+
+    base = {
+        "viewportWidth": 800,
+        "viewportHeight": 600,
+        "scrollX": 0,
+        "scrollY": 640,
+        "documentWidth": 800,
+        "documentHeight": 2000,
+        "canScrollDown": True,
+        "canScrollRight": False,
+    }
+
+    def test_container_round_trips(self):
+        ctx = SnapshotViewportContext.model_validate({**self.base, "container": "body"})
+        assert ctx.container == "body"
+        assert ctx.model_dump(by_alias=True)["container"] == "body"
+
+    def test_container_absent_from_an_older_sdk(self):
+        assert SnapshotViewportContext.model_validate(self.base).container is None
+
+    def test_container_rejects_unknown_value(self):
+        with pytest.raises(ValidationError):
+            SnapshotViewportContext.model_validate({**self.base, "container": "window"})
 
 
 class TestActionRequest:

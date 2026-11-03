@@ -24,6 +24,7 @@ import {
 } from '../core/a11y';
 import { createElementIdentifier, getBestIdentifier } from '../core/element-identifier';
 import { truncateCodePoints } from '../core/text';
+import { pageViewportContext } from '../control/page-scroll-container';
 
 /**
  * Captured DOM element information
@@ -461,6 +462,11 @@ export function captureDOMSnapshot(options: CaptureOptions = {}): DOMSnapshot {
 
   const endTime = performance.now();
 
+  // Scroll offsets come from the page's real scroll container: where `<body>`
+  // scrolls itself (the SPA / Tauri layout) the window never moves, so
+  // `window.scrollY` would record 0 on a scrolled page.
+  const pageViewport = pageViewportContext();
+
   return {
     timestamp: Date.now(),
     url: window.location.href,
@@ -468,8 +474,8 @@ export function captureDOMSnapshot(options: CaptureOptions = {}): DOMSnapshot {
     viewport: {
       width: window.innerWidth,
       height: window.innerHeight,
-      scrollX: window.scrollX,
-      scrollY: window.scrollY,
+      scrollX: pageViewport.scrollX,
+      scrollY: pageViewport.scrollY,
     },
     elements,
     totalNodeCount,

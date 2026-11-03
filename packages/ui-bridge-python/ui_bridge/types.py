@@ -1164,6 +1164,11 @@ class SnapshotViewportContext(BaseModel):
     document_height: float = Field(alias="documentHeight")
     can_scroll_down: bool = Field(alias="canScrollDown")
     can_scroll_right: bool = Field(alias="canScrollRight")
+    container: Literal["viewport", "body"] | None = None
+    """Which container the scroll fields were read from: the viewport (the
+    window scrolls the page) or ``body`` (the SPA / Tauri layout, where
+    ``<body>`` is its own scroll container). ``None`` from an SDK that
+    predates the field."""
 
     model_config = {"populate_by_name": True}
 

@@ -1,3 +1,5 @@
+import type { SnapshotViewportContext } from './types';
+
 /**
  * Which element scrolls the page.
  *
@@ -42,17 +44,7 @@ export function pageScrollContainer(): HTMLElement {
  * read reports `scrollY: 0` and `canScrollDown: false` on a page that does
  * scroll — the body's own offsets and extent are the truth there.
  */
-export function pageViewportContext(): {
-  viewportWidth: number;
-  viewportHeight: number;
-  scrollX: number;
-  scrollY: number;
-  documentWidth: number;
-  documentHeight: number;
-  canScrollDown: boolean;
-  canScrollRight: boolean;
-  container: 'viewport' | 'body';
-} {
+export function pageViewportContext(): Required<SnapshotViewportContext> {
   const container = pageScrollContainer();
   const viewport =
     container === ((document.scrollingElement as HTMLElement | null) ?? document.documentElement);
