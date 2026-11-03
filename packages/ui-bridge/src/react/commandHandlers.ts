@@ -4355,10 +4355,20 @@ export async function executeCommand(
 
     case 'pageScroll': {
       const scrollReq = payload as { top?: number; left?: number; smooth?: boolean };
-      const bX = window.scrollX;
-      const bY = window.scrollY;
+      // Scroll the page's real scroll container. Where `<body>` scrolls
+      // itself (the SPA / Tauri layout) the viewport does not move, so
+      // `window.scrollBy` would be a silent no-op; everywhere else the
+      // container is the viewport and the window drives it.
+      const container = pageScrollContainer();
+      const viewport = container === (document.scrollingElement ?? document.documentElement);
+      const target: Window | HTMLElement = viewport ? window : container;
+      const position = () =>
+        viewport
+          ? { scrollX: window.scrollX, scrollY: window.scrollY }
+          : { scrollX: container.scrollLeft, scrollY: container.scrollTop };
+      const before = position();
       const useSmooth = !!scrollReq?.smooth;
-      window.scrollBy({
+      target.scrollBy({
         top: scrollReq?.top ?? 0,
         left: scrollReq?.left ?? 0,
         behavior: useSmooth ? 'smooth' : 'auto',
@@ -4367,19 +4377,21 @@ export async function executeCommand(
       if (useSmooth) {
         await new Promise<void>((resolve) => {
           const onEnd = () => {
-            window.removeEventListener('scrollend', onEnd);
+            target.removeEventListener('scrollend', onEnd);
             resolve();
           };
-          window.addEventListener('scrollend', onEnd, { once: true });
+          target.addEventListener('scrollend', onEnd, { once: true });
           // Fallback timeout in case scrollend doesn't fire (e.g., already at boundary)
           setTimeout(onEnd, 500);
         });
       }
+      const after = position();
       return {
         success: true,
-        before: { scrollX: bX, scrollY: bY },
-        after: { scrollX: window.scrollX, scrollY: window.scrollY },
-        changed: window.scrollX !== bX || window.scrollY !== bY,
+        container: viewport ? 'viewport' : 'body',
+        before,
+        after,
+        changed: after.scrollX !== before.scrollX || after.scrollY !== before.scrollY,
         timestamp: Date.now(),
       };
     }
