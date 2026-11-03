@@ -194,8 +194,11 @@ export function InspectorOverlay({ bounds, label }: InspectorOverlayProps) {
     <div
       style={{
         ...overlayStyles,
-        left: bounds.left + window.scrollX,
-        top: bounds.top + window.scrollY,
+        // `position: fixed` is viewport-relative, as is `getBoundingClientRect()`:
+        // adding a scroll offset would push the box off its element on any
+        // scrolled page.
+        left: bounds.left,
+        top: bounds.top,
         width: bounds.width,
         height: bounds.height,
       }}
