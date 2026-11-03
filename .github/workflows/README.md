@@ -59,6 +59,14 @@ Python come from the pool host's shared tool cache, so a new `node-version` or
 for it (the action's header says why). ci.yml's `route` job carries the full
 explanation.
 
+The pool label set and the router's blob pin are spelled by hand at every site:
+`--self-hosted-labels` in each `route` step, the forced-lane literal in each
+routed `runs-on`, the `# coord-pools:` line directly above it, and the `want=`
+pin. `scripts/check-ci-routing.py` (run by `ci-integrity-selftest.yml`'s
+`guard-tests` job) fails on any disagreement among them or between a pin and the
+committed router, so after a re-sync or a label change run
+`python3 scripts/check-ci-routing.py` before pushing.
+
 ### `docs.yml` / `publish.yml` / `publish-pypi.yml`
 
 Documentation deploy and npm/package publishing. See each file for details.
