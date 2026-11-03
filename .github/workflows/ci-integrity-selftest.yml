@@ -30,17 +30,77 @@ on:
       - 'merge-candidate-spec/**'
       - 'merge-candidate-batch/**'
   pull_request:
+  # By hand, from a branch: exercises the self-hosted pool path below without
+  # pushing to a coord-owned merge-candidate ref.
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  # Where `guard-tests` runs: the self-hosted pool `[self-hosted, Linux, X64,
+  # ram-16g]` or the hosted `ubuntu-latest` floor, decided on a push or
+  # workflow_dispatch by the fleet's router (a verbatim copy of ccfg
+  # `scripts/route-ci-lane.py`) under the repo variable UIBRIDGE_CI_LINUX_LANE
+  # (auto | self-hosted | hosted, unset = hosted). A pull_request never reaches
+  # the pool, and every re-run goes to the floor. ci.yml's `route` job carries
+  # the full explanation. The guard itself, ci-integrity.yml, runs on
+  # pull_request_target and is NEVER routed: a base-permission trigger does not
+  # get a self-hosted host (decision_record self-hosted-runners-on-public-repos,
+  # condition 3). This workflow runs the guard's TESTS, on push or dispatch.
+  route:
+    if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && vars.UIBRIDGE_CI_LINUX_LANE == 'auto' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      labels: ${{ steps.route.outputs.labels }}
+      lane: ${{ steps.route.outputs.lane }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Route the Linux jobs
+        id: route
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UIBRIDGE_CI_LINUX_LANE: ${{ vars.UIBRIDGE_CI_LINUX_LANE }}
+          UIBRIDGE_CI_LINUX_LANE_SOURCE: repo variable UIBRIDGE_CI_LINUX_LANE
+          UIBRIDGE_CI_LINUX_HOSTED_LABEL: ubuntu-latest
+          UIBRIDGE_CI_LINUX_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: >-
+          python3 -B .github/scripts/route-ci-lane.py
+          --self-hosted-labels self-hosted,Linux,X64,ram-16g
+          --env-prefix UIBRIDGE_CI_LINUX
+          --title "CI-integrity guard tests"
+          --default-lane hosted
+          --hosted-on-rerun
+
   guard-tests:
     name: CI-integrity guard tests
-    runs-on: ubuntu-latest
+    # `!cancelled()` keeps a skipped `route` (every pull_request) from skipping
+    # this job, which coord would read as passing.
+    needs: route
+    if: ${{ !cancelled() }}
+    # The pool on a first attempt of a push or workflow_dispatch run when the
+    # lane says so, else the hosted floor. The check name stays
+    # `CI-integrity guard tests`.
+    # coord-pools: [self-hosted, Linux, X64, ram-16g] | [ubuntu-latest]
+    runs-on: ${{ fromJSON((github.run_attempt == 1 && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && vars.UIBRIDGE_CI_LINUX_LANE == 'self-hosted' && '["self-hosted","Linux","X64","ram-16g"]') || (github.run_attempt == 1 && needs.route.outputs.labels) || '["ubuntu-latest"]') }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
+
+      # SELF-HOSTED ONLY: a HOME, XDG dirs and TMPDIR of the job's own (every
+      # pool registration shares one account and one home).
+      - name: "Self-hosted: give the job its own HOME"
+        if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/self-hosted-job-env
 
       - name: Shell decision logic (real run-block, stubbed gh)
         run: bash scripts/tests/ci-integrity/run-scenarios.sh

@@ -6,7 +6,44 @@ This directory contains CI workflows for the UI Bridge monorepo.
 
 ### `ci.yml` — Standard CI
 
-Node + Python test matrix plus docs build. Runs on every push/PR to `main`.
+Node + Python test matrix plus docs build. Runs on every push/PR to `main`, on
+coord's `merge-candidate*/**` pushes, and by hand (`workflow_dispatch`).
+
+### Where the Linux jobs run — the self-hosted pool and its hosted floor
+
+On a **push** (`main` and coord's `merge-candidate*/**` refs) or a
+**`workflow_dispatch`**, the jobs of `ci.yml`, `qontinui-ci.yml`,
+`smoke-test.yml` and `ci-integrity-selftest.yml` can run on the self-hosted
+pool `[self-hosted, Linux, X64, ram-16g]` instead of GitHub's hosted
+`ubuntu-latest`. Each of those workflows has a `route` job that decides, using
+the fleet's router `.github/scripts/route-ci-lane.py` (a verbatim copy of
+qontinui-claude-config `scripts/route-ci-lane.py`; re-sync by copying it, never
+by editing it). The repository variable `UIBRIDGE_CI_LINUX_LANE` picks the lane:
+
+| Value | `route` | The routed jobs |
+|---|---|---|
+| `auto` | runs | the pool, unless it is stalled (a pool job queued 10 min or more), saturated (4 or more queued) or unreadable — then the hosted floor |
+| `self-hosted` | skipped | the pool, with no overflow: a dead pool queues them for up to 24 h |
+| `hosted`, unset, anything else | skipped | the hosted floor (the kill switch) |
+
+What never reaches the pool, whatever the variable says:
+
+- **A `pull_request` run.** Routing is gated on an allowlist of events (`push`,
+  `workflow_dispatch`), so a fork PR's code never runs on a fleet host. Every PR
+  check runs on GitHub's hosted runners, exactly as before.
+- **A re-run** (attempt 2 and later), so a pool that picks jobs up and then fails
+  them cannot fail the retry too.
+- **`ci-integrity.yml`** (`pull_request_target`), **`docs.yml`** (the Pages
+  deploy), **`publish.yml`** and **`publish-pypi.yml`**: they hold base-repo
+  permissions or publishing credentials, and stay on hosted runners.
+
+The check names do not change with the pool: they come from the job and its
+matrix values, so `lint-and-test (22.x)` is `lint-and-test (22.x)` on both. On
+the pool each job first runs `.github/actions/self-hosted-job-env`, which gives
+it a HOME and TMPDIR of its own (every pool registration shares one unix
+account), and the hosted-only steps (setup-node's npm cache, Playwright's
+`--with-deps`) carry `runner.environment == 'github-hosted'` guards. ci.yml's
+`route` job carries the full explanation.
 
 ### `docs.yml` / `publish.yml` / `publish-pypi.yml`
 
@@ -101,7 +138,8 @@ against the guard as committed in the PR, since the guard itself only ever runs
 
 One job:
 
-- **`lint-smoke-script`** (Ubuntu-hosted, runs on every PR + push to `main`)
+- **`lint-smoke-script`** (runs on every PR + push to `main`; Ubuntu-hosted for a
+  PR, routed to the self-hosted pool on a push — see "Where the Linux jobs run")
   - `bash -n scripts/smoke-test-runner.sh` — catches shell syntax errors early.
   - `shellcheck` — informational only; warnings do **not** fail the job.
   - Confirms `scripts["smoke-test:runner"]` exists in root `package.json`.

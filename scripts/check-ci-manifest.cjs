@@ -113,6 +113,13 @@ const EXCLUDED_JOBS = new Map([
       'on the host. Its 3.10/3.11/3.12 matrix is separately unrepresentable — a manifest ' +
       'has one PATH and one interpreter.',
   ],
+  [
+    'route',
+    'Not a gate: it only decides which runner pool the other jobs run on for a push or ' +
+      'workflow_dispatch, by reading this repo\'s queued Actions jobs with the run\'s ' +
+      'GITHUB_TOKEN. The local-CI lane has no runner pool to choose and no token to ask ' +
+      'with. Manifest header item 10.',
+  ],
 ]);
 
 /**

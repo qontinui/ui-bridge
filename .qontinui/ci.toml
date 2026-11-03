@@ -130,8 +130,19 @@
 #    that installs system packages. What this lane loses is only the browser
 #    half of the suite: the real-Chromium smokes skip themselves without a
 #    Playwright Chromium, so the `test` step below runs them skipping, exactly
-#    as ci.yml's `lint-and-test` does; they EXECUTE in `browser-smokes` on
-#    GitHub's hosted runners (ui-bridge is public).
+#    as ci.yml's `lint-and-test` does; they EXECUTE in `browser-smokes`, on
+#    GitHub's hosted runners for a pull_request (ui-bridge is public) and, on a
+#    push or dispatch, on whichever pool ci.yml's `route` job picked (item 10).
+#
+# 10. ci.yml's `route` job — NOT A GATE. On a push or workflow_dispatch it
+#    decides whether ci.yml's other jobs run on the self-hosted pool or on
+#    GitHub's hosted floor (repo variable UIBRIDGE_CI_LINUX_LANE), by reading
+#    this repo's queued Actions jobs with the run's GITHUB_TOKEN. This lane has
+#    no runner pool to choose between and no token to ask with, so there is
+#    nothing to mirror (EXCLUDED_JOBS in scripts/check-ci-manifest.cjs). The
+#    self-hosted setup it causes in `lint-and-test` and `docs` is a `uses:` step
+#    (.github/actions/self-hosted-job-env), which carries no command and so has
+#    no step to mirror here either.
 # ===========================================================================
 
 version = 1
