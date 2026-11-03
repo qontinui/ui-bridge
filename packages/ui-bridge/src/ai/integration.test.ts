@@ -348,23 +348,44 @@ describe('AI Module Integration: NL Instruction Flow', () => {
       );
     });
 
-    it('should run a bare "scroll down" as a window scroll, touching no element', async () => {
+    it('should run a bare "scroll down" as a page scroll through the action executor', async () => {
+      // The scroll goes to the executor's `document` page sentinel, never to
+      // this process's `window` (a standalone Node server has none).
       const windowScroll = vi.spyOn(window, 'scrollBy').mockImplementation(() => {});
       try {
         const response = await executor.execute({ instruction: 'scroll down' });
         expect(response.success).toBe(true);
         expect(response.elementUsed.id).toBe('page');
-        expect(windowScroll).toHaveBeenCalledWith(expect.objectContaining({ top: 300, left: 0 }));
-        expect(mockActionExecutor.executeAction).not.toHaveBeenCalled();
+        expect(mockActionExecutor.executeAction).toHaveBeenCalledWith('document', {
+          action: 'scroll',
+          params: { direction: 'down', amount: 300 },
+        });
 
         const parsed = await executor.executeParsed(parseNLInstruction('scroll left')!);
         expect(parsed.success).toBe(true);
-        expect(windowScroll).toHaveBeenLastCalledWith(
-          expect.objectContaining({ top: 0, left: -300 })
-        );
+        expect(mockActionExecutor.executeAction).toHaveBeenLastCalledWith('document', {
+          action: 'scroll',
+          params: { direction: 'left', amount: 300 },
+        });
+        expect(windowScroll).not.toHaveBeenCalled();
       } finally {
         windowScroll.mockRestore();
       }
+    });
+
+    it('should report a page scroll the executor rejects as a failure', async () => {
+      vi.mocked(mockActionExecutor.executeAction).mockResolvedValueOnce({
+        success: false,
+        error: 'scroll refused',
+      } as Awaited<ReturnType<ActionExecutor['executeAction']>>);
+      const response = await executor.execute({ instruction: 'scroll up' });
+      expect(response.success).toBe(false);
+      expect(response.error).toContain('scroll refused');
+
+      const unwired = createNLActionExecutor();
+      const noExecutor = await unwired.execute({ instruction: 'scroll down' });
+      expect(noExecutor.success).toBe(false);
+      expect(noExecutor.error).toContain('No action executor configured');
     });
 
     it('should run "scroll to X" as scrollIntoView and a directed scroll with its direction', async () => {

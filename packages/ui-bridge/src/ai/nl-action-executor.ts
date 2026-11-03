@@ -21,7 +21,7 @@ import {
   describeAction,
   validateParsedAction,
   isPageScroll,
-  pageScrollDelta,
+  NL_PAGE_SCROLL_STEP,
 } from './nl-action-parser';
 import { SearchEngine, type SearchEngineConfig } from './search-engine';
 import { createErrorContext } from './error-context';
@@ -119,7 +119,8 @@ export class NLActionExecutor {
 
     // "scroll down" names no element: scroll the page instead of searching
     // for an element called "down".
-    if (isPageScroll(parsed)) return this.scrollPage(parsed, startTime);
+    if (isPageScroll(parsed))
+      return this.scrollPage(parsed, request.instruction, threshold, startTime);
 
     // Build search criteria from parsed action
     const searchCriteria = this.buildSearchCriteria(parsed);
@@ -197,7 +198,8 @@ export class NLActionExecutor {
     const startTime = performance.now();
     const confidenceThreshold = threshold ?? this.config.defaultConfidenceThreshold;
 
-    if (isPageScroll(parsed)) return this.scrollPage(parsed, startTime);
+    if (isPageScroll(parsed))
+      return this.scrollPage(parsed, parsed.rawInstruction, confidenceThreshold, startTime);
 
     // Build search criteria
     const searchCriteria = this.buildSearchCriteria(parsed);
@@ -418,25 +420,51 @@ export class NLActionExecutor {
   }
 
   /**
-   * Scroll the window for a page-level scroll ("scroll down"). No element is
-   * involved, so `elementUsed` is a `page` placeholder rather than a match.
+   * Scroll the page for a page-level scroll ("scroll down"). It goes through
+   * the configured action executor with the `document` page sentinel, which
+   * every executor resolves to the page scroll container, so the scroll runs
+   * wherever the executor does — not on this process's `window`, which a
+   * standalone (Node) server does not have. No element is involved, so
+   * `elementUsed` is a `page` placeholder rather than a match.
    */
-  private scrollPage(
+  private async scrollPage(
     parsed: ParsedAction & { scrollDirection: NonNullable<ParsedAction['scrollDirection']> },
+    instruction: string,
+    threshold: number,
     startTime: number
-  ): NLActionResponse {
-    const { top, left } = pageScrollDelta(parsed.scrollDirection);
-    window.scrollBy({ top, left, behavior: 'auto' });
-    const page = placeholderElement('page', 'The page (window scroll)', true);
-    return {
-      success: true,
-      executedAction: describeAction(parsed),
-      elementUsed: page,
-      confidence: 1,
-      elementState: page.state,
-      durationMs: performance.now() - startTime,
-      timestamp: Date.now(),
-    };
+  ): Promise<NLActionResponse> {
+    try {
+      if (!this.actionExecutor) {
+        throw new Error('No action executor configured');
+      }
+      const response = await this.actionExecutor.executeAction(PAGE_SCROLL_SENTINEL, {
+        action: 'scroll',
+        params: { direction: parsed.scrollDirection, amount: NL_PAGE_SCROLL_STEP },
+      });
+      if (!response.success) {
+        throw new Error(response.error || 'Action failed');
+      }
+      const page = placeholderElement('page', 'The page (page scroll)', true);
+      return {
+        success: true,
+        executedAction: describeAction(parsed),
+        elementUsed: page,
+        confidence: 1,
+        elementState: response.elementState ?? page.state,
+        durationMs: performance.now() - startTime,
+        timestamp: Date.now(),
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return this.createFailureResponse(
+        startTime,
+        'UB-ACTION-FAILED',
+        errorMessage,
+        instruction,
+        [],
+        threshold
+      );
+    }
   }
 
   /**
@@ -541,6 +569,12 @@ export class NLActionExecutor {
     return createErrorContext(errorCode, instruction, this.elements, searchCriteria, nearestMatch);
   }
 }
+
+/**
+ * The virtual element id every action executor resolves, for a `scroll`, to
+ * the page scroll container.
+ */
+const PAGE_SCROLL_SENTINEL = 'document';
 
 /**
  * Create a default NL action executor
