@@ -348,6 +348,22 @@ describe('AI Module Integration: NL Instruction Flow', () => {
       );
     });
 
+    it('should run "scroll to X" as scrollIntoView and a directed scroll with its direction', async () => {
+      const toSave = await executor.execute({ instruction: 'scroll to Save Changes' });
+      expect(toSave.success).toBe(true);
+      expect(mockActionExecutor.executeAction).toHaveBeenCalledWith(
+        'save-btn',
+        expect.objectContaining({ action: 'scrollIntoView' })
+      );
+
+      const directed = await executor.execute({ instruction: 'scroll Save Changes up' });
+      expect(directed.success).toBe(true);
+      expect(mockActionExecutor.executeAction).toHaveBeenLastCalledWith(
+        'save-btn',
+        expect.objectContaining({ action: 'scroll', params: { direction: 'up' } })
+      );
+    });
+
     it('should default `clear: true` on NL type actions to replace pre-filled values', async () => {
       // Regression: "type 'X' in element Y" semantically replaces the field.
       // Without clear, performType appends — manifested in the runner's home-
@@ -721,7 +737,8 @@ describe('AI Module Integration: Error Recovery', () => {
 
       const hasCloseSuggestion = context.suggestions.some(
         (s) =>
-          s.suggestion.toLowerCase().includes('close') || s.suggestion.toLowerCase().includes('blocking')
+          s.suggestion.toLowerCase().includes('close') ||
+          s.suggestion.toLowerCase().includes('blocking')
       );
       expect(hasCloseSuggestion).toBe(true);
     });

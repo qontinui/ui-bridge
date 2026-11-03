@@ -336,7 +336,12 @@ export class NLActionExecutor {
       clear: 'clear',
     };
 
-    const standardAction = actionMap[parsed.action];
+    // "scroll to X" is the only scroll pattern that carries no direction, and
+    // it means "bring X into view", not "scroll X's container down 300px".
+    const standardAction: StandardAction | null =
+      parsed.action === 'scroll' && !parsed.scrollDirection
+        ? 'scrollIntoView'
+        : actionMap[parsed.action];
 
     if (!standardAction) {
       // Handle special actions
@@ -517,13 +522,7 @@ export class NLActionExecutor {
     searchCriteria?: SearchCriteria,
     nearestMatch?: SearchResult
   ): AIErrorContext {
-    return createErrorContext(
-      errorCode,
-      instruction,
-      this.elements,
-      searchCriteria,
-      nearestMatch
-    );
+    return createErrorContext(errorCode, instruction, this.elements, searchCriteria, nearestMatch);
   }
 }
 
