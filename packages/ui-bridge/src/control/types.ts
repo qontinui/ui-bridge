@@ -16,6 +16,7 @@ import type {
   MediaObservation,
   FillResult,
   SerializedElementAction,
+  CanvasCoverage,
 } from '../core/types';
 import type { SnapshotPageContext } from '../navigation/types';
 import type { SnapshotShortcutContext } from '../shortcuts/types';
@@ -931,6 +932,13 @@ export interface ControlSnapshot {
   shortcuts?: SnapshotShortcutContext;
   /** Modal/dialog stack — active modals/dialogs/drawers (populated by server handlers via ModalDetector) */
   modalStack?: SnapshotModalContext;
+  /**
+   * The page's canvas census (`UIBridgeRegistry.getCanvasCoverage`), stamped
+   * by every page SDK that has one. Absent means the page SDK predates it,
+   * which the relay's `/control/visibility` reports as `unavailable`
+   * (`page-sdk-lacks-coverage`).
+   */
+  canvasCoverage?: CanvasCoverage;
   /** Toast/notification snapshot — active and recently dismissed toasts (populated by server handlers via ToastCapture) */
   toasts?: SnapshotToastContext;
   /** Viewport dimensions and page scroll position */
