@@ -641,6 +641,7 @@ export type StandardAction =
   | 'focus'
   | 'blur'
   | 'hover'
+  | 'unhover'
   | 'scroll'
   | 'scrollIntoView'
   | 'check'

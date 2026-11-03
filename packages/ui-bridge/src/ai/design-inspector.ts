@@ -17,6 +17,13 @@ import type {
   ResponsiveSnapshot,
 } from '../core/types';
 import { classString } from '../core/class-name';
+import {
+  forcePseudoState,
+  reapplyIfIdle,
+  releaseForcedPseudoStateIfOwner,
+  snapshotForcedPseudoState,
+  type ForcedPseudoHoldSnapshot,
+} from '../control/forced-hover';
 
 // ============================================================================
 // Constants
@@ -92,7 +99,12 @@ const DESIGN_PROPERTIES: (keyof ExtendedComputedStyles)[] = [
 /**
  * Interaction states to cycle through for state variation capture
  */
-const INTERACTION_STATES: InteractionStateName[] = ['hover', 'focus', 'active', 'disabled'];
+export const INTERACTION_STATES: readonly InteractionStateName[] = [
+  'hover',
+  'focus',
+  'active',
+  'disabled',
+];
 
 /**
  * Default viewport breakpoints
@@ -194,9 +206,36 @@ export function getElementDesignData(
  */
 export async function captureStateVariations(
   el: HTMLElement,
-  states?: InteractionStateName[]
+  states?: readonly InteractionStateName[]
 ): Promise<StateStyles[]> {
   const targetStates = states || INTERACTION_STATES;
+
+  // The page has ONE forced pseudo-state (one pointer). If an agent is holding
+  // a `hover` right now, inspection borrows the pointer: the agent's hold is
+  // suspended (so `default` is read at rest, not hovered), and re-applied with
+  // the TTL it had left once inspection is done. Inspection only ever releases
+  // the holds it created itself (by hold id).
+  const agentHold = snapshotForcedPseudoState();
+  if (agentHold) {
+    await releaseForcedPseudoStateIfOwner(agentHold.holdId, 'replaced', {
+      borrowedFrom: agentHold,
+    });
+  }
+  try {
+    return await captureEachState(el, targetStates, agentHold ?? undefined);
+  } finally {
+    // Inside the serialized queue, and only if the pointer is idle: a hover
+    // someone applied while inspection ran is newer, and wins. The re-apply
+    // replays the original hover's JS half (its enter events) too.
+    if (agentHold) await reapplyIfIdle(agentHold);
+  }
+}
+
+async function captureEachState(
+  el: HTMLElement,
+  targetStates: readonly InteractionStateName[],
+  borrowedFrom: ForcedPseudoHoldSnapshot | undefined
+): Promise<StateStyles[]> {
   const defaultStyles = getExtendedComputedStyles(el);
   const results: StateStyles[] = [];
 
@@ -210,11 +249,12 @@ export async function captureStateVariations(
   for (const stateName of targetStates) {
     if (stateName === 'default') continue;
 
+    let restore: (() => Promise<void>) | null = null;
     try {
-      // Apply the state
-      applyInteractionState(el, stateName);
-
-      // Wait one frame for styles to apply
+      // Apply the state. `hover`/`active` force the real CSS pseudo-class and
+      // wait for the transitions it started, so the read below is the settled
+      // state appearance rather than a frame of a fade.
+      restore = await applyInteractionState(el, stateName, borrowedFrom);
       await waitFrame();
 
       // Read styles in the new state
@@ -228,7 +268,7 @@ export async function captureStateVariations(
       });
     } finally {
       // Always restore to default state
-      restoreInteractionState(el, stateName);
+      if (restore) await restore();
       await waitFrame();
     }
   }
@@ -583,46 +623,49 @@ function computeStyleDiff(
 }
 
 /**
- * Apply an interaction state to an element using synthetic events
+ * Apply an interaction state to an element and return the function that
+ * restores it.
+ *
+ * `hover` and `active` are user-action pseudo-classes no synthetic event can
+ * set (`mouseenter` never sets `:hover`, `mousedown` never sets `:active`), so
+ * they are FORCED through the in-place selector rewrite of `control/forced-hover.ts` —
+ * the same primitive the `hover` action uses — and released (verified) by the
+ * restore. `focus` uses the real `el.focus()` and restores the previously
+ * focused element. `disabled` restores the element's own prior value.
  */
-function applyInteractionState(el: HTMLElement, state: InteractionStateName): void {
+async function applyInteractionState(
+  el: HTMLElement,
+  state: InteractionStateName,
+  borrowedFrom?: ForcedPseudoHoldSnapshot
+): Promise<() => Promise<void>> {
   switch (state) {
     case 'hover':
-      el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-      el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-      break;
-    case 'focus':
+    case 'active': {
+      const { holdId } = await forcePseudoState(el, state, { borrowedFrom });
+      return async () => {
+        await releaseForcedPseudoStateIfOwner(holdId, 'explicit');
+      };
+    }
+    case 'focus': {
+      const previous = document.activeElement;
       el.focus();
-      el.dispatchEvent(new FocusEvent('focus', { bubbles: true }));
-      break;
-    case 'active':
-      el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-      break;
-    case 'disabled':
-      (el as HTMLButtonElement | HTMLInputElement).disabled = true;
-      break;
-  }
-}
-
-/**
- * Restore an element from an interaction state
- */
-function restoreInteractionState(el: HTMLElement, state: InteractionStateName): void {
-  switch (state) {
-    case 'hover':
-      el.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }));
-      el.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
-      break;
-    case 'focus':
-      el.blur();
-      el.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
-      break;
-    case 'active':
-      el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-      break;
-    case 'disabled':
-      (el as HTMLButtonElement | HTMLInputElement).disabled = false;
-      break;
+      return async () => {
+        if (previous instanceof HTMLElement && previous !== el && previous !== document.body) {
+          previous.focus();
+        }
+        if (document.activeElement === el) el.blur();
+      };
+    }
+    case 'disabled': {
+      const control = el as HTMLButtonElement | HTMLInputElement;
+      const wasDisabled = control.disabled;
+      control.disabled = true;
+      return async () => {
+        control.disabled = wasDisabled;
+      };
+    }
+    default:
+      return async () => undefined;
   }
 }
 
@@ -630,7 +673,10 @@ function restoreInteractionState(el: HTMLElement, state: InteractionStateName): 
  * Wait for the next animation frame
  */
 function waitFrame(): Promise<void> {
-  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+  return new Promise((resolve) => {
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => resolve());
+    else setTimeout(resolve, 0);
+  });
 }
 
 /**

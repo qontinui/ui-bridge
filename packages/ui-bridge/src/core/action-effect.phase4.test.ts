@@ -19,7 +19,7 @@ import {
 } from './action-effect';
 
 describe('Phase 4 — STANDARD_ACTION_EFFECTS', () => {
-  it('classifies all 22 standard verbs exactly as written here', () => {
+  it('classifies all 23 standard verbs exactly as written here', () => {
     expect(STANDARD_ACTION_EFFECTS).toEqual({
       click: 'write',
       hoverClick: 'write',
@@ -33,6 +33,7 @@ describe('Phase 4 — STANDARD_ACTION_EFFECTS', () => {
       focus: 'read',
       blur: 'read',
       hover: 'read',
+      unhover: 'read',
       scroll: 'read',
       scrollIntoView: 'read',
       check: 'write',
@@ -46,8 +47,8 @@ describe('Phase 4 — STANDARD_ACTION_EFFECTS', () => {
     });
   });
 
-  it('covers exactly 22 verbs', () => {
-    expect(Object.keys(STANDARD_ACTION_EFFECTS)).toHaveLength(22);
+  it('covers exactly 23 verbs', () => {
+    expect(Object.keys(STANDARD_ACTION_EFFECTS)).toHaveLength(23);
   });
 
   it('never defaults a verb to destructive — that value is declaration-only', () => {
