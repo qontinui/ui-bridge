@@ -240,6 +240,20 @@ const ACTION_PATTERNS: ActionPattern[] = [
     confidence: 0.85,
   },
 
+  // Unhover patterns (release the held forced `:hover`)
+  {
+    regex: /^(?:unhover|stop\s+hovering)\s+(?:over\s+)?(?:the\s+)?(.+)$/i,
+    action: 'unhover',
+    targetGroup: 1,
+    confidence: 0.9,
+  },
+  {
+    regex: /^move\s+(?:the\s+)?mouse\s+(?:away\s+)?(?:from|off)\s+(?:of\s+)?(?:the\s+)?(.+)$/i,
+    action: 'unhover',
+    targetGroup: 1,
+    confidence: 0.8,
+  },
+
   // Focus patterns
   {
     regex: /^focus\s+(?:on\s+)?(?:the\s+)?(.+)$/i,
@@ -541,6 +555,8 @@ export function describeAction(action: ParsedAction): string {
       return `Clear "${action.targetDescription}"`;
     case 'hover':
       return `Hover over "${action.targetDescription}"`;
+    case 'unhover':
+      return `Stop hovering "${action.targetDescription}"`;
     case 'focus':
       return `Focus on "${action.targetDescription}"`;
     case 'scroll':

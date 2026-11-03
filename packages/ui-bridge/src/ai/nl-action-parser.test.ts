@@ -305,6 +305,24 @@ describe('NLActionParser', () => {
     });
   });
 
+  describe('parseNLInstruction - unhover patterns', () => {
+    it.each([
+      ['unhover the menu', 'menu'],
+      ['stop hovering over the dropdown', 'dropdown'],
+      ['move the mouse away from the tooltip trigger', 'tooltip trigger'],
+      ['move mouse off the card', 'card'],
+    ])('should parse "%s" as unhover', (instruction, target) => {
+      const result = parseNLInstruction(instruction);
+
+      expect(result?.action).toBe('unhover');
+      expect(result?.targetDescription).toBe(target);
+    });
+
+    it('should keep "hover over the menu" a hover', () => {
+      expect(parseNLInstruction('hover over the menu')?.action).toBe('hover');
+    });
+  });
+
   describe('parseNLInstruction - focus patterns', () => {
     it('should parse "focus on the email input"', () => {
       const result = parseNLInstruction('focus on the email input');
@@ -826,6 +844,17 @@ describe('NLActionParser', () => {
       };
 
       expect(describeAction(action)).toBe('Hover over "menu"');
+    });
+
+    it('should describe unhover action', () => {
+      const action: ParsedAction = {
+        action: 'unhover',
+        targetDescription: 'menu',
+        rawInstruction: 'unhover menu',
+        parseConfidence: 0.9,
+      };
+
+      expect(describeAction(action)).toBe('Stop hovering "menu"');
     });
 
     it('should describe focus action', () => {

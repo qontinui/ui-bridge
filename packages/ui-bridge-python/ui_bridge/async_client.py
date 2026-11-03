@@ -396,6 +396,23 @@ class AsyncUIBridgeClient:
             params["settleTimeoutMs"] = settle_timeout_ms
         return await self._execute_action(element_id, "hover", params=params or None)
 
+    async def hover_click(
+        self,
+        element_id: str,
+        *,
+        settle_timeout_ms: int | None = None,
+    ) -> ActionResponse:
+        """
+        Force the CSS ``:hover`` state on a hover-revealed control, then click
+        it; the hover is released when the click completes.
+
+        See :meth:`UIBridgeClient.hover_click`.
+        """
+        params: dict[str, Any] = {}
+        if settle_timeout_ms is not None:
+            params["settleTimeoutMs"] = settle_timeout_ms
+        return await self._execute_action(element_id, "hoverClick", params=params or None)
+
     async def unhover(self, element_id: str) -> ActionResponse:
         """
         Release the page's forced hover, whichever element holds it. A no-op

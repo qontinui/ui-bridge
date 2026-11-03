@@ -687,6 +687,7 @@ class ParsedAction(BaseModel):
         "wait",
         "assert",
         "hover",
+        "unhover",
         "focus",
         "clear",
         "doubleClick",

@@ -331,6 +331,7 @@ export class NLActionExecutor {
       wait: null, // Special handling
       assert: null, // Special handling
       hover: 'hover',
+      unhover: 'unhover',
       focus: 'focus',
       clear: 'clear',
     };
