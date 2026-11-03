@@ -316,6 +316,7 @@ export interface ParsedAction {
     | 'wait'
     | 'assert'
     | 'hover'
+    | 'unhover'
     | 'focus'
     | 'clear'
     | 'doubleClick'

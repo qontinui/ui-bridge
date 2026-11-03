@@ -380,6 +380,24 @@ class TestAsyncUIBridgeClientActions:
         assert call_kwargs[1]["json"]["action"] == "unhover"
 
     @pytest.mark.asyncio
+    async def test_hover_click(self, client: AsyncUIBridgeClient) -> None:
+        data = _action_data()
+        data["forcedHover"] = {
+            "applied": {"rulesRewritten": 1, "revealed": []},
+            "released": {"released": True, "restore": "verified"},
+        }
+        client._request = AsyncMock(return_value=data)  # type: ignore[method-assign]
+        result = await client.hover_click("close-1", settle_timeout_ms=250)
+
+        assert result.forced_hover is not None
+        assert result.forced_hover["released"]["released"] is True
+        call_kwargs = client._request.call_args
+        assert call_kwargs[1]["json"] == {
+            "action": "hoverClick",
+            "params": {"settleTimeoutMs": 250},
+        }
+
+    @pytest.mark.asyncio
     async def test_select(self, client: AsyncUIBridgeClient) -> None:
         client._request = AsyncMock(return_value=_action_data(duration=30.0))  # type: ignore[method-assign]
         result = await client.select("dropdown-1", value="option-2")

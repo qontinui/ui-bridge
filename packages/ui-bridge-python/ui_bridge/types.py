@@ -433,6 +433,7 @@ class StandardAction(str, Enum):
     """Standard actions available on elements."""
 
     CLICK = "click"
+    HOVER_CLICK = "hoverClick"
     DOUBLE_CLICK = "doubleClick"
     RIGHT_CLICK = "rightClick"
     TYPE = "type"

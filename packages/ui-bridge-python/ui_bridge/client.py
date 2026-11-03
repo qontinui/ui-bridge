@@ -486,6 +486,27 @@ class UIBridgeClient:
             params["settleTimeoutMs"] = settle_timeout_ms
         return self._execute_action(element_id, "hover", params=params or None)
 
+    def hover_click(
+        self,
+        element_id: str,
+        *,
+        settle_timeout_ms: int | None = None,
+    ) -> ActionResponse:
+        """
+        Click a control that is only clickable while hovered (e.g. a
+        ``group-hover:pointer-events-auto`` button): force the real CSS
+        ``:hover`` state on it and its ancestors, wait up to
+        ``settle_timeout_ms`` for the transitions it starts, then click.
+
+        ``hoverClick`` is write-class, so the forced hover is released when the
+        click completes; ``forced_hover`` carries both ``applied`` and
+        ``released``.
+        """
+        params: dict[str, Any] = {}
+        if settle_timeout_ms is not None:
+            params["settleTimeoutMs"] = settle_timeout_ms
+        return self._execute_action(element_id, "hoverClick", params=params or None)
+
     def unhover(self, element_id: str) -> ActionResponse:
         """
         Release the page's forced hover, whichever element holds it, and
