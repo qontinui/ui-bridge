@@ -2973,8 +2973,59 @@ export async function executeCommand(
               dom.dispatchEvent(new Event('change', { bubbles: true }));
             }
             break;
-          default:
-            break;
+          case 'wait':
+          case 'assert':
+            // No element-action verb exists for these; only the NLActionExecutor
+            // path (`withDiff: true`) implements them. Refuse rather than report
+            // a success for an action that never ran.
+            return {
+              success: false,
+              executedAction: instruction,
+              error: `"${parsed.action}" is not executable on this path; send withDiff: true`,
+              errorCode: 'ACTION_REJECTED',
+              durationMs: performance.now() - t0,
+              timestamp: Date.now(),
+            };
+          default: {
+            // Every other parsed verb (`hover`, `unhover`, `focus`, `check`,
+            // `clear`, ...) IS an element action: run it through the relay's own
+            // `executeElementAction`, so `hover` forces the real CSS `:hover`
+            // and `unhover` releases it, exactly as the direct verb does. A
+            // fall-through `break` here used to answer `success: true` for a
+            // verb that was never dispatched.
+            const delegated = (await executeCommand(
+              'executeElementAction',
+              {
+                id: best.element.id,
+                request: {
+                  action: parsed.action,
+                  ...(parsed.value !== undefined ? { value: parsed.value } : {}),
+                },
+              },
+              bridge
+            )) as { success?: boolean; error?: string; forcedHover?: unknown };
+            if (delegated?.success !== true) {
+              return {
+                success: false,
+                executedAction: instruction,
+                error: `Action failed: ${delegated?.error ?? 'unknown error'}`,
+                errorCode: 'ACTION_REJECTED',
+                elementUsed: best.element,
+                confidence: best.confidence,
+                durationMs: performance.now() - t0,
+                timestamp: Date.now(),
+              };
+            }
+            return {
+              success: true,
+              executedAction: `${parsed.action} on ${best.element.id}`,
+              elementUsed: best.element,
+              confidence: best.confidence,
+              ...(delegated.forcedHover ? { forcedHover: delegated.forcedHover } : {}),
+              durationMs: performance.now() - t0,
+              timestamp: Date.now(),
+            };
+          }
         }
       } catch (err) {
         return {
