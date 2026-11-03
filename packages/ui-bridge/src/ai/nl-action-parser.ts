@@ -19,6 +19,8 @@ interface ActionPattern {
   targetGroup: number;
   /** Capture group index for value (optional) */
   valueGroup?: number;
+  /** Capture group index for a scroll direction (optional) */
+  directionGroup?: number;
   /** Extract modifiers from match */
   modifierExtractor?: (match: RegExpMatchArray) => ParsedAction['modifiers'];
   /** Confidence level for this pattern */
@@ -267,12 +269,14 @@ const ACTION_PATTERNS: ActionPattern[] = [
     regex: /^scroll\s+(up|down|left|right)$/i,
     action: 'scroll',
     targetGroup: 1,
+    directionGroup: 1,
     confidence: 0.9,
   },
   {
     regex: /^scroll\s+(?:the\s+)?(.+?)\s+(up|down|left|right)$/i,
     action: 'scroll',
     targetGroup: 1,
+    directionGroup: 2,
     confidence: 0.85,
   },
   {
@@ -365,12 +369,13 @@ export function parseNLInstruction(instruction: string): ParsedAction | null {
       }
 
       // Handle scroll direction
-      if (pattern.action === 'scroll') {
-        const directionMatch = trimmed.match(/(up|down|left|right)/i);
-        if (directionMatch) {
-          parsed.scrollDirection =
-            directionMatch[1].toLowerCase() as ParsedAction['scrollDirection'];
-        }
+      // Read the direction from the pattern's own capture group. Searching the
+      // whole instruction picked up target words ("Upload", "dropdown",
+      // "Downloads") as the direction.
+      if (pattern.directionGroup && match[pattern.directionGroup]) {
+        parsed.scrollDirection = match[
+          pattern.directionGroup
+        ].toLowerCase() as ParsedAction['scrollDirection'];
       }
 
       // Handle assertion type

@@ -375,6 +375,22 @@ describe('NLActionParser', () => {
       expect(result?.action).toBe('scroll');
       expect(result?.scrollDirection).toBe('down');
     });
+
+    it('takes the direction from the trailing word, not a word inside the target', () => {
+      const upload = parseNLInstruction('scroll Upload list down');
+      expect(upload?.targetDescription).toBe('Upload list');
+      expect(upload?.scrollDirection).toBe('down');
+
+      const dropdown = parseNLInstruction('scroll the dropdown up');
+      expect(dropdown?.targetDescription).toBe('dropdown');
+      expect(dropdown?.scrollDirection).toBe('up');
+    });
+
+    it('does not read a direction out of a "scroll to" target', () => {
+      const result = parseNLInstruction('scroll to Downloads');
+      expect(result?.targetDescription).toBe('Downloads');
+      expect(result?.scrollDirection).toBeUndefined();
+    });
   });
 
   describe('parseNLInstruction - wait patterns', () => {
