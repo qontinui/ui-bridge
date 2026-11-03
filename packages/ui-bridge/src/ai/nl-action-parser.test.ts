@@ -393,6 +393,8 @@ describe('NLActionParser', () => {
       expect(result?.targetDescription).toBe('');
       expect(result && isPageScroll(result)).toBe(true);
       expect(isPageScroll(parseNLInstruction('scroll the list down')!)).toBe(false);
+      expect(isPageScroll(parseNLInstruction('scroll the page down')!)).toBe(true);
+      expect(isPageScroll(parseNLInstruction('scroll window up')!)).toBe(true);
       expect(isPageScroll(parseNLInstruction('scroll to the footer')!)).toBe(false);
       expect(pageScrollDelta('up')).toEqual({ top: -300, left: 0 });
       expect(pageScrollDelta('right')).toEqual({ top: 0, left: 300 });

@@ -548,12 +548,22 @@ export function validateParsedAction(action: ParsedAction): { valid: boolean; er
  */
 export const NL_PAGE_SCROLL_STEP = 300;
 
+/** Targets that name the page itself rather than an element in it. */
+const PAGE_SCROLL_TARGETS = new Set(['', 'page', 'window', 'document', 'body', 'screen']);
+
 /**
  * A page-level scroll: a scroll instruction that names a direction and no
- * element ("scroll down"). It moves the window, not an element's container.
+ * element ("scroll down"), or names the page itself ("scroll the page down").
+ * It moves the window, not an element's container.
  */
-export function isPageScroll(action: ParsedAction): boolean {
-  return action.action === 'scroll' && !action.targetDescription && !!action.scrollDirection;
+export function isPageScroll(
+  action: ParsedAction
+): action is ParsedAction & { scrollDirection: NonNullable<ParsedAction['scrollDirection']> } {
+  return (
+    action.action === 'scroll' &&
+    !!action.scrollDirection &&
+    PAGE_SCROLL_TARGETS.has(action.targetDescription.trim().toLowerCase())
+  );
 }
 
 /**

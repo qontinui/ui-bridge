@@ -421,8 +421,11 @@ export class NLActionExecutor {
    * Scroll the window for a page-level scroll ("scroll down"). No element is
    * involved, so `elementUsed` is a `page` placeholder rather than a match.
    */
-  private scrollPage(parsed: ParsedAction, startTime: number): NLActionResponse {
-    const { top, left } = pageScrollDelta(parsed.scrollDirection!);
+  private scrollPage(
+    parsed: ParsedAction & { scrollDirection: NonNullable<ParsedAction['scrollDirection']> },
+    startTime: number
+  ): NLActionResponse {
+    const { top, left } = pageScrollDelta(parsed.scrollDirection);
     window.scrollBy({ top, left, behavior: 'auto' });
     const page = placeholderElement('page', 'The page (window scroll)', true);
     return {

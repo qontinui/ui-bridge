@@ -1903,7 +1903,8 @@ export async function executeCommand(
           case 'scrollIntoView': {
             type ScrollLogicalPos = 'start' | 'center' | 'end' | 'nearest';
             const sivParams = request.params as
-              { smooth?: boolean; block?: ScrollLogicalPos; inline?: ScrollLogicalPos } | undefined;
+              | { smooth?: boolean; block?: ScrollLogicalPos; inline?: ScrollLogicalPos }
+              | undefined;
             const sivBehavior =
               sivParams?.smooth !== false ? ('smooth' as const) : ('auto' as const);
             const sivBlock = sivParams?.block || 'center';
@@ -2977,7 +2978,7 @@ export async function executeCommand(
       if (isPageScroll(parsed)) {
         const scrolled = (await executeCommand(
           'pageScroll',
-          pageScrollDelta(parsed.scrollDirection!),
+          pageScrollDelta(parsed.scrollDirection),
           bridge
         )) as { success?: boolean; error?: string };
         if (scrolled?.success !== true)
