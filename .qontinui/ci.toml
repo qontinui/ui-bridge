@@ -53,8 +53,9 @@
 #    a directory the executor DELETES at cleanup, permanently breaking `import
 #    ui_bridge` in the user's own environment. Unlike the Node side there is no
 #    lockfile-scoped, self-contained equivalent here (the package is
-#    setuptools/pip, with no poetry venv to isolate into), and unlike an
-#    ephemeral Actions runner this lane's host survives the dispatch. Giving
+#    setuptools/pip, with no poetry venv to isolate into), and unlike a
+#    GitHub-hosted Actions runner this lane's host survives the dispatch (ci.yml's
+#    self-hosted pool runs survive too, and install into a per-job venv). Giving
 #    this job a mirror means giving the package a venv-scoped install path in
 #    the repo — a change to the repo and to the workflow, so it is not smuggled
 #    in here. Its matrix over Python 3.10/3.11/3.12 is separately unrepresentable:
@@ -116,8 +117,9 @@
 #    below that will fail these steps for a reason that is about the host, not
 #    the commit.
 #
-# 8. NO setup-node CACHE EQUIVALENT. The Actions lane restores an npm cache
-#    keyed on the lockfiles; a cold CI node downloads the full tree, which is why
+# 8. NO setup-node CACHE EQUIVALENT. The Actions lane's GitHub-hosted runs
+#    restore an npm cache keyed on the lockfiles (its self-hosted pool runs do
+#    not, by design); a cold CI node downloads the full tree, which is why
 #    the two install steps below carry the maximum per-step timeout.
 #
 # 9. ci.yml's `browser-smokes` job — A HOST-DAMAGE GAP, items 1 and 2 at once.

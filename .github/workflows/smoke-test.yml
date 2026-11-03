@@ -26,10 +26,10 @@ jobs:
   # X64, ram-16g]` or the hosted `ubuntu-latest` floor, decided on a push or
   # workflow_dispatch by the fleet's router (a verbatim copy of ccfg
   # `scripts/route-ci-lane.py`) under the repo variable UIBRIDGE_CI_LINUX_LANE
-  # (auto | self-hosted | hosted, unset = hosted). A pull_request never reaches
-  # the pool, and every re-run goes to the floor. ci.yml's `route` job carries
-  # the full explanation. Change the label set here, in the routed job's
-  # `runs-on`, and in ci.yml together.
+  # (auto | self-hosted | hosted, unset = hosted). This workflow never routes a
+  # pull_request run to the pool, and every re-run goes to the floor. ci.yml's
+  # `route` job carries the full explanation. Change the label set here, in the
+  # routed job's `runs-on`, and in ci.yml together.
   route:
     if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && vars.UIBRIDGE_CI_LINUX_LANE == 'auto' }}
     runs-on: ubuntu-latest
@@ -55,13 +55,22 @@ jobs:
           UIBRIDGE_CI_LINUX_LANE_SOURCE: repo variable UIBRIDGE_CI_LINUX_LANE
           UIBRIDGE_CI_LINUX_HOSTED_LABEL: ubuntu-latest
           UIBRIDGE_CI_LINUX_RUN_ATTEMPT: ${{ github.run_attempt }}
-        run: >-
-          python3 -B .github/scripts/route-ci-lane.py
-          --self-hosted-labels self-hosted,Linux,X64,ram-16g
-          --env-prefix UIBRIDGE_CI_LINUX
-          --title "Lint smoke-test script"
-          --default-lane hosted
-          --hosted-on-rerun
+        run: |
+          # PIN: the router must be ccfg's blob, byte for byte (ci.yml's `route`
+          # comment says why). A mismatch routes to the hosted floor, never red.
+          want=c67b16e79f3bfaa9b92cd5e1702aa8e03e818c83
+          got=$(git hash-object .github/scripts/route-ci-lane.py 2>/dev/null || echo unreadable)
+          if [ "$got" != "$want" ]; then
+            echo "::error title=route: router not the pinned blob::.github/scripts/route-ci-lane.py is $got, not $want. Routing to the hosted floor. Re-sync it as a verbatim copy of qontinui-claude-config scripts/route-ci-lane.py and update this pin in the same change."
+            printf 'labels=["ubuntu-latest"]\nlane=hosted\nreason=router blob mismatch\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 -B .github/scripts/route-ci-lane.py \
+            --self-hosted-labels self-hosted,Linux,X64,ram-16g \
+            --env-prefix UIBRIDGE_CI_LINUX \
+            --title "Lint smoke-test script" \
+            --default-lane hosted \
+            --hosted-on-rerun
 
   lint-smoke-script:
     name: Lint smoke-test script
@@ -73,7 +82,9 @@ jobs:
     # lane says so, else the hosted floor. The check name stays
     # `Lint smoke-test script`.
     # coord-pools: [self-hosted, Linux, X64, ram-16g] | [ubuntu-latest]
-    runs-on: ${{ fromJSON((github.run_attempt == 1 && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && vars.UIBRIDGE_CI_LINUX_LANE == 'self-hosted' && '["self-hosted","Linux","X64","ram-16g"]') || (github.run_attempt == 1 && needs.route.outputs.labels) || '["ubuntu-latest"]') }}
+    runs-on: ${{ fromJSON(github.run_attempt == 1 && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (vars.UIBRIDGE_CI_LINUX_LANE == 'self-hosted' && '["self-hosted","Linux","X64","ram-16g"]' || needs.route.outputs.labels) || '["ubuntu-latest"]') }}
+    # Backstop for a hung job (observed: 0.1-0.2 min on both).
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
 
