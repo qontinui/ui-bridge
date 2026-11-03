@@ -158,8 +158,9 @@ jobs:
     runs-on: ${{ fromJSON(github.run_attempt == 1 && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (vars.UIBRIDGE_CI_LINUX_LANE == 'self-hosted' && '["self-hosted","Linux","X64","ram-16g"]' || needs.route.outputs.labels) || '["ubuntu-latest"]') }}
     # A backstop: on the pool a hung job holds one of six registrations for the
     # 360-minute default. Slowest seen (samples, 2026-11-03): 9.5 min hosted,
-    # 15.2 min pool (pool times track the host's load).
-    timeout-minutes: 30
+    # 15.2 min pool (pool times track the host's load). Generous on purpose: a
+    # false timeout costs a whole candidate cycle, a later one only a slot.
+    timeout-minutes: 45
 
     strategy:
       matrix:
