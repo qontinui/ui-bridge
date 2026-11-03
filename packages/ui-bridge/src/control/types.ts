@@ -704,6 +704,12 @@ export interface SnapshotViewportContext {
   canScrollDown: boolean;
   /** Whether the page can scroll further right */
   canScrollRight: boolean;
+  /**
+   * Which container the scroll fields were read from: the viewport (the
+   * window scrolls the page) or `<body>` (the SPA / Tauri layout, where the
+   * body is its own scroll container and the window never moves).
+   */
+  container?: 'viewport' | 'body';
 }
 
 /**

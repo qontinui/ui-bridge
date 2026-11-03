@@ -96,3 +96,29 @@ describe('relay pageScroll · scroll container', () => {
     expect(performance.now() - t0).toBeLessThan(400);
   });
 });
+
+describe('relay getControlSnapshot · viewport context', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    for (const el of [document.documentElement, document.body]) {
+      el.style.overflowX = '';
+      el.style.overflowY = '';
+    }
+  });
+
+  it("carries the body's scroll position where the body scrolls the page", async () => {
+    document.documentElement.style.overflowX = 'hidden';
+    document.documentElement.style.overflowY = 'hidden';
+    document.body.style.overflowX = 'auto';
+    document.body.style.overflowY = 'auto';
+    vi.spyOn(document.body, 'scrollHeight', 'get').mockReturnValue(5000);
+    vi.spyOn(document.body, 'clientHeight', 'get').mockReturnValue(800);
+    vi.spyOn(document.body, 'scrollTop', 'get').mockReturnValue(300);
+    const snapshot = (await executeCommand('getControlSnapshot', {}, emptyBridge)) as {
+      viewport?: { container?: string; scrollY: number; canScrollDown: boolean };
+    };
+    expect(snapshot.viewport?.container).toBe('body');
+    expect(snapshot.viewport?.scrollY).toBe(300);
+    expect(snapshot.viewport?.canScrollDown).toBe(true);
+  });
+});

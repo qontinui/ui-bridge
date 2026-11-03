@@ -259,6 +259,7 @@ import type { RegisteredElement } from '../core/types';
 import { serializeElementCustomActions } from '../core/element-actions';
 import type { CustomAction } from '../core/types';
 import type { VisionCaptureRequest, VisionRawRequest } from '../vision/wire';
+import { pageViewportContext } from '../control/page-scroll-container';
 
 /**
  * Minimal structural type for the optional `@qontinui/ui-bridge-headless`
@@ -2461,17 +2462,10 @@ export function createHandlers(
 
         // Enrich snapshot with viewport/scroll context
         if (typeof window !== 'undefined') {
-          const docEl = document.documentElement;
-          snapshot.viewport = {
-            viewportWidth: window.innerWidth,
-            viewportHeight: window.innerHeight,
-            scrollX: window.scrollX,
-            scrollY: window.scrollY,
-            documentWidth: docEl.scrollWidth,
-            documentHeight: docEl.scrollHeight,
-            canScrollDown: window.scrollY + window.innerHeight < docEl.scrollHeight - 1,
-            canScrollRight: window.scrollX + window.innerWidth < docEl.scrollWidth - 1,
-          };
+          // Read the page's real scroll container: where `<body>` scrolls
+          // itself the window never moves, so a window-only read would say
+          // the page cannot scroll at all.
+          snapshot.viewport = pageViewportContext();
         }
 
         return success(snapshot);

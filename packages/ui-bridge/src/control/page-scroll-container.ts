@@ -31,3 +31,54 @@ export function pageScrollContainer(): HTMLElement {
   }
   return (document.scrollingElement as HTMLElement | null) ?? root;
 }
+
+/**
+ * The page's viewport and scroll context, read from the container that
+ * actually scrolls the page (see {@link pageScrollContainer}).
+ *
+ * Where the viewport scrolls, this is the window's offsets against the root's
+ * scroll extent. Where `<body>` scrolls itself (the SPA / Tauri layout) the
+ * window never moves and the root is exactly viewport-sized, so a window-only
+ * read reports `scrollY: 0` and `canScrollDown: false` on a page that does
+ * scroll — the body's own offsets and extent are the truth there.
+ */
+export function pageViewportContext(): {
+  viewportWidth: number;
+  viewportHeight: number;
+  scrollX: number;
+  scrollY: number;
+  documentWidth: number;
+  documentHeight: number;
+  canScrollDown: boolean;
+  canScrollRight: boolean;
+  container: 'viewport' | 'body';
+} {
+  const container = pageScrollContainer();
+  const viewport =
+    container === ((document.scrollingElement as HTMLElement | null) ?? document.documentElement);
+  if (viewport) {
+    const docEl = document.documentElement;
+    return {
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+      scrollX: window.scrollX,
+      scrollY: window.scrollY,
+      documentWidth: docEl.scrollWidth,
+      documentHeight: docEl.scrollHeight,
+      canScrollDown: window.scrollY + window.innerHeight < docEl.scrollHeight - 1,
+      canScrollRight: window.scrollX + window.innerWidth < docEl.scrollWidth - 1,
+      container: 'viewport',
+    };
+  }
+  return {
+    viewportWidth: window.innerWidth,
+    viewportHeight: window.innerHeight,
+    scrollX: container.scrollLeft,
+    scrollY: container.scrollTop,
+    documentWidth: container.scrollWidth,
+    documentHeight: container.scrollHeight,
+    canScrollDown: container.scrollTop + container.clientHeight < container.scrollHeight - 1,
+    canScrollRight: container.scrollLeft + container.clientWidth < container.scrollWidth - 1,
+    container: 'body',
+  };
+}

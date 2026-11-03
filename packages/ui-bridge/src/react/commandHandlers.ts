@@ -75,7 +75,7 @@ import { inertAbortSignal } from '../core/abortable';
 import type { ComponentActionRequest, DragAction, MouseAction } from '../control/types';
 import { comboboxSelect, isComboboxLike } from '../control/combobox-select';
 import { performDragSequence } from '../control/drag-sequence';
-import { pageScrollContainer } from '../control/page-scroll-container';
+import { pageScrollContainer, pageViewportContext } from '../control/page-scroll-container';
 import { findElementByIdentifier } from '../core/element-identifier';
 import { applyValueMutation } from '../control/value-mutation';
 import { getEventStack } from '../debug/shared-utils';
@@ -1606,6 +1606,13 @@ export async function executeCommand(
           steps: w.steps,
         })),
         activeRuns: [],
+        // Viewport + page scroll context, as `/control/snapshot` carries it
+        // standalone. Read from the page's real scroll container, so after a
+        // relay `pageScroll` in the body-scrolling SPA / Tauri layout the
+        // snapshot shows the moved position and an honest `canScrollDown`.
+        ...(typeof window !== 'undefined' && typeof document !== 'undefined'
+          ? { viewport: pageViewportContext() }
+          : {}),
       };
 
       // Run the registry's snapshot enrichers (canonical seven + any
