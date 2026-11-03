@@ -1675,7 +1675,11 @@ export class DefaultActionExecutor implements ActionExecutor {
           notDispatched: (err) =>
             err instanceof ElementDisabledError ||
             err instanceof ElementNotVisibleError ||
-            err instanceof ActionValidationError,
+            err instanceof ActionValidationError ||
+            // An unknown verb is refused, not dispatched. Defensive today:
+            // only a write-class verb releases, and every write-class verb
+            // has a `performAction` arm, so none reaches this throw.
+            err instanceof UnknownActionError,
         }
       );
       // `hover` / `hoverClick` / `unhover` return their forced-hover report as
