@@ -1,0 +1,58 @@
+# SELF-HOSTED ONLY: the per-job environment a GitHub-hosted VM gives every job
+# for free and a persistent pool host has to be told.
+#
+# Call it as the step right after actions/checkout, guarded by
+# `if: runner.environment == 'self-hosted'` (a local action is read from the
+# checked-out tree, so it cannot run before the checkout). It refuses to run
+# anywhere else rather than quietly moving a hosted job's HOME.
+#
+# WHY. A hosted job gets a fresh VM. A pool job gets a registration that ran a
+# job a minute ago and will run another a minute from now, and on the pool this
+# repo routes to (ci.yml's `route` job) every registration runs as ONE unix
+# account with ONE home. So anything a job writes under ~ -- npm's cache and its
+# _npx installs, Playwright's browsers, pip's cache, any tool's ~/.config -- is
+# shared by every concurrent job on the host and outlives the job that wrote it.
+# This gives the job a HOME, the four XDG base directories and a TMPDIR of its
+# own under $RUNNER_TEMP, which the runner empties when the job ends.
+# CI_POOL_HOME keeps the account's real home, and CARGO_HOME / RUSTUP_HOME stay
+# pointed at the account's toolchain, so a step that needs either still has it.
+#
+# WHY AN ACTION AND NOT A `run:` STEP. ci.yml's `lint-and-test` and `docs` jobs
+# are mirrored step for step into .qontinui/ci.toml, and
+# scripts/check-ci-manifest.cjs compares every `run:` step of those two jobs
+# against the manifest. A `uses:` step carries no command and is not compared,
+# so the self-hosted setup can live in those jobs without a manifest step (the
+# product's local-CI lane has no such pool and needs none).
+name: Self-hosted job environment
+description: >-
+  Self-hosted runners only: give the job its own HOME, XDG base directories and
+  TMPDIR under $RUNNER_TEMP, so concurrent pool jobs that share one unix account
+  never share caches or state.
+runs:
+  using: composite
+  steps:
+    - name: Give the job its own HOME and TMPDIR
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ "${RUNNER_ENVIRONMENT:-}" != "self-hosted" ]; then
+          echo "::error title=self-hosted-job-env::this action is for self-hosted runners only (RUNNER_ENVIRONMENT='${RUNNER_ENVIRONMENT:-}'). Guard the step with: if: runner.environment == 'self-hosted'"
+          exit 1
+        fi
+        # Idempotent: a second call keeps the account home the first one saved.
+        pool_home="${CI_POOL_HOME:-$HOME}"
+        job_home="$RUNNER_TEMP/home"
+        mkdir -p "$job_home/.cache" "$job_home/.config" "$job_home/.local/share" \
+                 "$job_home/.local/state" "$RUNNER_TEMP/tmp"
+        {
+          echo "CI_POOL_HOME=$pool_home"
+          echo "CARGO_HOME=${CARGO_HOME:-$pool_home/.cargo}"
+          echo "RUSTUP_HOME=${RUSTUP_HOME:-$pool_home/.rustup}"
+          echo "HOME=$job_home"
+          echo "XDG_CACHE_HOME=$job_home/.cache"
+          echo "XDG_CONFIG_HOME=$job_home/.config"
+          echo "XDG_DATA_HOME=$job_home/.local/share"
+          echo "XDG_STATE_HOME=$job_home/.local/state"
+          echo "TMPDIR=$RUNNER_TEMP/tmp"
+        } >> "$GITHUB_ENV"
+        echo "runner ${RUNNER_NAME:-?}: HOME -> $job_home, TMPDIR -> $RUNNER_TEMP/tmp (account home $pool_home kept as CI_POOL_HOME)"
