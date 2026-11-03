@@ -33,12 +33,14 @@ import type {
   VisionBaselineCreateResponse,
   VisionBaselineListResponse,
   VisionCacheStreamResponse,
+  VisionCaptureRequest,
   VisionCaptureResponse,
   VisionDescribeResponse,
   VisionDiffResponse,
   VisionExtractResponse,
   VisionHealthResponse,
   VisionMutationOccurredResponse,
+  VisionRawRequest,
   VisionRawResponse,
 } from '../vision/wire';
 import type { RenderLogEntry, RenderLogEntryType } from '../render-log';
@@ -645,11 +647,11 @@ export interface UIBridgeServerHandlers {
   // answer `RUNNER_REQUIRED` (→ `UB-CAPABILITY-UNAVAILABLE`); the success
   // payloads typed here are what the runner serves (see `../vision/wire`).
   visionCapture: (
-    request?: Record<string, unknown>,
+    request?: VisionCaptureRequest,
     context?: HandlerContext
   ) => Promise<APIResponse<VisionCaptureResponse>>;
   visionAnnotate: (
-    request?: Record<string, unknown>,
+    request?: VisionCaptureRequest,
     context?: HandlerContext
   ) => Promise<APIResponse<VisionCaptureResponse>>;
   visionDiff: (
@@ -657,7 +659,7 @@ export interface UIBridgeServerHandlers {
     context?: HandlerContext
   ) => Promise<APIResponse<VisionDiffResponse>>;
   visionRaw: (
-    request?: Record<string, unknown>,
+    request?: VisionRawRequest,
     context?: HandlerContext
   ) => Promise<APIResponse<VisionRawResponse>>;
   visionCacheStream: (
