@@ -106,8 +106,8 @@ jobs:
     # coord-pools: [self-hosted, Linux, X64, ram-16g] | [ubuntu-latest]
     runs-on: ${{ fromJSON(github.run_attempt == 1 && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (vars.UIBRIDGE_CI_LINUX_LANE == 'self-hosted' && '["self-hosted","Linux","X64","ram-16g"]' || needs.route.outputs.labels) || '["ubuntu-latest"]') }}
     # Backstop for a hung job: on the pool it would hold one of six
-    # registrations for the 360-minute default (observed: 5.8-7.3 min hosted,
-    # 6.8 min pool).
+    # registrations for the 360-minute default (slowest seen 2026-11-03:
+    # 7.3 min hosted, 10.8 min pool).
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4

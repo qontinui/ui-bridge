@@ -83,7 +83,7 @@ jobs:
     # `Lint smoke-test script`.
     # coord-pools: [self-hosted, Linux, X64, ram-16g] | [ubuntu-latest]
     runs-on: ${{ fromJSON(github.run_attempt == 1 && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (vars.UIBRIDGE_CI_LINUX_LANE == 'self-hosted' && '["self-hosted","Linux","X64","ram-16g"]' || needs.route.outputs.labels) || '["ubuntu-latest"]') }}
-    # Backstop for a hung job (observed: 0.1-0.2 min on both).
+    # Backstop for a hung job (slowest seen 2026-11-03: 0.2 min on both).
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5

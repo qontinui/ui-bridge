@@ -40,8 +40,8 @@ name: Self-hosted job environment
 description: >-
   Self-hosted runners only: give the job its own HOME, XDG base directories and
   TMPDIR under $RUNNER_TEMP, so concurrent pool jobs that share one unix account
-  do not share anything kept under ~ or in TMPDIR. The host's tool cache stays
-  shared (see the header).
+  do not share anything kept under ~ or in TMPDIR. The host's tool cache, and
+  CARGO_HOME / RUSTUP_HOME, stay shared (see the header).
 runs:
   using: composite
   steps:
