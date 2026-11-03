@@ -500,6 +500,24 @@ export function useInspector(options: UseInspectorOptions = {}) {
 
   // Build display element (selected takes precedence over hovered)
   const displayElement = selectedElement || hoveredElement;
+
+  // `bounds` is read at render time, so a scroll or resize under a still mouse
+  // would leave the fixed overlay where the element used to be. Re-render on
+  // any scroll (capture phase, so a scrolling `<body>` or inner container
+  // counts too) or resize while something is highlighted.
+  const [layoutTick, setLayoutTick] = useState(0);
+  useEffect(() => {
+    if (!active || !displayElement) return;
+    const relayout = () => setLayoutTick((n) => n + 1);
+    window.addEventListener('scroll', relayout, true);
+    window.addEventListener('resize', relayout);
+    return () => {
+      window.removeEventListener('scroll', relayout, true);
+      window.removeEventListener('resize', relayout);
+    };
+  }, [active, displayElement]);
+  // `layoutTick` is read only so a scroll/resize re-render re-reads the rect.
+  void layoutTick;
   const bounds = displayElement?.getBoundingClientRect() || null;
   const registeredElement = displayElement
     ? options.getRegisteredElement?.(displayElement)
