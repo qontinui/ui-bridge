@@ -17,8 +17,10 @@ On a **push** (`main` and coord's `merge-candidate*/**` refs) or a
 pool `[self-hosted, Linux, X64, ram-16g]` instead of GitHub's hosted
 `ubuntu-latest`. Each of those workflows has a `route` job that decides, using
 the fleet's router `.github/scripts/route-ci-lane.py` (a verbatim copy of
-qontinui-claude-config `scripts/route-ci-lane.py`; re-sync by copying it, never
-by editing it). The repository variable `UIBRIDGE_CI_LINUX_LANE` picks the lane:
+qontinui-claude-config `scripts/route-ci-lane.py`; re-sync by copying it and
+updating the blob pin in each `route` step, never by editing it — a copy that
+does not match its pin routes everything to the hosted floor). The repository
+variable `UIBRIDGE_CI_LINUX_LANE` picks the lane:
 
 | Value | `route` | The routed jobs |
 |---|---|---|
@@ -26,11 +28,20 @@ by editing it). The repository variable `UIBRIDGE_CI_LINUX_LANE` picks the lane:
 | `self-hosted` | skipped | the pool, with no overflow: a dead pool queues them for up to 24 h |
 | `hosted`, unset, anything else | skipped | the hosted floor (the kill switch) |
 
-What never reaches the pool, whatever the variable says:
+What `auto` costs: `route` itself runs on a hosted runner, so a run still waits
+for one hosted job before its pool jobs start — and when `route` picks the floor,
+the jobs then wait in the hosted queue a second time. `self-hosted` removes that
+wait and gives up the overflow.
+
+What these workflows never route to the pool, whatever the variable says:
 
 - **A `pull_request` run.** Routing is gated on an allowlist of events (`push`,
-  `workflow_dispatch`), so a fork PR's code never runs on a fleet host. Every PR
-  check runs on GitHub's hosted runners, exactly as before.
+  `workflow_dispatch`), checked in every routed job's own `runs-on`. Every PR
+  check runs on GitHub's hosted runners, exactly as before. Two things this does
+  not decide: a fork PR that edits `runs-on` itself is held by the repository's
+  fork-PR approval policy (`all_external_contributors`), and a PR's code does run
+  on the pool once coord pushes it to a `merge-candidate*` ref — that is the
+  candidate CI this exists to move.
 - **A re-run** (attempt 2 and later), so a pool that picks jobs up and then fails
   them cannot fail the retry too.
 - **`ci-integrity.yml`** (`pull_request_target`), **`docs.yml`** (the Pages
@@ -42,8 +53,11 @@ matrix values, so `lint-and-test (22.x)` is `lint-and-test (22.x)` on both. On
 the pool each job first runs `.github/actions/self-hosted-job-env`, which gives
 it a HOME and TMPDIR of its own (every pool registration shares one unix
 account), and the hosted-only steps (setup-node's npm cache, Playwright's
-`--with-deps`) carry `runner.environment == 'github-hosted'` guards. ci.yml's
-`route` job carries the full explanation.
+`--with-deps`) carry `runner.environment == 'github-hosted'` guards. Node and
+Python come from the pool host's shared tool cache, so a new `node-version` or
+`python-version` must be provisioned on the pool hosts before a workflow asks
+for it (the action's header says why). ci.yml's `route` job carries the full
+explanation.
 
 ### `docs.yml` / `publish.yml` / `publish-pypi.yml`
 

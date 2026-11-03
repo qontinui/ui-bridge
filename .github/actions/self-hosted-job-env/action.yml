@@ -17,6 +17,19 @@
 # CI_POOL_HOME keeps the account's real home, and CARGO_HOME / RUSTUP_HOME stay
 # pointed at the account's toolchain, so a step that needs either still has it.
 #
+# WHAT THIS DOES NOT ISOLATE: the runner TOOL CACHE. setup-node and setup-python
+# resolve versions from $RUNNER_TOOL_CACHE (/opt/hostedtoolcache on the pool
+# host), which is host-wide, shared by every registration, and outside this
+# action's reach -- moving it per job would also hide the Pythons the host is
+# seeded with. When a requested version is missing there, the action that wants
+# it downloads it and installs it with @actions/tool-cache, which deletes the
+# target directory before copying: two jobs fetching the same NEW version at
+# once can delete each other's install mid-job (observed once, harmlessly, on
+# this repo's first pool run, when Node 22 and 20 were fetched). So every
+# `node-version` / `python-version` these workflows ask for must already be in
+# the pool hosts' tool cache: adding a new one is a host provisioning step,
+# done before the workflow change lands.
+#
 # WHY AN ACTION AND NOT A `run:` STEP. ci.yml's `lint-and-test` and `docs` jobs
 # are mirrored step for step into .qontinui/ci.toml, and
 # scripts/check-ci-manifest.cjs compares every `run:` step of those two jobs
@@ -27,7 +40,8 @@ name: Self-hosted job environment
 description: >-
   Self-hosted runners only: give the job its own HOME, XDG base directories and
   TMPDIR under $RUNNER_TEMP, so concurrent pool jobs that share one unix account
-  never share caches or state.
+  do not share anything kept under ~ or in TMPDIR. The host's tool cache stays
+  shared (see the header).
 runs:
   using: composite
   steps:

@@ -31,14 +31,22 @@ jobs:
   # On a push (main and coord's merge-candidate*/** refs) or a workflow_dispatch,
   # this job decides whether every job below runs on the self-hosted pool
   # `[self-hosted, Linux, X64, ram-16g]` -- on 2026-11-03 the repo-level
-  # registrations nawa-uib-1..6, 60 GiB-high units -- or on the free
-  # GitHub-hosted `ubuntu-latest` floor. A pull_request never reaches the pool:
-  # this job does not run for one, and each routed job's `runs-on` sends it to
-  # the floor by itself, so a fork PR's code never runs on a fleet host
-  # (decision_record self-hosted-runners-on-public-repos, conditions 1 and 3).
-  # Routing is gated on an ALLOWLIST of events, not on "not a pull_request", so
-  # a trigger added later (pull_request_target, workflow_run, issue_comment)
-  # stays on the floor until someone routes it on purpose.
+  # registrations nawa-uib-1..6, systemd units with MemoryHigh 60 GiB
+  # (`systemctl show -p MemoryHigh`: 61440M) -- or on the free GitHub-hosted
+  # `ubuntu-latest` floor.
+  #
+  # WHAT REACHES THE POOL. This workflow never routes a pull_request run there:
+  # this job does not run for one, and each routed job's `runs-on` sends a
+  # pull_request to the floor by itself, independently of this job's `if`.
+  # Routing is gated on an ALLOWLIST of events (push, workflow_dispatch), not on
+  # "not a pull_request", so a trigger added later (pull_request_target,
+  # workflow_run, issue_comment) stays on the floor until someone routes it on
+  # purpose (decision_record self-hosted-runners-on-public-repos, condition 3).
+  # Two things this file does NOT decide: a fork PR that edits `runs-on` itself
+  # is held by the repo's fork-PR approval policy, `all_external_contributors`
+  # (that decision_record's condition 1), and a PR's code DOES run on the pool
+  # once coord pushes it to a merge-candidate ref -- by design, that is the
+  # candidate CI this routing exists to move.
   #
   # WHY. The org's free hosted pool (about 20 concurrent jobs) is shared by
   # every public repo's PR CI, and coord's merge train waits behind it. Over the
@@ -48,11 +56,14 @@ jobs:
   # The decision is the fleet's route-with-a-hosted-floor router: a VERBATIM
   # copy of qontinui-claude-config `scripts/route-ci-lane.py` (blob c67b16e7;
   # its hermetic test is `scripts/route-ci-lane-test.py` there). Re-sync by
-  # copying the file again and checking `git hash-object` against ccfg's blob,
-  # never by editing it here. With `actions: read` it reads THIS repo's queued
-  # jobs and routes to the floor when the pool is STALLED (a pool job queued
-  # >= 10 min), SATURATED (>= 4 queued) or its signal is unreadable. The repo
-  # variable picks the lane:
+  # copying the file again, checking `git hash-object` against ccfg's blob and
+  # updating the PIN in the step below in the same change -- never by editing
+  # the copy. The pin is what makes a router change visible to ci-integrity.yml,
+  # which watches workflows and actions but not `.github/scripts/`: an edited
+  # router fails the pin and the jobs go to the floor. With `actions: read` the
+  # router reads THIS repo's queued jobs and routes to the floor when the pool
+  # is STALLED (a pool job queued >= 10 min), SATURATED (>= 4 queued) or its
+  # signal is unreadable. The repo variable picks the lane:
   #
   #   UIBRIDGE_CI_LINUX_LANE = auto         this job runs and decides
   #                          = self-hosted  this job is SKIPPED; the routed jobs
@@ -63,24 +74,27 @@ jobs:
   #                                         are hosted (the kill switch)
   #
   # THE COST OF `auto`: this job needs a hosted runner itself, so a run still
-  # waits for one hosted job before its pool jobs can start. `self-hosted`
-  # removes that wait and gives up the overflow. Setting the lane only moves
-  # runs created afterwards; to free a stuck one, cancel it and re-run it.
+  # waits for one hosted job before its pool jobs can start, and when this job
+  # picks the floor the jobs then wait in the hosted queue a second time.
+  # `self-hosted` removes that wait and gives up the overflow. Setting the lane
+  # only moves runs created afterwards; to free a stuck one, cancel it and
+  # re-run it.
   #
   # RE-RUNS GO TO THE FLOOR, decided in each routed job's `runs-on`, not here: a
   # pool that picks jobs up and then fails them reads healthy to the queue
   # signal, and coord retries with "re-run failed jobs", which does not re-run a
-  # `route` that succeeded. So `runs-on` reads `needs.route.outputs.labels` on
-  # attempt 1 only. The router ALWAYS exits 0 with outputs written, and every
-  # routed job runs under `!cancelled()` with a hosted fallback, so a route job
-  # that fails, times out or is skipped leaves the jobs on the floor (or,
-  # forced, on the pool) -- never SKIPPED, which coord's check classification
-  # would count as passing.
+  # `route` that succeeded. So `runs-on` takes the pool only on attempt 1. The
+  # router ALWAYS exits 0 with outputs written (and so does the pin check
+  # below), and every routed job runs under `!cancelled()` with a hosted
+  # fallback, so a route job that fails, times out or is skipped leaves the
+  # jobs on the floor (or, forced, on the pool) -- never SKIPPED, which coord's
+  # check classification would count as passing.
   #
   # The pool label set is spelled in `--self-hosted-labels` below and in every
-  # routed job's `runs-on`: change them together. qontinui-ci.yml, smoke-test.yml
-  # and ci-integrity-selftest.yml route their Linux jobs the same way, with
-  # their own `route` job.
+  # routed job's `runs-on` and `# coord-pools:` line: change them together (the
+  # router counts queued pool jobs by that EXACT set). qontinui-ci.yml,
+  # smoke-test.yml and ci-integrity-selftest.yml route their Linux jobs the same
+  # way, with their own `route` job.
   route:
     if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && vars.UIBRIDGE_CI_LINUX_LANE == 'auto' }}
     runs-on: ubuntu-latest
@@ -106,13 +120,22 @@ jobs:
           UIBRIDGE_CI_LINUX_LANE_SOURCE: repo variable UIBRIDGE_CI_LINUX_LANE
           UIBRIDGE_CI_LINUX_HOSTED_LABEL: ubuntu-latest
           UIBRIDGE_CI_LINUX_RUN_ATTEMPT: ${{ github.run_attempt }}
-        run: >-
-          python3 -B .github/scripts/route-ci-lane.py
-          --self-hosted-labels self-hosted,Linux,X64,ram-16g
-          --env-prefix UIBRIDGE_CI_LINUX
-          --title "CI Linux jobs"
-          --default-lane hosted
-          --hosted-on-rerun
+        run: |
+          # PIN: the router must be ccfg's blob, byte for byte. A mismatch is
+          # announced and routed to the hosted floor, never run and never red.
+          want=c67b16e79f3bfaa9b92cd5e1702aa8e03e818c83
+          got=$(git hash-object .github/scripts/route-ci-lane.py 2>/dev/null || echo unreadable)
+          if [ "$got" != "$want" ]; then
+            echo "::error title=route: router not the pinned blob::.github/scripts/route-ci-lane.py is $got, not $want. Routing to the hosted floor. Re-sync it as a verbatim copy of qontinui-claude-config scripts/route-ci-lane.py and update this pin in the same change."
+            printf 'labels=["ubuntu-latest"]\nlane=hosted\nreason=router blob mismatch\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 -B .github/scripts/route-ci-lane.py \
+            --self-hosted-labels self-hosted,Linux,X64,ram-16g \
+            --env-prefix UIBRIDGE_CI_LINUX \
+            --title "CI Linux jobs" \
+            --default-lane hosted \
+            --hosted-on-rerun
 
   lint-and-test:
     # `route` above decides this job's pool. `!cancelled()` is load-bearing: on
@@ -122,20 +145,28 @@ jobs:
     needs: route
     if: ${{ !cancelled() }}
 
-    # The pool on a FIRST attempt of a push or workflow_dispatch run when the
-    # lane is forced `self-hosted`, or where `route` said under `auto` (its
-    # `labels` output). The hosted floor for everything else: a pull_request,
-    # any re-run, the `hosted`/unset lane, a route job that produced nothing.
+    # The pool only on a FIRST attempt of a push or workflow_dispatch run, and
+    # then only when the lane is forced `self-hosted` or `route` said so under
+    # `auto` (its `labels` output). The attempt and event gate covers BOTH
+    # lanes, so a pull_request or a re-run reaches the floor here whatever
+    # `route` did. The hosted floor for everything else: a pull_request, any
+    # re-run, the `hosted`/unset lane, a route job that produced nothing.
     # The check name comes from the job and its matrix value, never from the
     # pool, so it is `lint-and-test (22.x)` on both.
     # coord-pools: [self-hosted, Linux, X64, ram-16g] | [ubuntu-latest]
-    runs-on: ${{ fromJSON((github.run_attempt == 1 && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && vars.UIBRIDGE_CI_LINUX_LANE == 'self-hosted' && '["self-hosted","Linux","X64","ram-16g"]') || (github.run_attempt == 1 && needs.route.outputs.labels) || '["ubuntu-latest"]') }}
+    runs-on: ${{ fromJSON(github.run_attempt == 1 && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (vars.UIBRIDGE_CI_LINUX_LANE == 'self-hosted' && '["self-hosted","Linux","X64","ram-16g"]' || needs.route.outputs.labels) || '["ubuntu-latest"]') }}
+    # A backstop: on the pool a hung job holds one of six registrations for the
+    # 360-minute default. Observed runs: 9.2-9.5 min hosted, 10.7 min pool.
+    timeout-minutes: 30
 
     strategy:
       matrix:
         # 22.x: LTS that supports `node --experimental-strip-types` so the
         # diagnostics generator (scripts/gen-diagnostics.ts) runs with no
-        # transpile step in `diagnostics:check`.
+        # transpile step in `diagnostics:check`. On the pool, setup-node takes
+        # it from the HOST's shared tool cache, so a new major here must be
+        # provisioned on the pool hosts first (.github/actions/self-hosted-job-env
+        # says why).
         node-version: [22.x]
 
     steps:
@@ -148,11 +179,13 @@ jobs:
         if: runner.environment == 'self-hosted'
         uses: ./.github/actions/self-hosted-job-env
 
-      # The npm cache is HOSTED ONLY, on both of its inputs: a pool job must
-      # never SAVE into this repo's GitHub cache, which hosted runs restore
-      # (a Debian 13 host is not the ubuntu image the key assumes), and setup-node
-      # v5 also caches on its own when package.json names a `packageManager` and
-      # `cache` is empty.
+      # The npm cache is HOSTED ONLY. setup-node keys it
+      # `node-cache-<OS>-<arch>-npm-<lockfile hash>`, which names no image or
+      # distro, so a pool SAVE would be exactly what every hosted run, PR runs
+      # included, then restores. `package-manager-cache` guards the other door:
+      # setup-node v5 caches on its own when package.json names a
+      # `packageManager` and `cache` is empty (no package.json here names one
+      # today).
       - name: Use Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v5
         with:
@@ -361,14 +394,17 @@ jobs:
     #
     # It runs on GitHub's hosted runners, or -- routed by `route`, on a push or
     # dispatch -- on the self-hosted pool, whose hosts carry Chromium's system
-    # libraries already. A pool job has no sudo, so there it installs the
-    # browser WITHOUT `--with-deps` (the two install steps below).
+    # libraries already. A pool job must not use sudo (the pool's job account,
+    # `runner`, is in no group but its own), so there it installs the browser
+    # WITHOUT `--with-deps` (the two install steps below).
     needs: route
     if: ${{ !cancelled() }}
     # Routed by `route` (its comment says how): the pool on a first attempt of a
     # push or workflow_dispatch run when the lane says so, else the hosted floor.
     # coord-pools: [self-hosted, Linux, X64, ram-16g] | [ubuntu-latest]
-    runs-on: ${{ fromJSON((github.run_attempt == 1 && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && vars.UIBRIDGE_CI_LINUX_LANE == 'self-hosted' && '["self-hosted","Linux","X64","ram-16g"]') || (github.run_attempt == 1 && needs.route.outputs.labels) || '["ubuntu-latest"]') }}
+    runs-on: ${{ fromJSON(github.run_attempt == 1 && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (vars.UIBRIDGE_CI_LINUX_LANE == 'self-hosted' && '["self-hosted","Linux","X64","ram-16g"]' || needs.route.outputs.labels) || '["ubuntu-latest"]') }}
+    # Backstop for a hung job (observed: 4.4-5.3 min hosted, 6.7 min pool).
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v5
@@ -377,7 +413,8 @@ jobs:
         if: runner.environment == 'self-hosted'
         uses: ./.github/actions/self-hosted-job-env
 
-      # npm cache hosted only, as in lint-and-test.
+      # npm cache hosted only, as in lint-and-test. On the pool, node 22.x comes
+      # from the host's shared tool cache (provision a new major there first).
       - name: Use Node.js 22.x
         uses: actions/setup-node@v5
         with:
@@ -403,7 +440,8 @@ jobs:
 
       - name: "Self-hosted: install Playwright Chromium (system libraries preinstalled)"
         # The pool host is provisioned with every Playwright Chromium system
-        # dependency, and a pool job has no sudo, so this is the browser alone.
+        # dependency, and a pool job must not use sudo, so this is the browser
+        # alone (into the job's own HOME, which the runner deletes afterwards).
         # A library the host lacks fails at launch, naming it: that red is the
         # host's, and UIBRIDGE_CI_LINUX_LANE=hosted keeps new runs off the pool.
         if: runner.environment == 'self-hosted'
@@ -435,10 +473,16 @@ jobs:
     # push or workflow_dispatch run when the lane says so, else the hosted floor.
     # The check names stay `python-tests (3.10)` / `(3.11)` / `(3.12)`.
     # coord-pools: [self-hosted, Linux, X64, ram-16g] | [ubuntu-latest]
-    runs-on: ${{ fromJSON((github.run_attempt == 1 && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && vars.UIBRIDGE_CI_LINUX_LANE == 'self-hosted' && '["self-hosted","Linux","X64","ram-16g"]') || (github.run_attempt == 1 && needs.route.outputs.labels) || '["ubuntu-latest"]') }}
+    runs-on: ${{ fromJSON(github.run_attempt == 1 && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (vars.UIBRIDGE_CI_LINUX_LANE == 'self-hosted' && '["self-hosted","Linux","X64","ram-16g"]' || needs.route.outputs.labels) || '["ubuntu-latest"]') }}
+    # Backstop for a hung job (observed: 0.4-0.9 min hosted, 1.5-1.7 min pool).
+    timeout-minutes: 15
 
     strategy:
       matrix:
+        # On the pool, setup-python resolves these from the HOST's shared tool
+        # cache, which is seeded with 3.10/3.11/3.12/3.13 (setup-python's own
+        # manifest has no Debian builds). A version added here must be seeded on
+        # the pool hosts first.
         python-version: ['3.10', '3.11', '3.12']
 
     steps:
@@ -497,7 +541,9 @@ jobs:
     # Routed by `route` (its comment says how): the pool on a first attempt of a
     # push or workflow_dispatch run when the lane says so, else the hosted floor.
     # coord-pools: [self-hosted, Linux, X64, ram-16g] | [ubuntu-latest]
-    runs-on: ${{ fromJSON((github.run_attempt == 1 && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && vars.UIBRIDGE_CI_LINUX_LANE == 'self-hosted' && '["self-hosted","Linux","X64","ram-16g"]') || (github.run_attempt == 1 && needs.route.outputs.labels) || '["ubuntu-latest"]') }}
+    runs-on: ${{ fromJSON(github.run_attempt == 1 && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (vars.UIBRIDGE_CI_LINUX_LANE == 'self-hosted' && '["self-hosted","Linux","X64","ram-16g"]' || needs.route.outputs.labels) || '["ubuntu-latest"]') }}
+    # Backstop for a hung job (observed: 1.7-1.9 min hosted, 3.1 min pool).
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v5
@@ -506,7 +552,8 @@ jobs:
         if: runner.environment == 'self-hosted'
         uses: ./.github/actions/self-hosted-job-env
 
-      # npm cache hosted only, as in lint-and-test.
+      # npm cache hosted only, as in lint-and-test. On the pool, node 20.x comes
+      # from the host's shared tool cache (provision a new major there first).
       - name: Use Node.js
         uses: actions/setup-node@v5
         with:
