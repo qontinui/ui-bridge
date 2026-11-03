@@ -201,9 +201,9 @@ hash of the route's cache key, not of the image bytes (for `capture` and
 
 The runner contract the SDK's types target also accepts `inline: true` on
 `capture`, `annotate` or `raw`, which returns the encoded image as `base64` in
-the same response. Over the output contract's byte cap the runner answers
-`INLINE_TOO_LARGE` with `url` and `bytes` in its context instead of a
-truncated string. A runner that predates this contract ignores `inline`.
+the same response. Over the runner's fixed 5 MiB inline cap
+(`INLINE_MAX_BYTES`) it answers HTTP 413 `INLINE_TOO_LARGE`, whose `hint`
+carries `url`, `bytes` and `maxBytes`, instead of a truncated string. A runner that predates this contract ignores `inline`.
 
 These replaced the older `/control/*screenshot*` routes. The `/ai/media/*`
 routes were retired without a successor: image facts arrive on `find`'s media

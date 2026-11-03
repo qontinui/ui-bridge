@@ -96,9 +96,9 @@ export interface VisionNamedCapture {
  * Runner contract this type targets (plan
  * 2026-10-22-runner-ui-bridge-makes-an-agent-guess-its-own-vocabulary,
  * Phase 3 — a runner that predates it ignores `inline`): the inline size is
- * capped at the output contract's byte cap, and over the cap the runner
- * answers a typed `INLINE_TOO_LARGE` error whose context carries `url` and
- * `bytes`, never a truncated string.
+ * capped at a fixed 5 MiB (`INLINE_MAX_BYTES`), and over the cap the runner
+ * answers HTTP 413 `INLINE_TOO_LARGE` whose `hint` carries `url`, `bytes`
+ * and `maxBytes`, never a truncated string.
  */
 export interface VisionInlineOption {
   inline?: boolean;
