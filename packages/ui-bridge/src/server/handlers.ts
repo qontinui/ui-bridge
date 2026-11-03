@@ -258,6 +258,7 @@ import {
 import type { RegisteredElement } from '../core/types';
 import { serializeElementCustomActions } from '../core/element-actions';
 import type { CustomAction } from '../core/types';
+import type { VisionCaptureRequest, VisionRawRequest } from '../vision/wire';
 
 /**
  * Minimal structural type for the optional `@qontinui/ui-bridge-headless`
@@ -2211,11 +2212,11 @@ export function createHandlers(
     // `UB-CAPABILITY-UNAVAILABLE` — this build does not serve the route; it
     // is not an action a guard rejected. The success payloads the runner
     // serves are typed in `../vision/wire` (see `UIBridgeServerHandlers`).
-    visionCapture: async (_request?: Record<string, unknown>) => {
+    visionCapture: async (_request?: VisionCaptureRequest) => {
       return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
-    visionAnnotate: async (_request?: Record<string, unknown>) => {
+    visionAnnotate: async (_request?: VisionCaptureRequest) => {
       return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
@@ -2223,7 +2224,7 @@ export function createHandlers(
       return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
-    visionRaw: async (_request?: Record<string, unknown>) => {
+    visionRaw: async (_request?: VisionRawRequest) => {
       return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
