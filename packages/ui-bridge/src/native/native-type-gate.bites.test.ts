@@ -142,7 +142,14 @@ describe('the native type gate reports a deliberate error', () => {
       { code: 7006, line: 5 },
       { code: 2322, line: 9 },
     ]);
-  });
+    // An explicit budget: this builds the gate's whole TypeScript program
+    // synchronously (ts.createProgram over src/native plus the fixture), which
+    // vitest's 5 s default does not cover on a loaded host. This test's own time,
+    // measured 2026-11-03: 2148 ms on hosted ubuntu (job 126160051850), 4328 ms on
+    // the nawa pool (job 126192584585), and 6219 ms — over the limit — on the pool
+    // at host load average ~200-270 on 128 CPUs (job 126218742172, a trial run
+    // with vitest capped at 3 workers).
+  }, 30_000);
 });
 
 describe('the native type gate can see the files it is meant to gate', () => {
