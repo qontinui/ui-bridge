@@ -90,6 +90,7 @@ import type { IREffect, StandardAction } from './types';
 export const STANDARD_ACTION_EFFECTS: Record<StandardAction, IREffect> = {
   // --- Reads: reveal, observe, or move the viewport/focus. -----------------
   hover: 'read',
+  unhover: 'read',
   scroll: 'read',
   scrollIntoView: 'read',
   focus: 'read',

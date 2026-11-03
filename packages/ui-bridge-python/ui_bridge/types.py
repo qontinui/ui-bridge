@@ -441,6 +441,7 @@ class StandardAction(str, Enum):
     FOCUS = "focus"
     BLUR = "blur"
     HOVER = "hover"
+    UNHOVER = "unhover"
     SCROLL = "scroll"
     CHECK = "check"
     UNCHECK = "uncheck"
@@ -645,6 +646,12 @@ class ActionResponse(BaseModel):
     timestamp: int
     request_id: str | None = Field(None, alias="requestId")
     wait_duration_ms: float | None = Field(None, alias="waitDurationMs")
+    forced_hover: dict[str, Any] | None = Field(None, alias="forcedHover")
+    """What a ``hover``/``hoverClick``/``unhover`` forced or released:
+    ``applied`` (``rulesRewritten``, ``revealed``, ``settled``, ``unreadableSheets``,
+    ``expiresAt``, ...) and/or ``released`` (``released``, ``restore``,
+    ``drift``). Also present on a write-class action that released a held hover.
+    """
 
     model_config = {"populate_by_name": True}
 

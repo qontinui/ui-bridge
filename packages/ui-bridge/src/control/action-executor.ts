@@ -197,6 +197,14 @@ import type {
 } from './types';
 import { applyCanonicalFindFilter, type CanonicalFindContext } from '../core/find-filter';
 import { mediaFactsOf } from '../core/media-observation';
+import {
+  forcePseudoState,
+  releaseAfter,
+  releaseForcedPseudoState,
+  type ForcedHoverActionReport,
+  type ForcedPseudoElementSource,
+  type ForcedPseudoReport,
+} from './forced-hover';
 
 /**
  * What `find()`'s DOM scan matches when the caller passes no `selector`: the
@@ -242,6 +250,7 @@ const SUPPORTED_ACTIONS = new Set<string>([
   'focus',
   'blur',
   'hover',
+  'unhover',
   'scroll',
   'scrollIntoView',
   'check',
@@ -493,13 +502,69 @@ const CLICK_LIKE_ACTIONS = new Set<string>([
  * Click-like actions for which a base-state `pointer-events: none` is NOT a
  * blocking signal. `hoverClick` exists specifically to drive a control whose
  * `pointer-events` are gated behind a CSS `:hover`/`group-hover` rule
- * (e.g. the runner's `ZoneHoverActions` toolbar buttons): it synthesizes the
- * hover that flips `pointer-events` to `auto` and only then clicks. Refusing
- * it on the un-hovered `pointer-events: none` reading would defeat its whole
- * purpose. A genuine `aria-disabled`/native `disabled` still blocks it — only
- * the pointer-events discriminator is waived.
+ * (e.g. the runner's `ZoneHoverActions` toolbar buttons). The gate runs on the
+ * UN-hovered reading, before `hoverClick` forces the hover (`forced-hover.ts`)
+ * that flips such a control to `pointer-events: auto`, so refusing it there
+ * would defeat its purpose. The waiver is also the safety net for a hover rule
+ * the forced hover cannot reach (a cross-origin sheet): the click is a native
+ * `element.click()`, which a synthetic dispatch delivers regardless of
+ * `pointer-events`. A genuine `aria-disabled`/native `disabled` still blocks
+ * it — only the pointer-events discriminator is waived.
  */
 const POINTER_EVENTS_TOLERANT_ACTIONS = new Set<string>(['hoverClick']);
+
+/** What `hover`, `hoverClick` and `unhover` return from dispatch, before it is lifted to `forcedHover`. */
+interface ForcedHoverResult {
+  forcedHover: ForcedHoverActionReport;
+}
+
+const FORCED_HOVER_ACTIONS = new Set<string>(['hover', 'hoverClick', 'unhover']);
+
+/**
+ * The caller's `holdMs` / `settleTimeoutMs` for `hover` and `hoverClick`.
+ * Exported so the relay path reads them exactly as the executor does.
+ */
+export function forcedHoverTiming(params: unknown): {
+  holdMs?: number;
+  settleTimeoutMs?: number;
+} {
+  const p = (params ?? {}) as { holdMs?: unknown; settleTimeoutMs?: unknown };
+  return {
+    holdMs: typeof p.holdMs === 'number' ? p.holdMs : undefined,
+    settleTimeoutMs: typeof p.settleTimeoutMs === 'number' ? p.settleTimeoutMs : undefined,
+  };
+}
+
+/**
+ * The forced hover a `hoverClick` applied before its click threw, keyed by the
+ * thrown error. A side table rather than a property on the error, so nothing
+ * leaks into the handler-error envelope that copies an error's own fields.
+ */
+const appliedBeforeFailure = new WeakMap<Error, ForcedPseudoReport>();
+
+/** The `forcedHover` field of a failure response: what was applied and/or released. */
+function forcedHoverOnFailure(
+  error: unknown,
+  released: ForcedHoverActionReport['released']
+): { forcedHover?: ForcedHoverActionReport } {
+  const applied = error instanceof Error ? appliedBeforeFailure.get(error) : undefined;
+  if (!applied && !released) return {};
+  return {
+    forcedHover: {
+      ...(applied ? { applied } : {}),
+      ...(released ? { released } : {}),
+    },
+  };
+}
+
+function isForcedHoverResult(action: string, result: unknown): result is ForcedHoverResult {
+  return (
+    FORCED_HOVER_ACTIONS.has(action) &&
+    typeof result === 'object' &&
+    result !== null &&
+    'forcedHover' in result
+  );
+}
 
 /**
  * Secondary-button click: the pointer pair around the mouse pair (so
@@ -722,6 +787,22 @@ class ElementNotVisibleError extends Error {
 }
 
 /**
+ * The action was refused by its own argument/target validation BEFORE it
+ * touched the page: `type` on a non-input, malformed `sendKeys`, a missing
+ * `value`, a refused or form-less `submit`/`reset`, an unknown verb. A plain
+ * `Error` subclass, so the failure response is unchanged (`UB-ACTION-FAILED`
+ * with the same message); the type exists so `releaseAfter` can tell "did not
+ * dispatch" from "dispatched and failed", and keep a held forced hover for the
+ * retry instead of releasing it.
+ */
+export class ActionValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ActionValidationError';
+  }
+}
+
+/**
  * `Error` own-properties that carry no handler-domain meaning and must never
  * be copied into the failure context. `message`/`stack` already have dedicated
  * response fields; `name`/`cause` are plumbing.
@@ -905,19 +986,33 @@ export function findHoverableAncestor(element: HTMLElement): HTMLElement | null 
 /**
  * Fire the hover-enter event quartet on a single element. Pointer events are
  * dispatched alongside their mouse counterparts so both pointer-only
- * (`onPointerEnter`) and mouse-only (`:hover`, `onMouseEnter`) consumers react.
+ * (`onPointerEnter`) and mouse-only (`onMouseEnter`) JS handlers react.
  * `pointerenter`/`mouseenter` do not bubble; `pointerover`/`mouseover` do —
- * dispatching both covers handlers attached either way.
+ * dispatching both covers handlers attached either way. These events never
+ * set the CSS `:hover` flag; `forced-hover.ts` does that half.
  *
  * Exported so the React IPC command-handler path
  * (`react/commandHandlers.ts`) reuses the exact hover synthesis the HTTP
- * action-executor path uses for `hoverClick`, instead of duplicating it.
+ * action-executor path uses for `hover`/`hoverClick`, instead of duplicating it.
  */
 export function dispatchHoverEnter(element: HTMLElement): void {
   element.dispatchEvent(createPointerEvent('pointerover', element));
   element.dispatchEvent(createMouseEvent('mouseover', element));
   element.dispatchEvent(createPointerEvent('pointerenter', element));
   element.dispatchEvent(createMouseEvent('mouseenter', element));
+}
+
+/**
+ * The JS half of a hover: enter events on the nearest hoverable ancestor, then
+ * on the target — the natural pointer-enter order. Exported so the relay path
+ * (`react/commandHandlers.ts`) sends exactly what the executor sends.
+ */
+export function dispatchHoverEnterChain(element: HTMLElement): void {
+  const ancestor = findHoverableAncestor(element);
+  if (ancestor && ancestor !== element) {
+    dispatchHoverEnter(ancestor);
+  }
+  dispatchHoverEnter(element);
 }
 
 /**
@@ -1197,6 +1292,9 @@ export class DefaultActionExecutor implements ActionExecutor {
     // threw on a `weak` semantic-path match is precisely when the caller wants
     // to know the match was weak.
     let elementResolution: ElementResolution | undefined;
+    // A held forced hover released by this action's dispatch — reported on the
+    // failure response too, not only on success.
+    let heldRelease: ForcedHoverActionReport['released'];
 
     // Validate action name early — check built-in actions first
     const actionName = request.action;
@@ -1478,6 +1576,15 @@ export class DefaultActionExecutor implements ActionExecutor {
       // genuine action failure propagates to the catch below.
       let result: unknown;
       let effectVerification: EffectVerification | undefined;
+      let forcedHover: ForcedHoverActionReport | undefined;
+      // Set the moment dispatch is actually entered: an effect verifier that
+      // throws in its own pre-observation never reached the page, and must not
+      // release a held hover.
+      let reachedDispatch = false;
+      const dispatch = (): Promise<unknown> => {
+        reachedDispatch = true;
+        return this.performAction(element, request.action, actionParams, registered);
+      };
       // Verify when the executor-wide flag is on OR the caller opted in for this
       // single request via `verifyEffect: true`. The per-request override lets a
       // consumer (e.g. the runner's `effect_check` step) request a verified
@@ -1491,32 +1598,66 @@ export class DefaultActionExecutor implements ActionExecutor {
             actionParams as Record<string, unknown> | undefined
           )
         : undefined;
-      if (signature) {
-        const effectParams: ActionParams = {
-          action: request.action,
-          elementId,
-          params: actionParams as Record<string, unknown> | undefined,
-          requestId: request.requestId,
-        };
-        const verified = await this.getEffectVerifier().verifyAction(effectParams, signature, () =>
-          this.performAction(element, request.action, actionParams, registered)
-        );
-        result = verified.result;
-        effectVerification = verified.verification;
-        // Phase 2: record the verified cycle into the process-global effect
-        // store so the read-only `GET /effects/recent` endpoint can surface it.
-        getGlobalEffectStore().record({
-          requestId: request.requestId,
-          action: request.action,
-          elementId,
-          outcome: effectVerification.outcome,
-          cause: effectVerification.cause,
-          verification: effectVerification,
-          timestamp: Date.now(),
-        });
-      } else {
-        result = await this.performAction(element, request.action, actionParams, registered);
+      // A write-class action that reached dispatch releases a held forced
+      // hover once it — and, when one runs, the effect verifier's
+      // post-observation — has finished (sub-decision 6 of plan
+      // 2026-10-22-ui-bridge-hover-forces-the-css-hover-state): `hover` header
+      // → `click` revealed button succeeds, then the page is back at rest.
+      // Releasing inside the verifier's window would let the un-hover show up
+      // as an effect of the click. Everything that returned above (resolution,
+      // freshness, wait) never dispatched, and a click/visibility REFUSAL thrown
+      // by the gate in `performAction` did not dispatch either — both keep the
+      // hold, because the runner retries exactly those.
+      await releaseAfter(
+        request.action,
+        async () => {
+          if (signature) {
+            const effectParams: ActionParams = {
+              action: request.action,
+              elementId,
+              params: actionParams as Record<string, unknown> | undefined,
+              requestId: request.requestId,
+            };
+            const verified = await this.getEffectVerifier().verifyAction(
+              effectParams,
+              signature,
+              dispatch
+            );
+            result = verified.result;
+            effectVerification = verified.verification;
+            // Phase 2: record the verified cycle into the process-global effect
+            // store so the read-only `GET /effects/recent` endpoint can surface it.
+            getGlobalEffectStore().record({
+              requestId: request.requestId,
+              action: request.action,
+              elementId,
+              outcome: effectVerification.outcome,
+              cause: effectVerification.cause,
+              verification: effectVerification,
+              timestamp: Date.now(),
+            });
+          } else {
+            result = await dispatch();
+          }
+        },
+        {
+          onRelease: (report) => {
+            heldRelease = report;
+          },
+          dispatched: () => reachedDispatch,
+          notDispatched: (err) =>
+            err instanceof ElementDisabledError ||
+            err instanceof ElementNotVisibleError ||
+            err instanceof ActionValidationError,
+        }
+      );
+      // `hover` / `hoverClick` / `unhover` return their forced-hover report as
+      // the dispatch result; it is lifted to the response's own field.
+      if (isForcedHoverResult(request.action, result)) {
+        forcedHover = { ...result.forcedHover };
+        result = undefined;
       }
+      if (heldRelease) forcedHover = { ...forcedHover, released: heldRelease };
 
       // Visual click feedback — show a brief highlight at the action location
       // for observability during automation (TuriX-CUA inspired pattern)
@@ -1607,6 +1748,7 @@ export class DefaultActionExecutor implements ActionExecutor {
         effectVerification,
         elementResolution,
         snapshotFreshness,
+        ...(forcedHover ? { forcedHover } : {}),
         durationMs: performance.now() - startTime,
         timestamp: Date.now(),
         requestId: request.requestId,
@@ -1691,6 +1833,7 @@ export class DefaultActionExecutor implements ActionExecutor {
         elementState,
         elementResolution,
         snapshotFreshness,
+        ...forcedHoverOnFailure(error, heldRelease),
         durationMs: performance.now() - startTime,
         timestamp: Date.now(),
         requestId: request.requestId,
@@ -2742,7 +2885,20 @@ export class DefaultActionExecutor implements ActionExecutor {
     // "Unknown action". Keeping it inline guarantees the behavior regardless of
     // whether the optional auto package is installed.
     if (action === 'hoverClick') {
-      return this.performHoverClick(element, params as MouseAction);
+      return this.performHoverClick(element, params);
+    }
+
+    // `hover` / `unhover` force and release the real CSS `:hover` state
+    // (`forced-hover.ts`). Handled here, before the canonical delegation, for
+    // the same reason as `hoverClick`: ui-bridge-auto's `hover` only fires
+    // synthetic events, which never set `:hover`, and it has no `unhover`.
+    if (action === 'hover') {
+      return this.performForcedHover(element, params);
+    }
+    if (action === 'unhover') {
+      const released = await releaseForcedPseudoState('explicit');
+      const out: ForcedHoverResult = { forcedHover: { released } };
+      return out;
     }
 
     // Delegate to ui-bridge-auto's canonical action implementation if available.
@@ -2764,19 +2920,14 @@ export class DefaultActionExecutor implements ActionExecutor {
       return canonical(element, action, enriched);
     }
 
-    // Fallback: inline implementations (used when ui-bridge-auto is not installed)
-    // Auto-hover parent if element is opacity-hidden (e.g., close button revealed on hover)
-    const computedStyle = window.getComputedStyle(element);
-    if (parseFloat(computedStyle.opacity) === 0 && element.parentElement) {
-      this.performHover(element.parentElement);
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-
+    // Fallback: inline implementations (used when ui-bridge-auto is not installed).
+    // There is deliberately no implicit parent-hover before an action: a
+    // hover-revealed control is driven by an explicit `hover` (or
+    // `hoverClick`), which forces the real CSS state instead of guessing at
+    // a parent.
     switch (action as StandardAction) {
       case 'click':
         return this.performClick(element, params as MouseAction);
-      case 'hoverClick':
-        return this.performHoverClick(element, params as MouseAction);
       case 'doubleClick':
         return this.performDoubleClick(element, params as MouseAction);
       case 'rightClick':
@@ -2795,8 +2946,6 @@ export class DefaultActionExecutor implements ActionExecutor {
         return this.performFocus(element);
       case 'blur':
         return this.performBlur(element);
-      case 'hover':
-        return this.performHover(element);
       case 'scroll':
         return this.performScroll(element, params as ScrollAction);
       case 'scrollIntoView': {
@@ -2863,7 +3012,7 @@ export class DefaultActionExecutor implements ActionExecutor {
             signal: inertAbortSignal(),
           });
         }
-        throw new Error(`Unknown action: ${action}`);
+        throw new ActionValidationError(`Unknown action: ${action}`);
       }
     }
   }
@@ -2893,6 +3042,36 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   /**
+   * The registry, as the forced-hover module reads it for `revealed`.
+   */
+  private revealSource(): ForcedPseudoElementSource {
+    return { getAllElements: () => this.registry.getAllElements() };
+  }
+
+  /**
+   * `hover`: force the target's real CSS `:hover` state — and its ancestors',
+   * so a `group-hover:` rule keyed on a `.group` ancestor fires — through
+   * `forced-hover.ts`, and send the enter events to the target and its nearest
+   * hoverable ancestor for JS-driven reveals. The hover is HELD until
+   * `unhover`, the next `hover`/`hoverClick`, the completion of a dispatched
+   * write-class action, or its TTL (`holdMs`, default 30 s, ceiling 300 s), so
+   * a following `click` on a revealed control is not refused.
+   *
+   * LIMIT: app JS that reads `el.matches(':hover')` still sees `false`.
+   */
+  private async performForcedHover(
+    element: HTMLElement,
+    params?: Record<string, unknown>
+  ): Promise<ForcedHoverResult> {
+    const applied = await forcePseudoState(element, 'hover', {
+      ...forcedHoverTiming(params),
+      registry: this.revealSource(),
+      afterMark: () => dispatchHoverEnterChain(element),
+    });
+    return { forcedHover: { applied } };
+  }
+
+  /**
    * Hover-reveal click: a single-dispatch composite that drives a control
    * whose interactivity is gated behind a CSS `:hover` / Tailwind
    * `group-hover` rule.
@@ -2901,51 +3080,42 @@ export class DefaultActionExecutor implements ActionExecutor {
    * `opacity: 0`) in the rest state and only flip them to
    * `pointer-events: auto` when a `.group` ancestor is hovered — the runner's
    * `ZoneHoverActions` (maximize / export / close / "send terminal to a
-   * window") is the canonical example. A normal `click` is refused on the
-   * un-hovered `pointer-events: none` reading, and a separate one-shot `hover`
-   * action doesn't help because the synthetic `:hover` doesn't persist across
-   * the next HTTP `click` call.
+   * window") is the canonical example.
    *
-   * `performHoverClick` resolves that in one call:
-   *   1. Synthesize `pointerenter`/`mouseenter`/`pointerover`/`mouseover` on
-   *      the target AND its nearest hoverable ancestor (the `.group` /
-   *      hover-revealing container), so a `group-hover:pointer-events-auto`
-   *      rule activates.
-   *   2. Wait one animation frame so the style/layout flip is applied.
-   *   3. Perform the normal click dispatch chain.
+   * `performHoverClick`:
+   *   1. Forces the real CSS `:hover` state on the target and its ancestors
+   *      (`forced-hover.ts`: every `:hover` selector rewritten in place to `:is(:hover,[attr])`),
+   *      so `group-hover:opacity-100 group-hover:pointer-events-auto` actually
+   *      apply, and sends the enter events for JS-driven reveals. Synthetic
+   *      events alone never set `:hover`; that is why this step exists.
+   *   2. Waits (bounded) for the transitions the hover started to finish.
+   *   3. Clicks.
    *
-   * The hover is left in place (no matching `mouseleave`) so the control stays
-   * interactive for the duration of the click — mirroring how a real pointer
-   * would still be over the toolbar at click time.
+   * `hoverClick` is write-class, so the forced hover is released when it
+   * completes (`releaseAfter` in `executeAction`); the response carries the
+   * apply and the verified release under `forcedHover`. When the hover rule
+   * lives in a sheet the page cannot read (cross-origin), the control may stay
+   * `pointer-events: none`; the click still lands because it is a native
+   * `element.click()` and the pointer-events gate is waived for `hoverClick`.
    */
-  private async performHoverClick(element: HTMLElement, options?: MouseAction): Promise<void> {
-    // Hover the nearest hoverable ancestor first (outermost → innermost is
-    // irrelevant for `:hover` activation, but ancestor-then-target matches the
-    // natural pointer-enter order and lets a `group-hover` rule on the
-    // ancestor flip the descendant's pointer-events before we touch it).
-    const ancestor = findHoverableAncestor(element);
-    if (ancestor && ancestor !== element) {
-      this.dispatchHoverEnter(ancestor);
+  private async performHoverClick(
+    element: HTMLElement,
+    params?: Record<string, unknown>
+  ): Promise<ForcedHoverResult> {
+    const applied = await forcePseudoState(element, 'hover', {
+      ...forcedHoverTiming(params),
+      registry: this.revealSource(),
+      afterMark: () => dispatchHoverEnterChain(element),
+    });
+    try {
+      this.performClick(element, params as MouseAction | undefined);
+    } catch (error) {
+      // The hover WAS applied; the failure response must say so (see
+      // `forcedHoverOnFailure`), exactly as the relay's does.
+      if (error instanceof Error) appliedBeforeFailure.set(error, applied);
+      throw error;
     }
-    this.dispatchHoverEnter(element);
-
-    // Wait one animation frame so the browser applies the hover-driven style
-    // recomputation (pointer-events / opacity) before we click. Fall back to a
-    // microtask-ish 0ms timeout in environments without rAF (e.g. jsdom).
-    await nextAnimationFrame();
-
-    this.performClick(element, options);
-  }
-
-  /**
-   * Fire the hover-enter event quartet on a single element. Pointer events are
-   * dispatched alongside their mouse counterparts so both pointer-only
-   * (`onPointerEnter`) and mouse-only (`:hover`, `onMouseEnter`) consumers
-   * react. `pointerenter`/`mouseenter` do not bubble; `pointerover`/`mouseover`
-   * do — dispatching both covers handlers attached either way.
-   */
-  private dispatchHoverEnter(element: HTMLElement): void {
-    dispatchHoverEnter(element);
+    return { forcedHover: { applied } };
   }
 
   private performDoubleClick(element: HTMLElement, options?: MouseAction): void {
@@ -2964,7 +3134,7 @@ export class DefaultActionExecutor implements ActionExecutor {
 
   private async performType(element: HTMLElement, options?: TypeAction): Promise<void> {
     if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement)) {
-      throw new Error('Type action requires an input or textarea element');
+      throw new ActionValidationError('Type action requires an input or textarea element');
     }
 
     // Validate that the caller provided the required `text` parameter.
@@ -2980,7 +3150,7 @@ export class DefaultActionExecutor implements ActionExecutor {
       const hint = hasValueAlias
         ? ' Got `value` — the `type` action expects `text` instead. (Tip: `select`/`setValue` use `value`, but `type` uses `text`.)'
         : '';
-      throw new Error(
+      throw new ActionValidationError(
         `Type action requires a 'text' string parameter (the characters to type into the field).${hint}`
       );
     }
@@ -3010,7 +3180,7 @@ export class DefaultActionExecutor implements ActionExecutor {
     // caller forgot the array (or sent it as `value: "Enter"` — a common
     // mistake), making the misuse undebuggable.
     if (!Array.isArray(options?.keys) || options.keys.length === 0) {
-      throw new Error(
+      throw new ActionValidationError(
         "sendKeys action requires a non-empty 'keys' array of {key: '<KeyName>', modifiers?} descriptors or key-name strings. (Example: { keys: [{ key: 'Enter' }] } or { keys: ['Enter'] }.)"
       );
     }
@@ -3025,7 +3195,7 @@ export class DefaultActionExecutor implements ActionExecutor {
     // before any key is dispatched, never half-way through the sequence.
     const normalized = normalizeKeyDescriptors(options.keys);
     if (!normalized.ok) {
-      throw new Error(`sendKeys: ${normalized.error}`);
+      throw new ActionValidationError(`sendKeys: ${normalized.error}`);
     }
 
     element.focus();
@@ -3115,7 +3285,7 @@ export class DefaultActionExecutor implements ActionExecutor {
     // matches no <option>, and the action returns success with the select
     // unchanged — an invisible failure mode.
     if (options?.value === undefined || options.value === null) {
-      throw new Error(
+      throw new ActionValidationError(
         "select action requires a 'value' parameter (string or string[]) — the option value(s) to select."
       );
     }
@@ -3133,7 +3303,7 @@ export class DefaultActionExecutor implements ActionExecutor {
         }
         return;
       }
-      throw new Error(
+      throw new ActionValidationError(
         `Cannot select on ${element.tagName}. Use a <select> element or a combobox (role="combobox").`
       );
     }
@@ -3215,7 +3385,7 @@ export class DefaultActionExecutor implements ActionExecutor {
     options?: import('./types').AutocompleteAction
   ): Promise<void> {
     if (!options?.searchText) {
-      throw new Error('Autocomplete action requires searchText parameter');
+      throw new ActionValidationError('Autocomplete action requires searchText parameter');
     }
 
     const timeout = options.suggestionTimeout ?? 2000;
@@ -3258,11 +3428,6 @@ export class DefaultActionExecutor implements ActionExecutor {
   private performBlur(element: HTMLElement): void {
     element.blur();
     element.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
-  }
-
-  private performHover(element: HTMLElement): void {
-    element.dispatchEvent(createMouseEvent('mouseenter', element));
-    element.dispatchEvent(createMouseEvent('mouseover', element));
   }
 
   private async performScroll(
@@ -3467,7 +3632,7 @@ export class DefaultActionExecutor implements ActionExecutor {
   private performSetValue(element: HTMLElement, params?: Record<string, unknown>): void {
     const value = params?.value as string | undefined;
     if (value === undefined) {
-      throw new Error('setValue requires a "value" parameter');
+      throw new ActionValidationError('setValue requires a "value" parameter');
     }
     if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
       applyValueMutation(element, { value, mode: 'replace', blur: false });
@@ -3479,7 +3644,7 @@ export class DefaultActionExecutor implements ActionExecutor {
       // value to set — the caller saw `success: true` and an unchanged page.
       // Throwing matches `performSubmit`'s "no form found" arm and the relay's
       // `UNSUPPORTED_ACTION` for the same case (`react/commandHandlers.ts`).
-      throw new Error(
+      throw new ActionValidationError(
         `setValue is not supported on <${element.tagName.toLowerCase()}> — it applies to input, textarea and select elements.`
       );
     }
@@ -3492,9 +3657,9 @@ export class DefaultActionExecutor implements ActionExecutor {
       // handler's `preventDefault` is honoured. A hand-dispatched `submit`
       // before it made every handler run twice.
       const refused = requestFormSubmit(form, element);
-      if (refused) throw new Error(refused);
+      if (refused) throw new ActionValidationError(refused);
     } else {
-      throw new Error('No form found for submit action');
+      throw new ActionValidationError('No form found for submit action');
     }
   }
 
@@ -3505,7 +3670,7 @@ export class DefaultActionExecutor implements ActionExecutor {
       // every handler run twice.
       form.reset();
     } else {
-      throw new Error('No form found for reset action');
+      throw new ActionValidationError('No form found for reset action');
     }
   }
 
@@ -3714,7 +3879,15 @@ export class DefaultActionExecutor implements ActionExecutor {
     // `hoverClick` is advertised alongside `click` on every clickable type so a
     // hover-gated control (pointer-events:none until group-hover) is drivable
     // in one call without a page/evaluate workaround.
-    const baseActions = ['focus', 'blur', 'hover', 'sendKeys', 'scroll', 'scrollIntoView'];
+    const baseActions = [
+      'focus',
+      'blur',
+      'hover',
+      'unhover',
+      'sendKeys',
+      'scroll',
+      'scrollIntoView',
+    ];
 
     switch (type) {
       case 'button':
