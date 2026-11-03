@@ -499,6 +499,48 @@ describe('relay aiExecute withDiff · the shared tracker path', () => {
     const ok = await handlers.aiExecute!({ instruction: 'click Publish' } as never);
     expect(ok.success).toBe(true);
   }, 30_000);
+
+  it('plain aiExecute: hover and unhover run the real element action, not a silent no-op', async () => {
+    const card = document.createElement('div');
+    card.textContent = 'Archive';
+    makeVisible(card);
+    document.body.appendChild(card);
+    getGlobalRegistry().registerElement('archive-card', card, {
+      type: 'button',
+      label: 'Archive',
+      actions: ['click', 'hover', 'unhover'],
+    });
+    try {
+      const hovered = (await executeCommand(
+        'aiExecute',
+        { instruction: 'hover over Archive' },
+        emptyBridge
+      )) as Record<string, unknown>;
+      expect(hovered.success).toBe(true);
+      expect(hovered.executedAction).toBe('hover on archive-card');
+      expect(hovered.forcedHover).toMatchObject({ applied: expect.any(Object) });
+
+      const released = (await executeCommand(
+        'aiExecute',
+        { instruction: 'stop hovering Archive' },
+        emptyBridge
+      )) as Record<string, unknown>;
+      expect(released.success).toBe(true);
+      expect(released.forcedHover).toMatchObject({ released: { released: true } });
+    } finally {
+      card.remove();
+    }
+  }, 30_000);
+
+  it('plain aiExecute: a wait instruction is refused, not reported as done', async () => {
+    const result = (await executeCommand(
+      'aiExecute',
+      { instruction: 'wait for Publish' },
+      emptyBridge
+    )) as Record<string, unknown>;
+    expect(result.success).toBe(false);
+    expect(result.errorCode).toBe('ACTION_REJECTED');
+  }, 30_000);
 });
 
 describe('relay executeWithDiff · inputs: idle detector, network, one tracker, no inner settle', () => {
