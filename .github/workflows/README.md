@@ -18,9 +18,9 @@ pool `[self-hosted, Linux, X64, ram-16g]` instead of GitHub's hosted
 `ubuntu-latest`. Each of those workflows has a `route` job that decides, using
 the fleet's router `.github/scripts/route-ci-lane.py` (a verbatim copy of
 qontinui-claude-config `scripts/route-ci-lane.py`; re-sync by copying it and
-updating the blob pin in each `route` step, never by editing it — a copy that
-does not match its pin routes everything to the hosted floor). The repository
-variable `UIBRIDGE_CI_LINUX_LANE` picks the lane:
+updating the blob pin in each `route` step, never by editing it — under
+`auto`, a copy that does not match its pin routes to the hosted floor). The
+repository variable `UIBRIDGE_CI_LINUX_LANE` picks the lane:
 
 | Value | `route` | The routed jobs |
 |---|---|---|

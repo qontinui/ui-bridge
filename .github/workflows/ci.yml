@@ -31,9 +31,8 @@ jobs:
   # On a push (main and coord's merge-candidate*/** refs) or a workflow_dispatch,
   # this job decides whether every job below runs on the self-hosted pool
   # `[self-hosted, Linux, X64, ram-16g]` -- on 2026-11-03 the repo-level
-  # registrations nawa-uib-1..6, systemd units with MemoryHigh 60 GiB
-  # (`systemctl show -p MemoryHigh`: 61440M) -- or on the free GitHub-hosted
-  # `ubuntu-latest` floor.
+  # registrations nawa-uib-1..6, each carrying the classes ram-2g..ram-40g --
+  # or on the free GitHub-hosted `ubuntu-latest` floor.
   #
   # WHAT REACHES THE POOL. This workflow never routes a pull_request run there:
   # this job does not run for one, and each routed job's `runs-on` sends a
@@ -59,8 +58,10 @@ jobs:
   # copying the file again, checking `git hash-object` against ccfg's blob and
   # updating the PIN in the step below in the same change -- never by editing
   # the copy. The pin is what makes a router change visible to ci-integrity.yml,
-  # which watches workflows and actions but not `.github/scripts/`: an edited
-  # router fails the pin and the jobs go to the floor. With `actions: read` the
+  # which watches workflows and actions but not `.github/scripts/`: under
+  # `auto`, an edited router fails the pin and the jobs go to the floor (the
+  # forced `self-hosted` lane skips this job, so neither the router nor the pin
+  # runs there). With `actions: read` the
   # router reads THIS repo's queued jobs and routes to the floor when the pool
   # is STALLED (a pool job queued >= 10 min), SATURATED (>= 4 queued) or its
   # signal is unreadable. The repo variable picks the lane:
@@ -156,7 +157,8 @@ jobs:
     # coord-pools: [self-hosted, Linux, X64, ram-16g] | [ubuntu-latest]
     runs-on: ${{ fromJSON(github.run_attempt == 1 && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (vars.UIBRIDGE_CI_LINUX_LANE == 'self-hosted' && '["self-hosted","Linux","X64","ram-16g"]' || needs.route.outputs.labels) || '["ubuntu-latest"]') }}
     # A backstop: on the pool a hung job holds one of six registrations for the
-    # 360-minute default. Observed runs: 9.2-9.5 min hosted, 10.7 min pool.
+    # 360-minute default. Slowest seen (samples, 2026-11-03): 9.5 min hosted,
+    # 15.2 min pool (pool times track the host's load).
     timeout-minutes: 30
 
     strategy:
@@ -394,16 +396,15 @@ jobs:
     #
     # It runs on GitHub's hosted runners, or -- routed by `route`, on a push or
     # dispatch -- on the self-hosted pool, whose hosts carry Chromium's system
-    # libraries already. A pool job must not use sudo (the pool's job account,
-    # `runner`, is in no group but its own), so there it installs the browser
-    # WITHOUT `--with-deps` (the two install steps below).
+    # libraries already. A pool job must not use sudo, so there it installs the
+    # browser WITHOUT `--with-deps` (the two install steps below).
     needs: route
     if: ${{ !cancelled() }}
     # Routed by `route` (its comment says how): the pool on a first attempt of a
     # push or workflow_dispatch run when the lane says so, else the hosted floor.
     # coord-pools: [self-hosted, Linux, X64, ram-16g] | [ubuntu-latest]
     runs-on: ${{ fromJSON(github.run_attempt == 1 && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (vars.UIBRIDGE_CI_LINUX_LANE == 'self-hosted' && '["self-hosted","Linux","X64","ram-16g"]' || needs.route.outputs.labels) || '["ubuntu-latest"]') }}
-    # Backstop for a hung job (observed: 4.4-5.3 min hosted, 6.7 min pool).
+    # Backstop for a hung job (slowest seen 2026-11-03: 5.3 min hosted, 8.5 pool).
     timeout-minutes: 30
 
     steps:
@@ -474,15 +475,15 @@ jobs:
     # The check names stay `python-tests (3.10)` / `(3.11)` / `(3.12)`.
     # coord-pools: [self-hosted, Linux, X64, ram-16g] | [ubuntu-latest]
     runs-on: ${{ fromJSON(github.run_attempt == 1 && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (vars.UIBRIDGE_CI_LINUX_LANE == 'self-hosted' && '["self-hosted","Linux","X64","ram-16g"]' || needs.route.outputs.labels) || '["ubuntu-latest"]') }}
-    # Backstop for a hung job (observed: 0.4-0.9 min hosted, 1.5-1.7 min pool).
+    # Backstop for a hung job (slowest seen 2026-11-03: 0.9 min hosted, 1.7 pool).
     timeout-minutes: 15
 
     strategy:
       matrix:
         # On the pool, setup-python resolves these from the HOST's shared tool
-        # cache, which is seeded with 3.10/3.11/3.12/3.13 (setup-python's own
-        # manifest has no Debian builds). A version added here must be seeded on
-        # the pool hosts first.
+        # cache, which is seeded with every version listed here (setup-python's
+        # own manifest has no Debian builds). A version added here must be
+        # seeded on the pool hosts first.
         python-version: ['3.10', '3.11', '3.12']
 
     steps:
@@ -542,7 +543,7 @@ jobs:
     # push or workflow_dispatch run when the lane says so, else the hosted floor.
     # coord-pools: [self-hosted, Linux, X64, ram-16g] | [ubuntu-latest]
     runs-on: ${{ fromJSON(github.run_attempt == 1 && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (vars.UIBRIDGE_CI_LINUX_LANE == 'self-hosted' && '["self-hosted","Linux","X64","ram-16g"]' || needs.route.outputs.labels) || '["ubuntu-latest"]') }}
-    # Backstop for a hung job (observed: 1.7-1.9 min hosted, 3.1 min pool).
+    # Backstop for a hung job (slowest seen 2026-11-03: 1.9 min hosted, 4.1 pool).
     timeout-minutes: 20
 
     steps:
