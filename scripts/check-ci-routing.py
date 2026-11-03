@@ -15,8 +15,13 @@ of drift fails differently:
     routed `runs-on` with no such line is invisible to them);
   * a `--self-hosted-labels` that differs between workflows makes one router
     count a different queue than the jobs it routes land in;
-  * a `want=` pin that is not the committed router's blob sends that workflow
-    to the hosted floor on every run (safe, but silently).
+  * a `want=` pin that is not the router's blob (as `git hash-object` computes
+    it over the checked-out file) sends that workflow to the hosted floor on
+    every run (safe, but silently);
+  * a job that names the pool in `runs-on` outside the routed form (no route
+    reference, or a `runs-on` folded over several lines) escapes every check
+    above, so that is refused too, as is a workflow that invokes the router
+    but routes no job.
 
 This reads every workflow under .github/workflows and fails, naming file and
 line, on any disagreement. It is text-level on purpose: the sites are comments
@@ -34,7 +39,7 @@ ROUTER = os.path.join(".github", "scripts", "route-ci-lane.py")
 HOSTED = ["ubuntu-latest"]
 
 RE_FLAG = re.compile(r"--self-hosted-labels\s+(\S+)")
-RE_PIN = re.compile(r"^\s*want=([0-9a-f]{40})\s*$")
+RE_PIN = re.compile(r"^\s*want=\"?([0-9a-f]{40})\"?\s*$")
 RE_POOLS = re.compile(r"^\s*#\s*coord-pools:\s*\[([^\]]*)\]\s*\|\s*\[([^\]]*)\]\s*$")
 RE_RUNS_ON = re.compile(r"^\s*runs-on:\s*(.*)$")
 RE_FORCED = re.compile(r"'(\[\"self-hosted\"[^']*\])'")
@@ -62,7 +67,7 @@ def check(root):
             continue
         path = os.path.join(wf_dir, name)
         lines = open(path, encoding="utf-8").read().split("\n")
-        invocations = 0
+        invocations, file_routed = 0, 0
         for i, line in enumerate(lines):
             where = "%s:%d" % (os.path.join(".github", "workflows", name), i + 1)
             if "route-ci-lane.py" in line and "python" in line:
@@ -74,9 +79,17 @@ def check(root):
             if m:
                 pins.append((where, m.group(1)))
             m = RE_RUNS_ON.match(line)
-            if not m or "needs.route.outputs.labels" not in m.group(1):
+            if not m:
+                continue
+            if "needs.route.outputs.labels" not in m.group(1):
+                if "self-hosted" in m.group(1):
+                    findings.append("%s: runs-on names the pool outside the routed form" % where)
+                elif m.group(1).strip() in ("", ">", ">-", "|", "|-"):
+                    findings.append("%s: runs-on spans several lines; keep it on one line "
+                                    "so this check can read it" % where)
                 continue
             routed += 1
+            file_routed += 1
             expr = m.group(1)
             forced = RE_FORCED.search(expr)
             floor = RE_FLOOR.search(expr)
@@ -100,6 +113,9 @@ def check(root):
                 findings.append("%s: coord-pools floor %s != %s" % (where, floor_set, HOSTED))
             flags.append((where + " (coord-pools)", pool_set))
         file_pins = [p for p in pins if p[0].startswith(os.path.join(".github", "workflows", name) + ":")]
+        if invocations and not file_routed:
+            findings.append("%s: invokes the router but no job's runs-on reads its output"
+                            % os.path.join(".github", "workflows", name))
         if invocations != len(file_pins):
             findings.append("%s: %d router invocation(s) but %d `want=` pin(s)"
                             % (os.path.join(".github", "workflows", name), invocations, len(file_pins)))
@@ -116,7 +132,7 @@ def check(root):
         findings.append("%s: pinned by %d workflow(s) but missing" % (ROUTER, len(pins)))
     for where, want in pins:
         if router_blob and want != router_blob:
-            findings.append("%s: pin %s != committed %s blob %s" % (where, want, ROUTER, router_blob))
+            findings.append("%s: pin %s != %s blob %s" % (where, want, ROUTER, router_blob))
     summary = "%d routed job(s), %d label-set site(s), %d pin(s)" % (routed, len(flags), len(pins))
     return summary, findings
 
