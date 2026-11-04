@@ -34,6 +34,20 @@ function unreadableStore(): PairingStore & { readable: boolean } {
 }
 
 describe('pairing state shared across module copies', () => {
+  it('refuses to load over a registry that is not a WeakMap', async () => {
+    const key = Symbol.for('@qontinui/ui-bridge-native.suspect-pairing-stores');
+    const registry = globalThis as Record<symbol, unknown>;
+    const original = registry[key];
+    registry[key] = { has: () => false };
+    try {
+      vi.resetModules();
+      await expect(import('../pairing')).rejects.toThrow(/other than a WeakMap/);
+    } finally {
+      registry[key] = original;
+      vi.resetModules();
+    }
+  });
+
   it('agrees on the identity symbol', async () => {
     const first = await freshCopy();
     const second = await freshCopy();

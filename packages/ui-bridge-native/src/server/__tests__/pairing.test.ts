@@ -2319,6 +2319,150 @@ describe('revoke', () => {
     });
   });
 
+  /** A forwarding wrapper, like the provider's, whose target the test switches. */
+  function switchable(target: MemoryStore): PairingStore & { target: MemoryStore } {
+    const wrapper = {
+      target,
+      get: () => wrapper.target.get(),
+      set: (token: string) => wrapper.target.set(token),
+      clear: () => wrapper.target.clear(),
+      randomBytes: (n: number) => wrapper.target.randomBytes(n),
+      [PAIRING_STORE_IDENTITY]: () => wrapper.target,
+    };
+    return wrapper;
+  }
+
+  /** A store whose next `get` waits for `settle`, then answers or throws. */
+  function heldRead(store: MemoryStore): {
+    asked: Promise<void>;
+    answer: () => void;
+    fail: () => void;
+  } {
+    const realGet = store.get;
+    let answer!: () => void;
+    let fail!: () => void;
+    let asked!: () => void;
+    const askedPromise = new Promise<void>((resolve) => (asked = resolve));
+    const outcome = new Promise<boolean>((resolve) => {
+      answer = () => resolve(true);
+      fail = () => resolve(false);
+    });
+    store.get = async function (this: MemoryStore) {
+      store.get = realGet;
+      asked();
+      if (!(await outcome)) throw new Error('not loaded');
+      return realGet.call(store);
+    };
+    return { asked: askedPromise, answer, fail };
+  }
+
+  /** Whether a fresh server over a fresh wrapper of `store` refuses as suspended. */
+  async function expectSuspendedThroughFreshWrapper(store: MemoryStore): Promise<void> {
+    const fresh = await started({ pairingStore: switchable(store) });
+    const pair = await fresh.http(cable({ method: 'POST', path: PAIR }));
+    expect(pair.status).toBe(503);
+    expect(json(pair)).toMatchObject({
+      code: 'PAIRING_UNAVAILABLE',
+      error: 'Pairing is suspended until a revoke succeeds on the device.',
+    });
+  }
+
+  it('refuses a store the app switched back to while a revoke wrote elsewhere', async () => {
+    const oldToken = 'o'.repeat(64);
+    const b = memoryStore(oldToken);
+    const a = memoryStore(null);
+    const wrapper = switchable(b);
+    const { http, server } = await started({ pairingStore: wrapper });
+    await failRevokeAtRead(b, server);
+
+    wrapper.target = a;
+    const finish = heldWrite(a);
+    const revoked = server.revokePairing();
+    await new Promise((resolve) => setTimeout(resolve, 0)); // into the write on a
+    wrapper.target = b;
+    finish();
+    await revoked;
+
+    expect(a.token).toMatch(/^[0-9a-f]{64}$/);
+    expect(b.token).toBe(oldToken);
+    const pair = await http(cable({ method: 'POST', path: PAIR }));
+    expect(pair.status).toBe(503);
+    expect(json(pair)).toMatchObject({
+      code: 'PAIRING_UNAVAILABLE',
+      error: 'Pairing is suspended until a revoke succeeds on the device.',
+    });
+  });
+
+  it('leaves the store a revoke began on suspect when its write reached another', async () => {
+    const oldToken = 'o'.repeat(64);
+    const b = memoryStore(oldToken);
+    const a = memoryStore(null);
+    const wrapper = switchable(b);
+    const { http, server } = await started({ pairingStore: wrapper });
+    const read = heldRead(b);
+    const revoked = server.revokePairing();
+    await read.asked;
+    wrapper.target = a;
+    read.answer();
+    await revoked;
+
+    expect(a.token).toMatch(/^[0-9a-f]{64}$/);
+    expect(b.token).toBe(oldToken);
+    expectServed(await http(signed(a.token!)));
+    wrapper.target = b;
+    expect((await http(cable({ method: 'POST', path: PAIR }))).status).toBe(503);
+  });
+
+  describe('a failed revoke marks every store it may have touched', () => {
+    /** b at the start, a at the read's failure. */
+    async function failWhileSwitching(): Promise<{ a: MemoryStore; b: MemoryStore }> {
+      const b = memoryStore('b'.repeat(64));
+      const a = memoryStore('a'.repeat(64));
+      const wrapper = switchable(b);
+      const { server } = await started({ pairingStore: wrapper });
+      const read = heldRead(b);
+      const revoked = server.revokePairing();
+      await read.asked;
+      wrapper.target = a;
+      read.fail();
+      await expect(revoked).rejects.toBeInstanceOf(PairingError);
+      return { a, b };
+    }
+
+    it('the store it began on', async () => {
+      const { b } = await failWhileSwitching();
+      await expectSuspendedThroughFreshWrapper(b);
+    });
+
+    it('the store it ended on', async () => {
+      const { a } = await failWhileSwitching();
+      await expectSuspendedThroughFreshWrapper(a);
+    });
+
+    it('a store it wrote to, which was neither', async () => {
+      const b = memoryStore('b'.repeat(64));
+      const a = memoryStore('a'.repeat(64));
+      const c = memoryStore('c'.repeat(64));
+      const wrapper = switchable(b);
+      const { server } = await started({ pairingStore: wrapper });
+      const read = heldRead(b);
+      a.set = async () => {
+        wrapper.target = c;
+        throw new Error('disk full');
+      };
+      c.clear = async () => {
+        throw new Error('disk full');
+      };
+      const revoked = server.revokePairing();
+      await read.asked;
+      wrapper.target = a;
+      read.answer();
+      await expect(revoked).rejects.toBeInstanceOf(PairingError);
+      expect(a.token).toBe('a'.repeat(64));
+      await expectSuspendedThroughFreshWrapper(a);
+    });
+  });
+
   it('does not serve a signature that read the old token before a revoke finished', async () => {
     const oldToken = 'o'.repeat(64);
     const store = memoryStore(oldToken);
