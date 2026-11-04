@@ -31,6 +31,20 @@ function Harness({ enabled = true }: { enabled?: boolean }) {
   return null;
 }
 
+// Passes `contentDiscovery` inline, as hosts commonly do, so every re-render
+// re-runs the scan effect; `option` only forces that re-render.
+function SlowHarness({ option }: { option: number }) {
+  void option;
+  useAutoRegister({
+    enabled: true,
+    debounceMs: 0,
+    includeHidden: true,
+    contentDiscovery: { enabled: true, contentDebounceMs: 200, maxContentElements: 3 },
+    mediaDiscovery: { enabled: false },
+  });
+  return null;
+}
+
 const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
 
 describe('useAutoRegister: content rows a cap refused', () => {
@@ -76,6 +90,20 @@ describe('useAutoRegister: content rows a cap refused', () => {
   it('a page with no content to queue is measured at once', () => {
     document.body.innerHTML = '<div></div>';
     render(<Harness />);
+    expect(dropped()).toBe(0);
+  });
+
+  it('a re-scan before the first content pass still measures, though it queues nothing new', async () => {
+    document.body.innerHTML = '<p>Only</p>';
+    // A long debounce, so the re-render below lands before the first pass.
+    const view = render(<SlowHarness option={1} />);
+    expect(dropped()).toBeUndefined();
+    // The queued element stops being registrable, then the host re-renders with
+    // a new inline option: the scan effect re-runs (its cleanup clears the
+    // content timer) and the re-scan queues nothing.
+    document.querySelector('p')!.textContent = '';
+    view.rerender(<SlowHarness option={2} />);
+    await new Promise((resolve) => setTimeout(resolve, 400));
     expect(dropped()).toBe(0);
   });
 

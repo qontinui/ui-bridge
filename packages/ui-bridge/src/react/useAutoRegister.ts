@@ -1507,10 +1507,17 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
         }
       }
 
-      // A scan that queued no content runs no content pass, so measure here: a
-      // pending count (mount, or after a registry clear) must not wait forever.
-      if (pendingContentRegistrationsRef.current.size === 0) {
+      // Every scan ends with a content pass either measured here or armed, so a
+      // pending count (mount, or after a registry clear) never waits forever.
+      // Nothing pending: no pass would run, so measure now. Something pending:
+      // re-arm the pass even if this scan queued nothing new, because the scan
+      // effect's cleanup clears the content timer on every re-run (inline
+      // options), which would otherwise leave the queue with no pass to drain it.
+      const stillPending = pendingContentRegistrationsRef.current.values().next();
+      if (stillPending.done) {
         reportContentDropped(true);
+      } else {
+        queueContentRegistration(stillPending.value);
       }
     },
     [
