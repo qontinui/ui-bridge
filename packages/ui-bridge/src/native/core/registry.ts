@@ -70,10 +70,7 @@ export interface RegisterComponentOptions {
      * argument is the `ActionHandlerOptions` bag carrying the cancellation
      * signal. A 1-arity handler stays assignable.
      */
-    handler: (
-      params?: unknown,
-      options?: { signal?: AbortSignal }
-    ) => unknown | Promise<unknown>;
+    handler: (params?: unknown, options?: { signal?: AbortSignal }) => unknown | Promise<unknown>;
   }>;
   elementIds?: string[];
 }
