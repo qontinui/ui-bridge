@@ -172,3 +172,122 @@ describe('NativeUIBridgeRegistry unregister ownership guard', () => {
     expect(registry.getElement('slot-2')).toBeUndefined();
   });
 });
+
+/**
+ * `updateComponentMeta` is the in-place publish door the native `useUIComponent`
+ * republishes through. It must be idempotent over the PUBLISHED shape (handler
+ * identity excluded), report whether it changed, and map actions through the
+ * SAME mapper as `registerComponent` — a second closed field list is how
+ * `paramSchema` and `effect` were each dropped once.
+ */
+describe('NativeUIBridgeRegistry.updateComponentMeta', () => {
+  let registry: NativeUIBridgeRegistry;
+
+  beforeEach(() => {
+    registry = new NativeUIBridgeRegistry();
+  });
+
+  afterEach(() => {
+    resetGlobalRegistry();
+  });
+
+  it('returns true and emits component:registered on a published-field change', () => {
+    registry.registerComponent('c', {
+      name: 'C',
+      actions: [{ id: 'a', label: 'A', handler: () => 1 }],
+    });
+    const seen: Array<{ id: string; name: string }> = [];
+    const off = registry.on('component:registered', (event) => {
+      seen.push(event.data as { id: string; name: string });
+    });
+
+    expect(
+      registry.updateComponentMeta('c', {
+        actions: [{ id: 'a', label: 'B', handler: () => 1 }],
+      })
+    ).toBe(true);
+
+    expect(registry.getComponent('c')?.actions[0].label).toBe('B');
+    expect(seen).toEqual([{ id: 'c', name: 'C' }]);
+    off();
+  });
+
+  it('returns false and stays silent on a handler-only change, but stores the fresh handler', () => {
+    registry.registerComponent('c', {
+      name: 'C',
+      actions: [{ id: 'a', label: 'A', handler: () => 1 }],
+    });
+    let events = 0;
+    const off = registry.on('component:registered', () => {
+      events += 1;
+    });
+
+    expect(
+      registry.updateComponentMeta('c', {
+        name: 'C',
+        actions: [{ id: 'a', label: 'A', handler: () => 2 }],
+      })
+    ).toBe(false);
+
+    expect(events).toBe(0);
+    expect(registry.getComponent('c')?.actions[0].handler()).toBe(2);
+    off();
+  });
+
+  it('carries paramSchema and effect, the same fields registerComponent maps', () => {
+    registry.registerComponent('c', { name: 'C', actions: [{ id: 'a', handler: () => 1 }] });
+
+    const schema = { type: 'object', properties: { n: { type: 'number' } } };
+    expect(
+      registry.updateComponentMeta('c', {
+        actions: [{ id: 'a', paramSchema: schema, effect: 'destructive', handler: () => 1 }],
+      })
+    ).toBe(true);
+
+    const updated = registry.getComponent('c')?.actions[0];
+    expect(updated?.paramSchema).toEqual(schema);
+    expect(updated?.effect).toBe('destructive');
+
+    // The two doors produce the same stored action shape for the same input.
+    const fresh = registry.registerComponent('d', {
+      name: 'D',
+      actions: [{ id: 'a', paramSchema: schema, effect: 'destructive', handler: () => 1 }],
+    });
+    expect(Object.keys(updated ?? {}).sort()).toEqual(Object.keys(fresh.actions[0]).sort());
+  });
+
+  it('leaves omitted fields alone, compares elementIds by value, and refuses an unknown id', () => {
+    registry.registerComponent('c', {
+      name: 'C',
+      description: 'desc',
+      actions: [{ id: 'a', handler: () => 1 }],
+      elementIds: ['x'],
+    });
+
+    expect(registry.updateComponentMeta('c', { elementIds: ['x'] })).toBe(false);
+    expect(registry.updateComponentMeta('c', { name: 'C2' })).toBe(true);
+    const after = registry.getComponent('c');
+    expect(after?.name).toBe('C2');
+    expect(after?.description).toBe('desc');
+    expect(after?.actions.map((a) => a.id)).toEqual(['a']);
+    expect(after?.elementIds).toEqual(['x']);
+
+    expect(registry.updateComponentMeta('c', { elementIds: ['x', 'y'] })).toBe(true);
+    expect(registry.getComponent('c')?.elementIds).toEqual(['x', 'y']);
+
+    expect(registry.updateComponentMeta('missing', { name: 'nope' })).toBe(false);
+  });
+
+  it('does not throw on a paramSchema that cannot be serialised', () => {
+    const cyclic: Record<string, unknown> = { type: 'object' };
+    cyclic.self = cyclic;
+    registry.registerComponent('c', { name: 'C', actions: [{ id: 'a', handler: () => 1 }] });
+
+    expect(() =>
+      registry.updateComponentMeta('c', {
+        actions: [{ id: 'a', paramSchema: cyclic, handler: () => 1 }],
+      })
+    ).not.toThrow();
+    expect(registry.getComponent('c')?.actions[0].paramSchema).toBe(cyclic);
+  });
+});

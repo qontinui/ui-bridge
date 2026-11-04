@@ -56,6 +56,7 @@ export {
   resetGlobalRegistry,
   type RegisterElementOptions,
   type RegisterComponentOptions,
+  type UpdateComponentMetaOptions,
   type NativeRegistryConfig,
 } from './core/registry';
 
