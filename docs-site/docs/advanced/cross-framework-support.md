@@ -19,10 +19,42 @@ React comes from injected mode, not from a per-framework plugin.
 Injected mode gets its element registry from the **DOM itself** rather than
 from annotations the app author added. A driver injects the runtime bundle
 before the page's first paint; the bundle scans the DOM for interactive
-elements, registers each one, and keeps the registry live through a
-`MutationObserver`. From there the same semantic engine embedded apps use —
-find by label / text / role / type, click / type / clear / focus, snapshot,
-state read — works against a page that knows nothing about UI Bridge.
+elements, media and text content, registers each one, and keeps the registry
+live through a `MutationObserver`. From there the same semantic engine embedded
+apps use — find by label / text / role / type, click / type / clear / focus,
+snapshot, state read — works against a page that knows nothing about UI Bridge.
+
+What the scan registers, and the limits on it:
+
+- **Interactive elements** — buttons, links, inputs, `details > summary`, and
+  anything with an interactive role, a `tabindex` other than `-1`,
+  `contenteditable="true"`, an `onclick` attribute, `data-ui-element` or
+  `data-testid`. These carry actions. A `data-testid` alone is enough, so a
+  heading or a `div` that carries one gets an interactive row.
+- **Media** — `img`, `svg` outside a `button`, `video`, `canvas` and
+  `[role="img"]`, at
+  most 200 rows, as `useAutoRegister`'s default. Background images are not
+  registered.
+- **Content** — headings, paragraphs, list items, table cells and the rest of
+  `CONTENT_SELECTORS`, at most 500 rows, registered through the same
+  `registerContentInRegistry` the React scanner uses, so a heading gets one id
+  in either runtime. Within a pass, headings and prose are seeded before list
+  items, table cells and code, so the cap binds on bulk content first. Nothing
+  evicts a row already held: a heading that mounts after the cap filled gets no
+  row. Content rows have no actions. Under `observeAndSeed` (and so in the
+  bundle), a content row that later becomes interactive (a `<th>` given a
+  `tabindex`) is promoted to an interactive row on the next re-seed and keeps an
+  authored `data-content-id`, numbered only if another row already holds it. A
+  repeated one-shot `seedRegistryFromDom` call with no `tracked` map does not
+  promote; it adds a second, numbered interactive row beside the content row.
+  `data-ui-bridge-content` is not read here, and text in a plain `div` matches no
+  content selector.
+- **Duplicate ids** — two elements deriving one id become two content rows, the
+  later one numbered (`heading-2-featured`, `heading-2-featured-2`). An authored
+  `data-content-id` is not numbered when a content row is registered; the later
+  element gets no row.
+- **Redaction** — inside a `data-bridge-redact="true"` boundary no element text
+  reaches a content row's id, label, content or `stableTextPrefix`.
 
 ### The Prebuilt Bundle
 
@@ -52,7 +84,7 @@ runtime.settled; // DOM went quiet after content appeared — gate here
 runtime.settledByTimeout; // settle was forced by the hard cap, not by quiet
 runtime.expectSatisfied; // the settle gating condition was actually met
 runtime.expectSelector; // the CSS gate in effect, or null
-runtime.elementCount; // interactive elements as of the last seed pass
+runtime.elementCount; // interactive and media elements as of the last seed pass (content rows excluded)
 runtime.version; // SDK version the bundle was built from
 ```
 
@@ -67,6 +99,14 @@ const state = await runtime.whenSettled(15_000);
 A result with `settled: true`, `settledByTimeout: true` and
 `expectSatisfied: false` means the expected content never appeared inside the
 cap. Treat that as blocked or unverified — not as a clean settle.
+
+Content rows do not count toward `elementCount`, nor toward settle's default
+gate (`elementCount > 0`). A `<h1>Loading…</h1>` splash with no `data-testid`
+therefore does not read as the page having arrived, and a page of static text
+with nothing interactive or media on it keeps its BLOCKED answer. When
+`expectSelector` is set, the selector decides the gate instead, and a content
+element that matches it does satisfy settle. `elementCount` counts every
+non-content row in the registry, not only the rows the seeder added.
 
 ### Driving It
 
@@ -182,14 +222,15 @@ import { UIBridgeRegistry } from '@qontinui/ui-bridge';
 
 const registry = new UIBridgeRegistry();
 
-// One-shot scan: register every interactive element under `root`.
+// One-shot scan: register every interactive, media and content element under `root`.
 const { registered, total } = seedRegistryFromDom(registry, document.body);
 
 // Or keep it live — re-seeds on DOM mutation, unregisters removed nodes,
 // and returns a disconnect function.
 const disconnect = observeAndSeed(registry, document.body, {
   debounceMs: 100,
-  onSeed: (elementCount) => console.log(`registry now holds ${elementCount}`),
+  // elementCount is the registry's interactive and media count; content rows are excluded.
+  onSeed: (elementCount) => console.log(`${elementCount} interactive and media rows`),
 });
 ```
 
