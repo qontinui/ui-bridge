@@ -740,13 +740,12 @@ export type ActionHandler<TParams = unknown, TResult = unknown> = (
  * `qontinui-types::ui_bridge::UIBridgeElement.custom_actions` was widened from
  * `Vec<String>` to `Vec<ElementActionInfo>` (qontinui-schemas #164, with a
  * transitional deserializer that still accepts a bare name as `{id}` so no
- * SDK/runner version pairing has a broken window), and **all eight** wire
+ * SDK/runner version pairing has a broken window), and **all six** wire
  * projections in this repo now emit {@link SerializedElementAction} objects:
  *
  * - `core/registry.ts` `serializeRegisteredElement`
  * - `server/handlers.ts` `getElements`
  * - `native/core/registry.ts` `getSnapshot`
- * - `native/server/handlers.ts` `getElements` / `getElement`
  * - and the three twins in `@qontinui/ui-bridge-native`
  *   (`core/registry.ts` `getSnapshot`, `server/handlers.ts`
  *   `getElements` / `getElement`)

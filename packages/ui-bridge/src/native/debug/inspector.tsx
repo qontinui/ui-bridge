@@ -285,10 +285,6 @@ export function UIBridgeInspector({
                 <Text style={styles.statValue}>{components.length}</Text>
                 <Text style={styles.statLabel}>Components</Text>
               </View>
-              <View style={styles.stat}>
-                <Text style={styles.statValue}>{bridge.serverRunning ? 'ON' : 'OFF'}</Text>
-                <Text style={styles.statLabel}>Server</Text>
-              </View>
             </View>
 
             {/* Element list or detail */}

@@ -464,7 +464,7 @@ describe('UIBridgeNativeProvider (parent /native) — context identity', () => {
       // whether or not the context value changed.
       return React.createElement(
         UIBridgeNativeProvider,
-        { features: { server: false }, config: { serverPort: 8087 } },
+        { features: { debug: false }, config: { verbose: false } },
         React.createElement(Probe)
       );
     }

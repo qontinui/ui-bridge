@@ -193,12 +193,11 @@ export interface RouteDefinition {
  * KEEP IN SYNC with `WS_ROUTES`. That comment used to be the whole mechanism;
  * it is now a pointer to the test that enforces it.
  *
- * The sibling surface (`@qontinui/ui-bridge/native`) exports a constant of the
- * same name over a smaller route set, and there `routeRequest` READS it — the
- * wrong-verb arm derives its 405 from it (qontinui/ui-bridge#189). Do not
- * assume an entry present in one is present in the other; the two packages
- * publish different surfaces and only the status mapping is pinned equal
- * (`packages/ui-bridge/src/native/server/http-status-parity.test.ts`).
+ * The sibling surface (`@qontinui/ui-bridge/native`) used to export a constant
+ * of the same name over a smaller route set. From `@qontinui/ui-bridge` 0.41.0
+ * it publishes no server at all, so this table is the only native route
+ * declaration (plan
+ * `2026-11-02-ui-bridge-native-entry-serves-an-ungated-network-port`).
  *
  * Multi-verb routes appear once PER VERB, because `RouteDefinition.method` is
  * singular — `control/discover`, `control/page-health` and `control/screenshot`

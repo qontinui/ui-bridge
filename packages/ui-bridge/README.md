@@ -76,10 +76,15 @@ slice it needs — a Node-only server never pays for the React import:
 | `./annotations`, `./vision`, `./ai`              | Annotation, vision and AI-assisted element resolution                           |
 | `./idle`, `./artifacts`, `./verification-layers` | Idle detection, artifact capture, verification layers                           |
 | `./ctr`, `./ctr/migrate`                         | Click-to-refine capture and its config migration                                |
-| `./native`, `./native/*`                         | React Native bridge (core, react, control, server, debug)                       |
+| `./native`, `./native/*`                         | React Native bridge (core, react, control, debug) — no server, see below        |
 | `./server`, `./server/*`                         | In-package server adapters (see also `@qontinui/ui-bridge-server`)              |
 | `./injected`, `./injected/bundle.global.js`      | The injected-transport bundle for pages that do not embed the SDK               |
 | `./diagnostics`                                  | The generated diagnostic-code catalogue                                         |
+
+`./native` publishes no network server. Its hooks, registry and inspector run
+in-process only. A React Native app that needs a port for external tools uses
+[`@qontinui/ui-bridge-native`](../ui-bridge-native), whose server refuses
+callers it has not paired.
 
 `npm run docs:check-symbols` at the repo root name-checks every documented
 import on this page — and every one in a fenced `@example` block in this

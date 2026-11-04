@@ -154,7 +154,6 @@ export default defineConfig([
       'native/core/index': 'src/native/core/index.ts',
       'native/react/index': 'src/native/react/index.ts',
       'native/control/index': 'src/native/control/index.ts',
-      'native/server/index': 'src/native/server/index.ts',
       'native/debug/index': 'src/native/debug/index.ts',
     },
     format: ['cjs', 'esm'],

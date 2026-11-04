@@ -1,7 +1,7 @@
 /**
  * Phase 4 — the NATIVE verb→effect map, the registry round-trip, and the
  * native wire projection, in `@qontinui/ui-bridge`'s `src/native/*` tree (the
- * six published `./native/*` subpath exports).
+ * five published `./native/*` subpath exports).
  *
  * Plan: `2026-08-20-ui-bridge-action-declaration-shape.md`, Phase 4.
  *
@@ -22,7 +22,6 @@ import {
   standardActionEffect,
 } from './action-effect';
 import { NativeUIBridgeRegistry } from './registry';
-import { createServerHandlers } from '../server/handlers';
 
 describe('Phase 4 — NATIVE_STANDARD_ACTION_EFFECTS (ui-bridge/native)', () => {
   it('classifies every native verb exactly as written here', () => {
@@ -106,14 +105,11 @@ describe('Phase 4 — effect survives the native registerComponent literal', () 
   });
 });
 
-describe('Phase 4 — effect on the native wire', () => {
-  function handlersFor(registry: NativeUIBridgeRegistry) {
-    return createServerHandlers(registry, {
-      executeAction: async () => ({ success: true }),
-      executeComponentAction: async () => ({ success: true }),
-    } as never);
-  }
-
+describe('Phase 4 — effect on the native registry read surface', () => {
+  // `@qontinui/ui-bridge/native` publishes no network server (plan
+  // `2026-11-02-ui-bridge-native-entry-serves-an-ungated-network-port`), so
+  // the registry's own reads are the surface a consumer projects from. The
+  // served wire projection lives in `@qontinui/ui-bridge-native`.
   function seed(): NativeUIBridgeRegistry {
     const registry = new NativeUIBridgeRegistry();
     registry.registerComponent('invoice-row', {
@@ -132,34 +128,28 @@ describe('Phase 4 — effect on the native wire', () => {
     return registry;
   }
 
-  it('getComponents emits the annotation', async () => {
-    const resp = (await handlersFor(seed()).getComponents()) as {
-      success: boolean;
-      data: { components: Array<{ id: string; actions: Array<Record<string, unknown>> }> };
-    };
-    const wire = JSON.parse(JSON.stringify(resp.data)) as {
-      components: Array<{ id: string; actions: Array<Record<string, unknown>> }>;
-    };
-    const comp = wire.components.find((c) => c.id === 'invoice-row');
+  it('getAllComponents carries the annotation through a JSON round-trip', () => {
+    const wire = JSON.parse(JSON.stringify(seed().getAllComponents())) as Array<{
+      id: string;
+      actions: Array<Record<string, unknown>>;
+    }>;
+    const comp = wire.find((c) => c.id === 'invoice-row');
 
-    expect(comp?.actions[0]).toEqual({ id: 'press', label: 'Delete', effect: 'destructive' });
-    expect(comp?.actions[1]).toEqual({ id: 'rename', label: 'Rename' });
-  });
-
-  it('getComponent emits the annotation', async () => {
-    const resp = (await handlersFor(seed()).getComponent({
-      params: { id: 'invoice-row' },
-    } as never)) as { success: boolean; data: { component: { actions: unknown[] } } };
-    const wire = JSON.parse(JSON.stringify(resp.data)) as {
-      component: { actions: Array<Record<string, unknown>> };
-    };
-
-    expect(wire.component.actions[0]).toEqual({
+    expect(comp?.actions[0]).toEqual({
       id: 'press',
       label: 'Delete',
       description: 'Permanently delete this invoice',
       effect: 'destructive',
     });
-    expect(wire.component.actions[1]).toEqual({ id: 'rename', label: 'Rename' });
+    expect(comp?.actions[1]).toEqual({ id: 'rename', label: 'Rename' });
+  });
+
+  it('createSnapshot lists component actions by id only', () => {
+    const snapshot = JSON.parse(JSON.stringify(seed().createSnapshot())) as {
+      components: Array<{ id: string; actions: unknown[] }>;
+    };
+    const comp = snapshot.components.find((c) => c.id === 'invoice-row');
+
+    expect(comp?.actions).toEqual(['press', 'rename']);
   });
 });

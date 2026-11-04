@@ -185,33 +185,5 @@ export {
 
 export { DefaultNativeActionExecutor, createNativeActionExecutor } from './control/action-executor';
 
-// Server exports
-export {
-  type NativeServerConfig,
-  type RouteDefinition,
-  type APIResponse,
-  type HandlerContext,
-  type HandlerFunction,
-  type NativeServerHandlers,
-  UI_BRIDGE_NATIVE_ROUTES,
-} from './server/types';
-
-export { createServerHandlers } from './server/handlers';
-
-export {
-  NativeUIBridgeServer,
-  createNativeServer,
-  // The envelope-code → HTTP-status mapping the built-in `handleRequest` uses.
-  // Exported because this package's whole server story is BYO transport: a
-  // consumer implementing `ServerAdapter` for their chosen RN HTTP library
-  // needs the same mapping to answer consistently, and without it they would
-  // re-derive the blanket 400 this surface just stopped sending.
-  httpStatusForResponse,
-  type HTTPRequest,
-  type HTTPResponse,
-  type RequestHandler,
-  type ServerAdapter,
-} from './server/http-server';
-
 // Debug exports
 export { UIBridgeInspector, type UIBridgeInspectorProps } from './debug/inspector';

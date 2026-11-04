@@ -519,8 +519,6 @@ export interface NativeBridgeSnapshot {
  * UI Bridge Native feature flags
  */
 export interface NativeUIBridgeFeatures {
-  /** Enable HTTP control server */
-  server?: boolean;
   /** Enable debug tools (inspector overlay) */
   debug?: boolean;
 }
@@ -529,8 +527,6 @@ export interface NativeUIBridgeFeatures {
  * UI Bridge Native configuration
  */
 export interface NativeUIBridgeConfig {
-  /** Port for HTTP server */
-  serverPort?: number;
   /** Enable verbose logging */
   verbose?: boolean;
   /** Path prefix for parent components (for treePath generation) */

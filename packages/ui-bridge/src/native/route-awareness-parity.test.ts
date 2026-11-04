@@ -11,8 +11,7 @@
  *
  * The packages cannot import each other (`@qontinui/ui-bridge` is only an
  * OPTIONAL peer of `@qontinui/ui-bridge-native`), so the copies are compared
- * as SOURCE, the way `server/http-status-parity.test.ts` compares the status
- * maps. If a sibling file cannot be found this FAILS rather than skips.
+ * as SOURCE. If a sibling file cannot be found this FAILS rather than skips.
  */
 
 import { describe, it, expect } from 'vitest';

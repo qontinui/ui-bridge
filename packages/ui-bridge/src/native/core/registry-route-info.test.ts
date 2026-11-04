@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import { NativeUIBridgeRegistry } from './registry';
-import { createServerHandlers } from '../server/handlers';
 import type { RouteInfo } from './types';
 
 /**
@@ -10,9 +9,9 @@ import type { RouteInfo } from './types';
  *
  * `page.route` is spelled as the web SDK's `snapshot.page.route`, which the
  * runner's journey ledger reads as a route TEMPLATE. This twin's
- * `createSnapshot` has a single assembly point and no enrichers, so the
- * registry contract plus the server's `getSnapshot` handler cover every path
- * that emits a snapshot.
+ * `createSnapshot` has a single assembly point and no enrichers, and this
+ * entry publishes no network server, so the registry contract covers every
+ * path that emits a snapshot.
  */
 
 const PROFILE: RouteInfo = { pattern: '/profile/[user]', patternSource: 'router' };
@@ -113,19 +112,5 @@ describe('NativeUIBridgeRegistry route info → page.route', () => {
     read.params!.user = 'mallory';
     read.routeStack!.push('extra');
     expect(registry.createSnapshot().page).toEqual(expected);
-  });
-
-  it('reaches GET /control/snapshot through the server getSnapshot handler', async () => {
-    const registry = new NativeUIBridgeRegistry();
-    const handlers = createServerHandlers(registry, {} as never);
-    registry.setRouteInfo(PROFILE);
-    const withRoute = await handlers.getSnapshot({ params: {}, query: {}, body: undefined });
-    expect(withRoute.success).toBe(true);
-    expect(withRoute.data?.page).toEqual({
-      route: { pattern: '/profile/[user]', patternSource: 'router' },
-    });
-    registry.setRouteInfo(undefined);
-    const cleared = await handlers.getSnapshot({ params: {}, query: {}, body: undefined });
-    expect(cleared.data && 'page' in cleared.data).toBe(false);
   });
 });

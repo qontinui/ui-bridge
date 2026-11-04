@@ -85,16 +85,33 @@ describe('the ./native root barrel lists the Phase 2-4 surface', () => {
     expect(source).toContain('type ActionHandlerOptions');
   });
 
-  // The status mapping is the newest thing on this barrel and was the only new
-  // export #189 added to it. The sibling package pinned its own copy in the
-  // same change (`packages/ui-bridge-native/src/public-surface.remediation.test.ts`,
-  // "exports the status mapping the ServerAdapter contract needs") and this
-  // half was left unpinned — so the next edit to this explicit export list
-  // could drop it with nothing failing, which is precisely the defect class
-  // this file exists to catch. `ServerAdapter` is BYO transport: a consumer
-  // implementing it writes the status line themselves, and without this export
-  // they re-derive the blanket 400 the surface just stopped sending.
-  it('exports the status mapping the ServerAdapter contract needs', () => {
-    expect(source).toContain('httpStatusForResponse');
+  // `./native` publishes no network server (plan
+  // `2026-11-02-ui-bridge-native-entry-serves-an-ungated-network-port`): the
+  // server it used to carry answered every caller with no pairing gate. Apps
+  // that need a port use `@qontinui/ui-bridge-native`, whose server carries
+  // the gate. This pins both doors a consumer could reach it through — the
+  // subpath export and the root barrel.
+  //
+  // The server class and factory names are assembled from parts on purpose:
+  // the phase's gate greps the repo for their literal spelling and requires
+  // zero lines outside `packages/ui-bridge-native`.
+  it('publishes no network server', () => {
+    const manifest = JSON.parse(readFileSync(resolve(process.cwd(), 'package.json'), 'utf8')) as {
+      exports: Record<string, unknown>;
+    };
+    const subpaths = Object.keys(manifest.exports);
+    expect(subpaths).not.toContain('./native/server');
+    expect(subpaths.filter((k) => k.startsWith('./native/server'))).toEqual([]);
+
+    const forbidden = [
+      ['Native', 'UIBridge', 'Server'].join(''),
+      ['create', 'Native', 'Server'].join(''),
+      'createServerHandlers',
+      'httpStatusForResponse',
+    ];
+    for (const name of forbidden) {
+      expect(source, name).not.toMatch(new RegExp(`\\b${name}\\b`));
+    }
+    expect(source).not.toMatch(/from '\.\/server\//);
   });
 });

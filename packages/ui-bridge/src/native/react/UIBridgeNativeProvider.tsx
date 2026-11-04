@@ -4,15 +4,7 @@
  * React context provider for UI Bridge Native functionality.
  */
 
-import React, {
-  createContext,
-  use,
-  useMemo,
-  useEffect,
-  useCallback,
-  useRef,
-  useState,
-} from 'react';
+import React, { createContext, use, useMemo, useEffect, useCallback, useRef } from 'react';
 import type {
   NativeUIBridgeFeatures,
   NativeUIBridgeConfig,
@@ -50,12 +42,6 @@ export interface UIBridgeNativeContextValue {
   off: <T = unknown>(type: BridgeEventType, listener: BridgeEventListener<T>) => void;
   /** Whether the provider is initialized */
   initialized: boolean;
-  /** Server running status */
-  serverRunning: boolean;
-  /** Start the HTTP server */
-  startServer: () => Promise<void>;
-  /** Stop the HTTP server */
-  stopServer: () => void;
 }
 
 /**
@@ -72,7 +58,7 @@ const EMPTY_CONFIG: NativeUIBridgeConfig = {};
  *
  * The stable defaults above only fix the host that OMITS the prop. This
  * component's own usage example passes inline literals —
- * `features={{ server: __DEV__, debug: __DEV__ }} config={{ serverPort: 9876 }}`
+ * `features={{ debug: __DEV__ }} config={{ verbose: __DEV__ }}`
  * — which are freshly allocated on every render of the host's layout. Both feed
  * the `contextValue` memo below, so the context value (the `bridge` every hook
  * receives) was NEW on every provider render, and a hook keyed on `bridge`
@@ -120,14 +106,11 @@ export interface UIBridgeNativeProviderProps {
  * @example
  * ```tsx
  * // app/_layout.tsx
- * import { UIBridgeNativeProvider } from '@qontinui/ui-bridge-native';
+ * import { UIBridgeNativeProvider } from '@qontinui/ui-bridge/native';
  *
  * export default function RootLayout() {
  *   return (
- *     <UIBridgeNativeProvider
- *       features={{ server: __DEV__, debug: __DEV__ }}
- *       config={{ serverPort: 9876 }}
- *     >
+ *     <UIBridgeNativeProvider features={{ debug: __DEV__ }} config={{ verbose: __DEV__ }}>
  *       <Stack>{children}</Stack>
  *     </UIBridgeNativeProvider>
  *   );
@@ -146,7 +129,6 @@ export function UIBridgeNativeProvider({
   const config = useValueStable(configProp);
   const registryRef = useRef<NativeUIBridgeRegistry | null>(null);
   const executorRef = useRef<NativeActionExecutor | null>(null);
-  const [serverRunning, setServerRunning] = useState(false);
 
   // Initialize on first render
   if (!registryRef.current) {
@@ -166,46 +148,12 @@ export function UIBridgeNativeProvider({
 
   const executor = executorRef.current;
 
-  // Server management
-  // HTTP server start/stop requires a React Native HTTP server library (e.g., react-native-http-bridge
-  // or react-native-http-server) which must be installed as a peer dependency. Until that dependency
-  // is added, these methods log a warning and operate as no-ops.
-  const startServer = useCallback(async () => {
-    if (!features.server) {
-      console.warn('[ui-bridge-native] Server feature not enabled');
-      return;
-    }
-
-    console.warn(
-      `[ui-bridge-native] HTTP server not available: requires a React Native HTTP server library ` +
-        `(e.g., react-native-http-bridge). Server would listen on port ${config.serverPort || 9876}.`
-    );
-    // Do not set serverRunning to true — the server is not actually running since
-    // no React Native HTTP server library is installed. Reporting true would be misleading.
-  }, [features.server, config.serverPort]);
-
-  const stopServer = useCallback(() => {
-    console.warn(
-      '[ui-bridge-native] HTTP server stop is a no-op: no React Native HTTP server library installed.'
-    );
-    setServerRunning(false);
-  }, []);
-
-  // Auto-start server if enabled
-  useEffect(() => {
-    if (features.server) {
-      startServer();
-      return () => stopServer();
-    }
-  }, [features.server, startServer, stopServer]);
-
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      stopServer();
       resetGlobalRegistry();
     };
-  }, [stopServer]);
+  }, []);
 
   // Context methods
   const getElements = useCallback(() => registry.getAllElements(), [registry]);
@@ -238,24 +186,8 @@ export function UIBridgeNativeProvider({
       on,
       off,
       initialized: true,
-      serverRunning,
-      startServer,
-      stopServer,
     }),
-    [
-      features,
-      config,
-      registry,
-      executor,
-      getElements,
-      getComponents,
-      createSnapshot,
-      on,
-      off,
-      serverRunning,
-      startServer,
-      stopServer,
-    ]
+    [features, config, registry, executor, getElements, getComponents, createSnapshot, on, off]
   );
 
   return <UIBridgeNativeContext value={contextValue}>{children}</UIBridgeNativeContext>;

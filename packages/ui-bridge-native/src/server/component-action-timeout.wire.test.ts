@@ -10,9 +10,9 @@
  * `timeoutMs` is the only cancellation this transport has.
  *
  * This package carries its own copy of the handler (it cannot import
- * `@qontinui/ui-bridge`, an OPTIONAL peer), so the twin under
- * `@qontinui/ui-bridge` `src/native/server` is pinned by an identical test —
- * an untested duplicate is how the two drift.
+ * `@qontinui/ui-bridge`, an OPTIONAL peer). The twin that used to live in
+ * `@qontinui/ui-bridge/native` was removed in `@qontinui/ui-bridge` 0.41.0,
+ * which publishes no native server, so this is the only copy left to pin.
  *
  * Every expectation is a hand-written literal.
  */

@@ -122,12 +122,9 @@ describe('HTTP status mapping — the status line matches the envelope code', ()
  * read off `WS_ROUTES`, the array `routeRequest` itself iterates, so the header
  * and the status cannot come to disagree about what this surface accepts.
  *
- * Mirrored on the sibling surface (`packages/ui-bridge/src/native/server/
- * http-status-mapping.test.ts`). The status mapping is pinned equal across the
- * two packages by `http-status-parity.test.ts`; this header is not, because the
- * two serve genuinely different route sets — but a wrong-verb answer that names
- * its verbs on one surface and not the other would re-open exactly the
- * divergence #175 and #189 closed.
+ * This test once had a mirror on the sibling surface, `@qontinui/ui-bridge/native`.
+ * That entry publishes no server from `@qontinui/ui-bridge` 0.41.0, so this
+ * package's copy is the only native wrong-verb answer left to pin.
  */
 describe('the 405 says which verbs ARE allowed', () => {
   it('names the published verb for a wrong-verb request', async () => {

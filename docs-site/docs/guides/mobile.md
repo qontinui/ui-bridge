@@ -438,10 +438,14 @@ there. That entry point has no `RouteProvider`, so its snapshot carries no
 `@qontinui/ui-bridge-native`. If your app uses the `/native` entry point, import
 from there instead.
 
-:::warning The `/native` entry point has no device pairing
-Its HTTP server admits any caller that can reach the port. An app whose port is
-reachable from a network belongs on `@qontinui/ui-bridge-native`, whose
-[device pairing](#device-pairing) refuses those callers.
+:::warning The `/native` entry point publishes no server
+From `@qontinui/ui-bridge` 0.41.0, `@qontinui/ui-bridge/native` ships the hooks,
+the registry and the inspector, and no HTTP server. There is no
+`./native/server` subpath, and the provider has no `startServer`, `stopServer`,
+`serverRunning`, `features.server` or `config.serverPort`. The server it used to
+carry admitted any caller that could reach the port. An app that needs a port
+for external tools belongs on `@qontinui/ui-bridge-native`, whose
+[device pairing](#device-pairing) refuses callers it has not paired.
 :::
 
 ### The rules

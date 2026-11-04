@@ -526,7 +526,7 @@ const TSUP_BLOCKS = (blocks) =>
     )
     .join('\n')}\n]);\n`;
 
-const NATIVE_SUBPATHS = ['.', './core', './react', './control', './server', './debug'];
+const NATIVE_SUBPATHS = ['.', './core', './react', './control', './debug'];
 const nativeStem = (subpath) => `native${subpath === '.' ? '' : subpath.slice(1)}/index`;
 
 test('a "types" target whose entry sits in a `dts: false` block is reported', () => {
@@ -668,7 +668,7 @@ test('a waived target is not reported, and is credited to its waiver', () => {
 });
 
 test('a waiver that no longer reproduces fails, so the list can only shrink', () => {
-  // The same package with the six `types` conditions dropped — the fix the
+  // The same package with the five `types` conditions dropped — the fix the
   // waiver is holding a place for. Every waiver then waives nothing, and the
   // check demands their deletion rather than leaving them ready to
   // re-authorise whatever moves back into those targets.
@@ -690,7 +690,7 @@ test('a waiver that no longer reproduces fails, so the list can only shrink', ()
   });
   const { findings, stale } = undeclaredTypeTargets(new Map([pkg]));
   assert.deepEqual(findings, []);
-  assert.equal(stale.length, 6);
+  assert.equal(stale.length, 5);
   assert.deepEqual(
     [...new Set(stale.map((s) => s.package))],
     ['@qontinui/ui-bridge'],

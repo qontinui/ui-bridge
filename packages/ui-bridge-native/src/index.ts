@@ -293,13 +293,12 @@ export { createServerHandlers } from './server/handlers';
 export {
   NativeUIBridgeServer,
   createNativeServer,
-  // The envelope-code → HTTP-status mapping `handleRequest` uses. Exported on
-  // BOTH native surfaces deliberately: a consumer implementing `ServerAdapter`
-  // for their chosen RN HTTP library needs the same mapping to answer
-  // consistently, and this package ships that interface too. It was
-  // module-private here while the parent exported it — an asymmetry with no
-  // reason behind it, since the argument for exporting applies to whichever
-  // package the consumer happens to be holding.
+  // The envelope-code → HTTP-status mapping `handleRequest` uses. Exported
+  // because a consumer implementing `ServerAdapter` for their chosen RN HTTP
+  // library needs the same mapping to answer consistently. This package is the
+  // only native surface with a server: `@qontinui/ui-bridge/native` publishes
+  // none from 0.41.0 (plan
+  // `2026-11-02-ui-bridge-native-entry-serves-an-ungated-network-port`).
   httpStatusForResponse,
   type HTTPRequest,
   type HTTPResponse,

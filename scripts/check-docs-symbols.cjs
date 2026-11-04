@@ -1871,7 +1871,6 @@ const UNDECLARED_TYPE_WAIVERS = [
       './dist/native/core/index.d.ts',
       './dist/native/react/index.d.ts',
       './dist/native/control/index.d.ts',
-      './dist/native/server/index.d.ts',
       './dist/native/debug/index.d.ts',
     ],
     why:
@@ -1883,12 +1882,12 @@ const UNDECLARED_TYPE_WAIVERS = [
       "test's stated rationale is FALSE (it claims the main tsconfig emits declarations "+
       'while that config sets `noEmit: true`), and that the merged-program option which ' +
       'would let this subtree emit was never evaluated. So the fix is either direction: ' +
-      'emit the six declarations, or drop the `types` condition from the six ./native* '  +
+      'emit the five declarations, or drop the `types` condition from the five ./native* '+
       'subpaths and leave import/require so TypeScript reports the surface as untyped. '  +
       'Both edit a released package: one its build, one its published exports contract. ' +
       'That is a product call surfaced rather than self-adopted — coord finding '         +
       'c13a22bd-8bdf-4ec6-acc7-78e9cd350d0c, which recommends the manifest direction on ' +
-      'the strength of that same test. Delete these six lines in the same commit that '   +
+      'the strength of that same test. Delete these five lines in the same commit that '  +
       'resolves it: this list fails once they stop reproducing.',
   },
 ];

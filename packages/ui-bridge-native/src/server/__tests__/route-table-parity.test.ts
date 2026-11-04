@@ -3,9 +3,9 @@
  * same set — in both directions.
  *
  * Post-merge follow-up to qontinui/ui-bridge#189, which added the mirror of
- * this ratchet to the sibling surface (`packages/ui-bridge/src/native/server/
- * route-table-parity.test.ts`) and left this package's copy of the same
- * two-declaration problem unpinned.
+ * this ratchet to the sibling surface (`@qontinui/ui-bridge/native`, whose
+ * server was removed in `@qontinui/ui-bridge` 0.41.0) and left this package's
+ * copy of the same two-declaration problem unpinned.
  *
  * `UI_BRIDGE_NATIVE_ROUTES` (`../types`) is exported from the package root and
  * is what an external consumer reads to learn what `@qontinui/ui-bridge-native`
