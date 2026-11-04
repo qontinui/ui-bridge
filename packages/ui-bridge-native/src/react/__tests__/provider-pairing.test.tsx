@@ -13,7 +13,7 @@ vi.mock('react-native', () => ({
 
 import { UIBridgeNativeProvider, useUIBridgeNative } from '../UIBridgeNativeProvider';
 import type { HTTPRequest, RequestHandler, WebSocketServerAdapter } from '../../server/http-server';
-import type { PairingStore } from '../../server/pairing';
+import { signUIBridgeRequest, type PairingStore } from '../../server/pairing';
 
 const FEATURES = { server: true };
 const LAN: HTTPRequest = {
@@ -271,6 +271,66 @@ describe('UIBridgeNativeProvider pairing wiring', () => {
     await bridge.revokePairing();
     expect(state.token).toBe('42'.repeat(32));
     unmount();
+  });
+
+  it('keeps refusing the old token after a failed revoke, across a remount over the same store', async () => {
+    let bridge!: ReturnType<typeof useUIBridgeNative>;
+    function Capture() {
+      bridge = useUIBridgeNative();
+      return null;
+    }
+    const oldToken = 'o'.repeat(64);
+    const state = { token: oldToken as string | null };
+    // One object the app keeps, as a module-level store would be.
+    const host = storeWith(state);
+    const tree = (into: TestAdapter) => (
+      <UIBridgeNativeProvider
+        features={FEATURES}
+        serverAdapter={into}
+        deviceId="device-1"
+        pairingStore={host}
+      >
+        <Capture />
+      </UIBridgeNativeProvider>
+    );
+    const first = render(tree(adapter));
+    await flush();
+    const realGet = host.get;
+    host.get = () => {
+      throw new Error('not loaded');
+    };
+    await expect(bridge.revokePairing()).rejects.toMatchObject({ code: 'PAIRING_UNAVAILABLE' });
+    host.get = realGet;
+    first.unmount();
+
+    // A remount builds a new wrapper, and a new server, over the same app store.
+    const second = fakeAdapter();
+    const again = render(tree(second));
+    await flush();
+    const suspended = {
+      code: 'PAIRING_UNAVAILABLE',
+      error: 'Pairing is suspended until a revoke succeeds on the device.',
+    };
+    const header = signUIBridgeRequest(oldToken, {
+      method: LAN.method,
+      pathAndQuery: LAN.path,
+      ts: Date.now(),
+      nonce: 'remountnonce0000001',
+    });
+    const refused = await second.http({
+      ...LAN,
+      headers: { ...LAN.headers, 'x-ui-bridge-auth': header },
+    });
+    expect(refused.status).toBe(503);
+    expect(JSON.parse(refused.body)).toMatchObject(suspended);
+    const pair = await second.http(CABLE_PAIR);
+    expect(pair.status).toBe(503);
+    expect(JSON.parse(pair.body)).toMatchObject(suspended);
+
+    await bridge.revokePairing();
+    expect(state.token).toBe('42'.repeat(32));
+    expect(JSON.parse((await second.http(CABLE_PAIR)).body).data.token).toBe('42'.repeat(32));
+    again.unmount();
   });
 
   it('answers the doors honestly when no server is running', async () => {

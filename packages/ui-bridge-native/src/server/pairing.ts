@@ -64,10 +64,20 @@ function monotonicNow(): number | null {
 }
 
 /**
+ * Set by a wrapper that forwards to a store it does not own, such as the
+ * provider's: it answers the object the app passed in. A failed revoke is
+ * remembered against that object as well as the wrapper, so it survives the
+ * wrapper being rebuilt.
+ */
+export const PAIRING_STORE_IDENTITY: unique symbol = Symbol('ui-bridge.pairing-store-identity');
+
+/**
  * What the app implements: the token's persistence, and secure randomness,
  * because the SDK's only generator is `Math.random`.
  */
 export interface PairingStore {
+  /** For a forwarding wrapper only. See `PAIRING_STORE_IDENTITY`. */
+  [PAIRING_STORE_IDENTITY]?: () => PairingStore | undefined;
   /**
    * The current token, or `null` when the store has loaded and holds none.
    * THROW or reject while the store has not loaded: `null` then would mint a
@@ -419,6 +429,22 @@ const TOKEN_SUSPECT = Symbol('token-suspect');
  */
 const suspectStores = new WeakMap<PairingStore, true>();
 
+/**
+ * The objects a store's suspicion is kept against: the store itself and, for a
+ * forwarding wrapper, the app's store behind it. Both, because each covers a
+ * case the other misses: the wrapper outlives an app passing a fresh object on
+ * every render, and the app's object outlives a remounted provider's wrapper.
+ */
+function suspicionKeys(store: PairingStore): PairingStore[] {
+  let host: PairingStore | undefined;
+  try {
+    host = store[PAIRING_STORE_IDENTITY]?.();
+  } catch {
+    host = undefined;
+  }
+  return host && host !== store ? [store, host] : [store];
+}
+
 interface ArmedCode {
   code: string;
   expiresAt: number;
@@ -478,7 +504,15 @@ export class PairingAuthority {
   private async readToken(): Promise<
     string | null | typeof TOKEN_NOT_LOADED | typeof TOKEN_SUSPECT
   > {
-    return suspectStores.has(this.store) ? TOKEN_SUSPECT : this.readStore();
+    if (this.isSuspect()) return TOKEN_SUSPECT;
+    const token = await this.readStore();
+    // Another server over the same store may have failed a revoke during the read.
+    return this.isSuspect() ? TOKEN_SUSPECT : token;
+  }
+
+  /** Whether a failed revoke, on this server or another over the same store, stands. */
+  private isSuspect(): boolean {
+    return suspicionKeys(this.store).some((key) => suspectStores.has(key));
   }
 
   private async readStore(): Promise<string | null | typeof TOKEN_NOT_LOADED> {
@@ -554,6 +588,9 @@ export class PairingAuthority {
     // the read wins, and two copies of one request arriving together cannot both
     // pass.
     if (generation !== this.tokenGeneration) return 'refused';
+    // The generation is this server's; a revoke on another server over the same
+    // store shows only here.
+    if (this.isSuspect()) return 'pairing_suspended';
     if (this.nonces.has(nonce)) return 'refused';
     this.rememberNonce(nonce, tsMs);
     return 'valid';
@@ -622,7 +659,8 @@ export class PairingAuthority {
       if (existing === TOKEN_NOT_LOADED) return UNAVAILABLE;
       if (existing !== null) return { ok: true, token: existing };
       try {
-        return { ok: true, token: await this.mintAndStoreToken() };
+        const token = await this.mintAndStoreToken();
+        return this.isSuspect() ? SUSPENDED : { ok: true, token };
       } catch {
         return UNAVAILABLE;
       }
@@ -705,6 +743,9 @@ export class PairingAuthority {
       throw new PairingError('PAIRING_UNAVAILABLE', 'The pairing store is not available yet.');
     }
     const code = await this.drawCode();
+    if (this.isSuspect()) {
+      throw new PairingError('PAIRING_UNAVAILABLE', PAIRING_SUSPENDED_MESSAGE);
+    }
     const expiresAt = Date.now() + PAIRING_CODE_TTL_MS;
     const monotonic = monotonicNow();
     this.armedCode = {
@@ -751,8 +792,14 @@ export class PairingAuthority {
    * If it cannot be replaced it is cleared. If that fails too, or the store
    * cannot even be read, signatures and pairing stay refused until a revoke
    * succeeds: the user asked for the old token to die, and a store that would
-   * not say so cannot be trusted to have done it. The refusal is kept per store,
-   * so a server rebuilt over the same store keeps it.
+   * not say so cannot be trusted to have done it. The refusal is kept per store
+   * (and per app store behind a provider's wrapper), so a rebuilt server or a
+   * remounted provider over the same store keeps it.
+   *
+   * A stored value that is empty or not a string reads as not loaded, so a revoke
+   * over it fails at the first read and marks the store suspect, and no later
+   * revoke can recover it: each one fails the same read. Only clearing the
+   * store outside the SDK does.
    *
    * Nothing verifies from the moment this starts until it ends. The generation
    * moves when it ends, whichever way, so a check that read the old token before
@@ -760,6 +807,10 @@ export class PairingAuthority {
    * admitted runs to its end.
    */
   async revoke(): Promise<void> {
+    // Resolved once, so the keys a failure sets are the keys a success clears.
+    const keys = suspicionKeys(this.store);
+    const markSuspect = () => keys.forEach((key) => suspectStores.set(key, true));
+    const clearSuspect = () => keys.forEach((key) => suspectStores.delete(key));
     this.revokesInFlight += 1;
     this.dropCode('revoked');
     try {
@@ -770,18 +821,18 @@ export class PairingAuthority {
           // The app is told the revoke failed, so the old token must not verify
           // once reads recover. Writing anyway is no fix: what a write made before
           // the store loads does is not in the contract, and could be undone.
-          suspectStores.set(this.store, true);
+          markSuspect();
           throw new PairingError('PAIRING_UNAVAILABLE', 'The pairing store is not available yet.');
         }
         try {
           await this.mintAndStoreToken();
-          suspectStores.delete(this.store);
+          clearSuspect();
         } catch {
           try {
             await bounded(() => this.store.clear());
-            suspectStores.delete(this.store);
+            clearSuspect();
           } catch {
-            suspectStores.set(this.store, true);
+            markSuspect();
           }
           throw new PairingError('PAIRING_UNAVAILABLE', 'The pairing token could not be replaced.');
         }
