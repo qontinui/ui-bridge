@@ -48,6 +48,9 @@ const MAX_SEEDED_MEDIA = 200;
 /** Most content elements the seeder registers, as `useAutoRegister`'s default. */
 const MAX_SEEDED_CONTENT = 500;
 
+/** The key this seeder reports refused content rows under. */
+const SEED_DROP_SOURCE = 'injected-seed';
+
 /** Content that comes in bulk, seeded after the rest so it cannot crowd it out. */
 const BULK_CONTENT_SELECTORS = 'li, td, th, pre, code, dd, dt';
 
@@ -165,23 +168,32 @@ export function seedRegistryFromDom(
   // Headings and prose go first, so that when the cap binds in a pass it binds on
   // table cells and list items, not on a hero heading further down the page. Only
   // within a pass: nothing evicts a row, so a heading mounted after a large table
-  // filled the cap gets none. verify-page-verdict.sh's `contentRowsCapped` says so.
+  // filled the cap gets none. The pass does not stop at the cap: it counts every
+  // registrable element it had to refuse and reports that count, which the
+  // snapshot serves as `registration.contentDropped`.
   const matched = mediaRoot
     ? Array.from(mediaRoot.querySelectorAll<HTMLElement>(CONTENT_SELECTORS.join(', ')))
     : [];
   const isBulk = (el: HTMLElement) => el.matches(BULK_CONTENT_SELECTORS);
   const content = [...matched.filter((el) => !isBulk(el)), ...matched.filter(isBulk)];
   let contentCount = registry.getAllElements().filter((e) => e.category === 'content').length;
+  const refused: HTMLElement[] = [];
   for (const el of content) {
-    if (contentCount >= MAX_SEEDED_CONTENT) break;
     // The scan above can hold an element a content selector matches too.
     if (isRegistered(el) || !shouldRegisterContent(el)) continue;
+    if (contentCount >= MAX_SEEDED_CONTENT) {
+      refused.push(el);
+      continue;
+    }
     const id = registerContentInRegistry(registry, el);
     if (id === null) continue;
     tracked?.set(el, id);
     contentCount++;
     registered++;
   }
+  // The pass's whole refused set, so it replaces the previous pass's: a refused
+  // element that has since got a row, or left the page, is no longer counted.
+  registry.reportContentDropped(SEED_DROP_SOURCE, refused);
 
   return { registered, total: scanned.length + media.length + content.length };
 }
@@ -278,5 +290,7 @@ export function observeAndSeed(
       clearTimeout(timer);
       timer = null;
     }
+    // A stopped seeder no longer keeps its refused set current, so it withdraws it.
+    registry.endContentCount(SEED_DROP_SOURCE);
   };
 }

@@ -1959,6 +1959,28 @@ export interface SnapshotRegistrationMetadata {
    * `activeTab` by the runner's snapshot handler for the same reason.
    */
   route?: string;
+  /**
+   * How many content elements (headings, paragraphs, cells — anything that
+   * passed `shouldRegisterContent`) are on the page with NO row, because a
+   * registration cap was full: the injected seeder's 500, or an embedded
+   * `useAutoRegister`'s `contentDiscovery.maxContentElements`. Exact, not a
+   * lower bound, and current: a refused element that later gets a row leaves
+   * the count. A check that reads text rows (`text_over_image_contrast`) has not
+   * seen the whole page when this is above 0. A number only — no page text.
+   *
+   * Exact across sources: it is the union of every source's refused elements,
+   * less any that left the page or that some source (another hook, the seeder)
+   * has since given a row, so two sources over one page do not double-count.
+   * Each source re-derives its set on its own passes, so an element that stops
+   * being registrable without leaving the page (its text cleared) stays counted
+   * until that source's next pass.
+   *
+   * This SDK sends it once every counting source has measured, 0 when nothing
+   * was refused. ABSENT is UNKNOWN, never 0: an SDK that predates the field, or
+   * a source that has not measured yet (a hook before its first content pass,
+   * any source right after a registry `clear()`).
+   */
+  contentDropped?: number;
 }
 
 /**

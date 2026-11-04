@@ -1124,6 +1124,16 @@ export class UIBridgeRegistry {
   // happened but are all unmounted now". Never reset except on `clear()`.
   private everHadRegistrationsFlag = false;
 
+  // Content elements a registration cap refused, keyed by the source that
+  // refused them (the injected seeder, each `useAutoRegister`). Each source
+  // reports its whole refused set, so a re-seed pass replaces its own set instead
+  // of adding to it. `null` is a source that has begun but not yet measured: the
+  // count is UNKNOWN while any source is pending. Elements, not numbers, so the
+  // count is the UNION across sources less the elements some source has since
+  // given a row — two sources over one page cannot double-count. Served as
+  // `registration.contentDropped`; only the size leaves the registry.
+  private contentDroppedBySource = new Map<string, ReadonlySet<HTMLElement> | null>();
+
   // ── Snapshot identity ─────────────────────────────────────────────────────
   // The identity of the most recent snapshot this registry stamped. Set by
   // `stampSnapshotIdentity` — the ONE funnel every snapshot-shaped payload
@@ -3198,6 +3208,56 @@ export class UIBridgeRegistry {
   }
 
   /**
+   * Mark `source` as counting but not yet measured. Until its first
+   * {@link reportContentDropped}, {@link getContentDropped} answers `undefined`
+   * (UNKNOWN) and the snapshot omits `contentDropped`: a source that has not
+   * looked has not said that nothing was dropped.
+   */
+  beginContentCount(source: string): void {
+    this.contentDroppedBySource.set(source, null);
+  }
+
+  /**
+   * Record the content elements `source` found registrable (they passed
+   * `shouldRegisterContent`) but refused a row because its cap was full. This is
+   * the source's whole current set, not an increment: a later report from the
+   * same source replaces it. The registry keeps a copy; only its size is served.
+   */
+  reportContentDropped(source: string, refused: Iterable<HTMLElement>): void {
+    this.contentDroppedBySource.set(source, new Set(refused));
+  }
+
+  /**
+   * Withdraw `source` entirely (an unmounted hook, a stopped seeder): what it
+   * refused is no longer anyone's claim about the page.
+   */
+  endContentCount(source: string): void {
+    this.contentDroppedBySource.delete(source);
+  }
+
+  /**
+   * Registrable content elements on the page with no row because a cap refused
+   * them: the union of every source's refused set, less elements that have left
+   * the page or that any source has since given a row. `undefined` while any
+   * source is pending (UNKNOWN); 0 when no source refused anything.
+   */
+  getContentDropped(): number | undefined {
+    const refused = new Set<HTMLElement>();
+    for (const set of this.contentDroppedBySource.values()) {
+      if (set === null) return undefined;
+      set.forEach((el) => refused.add(el));
+    }
+    if (refused.size === 0) return 0;
+    const held = new Set<HTMLElement>();
+    for (const row of this.allElements()) held.add(row.element);
+    let dropped = 0;
+    refused.forEach((el) => {
+      if (el.isConnected && !held.has(el)) dropped++;
+    });
+    return dropped;
+  }
+
+  /**
    * Per-route counts of currently-registered elements, plus the ids that
    * make up each count. Returns a plain object copy so callers can't mutate
    * internal state. Elements with an undefined route are omitted. Exposed
@@ -3272,17 +3332,22 @@ export class UIBridgeRegistry {
     everHadRegistrations: boolean;
     byRoute: Record<string, { count: number; ids: string[] }>;
     byRoutePerWindow?: Record<string, Record<string, { count: number; ids: string[] }>>;
+    contentDropped?: number;
   } {
     const meta: {
       totalRegistered: number;
       everHadRegistrations: boolean;
       byRoute: Record<string, { count: number; ids: string[] }>;
       byRoutePerWindow?: Record<string, Record<string, { count: number; ids: string[] }>>;
+      contentDropped?: number;
     } = {
       totalRegistered: this.elementCount(),
       everHadRegistrations: this.everHadRegistrationsFlag,
       byRoute: this.getCountsByRoute(),
     };
+    // Absent while a counting source has not measured: UNKNOWN, not 0.
+    const contentDropped = this.getContentDropped();
+    if (contentDropped !== undefined) meta.contentDropped = contentDropped;
     // Only attach the per-window breakdown when a non-default window is in
     // play, so single-window hosts keep emitting the byte-identical
     // pre-window-aware registration shape (no extra key).
@@ -3665,6 +3730,12 @@ export class UIBridgeRegistry {
     // the lifetime semantics expected after `resetGlobalRegistry()`.
     this.routeIdsByWindow.clear();
     this.everHadRegistrationsFlag = false;
+    // The rows a cap refused were refused against what this teardown removed.
+    // Every known source becomes pending, so the count reads UNKNOWN until each
+    // has measured again — never a 0 nobody measured.
+    for (const source of this.contentDroppedBySource.keys()) {
+      this.contentDroppedBySource.set(source, null);
+    }
     // Same lifetime semantics as the latch above: a full teardown means this
     // registry has never been snapshotted again, which is UNKNOWN rather than
     // a stale identity the action path could reject against.

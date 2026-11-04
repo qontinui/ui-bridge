@@ -768,6 +768,9 @@ function generateDetailsId(element: HTMLElement): string {
   return 'details-unnamed';
 }
 
+/** Numbers each mounted hook's `contentDropped` source key. */
+let autoRegisterInstanceCount = 0;
+
 /**
  * Hook for automatic element registration
  *
@@ -811,6 +814,17 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
   const bridge = useUIBridgeOptional();
   const registeredElementsRef = useRef(new Map<HTMLElement, string>());
   const registeredContentElementsRef = useRef(new Map<HTMLElement, string>());
+  // Content elements that passed `shouldRegisterContent` but were refused a row
+  // because `maxContentElements` was full. Reported to the registry as this
+  // hook's `contentDropped`; an element leaves the set when it gets a row, leaves
+  // the page, or stops being registrable.
+  const droppedContentElementsRef = useRef(new Set<HTMLElement>());
+  // This hook's key for `reportContentDropped`, so two mounted hooks each report
+  // their own count and a later report replaces only its own.
+  const dropSourceRef = useRef<string | null>(null);
+  if (dropSourceRef.current === null) {
+    dropSourceRef.current = `useAutoRegister:${++autoRegisterInstanceCount}`;
+  }
   const registeredMediaElementsRef = useRef(new Map<HTMLElement, string>());
   // Per-registered-id untrackers for the lazy bbox tracker. Keyed by id
   // (not element) so mid-mount node swaps that re-run track() under the
@@ -1028,6 +1042,9 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
 
       const maxElements = contentDiscovery?.maxContentElements ?? 500;
       if (registeredContentElementsRef.current.size >= maxElements) {
+        // Every caller asked `contentAwaitsRegistration` first, so this element is
+        // registrable text the page shows and the snapshot will not hold.
+        droppedContentElementsRef.current.add(element);
         return;
       }
 
@@ -1036,8 +1053,32 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       if (id === null) return;
 
       registeredContentElementsRef.current.set(element, id);
+      droppedContentElementsRef.current.delete(element);
     },
     [bridge, contentDiscovery?.maxContentElements]
+  );
+
+  /**
+   * Report this hook's refused content elements to the registry, as its whole
+   * current set (the registry replaces this hook's previous report). Elements
+   * that left the page are pruned first. With `recheck` — the debounced content
+   * pass — each is also asked whether it is still registrable, so one whose text
+   * was cleared in place stays counted until that pass; the synchronous report
+   * after a removal skips that per-element cost. Rows another source holds are
+   * subtracted by the registry when it is read.
+   */
+  const reportContentDropped = useCallback(
+    (recheck: boolean): void => {
+      if (!bridge?.registry) return;
+      const dropped = droppedContentElementsRef.current;
+      dropped.forEach((element) => {
+        if (!element.isConnected || (recheck && !contentAwaitsRegistration(element))) {
+          dropped.delete(element);
+        }
+      });
+      bridge.registry.reportContentDropped(dropSourceRef.current as string, dropped);
+    },
+    [bridge, contentAwaitsRegistration]
   );
 
   /**
@@ -1255,7 +1296,13 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       }
     });
     pendingContentRegistrationsRef.current.clear();
-  }, [contentAwaitsRegistration, registerContentElement, registerSemanticContentElement]);
+    reportContentDropped(true);
+  }, [
+    contentAwaitsRegistration,
+    registerContentElement,
+    registerSemanticContentElement,
+    reportContentDropped,
+  ]);
 
   /**
    * Process pending media registrations (debounced, separate timer)
@@ -1459,9 +1506,23 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
           }
         }
       }
+
+      // Every scan ends with a content pass either measured here or armed, so a
+      // pending count (mount, or after a registry clear) never waits forever.
+      // Nothing pending: no pass would run, so measure now. Something pending:
+      // re-arm the pass even if this scan queued nothing new, because the scan
+      // effect's cleanup clears the content timer on every re-run (inline
+      // options), which would otherwise leave the queue with no pass to drain it.
+      const stillPending = pendingContentRegistrationsRef.current.values().next();
+      if (stillPending.done) {
+        reportContentDropped(true);
+      } else {
+        queueContentRegistration(stillPending.value);
+      }
     },
     [
       contentAwaitsRegistration,
+      reportContentDropped,
       bridge,
       includeSelectors,
       shouldRegister,
@@ -1480,6 +1541,10 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
    */
   const handleMutations = useCallback(
     (mutations: MutationRecord[]): void => {
+      // Rows this batch freed under the cap, and whether a refused element left.
+      let contentRowsFreed = 0;
+      let refusedRemoved = false;
+      const dropped = droppedContentElementsRef.current;
       mutations.forEach((mutation) => {
         // Handle attribute changes that may reveal hidden elements
         if (mutation.type === 'attributes' && mutation.target.nodeType === Node.ELEMENT_NODE) {
@@ -1630,7 +1695,9 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
             // Unregister the element itself (content)
             if (registeredContentElementsRef.current.has(element)) {
               unregisterContentElement(element);
+              contentRowsFreed++;
             }
+            if (dropped.has(element)) refusedRemoved = true;
 
             // Unregister the element itself (media)
             if (registeredMediaElementsRef.current.has(element)) {
@@ -1645,7 +1712,9 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
               }
               if (registeredContentElementsRef.current.has(descendant)) {
                 unregisterContentElement(descendant);
+                contentRowsFreed++;
               }
+              if (dropped.has(descendant)) refusedRemoved = true;
               if (registeredMediaElementsRef.current.has(descendant)) {
                 unregisterMediaElement(descendant);
               }
@@ -1653,6 +1722,21 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
           }
         });
       });
+
+      // A removal can free room under the content cap, and can take refused
+      // elements off the page. Report now (pruning by connection only) so the
+      // count does not wait on the debounced pass, and offer as many refused
+      // elements as there is room for; that pass registers them and reports again.
+      if ((contentRowsFreed > 0 || refusedRemoved) && dropped.size > 0) {
+        reportContentDropped(false);
+        const maxElements = contentDiscovery?.maxContentElements ?? 500;
+        let room = maxElements - registeredContentElementsRef.current.size;
+        for (const element of dropped) {
+          if (room <= 0) break;
+          queueContentRegistration(element);
+          room--;
+        }
+      }
     },
     [
       contentAwaitsRegistration,
@@ -1664,11 +1748,32 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       contentDiscovery,
       queueContentRegistration,
       unregisterContentElement,
+      reportContentDropped,
       mediaEnabled,
       queueMediaSubtree,
       unregisterMediaElement,
     ]
   );
+
+  /**
+   * This hook's content-drop count lives exactly as long as the hook is enabled
+   * against one registry. It begins pending — UNKNOWN until the first content
+   * pass measures — and is withdrawn on unmount, on `enabled: false` and on a
+   * bridge change, so a hook that is gone does not keep claiming text was
+   * dropped. Its own effect, not the scan effect's cleanup: that one re-runs on
+   * every inline-option change. Declared first so it begins before the scan.
+   */
+  const contentDropRegistry = bridge?.registry;
+  useEffect(() => {
+    if (!enabled || !contentDropRegistry) return;
+    const source = dropSourceRef.current as string;
+    const dropped = droppedContentElementsRef;
+    contentDropRegistry.beginContentCount(source);
+    return () => {
+      contentDropRegistry.endContentCount(source);
+      dropped.current = new Set();
+    };
+  }, [enabled, contentDropRegistry]);
 
   /**
    * Setup observer and initial scan
@@ -1700,23 +1805,11 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       attributeFilter: ['class', 'style', 'hidden', 'src', 'srcset', IMAGE_SLOT_ATTR],
     });
 
-    // Listen for auth-complete events from AuthProvider. When a temp
-    // runner auto-authenticates, the DOM transitions from login page →
-    // authenticated page, but the MutationObserver may not catch all
-    // the changes (React reconciliation can be non-incremental). A
-    // full re-scan ensures the snapshot reflects the post-auth page.
-    const handleAuthComplete = () => {
-      // Clear existing registrations — the login-page elements are
-      // stale after auth redirect.
-      if (bridge?.registry) {
-        bridge.registry.clear();
-      }
-      // Re-scan the entire DOM tree.
-      scanAndRegister(rootElement);
-    };
-    window.addEventListener('ui-bridge-auth-complete', handleAuthComplete);
-
-    const handleRouteChange = () => {
+    // Clear every registration and re-scan the entire DOM tree. `clear()` marks
+    // each content-counting source pending, and the hook's own maps are reset
+    // with it: left holding elements the registry no longer has, they would
+    // stop the re-scan from registering them again.
+    const resetAndRescan = () => {
       if (bridge?.registry) {
         bridge.registry.clear();
       }
@@ -1731,8 +1824,20 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       registeredElementsRef.current = new Map();
       registeredContentElementsRef.current = new Map();
       registeredMediaElementsRef.current = new Map();
+      droppedContentElementsRef.current = new Set();
       scanAndRegister(rootElement);
     };
+
+    // Listen for auth-complete events from AuthProvider. When a temp
+    // runner auto-authenticates, the DOM transitions from login page →
+    // authenticated page, but the MutationObserver may not catch all
+    // the changes (React reconciliation can be non-incremental). A
+    // full re-scan ensures the snapshot reflects the post-auth page; the
+    // login-page elements are stale after the redirect.
+    const handleAuthComplete = resetAndRescan;
+    window.addEventListener('ui-bridge-auth-complete', handleAuthComplete);
+
+    const handleRouteChange = resetAndRescan;
     window.addEventListener('ui-bridge-route-change', handleRouteChange);
 
     // Expose diagnostic flags on window.__UI_BRIDGE__

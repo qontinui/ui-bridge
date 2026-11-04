@@ -1528,10 +1528,13 @@ export async function executeCommand(
       // Computed from public registry APIs; degrades gracefully if the global
       // registry is unavailable for any reason.
       let route: string | undefined;
+      // `contentDropped` stays absent (UNKNOWN) in the fallback: a registry this
+      // could not read has not said that nothing was dropped.
       let registration: {
         totalRegistered: number;
         everHadRegistrations: boolean;
         byRoute: Record<string, { count: number; ids: string[] }>;
+        contentDropped?: number;
       } = {
         totalRegistered: elements.length,
         everHadRegistrations: false,
@@ -1544,6 +1547,9 @@ export async function executeCommand(
           everHadRegistrations: reg.hasEverHadRegistrations(),
           byRoute: reg.getCountsByRoute(),
         };
+        // Absent while a counting source has not measured: UNKNOWN, not 0.
+        const contentDropped = reg.getContentDropped();
+        if (contentDropped !== undefined) registration.contentDropped = contentDropped;
       } catch {
         // Fall back to the conservative default above.
       }
@@ -2580,10 +2586,13 @@ export async function executeCommand(
       // "page not hydrated/registered yet" (`everHadRegistrations: false`)
       // from "genuinely zero matches" (`true` + empty). Degrades gracefully
       // to the conservative default if the registry probe throws.
+      // `contentDropped` stays absent (UNKNOWN) in the fallback: a registry this
+      // could not read has not said that nothing was dropped.
       let registration: {
         totalRegistered: number;
         everHadRegistrations: boolean;
         byRoute: Record<string, { count: number; ids: string[] }>;
+        contentDropped?: number;
       } = {
         totalRegistered: elements.length,
         everHadRegistrations: false,
@@ -2596,6 +2605,9 @@ export async function executeCommand(
           everHadRegistrations: reg.hasEverHadRegistrations(),
           byRoute: reg.getCountsByRoute(),
         };
+        // Absent while a counting source has not measured: UNKNOWN, not 0.
+        const contentDropped = reg.getContentDropped();
+        if (contentDropped !== undefined) registration.contentDropped = contentDropped;
       } catch {
         // Fall back to the conservative default above.
       }
