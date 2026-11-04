@@ -320,6 +320,12 @@ publish immediately. The `useUIComponent` exported from `@qontinui/ui-bridge/nat
 behaves the same from `@qontinui/ui-bridge` 0.39.0. Earlier versions of that entry
 point published the first render's declaration only.
 
+One behaviour change comes with it. From 0.39.0, an action list installed with
+`updateActions` is cleared when the component's `id` changes, or when the
+declared `actions` option changes value, and the declared list is published in
+its place. The old `/native` hook kept an `updateActions` list across an `id`
+change (while an inline `actions` array silently reset it on the next render).
+
 ## Logging Component Renders
 
 Use the render log to track what components display:

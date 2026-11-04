@@ -80,9 +80,15 @@ const EMPTY_CONFIG: NativeUIBridgeConfig = {};
  *
  * Keyed on a JSON signature rather than an enumerated field list: both bags are
  * small and plain (booleans, a number, a string — no functions, no cycles), and
- * a field list would silently stop covering a field the day one is added. A
- * host that reorders keys or mutates in place degrades to a new context value,
- * never to a stale one. Ported from `@qontinui/ui-bridge-native`'s provider.
+ * a field list would silently stop covering a field the day one is added.
+ *
+ * Two limits. Reordering an object's keys between renders changes the
+ * signature, so it yields a new context value (a harmless extra re-render).
+ * Mutating the `features` / `config` object IN PLACE is NOT observed: the memo
+ * hands back that same object, so the context value keeps its identity and no
+ * consumer re-renders. To change a flag, pass a new object.
+ *
+ * Ported from `@qontinui/ui-bridge-native`'s provider.
  */
 function useValueStable<T>(value: T): T {
   const signature = JSON.stringify(value);

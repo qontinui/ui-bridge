@@ -42,12 +42,17 @@ const registry = new NativeUIBridgeRegistry();
 
 // One bridge object for the life of the file — a realistic, stable provider.
 // The REAL provider is kept for the provider-stability test at the bottom.
+//
+// `bridgeMode.churn` switches ONE test to the churning shape — a NEW
+// `{ registry }` per call — to pin that the hook still terminates under a
+// provider whose context value changes every render.
+const bridgeMode = vi.hoisted(() => ({ churn: false }));
 vi.mock('./UIBridgeNativeProvider', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./UIBridgeNativeProvider')>();
   let cached: { registry: NativeUIBridgeRegistry } | undefined;
   return {
     ...actual,
-    useUIBridgeNativeOptional: () => (cached ??= { registry }),
+    useUIBridgeNativeOptional: () => (bridgeMode.churn ? { registry } : (cached ??= { registry })),
   };
 });
 
@@ -367,6 +372,77 @@ describe('native useUIComponent — registration lifecycle', () => {
 
     unmount();
     expect(registry.getComponent('cell-3')).toBeUndefined();
+  });
+});
+
+describe('native useUIComponent — StrictMode and a churning provider', () => {
+  it('registers, republishes the label and cleans up under React.StrictMode', () => {
+    let applyCount!: (n: number) => void;
+
+    function Harness(): React.ReactElement {
+      const [count, setCount] = React.useState(0);
+      applyCount = setCount;
+      useUIComponent({
+        id: 'strict-cart',
+        name: 'Cart',
+        actions: [{ id: 'checkout', label: `Checkout (${count})`, handler: () => 'ok' }],
+      });
+      return React.createElement('div');
+    }
+
+    // StrictMode double-invokes renders and simulates an unmount/remount of
+    // effects on mount, so the register/unregister pairing is exercised twice.
+    const { unmount } = render(
+      React.createElement(React.StrictMode, null, React.createElement(Harness))
+    );
+    expect(registry.getComponent('strict-cart')?.actions[0].label).toBe('Checkout (0)');
+
+    act(() => applyCount(1));
+    expect(registry.getComponent('strict-cart')?.actions[0].label).toBe('Checkout (1)');
+
+    act(() => applyCount(2));
+    expect(registry.getComponent('strict-cart')?.actions[0].label).toBe('Checkout (2)');
+
+    unmount();
+    expect(registry.getComponent('strict-cart')).toBeUndefined();
+  });
+
+  // Termination guard. Under a churning provider the auto-register effect
+  // re-runs every commit; without the `publishedIdRef` guard every
+  // re-registration bumps state and the render loop never ends (the sibling's
+  // first fix OOM'd a 4 GB worker this way).
+  it('stays current and bounded when the bridge is a new object every render', () => {
+    bridgeMode.churn = true;
+    let renders = 0;
+    let applyCount!: (n: number) => void;
+
+    function Harness(): React.ReactElement {
+      renders += 1;
+      const [count, setCount] = React.useState(0);
+      applyCount = setCount;
+      useUIComponent({
+        id: 'churn-cart',
+        name: 'Cart',
+        actions: [{ id: 'checkout', label: `Checkout (${count})`, handler: () => 'ok' }],
+      });
+      return React.createElement('div');
+    }
+
+    try {
+      const { unmount } = render(React.createElement(Harness));
+      expect(registry.getComponent('churn-cart')?.actions[0].label).toBe('Checkout (0)');
+
+      for (const n of [1, 2, 3]) {
+        act(() => applyCount(n));
+        expect(registry.getComponent('churn-cart')?.actions[0].label).toBe(`Checkout (${n})`);
+      }
+
+      expect(renders).toBeLessThan(20);
+      unmount();
+      expect(registry.getComponent('churn-cart')).toBeUndefined();
+    } finally {
+      bridgeMode.churn = false;
+    }
   });
 });
 
