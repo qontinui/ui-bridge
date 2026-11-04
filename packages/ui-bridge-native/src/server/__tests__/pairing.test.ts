@@ -18,6 +18,7 @@ import {
   type WebSocketUpgradeDecision,
 } from '../http-server';
 import {
+  PAIRING_STORE_CHANGED_MESSAGE,
   PAIRING_STORE_IDENTITY,
   PairingError,
   SIGNED_BODY_MAX_CHARS,
@@ -2381,7 +2382,11 @@ describe('revoke', () => {
     await new Promise((resolve) => setTimeout(resolve, 0)); // into the write on a
     wrapper.target = b;
     finish();
-    await revoked;
+    // b still holds the old token, so the app must not be told the revoke worked.
+    await expect(revoked).rejects.toMatchObject({
+      code: 'PAIRING_UNAVAILABLE',
+      message: PAIRING_STORE_CHANGED_MESSAGE,
+    });
 
     expect(a.token).toMatch(/^[0-9a-f]{64}$/);
     expect(b.token).toBe(oldToken);
@@ -2411,6 +2416,80 @@ describe('revoke', () => {
     expectServed(await http(signed(a.token!)));
     wrapper.target = b;
     expect((await http(cable({ method: 'POST', path: PAIR }))).status).toBe(503);
+  });
+
+  describe('a revoke whose store calls the app redirected', () => {
+    /**
+     * The revoke starts on c; the app switches to a for the write, which fails
+     * and switches the app to b, where the clear fallback succeeds.
+     */
+    async function writeFailsThenClearElsewhere(aSuspect: boolean): Promise<{
+      a: MemoryStore;
+      b: MemoryStore;
+      revoked: Promise<void>;
+    }> {
+      const a = memoryStore('a'.repeat(64));
+      const b = memoryStore('b'.repeat(64));
+      const c = memoryStore('c'.repeat(64));
+      const wrapper = switchable(a);
+      const { server } = await started({ pairingStore: wrapper });
+      if (aSuspect) await failRevokeAtRead(a, server);
+      wrapper.target = c;
+      const read = heldRead(c);
+      a.set = async () => {
+        wrapper.target = b;
+        throw new Error('disk full');
+      };
+      const revoked = server.revokePairing();
+      await read.asked;
+      wrapper.target = a;
+      read.answer();
+      await revoked.catch(() => undefined);
+      return { a, b, revoked };
+    }
+
+    it('keeps a suspect store suspect when the clear fallback lands on another', async () => {
+      const { a, b, revoked } = await writeFailsThenClearElsewhere(true);
+      await expect(revoked).rejects.toMatchObject({
+        code: 'PAIRING_UNAVAILABLE',
+        message: 'The pairing token could not be replaced.',
+      });
+      expect(b.token).toBeNull();
+      expect(a.token).toBe('a'.repeat(64));
+      await expectSuspendedThroughFreshWrapper(a);
+    });
+
+    it('marks a clean store a failed write reached when the clear lands on another', async () => {
+      const { a, revoked } = await writeFailsThenClearElsewhere(false);
+      await expect(revoked).rejects.toBeInstanceOf(PairingError);
+      expect(a.token).toBe('a'.repeat(64));
+      await expectSuspendedThroughFreshWrapper(a);
+    });
+
+    it('marks a clean store it ended on, and says the revoke must be repeated', async () => {
+      const b = memoryStore('b'.repeat(64));
+      const a = memoryStore(null);
+      const d = memoryStore('d'.repeat(64));
+      const wrapper = switchable(b);
+      const { server } = await started({ pairingStore: wrapper });
+      const finish = heldWrite(a);
+      const read = heldRead(b);
+      const revoked = server.revokePairing();
+      await read.asked;
+      wrapper.target = a;
+      read.answer();
+      await new Promise((resolve) => setTimeout(resolve, 0)); // into the write on a
+      wrapper.target = d;
+      finish();
+      await expect(revoked).rejects.toMatchObject({
+        code: 'PAIRING_UNAVAILABLE',
+        message: PAIRING_STORE_CHANGED_MESSAGE,
+      });
+      expect(a.token).toMatch(/^[0-9a-f]{64}$/);
+      expect(d.token).toBe('d'.repeat(64));
+      await expectSuspendedThroughFreshWrapper(d);
+      await expectSuspendedThroughFreshWrapper(b);
+    });
   });
 
   describe('a failed revoke marks every store it may have touched', () => {
