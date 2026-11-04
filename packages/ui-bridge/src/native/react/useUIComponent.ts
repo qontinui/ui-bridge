@@ -4,8 +4,9 @@
  * Register a component with UI Bridge for component-level actions.
  */
 
-import { useEffect, useCallback, useRef, useMemo } from 'react';
+import { useEffect, useCallback, useRef, useState } from 'react';
 import type { IREffect, RegisteredNativeComponent } from '../core/types';
+import type { UpdateComponentMetaOptions } from '../core/registry';
 import { useUIBridgeNativeOptional } from './UIBridgeNativeProvider';
 
 /**
@@ -91,10 +92,7 @@ export interface ComponentActionDef<TParams = unknown, TResult = unknown> {
    * abort, so an unobservant handler is abandoned anyway — observing it is how
    * a handler releases its own in-flight work instead of leaving it detached.
    */
-  handler: (
-    params?: TParams,
-    options?: { signal?: AbortSignal }
-  ) => TResult | Promise<TResult>;
+  handler: (params?: TParams, options?: { signal?: AbortSignal }) => TResult | Promise<TResult>;
 }
 
 /**
@@ -130,14 +128,49 @@ export interface UseUIComponentReturn {
   register: () => void;
   /** Manually unregister the component */
   unregister: () => void;
-  /** Update actions dynamically */
+  /**
+   * Install an action list the `actions` option does not declare, published to
+   * the registry in place (no unregister/register gap).
+   *
+   * Not needed for the common case: the `actions` OPTION is republished
+   * whenever its published shape changes. The installed list holds until the
+   * declared actions change VALUE, or `id` changes, and then the declared list
+   * wins. An action id in both lists runs whichever handler was supplied last.
+   */
   updateActions: (actions: ComponentActionDef[]) => void;
-  /** Add an element ID to this component */
+  /**
+   * Add an element ID to this component, published to the registry
+   * immediately. Survives re-renders; it is replaced only when the DECLARED
+   * `elementIds` option itself changes value.
+   */
   addElement: (elementId: string) => void;
-  /** Remove an element ID from this component */
+  /** Remove an element ID from this component. Same publishing rules as {@link addElement}. */
   removeElement: (elementId: string) => void;
-  /** The registered component info */
+  /**
+   * The component as the registry currently holds it — `null` until
+   * registration commits, then refreshed on every republish that changes the
+   * published shape.
+   */
   registeredComponent: RegisteredNativeComponent | null;
+}
+
+/**
+ * Value signature of what a bridge consumer can SEE of an action list.
+ * Handlers are excluded: call sites pass fresh closures every render, and the
+ * registered trampoline looks the latest one up at invoke time anyway.
+ *
+ * Runs during render over `paramSchema`, typed `Record<string, unknown>`, so it
+ * must not throw: a cyclic or BigInt value degrades to a signature that cannot
+ * see schema changes rather than taking the consumer's tree down.
+ */
+function publishedActionsSignature(actions: ComponentActionDef[] | undefined): string {
+  const list = actions ?? [];
+  const head = (a: ComponentActionDef) => [a.id, a.label, a.description, a.effect];
+  try {
+    return JSON.stringify(list.map((a) => [...head(a), a.paramSchema]));
+  } catch {
+    return JSON.stringify(list.map(head));
+  }
 }
 
 /**
@@ -188,51 +221,139 @@ export interface UseUIComponentReturn {
  */
 export function useUIComponent(options: UseUIComponentOptions): UseUIComponentReturn {
   const bridge = useUIBridgeNativeOptional();
+  // `registeredRef` is authoritative for the register/unregister guard;
+  // `registered` is its rendered mirror — the value this hook RETURNS. It used
+  // to return `registeredRef.current`, read during render before any effect had
+  // set it: `false` on the first render and stale thereafter.
+  const [registered, setRegistered] = useState(false);
+  // Bumped whenever the registry's copy of this component demonstrably changed,
+  // so the render-phase read of `registeredComponent` below re-runs.
+  //
+  // ⚠ CHURN GUARD — do not "simplify" `publishedIdRef` away. A provider whose
+  // context value churns per render re-registers this component on every
+  // render. If every registration bumped this counter, that bounded registry
+  // churn would become an UNBOUNDED render loop (the sibling package's first
+  // version of this fix OOM'd a 4 GB test worker exactly so). A
+  // re-registration under an UNCHANGED id bumps nothing.
+  const [publishVersion, setPublishVersion] = useState(0);
+  const publishedIdRef = useRef<string | null>(null);
   const registeredRef = useRef(false);
-  const actionsRef = useRef(options.actions || []);
-  const elementIdsRef = useRef(options.elementIds || []);
+  const registeredIdRef = useRef<string | null>(null);
 
   const { id, name, description, autoRegister = true } = options;
 
-  // Update refs when options change
+  // --- Actions ---------------------------------------------------------------
+  //
+  // Two lanes, kept apart: the DECLARED `actions` option, and a list installed
+  // through `updateActions`. Sharing one ref meant an inline `actions` array —
+  // a new identity on every render — reset the imperative list on the next
+  // render.
+
+  // The declared list is tracked on identity, so calls reach the latest closures.
+  const actionsRef = useRef(options.actions || []);
+  const actionsSignature = publishedActionsSignature(options.actions);
   useEffect(() => {
     actionsRef.current = options.actions || [];
-    elementIdsRef.current = options.elementIds || [];
-  }, [options.actions, options.elementIds]);
+  }, [options.actions]);
 
-  // Register the component
+  // The imperative list holds until the declared actions change VALUE (the
+  // call site has said something newer) or the id changes (it was installed
+  // for the old one). Compared by hand rather than by effect deps, so a list
+  // installed before this hook's first effect runs is kept.
+  const imperativeActionsRef = useRef<ComponentActionDef[] | null>(null);
+  const imperativeHoldKey = JSON.stringify([id, actionsSignature]);
+  const imperativeHoldKeyRef = useRef(imperativeHoldKey);
+  useEffect(() => {
+    if (imperativeHoldKeyRef.current === imperativeHoldKey) return;
+    imperativeHoldKeyRef.current = imperativeHoldKey;
+    imperativeActionsRef.current = null;
+  }, [imperativeHoldKey]);
+
+  const publishedActions = useCallback(
+    (): ComponentActionDef[] => imperativeActionsRef.current ?? actionsRef.current,
+    []
+  );
+  // For an id in both lists, whichever handler was supplied last. A stable
+  // declared list leaves the `updateActions` handler newest; an inline one
+  // supplies a fresher closure on the next render.
+  const declaredAtInstallRef = useRef<ComponentActionDef[] | null>(null);
+  const findAction = useCallback((actionId: string): ComponentActionDef | undefined => {
+    const declared = actionsRef.current.find((x) => x.id === actionId);
+    const installed = imperativeActionsRef.current?.find((x) => x.id === actionId);
+    return actionsRef.current === declaredAtInstallRef.current
+      ? (installed ?? declared)
+      : (declared ?? installed);
+  }, []);
+
+  // Map the published actions into the registry's input shape.
+  //
+  // The handler is a TRAMPOLINE resolved at INVOKE time. Passing `a.handler`
+  // directly pinned the closure from the render that registered the component
+  // for the life of the mount, so a handler reading component state read it as
+  // it was at mount.
+  //
+  // Every other field is spread rather than re-listed: the registry closes the
+  // field list once (`toRegisteredComponentActions`), and a second closed list
+  // here is only a second place to drop `paramSchema` / `effect` from, which is
+  // what happened to each of them once.
+  const toRegistryActions = useCallback(
+    () =>
+      publishedActions().map(({ handler: declaredHandler, ...rest }) => ({
+        ...rest,
+        handler: (params?: unknown, handlerOptions?: { signal?: AbortSignal }) =>
+          (findAction(rest.id)?.handler ?? declaredHandler)(params, handlerOptions),
+      })),
+    [publishedActions, findAction]
+  );
+
+  // --- Element ids -----------------------------------------------------------
+  //
+  // `elementIds` carries no closures, so it is re-asserted only when the
+  // DECLARED value changes — compared by value, since the array is freshly
+  // allocated on essentially every render. Re-asserting on identity undid
+  // `addElement` / `removeElement` on the next render of any call site that
+  // declares an inline `elementIds` option.
+  const elementIdsRef = useRef(options.elementIds || []);
+  const elementIdsSignature = JSON.stringify(options.elementIds ?? null);
+  useEffect(() => {
+    if (options.elementIds !== undefined) elementIdsRef.current = options.elementIds;
+    // Keyed on the value signature, not the array identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [elementIdsSignature]);
+
+  // --- Register / unregister -------------------------------------------------
+
   const register = useCallback(() => {
     if (!bridge || registeredRef.current) return;
 
     bridge.registry.registerComponent(id, {
       name,
       description,
-      actions: actionsRef.current.map((a) => ({
-        id: a.id,
-        label: a.label,
-        description: a.description,
-        // Phase 2: re-wrap site with a CLOSED field list. `paramSchema` was
-        // absent here, so an author's declared schema died at this hop even
-        // once the registry accepted it. Count re-wrap sites, not declaration
-        // sites.
-        paramSchema: a.paramSchema,
-        // Phase 4: `effect` is the next field this closed list would have
-        // dropped silently. Name it, or the annotation never reaches the
-        // registry.
-        effect: a.effect,
-        handler: a.handler,
-      })),
+      actions: toRegistryActions(),
       elementIds: elementIdsRef.current,
     });
     registeredRef.current = true;
-  }, [bridge, id, name, description]);
+    registeredIdRef.current = id;
+    setRegistered(true);
+    // Only when the id this hook has PUBLISHED actually moved — see the churn
+    // guard note on `publishVersion`.
+    if (publishedIdRef.current !== id) {
+      publishedIdRef.current = id;
+      setPublishVersion((v) => v + 1);
+    }
+  }, [bridge, id, name, description, toRegistryActions]);
 
-  // Unregister the component
   const unregister = useCallback(() => {
     if (!bridge || !registeredRef.current) return;
 
-    bridge.registry.unregisterComponent(id);
+    // The id that was REGISTERED, which after an id change is not `id`.
+    bridge.registry.unregisterComponent(registeredIdRef.current ?? id);
     registeredRef.current = false;
+    registeredIdRef.current = null;
+    setRegistered(false);
+    // `publishedIdRef` is deliberately NOT cleared: clearing it would re-arm the
+    // bump in `register()`, which is exactly the loop the guard prevents under
+    // a churning provider (unregister+register on every render).
   }, [bridge, id]);
 
   // Execute an action
@@ -259,52 +380,127 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
     [bridge, id]
   );
 
-  // Update actions dynamically
-  const updateActions = useCallback(
-    (actions: ComponentActionDef[]) => {
-      actionsRef.current = actions;
-
-      // Re-register with updated actions if already registered
-      if (registeredRef.current && bridge) {
-        bridge.registry.unregisterComponent(id);
-        registeredRef.current = false;
-        register();
+  // Publish in place through the registry's update door. Republishing by
+  // unregister+register emitted a spurious `component:unregistered` /
+  // `component:registered` pair and left the component ABSENT from the
+  // registry for the width of the call.
+  const publish = useCallback(
+    (meta: UpdateComponentMetaOptions) => {
+      if (!registeredRef.current || !bridge) return;
+      const changed = bridge.registry.updateComponentMeta(registeredIdRef.current ?? id, meta);
+      if (changed) {
+        setPublishVersion((v) => v + 1);
       }
     },
-    [bridge, id, register]
+    [bridge, id]
   );
 
-  // Add element ID
-  const addElement = useCallback((elementId: string) => {
-    if (!elementIdsRef.current.includes(elementId)) {
+  const updateActions = useCallback(
+    (actions: ComponentActionDef[]) => {
+      imperativeActionsRef.current = actions;
+      declaredAtInstallRef.current = actionsRef.current;
+      publish({ actions: toRegistryActions() });
+    },
+    [publish, toRegistryActions]
+  );
+
+  // `addElement` / `removeElement` used to write a private ref and stop there,
+  // so the ownership list an agent read never moved.
+  const addElement = useCallback(
+    (elementId: string) => {
+      if (elementIdsRef.current.includes(elementId)) return;
       elementIdsRef.current = [...elementIdsRef.current, elementId];
-    }
-  }, []);
+      publish({ elementIds: elementIdsRef.current });
+    },
+    [publish]
+  );
 
-  // Remove element ID
-  const removeElement = useCallback((elementId: string) => {
-    elementIdsRef.current = elementIdsRef.current.filter((eid) => eid !== elementId);
-  }, []);
+  const removeElement = useCallback(
+    (elementId: string) => {
+      if (!elementIdsRef.current.includes(elementId)) return;
+      elementIdsRef.current = elementIdsRef.current.filter((eid) => eid !== elementId);
+      publish({ elementIds: elementIdsRef.current });
+    },
+    [publish]
+  );
 
-  // Auto-register on mount
+  // Keep the latest register/unregister in refs so the auto-register effect
+  // does not tear down when `name`, `description` or the action list changes —
+  // those are republished in place by the effect further down.
+  const registerRef = useRef(register);
+  const unregisterRef = useRef(unregister);
+  useEffect(() => {
+    registerRef.current = register;
+    unregisterRef.current = unregister;
+  }, [register, unregister]);
+
+  // Auto-register on mount, and RE-register when `id` (or the bridge) changes.
+  //
+  // `id` is a real dependency even though the body never reads it: without it
+  // an id change would leave the OLD id registered and never register the new
+  // one. On an id-change render the cleanup runs first, closing over the
+  // PREVIOUS `unregisterRef.current`, which removes `registeredIdRef.current` —
+  // the OLD id. The ref-sync effect above is declared first, so by the time
+  // this body re-runs, `registerRef.current` registers the NEW id.
   useEffect(() => {
     if (autoRegister) {
-      register();
+      registerRef.current();
     }
 
     return () => {
-      unregister();
+      if (registeredRef.current) {
+        unregisterRef.current();
+      }
     };
-  }, [autoRegister, register, unregister]);
+  }, [autoRegister, bridge, id]);
 
-  // Get registered component
-  const registeredComponent = useMemo(() => {
-    if (!bridge) return null;
-    return bridge.registry.getComponent(id) || null;
-  }, [bridge, id]);
+  // Keep the registry's copy of the declaration in step with the OPTIONS.
+  //
+  // `register()` publishes once and is guarded by `registeredRef`, so without
+  // this a state-derived label, a conditional action (with its `effect:
+  // 'destructive'`), or a widened `paramSchema` published its mount-time shape
+  // for the life of the mount.
+  //
+  // Gated on `registered` rather than `registeredRef` so it runs on the commit
+  // that FOLLOWS registration, and keyed on value signatures rather than the
+  // arrays, whose identity churns every render. The actions published are the
+  // imperative list while it holds, so this never overwrites `updateActions`.
+  // `elementIds` is re-asserted only when the call site DECLARES it, so a hook
+  // driven by `addElement` alone keeps its list.
+  useEffect(() => {
+    if (!bridge || !registered) return;
+    publish({
+      name,
+      description,
+      actions: toRegistryActions(),
+      ...(options.elementIds !== undefined ? { elementIds: elementIdsRef.current } : {}),
+    });
+    // `actionsSignature` / `elementIdsSignature` stand in for the arrays they
+    // summarise; the arrays themselves are deliberately NOT deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    bridge,
+    registered,
+    id,
+    name,
+    description,
+    actionsSignature,
+    elementIdsSignature,
+    publish,
+    toRegistryActions,
+  ]);
+
+  // Read straight out of the registry during render rather than mirroring the
+  // entry into state: the registry is the owner. `publishVersion` is what makes
+  // this re-run — it is bumped exactly when the registry's copy changed. This
+  // used to be a `useMemo` on `[bridge, id]` that ran BEFORE the register
+  // effect on the first render and never recomputed.
+  void publishVersion;
+  const registeredComponent =
+    registered && bridge ? (bridge.registry.getComponent(id) ?? null) : null;
 
   return {
-    registered: registeredRef.current,
+    registered,
     executeAction,
     register,
     unregister,

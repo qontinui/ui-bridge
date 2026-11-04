@@ -67,6 +67,32 @@ const EMPTY_FEATURES: NativeUIBridgeFeatures = {};
 const EMPTY_CONFIG: NativeUIBridgeConfig = {};
 
 /**
+ * Hold an options object's identity steady for as long as its VALUE is
+ * unchanged.
+ *
+ * The stable defaults above only fix the host that OMITS the prop. This
+ * component's own usage example passes inline literals —
+ * `features={{ server: __DEV__, debug: __DEV__ }} config={{ serverPort: 9876 }}`
+ * — which are freshly allocated on every render of the host's layout. Both feed
+ * the `contextValue` memo below, so the context value (the `bridge` every hook
+ * receives) was NEW on every provider render, and a hook keyed on `bridge`
+ * tore down and re-registered on every one of them.
+ *
+ * Keyed on a JSON signature rather than an enumerated field list: both bags are
+ * small and plain (booleans, a number, a string — no functions, no cycles), and
+ * a field list would silently stop covering a field the day one is added. A
+ * host that reorders keys or mutates in place degrades to a new context value,
+ * never to a stale one. Ported from `@qontinui/ui-bridge-native`'s provider.
+ */
+function useValueStable<T>(value: T): T {
+  const signature = JSON.stringify(value);
+  // Keyed on the VALUE signature on purpose: `value`'s identity is precisely
+  // what this hook exists to discard, so listing it as a dep would defeat it.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  return useMemo(() => value, [signature]);
+}
+
+/**
  * UI Bridge Native provider props
  */
 export interface UIBridgeNativeProviderProps {
@@ -104,10 +130,14 @@ export interface UIBridgeNativeProviderProps {
  */
 export function UIBridgeNativeProvider({
   children,
-  features = EMPTY_FEATURES,
-  config = EMPTY_CONFIG,
+  features: featuresProp = EMPTY_FEATURES,
+  config: configProp = EMPTY_CONFIG,
   onEvent,
 }: UIBridgeNativeProviderProps) {
+  // Identity held steady by VALUE — see `useValueStable`. Everything below,
+  // including the `contextValue` memo, reads these.
+  const features = useValueStable(featuresProp);
+  const config = useValueStable(configProp);
   const registryRef = useRef<NativeUIBridgeRegistry | null>(null);
   const executorRef = useRef<NativeActionExecutor | null>(null);
   const [serverRunning, setServerRunning] = useState(false);
