@@ -39,7 +39,7 @@ import type { RouteInfo } from '../../core/types';
  * identity stable so effect re-fires come only from the hook's own deps.
  */
 
-const FEATURES = { server: false };
+const FEATURES = { debug: false };
 const CONFIG = {};
 
 function mountUnderProvider(info: RouteInfo, options?: UseRouteAwarenessOptions) {

@@ -27,10 +27,10 @@ import * as nativeCoreSubpath from './core/index';
  * comments stripped first, so a name that appears only in prose does not
  * satisfy the check.
  */
-function nativeBarrelExports(): string {
+function nativeBarrelExports(barrel = 'src/native/index.ts'): string {
   // `process.cwd()` under vitest is the package root, and the barrel's path
   // relative to it is stable — `import.meta.url` is not a file: URL here.
-  const path = resolve(process.cwd(), 'src/native/index.ts');
+  const path = resolve(process.cwd(), barrel);
   return readFileSync(path, 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/\/\/.*$/gm, '');
@@ -89,8 +89,8 @@ describe('the ./native root barrel lists the Phase 2-4 surface', () => {
   // `2026-11-02-ui-bridge-native-entry-serves-an-ungated-network-port`): the
   // server it used to carry answered every caller with no pairing gate. Apps
   // that need a port use `@qontinui/ui-bridge-native`, whose server carries
-  // the gate. This pins both doors a consumer could reach it through — the
-  // subpath export and the root barrel.
+  // the gate. This pins every door a consumer could reach it through — the
+  // subpath export, the root barrel and the four sub-barrels.
   //
   // The server class and factory names are assembled from parts on purpose:
   // the phase's gate greps the repo for their literal spelling and requires
@@ -108,10 +108,25 @@ describe('the ./native root barrel lists the Phase 2-4 surface', () => {
       ['create', 'Native', 'Server'].join(''),
       'createServerHandlers',
       'httpStatusForResponse',
+      'UI_BRIDGE_NATIVE_ROUTES',
     ];
-    for (const name of forbidden) {
-      expect(source, name).not.toMatch(new RegExp(`\\b${name}\\b`));
+    // Any re-export or import of a `server` module, from the root barrel
+    // (`./server`) or a sub-barrel (`../server`): named or star, single or
+    // double quotes, bare directory or a file under it.
+    const serverModule = /from\s+['"](?:\.\.?\/)+server(?:['"/])/;
+    const barrels = [
+      'src/native/index.ts',
+      'src/native/core/index.ts',
+      'src/native/react/index.ts',
+      'src/native/control/index.ts',
+      'src/native/debug/index.ts',
+    ];
+    for (const barrel of barrels) {
+      const text = nativeBarrelExports(barrel);
+      for (const name of forbidden) {
+        expect(text, `${barrel}: ${name}`).not.toMatch(new RegExp(`\\b${name}\\b`));
+      }
+      expect(text, barrel).not.toMatch(serverModule);
     }
-    expect(source).not.toMatch(/from '\.\/server\//);
   });
 });
