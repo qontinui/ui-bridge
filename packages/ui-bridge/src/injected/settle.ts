@@ -27,7 +27,7 @@
 export interface SettleState {
   /** True once the DOM is considered settled (see module docs). */
   settled: boolean;
-  /** Interactive elements registered as of the most recent seed pass. */
+  /** Interactive and media elements registered as of the most recent seed pass; content rows do not count. */
   elementCount: number;
   /**
    * True when the settle was forced by the hard timeout cap rather than by the
@@ -61,7 +61,7 @@ export interface SettleTrackerOptions {
 export interface SettleTracker {
   /** True once settled (quiet window elapsed after the condition met, or cap hit). */
   readonly settled: boolean;
-  /** Interactive elements registered as of the most recent seed pass. */
+  /** Interactive and media elements registered as of the most recent seed pass; content rows do not count. */
   readonly elementCount: number;
   /** True when settle was forced by the hard cap rather than a clean quiet window. */
   readonly settledByTimeout: boolean;
@@ -70,7 +70,7 @@ export interface SettleTracker {
   /** Begin the hard-timeout cap. Idempotent; call when observation starts. */
   start(): void;
   /**
-   * Record a seed pass. `elementCount` is the registry's element count after the
+   * Record a seed pass. `elementCount` is the registry's interactive and media count after the
    * pass. `satisfied` is the gating condition for this pass; it defaults to
    * `elementCount > 0` (the original "page has content" behavior). The quiet
    * countdown (re)arms only while `satisfied` is true; each satisfied pass resets

@@ -14,6 +14,12 @@
  * page driven by inject-cli every media find answered with nothing — and a
  * media question about an uninstrumented page could not be asked at all.
  *
+ * Content registers too, through the same `registerContentInRegistry` (the same
+ * plan, Phase 16). A heading is neither interactive nor media, so an
+ * uninstrumented page's snapshot held no heading at all, and
+ * `text_over_image_contrast` could measure a link over a hero but never the
+ * hero's own heading.
+ *
  * No React, no app cooperation. This is what makes Tier-1 injected semantics
  * (find / act / snapshot / state-read) work on uninstrumented pages.
  */
@@ -30,15 +36,26 @@ import {
   shouldRegisterMedia,
 } from '../react/media-discovery';
 import { IMAGE_SLOT_ATTR } from '../react/media-capture';
+import {
+  CONTENT_SELECTORS,
+  registerContentInRegistry,
+  shouldRegisterContent,
+} from '../react/content-discovery';
 
 /** Most media elements the seeder registers, as `useAutoRegister`'s default. */
 const MAX_SEEDED_MEDIA = 200;
 
+/** Most content elements the seeder registers, as `useAutoRegister`'s default. */
+const MAX_SEEDED_CONTENT = 500;
+
+/** Content that comes in bulk, seeded after the rest so it cannot crowd it out. */
+const BULK_CONTENT_SELECTORS = 'li, td, th, pre, code, dd, dt';
+
 /** Outcome of a single seed pass. */
 export interface SeedResult {
-  /** Elements newly registered on this pass (interactive and media). */
+  /** Elements newly registered on this pass (interactive, media and content). */
   registered: number;
-  /** Total interactive and media elements the scan found (registered + already-tracked). */
+  /** Elements the interactive, media and content scans matched, before filtering; one both match counts twice. */
   total: number;
 }
 
@@ -59,7 +76,7 @@ function isActionable(item: DOMFallbackElementWithRef): boolean {
 }
 
 /**
- * Register every interactive DOM element under `root` into `registry`,
+ * Register every interactive, media and content element under `root` into `registry`,
  * carrying the live `HTMLElement` ref. Idempotent when a shared `tracked`
  * map is supplied. Element `type` and `actions` are inferred by the registry
  * itself (`registerElement` runs `inferElementType` / `inferActions` when
@@ -81,10 +98,22 @@ export function seedRegistryFromDom(
 
   let registered = 0;
   for (const item of scanned) {
-    if (tracked?.has(item.element)) continue;
+    const heldId = tracked?.get(item.element);
+    if (heldId !== undefined) {
+      // A row seeded as content that has since become interactive (a <th> a table
+      // plugin gave a tabindex) is promoted: a content row has no actions, so left
+      // alone it could never be clicked. Anything else held stays as it is.
+      if (registry.getElement(heldId)?.category !== 'content') continue;
+      registry.unregisterElement(heldId);
+      usedIds.delete(heldId);
+      tracked?.delete(item.element);
+    }
     if (!isActionable(item)) continue;
 
-    let id = item.id;
+    // A promoted row keeps an id its author chose: an assertion may name it. Only
+    // a promoted row: everything else this scan finds keeps the id it always had.
+    const authored = heldId !== undefined ? item.element.getAttribute('data-content-id') : null;
+    let id = authored || item.id;
     if (usedIds.has(id)) {
       let suffix = 2;
       while (usedIds.has(`${id}-${suffix}`)) suffix++;
@@ -130,7 +159,31 @@ export function seedRegistryFromDom(
     registered++;
   }
 
-  return { registered, total: scanned.length + media.length };
+  // Content — the React scanner's own registration, as for media above. Each
+  // element is judged once more on every pass, since one with no text yet can
+  // gain it; `isRegistered` is what stops a re-seed registering it twice.
+  // Headings and prose go first, so that when the cap binds in a pass it binds on
+  // table cells and list items, not on a hero heading further down the page. Only
+  // within a pass: nothing evicts a row, so a heading mounted after a large table
+  // filled the cap gets none. verify-page-verdict.sh's `contentRowsCapped` says so.
+  const matched = mediaRoot
+    ? Array.from(mediaRoot.querySelectorAll<HTMLElement>(CONTENT_SELECTORS.join(', ')))
+    : [];
+  const isBulk = (el: HTMLElement) => el.matches(BULK_CONTENT_SELECTORS);
+  const content = [...matched.filter((el) => !isBulk(el)), ...matched.filter(isBulk)];
+  let contentCount = registry.getAllElements().filter((e) => e.category === 'content').length;
+  for (const el of content) {
+    if (contentCount >= MAX_SEEDED_CONTENT) break;
+    // The scan above can hold an element a content selector matches too.
+    if (isRegistered(el) || !shouldRegisterContent(el)) continue;
+    const id = registerContentInRegistry(registry, el);
+    if (id === null) continue;
+    tracked?.set(el, id);
+    contentCount++;
+    registered++;
+  }
+
+  return { registered, total: scanned.length + media.length + content.length };
 }
 
 /** Options for {@link observeAndSeed}. */
@@ -139,9 +192,11 @@ export interface ObserveOptions {
   debounceMs?: number;
   /**
    * Called after every seed pass (the initial pass and each debounced re-seed),
-   * with the registry's total element count at that point. The injected
-   * bootstrap uses this to drive its settle tracker. The count is read from the
-   * registry (not {@link SeedResult.registered}) so it reflects removals too.
+   * with the registry's interactive and media element count at that point. The
+   * injected bootstrap uses this to drive its settle tracker. The count is read
+   * from the registry (not {@link SeedResult.registered}) so it reflects removals
+   * too. Content rows do NOT count: a `<h1>Loading…</h1>` splash must not read as
+   * the page having arrived, and a text-only page keeps its typed BLOCKED answer.
    */
   onSeed?: (elementCount: number) => void;
 }
@@ -167,7 +222,7 @@ export function observeAndSeed(
 
   const reseed = () => {
     const result = seedRegistryFromDom(registry, root, { tracked });
-    onSeed?.(registry.getAllElements().length);
+    onSeed?.(registry.getAllElements().filter((e) => e.category !== 'content').length);
     return result;
   };
 
@@ -207,6 +262,10 @@ export function observeAndSeed(
       'hidden',
       'disabled',
       'aria-hidden',
+      // A control can gain its interactivity from these alone, and a row seeded
+      // as content is only promoted on a re-seed.
+      'role',
+      'tabindex',
       'src',
       'srcset',
       IMAGE_SLOT_ATTR,

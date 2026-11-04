@@ -216,6 +216,16 @@ in each cell's directory.
 
 ### Text hidden for one frame: text over images on real pixels
 
+A snapshot from the injected runtime holds a page's headings, paragraphs and other
+static text as content rows, beside its controls and media, so this measures a hero's
+own heading as well as a link laid over it. Content rows do not count toward settle:
+a `<h1>Loading…</h1>` splash is not the page having arrived. They do reach every
+analyzer that reads the snapshot, so a layout check can report text it could not see
+before: python.org's layout criticals went from 1 to 4 on upgrading. At most 500 are
+registered, with headings and prose ahead of table cells and list items within a
+seed pass; nothing evicts a row already held, so text mounted after the cap is full
+gets none.
+
 The injected runtime also serves the `textVisibility` dev control, which makes
 every glyph on the page transparent for one frame and then restores the page
 exactly. Frame A (normal) and frame B (text hidden) against one snapshot differ,
