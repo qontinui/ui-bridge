@@ -18,6 +18,7 @@ import {
   type WebSocketUpgradeDecision,
 } from '../http-server';
 import {
+  PAIRING_STORE_IDENTITY,
   PairingError,
   SIGNED_BODY_MAX_CHARS,
   SIGNED_METHOD_MAX_CHARS,
@@ -2107,6 +2108,11 @@ describe('revoke', () => {
       throw new Error('not loaded');
     };
     await expect(server.revokePairing()).rejects.toBeInstanceOf(PairingError);
+    // Still unreadable: the answer names the suspension, which is what cures it.
+    expect(json(await http(signed(oldToken)))).toMatchObject({
+      code: 'PAIRING_UNAVAILABLE',
+      error: 'Pairing is suspended until a revoke succeeds on the device.',
+    });
     store.get = realGet;
 
     // The app told the user the revoke failed, so the old token may not verify,
@@ -2202,6 +2208,112 @@ describe('revoke', () => {
     const refused = await inFlight;
     expect(refused.status).toBe(503);
     expect(json(refused)).toMatchObject({
+      code: 'PAIRING_UNAVAILABLE',
+      error: 'Pairing is suspended until a revoke succeeds on the device.',
+    });
+  });
+
+  /** Fail a revoke on `server` at its first read, leaving the store readable after. */
+  async function failRevokeAtRead(store: MemoryStore, server: NativeUIBridgeServer): Promise<void> {
+    const realGet = store.get;
+    store.get = () => {
+      throw new Error('not loaded');
+    };
+    await expect(server.revokePairing()).rejects.toBeInstanceOf(PairingError);
+    store.get = realGet;
+  }
+
+  it('does not hand out a token minted while a revoke on another server failed', async () => {
+    const store = memoryStore(null);
+    const old = await started({ pairingStore: store });
+    const rebuilt = await started({ pairingStore: store });
+    const finish = heldWrite(store);
+    const pairing = old.http(cable({ method: 'POST', path: PAIR }));
+    await new Promise((resolve) => setTimeout(resolve, 0)); // into the write
+
+    await failRevokeAtRead(store, rebuilt.server);
+    finish();
+
+    const answer = await pairing;
+    expect(answer.status).toBe(503);
+    expect(json(answer)).toMatchObject({
+      code: 'PAIRING_UNAVAILABLE',
+      error: 'Pairing is suspended until a revoke succeeds on the device.',
+    });
+  });
+
+  it('names the suspension when a mint fails while a revoke on another server failed', async () => {
+    const store = memoryStore(null);
+    const old = await started({ pairingStore: store });
+    const rebuilt = await started({ pairingStore: store });
+    let fail!: () => void;
+    const gate = new Promise<void>((resolve) => (fail = resolve));
+    store.set = async () => {
+      await gate;
+      throw new Error('disk full');
+    };
+    const pairing = old.http(cable({ method: 'POST', path: PAIR }));
+    await new Promise((resolve) => setTimeout(resolve, 0)); // into the write
+
+    await failRevokeAtRead(store, rebuilt.server);
+    fail();
+
+    const answer = await pairing;
+    expect(answer.status).toBe(503);
+    expect(json(answer)).toMatchObject({
+      code: 'PAIRING_UNAVAILABLE',
+      error: 'Pairing is suspended until a revoke succeeds on the device.',
+    });
+  });
+
+  it('does not arm a code drawn while a revoke on another server failed', async () => {
+    const store = memoryStore('o'.repeat(64));
+    const old = await started({ pairingStore: store });
+    const rebuilt = await started({ pairingStore: store });
+    const realRandom = store.randomBytes;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let asked!: () => void;
+    const drawing = new Promise<void>((resolve) => (asked = resolve));
+    store.randomBytes = async (n: number) => {
+      store.randomBytes = realRandom;
+      asked();
+      await gate;
+      return realRandom.call(store, n);
+    };
+    const arming = old.server.armPairingCode();
+    await drawing;
+
+    await failRevokeAtRead(store, rebuilt.server);
+    release();
+
+    await expect(arming).rejects.toMatchObject({
+      code: 'PAIRING_UNAVAILABLE',
+      message: 'Pairing is suspended until a revoke succeeds on the device.',
+    });
+    expect(old.server.getPairingState().armed).toBe(false);
+  });
+
+  it('rejects with PairingError when a wrapper names a primitive as its store', async () => {
+    const oldToken = 'o'.repeat(64);
+    const inner = memoryStore(oldToken);
+    const wrapper: PairingStore = {
+      get: () => inner.get(),
+      set: (token) => inner.set(token),
+      clear: () => inner.clear(),
+      randomBytes: (n) => inner.randomBytes(n),
+      [PAIRING_STORE_IDENTITY]: () => 'not-an-object' as unknown as PairingStore,
+    };
+    const { http, server } = await started({ pairingStore: wrapper });
+    inner.get = () => {
+      throw new Error('not loaded');
+    };
+    await expect(server.revokePairing()).rejects.toMatchObject({ code: 'PAIRING_UNAVAILABLE' });
+    await expect(server.revokePairing()).rejects.toBeInstanceOf(PairingError);
+    inner.get = function (this: MemoryStore) {
+      return this.token;
+    };
+    expect(json(await http(signed(oldToken)))).toMatchObject({
       code: 'PAIRING_UNAVAILABLE',
       error: 'Pairing is suspended until a revoke succeeds on the device.',
     });
