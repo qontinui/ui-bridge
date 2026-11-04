@@ -177,12 +177,12 @@ export function seedRegistryFromDom(
   const isBulk = (el: HTMLElement) => el.matches(BULK_CONTENT_SELECTORS);
   const content = [...matched.filter((el) => !isBulk(el)), ...matched.filter(isBulk)];
   let contentCount = registry.getAllElements().filter((e) => e.category === 'content').length;
-  let contentDropped = 0;
+  const refused: HTMLElement[] = [];
   for (const el of content) {
     // The scan above can hold an element a content selector matches too.
     if (isRegistered(el) || !shouldRegisterContent(el)) continue;
     if (contentCount >= MAX_SEEDED_CONTENT) {
-      contentDropped++;
+      refused.push(el);
       continue;
     }
     const id = registerContentInRegistry(registry, el);
@@ -191,9 +191,9 @@ export function seedRegistryFromDom(
     contentCount++;
     registered++;
   }
-  // The pass's whole count, so it replaces the previous pass's: a refused
+  // The pass's whole refused set, so it replaces the previous pass's: a refused
   // element that has since got a row, or left the page, is no longer counted.
-  registry.reportContentDropped(SEED_DROP_SOURCE, contentDropped);
+  registry.reportContentDropped(SEED_DROP_SOURCE, refused);
 
   return { registered, total: scanned.length + media.length + content.length };
 }
@@ -290,5 +290,7 @@ export function observeAndSeed(
       clearTimeout(timer);
       timer = null;
     }
+    // A stopped seeder no longer keeps its refused set current, so it withdraws it.
+    registry.endContentCount(SEED_DROP_SOURCE);
   };
 }

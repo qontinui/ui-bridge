@@ -20,9 +20,9 @@ vi.mock('../UIBridgeProvider', () => ({
   useUIBridgeOptional: () => mockBridge,
 }));
 
-function Harness() {
+function Harness({ enabled = true }: { enabled?: boolean }) {
   useAutoRegister({
-    enabled: true,
+    enabled,
     debounceMs: 0,
     includeHidden: true,
     contentDiscovery: { enabled: true, contentDebounceMs: 0, maxContentElements: 3 },
@@ -63,12 +63,66 @@ describe('useAutoRegister: content rows a cap refused', () => {
     document.body.innerHTML = '';
   });
 
-  it('under the cap, the snapshot states 0', async () => {
+  it('before the first content pass the field is ABSENT; under the cap the pass states 0', async () => {
     document.body.innerHTML = '<p>One</p><p>Two</p>';
     render(<Harness />);
+    // Mounted, content queued, no pass yet: UNKNOWN, not 0.
+    expect(dropped()).toBeUndefined();
     await settle();
     expect(contentRows()).toHaveLength(2);
     expect(dropped()).toBe(0);
+  });
+
+  it('a page with no content to queue is measured at once', () => {
+    document.body.innerHTML = '<div></div>';
+    render(<Harness />);
+    expect(dropped()).toBe(0);
+  });
+
+  it('an unmounted hook withdraws its count', async () => {
+    document.body.innerHTML = '<p>One</p><p>Two</p><p>Three</p><p>Four</p><p>Five</p>';
+    const view = render(<Harness />);
+    await settle();
+    expect(dropped()).toBe(2);
+    view.unmount();
+    expect(dropped()).toBe(0);
+  });
+
+  it('a disabled hook withdraws its count', async () => {
+    document.body.innerHTML = '<p>One</p><p>Two</p><p>Three</p><p>Four</p><p>Five</p>';
+    const view = render(<Harness />);
+    await settle();
+    expect(dropped()).toBe(2);
+    view.rerender(<Harness enabled={false} />);
+    expect(dropped()).toBe(0);
+  });
+
+  it('two hooks over one page do not count a row the other holds', async () => {
+    document.body.innerHTML = '<p>One</p><p>Two</p><p>Three</p><p>Four</p><p>Five</p>';
+    render(
+      <>
+        <Harness />
+        <Harness />
+      </>
+    );
+    await settle();
+    // Between them the two caps (3 + 3) hold all five, so nothing is dropped,
+    // though the first hook refused two the second then registered.
+    expect(contentRows()).toHaveLength(5);
+    expect(dropped()).toBe(0);
+  });
+
+  it('after auth-complete clears the registry, the count is UNKNOWN until re-measured', async () => {
+    document.body.innerHTML = '<p>One</p><p>Two</p><p>Three</p><p>Four</p><p>Five</p>';
+    render(<Harness />);
+    await settle();
+    expect(dropped()).toBe(2);
+    window.dispatchEvent(new Event('ui-bridge-auth-complete'));
+    expect(dropped()).toBeUndefined();
+    await settle();
+    // The hook's own maps were reset with the registry, so the rows come back.
+    expect(contentRows()).toHaveLength(3);
+    expect(dropped()).toBe(2);
   });
 
   it('at the cap, the snapshot states exactly how many registrable rows were refused', async () => {

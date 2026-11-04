@@ -128,7 +128,9 @@ The response also includes:
   seeder's 500, or an embedded `useAutoRegister`'s
   `contentDiscovery.maxContentElements`. Above 0, a check that reads text rows
   has not seen the whole page. It is a number only, and 0 when nothing was
-  dropped; absent means an older SDK, which is UNKNOWN, never 0.
+  dropped. Absent is UNKNOWN, never 0: an older SDK, or a counting source
+  that has not measured yet (before a hook's first content pass, or right
+  after the registry was cleared on a route change).
 - `snapshotTakenAtMs` — server epoch ms when the snapshot was built.
 
 **Filtering tips:**

@@ -1546,8 +1546,10 @@ export async function executeCommand(
           totalRegistered: elements.length,
           everHadRegistrations: reg.hasEverHadRegistrations(),
           byRoute: reg.getCountsByRoute(),
-          contentDropped: reg.getContentDropped(),
         };
+        // Absent while a counting source has not measured: UNKNOWN, not 0.
+        const contentDropped = reg.getContentDropped();
+        if (contentDropped !== undefined) registration.contentDropped = contentDropped;
       } catch {
         // Fall back to the conservative default above.
       }
@@ -2602,8 +2604,10 @@ export async function executeCommand(
           totalRegistered: elements.length,
           everHadRegistrations: reg.hasEverHadRegistrations(),
           byRoute: reg.getCountsByRoute(),
-          contentDropped: reg.getContentDropped(),
         };
+        // Absent while a counting source has not measured: UNKNOWN, not 0.
+        const contentDropped = reg.getContentDropped();
+        if (contentDropped !== undefined) registration.contentDropped = contentDropped;
       } catch {
         // Fall back to the conservative default above.
       }

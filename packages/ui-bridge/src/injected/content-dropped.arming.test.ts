@@ -87,22 +87,55 @@ const cells = (n: number, from = 0) =>
 const settle = () => new Promise((resolve) => setTimeout(resolve, 200));
 
 it('a page under the cap states that nothing was dropped, on every emitter', async () => {
+  // Pending first, so a 0 below is a pass that measured, not an empty default.
+  getGlobalRegistry().beginContentCount('injected-seed');
   const registry = seed('<h1>Hero heading</h1><p>Body text</p>');
   expect(contentRows(registry)).toHaveLength(2);
   for (const r of await registrations(registry)) expect(r.contentDropped).toBe(0);
 });
 
-it('every emitter serves the sum of what each source reported, and a report replaces', async () => {
+it('every emitter serves the union of what the sources refused, less rows since given', async () => {
+  document.body.innerHTML = '<p id="a">A</p><p id="b">B</p><p id="c">C</p>';
+  const [a, b, c] = ['a', 'b', 'c'].map((id) => document.getElementById(id)!);
   const registry = getGlobalRegistry();
-  registry.reportContentDropped('injected-seed', 3);
-  registry.reportContentDropped('useAutoRegister:1', 4);
-  for (const r of await registrations(registry)) expect(r.contentDropped).toBe(7);
-  registry.reportContentDropped('injected-seed', 1);
-  registry.reportContentDropped('useAutoRegister:1', 0);
-  for (const r of await registrations(registry)) expect(r.contentDropped).toBe(1);
-  // A full teardown drops every source's count with the rows it was counted against.
-  registry.clear();
+  registry.reportContentDropped('injected-seed', [a, b]);
+  registry.reportContentDropped('useAutoRegister:1', [b, c]);
+  // b was refused by both sources: one element, counted once.
+  for (const r of await registrations(registry)) expect(r.contentDropped).toBe(3);
+  // A report replaces that source's set.
+  registry.reportContentDropped('useAutoRegister:1', []);
+  for (const r of await registrations(registry)) expect(r.contentDropped).toBe(2);
+  // A row some other source gave the element, and an element that left the
+  // page, both leave the count.
+  registry.registerElement('row-a', a);
+  b.remove();
   for (const r of await registrations(registry)) expect(r.contentDropped).toBe(0);
+});
+
+it('the field is ABSENT while a source has not measured, on every emitter', async () => {
+  const registry = getGlobalRegistry();
+  registry.beginContentCount('useAutoRegister:1');
+  for (const r of await registrations(registry)) expect('contentDropped' in r).toBe(false);
+  registry.reportContentDropped('useAutoRegister:1', []);
+  for (const r of await registrations(registry)) expect(r.contentDropped).toBe(0);
+  // A full teardown makes every known source pending again: UNKNOWN, not 0.
+  registry.clear();
+  for (const r of await registrations(registry)) expect('contentDropped' in r).toBe(false);
+  // A source withdrawn entirely no longer holds the count UNKNOWN.
+  registry.endContentCount('useAutoRegister:1');
+  for (const r of await registrations(registry)) expect(r.contentDropped).toBe(0);
+});
+
+it('a stopped seeder withdraws what it refused', () => {
+  document.body.innerHTML = '<p id="a">A</p>';
+  const registry = getGlobalRegistry();
+  stop = observeAndSeed(registry, document.body);
+  registry.reportContentDropped('injected-seed', [document.getElementById('a')!]);
+  registry.unregisterElement(registry.getAllElements()[0].id);
+  expect(registry.getContentDropped()).toBe(1);
+  stop();
+  stop = undefined;
+  expect(registry.getContentDropped()).toBe(0);
 });
 
 // Seeding past 500 cells under jsdom is slow on a CI runner, so these carry their
