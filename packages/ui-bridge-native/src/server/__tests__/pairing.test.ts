@@ -2457,6 +2457,13 @@ describe('revoke', () => {
       expect(b.token).toBeNull();
       expect(a.token).toBe('a'.repeat(64));
       await expectSuspendedThroughFreshWrapper(a);
+
+      // The clear reached b, so b is not suspended: a fresh server pairs over it.
+      const overB = await started({ pairingStore: switchable(b) });
+      const paired = await overB.http(cable({ method: 'POST', path: PAIR }));
+      expect(paired.status).toBe(200);
+      expect(json(paired).data!.token).toBe(b.token);
+      expect(b.token).toMatch(/^[0-9a-f]{64}$/);
     });
 
     it('marks a clean store a failed write reached when the clear lands on another', async () => {

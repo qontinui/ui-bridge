@@ -844,9 +844,11 @@ export class PairingAuthority {
    * Behind a wrapper, the app can switch stores while this runs. Only the store
    * the successful store call reached is cleared; every other one seen behind
    * the wrapper (at the start, at each store call, at the end) is marked, since
-   * its old token was never replaced. If the store the wrapper forwards to when
-   * this ends is one of those, this rejects, so the app is not told a revoke
-   * worked while pairing stays suspended.
+   * its old token was never replaced. If any key of the store this forwards to
+   * when it ends is still suspect after that, this rejects, so the app is not
+   * told a revoke worked while pairing stays suspended. Usually that means the
+   * app changed stores during the revoke; it can also be a failed revoke on
+   * another server over the same store.
    *
    * A stored value that is empty or not a string reads as not loaded, so a revoke
    * over it fails at the first read and marks the store suspect, and no later
