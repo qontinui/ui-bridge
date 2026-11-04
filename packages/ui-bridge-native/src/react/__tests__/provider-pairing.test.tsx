@@ -333,6 +333,68 @@ describe('UIBridgeNativeProvider pairing wiring', () => {
     again.unmount();
   });
 
+  it('leaves an app store the wrapper moved away from mid-revoke suspect', async () => {
+    let bridge!: ReturnType<typeof useUIBridgeNative>;
+    function Capture() {
+      bridge = useUIBridgeNative();
+      return null;
+    }
+    const oldToken = 'o'.repeat(64);
+    const firstState = { token: oldToken as string | null };
+    const secondState = { token: null as string | null };
+    const firstHost = storeWith(firstState);
+    const secondHost = storeWith(secondState);
+    const tree = (into: TestAdapter, host: PairingStore) => (
+      <UIBridgeNativeProvider
+        features={FEATURES}
+        serverAdapter={into}
+        deviceId="device-1"
+        pairingStore={host}
+      >
+        <Capture />
+      </UIBridgeNativeProvider>
+    );
+    const view = render(tree(adapter, firstHost));
+    await flush();
+    const realGet = firstHost.get;
+    firstHost.get = () => {
+      throw new Error('not loaded');
+    };
+    await expect(bridge.revokePairing()).rejects.toMatchObject({ code: 'PAIRING_UNAVAILABLE' });
+
+    // The next revoke reads the first store, and the app swaps stores before it writes.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    firstHost.get = async () => {
+      await gate;
+      return realGet();
+    };
+    const revoking = bridge.revokePairing();
+    await flush();
+    view.rerender(tree(adapter, secondHost));
+    await flush();
+    release();
+    await act(async () => {
+      await revoking;
+    });
+    expect(secondState.token).toBe('42'.repeat(32));
+    expect(firstState.token).toBe(oldToken);
+    firstHost.get = realGet;
+    view.unmount();
+
+    // The write never reached the first store, which still holds the old token.
+    const second = fakeAdapter();
+    const again = render(tree(second, firstHost));
+    await flush();
+    const pair = await second.http(CABLE_PAIR);
+    expect(pair.status).toBe(503);
+    expect(JSON.parse(pair.body)).toMatchObject({
+      code: 'PAIRING_UNAVAILABLE',
+      error: 'Pairing is suspended until a revoke succeeds on the device.',
+    });
+    again.unmount();
+  });
+
   it('answers the doors honestly when no server is running', async () => {
     let bridge!: ReturnType<typeof useUIBridgeNative>;
     function Capture() {

@@ -65,11 +65,15 @@ function monotonicNow(): number | null {
 
 /**
  * Set by a wrapper that forwards to a store it does not own, such as the
- * provider's: it answers the object the app passed in. A failed revoke is
+ * provider's: it answers the object the app passes in now. A failed revoke is
  * remembered against that object as well as the wrapper, so it survives the
- * wrapper being rebuilt.
+ * wrapper being rebuilt; a successful one clears the wrapper and the object it
+ * wrote to, and no other. A registered symbol, so every bundled copy of this
+ * module (each entry point, CJS and ESM) agrees on it.
  */
-export const PAIRING_STORE_IDENTITY: unique symbol = Symbol('ui-bridge.pairing-store-identity');
+export const PAIRING_STORE_IDENTITY: unique symbol = Symbol.for(
+  '@qontinui/ui-bridge-native.pairing-store-identity'
+);
 
 /**
  * What the app implements: the token's persistence, and secure randomness,
@@ -421,13 +425,21 @@ const TOKEN_NOT_LOADED = Symbol('token-not-loaded');
 /** The store may still hold a token a revoke was asked to kill. */
 const TOKEN_SUSPECT = Symbol('token-suspect');
 
+const SUSPECT_STORES_KEY: unique symbol = Symbol.for(
+  '@qontinui/ui-bridge-native.suspect-pairing-stores'
+);
+
 /**
  * Stores a revoke failed on, in a way that may have left the old token in place.
  * Keyed to the store, not the server: a provider rebuilds its server over the
  * same store object, and the rebuilt one must not trust the old token either.
  * Only a successful revoke clears an entry. A process restart clears them all.
+ * Held on `globalThis`, because the build inlines this module into every entry
+ * point, and a provider from one entry may drive a server from another.
  */
-const suspectStores = new WeakMap<PairingStore, true>();
+const suspectStores: WeakMap<object, true> = ((
+  globalThis as typeof globalThis & { [SUSPECT_STORES_KEY]?: WeakMap<object, true> }
+)[SUSPECT_STORES_KEY] ??= new WeakMap<object, true>());
 
 /**
  * The objects a store's suspicion is kept against: the store itself and, for a
@@ -435,14 +447,17 @@ const suspectStores = new WeakMap<PairingStore, true>();
  * case the other misses: the wrapper outlives an app passing a fresh object on
  * every render, and the app's object outlives a remounted provider's wrapper.
  */
-function suspicionKeys(store: PairingStore): PairingStore[] {
-  let host: PairingStore | undefined;
+function suspicionKeys(store: PairingStore): object[] {
+  let host: unknown;
   try {
     host = store[PAIRING_STORE_IDENTITY]?.();
   } catch {
     host = undefined;
   }
-  return host && host !== store ? [store, host] : [store];
+  // A primitive cannot key a WeakMap, and `set` would throw a TypeError in
+  // place of the revoke's own PairingError.
+  const usable = (typeof host === 'object' && host !== null) || typeof host === 'function';
+  return usable && host !== store ? [store, host as object] : [store];
 }
 
 interface ArmedCode {
@@ -504,10 +519,9 @@ export class PairingAuthority {
   private async readToken(): Promise<
     string | null | typeof TOKEN_NOT_LOADED | typeof TOKEN_SUSPECT
   > {
-    if (this.isSuspect()) return TOKEN_SUSPECT;
-    const token = await this.readStore();
-    // Another server over the same store may have failed a revoke during the read.
-    return this.isSuspect() ? TOKEN_SUSPECT : token;
+    // A failed revoke elsewhere can land during the read, so each caller checks
+    // again at the point it admits.
+    return this.isSuspect() ? TOKEN_SUSPECT : this.readStore();
   }
 
   /** Whether a failed revoke, on this server or another over the same store, stands. */
@@ -588,8 +602,8 @@ export class PairingAuthority {
     // the read wins, and two copies of one request arriving together cannot both
     // pass.
     if (generation !== this.tokenGeneration) return 'refused';
-    // The generation is this server's; a revoke on another server over the same
-    // store shows only here.
+    // The generation is this server's; a revoke that failed on another server
+    // over the same store during the read shows only here.
     if (this.isSuspect()) return 'pairing_suspended';
     if (this.nonces.has(nonce)) return 'refused';
     this.rememberNonce(nonce, tsMs);
@@ -653,18 +667,20 @@ export class PairingAuthority {
       if (refusal) return refusal;
     }
     const spent = input.trustedLoopback ? null : this.heldCode;
-    const outcome = await this.exclusive(async (): Promise<PairOutcome> => {
+    let outcome = await this.exclusive(async (): Promise<PairOutcome> => {
       const existing = await this.readToken();
       if (existing === TOKEN_SUSPECT) return SUSPENDED;
       if (existing === TOKEN_NOT_LOADED) return UNAVAILABLE;
       if (existing !== null) return { ok: true, token: existing };
       try {
-        const token = await this.mintAndStoreToken();
-        return this.isSuspect() ? SUSPENDED : { ok: true, token };
+        return { ok: true, token: await this.mintAndStoreToken() };
       } catch {
-        return UNAVAILABLE;
+        return this.isSuspect() ? SUSPENDED : UNAVAILABLE;
       }
     });
+    // A revoke on another server over the same store may have failed during the
+    // read or the mint; the token is then not ours to hand out.
+    if (outcome.ok && this.isSuspect()) outcome = SUSPENDED;
     if (spent) this.settleSpentCode(spent, outcome.ok, input.peer);
     return outcome;
   }
@@ -743,6 +759,8 @@ export class PairingAuthority {
       throw new PairingError('PAIRING_UNAVAILABLE', 'The pairing store is not available yet.');
     }
     const code = await this.drawCode();
+    // A revoke on another server over the same store may have failed during the
+    // read or the draw.
     if (this.isSuspect()) {
       throw new PairingError('PAIRING_UNAVAILABLE', PAIRING_SUSPENDED_MESSAGE);
     }
@@ -807,10 +825,15 @@ export class PairingAuthority {
    * admitted runs to its end.
    */
   async revoke(): Promise<void> {
-    // Resolved once, so the keys a failure sets are the keys a success clears.
-    const keys = suspicionKeys(this.store);
-    const markSuspect = () => keys.forEach((key) => suspectStores.set(key, true));
-    const clearSuspect = () => keys.forEach((key) => suspectStores.delete(key));
+    // A failure marks every store the revoke may have touched: the ones behind
+    // the wrapper when it began and when it failed. A success clears only the
+    // wrapper and the store it now forwards to, which the write just reached;
+    // an app store the wrapper moved away from keeps whatever it had.
+    const startKeys = suspicionKeys(this.store);
+    const markSuspect = () =>
+      [...startKeys, ...suspicionKeys(this.store)].forEach((key) => suspectStores.set(key, true));
+    const clearSuspect = () =>
+      suspicionKeys(this.store).forEach((key) => suspectStores.delete(key));
     this.revokesInFlight += 1;
     this.dropCode('revoked');
     try {
