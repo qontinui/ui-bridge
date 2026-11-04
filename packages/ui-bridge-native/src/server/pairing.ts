@@ -437,9 +437,24 @@ const SUSPECT_STORES_KEY: unique symbol = Symbol.for(
  * Held on `globalThis`, because the build inlines this module into every entry
  * point, and a provider from one entry may drive a server from another.
  */
-const suspectStores: WeakMap<object, true> = ((
-  globalThis as typeof globalThis & { [SUSPECT_STORES_KEY]?: WeakMap<object, true> }
-)[SUSPECT_STORES_KEY] ??= new WeakMap<object, true>());
+const suspectStores: WeakMap<object, true> = (() => {
+  const registry = globalThis as typeof globalThis & { [SUSPECT_STORES_KEY]?: unknown };
+  const existing = registry[SUSPECT_STORES_KEY];
+  if (existing === undefined) {
+    const created = new WeakMap<object, true>();
+    registry[SUSPECT_STORES_KEY] = created;
+    return created;
+  }
+  // Anything else under the key would make every suspicion check meaningless,
+  // so refuse to load rather than trust or replace it.
+  if (!(existing instanceof WeakMap)) {
+    throw new Error(
+      "@qontinui/ui-bridge-native: globalThis[Symbol.for('@qontinui/ui-bridge-native.suspect-pairing-stores')] " +
+        'holds something other than a WeakMap, so failed revokes cannot be tracked. Refusing to load.'
+    );
+  }
+  return existing as WeakMap<object, true>;
+})();
 
 /**
  * The objects a store's suspicion is kept against: the store itself and, for a
@@ -556,9 +571,16 @@ export class PairingAuthority {
     return bytes;
   }
 
-  private async mintAndStoreToken(): Promise<string> {
+  /**
+   * Mint and persist a token. `onWrite` gets the suspicion keys resolved inside
+   * the store call, the moment a forwarding wrapper picks the store it writes to.
+   */
+  private async mintAndStoreToken(onWrite?: (keys: object[]) => void): Promise<string> {
     const token = bytesToHex(await this.randomBytes(TOKEN_BYTES));
-    await bounded(() => this.store.set(token));
+    await bounded(() => {
+      onWrite?.(suspicionKeys(this.store));
+      return this.store.set(token);
+    });
     return token;
   }
 
@@ -825,15 +847,30 @@ export class PairingAuthority {
    * admitted runs to its end.
    */
   async revoke(): Promise<void> {
-    // A failure marks every store the revoke may have touched: the ones behind
-    // the wrapper when it began and when it failed. A success clears only the
-    // wrapper and the store it now forwards to, which the write just reached;
-    // an app store the wrapper moved away from keeps whatever it had.
+    // Keys are resolved inside each store call, where a forwarding wrapper picks
+    // its target, never before or after it: the app may switch stores while the
+    // call is pending. A failure marks every store the revoke may have touched,
+    // the ones behind the wrapper when it began, at each store call, and when it
+    // failed. A success clears exactly the stores the successful call reached,
+    // and marks every other one of those, since the old token there was never
+    // replaced.
     const startKeys = suspicionKeys(this.store);
+    const touched: object[] = [];
+    let reached: object[] = [];
+    const atStoreCall = (keys: object[]) => {
+      touched.push(...keys);
+      reached = keys;
+    };
     const markSuspect = () =>
-      [...startKeys, ...suspicionKeys(this.store)].forEach((key) => suspectStores.set(key, true));
-    const clearSuspect = () =>
-      suspicionKeys(this.store).forEach((key) => suspectStores.delete(key));
+      [...startKeys, ...touched, ...suspicionKeys(this.store)].forEach((key) =>
+        suspectStores.set(key, true)
+      );
+    const settle = () => {
+      reached.forEach((key) => suspectStores.delete(key));
+      [...startKeys, ...touched, ...suspicionKeys(this.store)]
+        .filter((key) => !reached.includes(key))
+        .forEach((key) => suspectStores.set(key, true));
+    };
     this.revokesInFlight += 1;
     this.dropCode('revoked');
     try {
@@ -848,12 +885,15 @@ export class PairingAuthority {
           throw new PairingError('PAIRING_UNAVAILABLE', 'The pairing store is not available yet.');
         }
         try {
-          await this.mintAndStoreToken();
-          clearSuspect();
+          await this.mintAndStoreToken(atStoreCall);
+          settle();
         } catch {
           try {
-            await bounded(() => this.store.clear());
-            clearSuspect();
+            await bounded(() => {
+              atStoreCall(suspicionKeys(this.store));
+              return this.store.clear();
+            });
+            settle();
           } catch {
             markSuspect();
           }
