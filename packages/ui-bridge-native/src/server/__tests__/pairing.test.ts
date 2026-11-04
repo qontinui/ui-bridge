@@ -2087,9 +2087,9 @@ describe('revoke', () => {
     await revoked;
   });
 
-  it('verifies again after a revoke that changed nothing', async () => {
-    const token = 'o'.repeat(64);
-    const store = memoryStore(token);
+  it('refuses the old token after a revoke that could not read the store', async () => {
+    const oldToken = 'o'.repeat(64);
+    const store = memoryStore(oldToken);
     const { http, server } = await started({ pairingStore: store });
     const realGet = store.get;
     store.get = () => {
@@ -2097,7 +2097,42 @@ describe('revoke', () => {
     };
     await expect(server.revokePairing()).rejects.toBeInstanceOf(PairingError);
     store.get = realGet;
-    expectServed(await http(signed(token)));
+
+    // The app told the user the revoke failed, so the old token may not verify,
+    // and a pair may not hand it out, even though the store reads again.
+    const refused = await http(signed(oldToken));
+    expect(refused.status).toBe(503);
+    expect(json(refused)).toMatchObject({
+      code: 'PAIRING_UNAVAILABLE',
+      error: 'Pairing is suspended until a revoke succeeds on the device.',
+    });
+    expect((await http(cable({ method: 'POST', path: PAIR }))).status).toBe(503);
+
+    await server.revokePairing();
+    expect(store.token).not.toBe(oldToken);
+    expectRefused(await http(signed(oldToken)));
+    expectServed(await http(signed(store.token!)));
+  });
+
+  it('keeps refusing the old token on a server rebuilt over the same store', async () => {
+    const oldToken = 'o'.repeat(64);
+    const store = memoryStore(oldToken);
+    const first = await started({ pairingStore: store });
+    const realGet = store.get;
+    store.get = () => {
+      throw new Error('not loaded');
+    };
+    await expect(first.server.revokePairing()).rejects.toBeInstanceOf(PairingError);
+    store.get = realGet;
+
+    const rebuilt = await started({ pairingStore: store });
+    expect(store.token).toBe(oldToken);
+    expect((await rebuilt.http(signed(oldToken))).status).toBe(503);
+    expect((await rebuilt.http(cable({ method: 'POST', path: PAIR }))).status).toBe(503);
+
+    await rebuilt.server.revokePairing();
+    expectRefused(await rebuilt.http(signed(oldToken)));
+    expectServed(await rebuilt.http(signed(store.token!)));
   });
 
   /** A store whose next `get` waits, still answering the token it read when asked. */
