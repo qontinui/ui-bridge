@@ -768,6 +768,9 @@ function generateDetailsId(element: HTMLElement): string {
   return 'details-unnamed';
 }
 
+/** Numbers each mounted hook's `contentDropped` source key. */
+let autoRegisterInstanceCount = 0;
+
 /**
  * Hook for automatic element registration
  *
@@ -811,6 +814,17 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
   const bridge = useUIBridgeOptional();
   const registeredElementsRef = useRef(new Map<HTMLElement, string>());
   const registeredContentElementsRef = useRef(new Map<HTMLElement, string>());
+  // Content elements that passed `shouldRegisterContent` but were refused a row
+  // because `maxContentElements` was full. Reported to the registry as this
+  // hook's `contentDropped`; an element leaves the set when it gets a row, leaves
+  // the page, or stops being registrable.
+  const droppedContentElementsRef = useRef(new Set<HTMLElement>());
+  // This hook's key for `reportContentDropped`, so two mounted hooks each report
+  // their own count and a later report replaces only its own.
+  const dropSourceRef = useRef<string | null>(null);
+  if (dropSourceRef.current === null) {
+    dropSourceRef.current = `useAutoRegister:${++autoRegisterInstanceCount}`;
+  }
   const registeredMediaElementsRef = useRef(new Map<HTMLElement, string>());
   // Per-registered-id untrackers for the lazy bbox tracker. Keyed by id
   // (not element) so mid-mount node swaps that re-run track() under the
@@ -1028,6 +1042,9 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
 
       const maxElements = contentDiscovery?.maxContentElements ?? 500;
       if (registeredContentElementsRef.current.size >= maxElements) {
+        // Every caller asked `contentAwaitsRegistration` first, so this element is
+        // registrable text the page shows and the snapshot will not hold.
+        droppedContentElementsRef.current.add(element);
         return;
       }
 
@@ -1036,9 +1053,27 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       if (id === null) return;
 
       registeredContentElementsRef.current.set(element, id);
+      droppedContentElementsRef.current.delete(element);
     },
     [bridge, contentDiscovery?.maxContentElements]
   );
+
+  /**
+   * Report this hook's refused content rows to the registry. The count is
+   * re-derived, not accumulated: an element that has since got a row, left the
+   * page, or lost its text is dropped from the set first, so the number
+   * describes the current page.
+   */
+  const reportContentDropped = useCallback((): void => {
+    if (!bridge?.registry) return;
+    const dropped = droppedContentElementsRef.current;
+    dropped.forEach((element) => {
+      if (!element.isConnected || !contentAwaitsRegistration(element)) {
+        dropped.delete(element);
+      }
+    });
+    bridge.registry.reportContentDropped(dropSourceRef.current as string, dropped.size);
+  }, [bridge, contentAwaitsRegistration]);
 
   /**
    * Unregister a single content element
@@ -1255,7 +1290,13 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       }
     });
     pendingContentRegistrationsRef.current.clear();
-  }, [contentAwaitsRegistration, registerContentElement, registerSemanticContentElement]);
+    reportContentDropped();
+  }, [
+    contentAwaitsRegistration,
+    registerContentElement,
+    registerSemanticContentElement,
+    reportContentDropped,
+  ]);
 
   /**
    * Process pending media registrations (debounced, separate timer)
@@ -1480,6 +1521,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
    */
   const handleMutations = useCallback(
     (mutations: MutationRecord[]): void => {
+      let contentRemoved = false;
       mutations.forEach((mutation) => {
         // Handle attribute changes that may reveal hidden elements
         if (mutation.type === 'attributes' && mutation.target.nodeType === Node.ELEMENT_NODE) {
@@ -1650,9 +1692,21 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
                 unregisterMediaElement(descendant);
               }
             });
+            contentRemoved = true;
           }
         });
       });
+
+      // A removal can free room under the content cap, and can take refused
+      // elements off the page. Offer every refused element the freed room (the
+      // debounced pass registers what fits and reports again), and report now so
+      // the count does not wait on that pass.
+      if (contentRemoved && droppedContentElementsRef.current.size > 0) {
+        droppedContentElementsRef.current.forEach((element) => {
+          if (element.isConnected) queueContentRegistration(element);
+        });
+        reportContentDropped();
+      }
     },
     [
       contentAwaitsRegistration,
@@ -1664,6 +1718,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       contentDiscovery,
       queueContentRegistration,
       unregisterContentElement,
+      reportContentDropped,
       mediaEnabled,
       queueMediaSubtree,
       unregisterMediaElement,
@@ -1731,6 +1786,9 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       registeredElementsRef.current = new Map();
       registeredContentElementsRef.current = new Map();
       registeredMediaElementsRef.current = new Map();
+      // `clear()` above dropped every source's count; the re-scan's content pass
+      // reports this hook's again.
+      droppedContentElementsRef.current = new Set();
       scanAndRegister(rootElement);
     };
     window.addEventListener('ui-bridge-route-change', handleRouteChange);

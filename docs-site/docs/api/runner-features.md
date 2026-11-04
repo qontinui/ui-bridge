@@ -122,6 +122,13 @@ The response also includes:
   metadata for distinguishing "page has no `useUIElement` coverage" from
   "bridge is broken / not yet mounted." `everHadRegistrations` is a
   sticky latch: it flips `true` on first register and never flips back.
+  `registration.contentDropped` (from `@qontinui/ui-bridge` 0.42.0) is the
+  exact number of registrable text elements (headings, paragraphs, cells) on
+  the page that hold no row because a content cap was full — the injected
+  seeder's 500, or an embedded `useAutoRegister`'s
+  `contentDiscovery.maxContentElements`. Above 0, a check that reads text rows
+  has not seen the whole page. It is a number only, and 0 when nothing was
+  dropped; absent means an older SDK, which is UNKNOWN, never 0.
 - `snapshotTakenAtMs` — server epoch ms when the snapshot was built.
 
 **Filtering tips:**
@@ -163,7 +170,7 @@ host-specific.
 | `snapshotTakenAtMs` | registry-native    | Server epoch ms when the snapshot was built — same value as `timestamp`, kept for forward-compat.        |
 | `route`             | registry-native    | `window.location.pathname` at snapshot time. Optional — omitted when `window` is absent (SSR/tests).     |
 | `activeTab`         | registry-native\*  | Active tab id when the host supplies a `getActiveTab` callback. \*Runner is the only current provider.   |
-| `registration`      | registry-native    | `{ totalRegistered, everHadRegistrations, byRoute }` — bridge-coverage diagnostics for the F3 contract.  |
+| `registration`      | registry-native    | `{ totalRegistered, everHadRegistrations, byRoute, contentDropped }` — bridge-coverage diagnostics.    |
 | `elements`          | registry-native    | All registered `useUIElement` records (each with nested `state`, `bbox`, `identifier`, etc.).            |
 | `components`        | registry-native    | Registered components, each with `id`/`name`/`actions`/`elementIds`/`actionInvocationPath`.              |
 | `workflows`         | registry-native    | Registered workflows. Shape differs by source — see "Shape drift" below.                                 |

@@ -1959,6 +1959,19 @@ export interface SnapshotRegistrationMetadata {
    * `activeTab` by the runner's snapshot handler for the same reason.
    */
   route?: string;
+  /**
+   * How many content elements (headings, paragraphs, cells — anything that
+   * passed `shouldRegisterContent`) are on the page with NO row, because a
+   * registration cap was full: the injected seeder's 500, or an embedded
+   * `useAutoRegister`'s `contentDiscovery.maxContentElements`. Exact, not a
+   * lower bound, and current: a refused element that later gets a row leaves
+   * the count. A check that reads text rows (`text_over_image_contrast`) has not
+   * seen the whole page when this is above 0. A number only — no page text.
+   *
+   * This SDK always sends it, 0 when nothing was refused. ABSENT means an SDK
+   * that predates the field, which is UNKNOWN, never 0.
+   */
+  contentDropped?: number;
 }
 
 /**

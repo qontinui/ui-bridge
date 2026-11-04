@@ -143,6 +143,7 @@ describe('executeCommand · getControlSnapshot · F3 registration metadata', () 
       totalRegistered: 0,
       everHadRegistrations: false,
       byRoute: {},
+      contentDropped: 0,
     });
   });
 
@@ -187,6 +188,7 @@ describe('executeCommand · getControlSnapshot · F3 registration metadata', () 
       totalRegistered: 0,
       everHadRegistrations: true,
       byRoute: {},
+      contentDropped: 0,
     });
   });
 });
@@ -453,6 +455,9 @@ describe('executeCommand · getControlSnapshot · graceful degradation', () => {
       everHadRegistrations: false,
       byRoute: {},
     });
+    // A registry that could not be read has not said nothing was dropped: the
+    // field is absent (UNKNOWN), not 0.
+    expect('contentDropped' in snap.registration).toBe(false);
     // The rest of the snapshot still works — elements are still serialized.
     expect(snap.elements).toHaveLength(1);
     expect(snap.elements[0].id).toBe('btn-1');

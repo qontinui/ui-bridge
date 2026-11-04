@@ -619,6 +619,12 @@ export interface SnapshotRegistrationStats {
   byRoute: Record<string, { count: number; ids: string[] }>;
   /** Per-window breakdown (only present when a non-default window exists). */
   byRoutePerWindow?: Record<string, Record<string, { count: number; ids: string[] }>>;
+  /**
+   * Registrable content elements a cap refused a row. Absent = an SDK that
+   * predates the field (UNKNOWN, never 0). See
+   * `SnapshotRegistrationMetadata.contentDropped`.
+   */
+  contentDropped?: number;
 }
 
 /**
