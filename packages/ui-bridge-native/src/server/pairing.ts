@@ -65,11 +65,12 @@ function monotonicNow(): number | null {
 
 /**
  * Set by a wrapper that forwards to a store it does not own, such as the
- * provider's: it answers the object the app passes in now. A failed revoke is
- * remembered against that object as well as the wrapper, so it survives the
- * wrapper being rebuilt; a successful one clears the wrapper and the object it
- * wrote to, and no other. A registered symbol, so every bundled copy of this
- * module (each entry point, CJS and ESM) agrees on it.
+ * provider's: it answers the object the app passes in now. Suspicion is kept
+ * against that object as well as the wrapper, so it survives the wrapper being
+ * rebuilt. A revoke clears it only for the object its successful store call
+ * reached, and marks every other object it saw behind the wrapper. A
+ * registered symbol, so every bundled copy of this module (each entry point,
+ * CJS and ESM) agrees on it.
  */
 export const PAIRING_STORE_IDENTITY: unique symbol = Symbol.for(
   '@qontinui/ui-bridge-native.pairing-store-identity'
@@ -414,6 +415,10 @@ const UNAVAILABLE: PairOutcome = {
 /** Why pairing refuses while a failed revoke has the store suspect. */
 export const PAIRING_SUSPENDED_MESSAGE =
   'Pairing is suspended until a revoke succeeds on the device.';
+
+/** Why a revoke rejects when the app switched stores under it. */
+export const PAIRING_STORE_CHANGED_MESSAGE =
+  'The pairing store changed during the revoke, so the old token may remain. Revoke again.';
 
 const SUSPENDED: PairOutcome = {
   ok: false,
@@ -836,6 +841,13 @@ export class PairingAuthority {
    * (and per app store behind a provider's wrapper), so a rebuilt server or a
    * remounted provider over the same store keeps it.
    *
+   * Behind a wrapper, the app can switch stores while this runs. Only the store
+   * the successful store call reached is cleared; every other one seen behind
+   * the wrapper (at the start, at each store call, at the end) is marked, since
+   * its old token was never replaced. If the store the wrapper forwards to when
+   * this ends is one of those, this rejects, so the app is not told a revoke
+   * worked while pairing stays suspended.
+   *
    * A stored value that is empty or not a string reads as not loaded, so a revoke
    * over it fails at the first read and marks the store suspect, and no later
    * revoke can recover it: each one fails the same read. Only clearing the
@@ -849,11 +861,9 @@ export class PairingAuthority {
   async revoke(): Promise<void> {
     // Keys are resolved inside each store call, where a forwarding wrapper picks
     // its target, never before or after it: the app may switch stores while the
-    // call is pending. A failure marks every store the revoke may have touched,
-    // the ones behind the wrapper when it began, at each store call, and when it
-    // failed. A success clears exactly the stores the successful call reached,
-    // and marks every other one of those, since the old token there was never
-    // replaced.
+    // call is pending. A failure marks every key the revoke saw. A store call
+    // that succeeds clears exactly the keys it reached and marks every other key
+    // the revoke saw, since the old token there was never replaced.
     const startKeys = suspicionKeys(this.store);
     const touched: object[] = [];
     let reached: object[] = [];
@@ -861,13 +871,12 @@ export class PairingAuthority {
       touched.push(...keys);
       reached = keys;
     };
-    const markSuspect = () =>
-      [...startKeys, ...touched, ...suspicionKeys(this.store)].forEach((key) =>
-        suspectStores.set(key, true)
-      );
+    /** Behind the wrapper at the start, at each store call, and now. */
+    const everyKeySeen = () => [...startKeys, ...touched, ...suspicionKeys(this.store)];
+    const markSuspect = () => everyKeySeen().forEach((key) => suspectStores.set(key, true));
     const settle = () => {
       reached.forEach((key) => suspectStores.delete(key));
-      [...startKeys, ...touched, ...suspicionKeys(this.store)]
+      everyKeySeen()
         .filter((key) => !reached.includes(key))
         .forEach((key) => suspectStores.set(key, true));
     };
@@ -884,19 +893,29 @@ export class PairingAuthority {
           markSuspect();
           throw new PairingError('PAIRING_UNAVAILABLE', 'The pairing store is not available yet.');
         }
+        let replaced = true;
         try {
           await this.mintAndStoreToken(atStoreCall);
-          settle();
         } catch {
+          replaced = false;
           try {
             await bounded(() => {
               atStoreCall(suspicionKeys(this.store));
               return this.store.clear();
             });
-            settle();
           } catch {
             markSuspect();
+            throw new PairingError(
+              'PAIRING_UNAVAILABLE',
+              'The pairing token could not be replaced.'
+            );
           }
+        }
+        settle();
+        if (this.isSuspect()) {
+          throw new PairingError('PAIRING_UNAVAILABLE', PAIRING_STORE_CHANGED_MESSAGE);
+        }
+        if (!replaced) {
           throw new PairingError('PAIRING_UNAVAILABLE', 'The pairing token could not be replaced.');
         }
       });
