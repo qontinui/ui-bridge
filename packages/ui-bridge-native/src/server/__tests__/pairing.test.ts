@@ -146,6 +146,7 @@ function signed(
 function json(response: HTTPResponse): {
   success: boolean;
   code?: string;
+  error?: string;
   data?: Record<string, unknown>;
 } {
   return JSON.parse(response.body);
@@ -2030,8 +2031,18 @@ describe('revoke', () => {
 
     // The old token is still on disk, and neither a signature nor a pair may use it.
     expect(store.token).toBe(oldToken);
-    expect((await http(signed(oldToken))).status).toBe(503);
-    expect((await http(cable({ method: 'POST', path: PAIR }))).status).toBe(503);
+    const refused = await http(signed(oldToken));
+    expect(refused.status).toBe(503);
+    expect(json(refused)).toMatchObject({
+      code: 'PAIRING_UNAVAILABLE',
+      error: 'Pairing is suspended until a revoke succeeds on the device.',
+    });
+    const pair = await http(cable({ method: 'POST', path: PAIR }));
+    expect(pair.status).toBe(503);
+    expect(json(pair)).toMatchObject({
+      code: 'PAIRING_UNAVAILABLE',
+      error: 'Pairing is suspended until a revoke succeeds on the device.',
+    });
 
     store.set = realSet;
     await server.revokePairing();
@@ -2106,7 +2117,16 @@ describe('revoke', () => {
       code: 'PAIRING_UNAVAILABLE',
       error: 'Pairing is suspended until a revoke succeeds on the device.',
     });
-    expect((await http(cable({ method: 'POST', path: PAIR }))).status).toBe(503);
+    const pair = await http(cable({ method: 'POST', path: PAIR }));
+    expect(pair.status).toBe(503);
+    expect(json(pair)).toMatchObject({
+      code: 'PAIRING_UNAVAILABLE',
+      error: 'Pairing is suspended until a revoke succeeds on the device.',
+    });
+    await expect(server.armPairingCode()).rejects.toMatchObject({
+      code: 'PAIRING_UNAVAILABLE',
+      message: 'Pairing is suspended until a revoke succeeds on the device.',
+    });
 
     await server.revokePairing();
     expect(store.token).not.toBe(oldToken);
@@ -2127,8 +2147,18 @@ describe('revoke', () => {
 
     const rebuilt = await started({ pairingStore: store });
     expect(store.token).toBe(oldToken);
-    expect((await rebuilt.http(signed(oldToken))).status).toBe(503);
-    expect((await rebuilt.http(cable({ method: 'POST', path: PAIR }))).status).toBe(503);
+    const refused = await rebuilt.http(signed(oldToken));
+    expect(refused.status).toBe(503);
+    expect(json(refused)).toMatchObject({
+      code: 'PAIRING_UNAVAILABLE',
+      error: 'Pairing is suspended until a revoke succeeds on the device.',
+    });
+    const pair = await rebuilt.http(cable({ method: 'POST', path: PAIR }));
+    expect(pair.status).toBe(503);
+    expect(json(pair)).toMatchObject({
+      code: 'PAIRING_UNAVAILABLE',
+      error: 'Pairing is suspended until a revoke succeeds on the device.',
+    });
 
     await rebuilt.server.revokePairing();
     expectRefused(await rebuilt.http(signed(oldToken)));
@@ -2151,6 +2181,31 @@ describe('revoke', () => {
     };
     return { release, asked: askedPromise };
   }
+
+  it('refuses a read in flight on one server when a revoke on another fails', async () => {
+    const oldToken = 'o'.repeat(64);
+    const store = memoryStore(oldToken);
+    const old = await started({ pairingStore: store });
+    const rebuilt = await started({ pairingStore: store });
+    const { release, asked } = deferNextRead(store);
+    const inFlight = old.http(signed(oldToken));
+    await asked;
+
+    const realGet = store.get;
+    store.get = () => {
+      throw new Error('not loaded');
+    };
+    await expect(rebuilt.server.revokePairing()).rejects.toBeInstanceOf(PairingError);
+    store.get = realGet;
+    release();
+
+    const refused = await inFlight;
+    expect(refused.status).toBe(503);
+    expect(json(refused)).toMatchObject({
+      code: 'PAIRING_UNAVAILABLE',
+      error: 'Pairing is suspended until a revoke succeeds on the device.',
+    });
+  });
 
   it('does not serve a signature that read the old token before a revoke finished', async () => {
     const oldToken = 'o'.repeat(64);

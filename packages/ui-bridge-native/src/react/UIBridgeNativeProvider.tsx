@@ -35,6 +35,7 @@ import {
 } from '../server/http-server';
 import {
   PairingError,
+  PAIRING_STORE_IDENTITY,
   UNCONFIGURED_PAIRING_STATE,
   type ArmedPairingCode,
   type PairingState,
@@ -308,6 +309,9 @@ function useStablePairingStore(store: PairingStore | undefined): PairingStore | 
       set: (token) => current().set(token),
       clear: () => current().clear(),
       randomBytes: (n) => current().randomBytes(n),
+      // A failed revoke is remembered against the app's store too, so a remount,
+      // which builds a new wrapper, keeps refusing the old token.
+      [PAIRING_STORE_IDENTITY]: () => latestRef.current,
     };
   }, [hasStore]);
 }
