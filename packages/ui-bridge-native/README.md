@@ -288,7 +288,7 @@ const pairingStore: PairingStore = {
 />;
 ```
 
-`useUIBridgeNative()` gives Settings `armPairingCode()`, `disarmPairingCode()`, `getPairingState()` and `revokePairing()`. A code lasts about 2 minutes, works once, and is disarmed by 5 wrong attempts from anyone. `getPairingState().consumedBy` names the peer that used it. A correct code is not used up when the store fails, so the user can try it again. A revoke replaces the token. No signature verifies while it runs, and one checked against the old token is not served after it.
+`useUIBridgeNative()` gives Settings `armPairingCode()`, `disarmPairingCode()`, `getPairingState()` and `revokePairing()`. A code lasts about 2 minutes, works once, and is disarmed by 5 wrong attempts from anyone. `getPairingState().consumedBy` names the peer that used it. A correct code is not used up when the store fails, so the user can try it again. A revoke replaces the token. No signature verifies while it runs, and one checked against the old token is not served after it. If a revoke fails, the old token is refused with `503 PAIRING_UNAVAILABLE` until a revoke succeeds, even on a server rebuilt over the same store; a process restart forgets the failure.
 
 A sample on a trusted network can opt out with `allowUnauthenticatedNetwork`. Anything that can reach the port can then drive the app over HTTP, with two exceptions. A web page is refused with `403 PAIRING_WEB_CALLER_REFUSED`: anything carrying `Origin`, `Referer` or a `Sec-Fetch-Site` other than `none`, and any `Host` other than an IP address, `localhost` or a `.local` name, which is how DNS rebinding shows up. A WebSocket upgrade stays loopback-only.
 

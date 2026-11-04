@@ -374,7 +374,9 @@ export type SignatureVerdict =
   | 'timestamp_refused'
   | 'body_too_large'
   | 'target_too_long'
-  | 'store_unavailable';
+  | 'store_unavailable'
+  /** A revoke failed and none has succeeded since, so the old token may still be stored. */
+  | 'pairing_suspended';
 
 /** The result of a pair call. */
 export type PairOutcome =
@@ -395,7 +397,27 @@ const UNAVAILABLE: PairOutcome = {
   error: 'The pairing store is not available yet. Try again.',
 };
 
+/** Why pairing refuses while a failed revoke has the store suspect. */
+export const PAIRING_SUSPENDED_MESSAGE =
+  'Pairing is suspended until a revoke succeeds on the device.';
+
+const SUSPENDED: PairOutcome = {
+  ok: false,
+  code: 'PAIRING_UNAVAILABLE',
+  error: PAIRING_SUSPENDED_MESSAGE,
+};
+
 const TOKEN_NOT_LOADED = Symbol('token-not-loaded');
+/** The store may still hold a token a revoke was asked to kill. */
+const TOKEN_SUSPECT = Symbol('token-suspect');
+
+/**
+ * Stores a revoke failed on, in a way that may have left the old token in place.
+ * Keyed to the store, not the server: a provider rebuilds its server over the
+ * same store object, and the rebuilt one must not trust the old token either.
+ * Only a successful revoke clears an entry. A process restart clears them all.
+ */
+const suspectStores = new WeakMap<PairingStore, true>();
 
 interface ArmedCode {
   code: string;
@@ -444,18 +466,19 @@ export class PairingAuthority {
   private tokenGeneration = 0;
   /** Revokes under way. The old token may already be dying, so nothing verifies. */
   private revokesInFlight = 0;
-  /** A revoke failed in a way that may have left the old token in the store. */
-  private storeSuspect = false;
 
   constructor(private readonly store: PairingStore) {}
 
   /**
-   * The stored token, `null` when there is none, or `TOKEN_NOT_LOADED`. Only
-   * `readStore` tells these apart: an empty or non-string value is never a
-   * token, because an empty key would verify anything signed with it.
+   * The stored token, `null` when there is none, `TOKEN_NOT_LOADED`, or
+   * `TOKEN_SUSPECT` while a failed revoke has the store suspect. Only
+   * `readStore` tells the first three apart: an empty or non-string value is
+   * never a token, because an empty key would verify anything signed with it.
    */
-  private async readToken(): Promise<string | null | typeof TOKEN_NOT_LOADED> {
-    return this.storeSuspect ? TOKEN_NOT_LOADED : this.readStore();
+  private async readToken(): Promise<
+    string | null | typeof TOKEN_NOT_LOADED | typeof TOKEN_SUSPECT
+  > {
+    return suspectStores.has(this.store) ? TOKEN_SUSPECT : this.readStore();
   }
 
   private async readStore(): Promise<string | null | typeof TOKEN_NOT_LOADED> {
@@ -520,6 +543,7 @@ export class PairingAuthority {
     const generation = this.tokenGeneration;
     const token = await this.readToken();
     if (this.revokesInFlight > 0) return 'refused';
+    if (token === TOKEN_SUSPECT) return 'pairing_suspended';
     if (token === TOKEN_NOT_LOADED) return 'store_unavailable';
     if (token === null) return 'refused';
 
@@ -594,6 +618,7 @@ export class PairingAuthority {
     const spent = input.trustedLoopback ? null : this.heldCode;
     const outcome = await this.exclusive(async (): Promise<PairOutcome> => {
       const existing = await this.readToken();
+      if (existing === TOKEN_SUSPECT) return SUSPENDED;
       if (existing === TOKEN_NOT_LOADED) return UNAVAILABLE;
       if (existing !== null) return { ok: true, token: existing };
       try {
@@ -673,6 +698,9 @@ export class PairingAuthority {
   /** Arm a fresh code, replacing any live one. */
   async arm(): Promise<ArmedPairingCode> {
     const stored = await this.readToken();
+    if (stored === TOKEN_SUSPECT) {
+      throw new PairingError('PAIRING_UNAVAILABLE', PAIRING_SUSPENDED_MESSAGE);
+    }
     if (stored === TOKEN_NOT_LOADED) {
       throw new PairingError('PAIRING_UNAVAILABLE', 'The pairing store is not available yet.');
     }
@@ -720,10 +748,11 @@ export class PairingAuthority {
 
   /**
    * Replace the token, so every signature made with the old one stops verifying.
-   * If it cannot be replaced it is cleared. If that fails too, signatures and
-   * pairing stay refused until a revoke succeeds: the user asked for the old
-   * token to die, and a store that would not say so cannot be trusted to have
-   * done it.
+   * If it cannot be replaced it is cleared. If that fails too, or the store
+   * cannot even be read, signatures and pairing stay refused until a revoke
+   * succeeds: the user asked for the old token to die, and a store that would
+   * not say so cannot be trusted to have done it. The refusal is kept per store,
+   * so a server rebuilt over the same store keeps it.
    *
    * Nothing verifies from the moment this starts until it ends. The generation
    * moves when it ends, whichever way, so a check that read the old token before
@@ -738,17 +767,21 @@ export class PairingAuthority {
         // `readStore`, not `readToken`: a revoke is how a suspect store recovers.
         const stored = await this.readStore();
         if (stored === TOKEN_NOT_LOADED) {
+          // The app is told the revoke failed, so the old token must not verify
+          // once reads recover. Writing anyway is no fix: what a write made before
+          // the store loads does is not in the contract, and could be undone.
+          suspectStores.set(this.store, true);
           throw new PairingError('PAIRING_UNAVAILABLE', 'The pairing store is not available yet.');
         }
         try {
           await this.mintAndStoreToken();
-          this.storeSuspect = false;
+          suspectStores.delete(this.store);
         } catch {
           try {
             await bounded(() => this.store.clear());
-            this.storeSuspect = false;
+            suspectStores.delete(this.store);
           } catch {
-            this.storeSuspect = true;
+            suspectStores.set(this.store, true);
           }
           throw new PairingError('PAIRING_UNAVAILABLE', 'The pairing token could not be replaced.');
         }

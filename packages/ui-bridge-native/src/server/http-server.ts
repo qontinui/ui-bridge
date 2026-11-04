@@ -27,6 +27,7 @@ import type { BridgeEvent } from '../core/types';
 import { createServerHandlers } from './handlers';
 import {
   PairingAuthority,
+  PAIRING_SUSPENDED_MESSAGE,
   PairingError,
   SIGNED_BODY_MAX_CHARS,
   SIGNED_TARGET_MAX_CHARS,
@@ -1829,6 +1830,9 @@ export class NativeUIBridgeServer {
     if (signatures.length !== 1) return required;
     const verdict = await this.pairing.verifySignature(request, signatures[0]);
     if (verdict === 'valid') return { admitted: true, as: 'signed' };
+    if (verdict === 'pairing_suspended') {
+      return { admitted: false, code: 'PAIRING_UNAVAILABLE', error: PAIRING_SUSPENDED_MESSAGE };
+    }
     if (verdict === 'store_unavailable') {
       return {
         admitted: false,
