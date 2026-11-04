@@ -311,6 +311,15 @@ function LoginForm() {
 }
 ```
 
+The declaration follows your options across renders. A label that carries state,
+an action that only exists conditionally (with its `effect`), or a `paramSchema`
+that widens after mount reaches the registry on the render that changes it, in
+place, with no unregister in between. The registered handler is always the
+latest render's closure, and `updateActions`, `addElement` and `removeElement`
+publish immediately. The `useUIComponent` exported from `@qontinui/ui-bridge/native`
+behaves the same from `@qontinui/ui-bridge` 0.39.0. Earlier versions of that entry
+point published the first render's declaration only.
+
 ## Logging Component Renders
 
 Use the render log to track what components display:
