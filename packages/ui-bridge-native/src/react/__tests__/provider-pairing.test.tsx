@@ -13,7 +13,11 @@ vi.mock('react-native', () => ({
 
 import { UIBridgeNativeProvider, useUIBridgeNative } from '../UIBridgeNativeProvider';
 import type { HTTPRequest, RequestHandler, WebSocketServerAdapter } from '../../server/http-server';
-import { signUIBridgeRequest, type PairingStore } from '../../server/pairing';
+import {
+  PAIRING_TOKEN_UNUSABLE_MESSAGE,
+  signUIBridgeRequest,
+  type PairingStore,
+} from '../../server/pairing';
 
 const FEATURES = { server: true };
 const LAN: HTTPRequest = {
@@ -270,6 +274,46 @@ describe('UIBridgeNativeProvider pairing wiring', () => {
 
     await bridge.revokePairing();
     expect(state.token).toBe('42'.repeat(32));
+    unmount();
+  });
+
+  // The Settings flow #304 exists for: an unusable stored value is reported as
+  // such through the hook, and the hook's own revoke is what cures it.
+  it('tells Settings an unusable stored token needs a revoke, and the revoke cures it', async () => {
+    let bridge!: ReturnType<typeof useUIBridgeNative>;
+    function Capture() {
+      bridge = useUIBridgeNative();
+      return null;
+    }
+    const state = { token: '' as string | null };
+    const { unmount } = render(
+      <UIBridgeNativeProvider
+        features={FEATURES}
+        serverAdapter={adapter}
+        deviceId="device-1"
+        pairingStore={storeWith(state)}
+      >
+        <Capture />
+      </UIBridgeNativeProvider>
+    );
+    await flush();
+
+    await expect(bridge.armPairingCode()).rejects.toMatchObject({
+      code: 'PAIRING_UNAVAILABLE',
+      message: PAIRING_TOKEN_UNUSABLE_MESSAGE,
+    });
+    const pair = await adapter.http(CABLE_PAIR);
+    expect(pair.status).toBe(503);
+    expect(JSON.parse(pair.body)).toMatchObject({
+      code: 'PAIRING_UNAVAILABLE',
+      error: PAIRING_TOKEN_UNUSABLE_MESSAGE,
+    });
+
+    await bridge.revokePairing();
+    expect(state.token).toBe('42'.repeat(32));
+    const armed = await bridge.armPairingCode();
+    expect(armed.code).toMatch(/^\d{6}$/);
+    expect(JSON.parse((await adapter.http(CABLE_PAIR)).body).data.token).toBe('42'.repeat(32));
     unmount();
   });
 

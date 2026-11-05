@@ -264,7 +264,7 @@ The server admits callers as follows:
 | Not loopback, on a server with no `pairingStore` | `401 PAIRING_UNCONFIGURED` |
 | WebSocket upgrade from anywhere but a trusted loopback caller, signed or not | `403 PAIRING_WS_LOOPBACK_ONLY` |
 
-`POST /ui-bridge/pair` refuses in its own terms: `401 PAIRING_NOT_ARMED` with no code live, `400 PAIRING_CODE_REQUIRED` with no well-formed code, `401 PAIRING_CODE_INVALID` for a wrong one, and `503 PAIRING_UNAVAILABLE` while the store or the device id is not ready.
+`POST /ui-bridge/pair` refuses in its own terms: `401 PAIRING_NOT_ARMED` with no code live, `400 PAIRING_CODE_REQUIRED` with no well-formed code, `401 PAIRING_CODE_INVALID` for a wrong one, and `503 PAIRING_UNAVAILABLE` while the store or the device id is not ready, or, for a cable caller, while the store holds an unusable token (`PAIRING_TOKEN_UNUSABLE_MESSAGE`; a revoke replaces it).
 
 `adb forward` was measured arriving as `::ffff:127.0.0.1` on an Android 11 emulator on 2026-10-31, which counts as loopback. Physical phones are unmeasured.
 
