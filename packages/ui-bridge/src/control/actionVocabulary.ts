@@ -16,9 +16,10 @@
  *
  * `@qontinui/ui-bridge-native` keeps a package-local copy
  * (`src/control/actionVocabulary.ts`), because `@qontinui/ui-bridge` is only
- * an optional peer of that package. The runner's Phase 1 copy (in flight,
- * `src-tauri/src/mcp/ui_bridge/action_vocabulary.rs`) will mirror this table. Each
- * copy's tests assert the entries as literals; keep them in sync.
+ * an optional peer of that package. The runner carries a Rust copy
+ * (`src-tauri/src/mcp/ui_bridge/action_vocabulary.rs`), which folds spelling the
+ * same way {@link foldVerb} does. No test spans the copies: each copy's tests
+ * assert the entries as literals; keep them in sync.
  */
 
 /** Commonly-guessed verb → ordered canonical candidates. */
@@ -44,14 +45,28 @@ export const ACTION_VERB_SYNONYMS: Readonly<Record<string, readonly string[]>> =
   middleclick: ['middleClick'],
   dblclick: ['doubleClick'],
   dblClick: ['doubleClick'],
+  // The runner's built-in aliases. Not SDK verbs, so a caller who sends one is
+  // told the canonical verb instead of getting no suggestion.
+  double: ['doubleClick'],
+  right: ['rightClick'],
+  middle: ['middleClick'],
   mouseover: ['hover'],
   mouseenter: ['hover'],
   scrollTo: ['scrollIntoView'],
 });
 
-/** Lower-cased lookup over {@link ACTION_VERB_SYNONYMS} (a `Map`, so `constructor` never resolves). */
-const SYNONYMS_BY_LOWER = new Map<string, readonly string[]>(
-  Object.entries(ACTION_VERB_SYNONYMS).map(([verb, candidates]) => [verb.toLowerCase(), candidates])
+/**
+ * A verb reduced to what spelling cannot change: trimmed, lower-cased, no `_`
+ * or `-`. `send_keys`, `Send-Keys` and ` sendkeys ` all fold to `sendkeys`,
+ * matching the runner's `fold_verb`.
+ */
+export function foldVerb(verb: string): string {
+  return verb.trim().replace(/[_-]/g, '').toLowerCase();
+}
+
+/** Folded lookup over {@link ACTION_VERB_SYNONYMS} (a `Map`, so `constructor` never resolves). */
+const SYNONYMS_BY_FOLDED = new Map<string, readonly string[]>(
+  Object.entries(ACTION_VERB_SYNONYMS).map(([verb, candidates]) => [foldVerb(verb), candidates])
 );
 
 /**
@@ -59,19 +74,24 @@ const SYNONYMS_BY_LOWER = new Map<string, readonly string[]>(
  *
  * - A verb the element accepts EXACTLY is never corrected (`undefined`), so
  *   `press` keeps its native meaning on an element that advertises `press`.
- * - A case-insensitive exact match fixes the case (`sendkeys` → `sendKeys`).
+ * - A spelling-only difference is fixed (`sendkeys`, `send_keys` or
+ *   ` sendKeys ` → `sendKeys`); see {@link foldVerb}.
  * - Otherwise the first synonym candidate the element accepts, spelled as the
  *   element spells it.
  * - Otherwise `undefined`.
  */
 export function suggestAction(requested: string, accepted: readonly string[]): string | undefined {
-  if (accepted.includes(requested)) return undefined;
-  const lower = requested.toLowerCase();
-  const byLower = new Map(accepted.map((verb) => [verb.toLowerCase(), verb]));
-  const caseFixed = byLower.get(lower);
-  if (caseFixed !== undefined) return caseFixed;
-  for (const candidate of SYNONYMS_BY_LOWER.get(lower) ?? []) {
-    const match = byLower.get(candidate.toLowerCase());
+  if (requested.trim() === '' || accepted.includes(requested)) return undefined;
+  const folded = foldVerb(requested);
+  const byFolded = new Map<string, string>();
+  for (const verb of accepted) {
+    const key = foldVerb(verb);
+    if (!byFolded.has(key)) byFolded.set(key, verb);
+  }
+  const spellingFixed = byFolded.get(folded);
+  if (spellingFixed !== undefined) return spellingFixed;
+  for (const candidate of SYNONYMS_BY_FOLDED.get(folded) ?? []) {
+    const match = byFolded.get(foldVerb(candidate));
     if (match !== undefined) return match;
   }
   return undefined;

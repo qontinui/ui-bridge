@@ -46,6 +46,13 @@ export const SIGNED_METHOD_MAX_CHARS = 16;
 /** The longest `path?query` a signature is checked over. */
 export const SIGNED_TARGET_MAX_CHARS = 8192;
 
+/** A peer's first signature failure costs it this long before anything of its is hashed. */
+export const SIGNATURE_BACKOFF_BASE_MS = 1_000;
+/** The backoff doubles per further failure up to this. */
+export const SIGNATURE_BACKOFF_MAX_MS = 30_000;
+/** Peers remembered at once; past it the oldest entry is evicted. */
+export const SIGNATURE_BACKOFF_PEERS_MAX = 256;
+
 const TOKEN_BYTES = 32;
 const NONCE_CACHE_MAX = 4096;
 /** A hung secure store must not hang a request, or every later pairing call behind it. */
@@ -56,6 +63,8 @@ const CODE_SAMPLE_ATTEMPTS = 32;
 const CODE_SAMPLE_LIMIT = Math.floor(0x100000000 / 1_000_000) * 1_000_000;
 /** How far the wall clock may move against the monotonic one before that is a step. */
 const CLOCK_STEP_TOLERANCE_MS = 5_000;
+
+const SIGNATURE_HEADER_PATTERN = /^(\d{1,16})\.([A-Za-z0-9_-]{16,64})\.([0-9a-f]{64})$/;
 
 /** A monotonic reading in ms, or null on a runtime with no `performance.now`. */
 function monotonicNow(): number | null {
@@ -394,7 +403,9 @@ export type SignatureVerdict =
   /** The store loaded but holds an empty or non-string value; a revoke replaces it. */
   | 'token_unusable'
   /** A revoke failed and none has succeeded since, so the old token may still be stored. */
-  | 'pairing_suspended';
+  | 'pairing_suspended'
+  /** This peer's last signature failed and its backoff has not ended. Nothing was hashed. */
+  | 'peer_backoff';
 
 /** The result of a pair call. */
 export type PairOutcome =
@@ -545,6 +556,8 @@ export class PairingAuthority {
   private tokenGeneration = 0;
   /** Revokes under way. The old token may already be dying, so nothing verifies. */
   private revokesInFlight = 0;
+  /** Peer to its failure count and the instant its backoff ends, oldest insertion first. */
+  private backoff = new Map<string, { failures: number; until: number }>();
 
   constructor(private readonly store: PairingStore) {}
 
@@ -625,9 +638,15 @@ export class PairingAuthority {
 
   /** Check a `<ts>.<nonce>.<sig>` value against this request and the stored token. */
   async verifySignature(request: HTTPRequest, header: string): Promise<SignatureVerdict> {
+    // No address means no peer to back off: a shared key would let one bad request
+    // lock out every signed client.
+    const peer = request.remoteAddress ? request.remoteAddress : null;
+    // First of all: a peer that just failed a signature is not hashed again until
+    // its backoff ends, so this costs it nothing but a map read.
+    if (peer !== null && this.backoffRemainingMs(peer) > 0) return 'peer_backoff';
     // Everything before the store read is free for this phone, and comes first
     // because a peer that has proved nothing can reach all of it.
-    const match = /^(\d{1,16})\.([A-Za-z0-9_-]{16,64})\.([0-9a-f]{64})$/.exec(header);
+    const match = SIGNATURE_HEADER_PATTERN.exec(header);
     if (!match) return 'refused';
     const [, ts, nonce, sig] = match;
     const tsMs = Number(ts);
@@ -644,6 +663,10 @@ export class PairingAuthority {
 
     const generation = this.tokenGeneration;
     const token = await this.readToken();
+    // The read yielded, so requests that were all in flight together passed the
+    // check above before any of them failed. Looking again is what stops the
+    // queued ones hashing once the first has recorded its failure.
+    if (peer !== null && this.backoffRemainingMs(peer) > 0) return 'peer_backoff';
     if (this.revokesInFlight > 0) return 'refused';
     if (token === TOKEN_SUSPECT) return 'pairing_suspended';
     if (token === TOKEN_NOT_LOADED) return 'store_unavailable';
@@ -651,7 +674,10 @@ export class PairingAuthority {
     if (token === null) return 'refused';
 
     const expected = signatureHex(token, { method: request.method, pathAndQuery, ts, nonce, body });
-    if (!constantTimeEqual(expected, sig)) return 'refused';
+    if (!constantTimeEqual(expected, sig)) {
+      if (peer !== null) this.recordSignatureFailure(peer);
+      return 'refused';
+    }
 
     // Checked with no await before the insert, so a revoke that finished during
     // the read wins, and two copies of one request arriving together cannot both
@@ -662,7 +688,67 @@ export class PairingAuthority {
     if (this.isSuspect()) return 'pairing_suspended';
     if (this.nonces.has(nonce)) return 'refused';
     this.rememberNonce(nonce, tsMs);
+    if (peer !== null) this.backoff.delete(peer);
     return 'valid';
+  }
+
+  /**
+   * The header checks that need no body, token or store, for a refusal before the
+   * body is read. `null` means "read the body and ask `verifySignature`", never
+   * "admitted": nothing here looks at the token.
+   */
+  preflightSignature(
+    peerAddress: string | undefined,
+    header: string,
+    declaredBodyBytes: number | undefined
+  ): SignatureVerdict | null {
+    if (peerAddress && this.backoffRemainingMs(peerAddress) > 0) return 'peer_backoff';
+    const match = SIGNATURE_HEADER_PATTERN.exec(header);
+    if (!match) return 'refused';
+    const tsMs = Number(match[1]);
+    this.noticeClockStep();
+    if (Math.abs(Date.now() - tsMs) > SIGNATURE_WINDOW_MS) return 'timestamp_refused';
+    if (tsMs < this.oldestAcceptedTs) return 'timestamp_refused';
+    // The header counts bytes and the cap counts UTF-16 units, which take one to
+    // three bytes each in UTF-8: only a count past three bytes a unit is sure to
+    // be over the cap. Anything between waits for the body.
+    if (declaredBodyBytes !== undefined && declaredBodyBytes > SIGNED_BODY_MAX_CHARS * 3) {
+      return 'body_too_large';
+    }
+    return null;
+  }
+
+  /** Whole seconds, rounded up, until this peer may be hashed again; 0 when it is not backed off. */
+  backoffRetryAfterSeconds(peerAddress: string | undefined): number {
+    return peerAddress ? Math.ceil(this.backoffRemainingMs(peerAddress) / 1000) : 0;
+  }
+
+  private backoffRemainingMs(peer: string): number {
+    const entry = this.backoff.get(peer);
+    if (!entry) return 0;
+    const remaining = entry.until - Date.now();
+    // A clock set back would stretch the wait; no wait is longer than the cap.
+    return remaining > SIGNATURE_BACKOFF_MAX_MS ? SIGNATURE_BACKOFF_MAX_MS : Math.max(0, remaining);
+  }
+
+  /** The signature was well formed and in the window, and wrong. */
+  private recordSignatureFailure(peer: string): void {
+    const now = Date.now();
+    const previous = this.backoff.get(peer);
+    // A peer quiet for several caps starts over rather than inheriting a long wait.
+    const stale = previous !== undefined && now - previous.until > SIGNATURE_BACKOFF_MAX_MS * 10;
+    const failures = previous === undefined || stale ? 1 : previous.failures + 1;
+    const wait = Math.min(
+      SIGNATURE_BACKOFF_BASE_MS * 2 ** Math.min(failures - 1, 16),
+      SIGNATURE_BACKOFF_MAX_MS
+    );
+    // Delete first so the entry moves to the newest end of the insertion order.
+    this.backoff.delete(peer);
+    this.backoff.set(peer, { failures, until: now + wait });
+    while (this.backoff.size > SIGNATURE_BACKOFF_PEERS_MAX) {
+      const oldest = this.backoff.keys().next().value as string;
+      this.backoff.delete(oldest);
+    }
   }
 
   private readClockOffset(): number | null {
@@ -737,6 +823,13 @@ export class PairingAuthority {
     // A revoke on another server over the same store may have failed during the
     // read or the mint; the token is then not ours to hand out.
     if (outcome.ok && this.isSuspect()) outcome = SUSPENDED;
+    // A peer that has just paired holds a fresh token, so its old failures are moot.
+    // A cable pair is the owner at the phone: every address's failures are moot,
+    // since a runner re-paired that way signs from an address that never paired itself.
+    if (outcome.ok) {
+      if (input.trustedLoopback) this.backoff.clear();
+      else if (input.peer) this.backoff.delete(input.peer);
+    }
     if (spent) this.settleSpentCode(spent, outcome.ok, input.peer);
     return outcome;
   }

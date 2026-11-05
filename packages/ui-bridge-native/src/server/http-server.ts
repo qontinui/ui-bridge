@@ -40,6 +40,7 @@ import {
   isWebReachableRequest,
   type ArmedPairingCode,
   type PairingState,
+  type SignatureVerdict,
 } from './pairing';
 import { ConsoleErrorBuffer, NetworkRequestBuffer } from './observability';
 import type { WebSocketEventBridge } from './ws-event-bridge';
@@ -94,6 +95,7 @@ const ERROR_CODE_HTTP_STATUS = new Map<string, number>([
   ['PAIRING_BODY_TOO_LARGE', 413],
   ['PAIRING_TARGET_TOO_LONG', 414],
   ['PAIRING_UNAVAILABLE', 503],
+  ['PAIRING_BACKOFF', 429],
 ]);
 
 /**
@@ -110,6 +112,21 @@ export function httpStatusForResponse(response: APIResponse): number {
   if (response.success) return 200;
   const mapped = response.code ? ERROR_CODE_HTTP_STATUS.get(response.code) : undefined;
   return mapped ?? 400;
+}
+
+/**
+ * An adapter that passes `rawBody` and no `body` leaves the parse to the SDK, so
+ * it happens after admission. A body that is not JSON arrives as the raw string,
+ * as an adapter that parsed it up front passed it.
+ */
+function withParsedBody(request: HTTPRequest): HTTPRequest {
+  if (request.body !== undefined || request.rawBody === undefined) return request;
+  if (!request.rawBody.trim()) return request;
+  try {
+    return { ...request, body: JSON.parse(request.rawBody) };
+  } catch {
+    return { ...request, body: request.rawBody };
+  }
 }
 
 // ── Path pattern matching ───────────────────────────────────────────────────
@@ -625,7 +642,28 @@ export type WebSocketUpgradeDecision = { admit: true } | { admit: false; respons
 /** Who a request was admitted as, or the answer that refuses it. */
 type Admission =
   | { admitted: true; as: 'loopback' | 'signed' | 'unauthenticated-network' }
-  | { admitted: false; code: string; error: string; data?: Record<string, unknown> };
+  | {
+      admitted: false;
+      code: string;
+      error: string;
+      data?: Record<string, unknown>;
+      headers?: Record<string, string>;
+    };
+
+/**
+ * What a network entry knows of a request from its header block alone: no body
+ * has been read. `contentLength` is the declared value in bytes, when one was sent.
+ */
+export interface NetworkRequestHead {
+  method: string;
+  /** The request target exactly as on the request line, `path?query`. */
+  rawTarget: string;
+  headers: Record<string, string>;
+  /** The socket peer's address, as for `HTTPRequest.remoteAddress`. */
+  remoteAddress?: string;
+  /** The declared `Content-Length`, in bytes. */
+  contentLength?: number;
+}
 
 const HEALTH_PATH = '/ui-bridge/health';
 const PAIR_PATH = '/ui-bridge/pair';
@@ -1744,6 +1782,7 @@ export class NativeUIBridgeServer {
    * | Signature outside the window or below the floor          | 401 `PAIRING_TIMESTAMP_REFUSED` |
    * | Signed body over `SIGNED_BODY_MAX_CHARS`                 | 413 `PAIRING_BODY_TOO_LARGE` |
    * | Signed method or target over its cap                     | 414 `PAIRING_TARGET_TOO_LONG` |
+   * | A peer whose last signature failed, inside its backoff   | 429 `PAIRING_BACKOFF`, `Retry-After` |
    * | Everyone else                                            | 401 `PAIRING_REQUIRED` |
    * | No store configured, not loopback                        | 401 `PAIRING_UNCONFIGURED` |
    * | Under `allowUnauthenticatedNetwork`, a web page or a rebindable `Host` | 403 `PAIRING_WEB_CALLER_REFUSED` |
@@ -1762,13 +1801,94 @@ export class NativeUIBridgeServer {
         return await this.handleNetworkHealth(request, admission);
       }
       if (!admission.admitted) {
-        return this.refusal(admission.code, admission.error, { data: admission.data });
+        return this.refusal(admission.code, admission.error, {
+          data: admission.data,
+          headers: admission.headers,
+        });
       }
-      return await this.handleRequest(request);
+      // Parsed here, after admission, so a peer that proved nothing never costs a parse.
+      return await this.handleRequest(withParsedBody(request));
     } catch {
       // Fixed text, not the error's: a store's failure could quote what it held.
       return this.refusal('INTERNAL_ERROR', 'Internal server error', { status: 500 });
     }
+  }
+
+  /**
+   * Refuse from the header block alone, before the body is read. Returns the
+   * response the full gate would give, or `null` when the body is needed to
+   * decide. **`null` is not admission**: it means "read the body and call
+   * `handleNetworkRequest`", which still runs the whole gate. This method never
+   * reads the token, never hashes and admits nothing.
+   *
+   * It refuses what needs no body: no store configured (`PAIRING_UNCONFIGURED`),
+   * a missing or malformed auth header (`PAIRING_REQUIRED`), a timestamp outside
+   * the window (`PAIRING_TIMESTAMP_REFUSED`), a backed-off peer (`PAIRING_BACKOFF`)
+   * and a declared body no signed body could fit in (`PAIRING_BODY_TOO_LARGE`).
+   * A trusted loopback caller, `GET /ui-bridge/health` and `POST /ui-bridge/pair`
+   * get `null`.
+   */
+  preflightNetworkRequest(head: NetworkRequestHead): HTTPResponse | null {
+    try {
+      const queryAt = head.rawTarget.indexOf('?');
+      const path = queryAt === -1 ? head.rawTarget : head.rawTarget.slice(0, queryAt);
+      const method = head.method.toUpperCase();
+      if (method === 'POST' && path === PAIR_PATH) return null;
+      if (method === 'GET' && path === HEALTH_PATH) return null;
+      const request: HTTPRequest = {
+        method,
+        path,
+        headers: head.headers,
+        query: {},
+        remoteAddress: head.remoteAddress,
+        rawTarget: head.rawTarget,
+      };
+      if (this.isTrustedLoopback(request)) return null;
+      if (this.config.allowUnauthenticatedNetwork) {
+        return isWebReachableRequest(request)
+          ? this.refusal('PAIRING_WEB_CALLER_REFUSED', 'A web page cannot drive this device.')
+          : null;
+      }
+      if (!this.pairing) {
+        return this.refusal(
+          'PAIRING_UNCONFIGURED',
+          'This app has not configured device pairing, so it accepts only local callers.'
+        );
+      }
+      const signatures = headerValues(head.headers, UI_BRIDGE_AUTH_HEADER);
+      if (signatures.length !== 1) return this.refusalFor(this.requiredAdmission());
+      const verdict = this.pairing.preflightSignature(
+        head.remoteAddress,
+        signatures[0],
+        head.contentLength
+      );
+      if (verdict === null) return null;
+      if (verdict === 'valid') return null;
+      return this.refusalFor(
+        this.admissionForVerdict(verdict, head.remoteAddress) ?? this.requiredAdmission()
+      );
+    } catch {
+      // Unsure means the body is read and the full gate decides.
+      return null;
+    }
+  }
+
+  private requiredAdmission(): Extract<Admission, { admitted: false }> {
+    return {
+      admitted: false,
+      code: 'PAIRING_REQUIRED',
+      error:
+        'This device requires pairing. Sign the request with the token from POST /ui-bridge/pair.',
+    };
+  }
+
+  private refusalFor(admission: Admission): HTTPResponse {
+    if (admission.admitted)
+      return this.refusal('INTERNAL_ERROR', 'Internal server error', { status: 500 });
+    return this.refusal(admission.code, admission.error, {
+      data: admission.data,
+      headers: admission.headers,
+    });
   }
 
   /**
@@ -1820,16 +1940,28 @@ export class NativeUIBridgeServer {
         error: 'This app has not configured device pairing, so it accepts only local callers.',
       };
     }
-    const required: Admission = {
-      admitted: false,
-      code: 'PAIRING_REQUIRED',
-      error:
-        'This device requires pairing. Sign the request with the token from POST /ui-bridge/pair.',
-    };
+    const required = this.requiredAdmission();
     const signatures = headerValues(request.headers, UI_BRIDGE_AUTH_HEADER);
     if (signatures.length !== 1) return required;
     const verdict = await this.pairing.verifySignature(request, signatures[0]);
     if (verdict === 'valid') return { admitted: true, as: 'signed' };
+    return this.admissionForVerdict(verdict, request.remoteAddress) ?? required;
+  }
+
+  /** The refusal for a signature verdict that is not `valid`; `null` is the plain `PAIRING_REQUIRED`. */
+  private admissionForVerdict(
+    verdict: Exclude<SignatureVerdict, 'valid'>,
+    remoteAddress: string | undefined
+  ): Admission | null {
+    if (verdict === 'peer_backoff') {
+      const retryAfter = Math.max(1, this.pairing?.backoffRetryAfterSeconds(remoteAddress) ?? 1);
+      return {
+        admitted: false,
+        code: 'PAIRING_BACKOFF',
+        error: `A signature from this address just failed. Wait ${retryAfter} s, then sign again.`,
+        headers: { 'Retry-After': String(retryAfter) },
+      };
+    }
     if (verdict === 'pairing_suspended') {
       return { admitted: false, code: 'PAIRING_UNAVAILABLE', error: PAIRING_SUSPENDED_MESSAGE };
     }
@@ -1870,7 +2002,7 @@ export class NativeUIBridgeServer {
         error: `A signed target may be at most ${SIGNED_TARGET_MAX_CHARS} characters.`,
       };
     }
-    return required;
+    return null;
   }
 
   private corsHeaders(): Record<string, string> {
@@ -1888,7 +2020,11 @@ export class NativeUIBridgeServer {
   private refusal(
     code: string,
     error: string,
-    extra: { status?: number; data?: Record<string, unknown> } = {}
+    extra: {
+      status?: number;
+      data?: Record<string, unknown>;
+      headers?: Record<string, string>;
+    } = {}
   ): HTTPResponse {
     const body: APIResponse = {
       success: false,
@@ -1899,7 +2035,7 @@ export class NativeUIBridgeServer {
     };
     return {
       status: extra.status ?? httpStatusForResponse(body),
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...extra.headers },
       body: JSON.stringify(body),
     };
   }
@@ -1976,7 +2112,7 @@ export class NativeUIBridgeServer {
     const outcome = await this.pairing.pair({
       trustedLoopback: this.isTrustedLoopback(request),
       peer: request.remoteAddress,
-      body: request.body,
+      body: withParsedBody(request).body,
     });
     if (!outcome.ok) return this.refusal(outcome.code, outcome.error);
     const body: APIResponse = {

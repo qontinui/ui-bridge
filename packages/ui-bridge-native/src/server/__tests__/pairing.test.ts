@@ -12,6 +12,7 @@ import { CloudRelayClient } from '../../transport/CloudRelayClient';
 import {
   NativeUIBridgeServer,
   type HTTPRequest,
+  type NetworkRequestHead,
   type HTTPResponse,
   type RequestHandler,
   type WebSocketServerAdapter,
@@ -46,6 +47,8 @@ const SNAPSHOT = '/ui-bridge/control/snapshot';
 const HEALTH = '/ui-bridge/health';
 const PAIR = '/ui-bridge/pair';
 const LAN_PEER = '192.168.1.50';
+// The revoked runner's old signature backed LAN_PEER off; its re-paired successor signs from here.
+const RUNNER_AFTER_REVOKE = '192.168.1.51';
 // The published test vector's token, not a secret.
 const TOKEN = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff'; // gitleaks:allow
 
@@ -1996,7 +1999,7 @@ describe('revoke', () => {
     expect(store.token).toMatch(/^[0-9a-f]{64}$/);
     expect(store.token).not.toBe(old);
     expectRefused(await http(signed(old)));
-    expectServed(await http(signed(store.token!)));
+    expectServed(await http(signed(store.token!, { remoteAddress: RUNNER_AFTER_REVOKE })));
     expect(json(await http(cable({ method: 'POST', path: PAIR }))).data!.token).toBe(store.token);
   });
 
@@ -2080,7 +2083,7 @@ describe('revoke', () => {
     finish();
     await revoked;
     expectRefused(await http(signed(oldToken)));
-    expectServed(await http(signed(store.token!)));
+    expectServed(await http(signed(store.token!, { remoteAddress: RUNNER_AFTER_REVOKE })));
   });
 
   it('refuses a read that began before a revoke and answered during it', async () => {
@@ -2187,7 +2190,7 @@ describe('revoke', () => {
     await server.revokePairing();
     expect(store.token).not.toBe(oldToken);
     expectRefused(await http(signed(oldToken)));
-    expectServed(await http(signed(store.token!)));
+    expectServed(await http(signed(store.token!, { remoteAddress: RUNNER_AFTER_REVOKE })));
   });
 
   it('keeps refusing the old token on a server rebuilt over the same store', async () => {
@@ -2218,7 +2221,7 @@ describe('revoke', () => {
 
     await rebuilt.server.revokePairing();
     expectRefused(await rebuilt.http(signed(oldToken)));
-    expectServed(await rebuilt.http(signed(store.token!)));
+    expectServed(await rebuilt.http(signed(store.token!, { remoteAddress: RUNNER_AFTER_REVOKE })));
   });
 
   /** A store whose next `get` waits, still answering the token it read when asked. */
@@ -2738,5 +2741,233 @@ describe('nothing logs the token or the code', () => {
     const { server } = await started({ pairingStore: store });
     const failure = await server.revokePairing().catch((err: Error) => err);
     expect(String((failure as Error).message)).not.toContain(token);
+  });
+});
+
+describe('a peer whose signature failed is backed off', () => {
+  const OTHER_PEER = '192.168.1.77';
+  const FIND = '/ui-bridge/control/find';
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  /** A well-formed, in-window signature that is wrong. */
+  function wrong(over: Partial<HTTPRequest> = {}): HTTPRequest {
+    return signed('f'.repeat(64), over);
+  }
+
+  function costs() {
+    return {
+      hmac: vi.spyOn(sha256Module, 'hmacSha256'),
+      digest: vi.spyOn(sha256Module, 'sha256Hex'),
+    };
+  }
+
+  it('refuses the next request from that peer with 429 and Retry-After, hashing and reading nothing', async () => {
+    const store = memoryStore(TOKEN);
+    const get = vi.spyOn(store, 'get');
+    const { http } = await started({ pairingStore: store });
+    expectRefused(await http(wrong()));
+    // Signed before the spies start, because signing hashes too.
+    const second = wrong({ method: 'POST', path: FIND, body: {}, rawBody: '{}' });
+    const third = signed(TOKEN);
+    const { hmac, digest } = costs();
+    get.mockClear();
+
+    const backedOff = await http(second);
+    expect(backedOff.status).toBe(429);
+    expect(json(backedOff).code).toBe('PAIRING_BACKOFF');
+    expect(backedOff.headers['Retry-After']).toBe('1');
+    expect(hmac).not.toHaveBeenCalled();
+    expect(digest).not.toHaveBeenCalled();
+    expect(get).not.toHaveBeenCalled();
+    // Even a correctly signed request waits out the window.
+    expect((await http(third)).status).toBe(429);
+  });
+
+  it('doubles per failure up to 30 s, and a valid signature after the window resets it', async () => {
+    fakeClocks(Date.UTC(2026, 10, 5, 12, 0, 0));
+    const { http } = await started({ pairingStore: memoryStore(TOKEN) });
+    const waits: number[] = [];
+    for (let i = 0; i < 8; i++) {
+      expectRefused(await http(wrong()));
+      const blocked = await http(signed(TOKEN));
+      expect(blocked.status).toBe(429);
+      const seconds = Number(blocked.headers['Retry-After']);
+      waits.push(seconds);
+      vi.advanceTimersByTime(seconds * 1000);
+    }
+    expect(waits).toEqual([1, 2, 4, 8, 16, 30, 30, 30]);
+
+    expectServed(await http(signed(TOKEN)));
+    expectRefused(await http(wrong()));
+    expect(Number((await http(signed(TOKEN))).headers['Retry-After'])).toBe(1);
+  });
+
+  it('leaves another peer alone', async () => {
+    const { http } = await started({ pairingStore: memoryStore(TOKEN) });
+    expectRefused(await http(wrong()));
+    expectServed(await http(signed(TOKEN, { remoteAddress: OTHER_PEER })));
+  });
+
+  it('is cleared at once by a successful pair from that peer', async () => {
+    const store = memoryStore(TOKEN);
+    const { http, server } = await started({ pairingStore: store });
+    expectRefused(await http(wrong()));
+    expect((await http(signed(TOKEN))).status).toBe(429);
+    const { code } = await server.armPairingCode();
+    expectServed(await http(postCode(code)));
+    expectServed(await http(signed(TOKEN)));
+  });
+
+  it('does not back off a request with no peer address', async () => {
+    const { http } = await started({ pairingStore: memoryStore(TOKEN) });
+    expectRefused(await http(wrong({ remoteAddress: undefined })));
+    expectRefused(await http(wrong({ remoteAddress: undefined })));
+    expectServed(await http(signed(TOKEN)));
+  });
+
+  it('is cleared for every address by a cable pair', async () => {
+    const { http } = await started({ pairingStore: memoryStore(TOKEN) });
+    expectRefused(await http(wrong()));
+    expect((await http(signed(TOKEN))).status).toBe(429);
+    expectServed(await http(cable({ method: 'POST', path: PAIR })));
+    expectServed(await http(signed(TOKEN)));
+  });
+
+  it('does not apply to health or to pair', async () => {
+    const { http, server } = await started({ pairingStore: memoryStore(TOKEN) });
+    expectRefused(await http(wrong()));
+    const health = await http(lan({ path: '/ui-bridge/health' }));
+    expectServed(health);
+    const { code } = await server.armPairingCode();
+    expect((await http(postCode(wrongCode(code)))).status).toBe(401);
+  });
+
+  it('does not back off a replayed nonce or an unsigned request', async () => {
+    const { http } = await started({ pairingStore: memoryStore(TOKEN) });
+    const first = signed(TOKEN, { nonce: 'replayednonce0000000' });
+    expectServed(await http(first));
+    expectRefused(await http(first));
+    expectServed(await http(signed(TOKEN)));
+    expectRefused(await http(lan()));
+    expectServed(await http(signed(TOKEN)));
+  });
+
+  it('bounds the table at 256 peers, evicting the oldest', async () => {
+    const { http } = await started({ pairingStore: memoryStore(TOKEN) });
+    for (let i = 0; i < 257; i++) {
+      expectRefused(await http(wrong({ remoteAddress: `10.0.${Math.floor(i / 250)}.${i % 250}` })));
+    }
+    // The first peer was evicted; the last is still backed off.
+    expectServed(await http(signed(TOKEN, { remoteAddress: '10.0.0.0' })));
+    expect((await http(signed(TOKEN, { remoteAddress: '10.0.1.6' }))).status).toBe(429);
+  });
+
+  it('hashes only once when a burst arrives together', async () => {
+    const store = memoryStore(TOKEN);
+    const { http } = await started({ pairingStore: store });
+    const requests = Array.from({ length: 12 }, () => wrong());
+    const { hmac } = costs();
+    const burst = await Promise.all(requests.map((r) => http(r)));
+    expect(hmac).toHaveBeenCalledTimes(1);
+    expect(burst.filter((r) => r.status === 429)).toHaveLength(11);
+  });
+});
+
+describe('the header-only preflight', () => {
+  const FIND = '/ui-bridge/control/find';
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  function head(over: Partial<NetworkRequestHead> = {}): NetworkRequestHead {
+    return {
+      method: 'POST',
+      rawTarget: FIND,
+      headers: { host: '192.168.1.20:8087' },
+      remoteAddress: LAN_PEER,
+      ...over,
+    };
+  }
+  function withAuth(auth: string, over: Partial<NetworkRequestHead> = {}): NetworkRequestHead {
+    return head({ headers: { host: '192.168.1.20:8087', 'x-ui-bridge-auth': auth }, ...over });
+  }
+  const good = () => signed(TOKEN).headers['x-ui-bridge-auth']!;
+
+  it('refuses an unsigned control request from a LAN peer without a body', async () => {
+    const { server } = await started({ pairingStore: memoryStore(TOKEN) });
+    const refusal = server.preflightNetworkRequest(head());
+    expect(refusal!.status).toBe(401);
+    expect(json(refusal!).code).toBe('PAIRING_REQUIRED');
+    const malformed = server.preflightNetworkRequest(withAuth('not-a-signature'));
+    expect(json(malformed!).code).toBe('PAIRING_REQUIRED');
+  });
+
+  it('refuses a stale timestamp, a backed-off peer and an absurd declared length', async () => {
+    const store = memoryStore(TOKEN);
+    const get = vi.spyOn(store, 'get');
+    const { server, http } = await started({ pairingStore: store });
+    const stale = signed(TOKEN, { ts: Date.now() - 600_000 }).headers['x-ui-bridge-auth']!;
+    expect(json(server.preflightNetworkRequest(withAuth(stale))!).code).toBe(
+      'PAIRING_TIMESTAMP_REFUSED'
+    );
+    expect(
+      json(
+        server.preflightNetworkRequest(
+          withAuth(good(), { contentLength: SIGNED_BODY_MAX_CHARS * 3 + 1 })
+        )!
+      ).code
+    ).toBe('PAIRING_BODY_TOO_LARGE');
+    expect(get).not.toHaveBeenCalled();
+
+    expectRefused(await http(signed('f'.repeat(64))));
+    const backed = server.preflightNetworkRequest(withAuth(good()));
+    expect(backed!.status).toBe(429);
+    expect(backed!.headers['Retry-After']).toBe('1');
+  });
+
+  it('returns null, which is not admission, for a well-formed signature', async () => {
+    const { server } = await started({ pairingStore: memoryStore(TOKEN) });
+    expect(
+      server.preflightNetworkRequest(withAuth(good(), { contentLength: SIGNED_BODY_MAX_CHARS }))
+    ).toBeNull();
+    // A wrong signature is also null: only the full gate, with the body, can tell.
+    expect(
+      server.preflightNetworkRequest(withAuth(signed('f'.repeat(64)).headers['x-ui-bridge-auth']!))
+    ).toBeNull();
+  });
+
+  it('returns null for loopback, health and pair', async () => {
+    const { server } = await started({ pairingStore: memoryStore(TOKEN) });
+    expect(
+      server.preflightNetworkRequest(
+        head({ remoteAddress: '127.0.0.1', headers: { host: 'localhost:8087' } })
+      )
+    ).toBeNull();
+    expect(
+      server.preflightNetworkRequest(head({ method: 'GET', rawTarget: '/ui-bridge/health' }))
+    ).toBeNull();
+    expect(server.preflightNetworkRequest(head({ rawTarget: '/ui-bridge/pair' }))).toBeNull();
+  });
+
+  it('refuses with PAIRING_UNCONFIGURED when no store is configured', async () => {
+    const { server } = await started({});
+    expect(json(server.preflightNetworkRequest(head())!).code).toBe('PAIRING_UNCONFIGURED');
+  });
+
+  it('leaves the parse to the SDK: a control route given rawBody only gets the parsed body', async () => {
+    const { http } = await started({ pairingStore: memoryStore(TOKEN) });
+    const rawBody = JSON.stringify({ query: 'x' });
+    const response = await http(signed(TOKEN, { method: 'POST', path: FIND, rawBody }));
+    expect(response.status).not.toBe(401);
+    expect(json(response).code).not.toBe('PAIRING_REQUIRED');
+    // And a LAN pair reads its code out of rawBody.
+    const { http: http2, server } = await started({ pairingStore: memoryStore() });
+    const { code } = await server.armPairingCode();
+    expectServed(await http2(postPair({ rawBody: JSON.stringify({ code }) })));
   });
 });

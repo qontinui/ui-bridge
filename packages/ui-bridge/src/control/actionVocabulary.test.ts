@@ -2,9 +2,9 @@
  * The "did you mean" verb table (plan
  * 2026-10-22-runner-ui-bridge-makes-an-agent-guess-its-own-vocabulary, D3 /
  * Phase 8). The table is asserted as LITERALS so an edited or dropped entry
- * goes red here. The same literals are asserted against `@qontinui/ui-bridge-native`'s package-local
- * copy. The
- * runner's Phase 1 copy (in flight) will mirror this table.
+ * goes red here. The same literals are asserted against
+ * `@qontinui/ui-bridge-native`'s package-local copy. The runner's Rust copy
+ * (`action_vocabulary.rs`) mirrors this table; no test spans the copies.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -12,6 +12,7 @@ import {
   ACTION_VERB_SYNONYMS,
   UnknownActionError,
   describeUnknownAction,
+  foldVerb,
   suggestAction,
   unknownActionContext,
 } from './actionVocabulary';
@@ -40,6 +41,9 @@ describe('ACTION_VERB_SYNONYMS', () => {
       middleclick: ['middleClick'],
       dblclick: ['doubleClick'],
       dblClick: ['doubleClick'],
+      double: ['doubleClick'],
+      right: ['rightClick'],
+      middle: ['middleClick'],
       mouseover: ['hover'],
       mouseenter: ['hover'],
       scrollTo: ['scrollIntoView'],
@@ -75,6 +79,26 @@ describe('suggestAction', () => {
   it('fixes the case of an exact accepted verb', () => {
     expect(suggestAction('sendkeys', terminalInput)).toBe('sendKeys');
     expect(suggestAction('CLICK', button)).toBe('click');
+  });
+
+  it('ignores separators and surrounding whitespace, as the runner does', () => {
+    expect(suggestAction('send_keys', terminalInput)).toBe('sendKeys');
+    expect(suggestAction('Send-Keys', terminalInput)).toBe('sendKeys');
+    expect(suggestAction(' sendKeys ', terminalInput)).toBe('sendKeys');
+    expect(suggestAction('scroll_into_view', ['scrollIntoView'])).toBe('scrollIntoView');
+    expect(suggestAction('dbl_click', ['doubleClick'])).toBe('doubleClick');
+    expect(suggestAction('   ', terminalInput)).toBeUndefined();
+    expect(foldVerb(' Scroll_Into-View ')).toBe('scrollintoview');
+  });
+
+  it('takes the first accepted verb when two fold alike', () => {
+    expect(suggestAction('SENDKEYS', ['send_keys', 'sendKeys'])).toBe('send_keys');
+  });
+
+  it("names the canonical verb for the runner's built-in aliases", () => {
+    expect(suggestAction('double', ['doubleClick'])).toBe('doubleClick');
+    expect(suggestAction('right', ['rightClick'])).toBe('rightClick');
+    expect(suggestAction('middle', ['middleClick'])).toBe('middleClick');
   });
 
   it('never corrects a verb the element accepts exactly', () => {
