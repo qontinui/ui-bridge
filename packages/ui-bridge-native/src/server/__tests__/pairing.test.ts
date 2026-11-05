@@ -2100,6 +2100,25 @@ describe('revoke', () => {
     await revoked;
   });
 
+  it.each<[string, unknown]>([
+    ['an empty string', ''],
+    ['a number', 42],
+    ['an object', { token: 'x' }],
+  ])('recovers a store holding %s, which never verifies, by revoking', async (_name, value) => {
+    const store = memoryStore();
+    store.token = value as string;
+    const { http, server } = await started({ pairingStore: store });
+    // Unusable, so nothing verifies and a pair does not mint over it.
+    expect((await http(signed(''))).status).toBe(503);
+    expect((await http(cable({ method: 'POST', path: PAIR }))).status).toBe(503);
+
+    // The store loaded (its get resolved), so a revoke replaces the value.
+    await server.revokePairing();
+    expect(store.token).toMatch(/^[0-9a-f]{64}$/);
+    expectServed(await http(signed(store.token!)));
+    expectServed(await http(cable({ method: 'POST', path: PAIR })));
+  });
+
   it('refuses the old token after a revoke that could not read the store', async () => {
     const oldToken = 'o'.repeat(64);
     const store = memoryStore(oldToken);

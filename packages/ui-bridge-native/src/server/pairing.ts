@@ -86,7 +86,8 @@ export interface PairingStore {
   /**
    * The current token, or `null` when the store has loaded and holds none.
    * THROW or reject while the store has not loaded: `null` then would mint a
-   * replacement over a token still on disk.
+   * replacement over a token still on disk. Only a throw means "not loaded":
+   * any value that resolves is taken as loaded, and a revoke overwrites it.
    */
   get(): string | null | Promise<string | null>;
   /** Persist `token`. Pairing answers only after this settles. */
@@ -850,10 +851,10 @@ export class PairingAuthority {
    * app changed stores during the revoke; it can also be a failed revoke on
    * another server over the same store.
    *
-   * A stored value that is empty or not a string reads as not loaded, so a revoke
-   * over it fails at the first read and marks the store suspect, and no later
-   * revoke can recover it: each one fails the same read. Only clearing the
-   * store outside the SDK does.
+   * A stored value that is empty or not a string never verifies, but the store
+   * that returned it has loaded: only a `get` that throws means it has not. So a
+   * revoke over such a value replaces it like any other token, and that is how
+   * a store left holding one recovers.
    *
    * Nothing verifies from the moment this starts until it ends. The generation
    * moves when it ends, whichever way, so a check that read the old token before
@@ -886,9 +887,17 @@ export class PairingAuthority {
     this.dropCode('revoked');
     try {
       await this.exclusive(async () => {
-        // `readStore`, not `readToken`: a revoke is how a suspect store recovers.
-        const stored = await this.readStore();
-        if (stored === TOKEN_NOT_LOADED) {
+        // Not `readToken`: a revoke is how a suspect store recovers. Not
+        // `readStore` either, which reads an unusable value as not loaded: the
+        // question here is only whether the store has loaded, and a `get` that
+        // resolved says it has, so the value it holds is replaced below.
+        let loaded = true;
+        try {
+          await bounded(() => this.store.get());
+        } catch {
+          loaded = false;
+        }
+        if (!loaded) {
           // The app is told the revoke failed, so the old token must not verify
           // once reads recover. Writing anyway is no fix: what a write made before
           // the store loads does is not in the contract, and could be undone.
