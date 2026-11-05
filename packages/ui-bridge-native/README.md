@@ -260,7 +260,7 @@ The server admits callers as follows:
 | Signature outside the 300 s window, or older than this server will accept | `401 PAIRING_TIMESTAMP_REFUSED` with `data.serverTime`: re-sync and sign again, no new pairing needed |
 | Signed body over `SIGNED_BODY_MAX_CHARS` (262,144 characters) | `413 PAIRING_BODY_TOO_LARGE` |
 | Signed method over 16 characters, or target over `SIGNED_TARGET_MAX_CHARS` (8,192) | `414 PAIRING_TARGET_TOO_LONG` |
-| A peer whose last signature failed, until its backoff ends (1 s, doubling to 30 s per further failure; cleared by a valid signature or a successful pair) | `429 PAIRING_BACKOFF`, with `Retry-After` in seconds |
+| A peer whose last signature failed, until its backoff ends (1 s, doubling to 30 s per further failure; per source address, so a peer sharing a NAT with a paired phone shares its backoff; cleared by a valid signature, a successful pair from that address, or a cable pair; not applied when the adapter passes no `remoteAddress`) | `429 PAIRING_BACKOFF`, with `Retry-After` in seconds |
 | Everyone else | `401 PAIRING_REQUIRED` |
 | Not loopback, on a server with no `pairingStore` | `401 PAIRING_UNCONFIGURED` |
 | WebSocket upgrade from anywhere but a trusted loopback caller, signed or not | `403 PAIRING_WS_LOOPBACK_ONLY` |

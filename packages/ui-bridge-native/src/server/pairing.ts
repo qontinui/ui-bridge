@@ -52,8 +52,6 @@ export const SIGNATURE_BACKOFF_BASE_MS = 1_000;
 export const SIGNATURE_BACKOFF_MAX_MS = 30_000;
 /** Peers remembered at once; past it the oldest entry is evicted. */
 export const SIGNATURE_BACKOFF_PEERS_MAX = 256;
-/** The key for a request that carries no peer address. */
-const UNKNOWN_PEER = 'unknown';
 
 const TOKEN_BYTES = 32;
 const NONCE_CACHE_MAX = 4096;
@@ -67,10 +65,6 @@ const CODE_SAMPLE_LIMIT = Math.floor(0x100000000 / 1_000_000) * 1_000_000;
 const CLOCK_STEP_TOLERANCE_MS = 5_000;
 
 const SIGNATURE_HEADER_PATTERN = /^(\d{1,16})\.([A-Za-z0-9_-]{16,64})\.([0-9a-f]{64})$/;
-
-function peerKey(address: string | undefined): string {
-  return address ? address : UNKNOWN_PEER;
-}
 
 /** A monotonic reading in ms, or null on a runtime with no `performance.now`. */
 function monotonicNow(): number | null {
@@ -644,10 +638,12 @@ export class PairingAuthority {
 
   /** Check a `<ts>.<nonce>.<sig>` value against this request and the stored token. */
   async verifySignature(request: HTTPRequest, header: string): Promise<SignatureVerdict> {
-    const peer = peerKey(request.remoteAddress);
+    // No address means no peer to back off: a shared key would let one bad request
+    // lock out every signed client.
+    const peer = request.remoteAddress ? request.remoteAddress : null;
     // First of all: a peer that just failed a signature is not hashed again until
     // its backoff ends, so this costs it nothing but a map read.
-    if (this.backoffRemainingMs(peer) > 0) return 'peer_backoff';
+    if (peer !== null && this.backoffRemainingMs(peer) > 0) return 'peer_backoff';
     // Everything before the store read is free for this phone, and comes first
     // because a peer that has proved nothing can reach all of it.
     const match = SIGNATURE_HEADER_PATTERN.exec(header);
@@ -670,7 +666,7 @@ export class PairingAuthority {
     // The read yielded, so requests that were all in flight together passed the
     // check above before any of them failed. Looking again is what stops the
     // queued ones hashing once the first has recorded its failure.
-    if (this.backoffRemainingMs(peer) > 0) return 'peer_backoff';
+    if (peer !== null && this.backoffRemainingMs(peer) > 0) return 'peer_backoff';
     if (this.revokesInFlight > 0) return 'refused';
     if (token === TOKEN_SUSPECT) return 'pairing_suspended';
     if (token === TOKEN_NOT_LOADED) return 'store_unavailable';
@@ -679,7 +675,7 @@ export class PairingAuthority {
 
     const expected = signatureHex(token, { method: request.method, pathAndQuery, ts, nonce, body });
     if (!constantTimeEqual(expected, sig)) {
-      this.recordSignatureFailure(peer);
+      if (peer !== null) this.recordSignatureFailure(peer);
       return 'refused';
     }
 
@@ -692,7 +688,7 @@ export class PairingAuthority {
     if (this.isSuspect()) return 'pairing_suspended';
     if (this.nonces.has(nonce)) return 'refused';
     this.rememberNonce(nonce, tsMs);
-    this.backoff.delete(peer);
+    if (peer !== null) this.backoff.delete(peer);
     return 'valid';
   }
 
@@ -706,7 +702,7 @@ export class PairingAuthority {
     header: string,
     declaredBodyBytes: number | undefined
   ): SignatureVerdict | null {
-    if (this.backoffRemainingMs(peerKey(peerAddress)) > 0) return 'peer_backoff';
+    if (peerAddress && this.backoffRemainingMs(peerAddress) > 0) return 'peer_backoff';
     const match = SIGNATURE_HEADER_PATTERN.exec(header);
     if (!match) return 'refused';
     const tsMs = Number(match[1]);
@@ -724,7 +720,7 @@ export class PairingAuthority {
 
   /** Whole seconds, rounded up, until this peer may be hashed again; 0 when it is not backed off. */
   backoffRetryAfterSeconds(peerAddress: string | undefined): number {
-    return Math.ceil(this.backoffRemainingMs(peerKey(peerAddress)) / 1000);
+    return peerAddress ? Math.ceil(this.backoffRemainingMs(peerAddress) / 1000) : 0;
   }
 
   private backoffRemainingMs(peer: string): number {
@@ -828,7 +824,12 @@ export class PairingAuthority {
     // read or the mint; the token is then not ours to hand out.
     if (outcome.ok && this.isSuspect()) outcome = SUSPENDED;
     // A peer that has just paired holds a fresh token, so its old failures are moot.
-    if (outcome.ok) this.backoff.delete(peerKey(input.peer));
+    // A cable pair is the owner at the phone: every address's failures are moot,
+    // since a runner re-paired that way signs from an address that never paired itself.
+    if (outcome.ok) {
+      if (input.trustedLoopback) this.backoff.clear();
+      else if (input.peer) this.backoff.delete(input.peer);
+    }
     if (spent) this.settleSpentCode(spent, outcome.ok, input.peer);
     return outcome;
   }

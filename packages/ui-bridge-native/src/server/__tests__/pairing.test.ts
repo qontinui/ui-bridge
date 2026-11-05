@@ -2822,6 +2822,21 @@ describe('a peer whose signature failed is backed off', () => {
     expectServed(await http(signed(TOKEN)));
   });
 
+  it('does not back off a request with no peer address', async () => {
+    const { http } = await started({ pairingStore: memoryStore(TOKEN) });
+    expectRefused(await http(wrong({ remoteAddress: undefined })));
+    expectRefused(await http(wrong({ remoteAddress: undefined })));
+    expectServed(await http(signed(TOKEN)));
+  });
+
+  it('is cleared for every address by a cable pair', async () => {
+    const { http } = await started({ pairingStore: memoryStore(TOKEN) });
+    expectRefused(await http(wrong()));
+    expect((await http(signed(TOKEN))).status).toBe(429);
+    expectServed(await http(cable({ method: 'POST', path: PAIR })));
+    expectServed(await http(signed(TOKEN)));
+  });
+
   it('does not apply to health or to pair', async () => {
     const { http, server } = await started({ pairingStore: memoryStore(TOKEN) });
     expectRefused(await http(wrong()));
