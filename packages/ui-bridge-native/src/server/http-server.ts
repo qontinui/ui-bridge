@@ -1825,7 +1825,8 @@ export class NativeUIBridgeServer {
    * a missing or malformed auth header (`PAIRING_REQUIRED`), a timestamp outside
    * the window (`PAIRING_TIMESTAMP_REFUSED`), a backed-off peer (`PAIRING_BACKOFF`)
    * and a declared body no signed body could fit in (`PAIRING_BODY_TOO_LARGE`).
-   * A trusted loopback caller, `GET /ui-bridge/health` and `POST /ui-bridge/pair`
+   * Under `allowUnauthenticatedNetwork` it refuses only a web page or a
+   * rebindable `Host` (`PAIRING_WEB_CALLER_REFUSED`). A trusted loopback caller, `GET /ui-bridge/health` and `POST /ui-bridge/pair`
    * get `null`.
    */
   preflightNetworkRequest(head: NetworkRequestHead): HTTPResponse | null {
@@ -2362,12 +2363,15 @@ export function createNativeServer(
  *         path: request.url,
  *         headers: request.headers || {},
  *         query: parseQuery(request.url),
- *         body: request.postData ? JSON.parse(request.postData) : undefined,
+ *         // No `body`: the SDK parses `rawBody` after admission, so a caller
+ *         // that has proved nothing never costs a parse.
  *         // Pairing: without these, non-loopback callers cannot be admitted.
  *         remoteAddress: request.remoteAddress,
  *         rawTarget: request.url,
  *         rawBody: request.postData,
  *       });
+ *       // A refusal can carry headers beyond Content-Type (`Retry-After` on
+ *       // 429 PAIRING_BACKOFF); forward them if your library can.
  *       httpBridge.respond(
  *         request.requestId,
  *         response.status,
@@ -2385,4 +2389,9 @@ export function createNativeServer(
  * server.setAdapter(adapter);
  * await server.start();
  * ```
+ *
+ * This library hands over the request with its body already read, so it cannot
+ * refuse on headers. An adapter over a raw socket should call
+ * `server.preflightNetworkRequest(head)` once the header block is complete, and
+ * answer a non-null result without reading the body (see the package README).
  */

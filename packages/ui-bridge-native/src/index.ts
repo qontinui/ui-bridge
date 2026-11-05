@@ -302,6 +302,8 @@ export {
   httpStatusForResponse,
   type HTTPRequest,
   type HTTPResponse,
+  // What `preflightNetworkRequest` takes: the header block, before any body is read.
+  type NetworkRequestHead,
   type RequestHandler,
   type ServerAdapter,
   type WebSocketServerAdapter,
@@ -321,6 +323,9 @@ export {
   SIGNED_BODY_MAX_CHARS,
   SIGNED_METHOD_MAX_CHARS,
   SIGNED_TARGET_MAX_CHARS,
+  SIGNATURE_BACKOFF_BASE_MS,
+  SIGNATURE_BACKOFF_MAX_MS,
+  SIGNATURE_BACKOFF_PEERS_MAX,
   canonicalSignatureInput,
   signUIBridgeRequest,
   isLoopbackAddress,
