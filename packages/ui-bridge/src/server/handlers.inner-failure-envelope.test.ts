@@ -114,6 +114,20 @@ describe('direct executeElementAction · an executor failure is an OUTER failure
     });
   });
 
+  it("a disabled element reports the executor's own errorCode, not a message sniff", async () => {
+    const button = document.createElement('button');
+    button.disabled = true;
+    container.appendChild(button);
+    registry.registerElement('locked', button, { type: 'button' });
+
+    const result = await handlers.executeElementAction!('locked', { action: 'click' });
+
+    expect(result.success).toBe(false);
+    const data = result.data as unknown as { failureDetails: { errorCode: string } };
+    expect(result.code).toBe(data.failureDetails.errorCode);
+    expect(data.failureDetails.errorCode).toBe('UB-ELEM-DISABLED');
+  });
+
   it('a genuinely successful action is untouched', async () => {
     const button = document.createElement('button');
     container.appendChild(button);
