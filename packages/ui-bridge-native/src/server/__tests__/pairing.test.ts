@@ -20,6 +20,7 @@ import {
 import {
   PAIRING_STORE_CHANGED_MESSAGE,
   PAIRING_STORE_IDENTITY,
+  PAIRING_TOKEN_UNUSABLE_MESSAGE,
   PairingError,
   SIGNED_BODY_MAX_CHARS,
   SIGNED_METHOD_MAX_CHARS,
@@ -2108,15 +2109,44 @@ describe('revoke', () => {
     const store = memoryStore();
     store.token = value as string;
     const { http, server } = await started({ pairingStore: store });
-    // Unusable, so nothing verifies and a pair does not mint over it.
-    expect((await http(signed(''))).status).toBe(503);
-    expect((await http(cable({ method: 'POST', path: PAIR }))).status).toBe(503);
+    // Unusable, so nothing verifies and a pair does not mint over it. Each
+    // refusal names the cure, a revoke, rather than "try again".
+    const unusable = { code: 'PAIRING_UNAVAILABLE', error: PAIRING_TOKEN_UNUSABLE_MESSAGE };
+    const refused = await http(signed(''));
+    expect(refused.status).toBe(503);
+    expect(json(refused)).toMatchObject(unusable);
+    const pair = await http(cable({ method: 'POST', path: PAIR }));
+    expect(pair.status).toBe(503);
+    expect(json(pair)).toMatchObject(unusable);
+    await expect(server.armPairingCode()).rejects.toThrow(PAIRING_TOKEN_UNUSABLE_MESSAGE);
 
     // The store loaded (its get resolved), so a revoke replaces the value.
     await server.revokePairing();
     expect(store.token).toMatch(/^[0-9a-f]{64}$/);
     expectServed(await http(signed(store.token!)));
     expectServed(await http(cable({ method: 'POST', path: PAIR })));
+    await expect(server.armPairingCode()).resolves.toMatchObject({ code: expect.any(String) });
+  });
+
+  it.each<[string, () => string | null | Promise<string | null>]>([
+    [
+      'throws',
+      () => {
+        throw new Error('not loaded');
+      },
+    ],
+    ['rejects', () => Promise.reject(new Error('not loaded'))],
+  ])('tells a store whose get %s apart from one holding an unusable value', async (_n, get) => {
+    const store = memoryStore();
+    store.get = get;
+    const { http, server } = await started({ pairingStore: store });
+    const refused = await http(signed(''));
+    expect(refused.status).toBe(503);
+    expect(json(refused).error).not.toBe(PAIRING_TOKEN_UNUSABLE_MESSAGE);
+    const pair = await http(cable({ method: 'POST', path: PAIR }));
+    expect(pair.status).toBe(503);
+    expect(json(pair).error).not.toBe(PAIRING_TOKEN_UNUSABLE_MESSAGE);
+    await expect(server.armPairingCode()).rejects.toThrow('not available yet');
   });
 
   it('refuses the old token after a revoke that could not read the store', async () => {
