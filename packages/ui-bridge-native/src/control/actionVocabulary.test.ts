@@ -9,7 +9,12 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { ACTION_VERB_SYNONYMS, describeUnknownAction, suggestAction } from './actionVocabulary';
+import {
+  ACTION_VERB_SYNONYMS,
+  describeUnknownAction,
+  foldVerb,
+  suggestAction,
+} from './actionVocabulary';
 
 describe('ACTION_VERB_SYNONYMS', () => {
   it('is exactly the D3 table', () => {
@@ -82,6 +87,11 @@ describe('suggestAction', () => {
     expect(suggestAction('scroll_into_view', ['scrollIntoView'])).toBe('scrollIntoView');
     expect(suggestAction('dbl_click', ['doubleClick'])).toBe('doubleClick');
     expect(suggestAction('   ', terminalInput)).toBeUndefined();
+    expect(foldVerb(' Scroll_Into-View ')).toBe('scrollintoview');
+  });
+
+  it('takes the first accepted verb when two fold alike', () => {
+    expect(suggestAction('SENDKEYS', ['send_keys', 'sendKeys'])).toBe('send_keys');
   });
 
   it("names the canonical verb for the runner's built-in aliases", () => {

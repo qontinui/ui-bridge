@@ -12,6 +12,7 @@ import {
   ACTION_VERB_SYNONYMS,
   UnknownActionError,
   describeUnknownAction,
+  foldVerb,
   suggestAction,
   unknownActionContext,
 } from './actionVocabulary';
@@ -87,6 +88,11 @@ describe('suggestAction', () => {
     expect(suggestAction('scroll_into_view', ['scrollIntoView'])).toBe('scrollIntoView');
     expect(suggestAction('dbl_click', ['doubleClick'])).toBe('doubleClick');
     expect(suggestAction('   ', terminalInput)).toBeUndefined();
+    expect(foldVerb(' Scroll_Into-View ')).toBe('scrollintoview');
+  });
+
+  it('takes the first accepted verb when two fold alike', () => {
+    expect(suggestAction('SENDKEYS', ['send_keys', 'sendKeys'])).toBe('send_keys');
   });
 
   it("names the canonical verb for the runner's built-in aliases", () => {
