@@ -260,6 +260,7 @@ The server admits callers as follows:
 | Signature outside the 300 s window, or older than this server will accept | `401 PAIRING_TIMESTAMP_REFUSED` with `data.serverTime`: re-sync and sign again, no new pairing needed |
 | Signed body over `SIGNED_BODY_MAX_CHARS` (262,144 characters) | `413 PAIRING_BODY_TOO_LARGE` |
 | Signed method over 16 characters, or target over `SIGNED_TARGET_MAX_CHARS` (8,192) | `414 PAIRING_TARGET_TOO_LONG` |
+| A peer whose last signature failed, until its backoff ends (1 s, doubling to 30 s per further failure; cleared by a valid signature or a successful pair) | `429 PAIRING_BACKOFF`, with `Retry-After` in seconds |
 | Everyone else | `401 PAIRING_REQUIRED` |
 | Not loopback, on a server with no `pairingStore` | `401 PAIRING_UNCONFIGURED` |
 | WebSocket upgrade from anywhere but a trusted loopback caller, signed or not | `403 PAIRING_WS_LOOPBACK_ONLY` |
@@ -299,7 +300,9 @@ The HTTP server requires a platform-specific adapter. See [documentation](./docs
 - `react-native-http-bridge`
 - `@aspect/react-native-http-server`
 
-An adapter must also pass what the gate reads. Fill each `HTTPRequest` with `remoteAddress` from the accepted socket, never from a header, and with `rawTarget` and `rawBody` exactly as received, because a signature covers those bytes. Without `remoteAddress` a caller is treated as not loopback. A WebSocket adapter must call `onWebSocketUpgrade(req)` before sending the 101 and answer `decision.response` when `decision.admit` is false. Messages are refused on an adapter that never calls `onWebSocketUpgrade`.
+An adapter must also pass what the gate reads. Fill each `HTTPRequest` with `remoteAddress` from the accepted socket, never from a header, and with `rawTarget` and `rawBody` exactly as received, because a signature covers those bytes. Without `remoteAddress` a caller is treated as not loopback.
+
+**Refuse on headers, then read the body.** Once the header block is complete, call `server.preflightNetworkRequest({ method, rawTarget, headers, remoteAddress, contentLength })`. A non-null result is the response the gate would give (no store configured, a missing or malformed auth header, a timestamp outside the window, a backed-off peer, a declared body no signed body could fit in): write it and close without buffering the body. **`null` is not admission**: it means the body is needed to decide, so read it and call `handleNetworkRequest`, which still runs the whole gate. Pass `rawBody` and leave `body` unset: the SDK parses it after admission (a body that is not JSON reaches a route as the raw string), so a caller that has proved nothing never costs a parse. A WebSocket adapter must call `onWebSocketUpgrade(req)` before sending the 101 and answer `decision.response` when `decision.admit` is false. Messages are refused on an adapter that never calls `onWebSocketUpgrade`.
 
 ## Debug Inspector
 
