@@ -391,6 +391,8 @@ export type SignatureVerdict =
   | 'body_too_large'
   | 'target_too_long'
   | 'store_unavailable'
+  /** The store loaded but holds an empty or non-string value; a revoke replaces it. */
+  | 'token_unusable'
   /** A revoke failed and none has succeeded since, so the old token may still be stored. */
   | 'pairing_suspended';
 
@@ -421,6 +423,19 @@ export const PAIRING_SUSPENDED_MESSAGE =
 export const PAIRING_STORE_CHANGED_MESSAGE =
   'The pairing store changed during the revoke, so the old token may remain. Revoke again.';
 
+/**
+ * Why pairing refuses while the store holds an empty or non-string value. Unlike
+ * a store that has not loaded, waiting never cures this: a revoke does.
+ */
+export const PAIRING_TOKEN_UNUSABLE_MESSAGE =
+  'The stored pairing token is unusable. Revoke pairing on the device to replace it.';
+
+const TOKEN_UNUSABLE_OUTCOME: PairOutcome = {
+  ok: false,
+  code: 'PAIRING_UNAVAILABLE',
+  error: PAIRING_TOKEN_UNUSABLE_MESSAGE,
+};
+
 const SUSPENDED: PairOutcome = {
   ok: false,
   code: 'PAIRING_UNAVAILABLE',
@@ -428,6 +443,8 @@ const SUSPENDED: PairOutcome = {
 };
 
 const TOKEN_NOT_LOADED = Symbol('token-not-loaded');
+/** The store loaded, but what it holds is empty or not a string, so it never verifies. */
+const TOKEN_UNUSABLE = Symbol('token-unusable');
 /** The store may still hold a token a revoke was asked to kill. */
 const TOKEN_SUSPECT = Symbol('token-suspect');
 
@@ -532,13 +549,14 @@ export class PairingAuthority {
   constructor(private readonly store: PairingStore) {}
 
   /**
-   * The stored token, `null` when there is none, `TOKEN_NOT_LOADED`, or
-   * `TOKEN_SUSPECT` while a failed revoke has the store suspect. Only
-   * `readStore` tells the first three apart: an empty or non-string value is
-   * never a token, because an empty key would verify anything signed with it.
+   * The stored token, `null` when there is none, `TOKEN_NOT_LOADED`,
+   * `TOKEN_UNUSABLE`, or `TOKEN_SUSPECT` while a failed revoke has the store
+   * suspect. Only `readStore` tells the first four apart: an empty or
+   * non-string value is never a token, because an empty key would verify
+   * anything signed with it.
    */
   private async readToken(): Promise<
-    string | null | typeof TOKEN_NOT_LOADED | typeof TOKEN_SUSPECT
+    string | null | typeof TOKEN_NOT_LOADED | typeof TOKEN_UNUSABLE | typeof TOKEN_SUSPECT
   > {
     // A failed revoke elsewhere can land during the read, so each caller checks
     // again at the point it admits.
@@ -550,14 +568,22 @@ export class PairingAuthority {
     return suspicionKeys(this.store).some((key) => suspectStores.has(key));
   }
 
-  private async readStore(): Promise<string | null | typeof TOKEN_NOT_LOADED> {
+  /**
+   * Only a `get` that throws means not loaded. A value that resolved but is empty
+   * or not a string is `TOKEN_UNUSABLE`: it never verifies, and a revoke is what
+   * replaces it, so callers say so instead of "try again".
+   */
+  private async readStore(): Promise<
+    string | null | typeof TOKEN_NOT_LOADED | typeof TOKEN_UNUSABLE
+  > {
+    let token: unknown;
     try {
-      const token = await bounded(() => this.store.get());
-      if (token === null) return null;
-      return typeof token === 'string' && token.length > 0 ? token : TOKEN_NOT_LOADED;
+      token = await bounded(() => this.store.get());
     } catch {
       return TOKEN_NOT_LOADED;
     }
+    if (token === null) return null;
+    return typeof token === 'string' && token.length > 0 ? token : TOKEN_UNUSABLE;
   }
 
   private async randomBytes(n: number): Promise<Uint8Array> {
@@ -621,6 +647,7 @@ export class PairingAuthority {
     if (this.revokesInFlight > 0) return 'refused';
     if (token === TOKEN_SUSPECT) return 'pairing_suspended';
     if (token === TOKEN_NOT_LOADED) return 'store_unavailable';
+    if (token === TOKEN_UNUSABLE) return 'token_unusable';
     if (token === null) return 'refused';
 
     const expected = signatureHex(token, { method: request.method, pathAndQuery, ts, nonce, body });
@@ -699,6 +726,7 @@ export class PairingAuthority {
       const existing = await this.readToken();
       if (existing === TOKEN_SUSPECT) return SUSPENDED;
       if (existing === TOKEN_NOT_LOADED) return UNAVAILABLE;
+      if (existing === TOKEN_UNUSABLE) return TOKEN_UNUSABLE_OUTCOME;
       if (existing !== null) return { ok: true, token: existing };
       try {
         return { ok: true, token: await this.mintAndStoreToken() };
@@ -785,6 +813,9 @@ export class PairingAuthority {
     }
     if (stored === TOKEN_NOT_LOADED) {
       throw new PairingError('PAIRING_UNAVAILABLE', 'The pairing store is not available yet.');
+    }
+    if (stored === TOKEN_UNUSABLE) {
+      throw new PairingError('PAIRING_UNAVAILABLE', PAIRING_TOKEN_UNUSABLE_MESSAGE);
     }
     const code = await this.drawCode();
     // A revoke on another server over the same store may have failed during the
@@ -887,17 +918,9 @@ export class PairingAuthority {
     this.dropCode('revoked');
     try {
       await this.exclusive(async () => {
-        // Not `readToken`: a revoke is how a suspect store recovers. Not
-        // `readStore` either, which reads an unusable value as not loaded: the
-        // question here is only whether the store has loaded, and a `get` that
-        // resolved says it has, so the value it holds is replaced below.
-        let loaded = true;
-        try {
-          await bounded(() => this.store.get());
-        } catch {
-          loaded = false;
-        }
-        if (!loaded) {
+        // `readStore`, not `readToken`: a revoke is how a suspect store recovers.
+        // Only not-loaded stops it; an unusable value is replaced below.
+        if ((await this.readStore()) === TOKEN_NOT_LOADED) {
           // The app is told the revoke failed, so the old token must not verify
           // once reads recover. Writing anyway is no fix: what a write made before
           // the store loads does is not in the contract, and could be undone.

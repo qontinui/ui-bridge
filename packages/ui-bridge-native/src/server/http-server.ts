@@ -28,6 +28,7 @@ import { createServerHandlers } from './handlers';
 import {
   PairingAuthority,
   PAIRING_SUSPENDED_MESSAGE,
+  PAIRING_TOKEN_UNUSABLE_MESSAGE,
   PairingError,
   SIGNED_BODY_MAX_CHARS,
   SIGNED_TARGET_MAX_CHARS,
@@ -462,8 +463,7 @@ const HANDLER_DESCRIPTIONS: Record<string, string> = {
     'Last-N console.error/console.warn entries; ?since=<ms>&limit=<n>. `installed:false` when capture is off (no testHooks) — entries empty but schema-valid.',
   getNetworkRequests:
     'Last-N fetch/XHR entries with status + duration; ?since=<ms>&limit=<n>. `installed:false` when capture is off (no testHooks) — entries empty but schema-valid.',
-  pushModal:
-    'TEST HOOK — push a modal onto the snapshot.modalStack via the registry ModalDetector',
+  pushModal: 'TEST HOOK — push a modal onto the snapshot.modalStack via the registry ModalDetector',
   dismissModal:
     'TEST HOOK — dismiss a modal by id from the snapshot.modalStack via the registry ModalDetector',
   keepAwake:
@@ -1832,6 +1832,13 @@ export class NativeUIBridgeServer {
     if (verdict === 'valid') return { admitted: true, as: 'signed' };
     if (verdict === 'pairing_suspended') {
       return { admitted: false, code: 'PAIRING_UNAVAILABLE', error: PAIRING_SUSPENDED_MESSAGE };
+    }
+    if (verdict === 'token_unusable') {
+      return {
+        admitted: false,
+        code: 'PAIRING_UNAVAILABLE',
+        error: PAIRING_TOKEN_UNUSABLE_MESSAGE,
+      };
     }
     if (verdict === 'store_unavailable') {
       return {
