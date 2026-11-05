@@ -88,6 +88,32 @@ describe('direct executeElementAction · an executor failure is an OUTER failure
     expect(String(result.error)).toContain('terminal has exited');
   });
 
+  it("an unknown verb keeps the executor's errorCode and didYouMean over HTTP", async () => {
+    // Follow-up to #279: the executor's own `failureDetails` (typed errorCode +
+    // context) used to be replaced by a message-sniffed `UB-UNKNOWN-ERROR`.
+    const input = document.createElement('input');
+    container.appendChild(input);
+    registry.registerElement('command-bar', input, {
+      type: 'input',
+      label: 'command-bar',
+      actions: ['focus', 'type', 'sendKeys'],
+    });
+
+    const result = await handlers.executeElementAction!('command-bar', { action: 'press' });
+
+    expect(result.success).toBe(false);
+    expect(result.code).toBe('UB-UNSUPPORTED-ACTION');
+    const data = result.data as unknown as {
+      failureDetails: { errorCode: string; context?: Record<string, unknown> };
+    };
+    expect(data.failureDetails.errorCode).toBe('UB-UNSUPPORTED-ACTION');
+    expect(data.failureDetails.context).toEqual({
+      action: 'press',
+      supportedActions: ['focus', 'type', 'sendKeys'],
+      didYouMean: 'sendKeys',
+    });
+  });
+
   it('a genuinely successful action is untouched', async () => {
     const button = document.createElement('button');
     container.appendChild(button);

@@ -164,6 +164,23 @@ function error<T = unknown>(message: string, code?: string): APIResponse<T> {
 }
 
 /**
+ * The executor's own `failureDetails`, when an action result carries one with
+ * a string `errorCode` — the typed half (`UB-UNSUPPORTED-ACTION`, …) and its
+ * `context` bag (an unknown verb's `supportedActions` / `didYouMean`). The
+ * `executeElementAction` failure arm keeps it rather than regenerating details
+ * from the message text, which dropped both.
+ */
+function readExecutorFailureDetails(result: unknown): ActionFailureDetails | undefined {
+  if (!result || typeof result !== 'object') return undefined;
+  const details = (result as { failureDetails?: unknown }).failureDetails;
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return undefined;
+  const code = (details as { errorCode?: unknown }).errorCode;
+  return typeof code === 'string' && code.length > 0
+    ? (details as ActionFailureDetails)
+    : undefined;
+}
+
+/**
  * Create structured failure details.
  *
  * Recovery suggestions come from the single generated diagnostics catalog
@@ -585,21 +602,29 @@ export function createHandlers(
             errorCode = 'UB-ELEM-NOT-INTERACTABLE';
           }
 
-          const failureDetails = createFailureDetails(
-            errorCode,
-            actionResult.error || 'Action failed',
-            {
+          // The executor's OWN `failureDetails` wins over the message-sniffed
+          // one: it carries the typed `errorCode` and the `context` bag (an
+          // unknown verb's `supportedActions` / `didYouMean`). Same rule as the
+          // twin handler in `@qontinui/ui-bridge`'s `server/handlers.ts`.
+          const executorDetails = readExecutorFailureDetails(actionResult);
+          const failureDetails =
+            executorDetails ??
+            createFailureDetails(errorCode, actionResult.error || 'Action failed', {
               elementId: id,
               durationMs: Date.now() - startTime,
-            }
-          );
+            });
+          const rawCode = (actionResult as unknown as { code?: unknown }).code;
+          const envelopeCode =
+            typeof rawCode === 'string' && rawCode.length > 0
+              ? (rawCode as UiBridgeErrorCode)
+              : ((executorDetails?.errorCode as UiBridgeErrorCode | undefined) ?? errorCode);
 
           // Return a proper failure envelope — don't wrap in success() which
           // creates double-wrapping: {success: true, data: {success: false}}
           return {
             success: false,
             error: actionResult.error || 'Action failed',
-            code: errorCode,
+            code: envelopeCode,
             data: { ...actionResult, failureDetails },
             timestamp: Date.now(),
           } as APIResponse<ControlActionResponse>;

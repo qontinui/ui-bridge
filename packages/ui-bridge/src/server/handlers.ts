@@ -831,6 +831,23 @@ function devControlUnavailable(command: string): APIResponse<unknown> {
 export { buildComponentNotFoundError };
 
 /**
+ * The executor's own `failureDetails`, when an action result carries one with
+ * a string `errorCode` — the typed half (`UB-UNSUPPORTED-ACTION`, …) and its
+ * `context` bag (an unknown verb's `supportedActions` / `didYouMean`). The
+ * `executeElementAction` failure arm keeps it rather than regenerating details
+ * from the message text, which dropped both.
+ */
+function readExecutorFailureDetails(result: unknown): ActionFailureDetails | undefined {
+  if (!result || typeof result !== 'object') return undefined;
+  const details = (result as { failureDetails?: unknown }).failureDetails;
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return undefined;
+  const code = (details as { errorCode?: unknown }).errorCode;
+  return typeof code === 'string' && code.length > 0
+    ? (details as ActionFailureDetails)
+    : undefined;
+}
+
+/**
  * Create structured failure details.
  *
  * Recovery suggestions come from the single generated diagnostics catalog
@@ -1794,14 +1811,18 @@ export function createHandlers(
             errorCode = 'UB-ELEM-NOT-INTERACTABLE';
           }
 
-          const failureDetails = createFailureDetails(
-            errorCode,
-            actionResult.error || 'Action failed',
-            {
+          // The executor's OWN `failureDetails` wins over the message-sniffed
+          // one: it carries the typed `errorCode` (`UB-UNSUPPORTED-ACTION`, …)
+          // and the `context` bag — an unknown verb's `supportedActions` /
+          // `didYouMean` live there. Regenerating it here used to leave the
+          // hint only in prose on the HTTP transport.
+          const executorDetails = readExecutorFailureDetails(actionResult);
+          const failureDetails =
+            executorDetails ??
+            createFailureDetails(errorCode, actionResult.error || 'Action failed', {
               elementId: id,
               durationMs: Date.now() - startTime,
-            }
-          );
+            });
 
           // An inner `success: false` must NOT surface as an outer success.
           // This used to be `success({...actionResult, failureDetails})`, i.e.
@@ -1821,7 +1842,7 @@ export function createHandlers(
           const preservedCode =
             typeof rawCode === 'string' && rawCode.length > 0
               ? (rawCode as UiBridgeErrorCode)
-              : errorCode;
+              : ((executorDetails?.errorCode as UiBridgeErrorCode | undefined) ?? errorCode);
           return {
             success: false,
             error: actionResult.error || 'Action failed',
