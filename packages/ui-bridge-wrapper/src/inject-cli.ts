@@ -34,7 +34,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createTransport } from './create-transport.js';
-import { consumeValue } from './cli-args.js';
+import { consumeValue, parseNonNegativeInt, parsePositiveInt } from './cli-args.js';
 import { InjectCliArgError } from './inject-cli-errors.js';
 import {
   applyNetworkEmulation,
@@ -629,44 +629,32 @@ export function parseArgs(argv: string[]): InjectCliArgs {
         args.registrationMetadata = { userId: m.userId, sessionId: m.sessionId };
         break;
       }
-      case '--ready-timeout': {
-        const raw = consumeValue('--ready-timeout', argv[++i], mkError);
-        const n = raw === null ? NaN : Number.parseInt(raw, 10);
-        if (!Number.isFinite(n) || n <= 0) {
-          throw new InjectCliArgError(
-            `--ready-timeout expects a positive integer (got ${raw ?? '<missing>'})`
-          );
-        }
-        args.readyTimeoutMs = n;
+      case '--ready-timeout':
+        args.readyTimeoutMs = parsePositiveInt(
+          '--ready-timeout',
+          consumeValue('--ready-timeout', argv[++i], mkError),
+          mkError
+        );
         break;
-      }
       case '--no-settle':
         args.waitForSettle = false;
         break;
-      case '--settle-quiet': {
+      case '--settle-quiet':
         // NOTE: consumeValue treats single-dash tokens (`-1`) as values, so
-        // negative numerics still reach the range check below.
-        const raw = consumeValue('--settle-quiet', argv[++i], mkError);
-        const n = raw === null ? NaN : Number.parseInt(raw, 10);
-        if (!Number.isFinite(n) || n < 0) {
-          throw new InjectCliArgError(
-            `--settle-quiet expects a non-negative integer (got ${raw ?? '<missing>'})`
-          );
-        }
-        args.settleQuietMs = n;
+        // negative numerics still reach the range check.
+        args.settleQuietMs = parseNonNegativeInt(
+          '--settle-quiet',
+          consumeValue('--settle-quiet', argv[++i], mkError),
+          mkError
+        );
         break;
-      }
-      case '--settle-timeout': {
-        const raw = consumeValue('--settle-timeout', argv[++i], mkError);
-        const n = raw === null ? NaN : Number.parseInt(raw, 10);
-        if (!Number.isFinite(n) || n <= 0) {
-          throw new InjectCliArgError(
-            `--settle-timeout expects a positive integer (got ${raw ?? '<missing>'})`
-          );
-        }
-        args.settleTimeoutMs = n;
+      case '--settle-timeout':
+        args.settleTimeoutMs = parsePositiveInt(
+          '--settle-timeout',
+          consumeValue('--settle-timeout', argv[++i], mkError),
+          mkError
+        );
         break;
-      }
       case '--expect-selector': {
         // consumeValue: '--headed' must not be accepted as a CSS selector.
         const raw = consumeValue('--expect-selector', argv[++i], mkError);

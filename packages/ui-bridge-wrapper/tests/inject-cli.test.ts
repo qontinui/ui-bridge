@@ -218,9 +218,9 @@ describe('parseArgs / buildTransportOptions', () => {
   });
 
   it('rejects a bare --auth-token-file with no value', () => {
-    expect(() =>
-      parseArgs(['--url', 'https://qontinui.io/admin', '--auth-token-file'])
-    ).toThrow(/--auth-token-file expects a path/);
+    expect(() => parseArgs(['--url', 'https://qontinui.io/admin', '--auth-token-file'])).toThrow(
+      /--auth-token-file expects a path/
+    );
   });
 });
 
@@ -342,9 +342,7 @@ describe('validation error paths', () => {
   });
 
   it('does NOT require --relay in exec mode', () => {
-    expect(() =>
-      parseArgs(['--url', 'https://example.com', '--exec', 'find {}'])
-    ).not.toThrow();
+    expect(() => parseArgs(['--url', 'https://example.com', '--exec', 'find {}'])).not.toThrow();
   });
 
   it('throws on an unknown flag', () => {
@@ -432,7 +430,9 @@ describe('settle flags', () => {
   });
 
   it('--settle-quiet accepts 0 (no quiet window) but rejects negatives', () => {
-    expect(buildTransportOptions(parseArgs([...base, '--settle-quiet', '0'])).settleQuietMs).toBe(0);
+    expect(buildTransportOptions(parseArgs([...base, '--settle-quiet', '0'])).settleQuietMs).toBe(
+      0
+    );
     expect(() => parseArgs([...base, '--settle-quiet', '-1'])).toThrow(InjectCliArgError);
   });
 
@@ -569,9 +569,9 @@ describe('Chromium launch args + LNA auto-disable (plan 2026-06-12 item 2)', () 
   });
 
   it('--launch-arg without a value errors', () => {
-    expect(() =>
-      parseArgs(['--url', 'https://x.io', '--exec', 'find {}', '--launch-arg'])
-    ).toThrow(InjectCliArgError);
+    expect(() => parseArgs(['--url', 'https://x.io', '--exec', 'find {}', '--launch-arg'])).toThrow(
+      InjectCliArgError
+    );
   });
 
   it('isLoopbackHost classifies hosts correctly', () => {
@@ -583,5 +583,21 @@ describe('Chromium launch args + LNA auto-disable (plan 2026-06-12 item 2)', () 
     expect(isLoopbackHost('[::1]')).toBe(true);
     expect(isLoopbackHost('qontinui.io')).toBe(false);
     expect(isLoopbackHost('192.168.1.10')).toBe(false);
+  });
+});
+
+describe('parseArgs — integer values are read whole', () => {
+  const BASE = ['--url', 'https://example.com', '--exec', 'find {}'];
+
+  for (const flag of ['--ready-timeout', '--settle-timeout', '--settle-quiet']) {
+    for (const raw of ['10abc', '1e3', '1.5', '-1']) {
+      it(`rejects ${flag} ${JSON.stringify(raw)} instead of reading a prefix`, () => {
+        expect(() => parseArgs([...BASE, flag, raw])).toThrow(/integer/);
+      });
+    }
+  }
+
+  it('still accepts --settle-quiet 0', () => {
+    expect(parseArgs([...BASE, '--settle-quiet', '0']).settleQuietMs).toBe(0);
   });
 });

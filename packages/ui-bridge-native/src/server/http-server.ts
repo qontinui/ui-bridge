@@ -2006,15 +2006,30 @@ export class NativeUIBridgeServer {
     return null;
   }
 
-  private corsHeaders(): Record<string, string> {
+  /**
+   * `Access-Control-Allow-Origin` names one origin or `*`; a browser rejects a
+   * list. No `allowedOrigins`, or a list holding `*`, answers `*`. Otherwise the
+   * request's own `Origin` is echoed when it is listed and no origin is granted
+   * when it is not, and `Vary: Origin` keeps a cache from serving one origin's
+   * grant to another.
+   */
+  private corsHeaders(request: HTTPRequest): Record<string, string> {
     if (!this.config.cors) return {};
-    return {
-      'Access-Control-Allow-Origin': this.config.allowedOrigins
-        ? this.config.allowedOrigins.join(',')
-        : '*',
+    const headers: Record<string, string> = {
       'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     };
+    const allowed = this.config.allowedOrigins;
+    if (!allowed || allowed.includes('*')) {
+      headers['Access-Control-Allow-Origin'] = '*';
+      return headers;
+    }
+    headers['Vary'] = 'Origin';
+    const origins = headerValues(request.headers, 'origin');
+    if (origins.length === 1 && allowed.includes(origins[0])) {
+      headers['Access-Control-Allow-Origin'] = origins[0];
+    }
+    return headers;
   }
 
   /** No CORS header: a page must not be able to read what the gate says. */
@@ -2173,7 +2188,7 @@ export class NativeUIBridgeServer {
     // Add CORS headers if enabled
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      ...this.corsHeaders(),
+      ...this.corsHeaders(request),
     };
 
     // Handle CORS preflight

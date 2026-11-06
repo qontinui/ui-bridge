@@ -3,6 +3,8 @@ import {
   ArgReader,
   consumeValue,
   makeLogger,
+  parseNonNegativeInt,
+  parsePositiveInt,
   rejectEmptyValue,
   COMMON_FLAGS,
   type ArgErrorFactory,
@@ -40,7 +42,9 @@ describe('ArgReader.value', () => {
   it('THROWS when a value-flag is followed by another flag (the swallow fix)', () => {
     const r = new ArgReader(['--success', '--headed'], KNOWN, mkError);
     expect(() => r.value('--success')).toThrow(TestArgError);
-    expect(() => r.value('--success')).toThrow(/--success expects a value but got the flag '--headed'/);
+    expect(() => r.value('--success')).toThrow(
+      /--success expects a value but got the flag '--headed'/
+    );
   });
 
   it('does NOT treat a single-dash / negative value as flag-shaped', () => {
@@ -129,4 +133,54 @@ describe('makeLogger', () => {
     makeLogger('[x]', true)('hi');
     expect(spy).not.toHaveBeenCalled();
   });
+});
+
+describe("ArgReader.has — a value-flag's value is not a flag", () => {
+  const VALUE = new Set(['--url', '--success']);
+
+  it("does not read -h as help when it is --success's value", () => {
+    const r = new ArgReader(['--success', '-h'], KNOWN, mkError, VALUE);
+    expect(r.has('-h')).toBe(false);
+    expect(r.value('--success')).toBe('-h');
+  });
+
+  it('still finds -h as a flag of its own', () => {
+    const r = new ArgReader(['--success', '/dash', '-h'], KNOWN, mkError, VALUE);
+    expect(r.has('-h')).toBe(true);
+  });
+
+  it('finds a boolean flag that follows a value', () => {
+    const r = new ArgReader(['--url', 'https://x', '--headed'], KNOWN, mkError, VALUE);
+    expect(r.has('--headed')).toBe(true);
+    expect(r.has('https://x')).toBe(false);
+  });
+});
+
+describe('parsePositiveInt', () => {
+  it('reads a whole decimal integer', () => {
+    expect(parsePositiveInt('--n', '300', mkError)).toBe(300);
+  });
+
+  for (const raw of ['10abc', '1e3', '1.5', '0', '-1', '', ' 10', '0x10', '99999999999999999999']) {
+    it(`rejects ${JSON.stringify(raw)}`, () => {
+      expect(() => parsePositiveInt('--n', raw, mkError)).toThrow(TestArgError);
+    });
+  }
+
+  it('rejects an absent value', () => {
+    expect(() => parsePositiveInt('--n', null, mkError)).toThrow(/<missing>/);
+  });
+});
+
+describe('parseNonNegativeInt', () => {
+  it('reads 0 and a whole decimal integer', () => {
+    expect(parseNonNegativeInt('--n', '0', mkError)).toBe(0);
+    expect(parseNonNegativeInt('--n', '250', mkError)).toBe(250);
+  });
+
+  for (const raw of ['10abc', '1e3', '-1', '']) {
+    it(`rejects ${JSON.stringify(raw)}`, () => {
+      expect(() => parseNonNegativeInt('--n', raw, mkError)).toThrow(/non-negative integer/);
+    });
+  }
 });
