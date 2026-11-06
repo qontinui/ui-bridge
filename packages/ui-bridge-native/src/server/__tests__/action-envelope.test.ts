@@ -60,7 +60,11 @@ describe('executeAction — action-envelope contract', () => {
     registry.registerElement('field', makeRef(), {
       type: 'input',
       label: 'Email',
-      props: { onChangeText: (t: string) => { typed = t; } },
+      props: {
+        onChangeText: (t: string) => {
+          typed = t;
+        },
+      },
     });
     const handlers = createServerHandlers(registry, executor);
     const res = await handlers.executeAction({
@@ -92,7 +96,11 @@ describe('executeAction — action-envelope contract', () => {
     registry.registerElement('field', makeRef(), {
       type: 'input',
       label: 'Email',
-      props: { onChangeText: (t: string) => { typed = t; } },
+      props: {
+        onChangeText: (t: string) => {
+          typed = t;
+        },
+      },
     });
     const handlers = createServerHandlers(registry, executor);
     const res = await handlers.executeAction({
@@ -125,5 +133,50 @@ describe('executeAction — action-envelope contract', () => {
     expect(res.success).toBe(false);
     expect(res.code).toBe('INVALID_REQUEST');
     expect(res.error).toBe('Action is required');
+  });
+});
+
+/**
+ * The executor's own failure fields reach the HTTP/WS envelope (post-merge
+ * follow-up to ui-bridge#306, plan
+ * 2026-10-22-runner-ui-bridge-makes-an-agent-guess-its-own-vocabulary Phase 8:
+ * "a mobile call with `click` receives `didYouMean`"). The handler used to
+ * rebuild the envelope from `error` + `code` alone, so the suggestion survived
+ * only in the prose.
+ */
+describe('executeAction — unknown verb keeps the executor hint', () => {
+  function handlersFor(actions: Array<'focus' | 'press' | 'longPress'>) {
+    const registry = new NativeUIBridgeRegistry();
+    const executor = new DefaultNativeActionExecutor(registry);
+    registry.registerElement('save', makeRef(), {
+      type: 'button',
+      props: { onPress: () => undefined },
+      actions,
+    });
+    return createServerHandlers(registry, executor);
+  }
+
+  it('`tap` answers UNKNOWN_ACTION with data.didYouMean `press`', async () => {
+    const res = await handlersFor(['focus', 'press', 'longPress']).executeAction({
+      params: { id: 'save' },
+      query: {},
+      body: { action: 'tap' },
+    });
+    expect(res.success).toBe(false);
+    expect(res.code).toBe('UNKNOWN_ACTION');
+    const data = res.data as { success: boolean; didYouMean?: string; code?: string };
+    expect(data.success).toBe(false);
+    expect(data.code).toBe('UNKNOWN_ACTION');
+    expect(data.didYouMean).toBe('press');
+  });
+
+  it('the relay/WS nested envelope carries the same hint', async () => {
+    const res = await handlersFor(['press']).executeAction({
+      params: {},
+      query: {},
+      body: { id: 'save', request: { action: 'tap' } },
+    });
+    expect(res.code).toBe('UNKNOWN_ACTION');
+    expect((res.data as { didYouMean?: string }).didYouMean).toBe('press');
   });
 });
