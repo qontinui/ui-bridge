@@ -117,3 +117,13 @@ describe('parseArgs — validation', () => {
     expect(parseArgs(['--help']).help).toBe(true);
   });
 });
+
+describe('parseArgs — integer values are read whole', () => {
+  for (const flag of ['--wait-ms', '--keep-alive']) {
+    for (const raw of ['10abc', '1e3', '1.5', '0', ' 10']) {
+      it(`rejects ${flag} ${JSON.stringify(raw)}`, () => {
+        expect(() => parseArgs(['--url', 'http://x', flag, raw])).toThrow(/positive integer/);
+      });
+    }
+  }
+});

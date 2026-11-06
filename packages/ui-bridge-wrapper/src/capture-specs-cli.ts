@@ -24,7 +24,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createTransport } from './create-transport.js';
-import { ArgReader, COMMON_FLAGS, makeLogger } from './cli-args.js';
+import { ArgReader, COMMON_FLAGS, makeLogger, parsePositiveInt } from './cli-args.js';
 import type { InjectedContext } from './transports/injected.js';
 import { isAppLoginPath, loginDrive } from './login-drive.js';
 import { returnedFailureError } from './action-outcome.js';
@@ -163,7 +163,7 @@ export function parseArgs(argv: string[]): CaptureCliArgs {
   const mkError = (m: string): CaptureCliArgError => new CaptureCliArgError(m);
   // Rejects unknown flags up front AND rejects a flag-shaped value for any
   // value-flag (so `--pages --device` no longer swallows `--device`).
-  const reader = new ArgReader(argv, KNOWN_FLAGS, mkError);
+  const reader = new ArgReader(argv, KNOWN_FLAGS, mkError, VALUE_FLAGS);
   const valueOf = (name: string): string | null => reader.value(name);
   const has = (name: string): boolean => reader.has(name);
 
@@ -171,10 +171,9 @@ export function parseArgs(argv: string[]): CaptureCliArgs {
   const origin = valueOf('--origin') ?? DEFAULT_ORIGIN;
   const device = valueOf('--device') ?? DEFAULT_DEVICE;
   const timeoutRaw = valueOf('--timeout');
-  const timeoutMs = timeoutRaw === null ? 70000 : Number.parseInt(timeoutRaw, 10);
-  if (!help && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
-    throw new CaptureCliArgError(`--timeout expects a positive integer (got ${timeoutRaw})`);
-  }
+  // `--help` still prints usage over a bad --timeout.
+  const timeoutMs =
+    timeoutRaw === null || help ? 70000 : parsePositiveInt('--timeout', timeoutRaw, mkError);
   const pagesSpec = valueOf('--pages');
   // A truly ABSENT --pages (null) falls through to defaultTargets. A PRESENT
   // but empty/whitespace --pages parses to [], which would otherwise make the
@@ -207,7 +206,8 @@ export function parseArgs(argv: string[]): CaptureCliArgs {
   return args;
 }
 
-const KNOWN_FLAGS = new Set([
+/** The flags that take a value: the token after one is never read as a flag. */
+const VALUE_FLAGS = new Set([
   '--email',
   '--password',
   '--out',
@@ -215,8 +215,9 @@ const KNOWN_FLAGS = new Set([
   '--pages',
   '--device',
   '--timeout',
-  ...COMMON_FLAGS,
 ]);
+
+const KNOWN_FLAGS = new Set([...VALUE_FLAGS, ...COMMON_FLAGS]);
 
 /** Validate cross-flag invariants. `--help` short-circuits (always valid). */
 export function validateArgs(args: CaptureCliArgs): void {
@@ -289,7 +290,9 @@ async function main(): Promise<void> {
       await page.goto(t.url, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
       await page
         .waitForFunction(
-          () => (window as { __uiBridgeInjected?: { ready?: boolean } }).__uiBridgeInjected?.ready === true,
+          () =>
+            (window as { __uiBridgeInjected?: { ready?: boolean } }).__uiBridgeInjected?.ready ===
+            true,
           { timeout: 20000 }
         )
         .catch(() => {});
@@ -324,7 +327,9 @@ async function main(): Promise<void> {
         totalRegistered: snap?.registration?.totalRegistered ?? null,
         snapshot: snap,
       });
-      log(`  -> route=${snap?.route} registered=${snap?.registration?.totalRegistered} onLogin=${onLogin}`);
+      log(
+        `  -> route=${snap?.route} registered=${snap?.registration?.totalRegistered} onLogin=${onLogin}`
+      );
     }
     return out;
   });

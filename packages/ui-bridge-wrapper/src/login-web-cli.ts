@@ -58,7 +58,13 @@ import {
   mergeMultiOriginSessionStorageIntoArtifact,
   type FrameSessionStorage,
 } from './session-storage-capture.js';
-import { ArgReader, COMMON_FLAGS, makeLogger, rejectEmptyValue } from './cli-args.js';
+import {
+  ArgReader,
+  COMMON_FLAGS,
+  makeLogger,
+  parsePositiveInt,
+  rejectEmptyValue,
+} from './cli-args.js';
 import type { InjectedContext } from './transports/injected.js';
 import { isReturnedFailure } from './action-outcome.js';
 import {
@@ -176,16 +182,15 @@ export function parseArgs(argv: string[]): LoginCliArgs {
   const mkError = (m: string): LoginCliArgError => new LoginCliArgError(m);
   // Rejects unknown flags up front AND rejects a flag-shaped value for any
   // value-flag (so `--success --headed` no longer swallows `--headed`).
-  const reader = new ArgReader(argv, KNOWN_FLAGS, mkError);
+  const reader = new ArgReader(argv, KNOWN_FLAGS, mkError, VALUE_FLAGS);
   const valueOf = (name: string): string | null => reader.value(name);
   const has = (name: string): boolean => reader.has(name);
 
   const help = has('--help') || has('-h');
   const timeoutRaw = valueOf('--timeout');
-  const timeoutMs = timeoutRaw === null ? 60000 : Number.parseInt(timeoutRaw, 10);
-  if (!help && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
-    throw new LoginCliArgError(`--timeout expects a positive integer (got ${timeoutRaw})`);
-  }
+  // `--help` still prints usage over a bad --timeout.
+  const timeoutMs =
+    timeoutRaw === null || help ? 60000 : parsePositiveInt('--timeout', timeoutRaw, mkError);
 
   const args: LoginCliArgs = {
     url: rejectEmptyValue('--url', valueOf('--url'), mkError) ?? 'https://qontinui.io/login',
@@ -213,21 +218,21 @@ export function parseArgs(argv: string[]): LoginCliArgs {
   return args;
 }
 
-const KNOWN_FLAGS = new Set([
+/** The flags that take a value: the token after one is never read as a flag. */
+const VALUE_FLAGS = new Set([
   '--url',
   '--email',
   '--password',
   '--success',
   '--timeout',
-  '--headed',
   '--post-login-click',
   '--expect-text',
   '--scroll-to',
   '--screenshot',
   '--storage-state-out',
-  '--keep-open',
-  ...COMMON_FLAGS,
 ]);
+
+const KNOWN_FLAGS = new Set([...VALUE_FLAGS, '--headed', '--keep-open', ...COMMON_FLAGS]);
 
 /** Validate cross-flag invariants. `--help` short-circuits (always valid). */
 export function validateArgs(args: LoginCliArgs): void {
