@@ -107,7 +107,10 @@ describe('parsePages', () => {
 describe('defaultTargets', () => {
   it('builds the two admin coord pages with the device id', () => {
     const t = defaultTargets(ORIGIN, 'dev-1');
-    expect(t[0]).toEqual({ slug: 'admin-coord-trees', url: `${ORIGIN}/admin/coord/trees?device_id=dev-1` });
+    expect(t[0]).toEqual({
+      slug: 'admin-coord-trees',
+      url: `${ORIGIN}/admin/coord/trees?device_id=dev-1`,
+    });
     expect(t[1]!.slug).toBe('admin-coord-pull-decisions');
   });
 });
@@ -134,3 +137,15 @@ describe('computeLoginUrl (deep-link via ?next=)', () => {
 // tests/login-drive.test.ts — single home for URL classification. The cases
 // that used to live here (isCognito on /login?next=, the isLoginPath→
 // isAppLoginPath bounce/authed cases, pathOf query-strip) are folded in there.
+
+describe('parseArgs — a value that looks like a short flag', () => {
+  it('reads --out -h as the --out value, not as a request for help', () => {
+    const args = parseArgs([...CREDS, '--out', '-h']);
+    expect(args.help).toBe(false);
+    expect(args.out).toBe('-h');
+  });
+
+  it('rejects --timeout 10abc instead of reading it as 10', () => {
+    expect(() => parseArgs([...CREDS, '--timeout', '10abc'])).toThrow(CaptureCliArgError);
+  });
+});

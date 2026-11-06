@@ -153,7 +153,10 @@ export class UIBridgeWSHandler {
 
     // Set up message handler
     ws.onmessage = (event: { data: string }) => {
-      this.handleMessage(clientId, event.data);
+      // A rejection that escaped here would be unhandled and end the process.
+      this.handleMessage(clientId, event.data).catch((error: unknown) => {
+        this.log(`[WS] Error handling a message from ${clientId}: ${error}`);
+      });
     };
 
     // Set up close handler. Capture THIS ws so a stale socket's delayed close
@@ -217,12 +220,19 @@ export class UIBridgeWSHandler {
       this.sendError(clientId, undefined, 'PARSE_ERROR', 'Invalid JSON message');
       return;
     }
-
-    if (this.verbose) {
-      this.log(`[WS] ${clientId} -> ${message.type}`);
+    // Valid JSON is not yet a message: `null`, a number or an array has no
+    // `type` to dispatch on, and reading `.type` off `null` throws.
+    if (message === null || typeof message !== 'object' || Array.isArray(message)) {
+      this.sendError(clientId, undefined, 'PARSE_ERROR', 'A message must be a JSON object');
+      return;
     }
 
     try {
+      // Inside the try: a `type` that cannot be stringified must answer with an
+      // error frame rather than throw past it.
+      if (this.verbose) {
+        this.log(`[WS] ${clientId} -> ${message.type}`);
+      }
       switch (message.type) {
         case 'ping':
           this.handlePing(clientId, message.id);

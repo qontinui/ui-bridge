@@ -31,7 +31,10 @@ export interface StandaloneServerConfig extends UIBridgeServerConfig {
   port?: number;
   /** Enable WebSocket support */
   websocket?: boolean;
-  /** WebSocket port (defaults to port) */
+  /**
+   * WebSocket port. Defaults to `port`: the WebSocket server then attaches to
+   * the HTTP server's own listener instead of binding a second one.
+   */
   websocketPort?: number;
   /** Logging function */
   log?: (message: string) => void;
@@ -46,14 +49,29 @@ export interface StandaloneServerConfig extends UIBridgeServerConfig {
  * Default configuration
  */
 const DEFAULT_CONFIG: Required<
-  Pick<StandaloneServerConfig, 'host' | 'port' | 'websocket' | 'websocketPort' | 'log'>
+  Pick<StandaloneServerConfig, 'host' | 'port' | 'websocket' | 'log'>
 > = {
   host: 'localhost',
   port: 9876,
   websocket: false,
-  websocketPort: 9876,
   log: console.log,
 };
+
+/** Largest request body the standalone server reads, in bytes. */
+const MAX_BODY_BYTES = 10 * 1024 * 1024;
+
+/**
+ * A request the server refuses before any handler runs: a malformed URL or
+ * path parameter, a body that is not JSON, or a body over the size limit.
+ */
+class RequestRefusal extends Error {
+  constructor(
+    readonly status: number,
+    message: string
+  ) {
+    super(message);
+  }
+}
 
 /**
  * Wrap error in API format
@@ -75,10 +93,7 @@ function wrapError(error: Error | string, code?: string): APIResponse<never> {
 export class StandaloneServer {
   private server: import('http').Server | null = null;
   private wsServer: unknown = null; // WebSocket.Server from 'ws' package
-  private config: Required<
-    Pick<StandaloneServerConfig, 'host' | 'port' | 'websocket' | 'websocketPort' | 'log'>
-  > &
-    StandaloneServerConfig;
+  private config: typeof DEFAULT_CONFIG & StandaloneServerConfig;
   private handlers: Partial<UIBridgeServerHandlers>;
   private wsHandler: UIBridgeWSHandler | null = null;
   private wsConnections: Set<WebSocketLike> = new Set();
@@ -131,8 +146,16 @@ export class StandaloneServer {
   async start(): Promise<void> {
     const http = await import('http');
 
-    this.server = http.createServer(async (req, res) => {
-      await this.handleRequest(req, res);
+    this.server = http.createServer((req, res) => {
+      // A rejection that escaped here would be unhandled and end the process.
+      this.handleRequest(req, res).catch((error: unknown) => {
+        this.config.log(`Error handling ${req.method} ${req.url}: ${error}`);
+        if (res.headersSent) {
+          res.destroy();
+          return;
+        }
+        this.sendJSON(res, wrapError(String(error), 'INTERNAL_ERROR'), 500);
+      });
     });
 
     // Start WebSocket server if enabled
@@ -198,7 +221,8 @@ export class StandaloneServer {
         if (rawUrl) {
           try {
             // request.url is path-relative (e.g. "/?tabId=..."); base is arbitrary.
-            preferredId = new URL(rawUrl, 'http://localhost').searchParams.get('tabId') ?? undefined;
+            preferredId =
+              new URL(rawUrl, 'http://localhost').searchParams.get('tabId') ?? undefined;
           } catch {
             /* malformed url — fall back to generated id */
           }
@@ -267,7 +291,19 @@ export class StandaloneServer {
     req: import('http').IncomingMessage,
     res: import('http').ServerResponse
   ): Promise<void> {
-    const url = new URL(req.url || '/', `http://${req.headers.host}`);
+    // Only the path and query are read, so the base is fixed rather than built
+    // from the client-supplied Host header (`Host: a b` is not a valid URL). An
+    // origin-form target is appended to the base rather than resolved against
+    // it, so `//x/path` stays a path instead of naming host `x`.
+    let url: URL;
+    try {
+      // `*` is the asterisk-form target of `OPTIONS *`, which names no path.
+      const target = !req.url || req.url === '*' ? '/' : req.url;
+      url = target.startsWith('/') ? new URL(`http://localhost${target}`) : new URL(target);
+    } catch {
+      this.sendJSON(res, wrapError('Malformed request URL', 'INVALID_REQUEST'), 400);
+      return;
+    }
     const method = req.method || 'GET';
     const basePath = this.config.basePath || '/ui-bridge';
 
@@ -475,6 +511,13 @@ export class StandaloneServer {
       }
       this.sendJSON(res, result);
     } catch (error) {
+      if (error instanceof RequestRefusal) {
+        // An oversized body is left unread: close the connection after the
+        // answer instead of letting Node drain the rest of it.
+        if (error.status === 413) res.setHeader('Connection', 'close');
+        this.sendJSON(res, wrapError(error, 'INVALID_REQUEST'), error.status);
+        return;
+      }
       this.config.log(`Error handling ${method} ${path}: ${error}`);
       this.sendJSON(res, wrapError(error as Error, 'INTERNAL_ERROR'), 500);
     }
@@ -507,7 +550,12 @@ export class StandaloneServer {
 
     for (let i = 0; i < routeParts.length; i++) {
       if (routeParts[i].startsWith(':')) {
-        params[routeParts[i].slice(1)] = pathParts[i];
+        // Decoded, as Express decodes them: `form%20submit` is `form submit`.
+        try {
+          params[routeParts[i].slice(1)] = decodeURIComponent(pathParts[i]);
+        } catch {
+          throw new RequestRefusal(400, `Malformed path parameter: ${pathParts[i]}`);
+        }
       }
     }
 
@@ -515,29 +563,49 @@ export class StandaloneServer {
   }
 
   /**
-   * Parse request body
+   * Parse a request body as JSON. An empty body is `{}`. The bytes are decoded
+   * once, after the last chunk, so a multi-byte character split across two
+   * chunks survives. A body declared JSON (or undeclared) that does not parse
+   * is refused (400) rather than reaching the handler as `{}`. A body declared
+   * as another type that does not parse is passed on as `{}`, not refused.
    */
   private parseBody(
     req: import('http').IncomingMessage,
-    maxBytes = 10 * 1024 * 1024
+    maxBytes = MAX_BODY_BYTES
   ): Promise<unknown> {
     return new Promise((resolve, reject) => {
-      let data = '';
+      const chunks: Buffer[] = [];
       let bytes = 0;
+      let refused = false;
       req.on('data', (chunk: string | Buffer) => {
-        bytes += typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length;
+        if (refused) return;
+        const buf = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+        bytes += buf.length;
         if (bytes > maxBytes) {
-          req.destroy();
-          reject(new Error('Request body too large'));
+          refused = true;
+          // Stop reading but keep the socket, so the 413 can still be written.
+          req.pause();
+          reject(new RequestRefusal(413, 'Request body too large'));
           return;
         }
-        data += chunk;
+        chunks.push(buf);
       });
       req.on('end', () => {
-        try {
-          resolve(data ? JSON.parse(data) : {});
-        } catch {
+        if (refused) return;
+        const data = Buffer.concat(chunks).toString('utf8');
+        if (!data.trim()) {
           resolve({});
+          return;
+        }
+        try {
+          resolve(JSON.parse(data));
+        } catch {
+          const type = req.headers['content-type'];
+          if (type && !/[/+]json\b/i.test(type)) {
+            resolve({});
+            return;
+          }
+          reject(new RequestRefusal(400, 'Request body is not valid JSON'));
         }
       });
       req.on('error', reject);
