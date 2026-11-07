@@ -91,10 +91,12 @@ The twenty-three `UB-OBS-*` codes are the diagnostic names of the observation
 envelope's `unknown.code` values (`input_missing` → `UB-OBS-INPUT-MISSING`, and
 so on — `UNKNOWN_CODE_DIAGNOSTICS` in `@qontinui/ui-bridge/diagnostics` is the
 map). An observation that could not look answers `status: "unknown"` with one
-of those codes rather than an empty result. The seven verdict codes
-(`UB-OBS-NO-RESULTS` through `UB-OBS-HIT-TEST-UNMEASURABLE`) name why a verdict
-could say neither passed nor failed; the verdict surfaces that answer with them
-arrive with the three-state assertion verdict, which has not shipped yet.
+of those codes rather than an empty result. Six of them (`UB-OBS-NO-RESULTS`,
+`UB-OBS-NO-EXPECTATION`, `UB-OBS-NOT-ATTEMPTED-DESTRUCTIVE`,
+`UB-OBS-NOT-ATTEMPTED-WRITE`, `UB-OBS-NOT-ATTEMPTED-BY-POLICY`,
+`UB-OBS-NOT-REPORTED`) name why a verdict could say neither passed nor failed,
+and `UB-OBS-HIT-TEST-UNMEASURABLE` why a hit-test could not tell whether a
+pointer reaches its target; nothing emits any of the seven yet.
 `UB-CAPABILITY-UNAVAILABLE` is what a runner-direct route (`/vision/*`) answers
 on a bridge that has no runner: the build does not serve it, which is not the
 same fact as an action a guard rejected.
