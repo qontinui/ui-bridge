@@ -58,7 +58,10 @@ import type {
 import type { SnapshotModalContext } from '../modal/types';
 import type { CanvasCoverage } from '../core/types';
 
-/** Default `minRatio` — filters hairline overlaps. */
+/**
+ * Default `minRatio` — filters hairline overlaps on DOM elements. No
+ * `minRatio` drops a `paintsText` entry (see `buildVisibilityReport`).
+ */
 export const DEFAULT_VISIBILITY_MIN_RATIO = 0.02;
 
 /**
@@ -238,7 +241,11 @@ export function buildVisibilityReport(
   for (const el of input.elements) {
     if (!el?.occludedBy) continue;
     const ratio = (el.occludedPct ?? 0) / 100;
-    if (ratio < minRatio) continue;
+    // `minRatio` filters hairline overlaps on DOM elements. It never drops a
+    // `paintsText` entry: that surface is hit-tested on a dense 81-point grid,
+    // where one covered sample rounds to 1% and is already an overlay over
+    // painted text, the small occluder the dense grid exists to see.
+    if (!el.paintsText && ratio < minRatio) continue;
 
     const isExpectedOverlay = detectionAvailable
       ? isTrackedOverlay(el.occludedBy, modalIds, registeredIds)

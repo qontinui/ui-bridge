@@ -2727,6 +2727,11 @@ export interface VisibilityOcclusionEntry {
 export interface VisibilityReport {
   occlusions: VisibilityOcclusionEntry[];
   elementCount: number;
+  /**
+   * Echo of the request's `minRatio` (default `0.02`). It drops occlusions of
+   * DOM elements below that ratio, and never drops a `paintsText` element's:
+   * one covered sample of its dense grid is already an overlay over its text.
+   */
   minRatio: number;
   /** Echo of the request's `includeExpected` (default `false`). */
   includeExpected: boolean;

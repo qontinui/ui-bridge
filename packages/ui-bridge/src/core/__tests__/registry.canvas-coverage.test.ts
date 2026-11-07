@@ -271,6 +271,36 @@ describe('in-page /control/visibility reports the census', () => {
     });
   });
 
+  it('a tooltip over ONE dense-grid sample of a paintsText surface is reported at the default minRatio', async () => {
+    // A 1280x700 surface samples 81 points: interior columns at x = 80 + 160k,
+    // rows at y = 43.75 + 87.5k, plus the edge rows at y = 8 and y = 692. A
+    // 120x70 tooltip at (650, 360) covers exactly one of them, (720, 393.75),
+    // so `occludedPct` is round(1/81 * 100) = 1: a ratio of 0.01, below the
+    // 0.02 default that would otherwise drop it and read the page `clear`.
+    const registry = new UIBridgeRegistry();
+    const term = boxed(div(), 0, 0, 1280, 700);
+    registry.registerElement('terminal-surface-a', term, { type: 'canvas', paintsText: true });
+    const tooltip = boxed(document.createElement('div'), 650, 360, 120, 70);
+    tooltip.id = 'tooltip';
+    document.body.appendChild(tooltip);
+    document.elementFromPoint = ((x: number, y: number) =>
+      x >= 650 && x < 770 && y >= 360 && y < 430 ? tooltip : term) as typeof document.elementFromPoint;
+
+    expect(registry.getElement('terminal-surface-a')?.getState().occludedPct).toBe(1);
+    const report = await visibility(registry as unknown as RegistryLike);
+    expect(report.minRatio).toBe(0.02);
+    expect(report.verdict).toBe('occlusions_found');
+    expect(report.occlusions).toEqual([
+      expect.objectContaining({
+        element: 'terminal-surface-a',
+        occludedBy: 'div#tooltip',
+        ratio: 0.01,
+        hidesText: true,
+        textSource: 'painted',
+      }),
+    ]);
+  });
+
   it('a directly registered modal whose registry id differs from its DOM id is an expected overlay', async () => {
     const registry = new UIBridgeRegistry();
     registry.setEnrichers({ modalDetector: new ModalDetector() });

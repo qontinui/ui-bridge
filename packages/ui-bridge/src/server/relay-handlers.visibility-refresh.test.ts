@@ -168,6 +168,39 @@ describe('relay visibility · canvas coverage rides the snapshot', () => {
     expect(data.verdict).toBe('unknown_canvas');
   });
 
+  it('reports a one-sample painted occlusion at the default minRatio, as the in-page path does', async () => {
+    const relay = freshRelay();
+    vi.spyOn(relay, 'queueCommand').mockResolvedValue({
+      timestamp: Date.now(),
+      elements: [
+        {
+          id: 'terminal-surface-a',
+          label: 'Terminal: zone 1',
+          // One covered sample of the dense grid's 81.
+          state: { occludedBy: 'div#tooltip', occludedPct: 1, paintsText: true },
+        },
+      ],
+      components: [],
+      workflows: [],
+      canvasCoverage: { state: 'measured', canvases: 1, attributed: 1, unattributed: [] },
+    } as never);
+    const res = await createRelayHandlers(relay).visibility!();
+    const data = res.data as {
+      verdict: string;
+      minRatio: number;
+      occlusions: Array<{ element: string; occludedBy: string; ratio: number }>;
+    };
+    expect(data.minRatio).toBe(0.02);
+    expect(data.verdict).toBe('occlusions_found');
+    expect(data.occlusions).toEqual([
+      expect.objectContaining({
+        element: 'terminal-surface-a',
+        occludedBy: 'div#tooltip',
+        ratio: 0.01,
+      }),
+    ]);
+  });
+
   it('carries state.paintsText through the explicit state-to-input mapping', async () => {
     const relay = freshRelay();
     vi.spyOn(relay, 'queueCommand').mockResolvedValue(
