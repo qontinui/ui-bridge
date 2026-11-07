@@ -910,8 +910,14 @@ describe('executeCommand · getControlSnapshot · canvas census', () => {
     canvas.className = 'chart';
     canvas.getBoundingClientRect = () =>
       ({
-        x: 0, y: 0, width: 300, height: 150,
-        top: 0, left: 0, right: 300, bottom: 150,
+        x: 0,
+        y: 0,
+        width: 300,
+        height: 150,
+        top: 0,
+        left: 0,
+        right: 300,
+        bottom: 150,
         toJSON: () => ({}),
       }) as DOMRect;
     document.body.appendChild(canvas);
@@ -923,4 +929,3 @@ describe('executeCommand · getControlSnapshot · canvas census', () => {
     expect(snap.canvasCoverage).toMatchObject({ canvases: 1, attributed: 0 });
   });
 });
-

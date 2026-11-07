@@ -53,8 +53,8 @@
 import type {
   VisibilityOcclusionEntry,
   VisibilityReport,
-  VisibilityTextSource,
 } from './types';
+import type { VisibilityTextSource } from './types';
 import type { SnapshotModalContext } from '../modal/types';
 import type { CanvasCoverage } from '../core/types';
 
