@@ -25,7 +25,11 @@ import {
 } from '../core/registry';
 import { projectVisionFields } from '../core/vision-fields';
 import type { NativeElementType, NativeLayout, NativeModalInfo, WorkflowStep } from '../core/types';
-import type { ControlActionRequest, NativeActionExecutor } from '../control/types';
+import type {
+  ControlActionRequest,
+  ControlActionResponse,
+  NativeActionExecutor,
+} from '../control/types';
 import type {
   APIResponse,
   ConsoleErrorsResponse,
@@ -581,7 +585,18 @@ export function createServerHandlers(
         // An action that failed with a code of its own (`NOT_SUPPORTED` from
         // `scrollIntoView`) keeps it — mapped to 501 by `http-server.ts` — so
         // "this element cannot do that" is not reported as a retryable 400.
-        return error(response.error || 'Action failed', response.code ?? 'ACTION_FAILED');
+        //
+        // The executor's own response rides under `data`, as on the web
+        // handlers (`@qontinui/ui-bridge` `server/handlers.ts`): an unknown
+        // verb's `didYouMean` lives there, and dropping it left the suggestion
+        // only in the prose `error` for a mobile HTTP/WS caller.
+        return {
+          ...error<ControlActionResponse>(
+            response.error || 'Action failed',
+            response.code ?? 'ACTION_FAILED'
+          ),
+          data: response,
+        };
       }
 
       return success(response);
