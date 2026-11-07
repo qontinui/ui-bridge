@@ -41,9 +41,6 @@ export class MemoryArtifactStore implements ArtifactStore {
     if (query.contractId) {
       results = results.filter((a) => a.source.contractId === query.contractId);
     }
-    if (query.matrixId) {
-      results = results.filter((a) => a.source.matrixId === query.matrixId);
-    }
     if (query.runId) {
       results = results.filter((a) => a.source.runId === query.runId);
     }

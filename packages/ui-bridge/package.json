@@ -151,11 +151,6 @@
       "import": "./dist/ctr/migrate.mjs",
       "require": "./dist/ctr/migrate.js"
     },
-    "./verification-layers": {
-      "types": "./dist/verification-layers/index.d.ts",
-      "import": "./dist/verification-layers/index.mjs",
-      "require": "./dist/verification-layers/index.js"
-    },
     "./artifacts": {
       "types": "./dist/artifacts/index.d.ts",
       "import": "./dist/artifacts/index.mjs",
