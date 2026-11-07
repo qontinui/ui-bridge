@@ -46,14 +46,14 @@ the other end.
 | `enabled` | `boolean` | `true` | Turn the relay off without unmounting |
 | `basePath` | `string` | `'/api/ui-bridge'` | Base path for the three relay routes |
 | `heartbeatInterval` | `number` | `10000` | Heartbeat period in ms |
-| `runnerUrl` | `string` | `'http://127.0.0.1:9876'` | Explicit runner URL for phone-home registration |
-| `disablePhoneHome` | `boolean` | `false` | Skip phone-home registration entirely |
+| `runnerUrl` | `string` | `'http://127.0.0.1:9876'` | Explicit runner URL for phone-home registration (and passive capture) |
+| `disablePhoneHome` | `boolean` | `false` | Skip phone-home registration entirely — also the only opt-out for [passive capture](#passive-capture) |
 | `appId` | `string` | `location.host` (port-inclusive, e.g. `localhost:3000`) | Stable identity in the runner's registry |
 | `appName` | `string` | `document.title \|\| location.hostname` | Display name |
 | `appType` | `'web' \| 'desktop' \| 'mobile' \| 'dashboard' \| 'other'` | `'web'` | App classification |
 | `framework` | `string` | `'react'` | Framework hint |
 | `capabilities` | `string[]` | `['control']` | Capability tags |
-| `version` | `string` | — | SDK/app version reported on heartbeats |
+| `version` | `string` | — | SDK/app version reported on heartbeats (passive capture relays it as `appVersion`) |
 | `authHeader` | `() => string \| null \| undefined` | — | Per-request bearer token source |
 | `registrationMetadata` | `() => { userId, sessionId } \| null \| undefined` | — | Per-user tab scoping; see below |
 
@@ -66,6 +66,37 @@ apps on `localhost:3000` and `localhost:3001` register as two apps. If the
 runner refuses the registration (HTTP 409 / 403, e.g. `UIB_REGISTRATION_HELD`
 when another live app already holds the id), the hook logs one `console.warn`
 per mount naming the refusal code; pass an explicit `appId` to resolve it.
+
+### Passive capture
+
+Wherever phone-home runs inside a `UIBridgeProvider`, the hook also relays each
+**human** interaction on a registered element to the runner's
+`POST /apps/{appId}/journey/observe`, so the runner's journey ledger reflects
+the paths real users take. Passive capture has no flag of its own:
+
+- `disablePhoneHome` is its only opt-out;
+- `runnerUrl` lifts its localhost gate, exactly as it does for phone-home;
+- it relays under the same `appId`, and forwards `version` as `appVersion`
+  when it is an identifier (`[A-Za-z0-9._:+-]`, ≤128 chars). A non-empty
+  value that is not is dropped from the relay and reported in `droppedIds`.
+
+Each relay carries the action type, the element's registry id and
+tab/session/version identifiers — never a typed value. Untrusted (synthetic)
+events and events fired while the SDK itself is acting on the page are not
+relayed. Capture fails closed: it relays only while the runner's registration
+answer carries `journeyObserve.admitted: true`; a runner that says nothing
+(a build predating the field) is treated as not admitting.
+
+`getPassiveCaptureStatuses()` (exported from `@qontinui/ui-bridge/react`)
+returns one `PassiveCaptureStatus` per **live** mount (a stopped mount is
+removed; a disabled one stays listed) — its `state` (`active`, or `disabled`
+with a `disabledReason`), the runner's `admission` (`admitted` /
+`not_admitted` / `admission_unknown` / `unregistered`), and counters for
+relayed, refused, failed and skipped interactions — so "nothing is being
+captured" can be told apart from "nothing happened". An **empty** array means
+capture never started on this page: phone-home is off (`disablePhoneHome` or
+`enabled: false`), gated (a non-localhost host with no `runnerUrl`), or there
+is no `UIBridgeProvider`.
 
 ### `authHeader`
 
