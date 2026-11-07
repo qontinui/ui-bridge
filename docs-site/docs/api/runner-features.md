@@ -704,8 +704,9 @@ the example the control is a refresh button that requests
 # 1. Stub it with times: "always", and keep its id. A times: 1 stub is
 #    REMOVED from the registry on its first match, so step 3 would answer
 #    matched:false with no hitCount left to read. With -e, a refused
-#    register (exit 1) or no answer (exit 4) fails here instead of
-#    handing step 3 a null id.
+#    register (exit 1; ID reads null) or no answer (exit 4; ID empty) is
+#    reported on stderr, and step 3's id check then fails rather than
+#    reading a count.
 ID=$(curl -s -X POST $BASE/control/network/stubs \
   -H "Content-Type: application/json" \
   -d '{"urlPattern":"/api/v1/runners","method":"GET",
@@ -728,10 +729,23 @@ curl -X POST $BASE/control/element/<refresh-button-id>/action \
 curl -s -X POST $BASE/control/network/verify-stub \
   -H "Content-Type: application/json" \
   -d '{"urlPattern":"/api/v1/runners?limit=50","method":"GET"}' \
-  | jq -e --arg id "$ID" 'if .data.stubEntry.id == $id
-      then .data.stubEntry.hitCount
+  | jq -e --arg id "$ID" '
+      if .success != true then error("verify-stub refused: \(.error // "?")")
+      elif .data.stubEntry.id == $id then .data.stubEntry.hitCount
       else error("answered by stub \(.data.stubEntry.id // "none"), not \($id)") end'
+
+# 4. Delete YOUR stub by its id, whatever step 3 answered. Never the
+#    clear-all DELETE /control/network/stubs: it drops other sessions'
+#    stubs too.
+curl -X DELETE "$BASE/control/network/stubs/$ID"
+# → {"success":true,"data":{"id":"stub_…","deleted":true}}
 ```
+
+Stubs clear only on a hard reload, and the bridge cannot hard-reload the
+runner's page (navigate uses `pushState`, refresh does not reload), so a
+stub nobody deletes outlives your session. While it lives, its body
+replaces the real response for every request it matches, from every
+session using that page. Step 4 is what ends it.
 
 Stubs live in the page, so on a shared runner the registry holds other
 sessions' stubs too, and a request is credited to the first-registered
@@ -740,18 +754,24 @@ same URL, `verify-stub` answers with that same stub: when another
 session's stub registered before yours takes the request — a broader
 pattern such as `/api/v1`, or a longer one the URL still contains such
 as `/api/v1/runners?limit` — step 3 fails naming it instead of reporting
-a count. A probe with your own pattern would miss the longer one and
-report your stub's unchanged count, a false "the UI made no request".
-With `-e`, step 3 also fails (exit 4, no output) when the runner does not
-answer.
+a count, unless that stub is gone by step 3 (a `times: N` stub this
+request used up, or one its owner deleted); then your stub answers with
+an unchanged count. Run step 3 once before step 2 as well, for a
+baseline: the click's own hits are the difference, and the baseline
+read catches such a stub that was already registered then. A probe
+with your own pattern would miss the longer one and report your stub's
+unchanged count, a false "the UI made no request". With `-e`, step 3
+also fails when the runner does not answer (exit 4, no output) or
+refuses the verify-stub call (it names the refusal).
 
 `hitCount` counts every `window.fetch` call that matched since the stub
 was registered — requests the page makes on its own (a poll) and any
-fetch issued from `page/evaluate` included. Run step 3 once before
-step 2 as well, for a baseline; pick a `urlPattern` that only the
-control's request matches; and send no evaluate fetch to it. Only
-`window.fetch` is intercepted: a request the UI makes through
-`XMLHttpRequest` is neither stubbed nor counted.
+fetch issued from `page/evaluate` included. Pick a `urlPattern` that
+only the control's request matches, and send no evaluate fetch to it.
+Only `window.fetch` is intercepted: a request the UI makes through
+`XMLHttpRequest`, `navigator.sendBeacon`, a `WebSocket` or an
+`EventSource` is neither stubbed nor counted, so for one of those a
+count of 0 means "not counted", not "not sent".
 
 **A network call from `page/evaluate`** needs the request to opt in.
 The static guard refuses `fetch(`, `XMLHttpRequest`,
