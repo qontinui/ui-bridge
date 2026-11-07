@@ -2,12 +2,11 @@
  * Artifact Types
  *
  * Immutable, content-addressed result records for verification evidence.
- * Each artifact is a tamper-evident envelope around a spec/contract/matrix execution result.
+ * Each artifact is a tamper-evident envelope around a spec or contract execution result.
  */
 
 import type { SpecExecutionResult, SpecGroupResult } from '../specs/types';
 import type { ContractExecutionResult } from '../contracts/types';
-import type { MatrixExecutionResult } from '../verification-layers/types';
 
 // =============================================================================
 // Core Types
@@ -18,8 +17,6 @@ export interface ArtifactSource {
   specId?: string;
   /** Contract ID (if from contract execution). */
   contractId?: string;
-  /** Execution matrix ID (if from multi-layer execution). */
-  matrixId?: string;
   /** Workflow run ID from the runner (for traceability). */
   runId?: string;
   /** How this execution was triggered. */
@@ -42,11 +39,7 @@ export interface ArtifactEnvironment {
 /**
  * The result payload union covering all execution result types.
  */
-export type ArtifactResult =
-  | SpecExecutionResult
-  | SpecGroupResult
-  | ContractExecutionResult
-  | MatrixExecutionResult;
+export type ArtifactResult = SpecExecutionResult | SpecGroupResult | ContractExecutionResult;
 
 /**
  * An immutable, content-addressed verification result record.
@@ -75,8 +68,6 @@ export interface ArtifactQuery {
   specId?: string;
   /** Filter by contract ID. */
   contractId?: string;
-  /** Filter by matrix ID. */
-  matrixId?: string;
   /** Filter by workflow run ID. */
   runId?: string;
   /** Filter by date range (ISO 8601). */

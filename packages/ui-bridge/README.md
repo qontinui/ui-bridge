@@ -64,22 +64,22 @@ The root entry re-exports the React surface, so `@qontinui/ui-bridge` alone is
 enough to get started. The subpaths exist so a consumer can import only the
 slice it needs — a Node-only server never pays for the React import:
 
-| Subpath                                          | What lives there                                                                |
-| ------------------------------------------------ | ------------------------------------------------------------------------------- |
-| `.`                                              | Everything below that is browser-safe, including all of `./react`               |
-| `./react`                                        | Providers and the 33 hooks (`useUIElement`, `useUIState`, `useUITransition`, …) |
-| `./core`                                         | Registry, element/component types, the serializers                              |
-| `./control`                                      | The control API — snapshots, find, element and component actions                |
-| `./render-log`                                   | Render logging (`RenderLogManager`)                                             |
-| `./debug`                                        | Debug/diagnostic surface                                                        |
-| `./specs`, `./discovery`, `./contracts`          | App spec capture, discovery, contract types                                     |
-| `./annotations`, `./vision`, `./ai`              | Annotation, vision and AI-assisted element resolution                           |
-| `./idle`, `./artifacts`, `./verification-layers` | Idle detection, artifact capture, verification layers                           |
-| `./ctr`, `./ctr/migrate`                         | Click-to-refine capture and its config migration                                |
-| `./native`, `./native/*`                         | React Native bridge (core, react, control, debug) — no server, see below        |
-| `./server`, `./server/*`                         | In-package server adapters (see also `@qontinui/ui-bridge-server`)              |
-| `./injected`, `./injected/bundle.global.js`      | The injected-transport bundle for pages that do not embed the SDK               |
-| `./diagnostics`                                  | The generated diagnostic-code catalogue                                         |
+| Subpath                                     | What lives there                                                                |
+| ------------------------------------------- | ------------------------------------------------------------------------------- |
+| `.`                                         | Everything below that is browser-safe, including all of `./react`               |
+| `./react`                                   | Providers and the 33 hooks (`useUIElement`, `useUIState`, `useUITransition`, …) |
+| `./core`                                    | Registry, element/component types, the serializers                              |
+| `./control`                                 | The control API — snapshots, find, element and component actions                |
+| `./render-log`                              | Render logging (`RenderLogManager`)                                             |
+| `./debug`                                   | Debug/diagnostic surface                                                        |
+| `./specs`, `./discovery`, `./contracts`     | App spec capture, discovery, contract types                                     |
+| `./annotations`, `./vision`, `./ai`         | Annotation, vision and AI-assisted element resolution                           |
+| `./idle`, `./artifacts`                     | Idle detection, artifact capture                                                |
+| `./ctr`, `./ctr/migrate`                    | Click-to-refine capture and its config migration                                |
+| `./native`, `./native/*`                    | React Native bridge (core, react, control, debug) — no server, see below        |
+| `./server`, `./server/*`                    | In-package server adapters (see also `@qontinui/ui-bridge-server`)              |
+| `./injected`, `./injected/bundle.global.js` | The injected-transport bundle for pages that do not embed the SDK               |
+| `./diagnostics`                             | The generated diagnostic-code catalogue                                         |
 
 `./native` publishes no network server. Its hooks, registry and inspector run
 in-process only. A React Native app that needs a port for external tools uses

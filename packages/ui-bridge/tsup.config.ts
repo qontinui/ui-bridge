@@ -69,7 +69,6 @@ export default defineConfig([
       'contracts/index': 'src/contracts/index.ts',
       'ctr/index': 'src/ctr/index.ts',
       'ctr/migrate': 'src/ctr/migrate-specs-to-ctr.ts',
-      'verification-layers/index': 'src/verification-layers/index.ts',
       'artifacts/index': 'src/artifacts/index.ts',
       'injected/index': 'src/injected/index.ts',
     }),

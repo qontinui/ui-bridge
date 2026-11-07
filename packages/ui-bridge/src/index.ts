@@ -66,9 +66,6 @@ export * from './undo';
 // Contracts module - schema-first verification contracts
 export * from './contracts';
 
-// Verification layers module - multi-layer execution matrix
-export * from './verification-layers';
-
 // Artifacts module - immutable verification result records
 export * from './artifacts';
 
