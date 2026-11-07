@@ -48,6 +48,7 @@ import type { CommandRelay } from './command-relay';
 import { CDPTabDiscovery } from './cdp-tabs';
 import { withoutReservedCaller } from './reserved-caller';
 import { scopedCallerRefusal } from './scoped-refusal';
+import { readJsonBody } from './request-body';
 
 /**
  * Next.js specific configuration
@@ -148,7 +149,9 @@ export function createNextRouteHandlers(
           path.startsWith('/tabs/cdp/'))
       ) {
         return jsonResponse(
-          scopedCallerRefusal(path.startsWith('/tabs/cdp') ? 'The CDP tab list' : 'This event stream'),
+          scopedCallerRefusal(
+            path.startsWith('/tabs/cdp') ? 'The CDP tab list' : 'This event stream'
+          ),
           403
         );
       }
@@ -236,8 +239,12 @@ export function createNextRouteHandlers(
       // HandlerContext`. Pushing a body for those would shift the
       // context to the wrong positional slot. Stick to the route table.
       if (route.bodyRequired) {
-        try {
-          const body = withoutReservedCaller(await request.json());
+        const read = await readJsonBody(request);
+        if (!read.ok) {
+          return jsonResponse(wrapError(read.message, 'INVALID_REQUEST'), read.status);
+        }
+        if (read.body !== undefined) {
+          const body = withoutReservedCaller(read.body);
           if (
             externalTabId &&
             body !== null &&
@@ -252,11 +259,11 @@ export function createNextRouteHandlers(
             (body as Record<string, unknown>).__callerUserId = callerUserId;
           }
           args.push(body);
-        } catch {
-          // No body or invalid JSON — synthesize a body that still carries
-          // tabId / callerUserId so per-tab routing + ownership enforcement
-          // work on endpoints whose handler signature requires a body but
-          // whose caller sent none.
+        } else {
+          // No body — synthesize one that still carries tabId / callerUserId
+          // so per-tab routing + ownership enforcement work on endpoints
+          // whose handler signature requires a body but whose caller sent
+          // none. A body that is not valid JSON was refused above.
           const synth: Record<string, unknown> = {};
           if (externalTabId) synth.tabId = externalTabId;
           if (callerUserId) synth.__callerUserId = callerUserId;
@@ -370,17 +377,21 @@ function extractParams(path: string, route: RouteDefinition): Record<string, str
  */
 function callerContextOf(request?: Request): HandlerContext {
   const callerUserId =
-    request?.headers.get('x-caller-user-id') ?? request?.headers.get('X-Caller-User-Id') ?? undefined;
+    request?.headers.get('x-caller-user-id') ??
+    request?.headers.get('X-Caller-User-Id') ??
+    undefined;
   return { callerUserId };
 }
 
-/** A JSON body without any request-supplied `__callerUserId`; `{}` when absent or unparseable. */
-async function bodyOf<T>(request: Request): Promise<T> {
-  try {
-    return withoutReservedCaller((await request.json()) as T);
-  } catch {
-    return {} as T;
-  }
+/**
+ * A JSON body without any request-supplied `__callerUserId`; `{}` when there
+ * is none. A body that is not valid JSON comes back as the refusal to answer with
+ * (see `readJsonBody`), so a malformed request never reaches a handler as `{}`.
+ */
+async function bodyOf<T>(request: Request): Promise<T | Response> {
+  const read = await readJsonBody(request);
+  if (!read.ok) return jsonResponse(wrapError(read.message, 'INVALID_REQUEST'), read.status);
+  return read.body === undefined ? ({} as T) : withoutReservedCaller(read.body as T);
 }
 
 /**
@@ -445,6 +456,7 @@ export function createControlHandlers(handlers: UIBridgeServerHandlers) {
       },
       async POST(request: NextRequest, context: { params: { id: string } }): Promise<Response> {
         const body = await bodyOf<ControlActionRequest>(request);
+        if (body instanceof Response) return body;
         const result = await handlers.executeElementAction(
           context.params.id,
           body,
@@ -471,6 +483,7 @@ export function createControlHandlers(handlers: UIBridgeServerHandlers) {
         context: { params: { id: string; actionId: string } }
       ): Promise<Response> {
         const body = await bodyOf<Record<string, unknown>>(request);
+        if (body instanceof Response) return body;
         const result = await handlers.invokeComponentAction(
           context.params.id,
           context.params.actionId,
@@ -488,8 +501,9 @@ export function createControlHandlers(handlers: UIBridgeServerHandlers) {
      * differ in what they DO, not in how they are addressed, and folding a
      * "predict or execute" flag into the invocation handler is how a caller
      * ends up invoking a destructive action while believing it asked a
-     * question. A missing / unparseable body is an empty request, not an
-     * error — predicting with no params is a legitimate question.
+     * question. A missing body is an empty request, not an error —
+     * predicting with no params is a legitimate question. A body that is not
+     * valid JSON is a 400, as on every other route.
      */
     componentActionPredict: {
       async POST(
@@ -497,6 +511,7 @@ export function createControlHandlers(handlers: UIBridgeServerHandlers) {
         context: { params: { id: string; actionId: string } }
       ): Promise<Response> {
         const body = await bodyOf<Record<string, unknown>>(request);
+        if (body instanceof Response) return body;
         const result = await handlers.predictComponentAction(
           context.params.id,
           context.params.actionId,
@@ -509,6 +524,7 @@ export function createControlHandlers(handlers: UIBridgeServerHandlers) {
     find: {
       async POST(request: NextRequest): Promise<Response> {
         const body = await bodyOf<FindRequest>(request);
+        if (body instanceof Response) return body;
         const result = await handlers.find(body, callerContextOf(request));
         return jsonResponse(result);
       },
@@ -519,6 +535,7 @@ export function createControlHandlers(handlers: UIBridgeServerHandlers) {
        */
       async POST(request: NextRequest): Promise<Response> {
         const body = await bodyOf<FindRequest>(request);
+        if (body instanceof Response) return body;
         const result = await handlers.discover(body, callerContextOf(request));
         return jsonResponse(result);
       },
@@ -545,6 +562,7 @@ export function createControlHandlers(handlers: UIBridgeServerHandlers) {
     workflow: {
       async POST(request: NextRequest, context: { params: { id: string } }): Promise<Response> {
         const body = await bodyOf<WorkflowRunRequest>(request);
+        if (body instanceof Response) return body;
         const result = await handlers.runWorkflow(
           context.params.id,
           body,
@@ -685,8 +703,11 @@ async function handleCDPRoute(
         503
       );
     }
-    const body = await request.json().catch(() => ({}));
-    const url = (body as { url?: string }).url;
+    const body = await bodyOf<unknown>(request);
+    if (body instanceof Response) return body;
+    const rawUrl =
+      body !== null && typeof body === 'object' ? (body as { url?: unknown }).url : undefined;
+    const url = typeof rawUrl === 'string' ? rawUrl : undefined;
     const target = await cdp.openNewTab(url);
     return jsonResponse({ success: !!target, data: target, timestamp: Date.now() });
   }
@@ -877,11 +898,13 @@ function handleRelayRoute(
       );
       // A refused claim leaves the tab exactly as its owner left it: no
       // heartbeat time, url or title is taken from the refused request.
-      if (registration.ownershipAssigned) relay.receiveHeartbeat(heartbeatTabId, {
-        url: typeof body?.url === 'string' ? (body.url as string) : undefined,
-        title: typeof body?.title === 'string' ? (body.title as string) : undefined,
-        visibility: typeof body?.visibility === 'string' ? (body.visibility as string) : undefined,
-      });
+      if (registration.ownershipAssigned)
+        relay.receiveHeartbeat(heartbeatTabId, {
+          url: typeof body?.url === 'string' ? (body.url as string) : undefined,
+          title: typeof body?.title === 'string' ? (body.title as string) : undefined,
+          visibility:
+            typeof body?.visibility === 'string' ? (body.visibility as string) : undefined,
+        });
 
       // Report whether the server currently holds an SSE listener for this
       // tabId. The SDK uses this to detect silent disconnects (e.g. when a
@@ -1090,10 +1113,14 @@ function handleRelayRoute(
     const targetTabId = decodeURIComponent(path.split('/')[2]);
     return (async () => {
       try {
-        const result = await relay.queueCommand('tabActivate', {}, {
-          targetTabId,
-          ...tabOwnerCheck(request),
-        });
+        const result = await relay.queueCommand(
+          'tabActivate',
+          {},
+          {
+            targetTabId,
+            ...tabOwnerCheck(request),
+          }
+        );
         return jsonResponse({ success: true, data: result, timestamp: Date.now() });
       } catch (err: unknown) {
         return tabCommandErrorResponse(err, relayCallerUserId(request) !== undefined);
@@ -1106,10 +1133,14 @@ function handleRelayRoute(
     const targetTabId = decodeURIComponent(path.split('/')[2]);
     return (async () => {
       try {
-        const result = await relay.queueCommand('tabClose', {}, {
-          targetTabId,
-          ...tabOwnerCheck(request),
-        });
+        const result = await relay.queueCommand(
+          'tabClose',
+          {},
+          {
+            targetTabId,
+            ...tabOwnerCheck(request),
+          }
+        );
         return jsonResponse({ success: true, data: result, timestamp: Date.now() });
       } catch (err: unknown) {
         return tabCommandErrorResponse(err, relayCallerUserId(request) !== undefined);

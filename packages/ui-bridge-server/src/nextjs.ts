@@ -24,6 +24,7 @@ import type {
   WorkflowRunRequest,
 } from '@qontinui/ui-bridge/control';
 import { createHandlers, type RegistryLike, type ActionExecutorLike } from './handlers';
+import { readJsonBody } from './request-body';
 
 /**
  * Next.js specific configuration
@@ -44,6 +45,16 @@ function wrapError(error: Error | string, code?: string): APIResponse<never> {
     code: mapInternalErrorCode(code, message),
     timestamp: Date.now(),
   };
+}
+
+/**
+ * A JSON request body; `{}` when there is none. A body that is not valid JSON
+ * comes back as the refusal to answer with (see `readJsonBody`).
+ */
+async function bodyOf<T>(request: Request): Promise<T | Response> {
+  const read = await readJsonBody(request);
+  if (!read.ok) return jsonResponse(wrapError(read.message, 'INVALID_REQUEST'), read.status);
+  return (read.body === undefined ? {} : read.body) as T;
 }
 
 /**
@@ -180,13 +191,11 @@ export function createNextRouteHandlers(
 
       // Add body for POST requests
       if (method === 'POST') {
-        try {
-          const body = await request.json();
-          args.push(body);
-        } catch {
-          // No body or invalid JSON
-          args.push({});
+        const read = await readJsonBody(request);
+        if (!read.ok) {
+          return jsonResponse(wrapError(read.message, 'INVALID_REQUEST'), read.status);
         }
+        args.push(read.body === undefined ? {} : read.body);
       }
 
       // Add query params for GET requests
@@ -299,7 +308,8 @@ export function createControlHandlers(handlers: UIBridgeServerHandlers) {
         request: NextRequest,
         context: NextRouteContext<{ id: string }>
       ): Promise<Response> {
-        const body = (await request.json()) as ControlActionRequest;
+        const body = await bodyOf<ControlActionRequest>(request);
+        if (body instanceof Response) return body;
         const { id } = await context.params;
         const result = await handlers.executeElementAction(id, body);
         return jsonResponse(result);
@@ -324,7 +334,8 @@ export function createControlHandlers(handlers: UIBridgeServerHandlers) {
         request: NextRequest,
         context: NextRouteContext<{ id: string; actionId: string }>
       ): Promise<Response> {
-        const body = (await request.json()) as Omit<ComponentActionRequest, 'action'>;
+        const body = await bodyOf<Omit<ComponentActionRequest, 'action'>>(request);
+        if (body instanceof Response) return body;
         const { id, actionId } = await context.params;
         const result = await handlers.executeComponentAction(id, {
           ...body,
@@ -335,7 +346,8 @@ export function createControlHandlers(handlers: UIBridgeServerHandlers) {
     },
     find: {
       async POST(request: NextRequest): Promise<Response> {
-        const body = (await request.json()) as FindRequest;
+        const body = await bodyOf<FindRequest>(request);
+        if (body instanceof Response) return body;
         const result = await handlers.find(body);
         return jsonResponse(result);
       },
@@ -345,7 +357,8 @@ export function createControlHandlers(handlers: UIBridgeServerHandlers) {
        * @deprecated Use /control/find instead
        */
       async POST(request: NextRequest): Promise<Response> {
-        const body = (await request.json()) as FindRequest;
+        const body = await bodyOf<FindRequest>(request);
+        if (body instanceof Response) return body;
         const result = await handlers.discover(body);
         return jsonResponse(result);
       },
@@ -367,7 +380,8 @@ export function createControlHandlers(handlers: UIBridgeServerHandlers) {
         request: NextRequest,
         context: NextRouteContext<{ id: string }>
       ): Promise<Response> {
-        const body = (await request.json()) as WorkflowRunRequest;
+        const body = await bodyOf<WorkflowRunRequest>(request);
+        if (body instanceof Response) return body;
         const { id } = await context.params;
         const result = await handlers.runWorkflow(id, body);
         return jsonResponse(result);
