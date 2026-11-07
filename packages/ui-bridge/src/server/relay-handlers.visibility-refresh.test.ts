@@ -117,9 +117,7 @@ describe('relay visibility · canvas coverage rides the snapshot', () => {
         {
           id: 'terminal-surface-a',
           label: 'Terminal: zone 1',
-          state: paintsText
-            ? { occludedBy: 'div#card', occludedPct: 40, paintsText: true }
-            : {},
+          state: paintsText ? { occludedBy: 'div#card', occludedPct: 40, paintsText: true } : {},
         },
       ],
       components: [],
@@ -222,4 +220,3 @@ describe('relay visibility · canvas coverage rides the snapshot', () => {
     });
   });
 });
-

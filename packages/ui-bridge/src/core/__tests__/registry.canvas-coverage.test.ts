@@ -284,7 +284,9 @@ describe('in-page /control/visibility reports the census', () => {
     tooltip.id = 'tooltip';
     document.body.appendChild(tooltip);
     document.elementFromPoint = ((x: number, y: number) =>
-      x >= 650 && x < 770 && y >= 360 && y < 430 ? tooltip : term) as typeof document.elementFromPoint;
+      x >= 650 && x < 770 && y >= 360 && y < 430
+        ? tooltip
+        : term) as typeof document.elementFromPoint;
 
     expect(registry.getElement('terminal-surface-a')?.getState().occludedPct).toBe(1);
     const report = await visibility(registry as unknown as RegistryLike);
