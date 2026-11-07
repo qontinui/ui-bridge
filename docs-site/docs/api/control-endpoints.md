@@ -574,8 +574,9 @@ The web SDK (`@qontinui/ui-bridge`) implements this route on both the in-page
 and relay transports. qontinui-runner serves a Rust twin of the same report at
 `POST /ui-bridge/control/visibility`, built from its webview's element states;
 `canvasCoverage` and `unknown_canvas` reach it with the runner release that
-moves to `@qontinui/ui-bridge` 0.36.0. `@qontinui/ui-bridge-native` returns a
-route miss for it. Discover it at runtime
+moves to the first `@qontinui/ui-bridge` release carrying them (that release's
+notes name its version). `@qontinui/ui-bridge-native` returns a route miss for
+it. Discover it at runtime
 under the `diagnostics` category of `GET /capabilities` rather than assuming it
 is present.
 
