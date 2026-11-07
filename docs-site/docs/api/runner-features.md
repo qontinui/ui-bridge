@@ -736,17 +736,21 @@ is non-consuming — `hitCount` and `timesRemaining` stay unchanged.
 **Asserting that the UI made the request.** An agent-issued
 `page/evaluate` is never user evidence: no user could have issued it, so
 a request it makes says nothing about what the UI does. Stub the
-request, trigger it through the UI, and read the stub's `hitCount`:
+request, trigger it through the UI, and read the stub's `hitCount`. In
+the example the control is a refresh button that requests
+`GET /api/v1/runners?limit=50`:
 
 ```bash
 # 1. Stub it with times: "always", and keep its id. A times: 1 stub is
 #    REMOVED from the registry on its first match, so step 3 would answer
-#    matched:false with no hitCount left to read.
+#    matched:false with no hitCount left to read. With -e, a refused
+#    register (exit 1) or no answer (exit 4) fails here instead of
+#    handing step 3 a null id.
 ID=$(curl -s -X POST $BASE/control/network/stubs \
   -H "Content-Type: application/json" \
   -d '{"urlPattern":"/api/v1/runners","method":"GET",
        "response":{"status":200,"bodyJson":[]},"times":"always"}' \
-  | jq -r '.data.id')
+  | jq -er '.data.id') || echo "stub not registered" >&2
 
 # 2. Trigger it through the UI: act on the control a user would use, in a
 #    state a user could act on (visible, enabled, unobstructed).
@@ -754,31 +758,39 @@ curl -X POST $BASE/control/element/<refresh-button-id>/action \
   -H "Content-Type: application/json" \
   -d '{"action":"click"}'
 
-# 3. Read the hit count, and only when YOUR stub answered: verify-stub
-#    answers with the first-registered stub whose pattern the probe
-#    contains, which need not be yours. Send the method the stub was
-#    registered with: a verify-stub with no "method" probes as "*",
-#    which matches only a stub registered with "*".
+# 3. Read the hit count, and only when YOUR stub answered. Probe with the
+#    control's own request, its URL as the page passes it to fetch and its
+#    method, not with your pattern: verify-stub reads urlPattern as the URL
+#    to test and answers with the first-registered stub whose pattern that
+#    URL contains, the rule the real request was matched by, so it answers
+#    with the stub that took the hit. A verify-stub with no "method"
+#    probes as "*", which matches only a stub registered with "*".
 curl -s -X POST $BASE/control/network/verify-stub \
   -H "Content-Type: application/json" \
-  -d '{"urlPattern":"/api/v1/runners","method":"GET"}' \
-  | jq --arg id "$ID" 'if .data.stubEntry.id == $id
+  -d '{"urlPattern":"/api/v1/runners?limit=50","method":"GET"}' \
+  | jq -e --arg id "$ID" 'if .data.stubEntry.id == $id
       then .data.stubEntry.hitCount
       else error("answered by stub \(.data.stubEntry.id // "none"), not \($id)") end'
 ```
 
-When stubs overlap, the first-registered one whose pattern the request
-URL contains takes the hit, and `verify-stub` answers with the
-first-registered one whose pattern its probe contains. Stubs live in
-the page, so on a shared runner the registry holds other sessions'
-stubs too: a broader one registered before yours takes your control's
-request and answers the probe, and step 3 then fails naming it instead
-of reporting a count. `hitCount` counts every `window.fetch` call that
-matched since the stub was registered — requests the page makes on its
-own (a poll) and any fetch issued from `page/evaluate` included. Run
-step 3 once before step 2 as well, for a baseline; pick a `urlPattern`
-that only the control's request matches; and send no evaluate fetch to
-it. Only `window.fetch` is intercepted: a request the UI makes through
+Stubs live in the page, so on a shared runner the registry holds other
+sessions' stubs too, and a request is credited to the first-registered
+stub whose pattern its URL contains. Because step 3 probes with that
+same URL, `verify-stub` answers with that same stub: when another
+session's stub registered before yours takes the request — a broader
+pattern such as `/api/v1`, or a longer one the URL still contains such
+as `/api/v1/runners?limit` — step 3 fails naming it instead of reporting
+a count. A probe with your own pattern would miss the longer one and
+report your stub's unchanged count, a false "the UI made no request".
+With `-e`, step 3 also fails (exit 4, no output) when the runner does not
+answer.
+
+`hitCount` counts every `window.fetch` call that matched since the stub
+was registered — requests the page makes on its own (a poll) and any
+fetch issued from `page/evaluate` included. Run step 3 once before
+step 2 as well, for a baseline; pick a `urlPattern` that only the
+control's request matches; and send no evaluate fetch to it. Only
+`window.fetch` is intercepted: a request the UI makes through
 `XMLHttpRequest` is neither stubbed nor counted.
 
 **A network call from `page/evaluate`** needs the request to opt in.
