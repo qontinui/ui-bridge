@@ -836,10 +836,14 @@ function handleRelayRoute(
   // compatibility is NOT a goal — sibling SDKs are updated separately.
   if (method === 'POST' && path === '/heartbeat') {
     return (async () => {
-      let body: Record<string, unknown>;
-      try {
-        body = (await request.json()) as Record<string, unknown>;
-      } catch {
+      // Read through `readJsonBody` so the 10 MB cap holds here as on every
+      // other route; an oversized body is a 413, any other unusable body the
+      // heartbeat's own 400.
+      const read = await readJsonBody(request);
+      if (!read.ok && read.status === 413) {
+        return jsonResponse(wrapError(read.message, 'INVALID_REQUEST'), 413);
+      }
+      if (!read.ok || read.body === undefined) {
         return jsonResponse(
           {
             success: false,
@@ -850,6 +854,7 @@ function handleRelayRoute(
           400
         );
       }
+      const body = read.body as Record<string, unknown> | null;
 
       const heartbeatTabId = typeof body?.tabId === 'string' ? (body.tabId as string) : undefined;
 
@@ -1280,17 +1285,33 @@ function createCommandStreamResponse(request: NextRequest, relay: CommandRelay):
   });
 }
 
+/** `value` when it is a non-empty string; `undefined` otherwise. */
+function stringOrUndefined(value: unknown): string | undefined {
+  return typeof value === 'string' && value ? value : undefined;
+}
+
 /**
  * Handle command responses from the browser (POST /commands).
  */
 async function handleCommandResponse(request: NextRequest, relay: CommandRelay): Promise<Response> {
+  // Read through `readJsonBody` so the 10 MB cap holds here as on every other
+  // route: an oversized result is a 413, never buffered whole.
+  const read = await readJsonBody(request);
+  if (!read.ok && read.status === 413) {
+    return jsonResponse(wrapError(read.message, 'INVALID_REQUEST'), 413);
+  }
   try {
-    const body = await request.json();
+    if (!read.ok || read.body === undefined) throw new Error('no usable body');
+    const body = read.body as Record<string, unknown>;
     const { commandId, success: ok, result, error: errorMsg, tabId: responseTabId } = body;
 
-    if (!commandId) {
+    if (typeof commandId !== 'string' || !commandId) {
       return jsonResponse(
-        { success: false, error: 'Missing commandId', timestamp: Date.now() },
+        {
+          success: false,
+          error: commandId ? 'Invalid commandId' : 'Missing commandId',
+          timestamp: Date.now(),
+        },
         400
       );
     }
@@ -1320,7 +1341,9 @@ async function handleCommandResponse(request: NextRequest, relay: CommandRelay):
     } else {
       relay.rejectCommand(
         commandId,
-        errorMsg || (result as { error?: string })?.error || 'Unknown error',
+        stringOrUndefined(errorMsg) ||
+          stringOrUndefined((result as { error?: unknown } | null)?.error) ||
+          'Unknown error',
         tabId,
         responder
       );

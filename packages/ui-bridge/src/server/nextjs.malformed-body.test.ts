@@ -9,7 +9,8 @@
  * body into `{}` and ran the handler on it.
  */
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { CommandRelay } from './command-relay';
 import { createControlHandlers, createNextRouteHandlers } from './nextjs';
 import type { UIBridgeServerHandlers } from './types';
 
@@ -146,5 +147,77 @@ describe('Next.js named helpers · request body', () => {
     const res = await control.find.POST(makeRequest('/control/find', ''));
     expect(res.status).toBe(200);
     expect(find.mock.calls[0][0]).toEqual({});
+  });
+});
+
+describe('Next.js relay routes · request body', () => {
+  const relays: CommandRelay[] = [];
+  afterEach(() => {
+    for (const relay of relays.splice(0)) relay.destroy();
+  });
+
+  function relayRoutes() {
+    const relay = new CommandRelay({
+      globalPrefix: `__uiBridgeMalformedBodyTest_${Math.random().toString(36).slice(2, 10)}`,
+    });
+    relays.push(relay);
+    const routes = createNextRouteHandlers({}, { relay });
+    const post = (route: string, body: string, headers?: Record<string, string>) =>
+      routes.POST(makeRequest(`/${route}`, body, 'application/json', headers), {
+        params: { path: [route] as unknown as string },
+      });
+    return { relay, post };
+  }
+
+  // A heartbeat the relay would otherwise accept, so the 413 is the only refusal.
+  const big = JSON.stringify({
+    tabId: 'tab-a',
+    registrationMetadata: { userId: 'alice', sessionId: 's-1' },
+    pad: 'x'.repeat(10 * 1024 * 1024),
+  });
+
+  it('refuses a heartbeat over 10 MB with a 413, registering nothing', async () => {
+    const { relay, post } = relayRoutes();
+    const res = await post('heartbeat', big);
+    expect(res.status).toBe(413);
+    expect(relay.getOwnership('tab-a')).toBeNull();
+  });
+
+  it('refuses a heartbeat whose declared Content-Length is over 10 MB', async () => {
+    const { post } = relayRoutes();
+    const res = await post('heartbeat', '{}', { 'Content-Length': String(11 * 1024 * 1024) });
+    expect(res.status).toBe(413);
+  });
+
+  it('still answers a malformed heartbeat with MISSING_REGISTRATION_METADATA', async () => {
+    const { post } = relayRoutes();
+    const res = await post('heartbeat', '{"tabId":');
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 'MISSING_REGISTRATION_METADATA' });
+  });
+
+  it('refuses a command result over 10 MB with a 413', async () => {
+    const { post } = relayRoutes();
+    const res = await post('commands', big);
+    expect(res.status).toBe(413);
+  });
+
+  it('still answers a malformed or empty command result with a 400', async () => {
+    const { post } = relayRoutes();
+    for (const body of ['{"commandId":', '', 'null']) {
+      const res = await post('commands', body);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: 'Invalid request body' });
+    }
+  });
+
+  it('answers a command result with no commandId, or a non-string one, with a 400', async () => {
+    const { post } = relayRoutes();
+    const missing = await post('commands', JSON.stringify({ success: true }));
+    expect(missing.status).toBe(400);
+    expect(await missing.json()).toMatchObject({ error: 'Missing commandId' });
+    const numeric = await post('commands', JSON.stringify({ commandId: 123, success: true }));
+    expect(numeric.status).toBe(400);
+    expect(await numeric.json()).toMatchObject({ error: 'Invalid commandId' });
   });
 });
