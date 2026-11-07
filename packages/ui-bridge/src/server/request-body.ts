@@ -1,7 +1,9 @@
 /**
- * Reading a fetch `Request` body as JSON, for the Next.js adapter.
- *
- * The same rules the standalone server's `parseBody` applies:
+ * Reading a request body as JSON — the rules every adapter applies (the
+ * standalone server's `parseBody`, the Express adapters' `jsonBody`, and
+ * `readJsonBody` below for the Next.js adapter). What a read body MEANS is
+ * `interpretJsonBody`, shared by all three; the size cap and the unreadable
+ * stream are each reader's own, since each reads a different kind of stream:
  *
  * - An empty (or whitespace-only) body is no body.
  * - A body declared JSON, or declared as nothing, that does not parse is
@@ -47,13 +49,25 @@ export async function readJsonBody(request: Request): Promise<JsonBodyRead> {
     return { ok: false, status: 400, message: 'Request body could not be read' };
   }
 
-  const text = new TextDecoder().decode(bytes);
+  return interpretJsonBody(new TextDecoder().decode(bytes), request.headers.get('content-type'));
+}
+
+/**
+ * What a fully-read, UTF-8-decoded body means: no body when empty or
+ * whitespace-only, the parsed value when it is JSON (top-level primitives
+ * included), and otherwise a 400 when it was declared JSON or declared as
+ * nothing, or no body when it was declared as another type. Every adapter's
+ * reader ends here, so the rule exists once.
+ */
+export function interpretJsonBody(
+  text: string,
+  contentType: string | null | undefined
+): JsonBodyRead {
   if (!text.trim()) return { ok: true, body: undefined };
   try {
     return { ok: true, body: JSON.parse(text) as unknown };
   } catch {
-    const type = request.headers.get('content-type');
-    if (type && !JSON_CONTENT_TYPE.test(type)) return { ok: true, body: undefined };
+    if (contentType && !JSON_CONTENT_TYPE.test(contentType)) return { ok: true, body: undefined };
     return { ok: false, status: 400, message: 'Request body is not valid JSON' };
   }
 }

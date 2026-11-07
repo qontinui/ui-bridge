@@ -19,6 +19,7 @@ import { createWSStreamBroadcast } from './ws-stream-adapter';
 import { SSEManager } from './sse-handler';
 import { withoutReservedCaller } from './reserved-caller';
 import { scopedCallerRefusal } from './scoped-refusal';
+import { MAX_BODY_BYTES, interpretJsonBody } from './request-body';
 import type { BridgeEvent } from '../core';
 
 /**
@@ -56,9 +57,6 @@ const DEFAULT_CONFIG: Required<
   websocket: false,
   log: console.log,
 };
-
-/** Largest request body the standalone server reads, in bytes. */
-const MAX_BODY_BYTES = 10 * 1024 * 1024;
 
 /**
  * A request the server refuses before any handler runs: a malformed URL or
@@ -592,21 +590,12 @@ export class StandaloneServer {
       });
       req.on('end', () => {
         if (refused) return;
-        const data = Buffer.concat(chunks).toString('utf8');
-        if (!data.trim()) {
-          resolve({});
-          return;
-        }
-        try {
-          resolve(JSON.parse(data));
-        } catch {
-          const type = req.headers['content-type'];
-          if (type && !/[/+]json\b/i.test(type)) {
-            resolve({});
-            return;
-          }
-          reject(new RequestRefusal(400, 'Request body is not valid JSON'));
-        }
+        const read = interpretJsonBody(
+          Buffer.concat(chunks).toString('utf8'),
+          req.headers['content-type']
+        );
+        if (read.ok) resolve(read.body === undefined ? {} : read.body);
+        else reject(new RequestRefusal(read.status, read.message));
       });
       req.on('error', reject);
     });
