@@ -432,6 +432,15 @@ describe('buildVisibilityReport — painted text', () => {
     expect('textSource' in byId.blank).toBe(false);
   });
 
+  it('minRatio never drops a paintsText entry: one dense-grid sample is an overlay over painted text', () => {
+    // 1 of the dense grid's 81 samples rounds to occludedPct 1 (ratio 0.01).
+    const surface = covered({ id: 'terminal', textContent: '', paintsText: true, occludedPct: 1 });
+    expect(sweep({ elements: [surface] }).occlusions).toHaveLength(1);
+    expect(sweep({ elements: [surface], minRatio: 0.5 }).occlusions).toHaveLength(1);
+    // The same ratio on an element with DOM text is still a filtered hairline.
+    expect(sweep({ elements: [covered({ occludedPct: 1 })] }).occlusions).toEqual([]);
+  });
+
   it('a painted occlusion ranks with the text-hiding ones, above a bigger blank one', () => {
     const r = sweep({
       elements: [

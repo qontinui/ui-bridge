@@ -374,7 +374,7 @@ not tell you which one the user can actually read.
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `minRatio` | number | `0.02` | Drop occlusions covering less than this fraction of the covered element. Filters hairline overlaps. |
+| `minRatio` | number | `0.02` | Drop occlusions covering less than this fraction of the covered element. Filters hairline overlaps. Never applies to a `paintsText` element: one covered sample of its dense grid is already an overlay over its text. |
 | `includeExpected` | boolean | `false` | Keep occlusions caused by a tracked modal. See [Expected overlays](#expected-overlays). |
 | `recency` | string | relay cache TTL (5 s) | **Relay transport only.** How fresh the backing snapshot must be: `"any"` (accept any non-empty cache), `"current"` (always refetch), or a max age in ms. Omitted, it falls back to the relay's configured `cacheTtlMs`. Ignored by the in-page handler, which always reads the live registry. |
 
@@ -478,7 +478,9 @@ descendants, and a hit on a descendant counts as the container itself. A
 - is hit-tested on a dense grid (8×8 interior points plus a row along the top
   and bottom edges, inset `min(8px, 2% of height)`), so a one-row status strip
   over a tall terminal is seen;
-- reports any occlusion as `hidesText: true`, `textSource: "painted"`.
+- reports any occlusion, whatever the request's `minRatio`, as `hidesText: true`,
+  `textSource: "painted"`. One covered sample of the 81 rounds to a `ratio` of
+  `0.01`, under the default `minRatio`, and is still reported.
 
 A registered `<canvas>` element is implicitly `paintsText`: it attributes itself
 in the census and its occlusions read `textSource: "painted"`, but it keeps the
