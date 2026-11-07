@@ -34,6 +34,7 @@
 
 import { readAriaLabelAttr } from '../core/a11y';
 import type { SelectAction } from './types';
+import { sdkDispatch } from '../core/sdk-dispatch';
 
 /** Why a combobox select could not be completed. */
 export type ComboboxSelectFailure =
@@ -109,7 +110,7 @@ function actuateTrigger(element: HTMLElement): void {
   );
   element.dispatchEvent(make('pointerup', 0));
   element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0 }));
-  element.click();
+  sdkDispatch(() => element.click());
 }
 
 /**
@@ -265,7 +266,7 @@ export function comboboxSelect(
         return;
       }
 
-      matched.click();
+      sdkDispatch(() => matched.click());
       resolve({ ok: true, matchedText: matched.textContent?.trim() ?? targetValue });
     };
 

@@ -146,6 +146,14 @@ export { useUndoRedo } from './useUndoRedo';
 // Command relay
 export { useCommandRelay, type UseCommandRelayOptions } from './useCommandRelay';
 export { CommandRelayListener, type CommandRelayListenerProps } from './CommandRelayListener';
+// Passive real-session capture rides the command relay's phone-home channel;
+// its outcome counters are read here.
+export {
+  getPassiveCaptureStatuses,
+  type PassiveCaptureStatus,
+  type PassiveCaptureState,
+  type PassiveCaptureAdmission,
+} from '../recording/passive-capture';
 
 // Capture-host pattern: stable outer host + iframe + echo input for driving
 // automation loops through pages that would otherwise unmount the SDK.
