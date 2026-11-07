@@ -9,11 +9,12 @@
  * DB layer called a runner command that always errors. Nothing consumed it,
  * and it was deleted rather than repaired.
  *
- * Nothing else checks a published surface: `tsc`, the linter and the rest of
- * the suite all pass a package that exports one entry more than it should. So
- * the `exports` map is pinned here as a literal allowlist, which makes adding
- * or removing a subpath a reviewed edit of this file. The deleted layer is
- * pinned absent at every door a consumer could reach it through: a subpath
+ * Nothing else pins the published set: `tsc`, the linter and the rest of the
+ * suite pass a package that exports an entry more than it should (the native
+ * public-surface test reads the same map, but refuses only `./native/server`).
+ * So the `exports` map is pinned here as a literal allowlist, which makes
+ * adding or removing a subpath a reviewed edit of this file. The deleted layer
+ * is pinned absent at every door a consumer could reach it through: a subpath
  * key or target, the root barrel's re-exports, the root module's runtime
  * namespace, and any production source that could feed another subpath.
  *
@@ -37,6 +38,8 @@ const packageRoot = resolve(srcRoot, '..');
  * an embedder API (D4 of plan
  * `2026-11-06-what-the-fleet-records-and-advertises-matches-what-actually-ran`,
  * whose Phase 7 deletes only the runner's executor-less Contracts view).
+ * Listing it pins its presence, not its independence: its `api` condition
+ * also fetches with the page's default credentials (`contracts/executor.ts`).
  */
 const PUBLISHED_SUBPATHS = [
   '.',
@@ -77,7 +80,8 @@ const LAYER_MODULE = 'verification-layers';
 
 /**
  * The runtime values the deleted layer exported. `ApiLayerExecutor` is the
- * session-sharing verifier; `MatrixExecutor` is the orchestrator that ran it.
+ * layer's API verifier, which shared the page session; `MatrixExecutor` is
+ * the orchestrator that ran it.
  */
 const RETIRED_VALUES = [
   'ApiLayerExecutor',
