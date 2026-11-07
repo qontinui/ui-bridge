@@ -486,7 +486,9 @@ A registered `<canvas>` element is implicitly `paintsText`: it attributes itself
 in the census and its occlusions read `textSource: "painted"`, but it keeps the
 ordinary nine-point grid (and the 48 px centre-only rule). Only an explicit
 `paintsText: true` pays for the dense grid, because media discovery may register
-hundreds of canvases.
+hundreds of canvases. That price is 81 `elementFromPoint` hit-tests per surface
+on every state read (each snapshot and each sweep), against at most 9 for an
+ordinary element, so set it on the few painted surfaces a page has.
 
 `canvasCoverage` is the census that keeps `clear` honest. It counts every
 visible `<canvas>` of at least 48×48 CSS px that intersects the viewport.
