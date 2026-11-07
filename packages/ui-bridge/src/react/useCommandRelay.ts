@@ -37,18 +37,30 @@ export interface UseCommandRelayOptions {
   /** Heartbeat interval in ms (default: 10000) */
   heartbeatInterval?: number;
   /**
-   * Explicit runner URL override for phone-home registration.
-   * Default: 'http://127.0.0.1:9876'. When set, phone-home fires regardless
-   * of hostname; otherwise it is gated to localhost-family hosts.
+   * Explicit runner URL override for phone-home registration — and for
+   * passive capture, which relays to the same runner.
+   * Default: 'http://127.0.0.1:9876'. When set, phone-home (and with it
+   * passive capture) fires regardless of hostname; otherwise both are gated
+   * to localhost-family hosts.
    */
   runnerUrl?: string;
-  /** Opt out of the phone-home registration entirely. */
+  /**
+   * Opt out of the phone-home registration entirely. This is also the
+   * opt-out for passive real-session capture, which has no flag of its own:
+   * it runs wherever phone-home runs inside a `UIBridgeProvider`, relaying
+   * each human interaction on a registered element (the action type, the
+   * element's registry id and tab/session/version identifiers — never a
+   * typed value) to the runner's `POST /apps/{appId}/journey/observe`, and
+   * only while the runner's registration answer admits this page. Outcomes:
+   * `getPassiveCaptureStatuses()`.
+   */
   disablePhoneHome?: boolean;
   /**
    * Stable identity for this app in the runner's registry. Default:
    * `location.host` (port-inclusive, e.g. `localhost:3000`), so two dev apps
    * on the same hostname but different ports register as distinct apps
-   * instead of contending for one registry row.
+   * instead of contending for one registry row. Passive capture relays
+   * under the same id.
    */
   appId?: string;
   /** Display name. Default: `document.title || location.hostname`. */
@@ -62,7 +74,10 @@ export interface UseCommandRelayOptions {
   /**
    * Optional SDK / app version string surfaced on heartbeats so the server
    * can report what is actually connected (rather than relying on
-   * build-time defaults baked into a static config).
+   * build-time defaults baked into a static config). Passive capture also
+   * relays it as `appVersion` when it is an identifier
+   * (`[A-Za-z0-9._:+-]`, ≤128 chars); a non-empty value that is not is
+   * dropped from the relay and reported in the status's `droppedIds`.
    */
   version?: string;
   /**
@@ -214,6 +229,12 @@ function resolvePhoneHomeRunnerUrl(runnerUrlOption: string | undefined): string 
  * 3. POSTs results back to `{basePath}/commands`
  * 4. Sends heartbeat every 10s to `{basePath}/heartbeat`
  * 5. Handles reconnection on visibility change
+ * 6. Phone-home: registers this app with the local runner (unless
+ *    `disablePhoneHome`)
+ * 7. Passive capture: wherever phone-home runs, relays each human interaction
+ *    on a registered element to the runner's journey observe route while the
+ *    runner admits this page (see `disablePhoneHome`;
+ *    `getPassiveCaptureStatuses()` reads the outcomes)
  */
 export function useCommandRelay(options?: UseCommandRelayOptions): void {
   const enabled = options?.enabled ?? true;
