@@ -26,7 +26,9 @@ describe('InteractionInterceptor (default config, as RecordingSessionManager bui
     const el = document.createElement('input');
     el.type = type;
     document.body.append(el);
-    registry.registerElement(id, el, { type: type === 'checkbox' ? 'checkbox' : 'input' });
+    registry.registerElement(id, el, {
+      type: type === 'checkbox' || type === 'radio' ? type : 'input',
+    });
     return el;
   };
 
@@ -59,6 +61,26 @@ describe('InteractionInterceptor (default config, as RecordingSessionManager bui
     expect(events.map((e) => ({ actionType: e.actionType, value: e.value }))).toEqual([
       { actionType: 'check', value: 'true' },
     ]);
+  });
+
+  it('records a radio choice as exactly one check carrying its value, and no type', async () => {
+    const monthly = field('plan-monthly', 'radio');
+    const yearly = field('plan-yearly', 'radio');
+    monthly.name = 'plan';
+    monthly.value = 'monthly';
+    yearly.name = 'plan';
+    yearly.value = 'yearly';
+
+    yearly.click(); // the newly checked radio fires `input` and then `change`
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(
+      events.map((e) => ({
+        actionType: e.actionType,
+        targetElementId: e.targetElementId,
+        value: e.value,
+      }))
+    ).toEqual([{ actionType: 'check', targetElementId: 'plan-yearly', value: 'yearly' }]);
   });
 
   it('coalesces a run of keystrokes in a text field into one type carrying the field value', async () => {
