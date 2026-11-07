@@ -17,7 +17,8 @@
  *     argument;
  *   - a click event built with a literal type: `new MouseEvent('click')`, or
  *     any subclass of MouseEvent (PointerEvent, DragEvent, WheelEvent), also
- *     written `new view.MouseEvent(…)`. A dispatched click-typed instance of
+ *     written `new view.MouseEvent(…)` or `new view['MouseEvent'](…)`. A
+ *     dispatched click-typed instance of
  *     MouseEvent or a subclass is what runs activation behaviour;
  *   - an event of that family built from a non-literal type. It may be built
  *     only inside a reviewed builder, from the builder's own type parameter,
@@ -27,7 +28,11 @@
  *   - `dispatchEvent(<variable>)`. The site must be reviewed, at its exact
  *     count, and the variable must be a `const` built in the same function
  *     from a literal non-click type, or by a reviewed builder
- *     (VARIABLE_DISPATCH_ALLOWLIST).
+ *     (VARIABLE_DISPATCH_ALLOWLIST);
+ *   - any use of a reviewed builder's, forwarder's or scoped-only function's
+ *     name, in its own file, other than a direct call: an export list,
+ *     `export default`, an alias, a callback argument, a property value. Every
+ *     call to one of them is therefore a call this scan reads.
  *
  * "Inside the scope" means the nearest enclosing function is a scoped-only
  * function, or the inline, non-async callback passed to `sdkDispatch(…)`.
@@ -42,6 +47,13 @@
  *   - a computed key: `el[name]()`;
  *   - `Reflect.construct(…)`, and `document.createEvent` with
  *     `initMouseEvent`;
+ *   - an event built inside the scope, returned, and dispatched outside it
+ *     (`el.dispatchEvent(buildInScope())`, where `buildInScope` returns
+ *     `sdkDispatch(() => new MouseEvent('click'))`): the scope is checked where
+ *     the event is built, while activation happens where it is dispatched;
+ *   - a reviewed builder that overwrites its type parameter before building
+ *     (`type = 'click'`): the rule checks only that it builds from that
+ *     parameter;
  *   - code outside this package's source, including the app's own handlers
  *     that react later to an agent's action (the gap sdk-dispatch.ts states).
  */
@@ -70,7 +82,8 @@ const CLICK_EVENT_CLASSES = new Set(['MouseEvent', 'PointerEvent', 'DragEvent', 
  * index of the parameter that carries the event type. A builder may build a
  * MouseEvent-family event from that parameter. Every call to it must pass a
  * literal type other than 'click', or run inside the scope. Each builder must
- * be private to its file, so that every call to it is visible here.
+ * be private to its file and used there only by direct calls (both checked
+ * below), so that every call to it is visible here.
  */
 const REVIEWED_BUILDERS = new Map<string, number>([
   ['control/action-executor.ts::createMouseEvent', 0],
@@ -249,7 +262,7 @@ function inScope(node: ts.Node): boolean {
 /** The class a `new` builds when it is MouseEvent or a subclass: `new MouseEvent(…)`, `new view.MouseEvent(…)`. */
 function clickEventClass(node: ts.NewExpression): string | null {
   const e = node.expression;
-  const name = ts.isIdentifier(e) ? e.text : ts.isPropertyAccessExpression(e) ? e.name.text : null;
+  const name = ts.isIdentifier(e) ? e.text : memberName(e);
   return name !== null && CLICK_EVENT_CLASSES.has(name) ? name : null;
 }
 
@@ -406,6 +419,7 @@ interface ScanResult {
   scopedOnlyCallsOutside: Finding[];
   unreviewedBuilders: Finding[];
   builderCalls: Finding[];
+  references: Finding[];
   variableDispatches: Finding[];
   variableDispatchCounts: Map<string, number>;
   builders: Map<string, BuilderSeen>;
@@ -418,6 +432,7 @@ function emptyResult(): ScanResult {
     scopedOnlyCallsOutside: [],
     unreviewedBuilders: [],
     builderCalls: [],
+    references: [],
     variableDispatches: [],
     variableDispatchCounts: new Map(),
     builders: new Map(),
@@ -491,6 +506,35 @@ function scanSource(rel: string, text: string, out: ScanResult): void {
     }
   };
 
+  /** Names whose every use in this file must be a direct call: its reviewed builders and forwarders, and the scoped-only functions. */
+  const guardedNames = new Set<string>([
+    ...SCOPED_ONLY_FUNCTIONS,
+    ...[...REVIEWED_BUILDERS.keys(), ...TYPE_FORWARDERS.keys()]
+      .filter((key) => key.startsWith(`${rel}::`))
+      .map((key) => key.slice(rel.length + 2)),
+  ]);
+
+  const checkReference = (node: ts.Identifier) => {
+    if (!guardedNames.has(node.text)) return;
+    const parent = node.parent;
+    const declarationName =
+      (ts.isFunctionDeclaration(parent) || ts.isVariableDeclaration(parent)) &&
+      parent.name === node;
+    const directCall = ts.isCallExpression(parent) && parent.expression === node;
+    const otherMemberName =
+      (ts.isPropertyAccessExpression(parent) ||
+        ts.isPropertyAssignment(parent) ||
+        ts.isMethodDeclaration(parent) ||
+        ts.isPropertyDeclaration(parent)) &&
+      parent.name === node;
+    if (declarationName || directCall || otherMemberName) return;
+    out.references.push({
+      where: at(node),
+      kind: 'non-call-reference',
+      text: `${rel}::${node.text}`,
+    });
+  };
+
   const checkVariableDispatch = (node: ts.CallExpression) => {
     const arg = variableDispatchArg(node, sf);
     if (arg === null || inScope(node)) return;
@@ -513,6 +557,7 @@ function scanSource(rel: string, text: string, out: ScanResult): void {
 
   const visit = (node: ts.Node) => {
     if (isFunctionNode(node)) recordBuilder(node);
+    if (ts.isIdentifier(node)) checkReference(node);
     const kind = activationKind(node, sf);
     if (kind !== null) {
       out.total++;
@@ -601,6 +646,10 @@ describe('sdkDispatch ratchet', () => {
     ).toEqual([]);
   });
 
+  it('a reviewed builder, forwarder or scoped-only function is used only as a direct call in its own file', () => {
+    expect(result.references).toEqual([]);
+  });
+
   it('a dispatchEvent of an event built elsewhere is reviewed, and its variable is built safely in its own function', () => {
     expect(result.variableDispatches).toEqual([]);
   });
@@ -623,6 +672,7 @@ describe('sdkDispatch ratchet', () => {
           "  const built = new PointerEvent('click');",
           "  const dragged = new DragEvent('click');",
           "  const viewBuilt = new window.MouseEvent('click');",
+          "  const viewIndexed = new window['MouseEvent']('click');",
           '  HTMLElement.prototype.click.call(el);',
           '  HTMLElement.prototype.click.bind(el)();',
           "  el['click']();",
@@ -654,6 +704,7 @@ describe('sdkDispatch ratchet', () => {
         'requestSubmit',
         'execCommand',
         'dispatched-click',
+        'click-event',
         'click-event',
         'click-event',
         'click-event',
@@ -747,6 +798,43 @@ describe('sdkDispatch ratchet', () => {
       expect(countMismatches(planted, ['react/commandHandlers.ts::executeCommand::event'])).toEqual(
         ['react/commandHandlers.ts::executeCommand::event: reviewed 1, found 2']
       );
+    });
+
+    it('a reviewed name used other than as a direct call: an export list, an alias, a callback', () => {
+      const planted = emptyResult();
+      scanSource(
+        'control/action-executor.ts',
+        [
+          'function createMouseEvent(type: string, element: HTMLElement): MouseEvent {',
+          '  return new MouseEvent(type);',
+          '}',
+          'export { createMouseEvent };',
+          'export const leak = createMouseEvent;',
+          'const viaProperty = { build: createMouseEvent };',
+          'export default createMouseEvent;',
+          "createMouseEvent('mousedown', document.body);",
+        ].join('\n'),
+        planted
+      );
+      scanSource(
+        'react/commandHandlers.ts',
+        [
+          'function dispatchRealClickSequence(el: HTMLElement): void {',
+          '  el.click();',
+          '}',
+          'function plant(el: HTMLElement): void {',
+          '  [el].forEach(dispatchRealClickSequence);',
+          '}',
+        ].join('\n'),
+        planted
+      );
+      expect(planted.references.map((f) => f.where)).toEqual([
+        'control/action-executor.ts:4',
+        'control/action-executor.ts:5',
+        'control/action-executor.ts:6',
+        'control/action-executor.ts:7',
+        'react/commandHandlers.ts:5',
+      ]);
     });
 
     it('a reviewed builder that builds from another variable, or is exported', () => {
