@@ -330,7 +330,7 @@ The server side of this pairing is
 | `enabled`              | `boolean`                                                | `true`                     | Whether the relay is active                        |
 | `heartbeatInterval`    | `number`                                                 | `10000`                    | Heartbeat interval in ms                           |
 | `runnerUrl`            | `string`                                                 | `'http://127.0.0.1:9876'`  | Explicit runner URL for phone-home registration    |
-| `disablePhoneHome`     | `boolean`                                                | `false`                    | Opt out of phone-home registration entirely        |
+| `disablePhoneHome`     | `boolean`                                                | `false`                    | Opt out of phone-home (and passive capture)        |
 | `appId`                | `string`                                                 | `location.host`            | Stable identity in the runner's registry           |
 | `appName`              | `string`                                                 | `document.title` or hostname | Display name                                     |
 | `appType`              | `'web' \| 'desktop' \| 'mobile' \| 'dashboard' \| 'other'` | `'web'`                  | App classification                                 |
@@ -348,6 +348,12 @@ Strict mode is the only mode in `@qontinui/ui-bridge` ≥ 0.12: without
 
 Without `runnerUrl`, phone-home is gated to localhost-family hosts. Setting it
 makes phone-home fire regardless of hostname.
+
+`CommandRelayListener` also runs **passive capture** wherever phone-home runs:
+each human interaction on a registered element is relayed to the runner's
+journey observe route while the runner admits this page. `disablePhoneHome` is
+its only opt-out, and `getPassiveCaptureStatuses()` reads its outcomes. See
+[Passive capture](./hooks-integration.md#passive-capture).
 
 ## CaptureHostFrame
 
