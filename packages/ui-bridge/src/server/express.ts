@@ -17,7 +17,7 @@ import { withoutReservedCaller } from './reserved-caller';
 import { scopedCallerRefusal } from './scoped-refusal';
 import { mapInternalErrorCode } from '../diagnostics';
 import type { SSEManager } from './sse-handler';
-import { MAX_BODY_BYTES } from './request-body';
+import { MAX_BODY_BYTES, interpretJsonBody } from './request-body';
 
 /**
  * Express-specific configuration
@@ -151,21 +151,16 @@ function jsonBody() {
     req.on('end', () => {
       if (settled) return;
       settled = true;
-      const text = Buffer.concat(chunks).toString('utf8');
       raw._body = true;
-      if (!text.trim()) {
-        next();
+      const read = interpretJsonBody(
+        Buffer.concat(chunks).toString('utf8'),
+        req.headers['content-type']
+      );
+      if (!read.ok) {
+        res.status(read.status).json(wrapError(read.message, 'INVALID_REQUEST'));
         return;
       }
-      try {
-        raw.body = JSON.parse(text);
-      } catch {
-        const type = req.headers['content-type'];
-        if (!type || /[/+]json\b/i.test(type)) {
-          res.status(400).json(wrapError('Request body is not valid JSON', 'INVALID_REQUEST'));
-          return;
-        }
-      }
+      if (read.body !== undefined) raw.body = read.body;
       next();
     });
     req.on('error', () => {
