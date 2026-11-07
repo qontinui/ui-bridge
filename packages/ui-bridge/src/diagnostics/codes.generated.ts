@@ -44,13 +44,20 @@ export type UiBridgeErrorCode =
   | "UB-OBS-BELOW-CONFIDENCE-FLOOR"
   | "UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD"
   | "UB-OBS-FRONTIER-OPEN"
+  | "UB-OBS-HIT-TEST-UNMEASURABLE"
   | "UB-OBS-INPUT-MISSING"
   | "UB-OBS-LEDGER-SCHEMA-ABSENT"
   | "UB-OBS-LEDGER-WRITE-FAILING"
   | "UB-OBS-MODEL-REPLY-UNPARSEABLE"
   | "UB-OBS-NEEDS-MULTI-FRAME-INPUT"
   | "UB-OBS-NO-EVENT-BEFORE-TIMEOUT"
+  | "UB-OBS-NO-EXPECTATION"
   | "UB-OBS-NO-OBSERVATIONS"
+  | "UB-OBS-NO-RESULTS"
+  | "UB-OBS-NOT-ATTEMPTED-BY-POLICY"
+  | "UB-OBS-NOT-ATTEMPTED-DESTRUCTIVE"
+  | "UB-OBS-NOT-ATTEMPTED-WRITE"
+  | "UB-OBS-NOT-REPORTED"
   | "UB-OBS-PERFORMANCE-OBSERVER-UNSUPPORTED"
   | "UB-OBS-PRODUCER-FAILED"
   | "UB-OBS-PRODUCER-NOT-RUN"
@@ -105,13 +112,20 @@ export const UI_BRIDGE_ERROR_CODES: readonly UiBridgeErrorCode[] = [
   "UB-OBS-BELOW-CONFIDENCE-FLOOR",
   "UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD",
   "UB-OBS-FRONTIER-OPEN",
+  "UB-OBS-HIT-TEST-UNMEASURABLE",
   "UB-OBS-INPUT-MISSING",
   "UB-OBS-LEDGER-SCHEMA-ABSENT",
   "UB-OBS-LEDGER-WRITE-FAILING",
   "UB-OBS-MODEL-REPLY-UNPARSEABLE",
   "UB-OBS-NEEDS-MULTI-FRAME-INPUT",
   "UB-OBS-NO-EVENT-BEFORE-TIMEOUT",
+  "UB-OBS-NO-EXPECTATION",
   "UB-OBS-NO-OBSERVATIONS",
+  "UB-OBS-NO-RESULTS",
+  "UB-OBS-NOT-ATTEMPTED-BY-POLICY",
+  "UB-OBS-NOT-ATTEMPTED-DESTRUCTIVE",
+  "UB-OBS-NOT-ATTEMPTED-WRITE",
+  "UB-OBS-NOT-REPORTED",
   "UB-OBS-PERFORMANCE-OBSERVER-UNSUPPORTED",
   "UB-OBS-PRODUCER-FAILED",
   "UB-OBS-PRODUCER-NOT-RUN",
@@ -627,6 +641,22 @@ export const DIAGNOSTICS: Record<UiBridgeErrorCode, DiagnosticEntry> = {
     ],
     category: "system",
   },
+  "UB-OBS-HIT-TEST-UNMEASURABLE": {
+    description: "Observation unknown: the hit-test looked and cannot tell whether a pointer reaches the target (a null hit, a hit on a shadow host on the target's composed path, a cross-origin frame, no `document.elementFromPoint`, or a target computing `pointer-events: none`), so the target is neither reachable nor blocked as far as is known.",
+    commonCauses: [
+      "`document.elementFromPoint` returned nothing at the sample points (a null hit)",
+      "The hit landed on a shadow host on the target's composed path, which cannot see into its shadow tree",
+      "The target is inside a cross-origin frame",
+      "The runtime has no `document.elementFromPoint`",
+      "The target computes `pointer-events: none` when measured, so the hit-test skips it",
+      "Some sample points were covered and the rest unmeasurable, so no point was measured as the target's own",
+    ],
+    recoveryTemplate: [
+      { suggestion: "Read `unknown.detail` for the hit-test arm that could not measure, and treat the target's reachability as not known rather than as reachable", confidence: 0.6, retryable: false, priority: 1 },
+      { suggestion: "Measure in a real browser layout, with the target scrolled into view and in a same-origin frame, then act again", confidence: 0.5, retryable: true, priority: 2 },
+    ],
+    category: "system",
+  },
   "UB-OBS-INPUT-MISSING": {
     description: "Observation unknown: a required input was absent (no `elements` array, no geometry/bbox, no frame, no viewport). This says nothing about the page itself.",
     commonCauses: [
@@ -695,6 +725,18 @@ export const DIAGNOSTICS: Record<UiBridgeErrorCode, DiagnosticEntry> = {
     ],
     category: "system",
   },
+  "UB-OBS-NO-EXPECTATION": {
+    description: "Verdict unknown: there was no usable expectation to judge against (assertion criteria that do not parse, an empty `activateStates`), so the result can be called neither passed nor failed.",
+    commonCauses: [
+      "The assertion's criteria do not parse",
+      "The expected-state list (e.g. `activateStates`) is empty",
+      "A verdict arrived for a check whose expectation was never committed",
+    ],
+    recoveryTemplate: [
+      { suggestion: "Fix or supply the expectation (the criteria, the expected states, or the committed check), then verify again", confidence: 0.7, retryable: false, priority: 1 },
+    ],
+    category: "system",
+  },
   "UB-OBS-NO-OBSERVATIONS": {
     description: "Observation unknown: the ledger holds no observations at all for the question asked, so nothing can be said either way.",
     commonCauses: [
@@ -703,6 +745,66 @@ export const DIAGNOSTICS: Record<UiBridgeErrorCode, DiagnosticEntry> = {
     ],
     recoveryTemplate: [
       { suggestion: "Drive the app (or run the explorer) so observations are recorded, then ask again", confidence: 0.6, retryable: true, priority: 1 },
+    ],
+    category: "system",
+  },
+  "UB-OBS-NO-RESULTS": {
+    description: "Verdict unknown: there was nothing to judge — zero results or assertions were folded, so the verdict is unknown, never passed. An empty set is not a pass.",
+    commonCauses: [
+      "The assertion batch, check group or condition set was empty",
+      "The producer returned a report with zero results",
+      "A filter or selector matched nothing, so no check ran",
+    ],
+    recoveryTemplate: [
+      { suggestion: "Supply at least one assertion or check, then run the verification again", confidence: 0.7, retryable: false, priority: 1 },
+      { suggestion: "Check that the filter or selector that builds the set matches what you meant to verify", confidence: 0.5, retryable: false, priority: 2 },
+    ],
+    category: "system",
+  },
+  "UB-OBS-NOT-ATTEMPTED-BY-POLICY": {
+    description: "Verdict unknown: a policy withheld the attempt (e.g. `stopOnFailure` after an earlier failure, an `allow_effects` rule), so the check never ran — skipped is not passed.",
+    commonCauses: [
+      "`stopOnFailure` ended the batch after an earlier failure",
+      "An `allow_effects` rule forbids the effect the check needs",
+      "The check, or its group, is disabled by configuration",
+    ],
+    recoveryTemplate: [
+      { suggestion: "Fix the earlier failure (or turn off `stopOnFailure`) and run again so this check is attempted", confidence: 0.6, retryable: true, priority: 1 },
+      { suggestion: "If the policy is intended, report this check as not verified rather than as passed", confidence: 0.5, retryable: false, priority: 2 },
+    ],
+    category: "system",
+  },
+  "UB-OBS-NOT-ATTEMPTED-DESTRUCTIVE": {
+    description: "Verdict unknown: the check was deliberately not attempted because performing it would be a destructive action, so nothing was observed and nothing passed.",
+    commonCauses: [
+      "The check's action would delete, overwrite or otherwise irreversibly change state",
+      "The run is configured to skip destructive actions",
+    ],
+    recoveryTemplate: [
+      { suggestion: "Run the check against a disposable environment or fixture where the destructive action is safe, or verify the behaviour another way", confidence: 0.5, retryable: false, priority: 1 },
+    ],
+    category: "system",
+  },
+  "UB-OBS-NOT-ATTEMPTED-WRITE": {
+    description: "Verdict unknown: the check was deliberately not attempted because performing it would be a write, so nothing was observed and nothing passed.",
+    commonCauses: [
+      "The check's action would submit, save or otherwise write data",
+      "The run is read-only or configured to skip writes",
+    ],
+    recoveryTemplate: [
+      { suggestion: "Run the check where writes are allowed (e.g. a test account or a stubbed backend), or verify the behaviour another way", confidence: 0.5, retryable: false, priority: 1 },
+    ],
+    category: "system",
+  },
+  "UB-OBS-NOT-REPORTED": {
+    description: "Verdict unknown: the producer ran but reported no result for this item, so the missing result is unknown, never passed.",
+    commonCauses: [
+      "The report covered other items and left this one out",
+      "The producer stopped or was cut off before reporting this item",
+      "The item was dispatched but no verdict for it reached the report",
+    ],
+    recoveryTemplate: [
+      { suggestion: "Re-run the producer, and read its log for why this item was left out of the report", confidence: 0.5, retryable: true, priority: 1 },
     ],
     category: "system",
   },

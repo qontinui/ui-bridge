@@ -225,4 +225,11 @@ def test_unknown_code_is_the_closed_wire_set_in_contract_order() -> None:
         "to_node_unobserved",
         "performance_observer_unsupported",
         "no_event_before_timeout",
+        "no_results",
+        "no_expectation",
+        "not_attempted_destructive",
+        "not_attempted_write",
+        "not_attempted_by_policy",
+        "not_reported",
+        "hit_test_unmeasurable",
     ]

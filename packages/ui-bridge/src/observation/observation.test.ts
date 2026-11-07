@@ -215,6 +215,13 @@ describe('UnknownCode', () => {
       'to_node_unobserved',
       'performance_observer_unsupported',
       'no_event_before_timeout',
+      'no_results',
+      'no_expectation',
+      'not_attempted_destructive',
+      'not_attempted_write',
+      'not_attempted_by_policy',
+      'not_reported',
+      'hit_test_unmeasurable',
     ]);
     expect(isUnknownCode('stale_input')).toBe(true);
     expect(isUnknownCode('performance_observer_unsupported')).toBe(true);

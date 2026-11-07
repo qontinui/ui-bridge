@@ -49,9 +49,10 @@
 // ============================================================================
 
 /**
- * Why a producer could not answer. A CLOSED set: every `unknown` observation
- * carries exactly one of these, so an agent branches on the code rather than
- * parsing English out of `detail`.
+ * Why a producer could not answer — or why a verdict can say neither passed nor
+ * failed. A CLOSED set: every `unknown` observation carries exactly one of
+ * these, so an agent branches on the code rather than parsing English out of
+ * `detail`.
  */
 export type UnknownCode =
   /** The bridge/app could not be reached. */
@@ -85,7 +86,21 @@ export type UnknownCode =
   /** The webview's `PerformanceObserver` does not support the entry type the measurement needs (e.g. `layout-shift`, `longtask`). */
   | 'performance_observer_unsupported'
   /** The awaited event did not occur before the observation window closed. */
-  | 'no_event_before_timeout';
+  | 'no_event_before_timeout'
+  /** Nothing to judge: zero results or assertions were folded, so the verdict is unknown — never passed. */
+  | 'no_results'
+  /** No usable expectation to judge against (assertion criteria that do not parse, an empty `activateStates`). */
+  | 'no_expectation'
+  /** Deliberately not attempted, because performing the check would be a destructive action. */
+  | 'not_attempted_destructive'
+  /** Deliberately not attempted, because performing the check would be a write. */
+  | 'not_attempted_write'
+  /** A policy withheld the attempt (e.g. `stopOnFailure` after an earlier failure, an `allow_effects` rule). */
+  | 'not_attempted_by_policy'
+  /** The producer ran but reported no result for this item. */
+  | 'not_reported'
+  /** The hit-test looked and cannot tell whether a pointer reaches the target (a null hit, a shadow host on the target's composed path, no `document.elementFromPoint`, `pointer-events: none`). */
+  | 'hit_test_unmeasurable';
 
 /** Every {@link UnknownCode}, in the canonical (wire-contract) order. */
 export const UNKNOWN_CODES: readonly UnknownCode[] = [
@@ -105,6 +120,13 @@ export const UNKNOWN_CODES: readonly UnknownCode[] = [
   'to_node_unobserved',
   'performance_observer_unsupported',
   'no_event_before_timeout',
+  'no_results',
+  'no_expectation',
+  'not_attempted_destructive',
+  'not_attempted_write',
+  'not_attempted_by_policy',
+  'not_reported',
+  'hit_test_unmeasurable',
 ] as const;
 
 /** Type guard: is `value` one of the closed {@link UnknownCode} members? */

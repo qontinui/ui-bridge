@@ -58,6 +58,13 @@ class UnknownCode(str, Enum):
     TO_NODE_UNOBSERVED = "to_node_unobserved"
     PERFORMANCE_OBSERVER_UNSUPPORTED = "performance_observer_unsupported"
     NO_EVENT_BEFORE_TIMEOUT = "no_event_before_timeout"
+    NO_RESULTS = "no_results"
+    NO_EXPECTATION = "no_expectation"
+    NOT_ATTEMPTED_DESTRUCTIVE = "not_attempted_destructive"
+    NOT_ATTEMPTED_WRITE = "not_attempted_write"
+    NOT_ATTEMPTED_BY_POLICY = "not_attempted_by_policy"
+    NOT_REPORTED = "not_reported"
+    HIT_TEST_UNMEASURABLE = "hit_test_unmeasurable"
 
 
 class ObservationProducer(BaseModel):

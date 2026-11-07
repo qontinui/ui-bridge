@@ -13,7 +13,7 @@ and their recovery templates.
 ## Error Codes
 
 Every code is `UB-`-prefixed and belongs to one of five categories: `element`,
-`action`, `assertion`, `network`, `system`. There are 51:
+`action`, `assertion`, `network`, `system`. There are 65:
 
 | Code | Category | Description |
 | ---- | -------- | ----------- |
@@ -53,12 +53,26 @@ Every code is `UB-`-prefixed and belongs to one of five categories: `element`,
 | `UB-OBS-APP-UNREACHABLE` | network | The bridge, the runner, or the app behind it could not be reached, so nothing was attempted or observed (an observation carrying it is unknown, not empty). |
 | `UB-OBS-BELOW-CONFIDENCE-FLOOR` | system | Observation unknown: observations existed but every one fell under the caller's confidence floor. |
 | `UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD` | system | Observation unknown: the running build does not serve the capability this observation needs. |
+| `UB-OBS-FRONTIER-OPEN` | system | Observation unknown: the answer depends on frontier entries (declared affordances never yet activated) that are still open, so a negative answer would be a claim about unexplored territory. |
+| `UB-OBS-HIT-TEST-UNMEASURABLE` | system | Observation unknown: the hit-test looked and cannot tell whether a pointer reaches the target (a null hit, a hit on a shadow host on the target's composed path, a cross-origin frame, no `document.elementFromPoint`, or a target computing `pointer-events: none`), so the target is neither reachable nor blocked as far as is known. |
 | `UB-OBS-INPUT-MISSING` | system | Observation unknown: a required input was absent (no `elements` array, no geometry/bbox, no frame, no viewport). This says nothing about the page itself. |
+| `UB-OBS-LEDGER-SCHEMA-ABSENT` | system | Observation unknown: the observation ledger's storage does not exist in this deployment, so nothing could be recorded or read. |
+| `UB-OBS-LEDGER-WRITE-FAILING` | system | Observation unknown: the observation ledger exists but its writes are failing, so recent observations are missing from it. |
 | `UB-OBS-MODEL-REPLY-UNPARSEABLE` | system | Observation unknown: a model reply could not be parsed or failed strict validation. |
 | `UB-OBS-NEEDS-MULTI-FRAME-INPUT` | system | Observation unknown: the question needs more than one frame (e.g. animation_settled) and only one was available. |
+| `UB-OBS-NO-EVENT-BEFORE-TIMEOUT` | system | Observation unknown: the awaited event did not occur before the observation window closed, so the timing it would have measured does not exist for this run. |
+| `UB-OBS-NO-EXPECTATION` | system | Verdict unknown: there was no usable expectation to judge against (assertion criteria that do not parse, an empty `activateStates`), so the result can be called neither passed nor failed. |
+| `UB-OBS-NO-OBSERVATIONS` | system | Observation unknown: the ledger holds no observations at all for the question asked, so nothing can be said either way. |
+| `UB-OBS-NO-RESULTS` | system | Verdict unknown: there was nothing to judge — zero results or assertions were folded, so the verdict is unknown, never passed. An empty set is not a pass. |
+| `UB-OBS-NOT-ATTEMPTED-BY-POLICY` | system | Verdict unknown: a policy withheld the attempt (e.g. `stopOnFailure` after an earlier failure, an `allow_effects` rule), so the check never ran — skipped is not passed. |
+| `UB-OBS-NOT-ATTEMPTED-DESTRUCTIVE` | system | Verdict unknown: the check was deliberately not attempted because performing it would be a destructive action, so nothing was observed and nothing passed. |
+| `UB-OBS-NOT-ATTEMPTED-WRITE` | system | Verdict unknown: the check was deliberately not attempted because performing it would be a write, so nothing was observed and nothing passed. |
+| `UB-OBS-NOT-REPORTED` | system | Verdict unknown: the producer ran but reported no result for this item, so the missing result is unknown, never passed. |
+| `UB-OBS-PERFORMANCE-OBSERVER-UNSUPPORTED` | system | Observation unknown: the webview's PerformanceObserver does not support the entry type this measurement needs (e.g. layout-shift, longtask), so the value was not measured — it is not zero. |
 | `UB-OBS-PRODUCER-FAILED` | system | The producer (an observation producer, or the runner answering a proxied call) ran and failed: transport error, HTTP error status, timeout, or a thrown exception. An observation carrying it is unknown — nothing is known about the page. |
 | `UB-OBS-PRODUCER-NOT-RUN` | system | Observation unknown: the producer did not run because there was nothing to look at yet (e.g. zero registered elements and components). |
 | `UB-OBS-STALE-INPUT` | system | Observation unknown: the input is known to be stale, so an answer over it would describe a page that no longer exists. |
+| `UB-OBS-TO-NODE-UNOBSERVED` | system | Observation unknown: the query's destination node has never been observed, so whether it is reachable is not known. |
 | `UB-PAGE-LOAD-ERROR` | network | The page failed to load correctly. |
 | `UB-PARSE-ERROR` | system | Could not parse the natural language instruction. |
 | `UB-STALE-ELEMENT` | element | The element reference is no longer attached to the DOM. |
@@ -73,7 +87,7 @@ The twelve `UB-HEALTH-*` codes are emitted by the page-health diagnostic
 (`POST /control/page-health`) rather than by an action, but they share the same
 vocabulary and the same recovery machinery.
 
-The nine `UB-OBS-*` codes are the diagnostic names of the observation
+The twenty-three `UB-OBS-*` codes are the diagnostic names of the observation
 envelope's `unknown.code` values (`input_missing` → `UB-OBS-INPUT-MISSING`, and
 so on — `UNKNOWN_CODE_DIAGNOSTICS` in `@qontinui/ui-bridge/diagnostics` is the
 map). An observation that could not look answers `status: "unknown"` with one
