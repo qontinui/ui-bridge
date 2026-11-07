@@ -123,13 +123,19 @@ export interface UseUIElementOptions {
 
   /**
    * The element's identifying text is PAINTED rather than held in the DOM:
-   * a canvas, a terminal, a chart. Its state carries `paintsText: true`, the
-   * occlusion hit-test samples it on a dense grid, `/control/visibility`
-   * reports any occlusion of it as hiding text (`textSource: 'painted'`), and
-   * the `<canvas>` elements inside it count as swept in the canvas census.
-   * Put it on the container of a canvas stack, not on each layer.
+   * a canvas, a terminal, a chart. Its state carries `paintsText: true`,
+   * `/control/visibility` reports any occlusion of it as hiding text
+   * (`textSource: 'painted'`), and the `<canvas>` elements inside it count as
+   * swept in the canvas census. Put it on the container of a canvas stack, not
+   * on each layer.
    *
-   * Default: `true` when the element is a `<canvas>`, otherwise `false`.
+   * Set explicitly to `true`, it also has the occlusion hit-test sample the
+   * element on a dense grid: 81 `elementFromPoint` calls on every state read,
+   * where an ordinary element costs at most 9. Use it on the few painted
+   * surfaces a page has, not on every canvas.
+   *
+   * Default: `true` when the element is a `<canvas>`, otherwise `false`. The
+   * implicit canvas default keeps the ordinary nine-point grid.
    */
   paintsText?: boolean;
 }

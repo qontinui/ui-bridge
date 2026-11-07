@@ -887,11 +887,13 @@ interface VisibilityVerdict {
  * `[role=alertdialog]`: see `isBlockingDialog` in modal-detector) that does not
  * itself hold the covered element is named by that dialog, the outermost such
  * dialog winning: its stamp, else `tag#id`, else its `data-testid` (the
- * detector's own identity order). A heading or button inside a dialog IS that
- * dialog, and the expected-overlay matcher recognises a modal only by its own
- * identity — so this must hold when the child is itself registered, since
- * content discovery, media discovery and direct registrations all stamp their
- * node.
+ * detector's own identity order). A heading or button inside such a dialog is
+ * named by the dialog when the only stamps between it and the dialog are ones
+ * the registry wrote: the expected-overlay matcher recognises a modal only by
+ * its own identity, and direct registrations and content and media discovery
+ * all leave their stamp to the registry. A developer or hook stamp there
+ * (`useUIElement`, `useAutoRegister`'s interactive scanner) still names its
+ * own node, not the dialog (see below).
  *
  * It is deliberately narrow, because a wrong dialog name HIDES a real
  * occlusion as "expected":
@@ -1493,6 +1495,12 @@ export class UIBridgeRegistry {
    * node can carry a stale one (unregistered, attribute left behind) or a
    * developer stamp for an id that was never registered. Membership holds for
    * every registration door by construction.
+   *
+   * Cost: each call first indexes every registered element by its node,
+   * O(registered elements), and then walks up from `node`. It answers one node
+   * at a time, so resolving every node of a page through it is quadratic. The
+   * canvas census, which resolves every canvas, builds that index once and
+   * walks it per canvas instead.
    */
   getRegisteredAncestor(node: Element): RegisteredElement | undefined {
     return registeredAncestorIn(node, this.elementsByNode());
@@ -2099,6 +2107,12 @@ export class UIBridgeRegistry {
        * The implicit canvas default carries the attribution and the painted
        * `hidesText`, but NOT the dense grid: only an explicit `true` pays for
        * 81 probes, since media discovery may register hundreds of canvases.
+       *
+       * Cost: an explicit `paintsText` surface runs 81 `elementFromPoint`
+       * hit-tests on every state read (each `getState()`, so every snapshot
+       * and every sweep), where an ordinary element runs at most 9. Set it on
+       * the few painted surfaces a page has (its terminals, a chart), not on
+       * every canvas.
        */
       paintsText?: boolean;
     } = {}
