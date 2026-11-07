@@ -260,6 +260,7 @@ import { serializeElementCustomActions } from '../core/element-actions';
 import type { CustomAction } from '../core/types';
 import type { VisionCaptureRequest, VisionRawRequest } from '../vision/wire';
 import { pageViewportContext } from '../control/page-scroll-container';
+import { sdkDispatch } from '../core/sdk-dispatch';
 
 /**
  * Minimal structural type for the optional `@qontinui/ui-bridge-headless`
@@ -3249,7 +3250,7 @@ export function createHandlers(
         const r = clickByTextPrimitive(
           request.text,
           { tag: request.tag, exact: request.exact },
-          (el) => el.click()
+          (el) => sdkDispatch(() => el.click())
         );
         return r.ok ? success(r.data) : error(r.error, r.code);
       } catch (err) {
@@ -3262,7 +3263,9 @@ export function createHandlers(
       index?: number;
     }): Promise<APIResponse<{ clicked: boolean; element?: unknown }>> => {
       try {
-        const r = clickBySelectorPrimitive(request.selector, request.index, (el) => el.click());
+        const r = clickBySelectorPrimitive(request.selector, request.index, (el) =>
+          sdkDispatch(() => el.click())
+        );
         return r.ok ? success(r.data) : error(r.error, r.code);
       } catch (err) {
         return error((err as Error).message, 'CLICK_BY_SELECTOR_ERROR');
@@ -3290,7 +3293,7 @@ export function createHandlers(
             el.dispatchEvent(new Event('input', { bubbles: true }));
             el.dispatchEvent(new Event('change', { bubbles: true }));
           } else if (el.isContentEditable) {
-            document.execCommand('insertText', false, text);
+            sdkDispatch(() => document.execCommand('insertText', false, text));
           }
         });
         return r.ok ? success(r.data) : error(r.error, r.code);

@@ -16,6 +16,11 @@ import { useUIBridge } from './useUIBridge';
 import { useUIBridgeOptional } from './UIBridgeProvider';
 import { executeCommand, type BridgeAccess } from './commandHandlers';
 import {
+  startPassiveCapture,
+  admissionFromRegistration,
+  type PassiveCaptureAdmission,
+} from '../recording/passive-capture';
+import {
   startRelayClient,
   resolveTabId,
   resolveAuthToken,
@@ -140,6 +145,65 @@ async function readRefusalCode(resp: Response): Promise<string | undefined> {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The runner URL phone-home registration (and passive capture, which rides
+ * the same channel) talks to, or `null` when this page must not phone home.
+ *
+ * Gated to localhost-family hostnames unless `runnerUrlOption` (or the
+ * dev-mode query-string override) names one explicitly.
+ */
+function resolvePhoneHomeRunnerUrl(runnerUrlOption: string | undefined): string | null {
+  if (typeof window === 'undefined') return null; // SSR guard
+
+  const host = window.location.hostname;
+  const isLocalhost =
+    host === '127.0.0.1' ||
+    host === 'localhost' ||
+    host === '0.0.0.0' ||
+    host === '::1' ||
+    host.endsWith('.local');
+
+  // Dev-mode override: `?uiBridgeRunnerUrl=http://127.0.0.1:9877` or the
+  // shorthand `?uiBridgeRunnerPort=9877`. Lets a developer point an existing
+  // running app at a temp runner on a different port without rebuilding the
+  // app. Only honored on localhost origins, and only accepts URLs whose
+  // host is itself localhost — the stated purpose is pointing at a local
+  // temp runner, so allowing arbitrary hosts would just be an exfiltration
+  // channel for the registration payload.
+  let qspRunnerUrl: string | undefined;
+  if (typeof URLSearchParams !== 'undefined' && isLocalhost) {
+    const params = new URLSearchParams(window.location.search);
+    const urlParam = params.get('uiBridgeRunnerUrl');
+    const portParam = params.get('uiBridgeRunnerPort');
+    if (urlParam) {
+      try {
+        const parsed = new URL(urlParam);
+        const parsedHost = parsed.hostname;
+        const parsedIsLocalhost =
+          parsedHost === '127.0.0.1' ||
+          parsedHost === 'localhost' ||
+          parsedHost === '0.0.0.0' ||
+          parsedHost === '::1';
+        if ((parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsedIsLocalhost) {
+          qspRunnerUrl = urlParam;
+        }
+      } catch {
+        // Invalid URL — ignore
+      }
+    } else if (portParam) {
+      const portNum = Number(portParam);
+      if (Number.isInteger(portNum) && portNum >= 1 && portNum <= 65535) {
+        qspRunnerUrl = `http://127.0.0.1:${portNum}`;
+      }
+    }
+  }
+
+  const runnerUrl = qspRunnerUrl ?? runnerUrlOption ?? 'http://127.0.0.1:9876';
+  // Guard: only phone home on localhost unless explicitly overridden (prop or QSP).
+  if (!isLocalhost && !runnerUrlOption && !qspRunnerUrl) return null;
+  return runnerUrl;
 }
 
 /**
@@ -268,6 +332,11 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
     heartbeatVersion,
   ]);
 
+  // The runner's admission of this page's passive-capture relays, from its
+  // latest phone-home registration answer. Written by the phone-home effect,
+  // read by passive capture.
+  const passiveAdmissionRef = useRef<PassiveCaptureAdmission>('unregistered');
+
   // ========================================================================
   // Phone-home registration
   // ========================================================================
@@ -279,52 +348,9 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
     if (!enabled || options?.disablePhoneHome) return;
     if (typeof window === 'undefined') return; // SSR guard
 
+    const runnerUrl = resolvePhoneHomeRunnerUrl(options?.runnerUrl);
+    if (runnerUrl === null) return;
     const host = window.location.hostname;
-    const isLocalhost =
-      host === '127.0.0.1' ||
-      host === 'localhost' ||
-      host === '0.0.0.0' ||
-      host === '::1' ||
-      host.endsWith('.local');
-
-    // Dev-mode override: `?uiBridgeRunnerUrl=http://127.0.0.1:9877` or the
-    // shorthand `?uiBridgeRunnerPort=9877`. Lets a developer point an existing
-    // running app at a temp runner on a different port without rebuilding the
-    // app. Only honored on localhost origins, and only accepts URLs whose
-    // host is itself localhost — the stated purpose is pointing at a local
-    // temp runner, so allowing arbitrary hosts would just be an exfiltration
-    // channel for the registration payload.
-    let qspRunnerUrl: string | undefined;
-    if (typeof URLSearchParams !== 'undefined' && isLocalhost) {
-      const params = new URLSearchParams(window.location.search);
-      const urlParam = params.get('uiBridgeRunnerUrl');
-      const portParam = params.get('uiBridgeRunnerPort');
-      if (urlParam) {
-        try {
-          const parsed = new URL(urlParam);
-          const parsedHost = parsed.hostname;
-          const parsedIsLocalhost =
-            parsedHost === '127.0.0.1' ||
-            parsedHost === 'localhost' ||
-            parsedHost === '0.0.0.0' ||
-            parsedHost === '::1';
-          if ((parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsedIsLocalhost) {
-            qspRunnerUrl = urlParam;
-          }
-        } catch {
-          // Invalid URL — ignore
-        }
-      } else if (portParam) {
-        const portNum = Number(portParam);
-        if (Number.isInteger(portNum) && portNum >= 1 && portNum <= 65535) {
-          qspRunnerUrl = `http://127.0.0.1:${portNum}`;
-        }
-      }
-    }
-
-    const runnerUrl = qspRunnerUrl ?? options?.runnerUrl ?? 'http://127.0.0.1:9876';
-    // Guard: only phone home on localhost unless explicitly overridden (prop or QSP).
-    if (!isLocalhost && !options?.runnerUrl && !qspRunnerUrl) return;
 
     const origin = window.location.origin;
     const baseUrl = `${origin}${basePath}`;
@@ -362,6 +388,19 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
+        // Passive capture relays only while the runner's latest accepted
+        // registration says it admits this page (`journeyObserve.admitted`).
+        let admission: PassiveCaptureAdmission = 'unregistered';
+        if (resp.ok) {
+          let body: unknown = undefined;
+          try {
+            body = await resp.json();
+          } catch {
+            /* no JSON body — admission unknown */
+          }
+          admission = admissionFromRegistration(body);
+        }
+        if (!cancelled) passiveAdmissionRef.current = admission;
         if (!refusalWarned && (resp.status === 409 || resp.status === 403)) {
           refusalWarned = true;
           const code = await readRefusalCode(resp);
@@ -374,6 +413,7 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
       } catch {
         // Runner not reachable — silent. Expected when runner is down or
         // unreachable (e.g. DNS failure inside a container).
+        if (!cancelled) passiveAdmissionRef.current = 'unregistered';
       }
     };
 
@@ -401,6 +441,7 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
 
     return () => {
       cancelled = true;
+      passiveAdmissionRef.current = 'unregistered';
       clearInterval(interval);
       window.removeEventListener('beforeunload', onBeforeUnload);
     };
@@ -414,5 +455,52 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
     options?.appName,
     options?.appType,
     options?.framework,
+  ]);
+
+  // ========================================================================
+  // Passive real-session capture
+  // ========================================================================
+  // Relays each interaction a HUMAN takes on a registered element to the
+  // runner's `POST /apps/{appId}/journey/observe` (plan
+  // 2026-09-20-ui-bridge-represents-the-users-path-and-the-passage-of-time,
+  // Phase 3), which records it as a `passive_session` journey edge and closes
+  // it with its own snapshot of this tab. There is no flag: it runs exactly
+  // where phone-home runs (relay enabled, phone-home not disabled, a
+  // localhost page or an explicit runner URL), and relays only while the
+  // runner's registration answer says it admits this page
+  // (`journeyObserve.admitted === true`). The body carries the action type,
+  // the element's registry id and identifiers — no typed value, no text
+  // field, no fingerprint (see recording/passive-capture.ts). Outcomes are
+  // counted per mount in `getPassiveCaptureStatuses()`.
+  const passiveRegistry = context?.registry;
+  const passiveDisabledByPhoneHome = options?.disablePhoneHome ?? false;
+  const passiveRunnerUrlOption = options?.runnerUrl;
+  const passiveAppIdOption = options?.appId;
+  useEffect(() => {
+    if (!enabled || passiveDisabledByPhoneHome || !passiveRegistry) return;
+    if (typeof window === 'undefined') return; // SSR guard
+    const runnerUrl = resolvePhoneHomeRunnerUrl(passiveRunnerUrlOption);
+    if (runnerUrl === null) return;
+
+    const handle = startPassiveCapture({
+      registry: passiveRegistry,
+      runnerUrl,
+      // The same id phone-home registers, so the runner's closing snapshot
+      // (`?app_id=`) reaches this app.
+      appId: passiveAppIdOption ?? window.location.host,
+      // The relay tab id, so the closing snapshot is of THIS tab.
+      tabId,
+      appVersion: heartbeatVersion,
+      admission: () => passiveAdmissionRef.current,
+    });
+    return () => handle.stop();
+  }, [
+    enabled,
+    passiveDisabledByPhoneHome,
+    passiveRegistry,
+    passiveRunnerUrlOption,
+    passiveAppIdOption,
+    tabId,
+    heartbeatVersion,
   ]);
 }

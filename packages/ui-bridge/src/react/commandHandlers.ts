@@ -137,6 +137,7 @@ import {
 } from '../specs/quality-request';
 import type { SnapshotBaseline } from '../specs/quality-types';
 import type { StyleGuideConfig } from '../specs/style-types';
+import { sdkDispatch } from '../core/sdk-dispatch';
 
 // ============================================================================
 // Types
@@ -825,6 +826,13 @@ async function awaitDOMSettledRelay(
  * `click` event ever reaches the element per relay click, never two.
  */
 function dispatchRealClick(el: HTMLElement): void {
+  // The whole sequence is the SDK's: the browser's trusted consequences of the
+  // dispatched click (a checkbox's `change`, a submit button's `submit`) fire
+  // synchronously inside it (core/sdk-dispatch.ts).
+  sdkDispatch(() => dispatchRealClickSequence(el));
+}
+
+function dispatchRealClickSequence(el: HTMLElement): void {
   try {
     (el as HTMLElement).focus?.();
   } catch {
@@ -1158,7 +1166,8 @@ function reactAwareFill(el: HTMLElement, text: string, clear: boolean): void {
   el.focus();
   if (clear) el.textContent = '';
   if (el.isContentEditable) {
-    document.execCommand('insertText', false, text);
+    // insertText fires a TRUSTED `input` — the SDK's (core/sdk-dispatch.ts).
+    sdkDispatch(() => document.execCommand('insertText', false, text));
   } else {
     el.textContent = readLiveText(el) + text;
   }
@@ -4440,7 +4449,7 @@ export async function executeCommand(
         document.body.appendChild(ta);
         ta.focus();
         ta.select();
-        const execResult = document.execCommand('copy');
+        const execResult = sdkDispatch(() => document.execCommand('copy'));
         document.body.removeChild(ta);
         if (execResult) {
           return {
@@ -4505,7 +4514,7 @@ export async function executeCommand(
             );
           });
           btn.focus();
-          btn.click();
+          sdkDispatch(() => btn.click());
           // Timeout fallback
           setTimeout(() => {
             try {
@@ -4557,7 +4566,7 @@ export async function executeCommand(
         ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0.01';
         document.body.appendChild(ta);
         ta.focus();
-        const execResult = document.execCommand('paste');
+        const execResult = sdkDispatch(() => document.execCommand('paste'));
         // Temp off-DOM textarea (no boundary/password) — reader passes it through.
         const pastedText = readScrubbedValue(ta) ?? '';
         document.body.removeChild(ta);
