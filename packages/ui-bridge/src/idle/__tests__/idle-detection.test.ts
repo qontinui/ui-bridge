@@ -10,6 +10,7 @@ import { NetworkIdleDetector } from '../network-idle';
 import { DOMSettlingDetector } from '../dom-settling';
 import { LoadingIndicatorDetector } from '../loading-indicators';
 import { CompositeIdleDetector } from '../composite-idle';
+import { UIBridgeRegistry } from '../../core/registry';
 
 // ============================================================================
 // NetworkIdleDetector
@@ -525,6 +526,27 @@ describe('DOMSettlingDetector', () => {
     expect(detector.isIdle()).toBe(false);
 
     // Clean up
+    document.body.removeChild(el);
+  });
+
+  it('ignores the registry stamp: registerElement writing data-ui-bridge-id keeps the DOM settled', async () => {
+    createDetector({ settleMs: 200 });
+
+    const el = document.createElement('div');
+    document.body.appendChild(el);
+    await vi.advanceTimersByTimeAsync(0);
+    vi.advanceTimersByTime(200);
+    expect(detector.isIdle()).toBe(true);
+    const lastMutationAt = detector.getStatus().lastMutationAt;
+
+    // `registerElement` stamps every registration that carries no stamp.
+    new UIBridgeRegistry().registerElement('stamped-node', el, { type: 'generic' });
+    expect(el.getAttribute('data-ui-bridge-id')).toBe('stamped-node');
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(detector.isIdle()).toBe(true);
+    expect(detector.getStatus().lastMutationAt).toBe(lastMutationAt);
+
     document.body.removeChild(el);
   });
 

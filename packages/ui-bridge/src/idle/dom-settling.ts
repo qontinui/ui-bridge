@@ -5,6 +5,7 @@
  * no mutations have occurred for `settleMs`.
  */
 
+import { isBridgeStampMutation } from '../core/bridge-stamp';
 import type {
   IdleSignal,
   DOMSignalStatus,
@@ -39,7 +40,11 @@ export class DOMSettlingDetector implements IdleSignal<DOMSignalStatus> {
 
     const root = this.root ?? document.body;
 
-    this.observer = new MutationObserver((mutations) => {
+    this.observer = new MutationObserver((records) => {
+      // The bridge stamping a registration is not a DOM change: a batch of
+      // only those must not move `lastMutationAt` or extend a settle wait.
+      const mutations = records.filter((m) => !isBridgeStampMutation(m));
+      if (mutations.length === 0) return;
       const now = Date.now();
       this.lastMutationAt = now;
 

@@ -25,6 +25,7 @@ import {
 import { createElementIdentifier, getBestIdentifier } from '../core/element-identifier';
 import { truncateCodePoints } from '../core/text';
 import { pageViewportContext } from '../control/page-scroll-container';
+import { isBridgeStampMutation } from '../core/bridge-stamp';
 
 /**
  * Captured DOM element information
@@ -550,6 +551,8 @@ export class DOMChangeObserver {
   }
 
   private processMutation(mutation: MutationRecord): DOMChange | null {
+    // The bridge stamping a registration is not a page change.
+    if (isBridgeStampMutation(mutation)) return null;
     const target = mutation.target;
     if (!(target instanceof HTMLElement)) return null;
 

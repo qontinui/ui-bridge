@@ -38,6 +38,25 @@ interface StampOwner {
 
 const registryStamped = new WeakMap<Element, StampOwner>();
 
+/** The attribute the bridge stamps a registered node with. */
+export const BRIDGE_ID_ATTRIBUTE = 'data-ui-bridge-id';
+
+/**
+ * True for a MutationRecord that reports only the bridge's own
+ * `data-ui-bridge-id` stamp being written or removed.
+ *
+ * `registerElement` stamps every registration that carries no stamp, and one
+ * discovery pass can register hundreds of nodes. That stamp is the bridge
+ * registering an element, not a change on the page. Every observer that
+ * records page changes or waits on them skips these records, so that
+ * registering an element neither fills its buffer nor resets its settle wait.
+ */
+export function isBridgeStampMutation(
+  record: Pick<MutationRecord, 'type' | 'attributeName'>
+): boolean {
+  return record.type === 'attributes' && record.attributeName === BRIDGE_ID_ATTRIBUTE;
+}
+
 /** Record that registry `owner` wrote `id` as `node`'s `data-ui-bridge-id`. */
 export function markRegistryStamp(node: Element, owner: object, id: string): void {
   registryStamped.set(node, { owner, id });
