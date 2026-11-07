@@ -52,6 +52,7 @@ import {
   type TimelineStateSource,
 } from './timeline-recorder';
 import { buildTimelineSummary } from './timeline-summary';
+import { isBridgeStampMutation } from '../core/bridge-stamp';
 
 // ============================================================================
 // Configuration
@@ -1306,6 +1307,9 @@ export class ChangeTracker {
     ) {
       this.mutationObserver = new MutationObserver((records) => {
         for (const record of records) {
+          // The bridge stamping a registration is not a page change, and
+          // must not evict one from the capped buffer either.
+          if (isBridgeStampMutation(record)) continue;
           if (this.domMutationBuffer.length >= 500) {
             // Cap at 500: drop the oldest entry
             this.domMutationBuffer.shift();
