@@ -50,7 +50,9 @@ export function consumeValue(
 ): string | null {
   if (raw === undefined) return null;
   if (isFlagShaped(raw)) {
-    throw error(`${flag} expects a value but got the flag '${raw}' — did you omit ${flag}'s argument?`);
+    throw error(
+      `${flag} expects a value but got the flag '${raw}' — did you omit ${flag}'s argument?`
+    );
   }
   return raw;
 }
@@ -76,6 +78,33 @@ export function rejectEmptyValue(
 }
 
 /**
+ * Read a non-negative integer value. The whole token must be digits: `parseInt`
+ * would read `10abc` as 10 and `1e3` as 1, so a typo would run with a number
+ * nobody asked for. Throws (via `error`) on anything else, including an absent
+ * value.
+ */
+export function parseNonNegativeInt(
+  flag: string,
+  raw: string | null,
+  error: ArgErrorFactory
+): number {
+  const n = raw !== null && /^\d+$/.test(raw) ? Number(raw) : NaN;
+  if (!Number.isSafeInteger(n)) {
+    throw error(`${flag} expects a non-negative integer (got ${raw ?? '<missing>'})`);
+  }
+  return n;
+}
+
+/** {@link parseNonNegativeInt}, refusing `0` as well. */
+export function parsePositiveInt(flag: string, raw: string | null, error: ArgErrorFactory): number {
+  const n = raw !== null && /^\d+$/.test(raw) ? Number(raw) : NaN;
+  if (!Number.isSafeInteger(n) || n <= 0) {
+    throw error(`${flag} expects a positive integer (got ${raw ?? '<missing>'})`);
+  }
+  return n;
+}
+
+/**
  * An `indexOf`-based reader for the browser bins' flat arg lists. Rejects unknown
  * `--flags` up front (matching each bin's prior behavior) and rejects flag-shaped
  * values for value-flags (the swallow fix).
@@ -83,15 +112,26 @@ export function rejectEmptyValue(
 export class ArgReader {
   private readonly argv: readonly string[];
   private readonly error: ArgErrorFactory;
+  private readonly valueFlags: ReadonlySet<string>;
 
   /**
-   * @param argv  Already sliced past `node script`.
-   * @param known All flags the bin recognizes (union the bin's set with {@link COMMON_FLAGS}).
-   * @param error Factory producing the bin's domain error type.
+   * @param argv       Already sliced past `node script`.
+   * @param known      All flags the bin recognizes (union the bin's set with {@link COMMON_FLAGS}).
+   * @param error      Factory producing the bin's domain error type.
+   * @param valueFlags The flags that take a value. The token after one is that
+   *                   flag's value, never a flag of its own, so `--success -h`
+   *                   does not also ask for help. Without it, {@link has} cannot
+   *                   tell a value from a flag.
    */
-  constructor(argv: readonly string[], known: ReadonlySet<string>, error: ArgErrorFactory) {
+  constructor(
+    argv: readonly string[],
+    known: ReadonlySet<string>,
+    error: ArgErrorFactory,
+    valueFlags: ReadonlySet<string> = new Set()
+  ) {
     this.argv = argv;
     this.error = error;
+    this.valueFlags = valueFlags;
     for (const arg of argv) {
       if (isFlagShaped(arg) && !known.has(arg)) {
         throw error(`Unknown flag: ${arg}`);
@@ -99,9 +139,16 @@ export class ArgReader {
     }
   }
 
-  /** True if `name` appears as a bare boolean flag. */
+  /** True if `name` appears as a bare boolean flag, not as a value-flag's value. */
   has(name: string): boolean {
-    return this.argv.includes(name);
+    for (let i = 0; i < this.argv.length; i++) {
+      if (this.valueFlags.has(this.argv[i])) {
+        i++; // the next token is this flag's value
+        continue;
+      }
+      if (this.argv[i] === name) return true;
+    }
+    return false;
   }
 
   /**

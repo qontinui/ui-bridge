@@ -14,7 +14,7 @@
 
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { consumeValue, type ArgErrorFactory } from '@qontinui/ui-bridge-cli-args';
+import { consumeValue, parsePositiveInt, type ArgErrorFactory } from '@qontinui/ui-bridge-cli-args';
 import { launchHeadlessTab, type LaunchHeadlessTabResult } from './launcher.js';
 
 /**
@@ -111,24 +111,20 @@ export function parseArgs(argv: string[]): CliArgs {
       case '--ui-bridge':
         args.uiBridgeBase = consumeValue('--ui-bridge', argv[++i], mkError);
         break;
-      case '--wait-ms': {
-        const raw = consumeValue('--wait-ms', argv[++i], mkError);
-        const n = raw === null ? NaN : Number.parseInt(raw, 10);
-        if (!Number.isFinite(n) || n <= 0) {
-          throw mkError(`--wait-ms expects a positive integer (got ${raw ?? '<missing>'})`);
-        }
-        args.waitForUiBridgeMs = n;
+      case '--wait-ms':
+        args.waitForUiBridgeMs = parsePositiveInt(
+          '--wait-ms',
+          consumeValue('--wait-ms', argv[++i], mkError),
+          mkError
+        );
         break;
-      }
-      case '--keep-alive': {
-        const raw = consumeValue('--keep-alive', argv[++i], mkError);
-        const n = raw === null ? NaN : Number.parseInt(raw, 10);
-        if (!Number.isFinite(n) || n <= 0) {
-          throw mkError(`--keep-alive expects a positive integer (got ${raw ?? '<missing>'})`);
-        }
-        args.keepAliveSecs = n;
+      case '--keep-alive':
+        args.keepAliveSecs = parsePositiveInt(
+          '--keep-alive',
+          consumeValue('--keep-alive', argv[++i], mkError),
+          mkError
+        );
         break;
-      }
       case '--viewport': {
         const raw = consumeValue('--viewport', argv[++i], mkError);
         const match = raw?.match(/^(\d+)x(\d+)$/);

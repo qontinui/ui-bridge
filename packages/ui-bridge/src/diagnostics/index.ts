@@ -343,4 +343,11 @@ export const UNKNOWN_CODE_DIAGNOSTICS: Readonly<Record<UnknownCode, UiBridgeErro
   to_node_unobserved: 'UB-OBS-TO-NODE-UNOBSERVED',
   performance_observer_unsupported: 'UB-OBS-PERFORMANCE-OBSERVER-UNSUPPORTED',
   no_event_before_timeout: 'UB-OBS-NO-EVENT-BEFORE-TIMEOUT',
+  no_results: 'UB-OBS-NO-RESULTS',
+  no_expectation: 'UB-OBS-NO-EXPECTATION',
+  not_attempted_destructive: 'UB-OBS-NOT-ATTEMPTED-DESTRUCTIVE',
+  not_attempted_write: 'UB-OBS-NOT-ATTEMPTED-WRITE',
+  not_attempted_by_policy: 'UB-OBS-NOT-ATTEMPTED-BY-POLICY',
+  not_reported: 'UB-OBS-NOT-REPORTED',
+  hit_test_unmeasurable: 'UB-OBS-HIT-TEST-UNMEASURABLE',
 };

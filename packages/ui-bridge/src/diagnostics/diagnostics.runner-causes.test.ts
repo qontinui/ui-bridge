@@ -13,6 +13,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DIAGNOSTICS,
   INTERNAL_CODE_TO_CANONICAL,
+  UI_BRIDGE_ERROR_CODES,
   UNKNOWN_CODE_DIAGNOSTICS,
   mapInternalErrorCode,
 } from './index';
@@ -61,6 +62,22 @@ describe('UnknownCode -> diagnostic code', () => {
     const codes = Object.values(UNKNOWN_CODE_DIAGNOSTICS);
     expect(new Set(codes).size).toBe(codes.length);
     expect(codes.length).toBe(UNKNOWN_CODES.length);
+  });
+
+  // The reverse direction: a `UB-OBS-*` registry entry that no UnknownCode
+  // carries is a diagnostic no envelope can ever emit. Same check as the
+  // Python client's tests/test_unknown_code_registry.py and vision-core's
+  // tests/unknown_code_registry.rs, so the registry and the closed set are
+  // pinned both ways here too.
+  it('maps back — every UB-OBS-* registry code is the diagnostic of exactly one UnknownCode', () => {
+    const obsCodes = UI_BRIDGE_ERROR_CODES.filter((c) => c.startsWith('UB-OBS-'));
+    // A probe that found (almost) nothing would pass vacuously; the same floor
+    // as the Rust and Python twins.
+    expect(obsCodes.length).toBeGreaterThanOrEqual(9);
+    for (const diag of obsCodes) {
+      const owners = UNKNOWN_CODES.filter((code) => UNKNOWN_CODE_DIAGNOSTICS[code] === diag);
+      expect(owners, `${diag} is the diagnostic of ${owners.length} UnknownCode members`).toHaveLength(1);
+    }
   });
 
   it('registers the capability code the RUNNER_REQUIRED mapping names', () => {
