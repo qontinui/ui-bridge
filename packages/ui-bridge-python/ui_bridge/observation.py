@@ -40,7 +40,10 @@ T = TypeVar("T")
 
 
 class UnknownCode(str, Enum):
-    """Why a producer could not answer. A CLOSED set, in the wire-contract order."""
+    """Why a producer could not answer, or why a verdict can say neither passed nor failed.
+
+    A CLOSED set, in the wire-contract order.
+    """
 
     APP_UNREACHABLE = "app_unreachable"
     CAPABILITY_UNAVAILABLE_IN_BUILD = "capability_unavailable_in_build"

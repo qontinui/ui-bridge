@@ -95,11 +95,16 @@ export type UnknownCode =
   | 'not_attempted_destructive'
   /** Deliberately not attempted, because performing the check would be a write. */
   | 'not_attempted_write'
-  /** A policy withheld the attempt (e.g. `stopOnFailure` after an earlier failure, an `allow_effects` rule). */
+  /** A policy withheld the attempt (e.g. `stopOnFailure` after an earlier failure, an effects allow-list). */
   | 'not_attempted_by_policy'
   /** The producer ran but reported no result for this item. */
   | 'not_reported'
-  /** The hit-test looked and cannot tell whether a pointer reaches the target (a null hit, a shadow host on the target's composed path, no `document.elementFromPoint`, `pointer-events: none`). */
+  /**
+   * The hit-test looked and cannot tell whether a pointer reaches the target: a null hit, a hit
+   * on a shadow host on the target's composed path, a cross-origin frame, no
+   * `document.elementFromPoint`, a target computing `pointer-events: none`, or sample points
+   * that were covered beside unmeasurable ones, with none measured as the target's own.
+   */
   | 'hit_test_unmeasurable';
 
 /** Every {@link UnknownCode}, in the canonical (wire-contract) order. */

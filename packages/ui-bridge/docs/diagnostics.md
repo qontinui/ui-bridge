@@ -77,7 +77,7 @@ There are **65** diagnostic codes.
 - [`UB-OBS-NO-EXPECTATION`](#ub-obs-no-expectation) — Verdict unknown: there was no usable expectation to judge against (assertion criteria that do not parse, an empty `activateStates`), so the result can be called neither passed nor failed.
 - [`UB-OBS-NO-OBSERVATIONS`](#ub-obs-no-observations) — Observation unknown: the ledger holds no observations at all for the question asked, so nothing can be said either way.
 - [`UB-OBS-NO-RESULTS`](#ub-obs-no-results) — Verdict unknown: there was nothing to judge — zero results or assertions were folded, so the verdict is unknown, never passed. An empty set is not a pass.
-- [`UB-OBS-NOT-ATTEMPTED-BY-POLICY`](#ub-obs-not-attempted-by-policy) — Verdict unknown: a policy withheld the attempt (e.g. `stopOnFailure` after an earlier failure, an `allow_effects` rule), so the check never ran — skipped is not passed.
+- [`UB-OBS-NOT-ATTEMPTED-BY-POLICY`](#ub-obs-not-attempted-by-policy) — Verdict unknown: a policy withheld the attempt (e.g. `stopOnFailure` after an earlier failure, an effects allow-list), so the check never ran — skipped is not passed.
 - [`UB-OBS-NOT-ATTEMPTED-DESTRUCTIVE`](#ub-obs-not-attempted-destructive) — Verdict unknown: the check was deliberately not attempted because performing it would be a destructive action, so nothing was observed and nothing passed.
 - [`UB-OBS-NOT-ATTEMPTED-WRITE`](#ub-obs-not-attempted-write) — Verdict unknown: the check was deliberately not attempted because performing it would be a write, so nothing was observed and nothing passed.
 - [`UB-OBS-NOT-REPORTED`](#ub-obs-not-reported) — Verdict unknown: the producer ran but reported no result for this item, so the missing result is unknown, never passed.
@@ -1061,12 +1061,12 @@ Verdict unknown: there was nothing to judge — zero results or assertions were 
 
 **Category:** `system`
 
-Verdict unknown: a policy withheld the attempt (e.g. `stopOnFailure` after an earlier failure, an `allow_effects` rule), so the check never ran — skipped is not passed.
+Verdict unknown: a policy withheld the attempt (e.g. `stopOnFailure` after an earlier failure, an effects allow-list), so the check never ran — skipped is not passed.
 
 ### Common causes
 
 - `stopOnFailure` ended the batch after an earlier failure
-- An `allow_effects` rule forbids the effect the check needs
+- An effects allow-list forbids the effect the check needs
 - The check, or its group, is disabled by configuration
 
 ### Default recovery template

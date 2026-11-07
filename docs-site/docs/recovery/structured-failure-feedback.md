@@ -64,7 +64,7 @@ Every code is `UB-`-prefixed and belongs to one of five categories: `element`,
 | `UB-OBS-NO-EXPECTATION` | system | Verdict unknown: there was no usable expectation to judge against (assertion criteria that do not parse, an empty `activateStates`), so the result can be called neither passed nor failed. |
 | `UB-OBS-NO-OBSERVATIONS` | system | Observation unknown: the ledger holds no observations at all for the question asked, so nothing can be said either way. |
 | `UB-OBS-NO-RESULTS` | system | Verdict unknown: there was nothing to judge — zero results or assertions were folded, so the verdict is unknown, never passed. An empty set is not a pass. |
-| `UB-OBS-NOT-ATTEMPTED-BY-POLICY` | system | Verdict unknown: a policy withheld the attempt (e.g. `stopOnFailure` after an earlier failure, an `allow_effects` rule), so the check never ran — skipped is not passed. |
+| `UB-OBS-NOT-ATTEMPTED-BY-POLICY` | system | Verdict unknown: a policy withheld the attempt (e.g. `stopOnFailure` after an earlier failure, an effects allow-list), so the check never ran — skipped is not passed. |
 | `UB-OBS-NOT-ATTEMPTED-DESTRUCTIVE` | system | Verdict unknown: the check was deliberately not attempted because performing it would be a destructive action, so nothing was observed and nothing passed. |
 | `UB-OBS-NOT-ATTEMPTED-WRITE` | system | Verdict unknown: the check was deliberately not attempted because performing it would be a write, so nothing was observed and nothing passed. |
 | `UB-OBS-NOT-REPORTED` | system | Verdict unknown: the producer ran but reported no result for this item, so the missing result is unknown, never passed. |
@@ -91,10 +91,11 @@ The twenty-three `UB-OBS-*` codes are the diagnostic names of the observation
 envelope's `unknown.code` values (`input_missing` → `UB-OBS-INPUT-MISSING`, and
 so on — `UNKNOWN_CODE_DIAGNOSTICS` in `@qontinui/ui-bridge/diagnostics` is the
 map). An observation that could not look answers `status: "unknown"` with one
-of those codes rather than an empty result. `UB-CAPABILITY-UNAVAILABLE` is what
-a runner-direct route (`/vision/*`) answers on a bridge that has no runner: the
-build does not serve it, which is not the same fact as an action a guard
-rejected.
+of those codes rather than an empty result, and a verdict that can say neither
+passed nor failed answers `unknown` with one of them rather than passed.
+`UB-CAPABILITY-UNAVAILABLE` is what a runner-direct route (`/vision/*`) answers
+on a bridge that has no runner: the build does not serve it, which is not the
+same fact as an action a guard rejected.
 
 To iterate the vocabulary or look a code up at runtime:
 

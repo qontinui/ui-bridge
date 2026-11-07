@@ -829,10 +829,10 @@
     {
       "code": "UB-OBS-NOT-ATTEMPTED-BY-POLICY",
       "category": "system",
-      "description": "Verdict unknown: a policy withheld the attempt (e.g. `stopOnFailure` after an earlier failure, an `allow_effects` rule), so the check never ran — skipped is not passed.",
+      "description": "Verdict unknown: a policy withheld the attempt (e.g. `stopOnFailure` after an earlier failure, an effects allow-list), so the check never ran — skipped is not passed.",
       "commonCauses": [
         "`stopOnFailure` ended the batch after an earlier failure",
-        "An `allow_effects` rule forbids the effect the check needs",
+        "An effects allow-list forbids the effect the check needs",
         "The check, or its group, is disabled by configuration"
       ],
       "recoveryTemplate": [
