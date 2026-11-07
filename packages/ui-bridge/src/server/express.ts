@@ -100,35 +100,81 @@ function wrapError(error: Error | string, code?: string): APIResponse<never> {
 }
 
 /**
- * Answer a body-parser refusal as the standalone server and the Next.js
- * adapter do — a JSON envelope — instead of Express's default HTML page: an
- * oversized body is a 413, a body that is not JSON a 400, and any other
- * body-parser refusal its own 4xx. Any other error passes on.
+ * Read a JSON request body by the standalone server's rules (`parseBody` in
+ * standalone.ts), so a body means the same thing through every adapter:
+ *
+ * - over `MAX_BODY_BYTES` (declared or read) is a 413, and the connection is
+ *   closed rather than draining the rest;
+ * - an empty or whitespace-only body is no body (the route supplies `{}`);
+ * - any JSON value parses, top-level primitives included;
+ * - a body that does not parse is a 400 when it is declared JSON (`/json`,
+ *   `+json`) or undeclared, and no body when it is declared as another type.
+ *
+ * A body a parser earlier in the stack already read, or a stream it already
+ * consumed, is left alone.
  */
-function bodyParserErrors() {
-  return (
-    err: Error & { type?: string; status?: number },
-    _req: Request,
-    res: Response,
-    next: NextFunction
-  ) => {
-    if (err?.type === 'entity.too.large') {
+function jsonBody() {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const raw = req as unknown as { _body?: boolean; body?: unknown };
+    const length = req.headers['content-length'];
+    const hasBody =
+      req.headers['transfer-encoding'] !== undefined || (length !== undefined && length !== '0');
+    // A stream an earlier middleware already consumed will never emit 'end'
+    // again: skip it rather than wait on it.
+    if (raw._body || !hasBody || req.readableEnded) {
+      next();
+      return;
+    }
+    const tooLarge = () => {
+      res.setHeader('Connection', 'close');
       res.status(413).json(wrapError('Request body too large', 'INVALID_REQUEST'));
+    };
+    if (Number(length) > MAX_BODY_BYTES) {
+      tooLarge();
       return;
     }
-    if (err?.type === 'entity.parse.failed') {
-      res.status(400).json(wrapError('Request body is not valid JSON', 'INVALID_REQUEST'));
-      return;
-    }
-    // Body-parser's other refusals (an unsupported charset or encoding, an
-    // aborted or mis-sized body) carry a `type` and a 4xx `status`.
-    if (err?.type && typeof err.status === 'number' && err.status >= 400 && err.status < 500) {
-      res
-        .status(err.status)
-        .json(wrapError(err.message || 'Invalid request body', 'INVALID_REQUEST'));
-      return;
-    }
-    next(err);
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    let settled = false;
+    req.on('data', (chunk: string | Buffer) => {
+      if (settled) return;
+      const buf = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+      bytes += buf.length;
+      if (bytes > MAX_BODY_BYTES) {
+        settled = true;
+        req.pause();
+        tooLarge();
+        return;
+      }
+      chunks.push(buf);
+    });
+    req.on('end', () => {
+      if (settled) return;
+      settled = true;
+      const text = Buffer.concat(chunks).toString('utf8');
+      raw._body = true;
+      if (!text.trim()) {
+        next();
+        return;
+      }
+      try {
+        raw.body = JSON.parse(text);
+      } catch {
+        const type = req.headers['content-type'];
+        if (!type || /[/+]json\b/i.test(type)) {
+          res.status(400).json(wrapError('Request body is not valid JSON', 'INVALID_REQUEST'));
+          return;
+        }
+      }
+      next();
+    });
+    req.on('error', () => {
+      if (settled) return;
+      settled = true;
+      res.status(400).json(wrapError('Request body could not be read', 'INVALID_REQUEST'));
+    });
+    // Restart a stream an earlier middleware paused; a no-op otherwise.
+    req.resume();
   };
 }
 
@@ -150,12 +196,10 @@ export function createExpressRouter(
     router.use(createCORSMiddleware(config.cors));
   }
 
-  // Add body parser if requested. The limit is the one the standalone server
-  // and the Next.js adapter read to (10 MB); Express's own default is 100 KB,
-  // which refused bodies every other adapter accepts.
+  // Add body parser if requested: the standalone server's rules, not
+  // `express.json()` (100 KB default, strict mode, `application/json` only).
   if (config.useBodyParser) {
-    router.use(express.json({ limit: MAX_BODY_BYTES }));
-    router.use(bodyParserErrors());
+    router.use(jsonBody());
   }
 
   // Add authentication middleware if configured
@@ -389,8 +433,7 @@ export function createExpressApp(
   const express = require('express');
   const app = express();
 
-  app.use(express.json({ limit: MAX_BODY_BYTES }));
-  app.use(bodyParserErrors());
+  app.use(jsonBody());
 
   const basePath = config.basePath || '/ui-bridge';
   const router = createExpressRouter(handlers, { ...config, useBodyParser: false });
