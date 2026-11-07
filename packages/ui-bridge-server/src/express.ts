@@ -14,6 +14,7 @@ import type {
 } from './types';
 import { UI_BRIDGE_ROUTES } from './types';
 import { mapInternalErrorCode } from './error-mapper';
+import { MAX_BODY_BYTES } from './request-body';
 
 /**
  * Express-specific configuration
@@ -94,6 +95,40 @@ function wrapError(error: Error | string, code?: string): APIResponse<never> {
 }
 
 /**
+ * Answer a body-parser refusal as the standalone server and the Next.js
+ * adapter do — a JSON envelope with the `INVALID_REQUEST` code — instead of
+ * Express's default HTML page: an oversized body is a 413, malformed JSON with
+ * a non-zero content-length a 400, and any other body-parser refusal its own
+ * 4xx. Any other error passes on.
+ */
+function bodyParserErrors() {
+  return (
+    err: Error & { type?: string; status?: number },
+    _req: Request,
+    res: Response,
+    next: NextFunction
+  ) => {
+    if (err?.type === 'entity.too.large') {
+      res.status(413).json(wrapError('Request body too large', 'INVALID_REQUEST'));
+      return;
+    }
+    if (err?.type === 'entity.parse.failed') {
+      res.status(400).json(wrapError('Request body is not valid JSON', 'INVALID_REQUEST'));
+      return;
+    }
+    // Body-parser's other refusals (an unsupported charset or encoding, an
+    // aborted or mis-sized body) carry a `type` and a 4xx `status`.
+    if (err?.type && typeof err.status === 'number' && err.status >= 400 && err.status < 500) {
+      res
+        .status(err.status)
+        .json(wrapError(err.message || 'Invalid request body', 'INVALID_REQUEST'));
+      return;
+    }
+    next(err);
+  };
+}
+
+/**
  * Create Express router with UI Bridge routes
  */
 export function createExpressRouter(
@@ -135,17 +170,10 @@ export function createExpressRouter(
       }
       next();
     });
-    router.use(express.json());
-    // Catch any residual body-parser errors (malformed JSON with non-zero
-    // content-length): downgrade to a structured 400 response carrying the
-    // canonical `BODY_PARSE_ERROR` code rather than express's default HTML.
-    router.use((err: Error & { type?: string }, _req: Request, res: Response, next: NextFunction) => {
-      if (err && err.type === 'entity.parse.failed') {
-        res.status(400).json(wrapError(err.message || 'Invalid JSON body', 'BODY_PARSE_ERROR'));
-        return;
-      }
-      next(err);
-    });
+    // The limit is the one the standalone server and the Next.js adapter read
+    // to (10 MB); Express's own default is 100 KB.
+    router.use(express.json({ limit: MAX_BODY_BYTES }));
+    router.use(bodyParserErrors());
   }
 
   // Add authentication middleware if configured
@@ -258,7 +286,8 @@ export function createExpressApp(
   const express = require('express');
   const app = express();
 
-  app.use(express.json());
+  app.use(express.json({ limit: MAX_BODY_BYTES }));
+  app.use(bodyParserErrors());
 
   const basePath = config.basePath || '/ui-bridge';
   const router = createExpressRouter(handlers, { ...config, useBodyParser: false });
