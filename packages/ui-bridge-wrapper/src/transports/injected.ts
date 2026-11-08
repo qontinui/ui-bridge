@@ -160,6 +160,14 @@ export interface InjectedContext extends HeadlessContext {
   find(criteria?: Record<string, unknown>): Promise<unknown>;
   /** Act on an element by registry id: `{ action: 'click' | 'type' | ... }`. */
   act(id: string, request: Record<string, unknown>): Promise<unknown>;
+  /**
+   * Read one element by registry id: its identity, state, box and actions —
+   * the same object its entry in `snapshot()` is. An unknown id resolves to the
+   * returned `{ success: false, failureDetails: { errorCode: 'ELEMENT_NOT_FOUND' } }`
+   * envelope, never `null`. An in-page runtime whose dispatcher predates the
+   * `getElement` case rejects instead, with `Unknown command action: getElement`.
+   */
+  element(id: string): Promise<unknown>;
   /** Read the interactive-element control snapshot. */
   snapshot(options?: Record<string, unknown>): Promise<unknown>;
   /** Assert a user-visible outcome (NL `{assertion}` or `{target,type,expected}`). */
@@ -530,6 +538,7 @@ export class InjectedTransport extends HeadlessTransport {
       find: (criteria?: Record<string, unknown>) => execute('find', criteria ?? {}),
       act: (id: string, request: Record<string, unknown>) =>
         execute('executeElementAction', { id, request }),
+      element: (id: string) => execute('getElement', { id }),
       snapshot: (options?: Record<string, unknown>) => execute('getControlSnapshot', options ?? {}),
       assert: (spec: Record<string, unknown>) => execute('aiAssert', spec),
     };
