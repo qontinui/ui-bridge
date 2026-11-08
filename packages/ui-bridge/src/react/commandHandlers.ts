@@ -157,6 +157,11 @@ import {
 import type { SnapshotBaseline } from '../specs/quality-types';
 import type { StyleGuideConfig } from '../specs/style-types';
 import { sdkDispatch } from '../core/sdk-dispatch';
+import {
+  ELEMENT_ACTION_PAYLOAD_SHAPE,
+  readElementActionPayload,
+  type ElementPayloadRefusal,
+} from './element-command-payload';
 
 // ============================================================================
 // Types
@@ -478,6 +483,37 @@ function createKindRefusalFailure(
     failureDetails: {
       ...failure.failureDetails,
       context: { action, refusal: refusal.refusal },
+    },
+  };
+}
+
+/**
+ * Finish an `INVALID_REQUEST` failure for a payload the element-command
+ * grammar refused (`./element-command-payload.ts`): `failureDetails` gains the
+ * shape the command expects and the keys it received, and the first suggested
+ * recovery is to resend in that shape. Nothing was looked up, so no selector
+ * was tried.
+ */
+function withPayloadGrammar(
+  failure: ReturnType<typeof createActionFailure>,
+  refusal: ElementPayloadRefusal,
+  expectedPayload: string
+) {
+  return {
+    ...failure,
+    failureDetails: {
+      ...failure.failureDetails,
+      selectorsTried: [],
+      expectedPayload,
+      receivedKeys: refusal.receivedKeys,
+      suggestedActions: [
+        {
+          suggestion: `Resend the payload as ${expectedPayload}`,
+          confidence: 0.95,
+          retryable: true,
+        },
+        ...failure.failureDetails.suggestedActions,
+      ],
     },
   };
 }
@@ -1730,17 +1766,19 @@ export async function executeCommand(
 
     case 'executeElementAction': {
       const startTime = performance.now();
-      const { id, request } = payload as {
-        id: string;
-        request: {
-          action: string;
-          value?: string;
-          params?: P;
-          text?: string;
-          clear?: boolean;
-          fromSnapshotId?: string;
-        };
-      };
+      // One grammar, two accepted spellings beside the canonical {id, request},
+      // and a RETURNED refusal for every other shape — before the first
+      // `request` read below, so a mis-shaped payload can never throw a
+      // TypeError out of this case (`./element-command-payload.ts`).
+      const parsed = readElementActionPayload(payload);
+      if (!parsed.ok) {
+        return withPayloadGrammar(
+          createActionFailure(parsed.elementId, 'INVALID_REQUEST', parsed.message, startTime),
+          parsed,
+          ELEMENT_ACTION_PAYLOAD_SHAPE
+        );
+      }
+      const { id, request } = parsed;
 
       // Opt-in stale-snapshot precondition, on the INJECTED/RELAY path.
       //
