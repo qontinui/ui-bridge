@@ -18,7 +18,9 @@
  *   2. exec      `execute(action, payload)` — once per dedupe key
  *   3. POST      `{basePath}/commands`   — result envelope, naming the stream
  *                the command arrived on; a repeat delivery is answered too
- *                while the command's outcome is kept (`command-dedupe.ts`)
+ *                while the command's outcome is kept (`command-dedupe.ts`).
+ *                The answer is read, and retried / reported by `postResult`
+ *                (see `./result-post`)
  *   4. POST      `{basePath}/heartbeat`  — every `heartbeatIntervalMs`
  *
  * Stream lifecycle (plan
@@ -56,6 +58,7 @@
 import { registerRelayTrafficBase } from './relay-traffic';
 import { createCommandDedupe, dedupeKeyOf } from './command-dedupe';
 import { randomUuid } from './random-uuid';
+import { postResult } from './result-post';
 import { safeJsonStringify } from '../core/wire-json';
 import { STREAM_CAPABILITIES, createStreamLifecycle, type QueuedCommand } from './stream-lifecycle';
 
@@ -423,8 +426,13 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
     fromStream: string | undefined
   ) => {
     if (isOpaqueOrigin()) return;
-    try {
-      await fetch(`${basePath}/commands`, {
+    // Reads the answer: a transient refusal (429/502/503/504, network error)
+    // is retried inside `Retry-After` and a bounded budget; anything else, or
+    // an exhausted retry, is reported once through `onError` — never dropped.
+    await postResult(
+      fetch,
+      `${basePath}/commands`,
+      {
         method: 'POST',
         headers: postHeaders(),
         body: safeJsonStringify({
@@ -435,10 +443,9 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
           streamId: fromStream,
           error: ok ? undefined : (result as { error?: string })?.error,
         }),
-      });
-    } catch (e) {
-      onError('[UIBridge] Failed to send command response:', e);
-    }
+      },
+      { onError, context: `command ${commandId}` }
+    );
   };
 
   // ----- Command processor -----
