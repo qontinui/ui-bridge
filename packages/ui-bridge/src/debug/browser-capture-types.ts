@@ -195,6 +195,11 @@ export interface BrowserCaptureConfig {
    * dropping at capture time.
    */
   consoleLevels?: Array<'error' | 'warn' | 'debug' | 'info' | 'log' | 'unhandledrejection'>;
+  /**
+   * Drop a console call whose arguments match (e.g. the SDK's own
+   * `[UIBridge]` diagnostics). The call still reaches the real console.
+   */
+  consoleIgnore?: (args: unknown[]) => boolean;
   /** Capture failed fetch requests (4xx/5xx/network errors). Default: true */
   network?: boolean;
   /** Capture History API navigation. Default: true */
@@ -220,6 +225,8 @@ export interface BrowserCaptureConfig {
   networkOptions?: {
     /** URL patterns to ignore (substrings). Defaults to dev-debug/ui-bridge endpoints. */
     ignorePatterns?: string[];
+    /** Also ignore a request whose URL this predicate matches (in addition to the patterns). */
+    ignore?: (url: string) => boolean;
   };
   /** Advanced: memory polling interval in ms. Default: 30000 */
   memoryIntervalMs?: number;

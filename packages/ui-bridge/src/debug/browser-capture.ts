@@ -158,7 +158,12 @@ export class BrowserEventCapture {
 
     if (cfg.console) {
       const levels = cfg.consoleLevels ? new Set(cfg.consoleLevels) : undefined;
-      this.cleanups.push(installConsoleCapture(emit, levels ? { levels } : undefined));
+      this.cleanups.push(
+        installConsoleCapture(emit, {
+          ...(levels ? { levels } : {}),
+          ...(cfg.consoleIgnore ? { ignore: cfg.consoleIgnore } : {}),
+        })
+      );
     }
     if (cfg.network) {
       this.cleanups.push(installNetworkCapture(emit, cfg.networkOptions));

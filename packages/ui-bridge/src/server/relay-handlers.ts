@@ -133,10 +133,41 @@ function readRelayInnerFailure(result: unknown): { message: string; code: string
   if ((result as Record<string, unknown>).success !== false) return undefined;
   // The message / code derivation (a handler's own `code` verbatim, else the
   // SDK `errorCode` mapped onto `UB-*`) is shared with the direct transport.
-  return describeInnerFailure(
+  const described = describeInnerFailure(
     result,
     `The browser reported the command failed but supplied no error message.`
   );
+  const instrumentCode = instrumentUnavailableCode(described.message);
+  return instrumentCode ? { ...described, code: instrumentCode } : described;
+}
+
+/**
+ * The codes a tab answers when the instrument a read needs is not running in
+ * the page (`react/commandHandlers.ts` `createInstrumentUnavailable`): the read
+ * is UNKNOWN, which is neither "no errors" nor "idle", and never a transport
+ * fault to paper over with a cache.
+ */
+const INSTRUMENT_UNAVAILABLE_CODES = ['CAPTURE_UNAVAILABLE', 'IDLE_DETECTOR_UNAVAILABLE'] as const;
+
+/**
+ * The instrument-unavailable code a failure message LEADS with, if any. A
+ * relayed failed result reaches `rejectCommand` as its message alone, so the
+ * tab puts the code first (`CAPTURE_UNAVAILABLE: …`); a code merely mentioned
+ * mid-message does not count.
+ */
+function instrumentUnavailableCode(message: string): string | undefined {
+  return INSTRUMENT_UNAVAILABLE_CODES.find((code) => message.startsWith(`${code}:`));
+}
+
+/** The failure envelope for a failure the tab itself reported, its code kept verbatim. */
+function relayTabFailure<T>(message: string, code: string, data?: unknown): APIResponse<T> {
+  return {
+    success: false,
+    error: message,
+    code: code as APIResponse['code'],
+    ...(data !== undefined ? { data } : {}),
+    timestamp: Date.now(),
+  } as APIResponse<T>;
 }
 
 /**
@@ -773,6 +804,10 @@ export function createRelayHandlers(
         ],
       } as APIResponse<T>;
     }
+    // The tab said it cannot measure (no console capture / idle detector):
+    // keep its code rather than flattening it to COMMAND_FAILED.
+    const instrumentCode = instrumentUnavailableCode(msg);
+    if (instrumentCode) return relayTabFailure<T>(msg, instrumentCode);
     const hasListeners = relay.hasCommandListeners() || relay.getWebSocketClientCount() > 0;
     const isTimeout = msg.includes('timeout') || msg.includes('Timeout');
     const hint = !hasListeners
@@ -1918,12 +1953,21 @@ export function createRelayHandlers(
           cleaned,
           ownedBy(scope.userId)
         );
+        // A tab that answered `success:false` (e.g. CAPTURE_UNAVAILABLE) is a
+        // failure: never cached, never wrapped as an outer success.
+        const innerFailure = readRelayInnerFailure(result);
+        if (innerFailure) return relayInnerFailureResponse(innerFailure, result);
         // Cache successful result for fallback when browser disconnects (ungrouped only)
         if (!isGrouped && result && typeof result === 'object') {
           scope.cache.consoleErrors = success(result as ConsoleErrorsResult);
         }
         return success(result as ConsoleErrorsResult | GroupedResult);
-      } catch {
+      } catch (e) {
+        // The tab positively said it cannot measure: its console errors are
+        // UNKNOWN, so neither the cache nor an empty list may stand in.
+        const msg = e instanceof Error ? e.message : String(e);
+        const instrumentCode = instrumentUnavailableCode(msg);
+        if (instrumentCode) return relayTabFailure(msg, instrumentCode);
         // Relay failed — return cached data if available (ungrouped only)
         if (!isGrouped && scope.cache.consoleErrors)
           return scope.cache.consoleErrors as APIResponse<ConsoleErrorsResult>;

@@ -27,6 +27,7 @@ import { enableDevControls } from '../core/dev-controls';
 import { executeCommand } from '../react/commandHandlers';
 import { BrowserEventCapture } from '../debug/browser-capture';
 import { startRelayClient } from '../relay/relay-client';
+import { isRelayOwnTraffic, registerRelayTrafficBase } from '../relay/relay-traffic';
 import { observeAndSeed } from './seed-registry';
 import { createSettleTracker } from './settle';
 import { bridgeAccessOver } from './bridge-access';
@@ -54,11 +55,13 @@ declare const __SDK_VERSION__: string;
 
   const bridge = bridgeAccessOver(registry);
 
+  const cfg = window.__uiBridgeInjectedConfig;
+
   // The React provider installs a BrowserEventCapture and publishes it as
   // `window.__UI_BRIDGE__.browserCapture`; a page without the provider had no
   // console instrument, so `getConsoleErrors` had nothing to read. Install the
-  // same capture (default config, as the provider does) only into an EMPTY
-  // slot — a provider's capture is never replaced. Installed now, at
+  // same capture class (the provider's default config, plus the SDK-traffic
+  // filters below) only into an EMPTY slot — a provider's capture is never replaced. Installed now, at
   // document_start, rather than at DOM-ready, so it observes from injection
   // onward (and before the relay client starts).
   const realm = ((window as unknown as Record<string, unknown>).__UI_BRIDGE__ ??= {}) as Record<
@@ -66,14 +69,24 @@ declare const __SDK_VERSION__: string;
     unknown
   >;
   if (!realm.browserCapture) {
-    const capture = new BrowserEventCapture();
+    // The SDK's own traffic is not the page's: the relay client's result POSTs
+    // and heartbeats go to `uiBridgeBase` (often `127.0.0.1:9876`, which the
+    // capture's default ignore list does not name), so a refused heartbeat
+    // must not read as a page network error; and its diagnostics are
+    // `[UIBridge]`-prefixed `console.error` calls. The base is registered here
+    // (the relay client registers it again, idempotently) so the exact
+    // endpoint predicate holds from the capture's first request.
+    if (typeof cfg?.uiBridgeBase === 'string') registerRelayTrafficBase(cfg.uiBridgeBase);
+    const capture = new BrowserEventCapture({
+      networkOptions: { ignore: isRelayOwnTraffic }, // on top of the default patterns
+      consoleIgnore: (args) => typeof args[0] === 'string' && args[0].startsWith('[UIBridge]'),
+    });
     capture.install();
     realm.browserCapture = capture;
     // Backward-compat alias, as the provider publishes it.
     realm.consoleCapture ??= capture;
   }
 
-  const cfg = window.__uiBridgeInjectedConfig;
   const settle = createSettleTracker({
     quietMs: typeof cfg?.settleQuietMs === 'number' ? cfg.settleQuietMs : 500,
     timeoutMs: typeof cfg?.settleTimeoutMs === 'number' ? cfg.settleTimeoutMs : 10_000,

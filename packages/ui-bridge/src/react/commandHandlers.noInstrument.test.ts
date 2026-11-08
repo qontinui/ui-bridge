@@ -61,6 +61,8 @@ function expectUnavailable(result: unknown, errorCode: string): void {
   expect(r.failureDetails.errorCode).toBe(errorCode);
   expect(typeof r.error).toBe('string');
   expect(r.error.length).toBeGreaterThan(0);
+  // The code leads the message: a relayed failure reaches the server as its message alone.
+  expect(r.error.startsWith(`${errorCode}: `)).toBe(true);
   expect(r.failureDetails.message).toBe(r.error);
   expect(typeof r.failureDetails.timestamp).toBe('number');
   // The default it replaced must not ride along beside the failure.

@@ -12,6 +12,8 @@ type Emit = (event: AnyCapturedEvent) => void;
 
 interface NetworkOptions {
   ignorePatterns?: string[];
+  /** Also skip a request whose URL this predicate matches (exact matching, e.g. the relay's own endpoints). */
+  ignore?: (url: string) => boolean;
 }
 
 const DEFAULT_IGNORE = ['/api/dev-debug/', '/api/ui-bridge/', 'localhost:9876'];
@@ -24,8 +26,10 @@ export function installNetworkCapture(emit: Emit, options?: NetworkOptions): () 
   const originalFetch = window.fetch;
   const ignorePatterns = options?.ignorePatterns ?? DEFAULT_IGNORE;
 
+  const ignore = options?.ignore;
+
   function shouldIgnore(url: string): boolean {
-    return ignorePatterns.some((p) => url.includes(p));
+    return ignorePatterns.some((p) => url.includes(p)) || ignore?.(url) === true;
   }
 
   function getMethod(input: RequestInfo | URL, init?: RequestInit): string {

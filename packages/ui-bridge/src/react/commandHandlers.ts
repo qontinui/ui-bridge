@@ -458,12 +458,17 @@ function createActionFailure(
  * console capture, no idle detector). A default such as `{ errors: [] }` or
  * `{ idle: true }` would report a measurement nobody made, so the read answers
  * UNKNOWN as the failure envelope callers already branch on.
+ *
+ * The message LEADS with the code (`CAPTURE_UNAVAILABLE: …`): a relayed failed
+ * result reaches the server's `rejectCommand` as its message alone, so the
+ * prefix is how `server/relay-handlers.ts` still recognises it.
  */
 function createInstrumentUnavailable(
   errorCode: 'CAPTURE_UNAVAILABLE' | 'IDLE_DETECTOR_UNAVAILABLE',
-  message: string
+  detail: string
 ) {
   const timestamp = Date.now();
+  const message = `${errorCode}: ${detail}`;
   return {
     success: false,
     error: message,
