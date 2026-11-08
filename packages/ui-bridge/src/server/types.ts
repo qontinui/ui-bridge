@@ -2617,21 +2617,24 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
  *
  * These are the cross-platform "convenience" interactions (click/type/read)
  * that the server relays verbatim over the SDK command channel (SSE for web,
- * WebSocket for the runner). The *action string* here is the single source of
- * truth shared by three sites:
+ * WebSocket for the runner). The *action string* here is shared by two sites:
  *
  *   1. `relay-handlers.ts` — `relayCommand('<action>', request)` queues it for
- *      the connected browser/native tab.
- *   2. `react/commandHandlers.ts` — the browser-side `executeCommand` switch
- *      MUST have a matching `case '<action>'`, otherwise the relay hits
+ *      the connected browser tab.
+ *   2. `react/commandHandlers.ts` — the in-page `executeCommand` switch MUST
+ *      have a matching `case '<action>'`, otherwise the browser answers
  *      `default: throw new Error('Unknown command action')` and the runner
  *      silently falls back to its own Tauri webview (masking the failure).
- *   3. `native/react/commandHandlers.ts` — the React-Native relay parity case.
  *
- * The drift guard test (`relay-handlers.contract.test.ts`) asserts every entry
- * here resolves to a handler case so the browser executor can never again
- * queue an action it cannot execute. Add new app-agnostic interactions here
- * first, then wire all three sites.
+ * The drift guard (`relay-handlers.contract.test.ts`) pins these six as both
+ * relayed and served. It does not stop at this list: it extracts EVERY action
+ * the SDK relays to a browser — from the TypeScript AST of each `queueCommand`
+ * call and of the wrappers that forward to one (`relayCommand`,
+ * `relayWithFallback`) — and fails on any that `executeCommand` does not
+ * serve, unless the action is on its ratcheted `KNOWN_UNSERVED_RELAY_ACTIONS`
+ * list. So every new relayed action needs its browser case, listed here or
+ * not; list an app-agnostic interaction here when it should stay pinned as
+ * both relayed and served.
  */
 export const INTERACTION_RELAY_COMMAND_ACTIONS = [
   'clickByText',
