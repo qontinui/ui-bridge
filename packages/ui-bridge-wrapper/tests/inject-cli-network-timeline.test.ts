@@ -2,11 +2,21 @@
  * Phase 18 step 3 (plan 2026-10-13-image-generation-and-visual-judgment):
  * inject-cli's `--throttle` / `--no-cache` flags and the `captureTimeline`
  * CLI-side action, pinned without a browser. The real-Chromium half is
- * `inject-cli-override-smoke.test.ts`.
+ * `inject-cli-override-smoke.test.ts`, and for the reload frame-1 retry (D4 of
+ * plan 2026-11-08-ui-bridge-inject-exec-mode-is-a-second-class-driver)
+ * `inject-cli-timeline-reload-smoke.test.ts`.
  */
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
+import {
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+  mkdirSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -29,6 +39,7 @@ import {
   parseCaptureTimelinePayload,
   registerTimelineCapture,
   type TimelinePage,
+  type TimelineResult,
 } from '../src/timeline-capture.js';
 import { HandlerRegistry } from '../src/handler-registry.js';
 
@@ -189,10 +200,23 @@ describe('network emulation is applied through CDP, and only what was sent is st
   });
 });
 
+// Chromium's own words when the document has no compositor frame yet, as
+// Playwright relays them — measured on frame 1 right after a reload commit.
+const REFUSAL =
+  'page.screenshot: Protocol error (Page.captureScreenshot): Unable to capture screenshot';
+
 describe('captureTimeline', () => {
-  function timelinePage(opts: { failFrame?: number; settles?: boolean } = {}) {
+  /**
+   * A fake page. `failFrame` and `refuse` count SCREENSHOT CALLS, not frames:
+   * call `failFrame` throws `Target closed`, and `refuse: n` makes n consecutive
+   * calls, from call `refuseFromShot` (default 1), throw {@link REFUSAL}.
+   */
+  function timelinePage(
+    opts: { failFrame?: number; settles?: boolean; refuse?: number; refuseFromShot?: number } = {}
+  ) {
     let shots = 0;
     const calls: string[] = [];
+    const refuseFrom = opts.refuseFromShot ?? 1;
     const page: TimelinePage = {
       evaluate: (async () => ({
         devicePixelRatio: 2,
@@ -204,6 +228,9 @@ describe('captureTimeline', () => {
         shots += 1;
         calls.push(`shot${shots}`);
         if (shots === opts.failFrame) throw new Error('Target closed');
+        if (shots >= refuseFrom && shots < refuseFrom + (opts.refuse ?? 0)) {
+          throw new Error(REFUSAL);
+        }
         return png(800, 600);
       },
       reload: async () => {
@@ -456,5 +483,212 @@ describe('captureTimeline', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // D4 (plan 2026-11-08-ui-bridge-inject-exec-mode-is-a-second-class-driver):
+  // only Chromium's no-compositor-frame refusal is retried, every 16 ms, until
+  // the frame's deadline. Under a fake clock every instant below is a literal.
+  async function underFakeClock(run: () => Promise<TimelineResult>): Promise<TimelineResult> {
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.parse('2026-11-08T09:00:00.000Z'));
+    try {
+      const pending = run();
+      await vi.runAllTimersAsync();
+      return await pending;
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  it('D4 reload: frame 1 refused twice is retried, written, and dated by the attempt that succeeded', async () => {
+    const dir = join(tmp(), 'tl');
+    const { page, calls } = timelinePage({ refuse: 2 });
+    const res = await underFakeClock(() =>
+      captureTimeline(page, {
+        dir,
+        frames: 2,
+        intervalMs: 100,
+        reload: true,
+        readyTimeoutMs: 1000,
+      })
+    );
+    expect(calls).toEqual(['reload', 'shot1', 'shot2', 'shot3', 'shot4', 'waitReady']);
+    // Refused at 0 and 16 ms, taken at 32 ms; frame 2 keeps its 100 ms due time.
+    expect(res.frames).toStrictEqual([
+      {
+        index: 1,
+        path: join(dir, 'frame-1.png'),
+        offsetMs: 32,
+        capturedAt: '2026-11-08T09:00:00.032Z',
+        width: 800,
+        height: 600,
+        attempts: 3,
+      },
+      {
+        index: 2,
+        path: join(dir, 'frame-2.png'),
+        offsetMs: 100,
+        capturedAt: '2026-11-08T09:00:00.100Z',
+        width: 800,
+        height: 600,
+      },
+    ]);
+    expect(res.frames[0]!.offsetMs).toBeGreaterThan(0);
+    expect(readdirSync(dir).sort()).toEqual(['frame-1.png', 'frame-2.png']);
+    expect(res).toMatchObject({ success: true, reloaded: true, runtimeReady: true });
+    expect(res.error).toBeUndefined();
+  });
+
+  it('D4 reload: a refusal that outlasts readyTimeoutMs fails frame 1 at its deadline, never a silent gap', async () => {
+    const dir = join(tmp(), 'tl');
+    // Refused at 0, 16, ..., 96 ms; an attempt at 112 ms would be past the
+    // 100 ms deadline, so there is none. The page would answer frame 2's call.
+    const { page, calls } = timelinePage({ refuse: 7 });
+    const res = await underFakeClock(() =>
+      captureTimeline(page, {
+        dir,
+        frames: 2,
+        intervalMs: 150,
+        reload: true,
+        readyTimeoutMs: 100,
+      })
+    );
+    expect(calls).toEqual([
+      'reload',
+      'shot1',
+      'shot2',
+      'shot3',
+      'shot4',
+      'shot5',
+      'shot6',
+      'shot7',
+      'shot8',
+      'waitReady',
+    ]);
+    expect(res.frames).toStrictEqual([
+      {
+        index: 1,
+        path: null,
+        offsetMs: 96,
+        capturedAt: '2026-11-08T09:00:00.096Z',
+        width: null,
+        height: null,
+        attempts: 7,
+        error: REFUSAL,
+      },
+      {
+        index: 2,
+        path: join(dir, 'frame-2.png'),
+        offsetMs: 150,
+        capturedAt: '2026-11-08T09:00:00.150Z',
+        width: 800,
+        height: 600,
+      },
+    ]);
+    expect(readdirSync(dir)).toEqual(['frame-2.png']);
+    expect(res).toMatchObject({
+      success: false,
+      runtimeReady: true,
+      error: '1 of 2 frames failed',
+    });
+  });
+
+  it('D4: any other error on frame 1 after a reload (Target closed) is not retried and fails as today', async () => {
+    const dir = join(tmp(), 'tl');
+    const { page, calls } = timelinePage({ failFrame: 1 });
+    const res = await underFakeClock(() =>
+      captureTimeline(page, {
+        dir,
+        frames: 2,
+        intervalMs: 0,
+        reload: true,
+        readyTimeoutMs: 1000,
+      })
+    );
+    // A 1000 ms budget, and still one attempt: only the refusal is retried.
+    expect(calls).toEqual(['reload', 'shot1', 'shot2', 'waitReady']);
+    expect(res.frames[0]).toStrictEqual({
+      index: 1,
+      path: null,
+      offsetMs: 0,
+      capturedAt: '2026-11-08T09:00:00.000Z',
+      width: null,
+      height: null,
+      error: 'Target closed',
+    });
+    expect(res).toMatchObject({
+      success: false,
+      runtimeReady: true,
+      error: '1 of 2 frames failed',
+    });
+  });
+
+  it('D4 without a reload: frame 2 refused once is retried inside its own slot, and frame 3 keeps its due time', async () => {
+    const dir = join(tmp(), 'tl');
+    const { page, calls } = timelinePage({ refuse: 1, refuseFromShot: 2 });
+    const res = await underFakeClock(() =>
+      captureTimeline(page, {
+        dir,
+        frames: 3,
+        intervalMs: 100,
+        reload: false,
+        readyTimeoutMs: 1,
+      })
+    );
+    expect(calls).toEqual(['shot1', 'shot2', 'shot3', 'shot4']);
+    expect(res.frames).toStrictEqual([
+      {
+        index: 1,
+        path: join(dir, 'frame-1.png'),
+        offsetMs: 0,
+        capturedAt: '2026-11-08T09:00:00.000Z',
+        width: 800,
+        height: 600,
+      },
+      {
+        index: 2,
+        path: join(dir, 'frame-2.png'),
+        offsetMs: 116,
+        capturedAt: '2026-11-08T09:00:00.116Z',
+        width: 800,
+        height: 600,
+        attempts: 2,
+      },
+      {
+        index: 3,
+        path: join(dir, 'frame-3.png'),
+        offsetMs: 200,
+        capturedAt: '2026-11-08T09:00:00.200Z',
+        width: 800,
+        height: 600,
+      },
+    ]);
+    expect(res).toMatchObject({ success: true, reloaded: false, runtimeReady: null });
+  });
+
+  it('D4 intervalMs 0: frame 2 refused gets a single attempt, its deadline being its own due time', async () => {
+    const dir = join(tmp(), 'tl');
+    const { page, calls } = timelinePage({ refuse: 1, refuseFromShot: 2 });
+    const res = await underFakeClock(() =>
+      captureTimeline(page, {
+        dir,
+        frames: 3,
+        intervalMs: 0,
+        reload: false,
+        readyTimeoutMs: 1,
+      })
+    );
+    expect(calls).toEqual(['shot1', 'shot2', 'shot3']);
+    expect(res.frames[1]).toStrictEqual({
+      index: 2,
+      path: null,
+      offsetMs: 0,
+      capturedAt: '2026-11-08T09:00:00.000Z',
+      width: null,
+      height: null,
+      error: REFUSAL,
+    });
+    expect(readdirSync(dir).sort()).toEqual(['frame-1.png', 'frame-3.png']);
+    expect(res).toMatchObject({ success: false, error: '1 of 3 frames failed' });
   });
 });

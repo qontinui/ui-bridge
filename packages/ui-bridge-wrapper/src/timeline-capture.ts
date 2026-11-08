@@ -16,16 +16,32 @@
  * the slot's slow-network arrival). The action's own result rides on the
  * timeline result, and a failed action fails the step.
  *
- * `reload: true` starts the clock at a fresh navigation commit, so frame 1 is
- * the page before anything painted. A reload re-runs the injected runtime and
- * drops any media override the page held (the DOM is new), so the action waits
- * for the runtime to be ready again before it answers — the next exec step
- * finds a drivable page.
+ * `reload: true` starts the clock at a fresh navigation commit. Frame 1 is the
+ * first frame the page produced after that commit, and its `offsetMs` says how
+ * long after the commit the screenshot that produced it was requested. Right
+ * after the commit the reloaded document can have no compositor frame yet (the
+ * renderer is still evaluating the injected runtime at document start); then
+ * Chromium refuses the screenshot outright ({@link NO_COMPOSITOR_FRAME}), and
+ * frame 1 reads the tens of milliseconds the retries below took, not 0. Under
+ * a throttled network that first frame can still be the previous document's
+ * held frame, its body not yet arrived; `offsetMs` dates it either way. A
+ * reload re-runs the injected runtime and drops any media override the page
+ * held (the DOM is new), so the action waits for the runtime to be ready again
+ * before it answers — the next exec step finds a drivable page.
+ *
+ * That refusal, and no other error, is retried every
+ * {@link NO_COMPOSITOR_FRAME_RETRY_MS} ms until a frame comes back or the
+ * frame's deadline passes: `t0 + readyTimeoutMs` for frame 1 after a reload
+ * (the budget the reload already has), and the next frame's due time for every
+ * other frame, so a retry never shifts the schedule (`intervalMs: 0` is one
+ * attempt). A frame that took more than one attempt says how many in
+ * `attempts`.
  *
  * Every frame records what was MEASURED: the PNG's own dimensions and the
- * instant the screenshot was requested. A frame that could not be taken is a
- * per-frame `error` and makes the action answer `success: false` (exit 1),
- * never a gap silently closed up.
+ * instant the screenshot that produced it was requested. A frame that could
+ * not be taken, or was still refused at its deadline, is a per-frame `error`
+ * and makes the action answer `success: false` (exit 1), never a gap silently
+ * closed up.
  */
 
 import { readdirSync } from 'node:fs';
@@ -46,6 +62,17 @@ export const CAPTURE_TIMELINE_ACTION = 'captureTimeline';
 export const MAX_TIMELINE_FRAMES = 120;
 export const MAX_TIMELINE_INTERVAL_MS = 10_000;
 export const DEFAULT_TIMELINE_READY_TIMEOUT_MS = 30_000;
+
+/**
+ * Chromium's refusal to screenshot a document that has no compositor frame
+ * yet — CDP `Page.captureScreenshot` answering `Unable to capture screenshot`,
+ * measured on frame 1 right after a reload commit. The ONLY screenshot error
+ * {@link takeFrameByDeadline} retries; every other one is final at once.
+ */
+export const NO_COMPOSITOR_FRAME = /Unable to capture screenshot/;
+
+/** The wait between attempts at a frame Chromium refused: about one 60 Hz frame. */
+export const NO_COMPOSITOR_FRAME_RETRY_MS = 16;
 
 export interface CaptureTimelinePayload {
   /** Directory the frames go into; must be empty or not exist yet. */
@@ -134,11 +161,17 @@ export interface TimelineFrame {
   index: number;
   /** Absolute path of the PNG, or null when the frame failed. */
   path: string | null;
-  /** ms from the timeline's start (the reload commit, or the action start). */
+  /**
+   * ms from the timeline's start (the reload commit, or the action start) to
+   * the request of the attempt this frame records: the one that succeeded, or
+   * the last one refused.
+   */
   offsetMs: number;
   capturedAt: string;
   width: number | null;
   height: number | null;
+  /** Screenshot attempts this frame took; present only when more than one. */
+  attempts?: number;
   error?: string;
 }
 
@@ -193,6 +226,38 @@ function assertEmptyDir(dir: string): void {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/** One frame taken by {@link takeFrameByDeadline}: its PNG, or the last attempt's error. */
+export type FrameShot =
+  | { png: Uint8Array; at: number; attempts: number }
+  | { error: string; at: number; attempts: number };
+
+/**
+ * Take one screenshot. A {@link NO_COMPOSITOR_FRAME} refusal is retried every
+ * {@link NO_COMPOSITOR_FRAME_RETRY_MS} ms for as long as the next attempt is
+ * due before `deadline` (an instant on the `now` clock); any other error is
+ * returned at once. `at` is the request instant of the attempt the result
+ * describes: the one that succeeded, or the last one refused.
+ */
+export async function takeFrameByDeadline(
+  page: Pick<FramePage, 'screenshot'>,
+  deadline: number,
+  now: () => number
+): Promise<FrameShot> {
+  for (let attempts = 1; ; attempts++) {
+    const at = now();
+    try {
+      const png = await page.screenshot({ type: 'png', scale: 'device', fullPage: false });
+      return { png, at, attempts };
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      if (!NO_COMPOSITOR_FRAME.test(error) || now() + NO_COMPOSITOR_FRAME_RETRY_MS >= deadline) {
+        return { error, at, attempts };
+      }
+    }
+    await sleep(NO_COMPOSITOR_FRAME_RETRY_MS);
+  }
+}
+
 /** Run one timeline against `page`. */
 export async function captureTimeline(
   page: TimelinePage,
@@ -240,25 +305,34 @@ export async function captureTimeline(
     // A timer can fire a millisecond early; sleep again until the frame is due,
     // so an offset never reads shorter than the interval asked for.
     for (let wait = due - now(); wait > 0; wait = due - now()) await sleep(wait);
-    const at = now();
-    const capturedAt = new Date(at).toISOString();
-    try {
-      const png = await page.screenshot({ type: 'png', scale: 'device', fullPage: false });
-      const { width, height } = pngDimensions(png);
-      const path = join(dir, `frame-${k}.png`);
-      writePrivateFile(path, png);
-      frames.push({ index: k, path, offsetMs: at - t0, capturedAt, width, height });
-    } catch (err) {
-      frames.push({
-        index: k,
-        path: null,
-        offsetMs: at - t0,
-        capturedAt,
-        width: null,
-        height: null,
-        error: err instanceof Error ? err.message : String(err),
-      });
+    // Frame 1 after a reload may wait for the new document's first frame as
+    // long as the reload itself may take; every other frame retries only
+    // inside its own slot, up to the next frame's due time.
+    const deadline =
+      k === 1 && payload.reload ? t0 + payload.readyTimeoutMs : t0 + k * payload.intervalMs;
+    const shot = await takeFrameByDeadline(page, deadline, now);
+    const frame: TimelineFrame = {
+      index: k,
+      path: null,
+      offsetMs: shot.at - t0,
+      capturedAt: new Date(shot.at).toISOString(),
+      width: null,
+      height: null,
+      ...(shot.attempts > 1 ? { attempts: shot.attempts } : {}),
+    };
+    if ('error' in shot) {
+      frame.error = shot.error;
+    } else {
+      try {
+        const { width, height } = pngDimensions(shot.png);
+        const path = join(dir, `frame-${k}.png`);
+        writePrivateFile(path, shot.png);
+        Object.assign(frame, { path, width, height });
+      } catch (err) {
+        frame.error = err instanceof Error ? err.message : String(err);
+      }
     }
+    frames.push(frame);
   }
 
   const during = duringRun ? await duringRun : undefined;
