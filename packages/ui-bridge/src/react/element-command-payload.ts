@@ -24,12 +24,20 @@
  *     These are the spellings `relayExecuteWithDiff` already accepts.
  *   - `getElement` takes {"id"} or {"elementId"} under the same id rule.
  *
- * No field is ever silently dropped. A key beside `request` that is not the
- * element id or a dispatcher key must agree with the same key inside
- * `request`; one that would otherwise be ignored is refused, never dropped.
- * So `{"id":"q","request":{"action":"type"},"text":"x"}` is refused instead of
- * typing nothing. Refusals name keys, never the values they carry: a typed
- * value can be a secret.
+ * No key BESIDE a `request` object is ever silently dropped: one that is not
+ * the element id or a dispatcher key must agree with the same key inside
+ * `request`, and one that would otherwise be ignored is refused. So
+ * `{"id":"q","request":{"action":"type"},"text":"x"}` is refused instead of
+ * typing nothing. The request fields themselves (the keys inside `request`, or
+ * every key of a flat payload but the id) are not checked here: they reach the
+ * action handler as sent, so a misspelt one (`"txt"` for `"text"`) is not
+ * caught by this grammar.
+ *
+ * Refusals name keys and the KIND of a value, never its content (a string is
+ * described by its length alone): a typed value can be a secret. The one
+ * exception is a pair of element ids that disagree, which are named: they are
+ * registered element ids, and naming both is what makes the conflict
+ * diagnosable.
  *
  * A refusal is RETURNED by the caller as an `INVALID_REQUEST` action failure,
  * never thrown (`action-outcome.ts` in ui-bridge-wrapper lifts a returned
@@ -48,13 +56,21 @@ export const ELEMENT_READ_PAYLOAD_SHAPE = '{"id":"<elementId>"}';
 /**
  * Keys a transport or the dispatcher reads before the command runs (the
  * pre-read settle, the relay's tab pin). Tolerated at the top level of every
- * element command and never treated as a request field.
+ * element command and never treated as a request field. A read that does not
+ * settle (`getElement`) tolerates the settle keys and ignores them.
  */
 const DISPATCHER_KEYS: ReadonlySet<string> = new Set([
   'settleTimeout',
   'skipSettle',
   'targetTabId',
 ]);
+
+/**
+ * Keys a single-element read tolerates and ignores: the WebSocket protocol's
+ * own `getElement` payload carries `includeState?` (`WSGetElementMessage`,
+ * `../core/types.ts`), and a read always includes the element's state.
+ */
+const READ_IGNORED_KEYS: ReadonlySet<string> = new Set(['includeState']);
 
 /** The keys that name the target element. */
 const ID_KEYS: ReadonlySet<string> = new Set(['id', 'elementId']);
@@ -109,17 +125,20 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
 }
 
-/** What a value is, for a refusal. Short strings are quoted; nothing long is echoed. */
+/**
+ * What a value is, for a refusal: its kind, and a string's length — never its
+ * content. Whatever a caller put where a key or verb belongs can be a typed
+ * value, and a typed value can be a secret.
+ */
 function describeValue(value: unknown): string {
   if (value === undefined) return 'nothing';
   if (value === null) return 'null';
   if (Array.isArray(value)) return 'an array';
   if (typeof value === 'string') {
     if (value.length === 0) return 'an empty string';
-    return value.length <= 60 ? `the string ${JSON.stringify(value)}` : 'a string';
+    return `a string of ${value.length} character${value.length === 1 ? '' : 's'}`;
   }
-  if (typeof value === 'object') return 'an object';
-  return `${typeof value} ${String(value)}`;
+  return typeof value === 'object' ? 'an object' : `a ${typeof value}`;
 }
 
 /** Structural equality over JSON-shaped values, for the field-agreement rule. */
@@ -140,7 +159,8 @@ function sameValue(a: unknown, b: unknown): boolean {
 /**
  * The target element, under the id rule both commands share: `id` or
  * `elementId`, each a non-empty string when present, and the two equal when
- * both are present. Problems are appended to `problems`.
+ * both are present. Problems are appended to `problems`. Two disagreeing ids
+ * are the one place a refusal names values (see the module comment).
  */
 function readTargetId(payload: Record<string, unknown>, problems: string[]): string {
   const { id, elementId } = payload;
@@ -233,9 +253,7 @@ export function readElementActionPayload(payload: unknown): ElementActionPayload
         if (outer === undefined) continue;
         if (key === 'action') {
           if (!sameValue(outer, request.action)) {
-            problems.push(
-              `names two actions: "action" is ${describeValue(outer)} but "request.action" is ${describeValue(request.action)}`
-            );
+            problems.push('names two actions: the top-level "action" and "request.action" differ');
           }
           continue;
         }
@@ -260,17 +278,22 @@ export function readElementActionPayload(payload: unknown): ElementActionPayload
     );
   }
   if (problems.length > 0) return refusal(command, problems, ACTION_SPELLINGS, receivedKeys, id);
-  const flat: Record<string, unknown> = {};
-  for (const key of receivedKeys) {
-    if (!ID_KEYS.has(key)) flat[key] = payload[key];
-  }
+  // Defined, never assigned: `flat[key] = …` with the key `__proto__` would run
+  // the prototype setter and hand the payload's object to the request as its
+  // prototype, so every field it holds would read as a request field.
+  const flat = Object.fromEntries(
+    receivedKeys.filter((key) => !ID_KEYS.has(key)).map((key) => [key, payload[key]])
+  );
   return { ok: true, id, request: flat as ElementActionRequest };
 }
 
 /**
  * Read a single-element read payload (`getElement`) into `{id}`, or refuse it.
- * `command` names the read in the refusal. Beside the id only the dispatcher
- * keys are tolerated: a key the read does not take is refused, never ignored.
+ * `command` names the read in the refusal. Beside the id it tolerates, and
+ * ignores, the dispatcher keys (`settleTimeout` / `skipSettle`: the read does
+ * not settle; `targetTabId`: the transport's tab pin) and the WebSocket
+ * protocol's `includeState` (the state is always included). Any other key is
+ * refused, never ignored.
  */
 export function readElementIdPayload(command: string, payload: unknown): ElementReadPayloadReading {
   if (!isPlainObject(payload)) {
@@ -286,7 +309,11 @@ export function readElementIdPayload(command: string, payload: unknown): Element
   const problems: string[] = [];
   const id = readTargetId(payload, problems);
   const unread = receivedKeys.filter(
-    (key) => !ID_KEYS.has(key) && !DISPATCHER_KEYS.has(key) && payload[key] !== undefined
+    (key) =>
+      !ID_KEYS.has(key) &&
+      !DISPATCHER_KEYS.has(key) &&
+      !READ_IGNORED_KEYS.has(key) &&
+      payload[key] !== undefined
   );
   if (unread.length > 0) {
     problems.push(

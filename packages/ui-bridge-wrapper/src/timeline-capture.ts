@@ -33,9 +33,11 @@
  * {@link NO_COMPOSITOR_FRAME_RETRY_MS} ms until a frame comes back or the
  * frame's deadline passes: `t0 + readyTimeoutMs` for frame 1 after a reload
  * (the budget the reload already has), and the next frame's due time for every
- * other frame, so a retry never shifts the schedule (`intervalMs: 0` is one
- * attempt). A frame that took more than one attempt says how many in
- * `attempts`.
+ * other frame. A retry is made only when it falls due before that deadline
+ * (`intervalMs: 0` is one attempt), so retries never take a later frame's
+ * slot; an attempt still under way when the next frame falls due delays that
+ * frame by what is left of it, as any slow screenshot does. A frame that took
+ * more than one attempt says how many in `attempts`.
  *
  * Every frame records what was MEASURED: the PNG's own dimensions and the
  * instant the screenshot that produced it was requested. A frame that could
@@ -237,24 +239,38 @@ export type FrameShot =
  * due before `deadline` (an instant on the `now` clock); any other error is
  * returned at once. `at` is the request instant of the attempt the result
  * describes: the one that succeeded, or the last one refused.
+ *
+ * The clock bounds the retries only while it advances, so the attempts are
+ * also capped, by a count fixed ONCE from the budget before the first attempt:
+ * `ceil((deadline - start) / NO_COMPOSITOR_FRAME_RETRY_MS) + 2` — what the
+ * deadline admits at the nominal spacing, plus two for timers that fire early.
+ * With a moving clock the deadline ends the retries; with a frozen injected
+ * `now` the cap does, so a refusal can never spin the loop forever.
  */
 export async function takeFrameByDeadline(
   page: Pick<FramePage, 'screenshot'>,
   deadline: number,
   now: () => number
 ): Promise<FrameShot> {
+  const start = now();
+  const maxAttempts = Math.ceil((deadline - start) / NO_COMPOSITOR_FRAME_RETRY_MS) + 2;
+  let at = start;
   for (let attempts = 1; ; attempts++) {
-    const at = now();
     try {
       const png = await page.screenshot({ type: 'png', scale: 'device', fullPage: false });
       return { png, at, attempts };
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
-      if (!NO_COMPOSITOR_FRAME.test(error) || now() + NO_COMPOSITOR_FRAME_RETRY_MS >= deadline) {
+      if (
+        !NO_COMPOSITOR_FRAME.test(error) ||
+        attempts >= maxAttempts ||
+        now() + NO_COMPOSITOR_FRAME_RETRY_MS >= deadline
+      ) {
         return { error, at, attempts };
       }
     }
     await sleep(NO_COMPOSITOR_FRAME_RETRY_MS);
+    at = now();
   }
 }
 

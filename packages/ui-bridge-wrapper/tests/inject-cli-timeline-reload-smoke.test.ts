@@ -11,17 +11,20 @@
  * frames 2-4 are written. A fake page cannot see that (its first screenshot
  * always succeeds), so this runs the real one.
  *
- * WHETHER THE REFUSAL ARRIVES DEPENDS ON THE PLAYWRIGHT DRIVING CHROMIUM.
- * Measured 2026-11-08 on one box, first screenshot after each reload commit:
- * Playwright 1.65.0 (what `npx -p playwright` resolves for a published-wrapper
- * user) was refused on 2 of 12 against Chromium 158, and on 5 of 6 at
- * authoring; Playwright 1.59.1, this workspace's lock, on 0 of 36 across
- * Chromium 147, 156 and 158. So under the lock this smoke passes with or
- * without the retry, and it fails against the defect only under a Playwright
- * that relays the refusal: red-first was 0 of 3 runs under 1.59.1 and 1 of 3
- * under 1.65.0. The deterministic proof of the retry rule is the unit suite
- * (`inject-cli-network-timeline.test.ts`); this pins that the rule meets the
- * refusal Chromium actually sends, and logs which path each run took.
+ * WHETHER THE REFUSAL ARRIVES DEPENDS ON THE PLAYWRIGHT DRIVING CHROMIUM, AND
+ * EVEN THEN IT IS A RACE. Measured 2026-11-08 on one box, first screenshot
+ * after each reload commit: Playwright 1.65.0 (also what `npx -p playwright`
+ * resolves for a published-wrapper user) was refused on 2 of 12 against
+ * Chromium 158, and on 5 of 6 at authoring; Playwright 1.59.1 on 0 of 36
+ * across Chromium 147, 156 and 158. The workspace lock resolves Playwright
+ * 1.65.0 (213dfdf moved it off 1.59.1 for exactly this), and CI installs the
+ * browser that version pins, so this smoke CAN fail against the defect:
+ * without the retry it was red on 1 of 3 runs at red-first and on 1 of 8 at the
+ * review of 213dfdf, and green on the rest, because each run draws the race
+ * afresh. A green run is therefore not by itself proof the retry ran; each run
+ * logs which path it took (frame 1's `attempts`). The deterministic proof of
+ * the retry rule is the unit suite (`inject-cli-network-timeline.test.ts`);
+ * this pins that the rule meets the refusal Chromium actually sends.
  *
  * Gated on a Playwright Chromium being installed, as the other smokes are.
  */
