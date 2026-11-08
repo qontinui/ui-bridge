@@ -10,7 +10,9 @@
  *      `dom-fallback` substrate (no app cooperation).
  *   3. `window.__uiBridgeInjected.execute = (a, p) => executeCommand(a, p, bridge)`
  *      — the same dispatcher embedded apps use.
- *   4. (Relay variant) `startRelayClient(...)` when the driver injected a
+ *   4. A `BrowserEventCapture` in the realm's `browserCapture` slot when no
+ *      provider put one there, so console reads observe from injection onward.
+ *   5. (Relay variant) `startRelayClient(...)` when the driver injected a
  *      `window.__uiBridgeInjectedConfig.uiBridgeBase`.
  *
  * Init-scripts run at document_start — before `<body>` exists — so seeding is
@@ -23,6 +25,7 @@
 import { UIBridgeRegistry, setGlobalRegistry } from '../core/registry';
 import { enableDevControls } from '../core/dev-controls';
 import { executeCommand } from '../react/commandHandlers';
+import { BrowserEventCapture } from '../debug/browser-capture';
 import { startRelayClient } from '../relay/relay-client';
 import { observeAndSeed } from './seed-registry';
 import { createSettleTracker } from './settle';
@@ -50,6 +53,25 @@ declare const __SDK_VERSION__: string;
   setGlobalRegistry(registry);
 
   const bridge = bridgeAccessOver(registry);
+
+  // The React provider installs a BrowserEventCapture and publishes it as
+  // `window.__UI_BRIDGE__.browserCapture`; a page without the provider had no
+  // console instrument, so `getConsoleErrors` had nothing to read. Install the
+  // same capture (default config, as the provider does) only into an EMPTY
+  // slot — a provider's capture is never replaced. Installed now, at
+  // document_start, rather than at DOM-ready, so it observes from injection
+  // onward (and before the relay client starts).
+  const realm = ((window as unknown as Record<string, unknown>).__UI_BRIDGE__ ??= {}) as Record<
+    string,
+    unknown
+  >;
+  if (!realm.browserCapture) {
+    const capture = new BrowserEventCapture();
+    capture.install();
+    realm.browserCapture = capture;
+    // Backward-compat alias, as the provider publishes it.
+    realm.consoleCapture ??= capture;
+  }
 
   const cfg = window.__uiBridgeInjectedConfig;
   const settle = createSettleTracker({

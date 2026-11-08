@@ -454,6 +454,36 @@ function createActionFailure(
 }
 
 /**
+ * The answer for a read whose instrument is not running in this realm (no
+ * console capture, no idle detector). A default such as `{ errors: [] }` or
+ * `{ idle: true }` would report a measurement nobody made, so the read answers
+ * UNKNOWN as the failure envelope callers already branch on.
+ */
+function createInstrumentUnavailable(
+  errorCode: 'CAPTURE_UNAVAILABLE' | 'IDLE_DETECTOR_UNAVAILABLE',
+  message: string
+) {
+  const timestamp = Date.now();
+  return {
+    success: false,
+    error: message,
+    failureDetails: { errorCode, message, timestamp },
+    timestamp,
+  };
+}
+
+const noCapture = () =>
+  createInstrumentUnavailable(
+    'CAPTURE_UNAVAILABLE',
+    'No console capture is installed in this page, so its console errors are UNKNOWN (not zero)'
+  );
+const noIdleDetector = () =>
+  createInstrumentUnavailable(
+    'IDLE_DETECTOR_UNAVAILABLE',
+    'No idle detector is available in this page, so whether it is idle is UNKNOWN (not idle)'
+  );
+
+/**
  * The relay's refusal envelope for a click `getClickRefusal` blocked, from the
  * pre-dispatch guard. (`submit` used to share it through a no-form click
  * fallback; that fallback is gone — a form-less `submit` is the element-kind
@@ -4830,12 +4860,8 @@ export async function executeCommand(
         groupBy?: 'fingerprint' | 'message' | 'source';
       };
       const cap = g.browserCapture;
-      if (!cap) {
-        if (group) {
-          return { groups: [], totalErrors: 0, totalGroups: 0, timestamp: Date.now() };
-        }
-        return { errors: [], timestamp: Date.now() };
-      }
+      // Flat and grouped alike: no capture means the errors are UNKNOWN.
+      if (!cap) return noCapture();
       const errors = since ? cap.getConsoleSince(since) : cap.getConsoleRecent(limit);
 
       if (!group) {
@@ -5496,36 +5522,36 @@ export async function executeCommand(
 
     case 'getIdleStatus': {
       const detector = await getIdleDetector();
-      if (!detector) return { idle: true, signals: {}, timestamp: Date.now() };
+      if (!detector) return noIdleDetector();
       return detector.getStatus();
     }
 
     case 'getIdleSignalStatus': {
       const detector = await getIdleDetector();
-      if (!detector) return { idle: true, timestamp: Date.now() };
+      if (!detector) return noIdleDetector();
       return detector.getSignalStatus(payload.signal as string);
     }
 
     case 'waitForIdle': {
       const detector = await getIdleDetector();
-      if (!detector) return { idle: true, timestamp: Date.now() };
+      if (!detector) return noIdleDetector();
       return detector.waitForIdle(payload);
     }
 
     case 'waitForSignalIdle': {
       const detector = await getIdleDetector();
-      if (!detector) return { idle: true, timestamp: Date.now() };
+      if (!detector) return noIdleDetector();
       const { signal, ...opts } = payload;
       if (detector.waitForSignal) return detector.waitForSignal(signal as string, opts);
-      return { idle: true, timestamp: Date.now() };
+      return noIdleDetector();
     }
 
     case 'waitForTargets': {
       const detector = await getIdleDetector();
-      if (!detector) return { idle: true, timestamp: Date.now() };
+      if (!detector) return noIdleDetector();
       const { targets, ...opts } = payload as { targets: unknown[]; [k: string]: unknown };
       if (detector.waitFor) return detector.waitFor(targets as never[], opts);
-      return { idle: true, timestamp: Date.now() };
+      return noIdleDetector();
     }
 
     // ======================================================================
