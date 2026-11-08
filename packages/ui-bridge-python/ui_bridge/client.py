@@ -655,12 +655,62 @@ class UIBridgeClient:
 
         return self._execute_action(element_id, "drag", params=params)
 
+    def execute_action(
+        self,
+        element_id: str,
+        action: str,
+        params: dict[str, Any] | None = None,
+        *,
+        verify_effect: bool | None = None,
+        wait_visible: bool = False,
+        wait_enabled: bool = False,
+        timeout: int | None = None,
+    ) -> ActionResponse:
+        """
+        Execute any element action by name.
+
+        The per-verb methods (``click``, ``type``, ...) cover the common
+        actions; this is the general door, and the one that carries
+        ``verify_effect``.
+
+        Args:
+            element_id: Element identifier
+            action: Action name, e.g. ``"click"``
+            params: Action parameters
+            verify_effect: ``True`` opts this action into predict-then-verify
+                even with verification off executor-wide. The verdict is
+                ``response.effect_verification`` (``response.effect_outcome``
+                for just the outcome). Honoured only where the element action
+                reaches the SDK's action executor (a bridge server's direct
+                HTTP route). The runner relay / injected path runs its own DOM
+                implementation and ignores it, so ``effect_verification`` is
+                ``None`` there; it is also ``None`` when no handler effect
+                signature resolved. ``False`` is not an opt-out on element
+                actions: only ``True`` changes anything.
+            wait_visible: Wait for the element to be visible first
+            wait_enabled: Wait for the element to be enabled first
+            timeout: Wait timeout in milliseconds
+
+        Returns:
+            ActionResponse (raises ``ActionFailedError`` on failure)
+        """
+        return self._execute_action(
+            element_id,
+            action,
+            params=params,
+            verify_effect=verify_effect,
+            wait_visible=wait_visible,
+            wait_enabled=wait_enabled,
+            timeout=timeout,
+        )
+
     def _execute_action(
         self,
         element_id: str,
         action: str,
         *,
         params: dict[str, Any] | None = None,
+        verify_effect: bool | None = None,
         wait_visible: bool = False,
         wait_enabled: bool = False,
         timeout: int | None = None,
@@ -686,6 +736,8 @@ class UIBridgeClient:
 
         if wait_options:
             request["waitOptions"] = wait_options
+        if verify_effect is not None:
+            request["verifyEffect"] = verify_effect
 
         try:
             data = self._request(

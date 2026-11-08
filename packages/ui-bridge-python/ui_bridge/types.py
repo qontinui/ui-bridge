@@ -468,8 +468,20 @@ class ActionRequest(BaseModel):
     wait_options: WaitOptions | None = Field(None, alias="waitOptions")
     request_id: str | None = Field(None, alias="requestId")
     capture_after: bool | None = Field(None, alias="captureAfter")
+    # Opt THIS action into predict-then-verify even with the executor-wide flag
+    # off. The verdict comes back as ``ActionResponse.effect_verification``
+    # when a handler effect signature resolves for the action.
+    verify_effect: bool | None = Field(None, alias="verifyEffect")
 
     model_config = {"populate_by_name": True}
+
+
+def _effect_outcome(verification: dict[str, Any] | None) -> str | None:
+    """The ``outcome`` of a raw ``EffectVerification`` wire object, if any."""
+    if verification is None:
+        return None
+    outcome = verification.get("outcome")
+    return outcome if isinstance(outcome, str) else None
 
 
 # The wire's error-code vocabulary is the GENERATED catalog in
@@ -647,6 +659,10 @@ class ActionResponse(BaseModel):
     timestamp: int
     request_id: str | None = Field(None, alias="requestId")
     wait_duration_ms: float | None = Field(None, alias="waitDurationMs")
+    # The predicted-vs-observed verdict (the SDK's ``EffectVerification``),
+    # present only when verification ran. Kept as the raw wire object so a
+    # new SDK field is never dropped here.
+    effect_verification: dict[str, Any] | None = Field(None, alias="effectVerification")
     forced_hover: dict[str, Any] | None = Field(None, alias="forcedHover")
     """What a ``hover``/``hoverClick``/``unhover`` forced or released:
     ``applied`` (``rulesRewritten``, ``revealed``, ``settled``, ``unreadableSheets``,
@@ -655,6 +671,12 @@ class ActionResponse(BaseModel):
     """
 
     model_config = {"populate_by_name": True}
+
+    @property
+    def effect_outcome(self) -> str | None:
+        """The verdict's ``outcome`` (e.g. ``"Confirmed"``), or ``None`` when
+        no verification ran."""
+        return _effect_outcome(self.effect_verification)
 
     def is_element_not_found(self) -> bool:
         """Check if the failure is due to element not being found."""
@@ -738,10 +760,7 @@ class ComponentActionResponse(BaseModel):
     def effect_outcome(self) -> str | None:
         """The verdict's ``outcome`` (e.g. ``"Confirmed"``), or ``None`` when
         no verification ran."""
-        if self.effect_verification is None:
-            return None
-        outcome = self.effect_verification.get("outcome")
-        return outcome if isinstance(outcome, str) else None
+        return _effect_outcome(self.effect_verification)
 
     def is_timeout(self) -> bool:
         """Check if the action was abandoned because ``timeout_ms`` elapsed."""

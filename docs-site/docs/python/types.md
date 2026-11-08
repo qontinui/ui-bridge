@@ -87,6 +87,17 @@ if response.effect_outcome != 'Confirmed':
     ...  # response.effect_verification holds predicted, observed and containment
 ```
 
+Element actions can be verified too, with two differences from component
+actions. `client.execute_action(element_id, action, params, verify_effect=True)`
+sends the override, and `ActionResponse.effect_verification` / `effect_outcome`
+hold the verdict. First, only `True` does anything: an element action has no
+declared signature to decline, so `False` is not an opt-out. Second, it is
+honoured only where the action reaches the SDK's action executor (a bridge
+server's direct HTTP route). The runner relay / injected path runs its own DOM
+implementation and ignores it, so the verdict is `None` there. The per-verb
+methods (`click`, `type`, ...) do not take the argument; use `execute_action`
+with the verb's name.
+
 `effect_verification` is `None` when no verification ran, including when no
 signature resolved for the action: nothing is predicted for an action nobody
 described.

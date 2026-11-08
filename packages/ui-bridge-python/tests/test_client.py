@@ -59,6 +59,45 @@ class TestUIBridgeClientActions:
             assert result.success is True
             assert result.duration_ms == 50.0
 
+    def test_execute_action_verify_effect(self, client, mock_response):
+        mock_response.json.return_value = {
+            "success": True,
+            "data": {
+                "success": True,
+                "durationMs": 50.0,
+                "timestamp": 1234567890,
+                "effectVerification": {"outcome": "Failure", "durationMs": 4},
+            },
+        }
+
+        with patch.object(client._client, "request", return_value=mock_response) as req:
+            result = client.execute_action(
+                "btn-1", "toggle", params={"x": 1}, verify_effect=False
+            )
+
+            assert req.call_args[1]["json"] == {
+                "action": "toggle",
+                "params": {"x": 1},
+                "verifyEffect": False,
+            }
+            assert result.effect_outcome == "Failure"
+
+    def test_execute_action_and_verbs_omit_verify_effect_by_default(
+        self, client, mock_response
+    ):
+        mock_response.json.return_value = {
+            "success": True,
+            "data": {"success": True, "durationMs": 1.0, "timestamp": 1},
+        }
+
+        with patch.object(client._client, "request", return_value=mock_response) as req:
+            result = client.execute_action("btn-1", "focus")
+            assert req.call_args[1]["json"] == {"action": "focus"}
+            assert result.effect_outcome is None
+
+            client.click("btn-1")
+            assert "verifyEffect" not in req.call_args[1]["json"]
+
     def test_type(self, client, mock_response):
         mock_response.json.return_value = {
             "success": True,

@@ -285,6 +285,40 @@ class TestAsyncUIBridgeClientActions:
         )
 
     @pytest.mark.asyncio
+    async def test_execute_action_sends_verify_effect_and_reads_verdict(
+        self, client: AsyncUIBridgeClient
+    ) -> None:
+        data = _action_data()
+        data["effectVerification"] = {"outcome": "Partial", "durationMs": 9}
+        client._request = AsyncMock(return_value=data)  # type: ignore[method-assign]
+        result = await client.execute_action(
+            "btn-1", "click", verify_effect=True, wait_visible=True
+        )
+
+        client._request.assert_called_once_with(
+            "POST",
+            "/control/element/btn-1/action",
+            json={
+                "action": "click",
+                "waitOptions": {"visible": True},
+                "verifyEffect": True,
+            },
+        )
+        assert result.effect_verification == {"outcome": "Partial", "durationMs": 9}
+        assert result.effect_outcome == "Partial"
+
+    @pytest.mark.asyncio
+    async def test_execute_action_omits_verify_effect_by_default(
+        self, client: AsyncUIBridgeClient
+    ) -> None:
+        client._request = AsyncMock(return_value=_action_data())  # type: ignore[method-assign]
+        result = await client.execute_action("btn-1", "focus")
+
+        assert client._request.call_args[1]["json"] == {"action": "focus"}
+        assert result.effect_verification is None
+        assert result.effect_outcome is None
+
+    @pytest.mark.asyncio
     async def test_type(self, client: AsyncUIBridgeClient) -> None:
         client._request = AsyncMock(return_value=_action_data(duration=100.0))  # type: ignore[method-assign]
         result = await client.type("input-1", "Hello World")
