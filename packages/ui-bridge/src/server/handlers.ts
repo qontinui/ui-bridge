@@ -524,6 +524,15 @@ export interface ActionExecutorLike {
        * (`normalizeActionTimeoutMs`); never passed to a timer unchecked.
        */
       timeoutMs?: number;
+      /**
+       * Per-request effect-verification override
+       * (`ComponentActionRequest.verifyEffect`): `true` verifies this call,
+       * `false` declines even a declared signature's verification. Dropping it
+       * here left both arms unreachable from every HTTP caller.
+       */
+      verifyEffect?: boolean;
+      /** Echoed on the response so a caller can correlate it. */
+      requestId?: string;
     }
   ): Promise<unknown>;
   /**
@@ -2146,7 +2155,13 @@ export function createHandlers(
 
     executeComponentAction: async (
       id: string,
-      request: { action: string; params?: Record<string, unknown>; timeoutMs?: number }
+      request: {
+        action: string;
+        params?: Record<string, unknown>;
+        timeoutMs?: number;
+        verifyEffect?: boolean;
+        requestId?: string;
+      }
     ) => {
       try {
         const result = await actionExecutor.executeComponentAction(id, {
@@ -2154,6 +2169,9 @@ export function createHandlers(
           params: request.params,
           // Forwarded, not dropped. See `ActionExecutorLike` above.
           timeoutMs: request.timeoutMs,
+          verifyEffect:
+            typeof request.verifyEffect === 'boolean' ? request.verifyEffect : undefined,
+          requestId: typeof request.requestId === 'string' ? request.requestId : undefined,
         });
         return success(result) as APIResponse<ComponentActionResponse>;
       } catch (err) {
@@ -2176,6 +2194,8 @@ export function createHandlers(
           action: request.action,
           params: request.params,
           timeoutMs: request.timeoutMs,
+          verifyEffect: request.verifyEffect,
+          requestId: request.requestId,
         });
         return success(result) as APIResponse<ComponentActionResponse>;
       } catch (err) {

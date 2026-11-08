@@ -91,6 +91,47 @@ describe('direct HTTP handlers (server/handlers.ts)', () => {
   });
 });
 
+describe('direct HTTP handlers forward verifyEffect and requestId', () => {
+  it('executeComponentAction forwards both to the executor', async () => {
+    const handlers = createHandlers(makeRegistryLike(), recordingExecutor() as never);
+
+    await handlers.executeComponentAction('login-form', {
+      action: 'submit',
+      params: {},
+      verifyEffect: false,
+      requestId: 'req-d',
+    });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toEqual({
+      id: 'login-form',
+      action: 'submit',
+      params: {},
+      verifyEffect: false,
+      requestId: 'req-d',
+    });
+  });
+
+  it('invokeComponentAction hoists verifyEffect out of the body', async () => {
+    const handlers = createHandlers(makeRegistryLike(), recordingExecutor() as never);
+
+    await handlers.invokeComponentAction('login-form', 'submit', {
+      user: 'ada',
+      verifyEffect: true,
+      requestId: 'req-i',
+    });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toEqual({
+      id: 'login-form',
+      action: 'submit',
+      params: { user: 'ada' },
+      verifyEffect: true,
+      requestId: 'req-i',
+    });
+  });
+});
+
 describe('Next.js route adapter (server/nextjs.ts)', () => {
   it('carries timeoutMs from the POST body through to the executor', async () => {
     const handlers = createHandlers(

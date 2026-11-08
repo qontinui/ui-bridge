@@ -505,9 +505,15 @@ function ipcActionExecutor(registry: ReturnType<typeof getGlobalRegistry>): Defa
  * response into this channel's `{ success, result?, error?, timestamp }`
  * envelope.
  *
- * The extra fields the executor produces (`failureDetails`, `durationMs`) are
- * passed through additively — `JSON.stringify` drops the undefined ones, so an
- * ordinary success is byte-identical to what this seam emitted before.
+ * The extra fields the executor produces (`failureDetails`, `durationMs`,
+ * `effectVerification`, `requestId`) are passed through additively —
+ * `JSON.stringify` drops the undefined ones, so an ordinary success is
+ * byte-identical to what this seam emitted before.
+ *
+ * `effectVerification` is the predicted-vs-observed verdict. Leaving it off
+ * here made every component action driven through the relay unverifiable: the
+ * executor computed the verdict and this envelope threw it away, so a caller
+ * could only ever read `unknown`.
  */
 async function runComponentActionViaExecutor(
   registry: ReturnType<typeof getGlobalRegistry>,
@@ -520,8 +526,30 @@ async function runComponentActionViaExecutor(
     result: response.result,
     error: response.error,
     failureDetails: response.failureDetails,
+    effectVerification: response.effectVerification,
     durationMs: response.durationMs,
     timestamp: response.timestamp,
+    requestId: response.requestId,
+  };
+}
+
+/**
+ * The per-request fields of a wire `ComponentActionRequest` that this channel
+ * forwards to the executor besides `action` and `params`.
+ *
+ * Read off the payload by name and type rather than spread, so a malformed
+ * value is dropped instead of reaching the executor (which treats only a
+ * boolean `verifyEffect` as an instruction). `verifyEffect` is the
+ * effect-verification switch: before it was forwarded here, `true` could not
+ * opt one relay call in and `false` could not decline a declared signature.
+ */
+function wireComponentRequestFields(
+  source: Record<string, unknown>
+): Pick<ComponentActionRequest, 'timeoutMs' | 'verifyEffect' | 'requestId'> {
+  return {
+    timeoutMs: source.timeoutMs as number | undefined,
+    verifyEffect: typeof source.verifyEffect === 'boolean' ? source.verifyEffect : undefined,
+    requestId: typeof source.requestId === 'string' ? source.requestId : undefined,
   };
 }
 
@@ -2749,7 +2777,7 @@ export async function executeCommand(
       return await runComponentActionViaExecutor(registry, compId, {
         action: actionId,
         params: payload.params as Record<string, unknown> | undefined,
-        timeoutMs: (payload as { timeoutMs?: unknown }).timeoutMs as number | undefined,
+        ...wireComponentRequestFields(payload as Record<string, unknown>),
       });
     }
 
@@ -2777,7 +2805,14 @@ export async function executeCommand(
         // `timeoutMs` is the wire-reachable half of cancellation — the relay
         // forwards the whole `ComponentActionRequest`, so failing to read it
         // here is what made it unreachable on this channel.
-        request: { action: string; actionId?: string; params?: P; timeoutMs?: number };
+        request: {
+          action: string;
+          actionId?: string;
+          params?: P;
+          timeoutMs?: number;
+          verifyEffect?: boolean;
+          requestId?: string;
+        };
       };
       const actionId = request.actionId ?? request.action;
       const comp = registry.getComponent(id);
@@ -2800,7 +2835,7 @@ export async function executeCommand(
       return await runComponentActionViaExecutor(registry, id, {
         action: actionId,
         params: request.params as Record<string, unknown> | undefined,
-        timeoutMs: request.timeoutMs,
+        ...wireComponentRequestFields(request as Record<string, unknown>),
       });
     }
 
