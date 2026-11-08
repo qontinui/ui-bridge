@@ -50,12 +50,11 @@ const commandHandlersSrc = readFileSync(resolve(here, '../react/commandHandlers.
  * or, through `relayWithFallback`, a `success` carrying the fallback default
  * with `fallback: true`, which reads as an empty answer.
  *
- * Owned by plan `2026-11-08-eight-relayed-ui-bridge-actions-have-no-browser-case`:
- * each one is served in the dispatcher or its relay route is deleted (delete
- * over deprecate). That plan was scoped from the eight `relayCommand` sites;
- * `getElementHistory` and `getRecentEffects` reach the browser through
- * `relayWithFallback`, which only this AST extraction reads, and belong to the
- * same work.
+ * Owned by plan `2026-11-08-relayed-ui-bridge-actions-have-no-browser-case`,
+ * which covers all ten listed here: each one is served in the dispatcher or its
+ * relay route is deleted (delete over deprecate). Most reach the browser through
+ * `relayCommand`; `getElementHistory` and `getRecentEffects` go through
+ * `relayWithFallback`, which only this AST extraction reads.
  *
  * Ratcheted both ways: an action that gains a browser case, or stops being
  * relayed, fails the guard until it leaves this list.
