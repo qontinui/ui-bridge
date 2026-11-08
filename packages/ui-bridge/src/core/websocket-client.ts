@@ -360,13 +360,26 @@ export class UIBridgeWSClient {
      * of cancellation — an `AbortSignal` cannot cross a WebSocket. See
      * `ComponentActionRequest.timeoutMs`.
      */
-    timeoutMs?: number
+    timeoutMs?: number,
+    /**
+     * Per-request options carried on the wire alongside `timeoutMs`:
+     * `verifyEffect` is the effect-verification override (see
+     * `ComponentActionRequest.verifyEffect`); `requestId` is echoed back.
+     */
+    options?: { verifyEffect?: boolean; requestId?: string }
   ): Promise<ActionResponse> {
     const response = await this.sendRequest<ActionResponse>({
       id: generateId(),
       type: 'executeComponentAction',
       timestamp: Date.now(),
-      payload: { componentId, action, params, timeoutMs },
+      payload: {
+        componentId,
+        action,
+        params,
+        timeoutMs,
+        verifyEffect: options?.verifyEffect,
+        requestId: options?.requestId,
+      },
     });
 
     return response;
