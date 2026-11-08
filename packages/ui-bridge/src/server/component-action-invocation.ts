@@ -12,7 +12,11 @@
  * merged into `params`, and an explicit `params` wins on collision: parity
  * with the runner's `UIBridgeComponentActionRequest` merge and the element
  * action route's flat format. Two kinds of key never become params:
- *   - request fields (`timeoutMs`, `requestId`), hoisted onto the request;
+ *   - request fields (`timeoutMs`, `requestId`, `verifyEffect`), hoisted onto
+ *     the request. `verifyEffect` used to be absent from this list, so it was
+ *     merged into `params` as if it were an action argument and the executor
+ *     never saw it: a caller could neither opt one call into effect
+ *     verification nor decline a declared signature's;
  *   - routing fields (`tabId`, `targetTabId`, `__callerUserId`), which the
  *     adapters splice into a body and the relay lifts off a request before
  *     dispatch. They are dropped from the flat keys and from the top level of
@@ -23,7 +27,7 @@
 import type { ComponentActionRequest } from '../control/types';
 import { withoutReservedCaller } from './reserved-caller';
 
-const REQUEST_FIELDS = new Set(['params', 'timeoutMs', 'requestId']);
+const REQUEST_FIELDS = new Set(['params', 'timeoutMs', 'requestId', 'verifyEffect']);
 const ROUTING_FIELDS = ['tabId', 'targetTabId', '__callerUserId'] as const;
 
 type RoutingField = (typeof ROUTING_FIELDS)[number];
@@ -64,6 +68,7 @@ export function componentActionInvocation(
       params: withoutReservedCaller({ ...flat, ...explicit }),
       timeoutMs: typeof body?.timeoutMs === 'number' ? body.timeoutMs : undefined,
       requestId: typeof body?.requestId === 'string' ? body.requestId : undefined,
+      verifyEffect: typeof body?.verifyEffect === 'boolean' ? body.verifyEffect : undefined,
     },
     routing,
   };

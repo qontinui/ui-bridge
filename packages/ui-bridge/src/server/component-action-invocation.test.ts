@@ -21,6 +21,25 @@ describe('componentActionInvocation', () => {
     expect(request).toEqual({ action: 'select', params: {}, timeoutMs: 500, requestId: 'r-1' });
   });
 
+  it('hoists a boolean verifyEffect onto the request, never into params', () => {
+    expect(componentActionInvocation('open', { verifyEffect: true, x: 1 }).request).toEqual({
+      action: 'open',
+      params: { x: 1 },
+      verifyEffect: true,
+    });
+    expect(componentActionInvocation('open', { verifyEffect: false }).request).toEqual({
+      action: 'open',
+      params: {},
+      verifyEffect: false,
+    });
+  });
+
+  it('drops a non-boolean verifyEffect instead of passing it on', () => {
+    const { request } = componentActionInvocation('open', { verifyEffect: 'true' });
+    expect(request).toEqual({ action: 'open', params: {} });
+    expect(request.verifyEffect).toBeUndefined();
+  });
+
   it('keeps routing fields out of params and returns them separately', () => {
     const { request, routing } = componentActionInvocation('select', {
       tabId: 'tab-1',
