@@ -122,6 +122,26 @@ function readRelayInnerFailure(result: unknown): { message: string; code: string
 }
 
 /**
+ * The outer failure envelope for a browser-reported inner failure: the verdict
+ * changes, and the browser's payload is preserved verbatim under `data`, so
+ * nothing that reads `failureDetails`, `elementState` or a handler's own
+ * fields loses information. One shape for every relay path that reads a live
+ * answer (`relayCommand`, `getElement`'s unpinned read).
+ */
+function relayInnerFailureResponse<T>(
+  innerFailure: { message: string; code: string },
+  result: unknown
+): APIResponse<T> {
+  return {
+    success: false,
+    error: innerFailure.message,
+    code: innerFailure.code as APIResponse['code'],
+    data: result,
+    timestamp: Date.now(),
+  } as APIResponse<T>;
+}
+
+/**
  * Is a relay command's `data` the browser's typed find refusal — an inner
  * `success: false` carrying the `refusal` the canonical filter raised?
  */
@@ -501,20 +521,10 @@ export function createRelayHandlers(
     try {
       const result = await relay.queueCommand<T>(action, cleaned, effectiveOpts);
       // An inner `success: false` is a FAILURE — it must never surface as an
-      // outer success. See `readRelayInnerFailure`. The payload is preserved
-      // verbatim under `data` so nothing that reads `failureDetails`,
-      // `elementState` or the handler's own fields loses information; only the
-      // envelope's verdict changes.
+      // outer success. See `readRelayInnerFailure`; the envelope keeps the
+      // payload verbatim under `data` (`relayInnerFailureResponse`).
       const innerFailure = readRelayInnerFailure(result);
-      if (innerFailure) {
-        return {
-          success: false,
-          error: innerFailure.message,
-          code: innerFailure.code as APIResponse['code'],
-          data: result,
-          timestamp: Date.now(),
-        } as APIResponse<T>;
-      }
+      if (innerFailure) return relayInnerFailureResponse<T>(innerFailure, result);
       return success(result);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -991,8 +1001,11 @@ export function createRelayHandlers(
 
       // P0 (plan 2026-06-12 item 1): a PINNED read must never fall back to
       // the shared cross-tab cache — propagate the routing/timeout error.
+      // `relayCommand` returns the tab's own not-found (the dispatcher's
+      // returned `ELEMENT_NOT_FOUND`) as a failure envelope; the dispatcher
+      // never answers `null`, so there is no null arm to handle here.
       if (targetTabId !== undefined) {
-        const live = await relayCommand<ControlSnapshot['elements'][0] | null>(
+        return relayCommand<ControlSnapshot['elements'][0]>(
           'getElement',
           { id },
           {
@@ -1000,29 +1013,26 @@ export function createRelayHandlers(
             ...(effectiveUserId ? { ownerCheck: { userId: effectiveUserId } } : {}),
           }
         );
-        if (!live.success) {
-          return live as unknown as APIResponse<ControlSnapshot['elements'][0]>;
-        }
-        if (live.data) return success(live.data);
-        return error(
-          `Element "${id}" not found on tab "${targetTabId}". Use find() or getControlSnapshot() with the same tabId to see that tab's elements.`,
-          'ELEMENT_NOT_FOUND',
-          [
-            'Use find() with the same tabId to search that tab',
-            'GET /tabs?activeOnly=true to discover currently live tabs',
-            'The element may not be rendered yet — wait for the page to fully load',
-          ]
-        );
       }
 
       const scope = scopeOf(effectiveUserId);
-      // Try relay first for live element data when browser is connected
+      // Live first. A LIVE answer is the answer: an element is a success, and
+      // a returned failure (the dispatcher's `ELEMENT_NOT_FOUND` for an id the
+      // page just said is gone) is a failure in `relayCommand`'s envelope —
+      // never answered from the cache, which can be stale or another tab's.
+      // The cache answers only when there was no live answer at all: no tab,
+      // or a tab whose SDK predates the dispatcher's `getElement` case and
+      // threw `Unknown command action`.
       try {
         const liveOpts = effectiveUserId ? { ownerCheck: { userId: effectiveUserId } } : undefined;
         const result = await relay.queueCommand('getElement', { id }, liveOpts);
+        const innerFailure = readRelayInnerFailure(result);
+        if (innerFailure) {
+          return relayInnerFailureResponse<ControlSnapshot['elements'][0]>(innerFailure, result);
+        }
         if (result) return success(result) as APIResponse<ControlSnapshot['elements'][0]>;
       } catch {
-        // Relay failed — fall back to cached snapshot
+        // No live answer — fall back to the cached snapshot.
       }
       let element = scope.cache.controlSnapshot.elements.find((e) => e.id === id);
       if (!element) {

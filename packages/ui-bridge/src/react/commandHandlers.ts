@@ -159,7 +159,9 @@ import type { StyleGuideConfig } from '../specs/style-types';
 import { sdkDispatch } from '../core/sdk-dispatch';
 import {
   ELEMENT_ACTION_PAYLOAD_SHAPE,
+  ELEMENT_READ_PAYLOAD_SHAPE,
   readElementActionPayload,
+  readElementIdPayload,
   type ElementPayloadRefusal,
 } from './element-command-payload';
 
@@ -1302,10 +1304,12 @@ const SETTLE_BEFORE_READ_ACTIONS: ReadonlySet<string> = new Set([
  *
  * `getControlSnapshot` is here because the relay builds its element array from
  * the `elements` captured below rather than going through
- * `registry.createSnapshot()`, which refreshes on its own.
+ * `registry.createSnapshot()`, which refreshes on its own. `getElement` is here
+ * because it answers one element of that same projection, `label` included.
  */
 const LABEL_REFRESH_ACTIONS: ReadonlySet<string> = new Set([
   'getControlSnapshot',
+  'getElement',
   'captureSnapshot',
   'find',
   'discover',
@@ -1762,6 +1766,48 @@ export async function executeCommand(
         isEnabled: state.enabled,
         text: state.textContent,
       };
+    }
+
+    case 'getElement': {
+      // A point read of the snapshot projection: the same object the matching
+      // `getControlSnapshot` element is, and the relay's cached answer already
+      // was — redaction scrubbing included. The relay and the runner's SDK
+      // route send this action to browser tabs; until this case existed it
+      // threw `Unknown command action: getElement`. It takes `{id}` or the
+      // WebSocket protocol's `{elementId}` (`./element-command-payload.ts`).
+      //
+      // No settle, like `getElementState`: a caller that needs a settled read
+      // runs `waitForSelector` / `waitForChange` first. A not-found — no
+      // registration, or a registration whose DOM node is gone — is a RETURNED
+      // `ELEMENT_NOT_FOUND`: never `null`, which exec mode would print as a
+      // result and exit 0 on, and never a throw.
+      const startTime = performance.now();
+      const parsed = readElementIdPayload('getElement', payload);
+      if (!parsed.ok) {
+        return withPayloadGrammar(
+          createActionFailure(parsed.elementId, 'INVALID_REQUEST', parsed.message, startTime),
+          parsed,
+          ELEMENT_READ_PAYLOAD_SHAPE
+        );
+      }
+      const el = getElement(parsed.id);
+      if (!el) {
+        return createActionFailure(
+          parsed.id,
+          'ELEMENT_NOT_FOUND',
+          `Element ${parsed.id} not found`,
+          startTime
+        );
+      }
+      if (!el.element?.isConnected) {
+        return createActionFailure(
+          parsed.id,
+          'ELEMENT_NOT_FOUND',
+          `DOM element for ${parsed.id} not found`,
+          startTime
+        );
+      }
+      return serializeRegisteredElement(el);
     }
 
     case 'executeElementAction': {
