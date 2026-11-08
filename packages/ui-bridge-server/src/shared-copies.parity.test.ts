@@ -16,6 +16,11 @@
  *   The implementations they test differ between the packages, but the
  *   contract they pin is the same. Keeping the tests identical means a
  *   robustness fix and its test reach both servers, not just one.
+ * - `express.body-limit.test.ts`: the regression test for the Express adapters'
+ *   body rules (`b2a9cdb`: the 10 MB limit and JSON refusals; `5c9a6a3`: reading a
+ *   body the way the standalone server does). The two copies had drifted only
+ *   in the ORDER of two cases. They are kept identical for the same reason as
+ *   the robustness tests.
  *
  * This package cannot import these files: `@qontinui/ui-bridge` does not
  * export them. Exporting them would also need a release, and this package's
@@ -39,6 +44,7 @@ const SHARED_FILES = [
   'request-body.test.ts',
   'standalone.robustness.test.ts',
   'websocket-handler.non-object.test.ts',
+  'express.body-limit.test.ts',
 ];
 
 describe('server sources shared with @qontinui/ui-bridge', () => {

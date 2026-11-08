@@ -150,12 +150,6 @@ describe.each([
     expect(JSON.parse(await response.text())).toMatchObject({ error: 'Request body too large' });
     expect(received).toBeUndefined();
   });
-
-  it('hands an empty JSON POST to the handler as {}', async () => {
-    const port = await start();
-    expect((await post(port, '')).status).toBe(200);
-    expect(received?.[1]).toEqual({});
-  });
   it('refuses an unparseable body with no Content-Type with a JSON 400', async () => {
     const port = await start();
     const response = await fetch(`http://127.0.0.1:${port}${PATH}`, {
@@ -167,6 +161,12 @@ describe.each([
       error: 'Request body is not valid JSON',
     });
     expect(received).toBeUndefined();
+  });
+
+  it('hands an empty JSON POST to the handler as {}', async () => {
+    const port = await start();
+    expect((await post(port, '')).status).toBe(200);
+    expect(received?.[1]).toEqual({});
   });
 });
 
