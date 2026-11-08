@@ -12,15 +12,20 @@
  *   when parseable, else `RESULT_POST_BACKOFF_MS` doubled per attempt, clamped
  *   to `RESULT_POST_MAX_WAIT_MS`. At most `RESULT_POST_MAX_ATTEMPTS` POSTs.
  * - All attempts share `RESULT_POST_TOTAL_BUDGET_MS`, measured from the first
- *   POST: a retry whose wait would overrun the budget remaining is not made,
- *   because a result posted after the driver timed out reaches no one.
+ *   POST: a retry is not made unless its wait plus `RESULT_POST_MIN_ATTEMPT_MS`
+ *   fits in the budget remaining, because a result posted after the driver
+ *   timed out reaches no one and a near-zero attempt window only aborts a POST
+ *   it has just sent.
  * - Any other non-2xx (403 `COMMAND_RESPONSE_REFUSED`, 404 `COMMAND_UNKNOWN`,
  *   413, ...) is reported at once and never retried.
  * - Every attempt — the POST and the read of a refusal body — is bounded by the
  *   budget remaining: an `AbortController` (combined with any caller signal)
  *   aborts it, and a fetch or body that ignores the abort is raced against the
- *   same deadline. A timed-out attempt is a network-error failure; no budget
- *   remains by construction, so it is reported, never left pending.
+ *   same deadline. No budget remains by construction, so a timed-out attempt
+ *   is reported, never left pending. With no answer the POST may still have
+ *   landed, so it is reported as `delivery unconfirmed`, never as "not
+ *   delivered". A refusal whose status arrived but whose body stalled is a
+ *   definite refusal, reported without a code.
  * - A result that is not delivered produces exactly ONE `onError` call, naming
  *   the HTTP status and the refusal body's `code` and `lane` when present.
  *
@@ -35,6 +40,11 @@ export const RESULT_POST_BACKOFF_MS = 1000;
 export const RESULT_POST_MAX_WAIT_MS = 5000;
 /** Budget shared by every attempt for one result, measured from the first POST. */
 export const RESULT_POST_TOTAL_BUDGET_MS = 6000;
+/**
+ * Least budget a retry must still have AFTER its wait. A retry that would
+ * start with less is not made: it would abort a POST it had only just sent.
+ */
+export const RESULT_POST_MIN_ATTEMPT_MS = 500;
 
 /** Bytes of a refusal body read when looking for its `code` / `lane`. */
 const REFUSAL_BODY_READ_LIMIT = 4096;
@@ -203,11 +213,12 @@ export async function postResult(
   options: PostResultOptions
 ): Promise<void> {
   const { onError, now = Date.now, sleep = defaultSleep, context } = options;
-  const report = (detail: string, attempts: number, error?: unknown) => {
+  const report = (detail: string, attempts: number, error?: unknown, unconfirmed = false) => {
     const subject = context ? ` for ${context}` : '';
+    const verdict = unconfirmed ? 'delivery unconfirmed' : 'was not delivered';
     try {
       const tally = attempts > 0 ? ` after ${attempts} attempt(s)` : '';
-      onError(`[UIBridge] Command result${subject} was not delivered: ${detail}${tally}`, error);
+      onError(`[UIBridge] Command result${subject} ${verdict}: ${detail}${tally}`, error);
     } catch {
       /* a broken logger must not break the relay loop */
     }
@@ -218,7 +229,7 @@ export async function postResult(
     const startedAt = now();
     for (attempt = 1; ; attempt++) {
       let waitMs: number;
-      let failure: { detail: string; error?: unknown };
+      let failure: { detail: string; error?: unknown; unconfirmed?: boolean };
       const deadline = attemptDeadline(
         RESULT_POST_TOTAL_BUDGET_MS - (now() - startedAt),
         init.signal
@@ -226,7 +237,11 @@ export async function postResult(
       try {
         const resp = await deadline.race(fetchImpl(url, { ...init, signal: deadline.signal }));
         if (resp.ok) return;
-        const refusal = await deadline.race(readRefusal(resp, deadline.signal));
+        // The status line arrived, so this IS a refusal; a body that stalls past
+        // the deadline only costs us its code.
+        const refusal = await deadline
+          .race(readRefusal(resp, deadline.signal))
+          .catch((): { code?: string; lane?: string } => ({}));
         failure = { detail: describeRefusal(resp.status, refusal) };
         if (!RETRYABLE_STATUSES.has(resp.status)) {
           report(failure.detail, attempt);
@@ -235,18 +250,25 @@ export async function postResult(
         const retryAfter = parseRetryAfter(resp.headers?.get?.('Retry-After'), now());
         waitMs = retryAfter ?? RESULT_POST_BACKOFF_MS * 2 ** (attempt - 1);
       } catch (e) {
-        failure = {
-          detail: `network error (${e instanceof Error ? e.message : String(e)})`,
-          error: e,
-        };
+        failure =
+          e instanceof AttemptDeadlineError
+            ? {
+                detail: `no answer within ${RESULT_POST_TOTAL_BUDGET_MS} ms`,
+                error: e,
+                unconfirmed: true,
+              }
+            : {
+                detail: `network error (${e instanceof Error ? e.message : String(e)})`,
+                error: e,
+              };
         waitMs = RESULT_POST_BACKOFF_MS * 2 ** (attempt - 1);
       } finally {
         deadline.dispose();
       }
       waitMs = Math.min(waitMs, RESULT_POST_MAX_WAIT_MS);
       const remaining = RESULT_POST_TOTAL_BUDGET_MS - (now() - startedAt);
-      if (attempt >= RESULT_POST_MAX_ATTEMPTS || waitMs > remaining) {
-        report(failure.detail, attempt, failure.error);
+      if (attempt >= RESULT_POST_MAX_ATTEMPTS || waitMs + RESULT_POST_MIN_ATTEMPT_MS > remaining) {
+        report(failure.detail, attempt, failure.error, failure.unconfirmed);
         return;
       }
       await sleep(waitMs);

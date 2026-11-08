@@ -16,6 +16,7 @@ import {
   RESULT_POST_BACKOFF_MS,
   RESULT_POST_MAX_WAIT_MS,
   RESULT_POST_TOTAL_BUDGET_MS,
+  RESULT_POST_MIN_ATTEMPT_MS,
 } from './result-post';
 
 /** One scripted answer: an HTTP response, or a thrown network error. */
@@ -78,6 +79,7 @@ describe('postResult · constants', () => {
     expect(RESULT_POST_BACKOFF_MS).toBe(1000);
     expect(RESULT_POST_MAX_WAIT_MS).toBe(5000);
     expect(RESULT_POST_TOTAL_BUDGET_MS).toBe(6000);
+    expect(RESULT_POST_MIN_ATTEMPT_MS).toBe(500);
   });
 });
 
@@ -367,7 +369,11 @@ describe('postResult · every attempt is bounded by the budget remaining (fake t
     expect(errors).toHaveLength(0);
     await vi.advanceTimersByTimeAsync(1);
     expect(errors).toHaveLength(1);
-    expect(errors[0]).toContain('6000 ms');
+    // The 403 status line DID arrive; only its body stalled — a definite
+    // refusal, reported as one, without a code.
+    expect(errors[0]).toBe(
+      '[UIBridge] Command result was not delivered: HTTP 403 after 1 attempt(s)'
+    );
     expect(settled).toBe(true);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(errors).toHaveLength(1);
@@ -393,6 +399,10 @@ describe('postResult · every attempt is bounded by the budget remaining (fake t
     });
     await vi.advanceTimersByTimeAsync(6000);
     expect(errors).toHaveLength(1);
+    // No answer at all: the POST may have landed, so it is NOT "not delivered".
+    expect(errors[0]).toBe(
+      '[UIBridge] Command result delivery unconfirmed: no answer within 6000 ms after 1 attempt(s)'
+    );
     expect(settled).toBe(true);
     expect(signals).toHaveLength(1);
     expect(signals[0]?.aborted).toBe(true);
@@ -474,5 +484,45 @@ describe('postResult · report wording', () => {
     expect(errors).toHaveLength(1);
     expect(errors[0]).not.toContain('0 attempt(s)');
     expect(errors[0]).toContain('after 1 attempt(s)');
+  });
+});
+
+describe('postResult · a retry needs a usable attempt window', () => {
+  it('Retry-After 5 then Retry-After 1 -> no third POST (only 1000 ms left, < 1000 + 500), one onError', async () => {
+    const h = harness([
+      { status: 429, retryAfter: '5', body: rateLimited },
+      { status: 429, retryAfter: '1', body: rateLimited },
+      { status: 200 },
+    ]);
+    await h.run();
+    expect(h.postTimes).toHaveLength(2);
+    expect(h.sleeps).toEqual([5000]);
+    expect(h.errors).toHaveLength(1);
+    expect(h.errors[0].message).toBe(
+      '[UIBridge] Command result was not delivered: HTTP 429 TRANSPORT_RATE_LIMITED (lane result) after 2 attempt(s)'
+    );
+  });
+
+  it('a slow answer that outlives the deadline is reported as delivery unconfirmed, once', async () => {
+    vi.useFakeTimers();
+    try {
+      const errors: string[] = [];
+      const done = postResult(
+        (() =>
+          new Promise<Response>((resolve) =>
+            setTimeout(() => resolve(new Response('', { status: 200 })), 7000)
+          )) as unknown as typeof fetch,
+        '/x',
+        {},
+        { onError: (m) => errors.push(m), context: 'command cmd-9' }
+      );
+      await vi.advanceTimersByTimeAsync(10_000);
+      await done;
+      expect(errors).toEqual([
+        '[UIBridge] Command result for command cmd-9 delivery unconfirmed: no answer within 6000 ms after 1 attempt(s)',
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
