@@ -186,6 +186,18 @@ function noLiveAnswerCause(action: string, e: unknown): string | undefined {
 }
 
 /**
+ * The `_meta` of an answer a relay read took from its cached snapshot because
+ * there was no live answer (`noLiveAnswerCause`): the `{ fallback, reason }`
+ * marker `relayWithFallback` puts on its default, with the cause named.
+ */
+function cacheFallbackMeta(action: string, cause: string): { fallback: true; reason: string } {
+  return {
+    fallback: true,
+    reason: `Relay command '${action}' got no live answer (${cause}) — answered from the cached snapshot, which can be stale or another tab's.`,
+  };
+}
+
+/**
  * Is a relay command's `data` the browser's typed find refusal — an inner
  * `success: false` carrying the `refusal` the canonical filter raised?
  */
@@ -1095,10 +1107,7 @@ export function createRelayHandlers(
         noLiveAnswer = cause;
       }
       // Every answer from here on is the cache's, the not-found included.
-      const fallbackMeta = {
-        fallback: true,
-        reason: `Relay command 'getElement' got no live answer (${noLiveAnswer}) — answered from the cached snapshot, which can be stale or another tab's.`,
-      };
+      const fallbackMeta = cacheFallbackMeta('getElement', noLiveAnswer);
       let element = scope.cache.controlSnapshot.elements.find((e) => e.id === id);
       if (!element) {
         // Refresh and retry — element may have been registered after the cached snapshot
@@ -1137,17 +1146,42 @@ export function createRelayHandlers(
       const liveOpts = context?.callerUserId
         ? { ownerCheck: { userId: context.callerUserId } }
         : undefined;
+      // Live first, and a LIVE answer is the answer, under the rule
+      // `getElement`'s unpinned read follows: the tab's state is a success,
+      // and a failure the tab reported is a failure envelope — the
+      // dispatcher THROWS `Element <id> not found` for an id the page does
+      // not hold, so it reaches the relay as a rejection, and
+      // `relayErrorResponse` answers it as `relayCommand` would. The caller's
+      // cached snapshot (only the caller's own tabs when the caller is
+      // scoped, §4.2) answers only when there was NO live answer
+      // (`noLiveAnswerCause`: no connected tab, a timeout, or a tab whose SDK
+      // has no `getElementState` case), and its answer is marked
+      // `_meta.fallback` with the cause.
+      let noLiveAnswer: string;
       try {
         const result = await relay.queueCommand('getElementState', { id }, liveOpts);
-        if (result) return success(result);
-      } catch {
-        // Relay failed — fall back to state from the caller's cached
-        // snapshot, which holds only tabs the caller owns (§4.2).
+        const innerFailure = readRelayInnerFailure(result);
+        if (innerFailure) return relayInnerFailureResponse(innerFailure, result);
+        return success(result);
+      } catch (e) {
+        const cause = noLiveAnswerCause('getElementState', e);
+        if (cause === undefined) return relayErrorResponse(e, liveOpts?.ownerCheck);
+        noLiveAnswer = cause;
       }
+      // Every answer from here on is the cache's, the not-found included.
+      const fallbackMeta = cacheFallbackMeta('getElementState', noLiveAnswer);
       const scope = scopeOf(context?.callerUserId);
       const element = scope.cache.controlSnapshot.elements.find((e) => e.id === id);
-      if (element && 'state' in element) return success((element as { state: unknown }).state);
-      return error(`Element state for ${id} not available (browser disconnected)`, 'NOT_FOUND');
+      if (element && 'state' in element) {
+        return success((element as { state: unknown }).state, fallbackMeta);
+      }
+      return {
+        ...error(
+          `Element state for "${id}" is not in the cached snapshot, and the relay got no live answer (${noLiveAnswer}).`,
+          'NOT_FOUND'
+        ),
+        _meta: fallbackMeta,
+      };
     },
 
     async getElementReactState(id, context) {
