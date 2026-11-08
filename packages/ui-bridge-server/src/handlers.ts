@@ -118,6 +118,14 @@ export interface ActionExecutorLike {
        * (`normalizeActionTimeoutMs`); never passed to a timer unchecked.
        */
       timeoutMs?: number;
+      /**
+       * Per-request effect-verification override
+       * (`ComponentActionRequest.verifyEffect`). Dropping it here left it
+       * unreachable from every HTTP and WebSocket caller of this package.
+       */
+      verifyEffect?: boolean;
+      /** Echoed on the response so a caller can correlate it. */
+      requestId?: string;
     }
   ): Promise<unknown>;
   /** Optional find method for filtered element discovery */
@@ -728,7 +736,13 @@ export function createHandlers(
 
     executeComponentAction: async (
       id: string,
-      request: { action: string; params?: Record<string, unknown>; timeoutMs?: number }
+      request: {
+        action: string;
+        params?: Record<string, unknown>;
+        timeoutMs?: number;
+        verifyEffect?: unknown;
+        requestId?: unknown;
+      }
     ): Promise<APIResponse<ComponentActionResponse>> => {
       try {
         const result = await actionExecutor.executeComponentAction(id, {
@@ -736,6 +750,9 @@ export function createHandlers(
           params: request.params,
           // Forwarded, not dropped. See `ActionExecutorLike` above.
           timeoutMs: request.timeoutMs,
+          verifyEffect:
+            typeof request.verifyEffect === 'boolean' ? request.verifyEffect : undefined,
+          requestId: typeof request.requestId === 'string' ? request.requestId : undefined,
         });
         return success(result) as APIResponse<ComponentActionResponse>;
       } catch (err) {

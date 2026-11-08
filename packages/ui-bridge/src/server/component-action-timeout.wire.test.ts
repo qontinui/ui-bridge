@@ -263,3 +263,62 @@ describe('relay handlers, HTTP route arm (invokeComponentAction)', () => {
     });
   });
 });
+
+describe('WebSocket handler forwards verifyEffect and requestId', () => {
+  function send(ws: UIBridgeWSHandler, payload: Record<string, unknown>): void {
+    const socket = {
+      send: () => {},
+      close: () => {},
+      readyState: 1,
+      onmessage: undefined as ((event: { data: string }) => void) | undefined,
+      onclose: undefined,
+      onerror: undefined,
+    };
+    ws.handleConnection(socket);
+    socket.onmessage?.({
+      data: JSON.stringify({ id: 'req-ws', type: 'executeComponentAction', timestamp: 0, payload }),
+    });
+  }
+
+  it('forwards a boolean verifyEffect and a string requestId', async () => {
+    const ws = new UIBridgeWSHandler(
+      createHandlers(
+        makeRegistryLike(),
+        recordingExecutor() as never
+      ) as unknown as Partial<UIBridgeServerHandlers>
+    );
+
+    send(ws, {
+      componentId: 'login-form',
+      action: 'submit',
+      params: {},
+      verifyEffect: false,
+      requestId: 'req-7',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toEqual({
+      id: 'login-form',
+      action: 'submit',
+      params: {},
+      verifyEffect: false,
+      requestId: 'req-7',
+    });
+  });
+
+  it('ignores a non-boolean verifyEffect', async () => {
+    const ws = new UIBridgeWSHandler(
+      createHandlers(
+        makeRegistryLike(),
+        recordingExecutor() as never
+      ) as unknown as Partial<UIBridgeServerHandlers>
+    );
+
+    send(ws, { componentId: 'login-form', action: 'submit', verifyEffect: 'true' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0].verifyEffect).toBeUndefined();
+  });
+});

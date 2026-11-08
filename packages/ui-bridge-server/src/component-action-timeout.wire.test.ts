@@ -150,3 +150,74 @@ describe('WebSocket handler (websocket-handler.ts)', () => {
     });
   });
 });
+
+describe('WebSocket handler forwards verifyEffect and requestId', () => {
+  function send(ws: UIBridgeWSHandler, payload: Record<string, unknown>): void {
+    const socket = {
+      send: () => {},
+      close: () => {},
+      readyState: 1,
+      onmessage: undefined as ((event: { data: string }) => void) | undefined,
+      onclose: undefined,
+      onerror: undefined,
+    };
+    ws.handleConnection(socket);
+    socket.onmessage?.({
+      data: JSON.stringify({ id: 'req-ws', type: 'executeComponentAction', timestamp: 0, payload }),
+    });
+  }
+
+  it('forwards a boolean verifyEffect and a string requestId', async () => {
+    const ws = new UIBridgeWSHandler(makeHandlers());
+
+    send(ws, {
+      componentId: 'login-form',
+      action: 'submit',
+      params: {},
+      verifyEffect: false,
+      requestId: 'req-7',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toEqual({
+      id: 'login-form',
+      action: 'submit',
+      params: {},
+      verifyEffect: false,
+      requestId: 'req-7',
+    });
+  });
+
+  it('ignores a non-boolean verifyEffect', async () => {
+    const ws = new UIBridgeWSHandler(makeHandlers());
+
+    send(ws, { componentId: 'login-form', action: 'submit', verifyEffect: 'true' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0].verifyEffect).toBeUndefined();
+  });
+});
+
+describe('direct HTTP handlers forward verifyEffect and requestId', () => {
+  it('executeComponentAction forwards both to the executor', async () => {
+    const handlers = makeHandlers();
+
+    await handlers.executeComponentAction('login-form', {
+      action: 'submit',
+      params: {},
+      verifyEffect: true,
+      requestId: 'req-h',
+    });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toEqual({
+      id: 'login-form',
+      action: 'submit',
+      params: {},
+      verifyEffect: true,
+      requestId: 'req-h',
+    });
+  });
+});

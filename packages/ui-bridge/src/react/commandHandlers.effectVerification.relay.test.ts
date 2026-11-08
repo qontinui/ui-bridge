@@ -143,6 +143,14 @@ describe('the listener forwards verifyEffect to the executor', () => {
   it('verifyEffect: false declines a declared signature (relay spelling)', async () => {
     registerDrawer('panel-declined-camel');
 
+    // Control: the same action, not declined, does verify — so the absence
+    // below is the decline, not an envelope that drops the field.
+    const control = await listener('executeComponentAction', {
+      id: 'drawer',
+      request: { action: 'open' },
+    });
+    expect((control.effectVerification as Record<string, unknown>).outcome).toBe('Confirmed');
+
     const res = await listener('executeComponentAction', {
       id: 'drawer',
       request: { action: 'open', verifyEffect: false },
@@ -154,6 +162,12 @@ describe('the listener forwards verifyEffect to the executor', () => {
 
   it('verifyEffect: false declines a declared signature (IPC spelling)', async () => {
     registerDrawer('panel-declined-snake');
+
+    const control = await listener('execute_component_action', {
+      componentId: 'drawer',
+      actionId: 'open',
+    });
+    expect((control.effectVerification as Record<string, unknown>).outcome).toBe('Confirmed');
 
     const res = await listener('execute_component_action', {
       componentId: 'drawer',
