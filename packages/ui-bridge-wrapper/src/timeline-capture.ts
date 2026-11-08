@@ -76,6 +76,15 @@ export const NO_COMPOSITOR_FRAME = /Unable to capture screenshot/;
 /** The wait between attempts at a frame Chromium refused: about one 60 Hz frame. */
 export const NO_COMPOSITOR_FRAME_RETRY_MS = 16;
 
+/**
+ * The most sleeps one frame's wait for its due time may take: one for the
+ * wait, two more for timers that fire a millisecond early. A constant, so the
+ * bound never depends on the clock advancing: with a moving clock the due time
+ * ends the wait, and with a frozen injected `now` this cap does, instead of the
+ * schedule waiting forever.
+ */
+export const MAX_SLEEPS_PER_FRAME_WAIT = 3;
+
 export interface CaptureTimelinePayload {
   /** Directory the frames go into; must be empty or not exist yet. */
   dir: string;
@@ -319,8 +328,16 @@ export async function captureTimeline(
   for (let k = 1; k <= payload.frames; k++) {
     const due = t0 + (k - 1) * payload.intervalMs;
     // A timer can fire a millisecond early; sleep again until the frame is due,
-    // so an offset never reads shorter than the interval asked for.
-    for (let wait = due - now(); wait > 0; wait = due - now()) await sleep(wait);
+    // so an offset never reads shorter than the interval asked for — at most
+    // MAX_SLEEPS_PER_FRAME_WAIT times, so a frozen injected clock cannot hold
+    // the schedule forever.
+    for (
+      let wait = due - now(), sleeps = 0;
+      wait > 0 && sleeps < MAX_SLEEPS_PER_FRAME_WAIT;
+      wait = due - now(), sleeps++
+    ) {
+      await sleep(wait);
+    }
     // Frame 1 after a reload may wait for the new document's first frame as
     // long as the reload itself may take; every other frame retries only
     // inside its own slot, up to the next frame's due time.

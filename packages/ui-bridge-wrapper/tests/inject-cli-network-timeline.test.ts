@@ -35,6 +35,7 @@ import {
 } from '../src/network-throttle.js';
 import {
   CAPTURE_TIMELINE_ACTION,
+  MAX_SLEEPS_PER_FRAME_WAIT,
   captureTimeline,
   parseCaptureTimelinePayload,
   registerTimelineCapture,
@@ -675,6 +676,33 @@ describe('captureTimeline', () => {
       // ceil(100 / 16) + 2 = 9 attempts, every one at the frozen instant.
       expect(await pending).toStrictEqual({ error: REFUSAL, at: FROZEN, attempts: 9 });
       expect(shots).toBe(9);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a frozen clock cannot hold the frame schedule forever: each frame wait takes at most MAX_SLEEPS_PER_FRAME_WAIT sleeps', async () => {
+    const dir = join(tmp(), 'tl');
+    const { page, calls } = timelinePage();
+    const FROZEN = 5_000;
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    try {
+      // `now` never moves, so frames 2 and 3 would wait for their due time forever.
+      const pending = captureTimeline(
+        page,
+        { dir, frames: 3, intervalMs: 100, reload: false, readyTimeoutMs: 1 },
+        () => FROZEN
+      );
+      await vi.runAllTimersAsync();
+      const res = await pending;
+      expect(calls).toEqual(['shot1', 'shot2', 'shot3']);
+      expect(res.success).toBe(true);
+      expect(res.frames.map((f) => f.offsetMs)).toEqual([0, 0, 0]);
+      expect(readdirSync(dir).sort()).toEqual(['frame-1.png', 'frame-2.png', 'frame-3.png']);
+      // Frame 2 slept its whole 100 ms wait 3 times, frame 3 its 200 ms wait 3 times.
+      expect(MAX_SLEEPS_PER_FRAME_WAIT).toBe(3);
+      expect(Date.now() - T0).toBe(3 * 100 + 3 * 200);
     } finally {
       vi.useRealTimers();
     }
