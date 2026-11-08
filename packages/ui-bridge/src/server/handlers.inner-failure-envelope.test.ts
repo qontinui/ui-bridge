@@ -58,6 +58,35 @@ describe('direct executeElementAction · an executor failure is an OUTER failure
     expect(data.failureDetails?.errorCode).toBeTruthy();
   });
 
+  it('a body with no action is refused as an unknown action, not crashed on', async () => {
+    const host = document.createElement('button');
+    container.appendChild(host);
+    registry.registerElement('save', host, { type: 'button', actions: ['click'] });
+
+    const result = await handlers.executeElementAction!('save', {} as { action: string });
+
+    expect(result.success).toBe(false);
+    expect(String(result.error)).not.toMatch(/Cannot read properties|toLowerCase|trim/);
+    expect((result as { code?: string }).code).toBe('UB-UNSUPPORTED-ACTION');
+  });
+
+  it('a batch step with no action object is refused on its own, not the whole batch', async () => {
+    const host = document.createElement('button');
+    container.appendChild(host);
+    registry.registerElement('save', host, { type: 'button', actions: ['click'] });
+
+    const result = await handlers.executeBatchAction!({
+      steps: [{ elementId: 'save' } as never, { elementId: 'save', action: { action: 'focus' } }],
+    } as never);
+
+    const data = result.data as {
+      results?: Array<{ response: { success: boolean; failureDetails?: { errorCode?: string } } }>;
+    };
+    expect(String(result.error ?? '')).not.toMatch(/Cannot read properties/);
+    expect(data.results?.[0]?.response.success).toBe(false);
+    expect(data.results?.[0]?.response.failureDetails?.errorCode).toBe('UB-UNSUPPORTED-ACTION');
+  });
+
   it("a custom-action handler's typed throw keeps its own code on the envelope", async () => {
     const host = document.createElement('div');
     container.appendChild(host);
