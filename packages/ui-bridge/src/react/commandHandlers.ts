@@ -1852,6 +1852,30 @@ export async function executeCommand(
           ? { ...response, forcedHover: { ...forcedHover, released: heldRelease } }
           : response;
       };
+      // The verb is wire input. Refuse a missing or non-string one HERE, before
+      // anything uses it as a property key: a parsed object such as
+      // {"toString":"x"} throws on that coercion, and the catch below would
+      // throw it again on release.
+      if (typeof (request as { action?: unknown } | undefined)?.action !== 'string') {
+        const custom = Object.keys(registered?.customActions ?? {});
+        const own = [
+          ...(registered?.actions ?? []).filter((verb) => RELAY_ELEMENT_ACTIONS.includes(verb)),
+          ...custom,
+        ];
+        const wireAction: unknown = (request as { action?: unknown } | undefined)?.action;
+        const hint = describeUnknownAction(wireAction, {
+          elementId: registered?.id,
+          accepted: own.length > 0 ? own : [...RELAY_ELEMENT_ACTIONS, ...custom],
+        });
+        const failure = createActionFailure(id, 'UNSUPPORTED_ACTION', hint.message, startTime);
+        return refuse({
+          ...failure,
+          failureDetails: {
+            ...failure.failureDetails,
+            context: { action: null, ...unknownActionContext(hint) },
+          },
+        });
+      }
       const revealSource = { getAllElements: () => registry.getAllElements() };
       try {
         // Custom-action precedence — a registered handler wins over a

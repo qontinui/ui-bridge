@@ -278,7 +278,7 @@ const SUPPORTED_ACTIONS = new Set<string>([
  * only from that list — see `./actionVocabulary`.
  */
 function unknownActionHintFor(
-  action: string,
+  action: unknown,
   elementId: string | undefined,
   registered: RegisteredElement | undefined,
   advertised: readonly string[] = registered?.actions ?? []
@@ -1328,15 +1328,20 @@ export class DefaultActionExecutor implements ActionExecutor {
     // failure response too, not only on success.
     let heldRelease: ForcedHoverActionReport['released'];
 
-    // Validate action name early — check built-in actions first
-    const actionName = request.action;
+    // Validate action name early — check built-in actions first. `request` is
+    // wire input: a batch step with no `action` object reaches here as
+    // `undefined`, and must be refused like any unknown verb, not crash the batch.
+    const wireAction: unknown = (request as ControlActionRequest | undefined)?.action;
+    const hasVerb = typeof wireAction === 'string';
+    const actionName = hasVerb ? wireAction : '';
     if (!SUPPORTED_ACTIONS.has(actionName)) {
       // Check if it could be a custom action (we'll verify on the element later).
       // Skip this check for CTR logical names since the element isn't resolved yet.
       const registered = this.registry.getElement(elementId);
       const isCtrTarget = !registered && getGlobalCtr().has(elementId);
-      if (!registered?.customActions?.[actionName] && !isCtrTarget) {
-        const hint = unknownActionHintFor(actionName, registered?.id, registered);
+      // A CTR target may go on to resolve, but only with a verb to run on it.
+      if (!registered?.customActions?.[actionName] && (!isCtrTarget || !hasVerb)) {
+        const hint = unknownActionHintFor(hasVerb ? actionName : wireAction, registered?.id, registered);
         const message = hint.message;
         return {
           success: false,
@@ -1348,7 +1353,7 @@ export class DefaultActionExecutor implements ActionExecutor {
           }),
           durationMs: performance.now() - startTime,
           timestamp: Date.now(),
-          requestId: request.requestId,
+          requestId: (request as ControlActionRequest | undefined)?.requestId,
         };
       }
     }

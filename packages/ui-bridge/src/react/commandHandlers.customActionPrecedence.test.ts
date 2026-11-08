@@ -246,3 +246,24 @@ describe('relay executeElementAction · a registered handler wins over a same-na
     expect(result.result).toBe('boom');
   });
 });
+
+describe('relay executeElementAction · a non-string verb is refused, never thrown', () => {
+  afterEach(() => getGlobalRegistry().clear());
+
+  it('refuses {"toString":"x"} as UNSUPPORTED_ACTION on an element with custom actions', async () => {
+    const host = document.createElement('div');
+    makeVisible(host);
+    document.body.appendChild(host);
+    getGlobalRegistry().registerElement('pane', host, {
+      type: 'custom',
+      customActions: { sendKeys: { id: 'sendKeys', handler: () => ({}) } },
+    });
+    for (const request of [JSON.parse('{"action":{"toString":"x"}}'), {}, { action: 42 }]) {
+      const res = await relayAction('pane', request as Record<string, unknown>);
+      expect(res.success).toBe(false);
+      expect((res.failureDetails as { errorCode?: string } | undefined)?.errorCode).toBeTruthy();
+      expect(String(res.error)).toMatch(/^Unknown action /);
+    }
+    host.remove();
+  });
+});

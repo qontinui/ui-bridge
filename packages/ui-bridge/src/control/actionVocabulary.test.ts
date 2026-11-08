@@ -52,6 +52,12 @@ describe('ACTION_VERB_SYNONYMS', () => {
 });
 
 describe('suggestAction', () => {
+  it('suggests nothing, and does not throw, for a verb that is not a string', () => {
+    for (const bad of [undefined, null, 42, { action: 'click' }]) {
+      expect(suggestAction(bad as unknown as string, ['click'])).toBeUndefined();
+    }
+  });
+
   const terminalInput = ['focus', 'blur', 'type', 'sendKeys', 'clear'];
   const button = ['focus', 'blur', 'click', 'hoverClick'];
   const nativeButton = ['focus', 'blur', 'press', 'longPress', 'doubleTap'];
@@ -115,6 +121,16 @@ describe('suggestAction', () => {
 });
 
 describe('describeUnknownAction', () => {
+  it('renders a non-string verb without throwing, even one shadowing toString', () => {
+    const bad = JSON.parse('{"toString":"x"}') as unknown;
+    const hint = describeUnknownAction(bad, { accepted: ['click'], elementId: 'save' });
+    expect(hint.message).toContain(`Unknown action '{"toString":"x"}'`);
+    expect(hint.didYouMean).toBeUndefined();
+    expect(describeUnknownAction(undefined, { accepted: ['click'] }).message).toContain(
+      "Unknown action 'undefined'"
+    );
+  });
+
   it('names the element, its verbs and the suggestion', () => {
     const hint = describeUnknownAction('press', {
       elementId: 'terminal.command-bar-input',

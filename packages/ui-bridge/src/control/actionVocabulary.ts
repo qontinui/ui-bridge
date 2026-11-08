@@ -80,7 +80,10 @@ const SYNONYMS_BY_FOLDED = new Map<string, readonly string[]>(
  *   element spells it.
  * - Otherwise `undefined`.
  */
-export function suggestAction(requested: string, accepted: readonly string[]): string | undefined {
+export function suggestAction(requested: unknown, accepted: readonly string[]): string | undefined {
+  // The verb arrives off the wire: a body with no `action`, or a non-string
+  // one, gets the refusal with no suggestion instead of a TypeError here.
+  if (typeof requested !== 'string') return undefined;
   if (requested.trim() === '' || accepted.includes(requested)) return undefined;
   const folded = foldVerb(requested);
   const byFolded = new Map<string, string>();
@@ -108,6 +111,20 @@ export interface UnknownActionHint {
 }
 
 /**
+ * Render a wire verb for the refusal text without ever throwing. `String()` on
+ * a parsed JSON object whose own `toString` is not a function (e.g.
+ * `{"toString":"x"}`) throws, which would turn the refusal into a crash.
+ */
+function renderVerb(requested: unknown): string {
+  if (typeof requested === 'string') return requested;
+  try {
+    return JSON.stringify(requested) ?? String(requested);
+  } catch {
+    return '<non-string>';
+  }
+}
+
+/**
  * Build the refusal for an unknown action.
  *
  * `accepted` is the element's own accepted list: its advertised `actions` plus
@@ -117,7 +134,7 @@ export interface UnknownActionHint {
  * `elementId` is omitted when the target is not a known element.
  */
 export function describeUnknownAction(
-  requested: string,
+  requested: unknown,
   options: { accepted: readonly string[]; elementId?: string }
 ): UnknownActionHint {
   const supportedActions = Array.from(new Set(options.accepted));
@@ -125,7 +142,7 @@ export function describeUnknownAction(
   const subject = options.elementId !== undefined ? ` for element '${options.elementId}'` : '';
   const listLabel = options.elementId !== undefined ? 'This element accepts' : 'Supported';
   const message =
-    `Unknown action '${requested}'${subject}. ${listLabel}: ${supportedActions.join(', ')}.` +
+    `Unknown action '${renderVerb(requested)}'${subject}. ${listLabel}: ${supportedActions.join(', ')}.` +
     (didYouMean !== undefined ? ` Did you mean '${didYouMean}'?` : '');
   return didYouMean !== undefined
     ? { message, didYouMean, supportedActions }

@@ -121,6 +121,24 @@ describe('DefaultActionExecutor — unknown action raised inside dispatch', () =
     });
   });
 
+  it('refuses a CTR target with no verb at the gate instead of falling through', async () => {
+    const el = document.createElement('input');
+    el.setAttribute('data-testid', 'ctr-verbless');
+    container.appendChild(el);
+    getGlobalCtr().register({
+      logicalName: 'exec.verbless',
+      selectors: [{ strategy: 'data-testid', value: 'ctr-verbless', priority: 0, confidence: 1 }],
+      version: 1,
+    });
+
+    const executor = new DefaultActionExecutor(new UIBridgeRegistry());
+    for (const request of [undefined, {}, { action: 42 }]) {
+      const res = await executor.executeAction('exec.verbless', request as never);
+      expect(res.success).toBe(false);
+      expect(res.failureDetails?.errorCode).toBe('UB-UNSUPPORTED-ACTION');
+    }
+  });
+
   it('carries no didYouMean key when there is no suggestion', async () => {
     const el = document.createElement('div');
     el.setAttribute('data-testid', 'ctr-pane');
