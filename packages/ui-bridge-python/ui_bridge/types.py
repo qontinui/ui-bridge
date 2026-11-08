@@ -699,6 +699,12 @@ class ComponentActionRequest(BaseModel):
     # ``failure_details.error_code == UB-ACTION-TIMEOUT`` and
     # ``failure_details.cancel_reason == "timeout"``.
     timeout_ms: int | None = Field(None, alias="timeoutMs")
+    # Per-request effect-verification override. ``True`` verifies this call
+    # even with the executor-wide flag off; ``False`` declines verification
+    # even when the action's declared signature would turn it on; omitted
+    # leaves the decision to the flag and the signature. The verdict comes
+    # back as ``ComponentActionResponse.effect_verification``.
+    verify_effect: bool | None = Field(None, alias="verifyEffect")
 
     model_config = {"populate_by_name": True}
 
@@ -716,11 +722,26 @@ class ComponentActionResponse(BaseModel):
     # one (``UB-ACTION-TIMEOUT``) from params the SDK's validation gate
     # rejected (``UB-ACTION-REJECTED`` + ``invalid_params``).
     failure_details: ActionFailureDetails | None = Field(None, alias="failureDetails")
+    # The predicted-vs-observed verdict (the SDK's ``EffectVerification``:
+    # ``outcome``, ``predicted``, ``observed``, ``containment``, ``cause``,
+    # ``durationMs``). Present only when verification ran -- requested with
+    # ``verify_effect=True``, the executor-wide flag, or a declared signature.
+    # Kept as the raw wire object so a new SDK field is never dropped here.
+    effect_verification: dict[str, Any] | None = Field(None, alias="effectVerification")
     duration_ms: float = Field(alias="durationMs")
     timestamp: int
     request_id: str | None = Field(None, alias="requestId")
 
     model_config = {"populate_by_name": True}
+
+    @property
+    def effect_outcome(self) -> str | None:
+        """The verdict's ``outcome`` (e.g. ``"Confirmed"``), or ``None`` when
+        no verification ran."""
+        if self.effect_verification is None:
+            return None
+        outcome = self.effect_verification.get("outcome")
+        return outcome if isinstance(outcome, str) else None
 
     def is_timeout(self) -> bool:
         """Check if the action was abandoned because ``timeout_ms`` elapsed."""

@@ -667,6 +667,7 @@ class AsyncUIBridgeClient:
         *,
         timeout_ms: int | None = None,
         request_id: str | None = None,
+        verify_effect: bool | None = None,
     ) -> ComponentActionResponse:
         """
         Execute an action on a component.
@@ -685,6 +686,12 @@ class AsyncUIBridgeClient:
                 JSON-serialized. On abandonment the failure carries
                 ``UB-ACTION-TIMEOUT`` and ``cancel_reason == "timeout"``.
             request_id: Correlation id echoed back on the response.
+            verify_effect: Effect-verification override for this call.
+                ``True`` verifies it even with verification off executor-wide;
+                ``False`` declines it even when the action declares a
+                signature; ``None`` (default) leaves it to the flag and the
+                signature. The verdict is ``response.effect_verification``
+                (``response.effect_outcome`` for just the outcome).
 
         Returns:
             ComponentActionResponse (raises ``ActionFailedError`` on failure;
@@ -695,6 +702,7 @@ class AsyncUIBridgeClient:
             params=params or None,
             request_id=request_id,
             timeout_ms=timeout_ms,
+            verify_effect=verify_effect,
         ).model_dump(by_alias=True, exclude_none=True)
 
         data = await self._request(
@@ -1087,14 +1095,17 @@ class AsyncComponentControl:
         *,
         timeout_ms: int | None = None,
         request_id: str | None = None,
+        verify_effect: bool | None = None,
     ) -> ComponentActionResponse:
-        """Execute an action on the component."""
+        """Execute an action on the component. ``verify_effect`` is the
+        per-call effect-verification override (see ``execute_component_action``)."""
         return await self._client.execute_component_action(
             self._component_id,
             action,
             params,
             timeout_ms=timeout_ms,
             request_id=request_id,
+            verify_effect=verify_effect,
         )
 
     async def __call__(

@@ -633,6 +633,36 @@ class TestAsyncUIBridgeClientComponents:
         )
 
     @pytest.mark.asyncio
+    async def test_execute_component_action_sends_verify_effect(
+        self, client: AsyncUIBridgeClient
+    ) -> None:
+        data = _component_action_data(result={"submitted": True})
+        data["effectVerification"] = {"outcome": "Confirmed", "durationMs": 12}
+        client._request = AsyncMock(return_value=data)  # type: ignore[method-assign]
+        result = await client.execute_component_action("form-1", "submit", verify_effect=True)
+
+        client._request.assert_called_once_with(
+            "POST",
+            "/control/component/form-1/action/submit",
+            json={"action": "submit", "verifyEffect": True},
+        )
+        assert result.effect_verification == {"outcome": "Confirmed", "durationMs": 12}
+        assert result.effect_outcome == "Confirmed"
+
+    @pytest.mark.asyncio
+    async def test_execute_component_action_can_decline_verification(
+        self, client: AsyncUIBridgeClient
+    ) -> None:
+        client._request = AsyncMock(  # type: ignore[method-assign]
+            return_value=_component_action_data()
+        )
+        result = await client.execute_component_action("form-1", "submit", verify_effect=False)
+
+        assert client._request.call_args[1]["json"] == {"action": "submit", "verifyEffect": False}
+        assert result.effect_verification is None
+        assert result.effect_outcome is None
+
+    @pytest.mark.asyncio
     async def test_execute_component_action_no_params(self, client: AsyncUIBridgeClient) -> None:
         client._request = AsyncMock(  # type: ignore[method-assign]
             return_value=_component_action_data()
@@ -1361,6 +1391,20 @@ class TestAsyncComponentControl:
 
         assert result.success is True
         assert result.result["incremented"] is True
+
+    @pytest.mark.asyncio
+    async def test_action_forwards_verify_effect(self, client: AsyncUIBridgeClient) -> None:
+        data = _component_action_data()
+        data["effectVerification"] = {"outcome": "Surprise"}
+        client._request = AsyncMock(return_value=data)  # type: ignore[method-assign]
+        ctrl = client.component("counter-1")
+        result = await ctrl.action("increment", verify_effect=True)
+
+        assert client._request.call_args[1]["json"] == {
+            "action": "increment",
+            "verifyEffect": True,
+        }
+        assert result.effect_outcome == "Surprise"
 
     @pytest.mark.asyncio
     async def test_callable(self, client: AsyncUIBridgeClient) -> None:

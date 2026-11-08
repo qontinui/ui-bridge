@@ -40,6 +40,9 @@ response.timestamp        # int
 response.result           # Any | None - Handler return value
 response.error            # str | None
 response.failure_details  # ActionFailureDetails | None - set on every failure
+response.effect_verification  # dict | None - the predicted-vs-observed verdict
+response.effect_outcome       # str | None - its outcome: "Confirmed" | "Surprise"
+                              #   | "Failure" | "Contradiction" | "Partial"
 ```
 
 `client.component(...).action(...)` raises `ActionFailedError` when the action
@@ -69,6 +72,24 @@ client.component('report').action('generate', timeout_ms=30_000)
 The SDK validates and clamps the value at the executor: `0` abandons on the next
 tick, anything above 24h is clamped, and a negative, NaN, infinite or
 non-numeric value is refused with `UB-VALIDATION-ERROR`.
+
+#### Verifying an action's effect
+
+`verify_effect` is the per-call effect-verification override. `True` verifies
+this call even when verification is off executor-wide; `False` declines it even
+when the action declares a signature that would turn it on; leaving it out lets
+the executor-wide flag and the declared signature decide. When verification ran,
+the verdict is on the response:
+
+```python
+response = client.component('cart').action('add', {'sku': 'A1'}, verify_effect=True)
+if response.effect_outcome != 'Confirmed':
+    ...  # response.effect_verification holds predicted, observed and containment
+```
+
+`effect_verification` is `None` when no verification ran, including when no
+signature resolved for the action: nothing is predicted for an action nobody
+described.
 
 ### ActionFailureDetails
 

@@ -312,6 +312,38 @@ class TestUIBridgeClientComponents:
             assert result.success is True
             assert result.result["submitted"] is True
 
+    def test_execute_component_action_verify_effect(self, client, mock_response):
+        mock_response.json.return_value = {
+            "success": True,
+            "data": {
+                "success": True,
+                "durationMs": 200.0,
+                "timestamp": 1234567890,
+                "effectVerification": {"outcome": "Contradiction", "durationMs": 3},
+            },
+        }
+
+        with patch.object(client._client, "request", return_value=mock_response) as req:
+            result = client.execute_component_action("form-1", "submit", verify_effect=True)
+
+            assert req.call_args[1]["json"] == {"action": "submit", "verifyEffect": True}
+            assert result.effect_verification == {"outcome": "Contradiction", "durationMs": 3}
+            assert result.effect_outcome == "Contradiction"
+
+    def test_execute_component_action_omits_verify_effect_by_default(
+        self, client, mock_response
+    ):
+        mock_response.json.return_value = {
+            "success": True,
+            "data": {"success": True, "durationMs": 1.0, "timestamp": 1},
+        }
+
+        with patch.object(client._client, "request", return_value=mock_response) as req:
+            result = client.execute_component_action("form-1", "submit")
+
+            assert "verifyEffect" not in req.call_args[1]["json"]
+            assert result.effect_outcome is None
+
 
 class TestUIBridgeClientWorkflows:
     """Tests for UIBridgeClient workflow methods."""

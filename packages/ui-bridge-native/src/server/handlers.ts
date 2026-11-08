@@ -650,12 +650,21 @@ export function createServerHandlers(
       // hand over an `AbortSignal`, so this is its ONLY way to call off a hung
       // handler. The executor validates and clamps it
       // (`normalizeActionTimeoutMs`) before it can reach a timer.
-      const body = ctx.body as { params?: Record<string, unknown>; timeoutMs?: number };
+      // `requestId` is forwarded too (string only): the executor echoes it on
+      // every response it builds, and dropping it here left an HTTP caller
+      // unable to correlate. This package's executor does no effect
+      // verification, so `verifyEffect` has nothing to reach.
+      const body = ctx.body as {
+        params?: Record<string, unknown>;
+        timeoutMs?: number;
+        requestId?: unknown;
+      };
 
       const response = await executor.executeComponentAction(id, {
         action: actionId,
         params: body?.params,
         timeoutMs: body?.timeoutMs,
+        requestId: typeof body?.requestId === 'string' ? body.requestId : undefined,
       });
 
       if (!response.success) {

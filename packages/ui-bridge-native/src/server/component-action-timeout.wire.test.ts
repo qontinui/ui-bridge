@@ -73,4 +73,21 @@ describe('native executeComponentAction handler', () => {
       timeoutMs: undefined,
     });
   });
+
+  it('forwards a string requestId and drops a non-string one', async () => {
+    await handlers().executeComponentAction({
+      params: { id: 'login-form', actionId: 'submit' },
+      query: {},
+      body: { params: {}, requestId: 'req-7' },
+    } as never);
+    await handlers().executeComponentAction({
+      params: { id: 'login-form', actionId: 'submit' },
+      query: {},
+      body: { params: {}, requestId: 42 },
+    } as never);
+
+    expect(seen).toHaveLength(2);
+    expect(seen[0].requestId).toBe('req-7');
+    expect(seen[1].requestId).toBeUndefined();
+  });
 });
