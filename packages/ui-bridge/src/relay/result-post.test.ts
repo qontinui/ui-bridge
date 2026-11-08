@@ -8,7 +8,7 @@
  * injected clock so each wait is asserted to the millisecond.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   postResult,
   parseRetryAfter,
@@ -21,16 +21,14 @@ import {
 /** One scripted answer: an HTTP response, or a thrown network error. */
 type Scripted = { status: number; body?: string; retryAfter?: string } | { networkError: true };
 
+/**
+ * A real `Response`, so the refusal body is read through its stream
+ * (`body.getReader()`), exactly as a browser answer would be.
+ */
 function fakeResponse(s: { status: number; body?: string; retryAfter?: string }): Response {
   const headers = new Headers();
   if (s.retryAfter !== undefined) headers.set('Retry-After', s.retryAfter);
-  const body = s.body ?? '';
-  return {
-    ok: s.status >= 200 && s.status < 300,
-    status: s.status,
-    headers,
-    text: () => Promise.resolve(body),
-  } as unknown as Response;
+  return new Response(s.body ?? '', { status: s.status, headers });
 }
 
 /**
@@ -256,5 +254,225 @@ describe('parseRetryAfter', () => {
     expect(parseRetryAfter('soon', now)).toBeNull();
     expect(parseRetryAfter('-3', now)).toBeNull();
     expect(parseRetryAfter('1.5', now)).toBeNull();
+  });
+});
+
+describe('postResult · streamed refusal body', () => {
+  it('reads a multi-chunk body only up to 4096 bytes, then cancels the reader', async () => {
+    // 1000-byte chunks of a ~20 KB body; `code` lands past byte 4096.
+    const text = JSON.stringify({ pad: 'x'.repeat(20_000), code: 'COMMAND_UNKNOWN' });
+    const bytes = new TextEncoder().encode(text);
+    let offset = 0;
+    let pulls = 0;
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls++;
+        if (offset >= bytes.length) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(bytes.subarray(offset, offset + 1000));
+        offset += 1000;
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const errors: string[] = [];
+    await postResult(
+      (() => Promise.resolve(new Response(body, { status: 404 }))) as unknown as typeof fetch,
+      '/x',
+      {},
+      { onError: (m) => errors.push(m), now: () => 0, sleep: () => Promise.resolve() }
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('404');
+    expect(errors[0]).not.toContain('COMMAND_UNKNOWN');
+    expect(cancelled).toBe(true);
+    // 5 chunks reach 5000 >= 4096 bytes; allow the stream's own one-chunk
+    // read-ahead, and nothing like the ~20 KB body.
+    expect(pulls).toBeLessThanOrEqual(7);
+    expect(offset).toBeLessThanOrEqual(6000);
+  });
+
+  it('a multi-chunk body whose code sits inside 4096 bytes is joined and read', async () => {
+    const text = JSON.stringify({
+      code: 'COMMAND_RESPONSE_REFUSED',
+      lane: 'result',
+      pad: 'y'.repeat(3000),
+    });
+    const bytes = new TextEncoder().encode(text);
+    let offset = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (offset >= bytes.length) return controller.close();
+        controller.enqueue(bytes.subarray(offset, offset + 7));
+        offset += 7;
+      },
+    });
+    const errors: string[] = [];
+    await postResult(
+      (() => Promise.resolve(new Response(body, { status: 403 }))) as unknown as typeof fetch,
+      '/x',
+      {},
+      { onError: (m) => errors.push(m), now: () => 0, sleep: () => Promise.resolve() }
+    );
+    expect(errors).toEqual([
+      '[UIBridge] Command result was not delivered: HTTP 403 COMMAND_RESPONSE_REFUSED (lane result) after 1 attempt(s)',
+    ]);
+  });
+
+  it('falls back to text() for an answer with no body stream', async () => {
+    const answer = {
+      ok: false,
+      status: 404,
+      headers: new Headers(),
+      text: () => Promise.resolve(JSON.stringify({ code: 'COMMAND_UNKNOWN' })),
+    } as unknown as Response;
+    const errors: string[] = [];
+    await postResult(
+      (() => Promise.resolve(answer)) as unknown as typeof fetch,
+      '/x',
+      {},
+      { onError: (m) => errors.push(m), now: () => 0, sleep: () => Promise.resolve() }
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('COMMAND_UNKNOWN');
+  });
+});
+
+describe('postResult · every attempt is bounded by the budget remaining (fake timers)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('a stalled refusal body -> exactly one onError by 6000 ms', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-08T12:00:00Z'));
+    const errors: string[] = [];
+    let settled = false;
+    void postResult(
+      (() =>
+        Promise.resolve(
+          new Response(new ReadableStream({ start() {} }), { status: 403 })
+        )) as unknown as typeof fetch,
+      '/x',
+      {},
+      { onError: (m) => errors.push(m) }
+    ).then(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(5999);
+    expect(errors).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('6000 ms');
+    expect(settled).toBe(true);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(errors).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a hung fetch -> exactly one onError by 6000 ms, and its signal is aborted', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-08T12:00:00Z'));
+    const errors: string[] = [];
+    const signals: Array<AbortSignal | null | undefined> = [];
+    let settled = false;
+    void postResult(
+      ((_url: string, init: RequestInit) => {
+        signals.push(init.signal);
+        return new Promise(() => {}); // never answers, ignores the signal
+      }) as unknown as typeof fetch,
+      '/x',
+      {},
+      { onError: (m) => errors.push(m) }
+    ).then(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(errors).toHaveLength(1);
+    expect(settled).toBe(true);
+    expect(signals).toHaveLength(1);
+    expect(signals[0]?.aborted).toBe(true);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(errors).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a caller signal that aborts also aborts the attempt', async () => {
+    vi.useFakeTimers();
+    const caller = new AbortController();
+    const errors: string[] = [];
+    let seen: AbortSignal | null | undefined;
+    const done = postResult(
+      ((_url: string, init: RequestInit) => {
+        seen = init.signal;
+        return new Promise(() => {});
+      }) as unknown as typeof fetch,
+      '/x',
+      { signal: caller.signal },
+      { onError: (m) => errors.push(m) }
+    );
+    await vi.advanceTimersByTimeAsync(10);
+    caller.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(seen?.aborted).toBe(true);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await done;
+    expect(errors).toHaveLength(1);
+  });
+
+  it('a delivered result leaves no timer behind', async () => {
+    vi.useFakeTimers();
+    const errors: string[] = [];
+    await postResult(
+      (() => Promise.resolve(new Response('', { status: 200 }))) as unknown as typeof fetch,
+      '/x',
+      {},
+      { onError: (m) => errors.push(m) }
+    );
+    expect(errors).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a refused-then-delivered result leaves no timer behind', async () => {
+    vi.useFakeTimers();
+    let n = 0;
+    const errors: string[] = [];
+    const done = postResult(
+      (() =>
+        Promise.resolve(
+          new Response('', { status: n++ === 0 ? 503 : 200 })
+        )) as unknown as typeof fetch,
+      '/x',
+      {},
+      { onError: (m) => errors.push(m) }
+    );
+    await vi.advanceTimersByTimeAsync(1000);
+    await done;
+    expect(n).toBe(2);
+    expect(errors).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe('postResult · report wording', () => {
+  it('an unexpected internal failure names the attempt count it reached, never "0 attempt(s)"', async () => {
+    const errors: string[] = [];
+    await postResult(
+      (() => Promise.resolve(new Response('', { status: 503 }))) as unknown as typeof fetch,
+      '/x',
+      {},
+      {
+        onError: (m) => errors.push(m),
+        now: () => 0,
+        sleep: () => Promise.reject(new Error('sleep broke')),
+      }
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).not.toContain('0 attempt(s)');
+    expect(errors[0]).toContain('after 1 attempt(s)');
   });
 });

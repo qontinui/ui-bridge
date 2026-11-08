@@ -16,6 +16,11 @@
  *   because a result posted after the driver timed out reaches no one.
  * - Any other non-2xx (403 `COMMAND_RESPONSE_REFUSED`, 404 `COMMAND_UNKNOWN`,
  *   413, ...) is reported at once and never retried.
+ * - Every attempt — the POST and the read of a refusal body — is bounded by the
+ *   budget remaining: an `AbortController` (combined with any caller signal)
+ *   aborts it, and a fetch or body that ignores the abort is raced against the
+ *   same deadline. A timed-out attempt is a network-error failure; no budget
+ *   remains by construction, so it is reported, never left pending.
  * - A result that is not delivered produces exactly ONE `onError` call, naming
  *   the HTTP status and the refusal body's `code` and `lane` when present.
  *
@@ -73,12 +78,19 @@ const defaultSleep = (ms: number): Promise<void> =>
     setTimeout(resolve, ms);
   });
 
-/** Read at most the first {@link REFUSAL_BODY_READ_LIMIT} bytes of a body as text. */
-async function readBoundedText(resp: Response): Promise<string> {
+/**
+ * Read at most the first {@link REFUSAL_BODY_READ_LIMIT} bytes of a body as
+ * text. An abort of `signal` cancels the reader, which ends a pending read.
+ */
+async function readBoundedText(resp: Response, signal: AbortSignal): Promise<string> {
   const reader = resp.body?.getReader?.();
   if (reader) {
     const chunks: Uint8Array[] = [];
     let total = 0;
+    const onAbort = () => {
+      void reader.cancel().catch(() => {});
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
     try {
       while (total < REFUSAL_BODY_READ_LIMIT) {
         const { value, done } = await reader.read();
@@ -87,6 +99,7 @@ async function readBoundedText(resp: Response): Promise<string> {
         total += value.byteLength;
       }
     } finally {
+      signal.removeEventListener('abort', onAbort);
       void reader.cancel().catch(() => {});
     }
     const joined = new Uint8Array(Math.min(total, REFUSAL_BODY_READ_LIMIT));
@@ -106,9 +119,12 @@ async function readBoundedText(resp: Response): Promise<string> {
 }
 
 /** The refusal's `code` and `lane`, when the (bounded) body is JSON carrying them. */
-async function readRefusal(resp: Response): Promise<{ code?: string; lane?: string }> {
+async function readRefusal(
+  resp: Response,
+  signal: AbortSignal
+): Promise<{ code?: string; lane?: string }> {
   try {
-    const parsed: unknown = JSON.parse(await readBoundedText(resp));
+    const parsed: unknown = JSON.parse(await readBoundedText(resp, signal));
     if (!parsed || typeof parsed !== 'object') return {};
     const top = parsed as Record<string, unknown>;
     const nested =
@@ -121,6 +137,52 @@ async function readRefusal(resp: Response): Promise<{ code?: string; lane?: stri
   } catch {
     return {};
   }
+}
+
+/** Raised when an attempt outlives the budget remaining. */
+class AttemptDeadlineError extends Error {
+  constructor(ms: number) {
+    super(
+      `no answer within the ${RESULT_POST_TOTAL_BUDGET_MS} ms budget (attempt bounded at ${ms} ms)`
+    );
+    this.name = 'AttemptDeadlineError';
+  }
+}
+
+/**
+ * One attempt's deadline: an `AbortController` that fires after `ms`, or when
+ * the caller's own signal aborts, and a promise that rejects when it does —
+ * so a fetch or body read that ignores the signal still loses the race.
+ * `dispose()` clears the timer and the caller-signal listener.
+ */
+function attemptDeadline(ms: number, callerSignal: AbortSignal | null | undefined) {
+  const controller = new AbortController();
+  let rejectDeadline: (e: unknown) => void = () => {};
+  const expired = new Promise<never>((_, reject) => {
+    rejectDeadline = reject;
+  });
+  expired.catch(() => {}); // only ever observed through a race
+  const abort = (reason: unknown) => {
+    if (controller.signal.aborted) return;
+    controller.abort(reason);
+    rejectDeadline(reason);
+  };
+  const timer = setTimeout(() => abort(new AttemptDeadlineError(ms)), Math.max(0, ms));
+  const onCallerAbort = () => abort(callerSignal?.reason ?? new Error('aborted by caller'));
+  if (callerSignal) {
+    if (callerSignal.aborted) onCallerAbort();
+    else callerSignal.addEventListener('abort', onCallerAbort, { once: true });
+  }
+  return {
+    signal: controller.signal,
+    race<T>(p: Promise<T>): Promise<T> {
+      return Promise.race([p, expired]);
+    },
+    dispose() {
+      clearTimeout(timer);
+      callerSignal?.removeEventListener('abort', onCallerAbort);
+    },
+  };
 }
 
 function describeRefusal(status: number, refusal: { code?: string; lane?: string }): string {
@@ -144,24 +206,27 @@ export async function postResult(
   const report = (detail: string, attempts: number, error?: unknown) => {
     const subject = context ? ` for ${context}` : '';
     try {
-      onError(
-        `[UIBridge] Command result${subject} was not delivered: ${detail} after ${attempts} attempt(s)`,
-        error
-      );
+      const tally = attempts > 0 ? ` after ${attempts} attempt(s)` : '';
+      onError(`[UIBridge] Command result${subject} was not delivered: ${detail}${tally}`, error);
     } catch {
       /* a broken logger must not break the relay loop */
     }
   };
 
+  let attempt = 0;
   try {
     const startedAt = now();
-    for (let attempt = 1; ; attempt++) {
+    for (attempt = 1; ; attempt++) {
       let waitMs: number;
       let failure: { detail: string; error?: unknown };
+      const deadline = attemptDeadline(
+        RESULT_POST_TOTAL_BUDGET_MS - (now() - startedAt),
+        init.signal
+      );
       try {
-        const resp = await fetchImpl(url, init);
+        const resp = await deadline.race(fetchImpl(url, { ...init, signal: deadline.signal }));
         if (resp.ok) return;
-        const refusal = await readRefusal(resp);
+        const refusal = await deadline.race(readRefusal(resp, deadline.signal));
         failure = { detail: describeRefusal(resp.status, refusal) };
         if (!RETRYABLE_STATUSES.has(resp.status)) {
           report(failure.detail, attempt);
@@ -175,6 +240,8 @@ export async function postResult(
           error: e,
         };
         waitMs = RESULT_POST_BACKOFF_MS * 2 ** (attempt - 1);
+      } finally {
+        deadline.dispose();
       }
       waitMs = Math.min(waitMs, RESULT_POST_MAX_WAIT_MS);
       const remaining = RESULT_POST_TOTAL_BUDGET_MS - (now() - startedAt);
@@ -185,6 +252,6 @@ export async function postResult(
       await sleep(waitMs);
     }
   } catch (e) {
-    report('unexpected error', 0, e);
+    report(`unexpected error (${e instanceof Error ? e.message : String(e)})`, attempt, e);
   }
 }
