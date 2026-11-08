@@ -85,6 +85,21 @@ describe('readElementActionPayload · accepted spellings', () => {
     ).toEqual({ ok: true, id: 'src', request: { action: 'drag', targetId: 'dst', steps: 4 } });
   });
 
+  it('flat: a "__proto__" key is carried as an own field, never made the request\'s prototype', () => {
+    // The CLI reads an NDJSON line with JSON.parse, which defines "__proto__" as
+    // an OWN key; an object literal would set the prototype instead.
+    const payload = JSON.parse('{"id":"q","action":"type","__proto__":{"text":"injected"}}');
+    const reading = readElementActionPayload(payload);
+    if (!reading.ok) throw new Error(reading.message);
+    expect(Object.getPrototypeOf(reading.request)).toBe(Object.prototype);
+    // Nothing the "__proto__" object holds reads as a request field.
+    expect(reading.request.text).toBeUndefined();
+    expect(Object.keys(reading.request)).toEqual(['action', '__proto__']);
+    expect(Object.getOwnPropertyDescriptor(reading.request, '__proto__')?.value).toEqual({
+      text: 'injected',
+    });
+  });
+
   it('a request plus an AGREEING top-level action is accepted', () => {
     expect(
       readElementActionPayload({ id: 'q', action: 'click', request: { action: 'click' } })
@@ -118,11 +133,13 @@ describe('readElementActionPayload · accepted spellings', () => {
 });
 
 describe('readElementActionPayload · refusals', () => {
-  it('a top-level action DISAGREEING with request.action is refused', () => {
+  it('a top-level action DISAGREEING with request.action is refused, echoing neither', () => {
     const r = refused({ id: 'q', action: 'click', request: { action: 'focus' } });
     expect(r.message).toContain(
-      'names two actions: "action" is the string "click" but "request.action" is the string "focus"'
+      'names two actions: the top-level "action" and "request.action" differ'
     );
+    expect(r.message).not.toContain('click');
+    expect(r.message).not.toContain('focus');
     expect(r.elementId).toBe('q');
   });
 
@@ -154,7 +171,7 @@ describe('readElementActionPayload · refusals', () => {
   });
 
   it.each([
-    ['a string', 'click', 'the string "click"'],
+    ['a string', 'click', 'a string of 5 characters'],
     ['null', null, 'null'],
     ['an array', ['click'], 'an array'],
   ])('a request that is %s is refused', (_label, request, described) => {
@@ -165,7 +182,7 @@ describe('readElementActionPayload · refusals', () => {
   it.each([
     ['empty', '', 'an empty string'],
     ['absent', undefined, 'nothing'],
-    ['a number', 5, 'number 5'],
+    ['a number', 5, 'a number'],
   ])('request.action %s is refused', (_label, action, described) => {
     const r = refused({ id: 'q', request: action === undefined ? {} : { action } });
     expect(r.message).toContain(`"request.action" must be a non-empty string, got ${described}`);
@@ -180,9 +197,9 @@ describe('readElementActionPayload · refusals', () => {
   it.each([
     ['null', null, 'null'],
     ['an array', [{ id: 'q' }], 'an array'],
-    ['a string', 'executeElementAction q click', 'the string "executeElementAction q click"'],
+    ['a string', 'executeElementAction q click', 'a string of 28 characters'],
     ['undefined', undefined, 'nothing'],
-    ['a number', 7, 'number 7'],
+    ['a number', 7, 'a number'],
   ])('a payload that is %s is refused with no received keys', (_label, payload, described) => {
     const r = refused(payload);
     expect(r.message).toContain(`must be a JSON object, got ${described}`);
@@ -199,7 +216,7 @@ describe('readElementActionPayload · refusals', () => {
       { elementId: '', action: 'click' },
       '"elementId" must be a non-empty string, got an empty string',
     ],
-    [{ id: 42, request: { action: 'click' } }, '"id" must be a non-empty string, got number 42'],
+    [{ id: 42, request: { action: 'click' } }, '"id" must be a non-empty string, got a number'],
   ])('an empty or non-string id is refused: %j', (payload, problem) => {
     expect(refused(payload).message).toContain(problem);
   });
@@ -238,14 +255,50 @@ describe('readElementActionPayload · refusals', () => {
     expect(r.receivedKeys).toEqual(['id', 'elementId', 'request', 'text', 'clear']);
   });
 
-  it('a refusal names keys, never the values they carry (a typed value can be a secret)', () => {
-    const r = refused({
-      id: 'q',
-      text: 'hunter2',
-      request: { action: 'type', text: 'correct-horse' },
-    });
-    expect(r.message).not.toContain('hunter2');
-    expect(r.message).not.toContain('correct-horse');
+  // A typed value can be a secret, and a caller who puts one where a key or a
+  // verb belongs must not get it echoed into a refusal, a log or a CLI line.
+  const SECRET = 'hunter2-secret';
+
+  it.each([
+    [
+      'a request field at both levels',
+      { id: 'q', text: SECRET, request: { action: 'type', text: 'correct-horse' } },
+      '"text" is at both levels with different values',
+    ],
+    [
+      'a "request" that is a string',
+      { id: 'q', request: SECRET },
+      '"request" must be an object, got a string of 14 characters',
+    ],
+    [
+      'a top-level "action" disagreeing with "request.action"',
+      { id: 'q', action: SECRET, request: { action: 'type' } },
+      'names two actions: the top-level "action" and "request.action" differ',
+    ],
+    [
+      'a "request.action" disagreeing with the top-level "action"',
+      { id: 'q', action: 'type', request: { action: SECRET } },
+      'names two actions: the top-level "action" and "request.action" differ',
+    ],
+    [
+      'a flat "action" that is not a string',
+      { id: 'q', action: [SECRET] },
+      '"action" must be a non-empty string, got an array',
+    ],
+    ['a bare string payload', SECRET, 'must be a JSON object, got a string of 14 characters'],
+  ])('a refusal names keys and kinds, never a value: %s', (_label, payload, problem) => {
+    const { message } = refused(payload);
+    expect(message).toContain(problem);
+    expect(message).not.toContain(SECRET);
+    expect(message).not.toContain('correct-horse');
+  });
+
+  it('a single-element read refusal never echoes a value either', () => {
+    const reading = readElementIdPayload('getElement', SECRET);
+    expect(reading.ok).toBe(false);
+    if (reading.ok) return;
+    expect(reading.message).toContain('must be a JSON object, got a string of 14 characters');
+    expect(reading.message).not.toContain(SECRET);
   });
 
   it.each([
@@ -270,7 +323,12 @@ describe('readElementIdPayload', () => {
     [{ id: 'q' }],
     [{ elementId: 'q' }],
     [{ id: 'q', elementId: 'q' }],
+    // The dispatcher keys are tolerated and ignored: the read does not settle,
+    // and the tab pin is the transport's.
     [{ id: 'q', settleTimeout: 100, skipSettle: true, targetTabId: 'tab-a' }],
+    // The WebSocket protocol's own getElement field: the state is always included.
+    [{ id: 'q', includeState: true }],
+    [{ elementId: 'q', includeState: false }],
   ])('accepts %j as {id: "q"}', (payload) => {
     expect(readElementIdPayload('getElement', payload)).toEqual({ ok: true, id: 'q' });
   });
@@ -279,10 +337,11 @@ describe('readElementIdPayload', () => {
     [{}, 'names no element: "id" (or "elementId") is missing'],
     [{ id: '' }, '"id" must be a non-empty string, got an empty string'],
     [{ id: 'a', elementId: 'b' }, 'names two elements: "id" is "a" but "elementId" is "b"'],
-    [{ id: 'q', includeState: true }, '"includeState" is not read by getElement'],
+    // Only the exact key is tolerated: a misspelling of it is refused.
+    [{ id: 'q', includeStates: true }, '"includeStates" is not read by getElement'],
     [{ id: 'q', a: 1, b: 2 }, '"a", "b" are not read by getElement'],
     [null, 'must be a JSON object, got null'],
-    ['q', 'must be a JSON object, got the string "q"'],
+    ['q', 'must be a JSON object, got a string of 1 character'],
   ])('refuses %j', (payload, problem) => {
     const reading = readElementIdPayload('getElement', payload);
     expect(reading.ok).toBe(false);

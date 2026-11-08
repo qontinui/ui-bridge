@@ -133,12 +133,14 @@ Exec (Variant A — one-shot; presence of any --exec/--exec-stdin selects this m
         label, role, accessibleName), "state", box ("bbox", "visible") and
         "actions" — the same object as the matching getControlSnapshot element,
         redaction included. {"elementId":"<id>"} is accepted too; given both,
-        they must name the same element. Beside the id it takes only the
-        dispatcher keys settleTimeout, skipSettle and targetTabId; any other
-        key is refused with INVALID_REQUEST. Nothing settles first: run
-        waitForSelector before it for a settled read. An unknown id, or one
-        whose DOM node is gone, is a RETURNED ELEMENT_NOT_FOUND (an "error"
-        line, exit 1), never a null result.
+        they must name the same element. Nothing settles first: run
+        waitForSelector before it for a settled read. Beside the id it
+        tolerates, and ignores, settleTimeout and skipSettle (it does not
+        settle), targetTabId, and the WebSocket protocol's "includeState" (the
+        state is always included); any other key is refused with
+        INVALID_REQUEST. An unknown id, or one whose DOM node is gone, is a
+        RETURNED ELEMENT_NOT_FOUND (an "error" line, exit 1), never a null
+        result.
 
       getElementState {"id":"<id>"}
         The state alone (visible, enabled, focused, ariaPressed, value, ...).
@@ -151,17 +153,21 @@ Exec (Variant A — one-shot; presence of any --exec/--exec-stdin selects this m
           {"elementId":"<id>","request":{"action":"focus"}}   "elementId" for "id"
           {"id":"<id>","action":"type","text":"hi"}            flat: the payload,
                                         minus "id"/"elementId", IS the request
-        No field is ever silently dropped. Beside a "request" object, a
-        top-level "action" or request field ("value", "text", ...) must equal
-        the same field inside "request" (an agreeing duplicate is accepted);
-        one that is only at the top level, or at both levels with different
+        No key BESIDE a "request" object is silently dropped: a top-level
+        "action" or request field ("value", "text", ...) there must equal the
+        same field inside "request" (an agreeing duplicate is accepted); one
+        that is only at the top level, or at both levels with different
         values, is refused, and so are an "id" and an "elementId" that name
         different elements. settleTimeout, skipSettle and targetTabId stay
-        allowed at the top level. Every refused shape is a RETURNED
-        INVALID_REQUEST (an "error" line, exit 1; never a thrown TypeError)
-        whose message names the canonical shape
+        allowed at the top level. The request fields themselves (the keys
+        inside "request", or every key of a flat payload but the id) reach
+        the action as sent, so a misspelt one there ("txt" for "text") is not
+        caught. Every refused shape is a RETURNED INVALID_REQUEST (an "error"
+        line, exit 1; never a thrown TypeError) whose message names the
+        canonical shape
           {"id":"<elementId>","request":{"action":"<action>", …}}
-        and both accepted spellings; "error.details" adds "expectedPayload" and
+        and both accepted spellings, and names keys and the kinds of values,
+        never a value; "error.details" adds "expectedPayload" and
         "receivedKeys". A well-formed payload with an unknown verb is refused
         with UNSUPPORTED_ACTION, naming the accepted verbs.
 
@@ -181,10 +187,12 @@ Exec (Variant A — one-shot; presence of any --exec/--exec-stdin selects this m
         had to wait reads the tens of ms its retries took, not 0. Under
         --throttle that first frame can still be the previous document's held
         frame; "offsetMs" dates it either way. Every other frame retries the
-        same refusal only until the next frame's due time, so the schedule
-        never shifts ("intervalMs":0 is one attempt), and no other error is
-        retried. A frame that took more than one attempt says how many in
-        "attempts". The
+        same refusal only while the retry falls due before the next frame's
+        due time ("intervalMs":0 is one attempt), so retries never take a
+        later frame's slot; an attempt still under way when the next frame
+        falls due delays it by what is left of that attempt, as any slow
+        screenshot does. No other error is retried. A frame that took more
+        than one attempt says how many in "attempts". The
         reload drops any media override, and the action waits for the injected
         runtime to settle again ('readyTimeoutMs', default 30000) so the next
         step finds a drivable page. In --capture-matrix a relative <dir> lands

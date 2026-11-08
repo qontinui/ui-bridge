@@ -142,6 +142,50 @@ function relayInnerFailureResponse<T>(
 }
 
 /**
+ * Why a relayed command got NO live answer, or `undefined` when a tab did
+ * answer it.
+ *
+ * A rejection from `relay.queueCommand` is one of two things. Either no tab
+ * answered at all, or a tab ran the command and reported a failure. The second
+ * is the ordinary case, not the exception: the in-page relay client posts the
+ * dispatcher's returned `{ success: false, … }` back as `success: false`, which
+ * the adapter settles with `rejectCommand(commandId, error)` (`./nextjs.ts`),
+ * and across instances the bus re-raises it as `new Error(env.error)`
+ * (`./command-relay.ts`, `dispatchViaBus`). Only the message survives either
+ * path, so each no-answer cause is recognised by the exact message the relay,
+ * or the dispatcher's `default:` arm, raises for it:
+ *
+ *   - no connected tab: `SDK_DISCONNECTED: …` (`queueCommand`'s wait for a
+ *     transport, an owner-scoped dispatch whose caller owns no tab, and
+ *     `sendCommand`'s fail-fast), or `No active UI Bridge SDK client received
+ *     the <action> command` (a broadcast no listener accepted);
+ *   - a timeout: `Command <action> timed out after <n>ms (<transport>)`, from
+ *     the local timer and the bus timer alike;
+ *   - a tab whose SDK has no case for the action: `Unknown command action:
+ *     <action>`, which the in-page dispatcher's `default:` arm throws.
+ *
+ * Anything else — a not-found, a crash in the handler, a routing or ownership
+ * refusal — is never a reason to answer from a cache.
+ */
+function noLiveAnswerCause(action: string, e: unknown): string | undefined {
+  const msg = e instanceof Error ? e.message : String(e);
+  if (
+    msg.startsWith('SDK_DISCONNECTED: ') ||
+    msg.startsWith(`No active UI Bridge SDK client received the ${action} command`)
+  ) {
+    return 'no browser tab is connected to receive it';
+  }
+  if (msg.startsWith(`Command ${action} timed out after `)) {
+    return 'no tab answered it in time';
+  }
+  const noCase = `Unknown command action: ${action}`;
+  if (msg.startsWith(noCase) && !/^[\w$]/.test(msg.slice(noCase.length))) {
+    return `the tab's UI Bridge SDK has no ${action} case`;
+  }
+  return undefined;
+}
+
+/**
  * Is a relay command's `data` the browser's typed find refusal — an inner
  * `success: false` carrying the `refusal` the canonical filter raised?
  */
@@ -527,95 +571,102 @@ export function createRelayHandlers(
       if (innerFailure) return relayInnerFailureResponse<T>(innerFailure, result);
       return success(result);
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      // Per-tab routing errors get a dedicated code so callers can branch
-      // without parsing prose (Item #4). Bypass `mapInternalErrorCode` and
-      // return the literal `TAB_NOT_FOUND` / `TAB_STALE` codes — these are
-      // contract surface (multi-machine drivers branch on them), same shape
-      // as the `WRONG_TYPE_PARAM` envelope in `executeElementAction`.
-      const tabErr = e as { code?: unknown; name?: unknown };
-      // Per-user tab scoping (§4.2): a scoped caller cannot distinguish "tab
-      // exists but not yours" from "tab does not exist". OwnerMismatchError
-      // and, for a scoped dispatch, a missing tab both get this one answer:
-      // no tab id, no tab list. The structured fields (`callerUserId` /
-      // `storedUserId`) stay in the relay's exception for server-side
-      // observability and never reach the wire.
-      const unaddressableTab = (): APIResponse<T> =>
-        ({
-          success: false,
-          error:
-            `tabId is not in connectedTabs. ` +
-            `Use GET /tabs to discover live tab ids, or omit tabId to dispatch to the primary tab.`,
-          code: 'TAB_NOT_FOUND' as APIResponse['code'],
-          timestamp: Date.now(),
-          httpStatus: 404,
-          suggestions: [
-            'GET /tabs?activeOnly=true to discover currently live tabs',
-            'Omit tabId to fall back to the relay primary tab',
-          ],
-        }) as APIResponse<T>;
-      if (tabErr?.name === 'OwnerMismatchError') return unaddressableTab();
-      if (
-        effectiveOwnerCheck &&
-        tabErr?.name === 'TabRoutingError' &&
-        tabErr.code === 'TAB_NOT_FOUND'
-      ) {
-        return unaddressableTab();
-      }
-      if (tabErr?.name === 'TabRoutingError' && typeof tabErr.code === 'string') {
-        // Surface HTTP-level status codes so adapters (Express / Next.js)
-        // translate the per-tab routing failure into the documented
-        // status, not the default 200. The vet for multi-tab routing
-        // (mtc post-vet) explicitly required HTTP 404 when a pinned
-        // `?tabId=<id>` is not registered. TAB_STALE → 410 Gone reads
-        // as "the tab existed but is no longer routable", consistent
-        // with the RFC 7231 semantic. Callers that branch on the
-        // envelope code keep working unchanged.
-        const httpStatus =
-          tabErr.code === 'TAB_NOT_FOUND' ? 404 : tabErr.code === 'TAB_STALE' ? 410 : undefined;
-        return {
-          success: false,
-          error: msg,
-          code: tabErr.code as APIResponse['code'],
-          timestamp: Date.now(),
-          ...(httpStatus !== undefined ? { httpStatus } : {}),
-          suggestions: [
-            'GET /tabs?activeOnly=true to discover currently live tabs',
-            'Omit tabId to fall back to the relay primary tab',
-            'Wait for the target tab to reconnect, then retry',
-          ],
-        } as APIResponse<T>;
-      }
-      const hasListeners = relay.hasCommandListeners() || relay.getWebSocketClientCount() > 0;
-      const isTimeout = msg.includes('timeout') || msg.includes('Timeout');
-      const hint = !hasListeners
-        ? ' No browser tab is connected — ensure the app is open and the UI Bridge SDK is loaded.'
-        : isTimeout
-          ? ' The browser did not respond in time — the page may be unresponsive or navigating.'
-          : '';
-      const isUnsupported =
-        msg.includes('unsupported') || msg.includes('Unsupported') || msg.includes('not supported');
-      const suggestions = isTimeout
-        ? [
-            'Check if the browser tab is responsive',
-            'The page may be navigating or loading heavy content',
-            'Try again after the page settles',
-          ]
-        : !hasListeners
-          ? [
-              'Ensure the app is open in a browser tab',
-              'Verify the UI Bridge SDK is loaded in the app',
-            ]
-          : isUnsupported
-            ? [
-                'Check that the action is supported for this element type',
-                'Use getControlSnapshot() to see element capabilities',
-                'Supported actions: click, type, select, toggle, scroll, focus',
-              ]
-            : undefined;
-      const code = isTimeout ? 'TIMEOUT' : isUnsupported ? 'UNSUPPORTED_ACTION' : 'COMMAND_FAILED';
-      return error(`${msg}${hint}`, code, suggestions);
+      return relayErrorResponse<T>(e, effectiveOwnerCheck);
     }
+  }
+
+  // The failure envelope for a relayed command that REJECTED. Shared by
+  // `relayCommand` and the one handler that reads its live answer itself
+  // (`getElement`'s unpinned read), so a rejection answers the same envelope
+  // whichever path relayed it. `ownerCheck` is the dispatch's owner scope.
+  function relayErrorResponse<T>(
+    e: unknown,
+    ownerCheck: { userId: string } | undefined
+  ): APIResponse<T> {
+    const msg = e instanceof Error ? e.message : String(e);
+    // Per-tab routing errors get a dedicated code so callers can branch
+    // without parsing prose (Item #4). Bypass `mapInternalErrorCode` and
+    // return the literal `TAB_NOT_FOUND` / `TAB_STALE` codes — these are
+    // contract surface (multi-machine drivers branch on them), same shape
+    // as the `WRONG_TYPE_PARAM` envelope in `executeElementAction`.
+    const tabErr = e as { code?: unknown; name?: unknown };
+    // Per-user tab scoping (§4.2): a scoped caller cannot distinguish "tab
+    // exists but not yours" from "tab does not exist". OwnerMismatchError
+    // and, for a scoped dispatch, a missing tab both get this one answer:
+    // no tab id, no tab list. The structured fields (`callerUserId` /
+    // `storedUserId`) stay in the relay's exception for server-side
+    // observability and never reach the wire.
+    const unaddressableTab = (): APIResponse<T> =>
+      ({
+        success: false,
+        error:
+          `tabId is not in connectedTabs. ` +
+          `Use GET /tabs to discover live tab ids, or omit tabId to dispatch to the primary tab.`,
+        code: 'TAB_NOT_FOUND' as APIResponse['code'],
+        timestamp: Date.now(),
+        httpStatus: 404,
+        suggestions: [
+          'GET /tabs?activeOnly=true to discover currently live tabs',
+          'Omit tabId to fall back to the relay primary tab',
+        ],
+      }) as APIResponse<T>;
+    if (tabErr?.name === 'OwnerMismatchError') return unaddressableTab();
+    if (ownerCheck && tabErr?.name === 'TabRoutingError' && tabErr.code === 'TAB_NOT_FOUND') {
+      return unaddressableTab();
+    }
+    if (tabErr?.name === 'TabRoutingError' && typeof tabErr.code === 'string') {
+      // Surface HTTP-level status codes so adapters (Express / Next.js)
+      // translate the per-tab routing failure into the documented
+      // status, not the default 200. The vet for multi-tab routing
+      // (mtc post-vet) explicitly required HTTP 404 when a pinned
+      // `?tabId=<id>` is not registered. TAB_STALE → 410 Gone reads
+      // as "the tab existed but is no longer routable", consistent
+      // with the RFC 7231 semantic. Callers that branch on the
+      // envelope code keep working unchanged.
+      const httpStatus =
+        tabErr.code === 'TAB_NOT_FOUND' ? 404 : tabErr.code === 'TAB_STALE' ? 410 : undefined;
+      return {
+        success: false,
+        error: msg,
+        code: tabErr.code as APIResponse['code'],
+        timestamp: Date.now(),
+        ...(httpStatus !== undefined ? { httpStatus } : {}),
+        suggestions: [
+          'GET /tabs?activeOnly=true to discover currently live tabs',
+          'Omit tabId to fall back to the relay primary tab',
+          'Wait for the target tab to reconnect, then retry',
+        ],
+      } as APIResponse<T>;
+    }
+    const hasListeners = relay.hasCommandListeners() || relay.getWebSocketClientCount() > 0;
+    const isTimeout = msg.includes('timeout') || msg.includes('Timeout');
+    const hint = !hasListeners
+      ? ' No browser tab is connected — ensure the app is open and the UI Bridge SDK is loaded.'
+      : isTimeout
+        ? ' The browser did not respond in time — the page may be unresponsive or navigating.'
+        : '';
+    const isUnsupported =
+      msg.includes('unsupported') || msg.includes('Unsupported') || msg.includes('not supported');
+    const suggestions = isTimeout
+      ? [
+          'Check if the browser tab is responsive',
+          'The page may be navigating or loading heavy content',
+          'Try again after the page settles',
+        ]
+      : !hasListeners
+        ? [
+            'Ensure the app is open in a browser tab',
+            'Verify the UI Bridge SDK is loaded in the app',
+          ]
+        : isUnsupported
+          ? [
+              'Check that the action is supported for this element type',
+              'Use getControlSnapshot() to see element capabilities',
+              'Supported actions: click, type, select, toggle, scroll, focus',
+            ]
+          : undefined;
+    const code = isTimeout ? 'TIMEOUT' : isUnsupported ? 'UNSUPPORTED_ACTION' : 'COMMAND_FAILED';
+    return error(`${msg}${hint}`, code, suggestions);
   }
 
   // Helper: relay with empty-array fallback — includes metadata when fallback is used
@@ -1016,24 +1067,38 @@ export function createRelayHandlers(
       }
 
       const scope = scopeOf(effectiveUserId);
-      // Live first. A LIVE answer is the answer: an element is a success, and
-      // a returned failure (the dispatcher's `ELEMENT_NOT_FOUND` for an id the
-      // page just said is gone) is a failure in `relayCommand`'s envelope —
-      // never answered from the cache, which can be stale or another tab's.
-      // The cache answers only when there was no live answer at all: no tab,
-      // or a tab whose SDK predates the dispatcher's `getElement` case and
-      // threw `Unknown command action`.
+      // Live first, and a LIVE answer is the answer, exactly as the pinned
+      // read answers it: an element is a success, and a failure the tab
+      // reported — the dispatcher's `ELEMENT_NOT_FOUND` for an id the page
+      // just said is gone, resolved as `{ success: false, … }` or, over the
+      // in-page relay client, rejected with its message — is a failure
+      // envelope, never overruled by the cache, which can be stale or another
+      // tab's. The cache answers only when there was NO live answer
+      // (`noLiveAnswerCause`: no connected tab, a timeout, or a tab whose SDK
+      // predates the dispatcher's `getElement` case), and its answer is marked
+      // `_meta.fallback` with the cause, the way `relayWithFallback` marks
+      // its default.
+      const liveOpts = effectiveUserId ? { ownerCheck: { userId: effectiveUserId } } : undefined;
+      let noLiveAnswer: string;
       try {
-        const liveOpts = effectiveUserId ? { ownerCheck: { userId: effectiveUserId } } : undefined;
         const result = await relay.queueCommand('getElement', { id }, liveOpts);
         const innerFailure = readRelayInnerFailure(result);
         if (innerFailure) {
           return relayInnerFailureResponse<ControlSnapshot['elements'][0]>(innerFailure, result);
         }
-        if (result) return success(result) as APIResponse<ControlSnapshot['elements'][0]>;
-      } catch {
-        // No live answer — fall back to the cached snapshot.
+        return success(result) as APIResponse<ControlSnapshot['elements'][0]>;
+      } catch (e) {
+        const cause = noLiveAnswerCause('getElement', e);
+        if (cause === undefined) {
+          return relayErrorResponse<ControlSnapshot['elements'][0]>(e, liveOpts?.ownerCheck);
+        }
+        noLiveAnswer = cause;
       }
+      // Every answer from here on is the cache's, the not-found included.
+      const fallbackMeta = {
+        fallback: true,
+        reason: `Relay command 'getElement' got no live answer (${noLiveAnswer}) — answered from the cached snapshot, which can be stale or another tab's.`,
+      };
       let element = scope.cache.controlSnapshot.elements.find((e) => e.id === id);
       if (!element) {
         // Refresh and retry — element may have been registered after the cached snapshot
@@ -1047,17 +1112,20 @@ export function createRelayHandlers(
       }
       if (!element) {
         const count = scope.cache.controlSnapshot.elements.length;
-        return error(
-          `Element "${id}" not found (${count} elements registered). Use find() or getControlSnapshot() to see available elements.`,
-          'ELEMENT_NOT_FOUND',
-          [
-            'Use find() to search for elements by description or type',
-            'Use getControlSnapshot() to see all available elements',
-            'The element may not be rendered yet — wait for the page to fully load',
-          ]
-        );
+        return {
+          ...error(
+            `Element "${id}" not found in the cached snapshot (${count} elements registered). Use find() or getControlSnapshot() to see available elements.`,
+            'ELEMENT_NOT_FOUND',
+            [
+              'Use find() to search for elements by description or type',
+              'Use getControlSnapshot() to see all available elements',
+              'The element may not be rendered yet — wait for the page to fully load',
+            ]
+          ),
+          _meta: fallbackMeta,
+        };
       }
-      return success(element);
+      return success(element, fallbackMeta);
     },
 
     async getElementState(id, context) {

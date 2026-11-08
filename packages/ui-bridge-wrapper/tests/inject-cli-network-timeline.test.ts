@@ -38,6 +38,7 @@ import {
   captureTimeline,
   parseCaptureTimelinePayload,
   registerTimelineCapture,
+  takeFrameByDeadline,
   type TimelinePage,
   type TimelineResult,
 } from '../src/timeline-capture.js';
@@ -210,12 +211,14 @@ describe('captureTimeline', () => {
    * A fake page. `failFrame` and `refuse` count SCREENSHOT CALLS, not frames:
    * call `failFrame` throws `Target closed`, and `refuse: n` makes n consecutive
    * calls, from call `refuseFromShot` (default 1), throw {@link REFUSAL}.
+   * `shotAt` holds the `Date.now()` instant of every screenshot call.
    */
   function timelinePage(
     opts: { failFrame?: number; settles?: boolean; refuse?: number; refuseFromShot?: number } = {}
   ) {
     let shots = 0;
     const calls: string[] = [];
+    const shotAt: number[] = [];
     const refuseFrom = opts.refuseFromShot ?? 1;
     const page: TimelinePage = {
       evaluate: (async () => ({
@@ -227,6 +230,7 @@ describe('captureTimeline', () => {
       screenshot: async () => {
         shots += 1;
         calls.push(`shot${shots}`);
+        shotAt.push(Date.now());
         if (shots === opts.failFrame) throw new Error('Target closed');
         if (shots >= refuseFrom && shots < refuseFrom + (opts.refuse ?? 0)) {
           throw new Error(REFUSAL);
@@ -241,7 +245,7 @@ describe('captureTimeline', () => {
         if (opts.settles === false) throw new Error('Timeout 10ms exceeded');
       },
     };
-    return { page, calls };
+    return { page, calls, shotAt };
   }
 
   it('grammar: dir, frames and intervalMs are required and bounded', () => {
@@ -488,9 +492,10 @@ describe('captureTimeline', () => {
   // D4 (plan 2026-11-08-ui-bridge-inject-exec-mode-is-a-second-class-driver):
   // only Chromium's no-compositor-frame refusal is retried, every 16 ms, until
   // the frame's deadline. Under a fake clock every instant below is a literal.
+  const T0 = Date.parse('2026-11-08T09:00:00.000Z');
   async function underFakeClock(run: () => Promise<TimelineResult>): Promise<TimelineResult> {
     vi.useFakeTimers();
-    vi.setSystemTime(Date.parse('2026-11-08T09:00:00.000Z'));
+    vi.setSystemTime(T0);
     try {
       const pending = run();
       await vi.runAllTimersAsync();
@@ -591,6 +596,88 @@ describe('captureTimeline', () => {
       runtimeReady: true,
       error: '1 of 2 frames failed',
     });
+  });
+
+  it('D4 reload: only frame 1 gets the readyTimeoutMs budget; frame 2 retries inside its own slot, and frame 3 keeps its due time', async () => {
+    const dir = join(tmp(), 'tl');
+    // Frame 1 is taken at the first call; every call after it is refused, far
+    // longer than readyTimeoutMs would allow a frame to keep retrying.
+    const { page, calls, shotAt } = timelinePage({ refuse: 20, refuseFromShot: 2 });
+    const res = await underFakeClock(() =>
+      captureTimeline(page, {
+        dir,
+        frames: 3,
+        intervalMs: 100,
+        reload: true,
+        readyTimeoutMs: 1000,
+      })
+    );
+    // Frame 2 (due at 100) is refused at 100, 116, ... 196, its last attempt
+    // before frame 3 falls due at 200; frame 3 starts at 200 and is refused
+    // through 296, its last attempt before 300.
+    expect(shotAt.map((t) => t - T0)).toEqual([
+      0, 100, 116, 132, 148, 164, 180, 196, 200, 216, 232, 248, 264, 280, 296,
+    ]);
+    expect(calls.at(-1)).toBe('waitReady');
+    expect(res.frames).toStrictEqual([
+      {
+        index: 1,
+        path: join(dir, 'frame-1.png'),
+        offsetMs: 0,
+        capturedAt: '2026-11-08T09:00:00.000Z',
+        width: 800,
+        height: 600,
+      },
+      {
+        index: 2,
+        path: null,
+        offsetMs: 196,
+        capturedAt: '2026-11-08T09:00:00.196Z',
+        width: null,
+        height: null,
+        attempts: 7,
+        error: REFUSAL,
+      },
+      {
+        index: 3,
+        path: null,
+        offsetMs: 296,
+        capturedAt: '2026-11-08T09:00:00.296Z',
+        width: null,
+        height: null,
+        attempts: 7,
+        error: REFUSAL,
+      },
+    ]);
+    expect(readdirSync(dir)).toEqual(['frame-1.png']);
+    expect(res).toMatchObject({
+      success: false,
+      reloaded: true,
+      runtimeReady: true,
+      error: '2 of 3 frames failed',
+    });
+  });
+
+  it('D4: a frozen clock cannot spin the retry loop; the attempt cap is fixed from the budget before the first attempt', async () => {
+    let shots = 0;
+    const page = {
+      screenshot: async (): Promise<Uint8Array> => {
+        shots += 1;
+        throw new Error(REFUSAL);
+      },
+    };
+    const FROZEN = 5_000;
+    vi.useFakeTimers();
+    try {
+      // `now` never moves, so the deadline check alone would retry for ever.
+      const pending = takeFrameByDeadline(page, FROZEN + 100, () => FROZEN);
+      await vi.runAllTimersAsync();
+      // ceil(100 / 16) + 2 = 9 attempts, every one at the frozen instant.
+      expect(await pending).toStrictEqual({ error: REFUSAL, at: FROZEN, attempts: 9 });
+      expect(shots).toBe(9);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('D4: any other error on frame 1 after a reload (Target closed) is not retried and fails as today', async () => {

@@ -114,6 +114,31 @@ describe('injected execute("getElement") · reads one element', () => {
     expect(el.state.enabled).toBe(false);
   }, 30_000);
 
+  it.each([[true], [false]])(
+    'the WebSocket protocol\'s own field {"includeState":%s} is accepted, and the state is always included',
+    async (includeState) => {
+      const api = await bootRuntime();
+      const el = (await api.execute('getElement', { id: GO, includeState })) as SerializedElement;
+      expect(el.id).toBe(GO);
+      expect(el.state.ariaPressed).toBe(false);
+      expect(el.state.enabled).toBe(true);
+    },
+    30_000
+  );
+
+  it('answers the label the DOM carries NOW: an aria-label changed after boot is read fresh', async () => {
+    const api = await bootRuntime();
+    expect(((await api.execute('getElement', { id: GO })) as SerializedElement).label).toBe(
+      'Toggle'
+    );
+    // The scanner never re-labels a node it already holds, so the change is
+    // seen only because getElement re-derives scraped labels before it reads
+    // (it is in the dispatcher's LABEL_REFRESH_ACTIONS).
+    document.querySelector('[data-testid="go"]')!.setAttribute('aria-label', 'Pause playback');
+    const el = (await api.execute('getElement', { id: GO })) as SerializedElement;
+    expect(el.label).toBe('Pause playback');
+  }, 30_000);
+
   it('parity: the answer deep-equals the matching getControlSnapshot element taken in the same tick', async () => {
     const api = await bootRuntime();
     const [one, snapshot] = await Promise.all([
@@ -149,9 +174,9 @@ describe('injected execute("getElement") · returned refusals, never null and ne
   it.each([
     ['{}', {}, 'names no element'],
     [
-      '{"id":"dom-go","includeState":true}',
-      { id: GO, includeState: true },
-      '"includeState" is not read by getElement',
+      '{"id":"dom-go","includeStates":true}',
+      { id: GO, includeStates: true },
+      '"includeStates" is not read by getElement',
     ],
   ])(
     '%s answers INVALID_REQUEST naming the read payload',
