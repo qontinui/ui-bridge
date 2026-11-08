@@ -24,6 +24,7 @@
 // `moduleResolution: bundler` won't auto-resolve them. The ambient declaration
 // for our use is in `dom-accessibility-api.d.ts` next to this file.
 import { computeAccessibleName, getRole } from 'dom-accessibility-api';
+import { isRegistryStamp } from './bridge-stamp';
 
 /**
  * Collapse runs of whitespace to a single space and trim. Matches the
@@ -152,6 +153,10 @@ const ICON_CLASS_PREFIX = /^(?:lucide|icon|fa|fas|far|mdi|bi|material-icons)[-_]
  */
 function deriveStructuralName(node: Element): string | undefined {
   for (const attr of DERIVED_NAME_ATTRS) {
+    // A `data-ui-bridge-id` the registry wrote itself is bookkeeping, not a
+    // developer affordance: it must not outrank the node's own `name`, DOM
+    // id, title or icon class (see `core/bridge-stamp.ts`).
+    if (attr === 'data-ui-bridge-id' && isRegistryStamp(node)) continue;
     const value = node.getAttribute(attr)?.trim();
     if (value) return value;
   }

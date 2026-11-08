@@ -138,6 +138,7 @@ import {
 import type { SnapshotBaseline } from '../specs/quality-types';
 import type { StyleGuideConfig } from '../specs/style-types';
 import { sdkDispatch } from '../core/sdk-dispatch';
+import { isBridgeStampMutation } from '../core/bridge-stamp';
 
 // ============================================================================
 // Types
@@ -1071,6 +1072,8 @@ function enableChangeTracking() {
   changeObserver = new MutationObserver((mutations) => {
     if (!changeBufferEnabled) return;
     for (const m of mutations) {
+      // The bridge stamping a registration is not a page change.
+      if (isBridgeStampMutation(m)) continue;
       changeBuffer.push({
         timestamp: Date.now(),
         type: m.type,
@@ -3354,7 +3357,9 @@ export async function executeCommand(
       };
       const timeout = opts.timeout ?? opts.options?.timeout ?? 5000;
       return new Promise((resolve) => {
-        const observer = new MutationObserver(() => {
+        const observer = new MutationObserver((records) => {
+          // A batch that only stamped registrations is not a page change.
+          if (records.every(isBridgeStampMutation)) return;
           observer.disconnect();
           resolve({ changed: true, timestamp: Date.now() });
         });
