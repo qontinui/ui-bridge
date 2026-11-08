@@ -2927,6 +2927,14 @@ export interface WSExecuteComponentActionMessage extends WSMessageBase {
      * type) forward it to the executor, which validates and clamps it.
      */
     timeoutMs?: number;
+    /**
+     * Per-request effect-verification override — see
+     * {@link ComponentActionRequest.verifyEffect}. Both WS handlers forward a
+     * boolean value; anything else is ignored.
+     */
+    verifyEffect?: boolean;
+    /** Echoed on the response — see {@link ComponentActionRequest.requestId}. */
+    requestId?: string;
   };
 }
 
