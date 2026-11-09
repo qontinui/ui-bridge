@@ -4,7 +4,7 @@
  * Register a native element with UI Bridge for control and observation.
  */
 
-import { useRef, useEffect, useCallback, useMemo, useState } from 'react';
+import { useRef, useEffect, useLayoutEffect, useCallback, useMemo, useState } from 'react';
 // `useState` is still used below for `_layout` (drives re-render on layout
 // changes). `registered` was migrated to a `useRef` (mirrors the web
 // `useUIElement` at packages/ui-bridge/src/react/useUIElement.ts:165) so
@@ -365,6 +365,32 @@ export function useUIElement(options: UseUIElementOptionsBase): UseUIElementRetu
       unregister();
     };
   }, [autoRegister, register, unregister]);
+
+  // Unregister AT COMMIT on unmount (a passive cleanup runs a task later for a
+  // non-discrete unmount, leaving the element listed with its DOM gone). Deps
+  // are [] so a churning `bridge` keeps the passive swap above.
+  const registerRef = useRef(register);
+  const unregisterRef = useRef(unregister);
+  const reregisterRef = useRef(false);
+  useEffect(() => {
+    registerRef.current = register;
+    unregisterRef.current = unregister;
+  }, [register, unregister]);
+  useLayoutEffect(() => {
+    // A Suspense boundary that re-suspends runs layout cleanups but keeps
+    // passive effects mounted, then re-runs only layout mounts on reveal: put
+    // back what this cleanup took out, or the entry would stay gone for good.
+    if (reregisterRef.current) {
+      reregisterRef.current = false;
+      registerRef.current();
+    }
+    return () => {
+      if (registeredRef.current) {
+        unregisterRef.current();
+        reregisterRef.current = true;
+      }
+    };
+  }, []);
 
   // Update props for action execution (allows accessing onPress, onChangeText, etc.)
   const _updateProps = useCallback(

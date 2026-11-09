@@ -5,6 +5,7 @@
  */
 
 import { useRef, useEffect, useCallback, useMemo } from 'react';
+import { useIsomorphicLayoutEffect } from './useIsomorphicLayoutEffect';
 import type {
   ElementType,
   StandardAction,
@@ -389,8 +390,9 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     // every option tweak is wasteful and would fight the register effect.
   }, [bridge, id, autoRegister]);
 
-  // Cleanup on unmount — runs once.
-  useEffect(() => {
+  // Cleanup on unmount — runs once, AT COMMIT (layout phase), so the registry
+  // stops serving the element in the same task that removes its DOM.
+  useIsomorphicLayoutEffect(() => {
     return () => {
       if (registeredRef.current) {
         unregisterRef.current();

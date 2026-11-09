@@ -4,7 +4,7 @@
  * Register a component with UI Bridge for component-level actions.
  */
 
-import { useEffect, useCallback, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useCallback, useRef, useState } from 'react';
 import type { IREffect, RegisteredNativeComponent } from '../core/types';
 import { useUIBridgeNativeOptional } from './UIBridgeNativeProvider';
 
@@ -454,6 +454,30 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
       }
     };
   }, [autoRegister, bridge, id]);
+
+  // Unregister AT COMMIT on unmount. A passive cleanup runs in a later task for
+  // a non-discrete unmount, so until then the registry would still list this
+  // component, answer its state and run its handlers although its DOM is gone.
+  // Deps are [] on purpose: a churning `bridge` or an `id` change must keep the
+  // atomic passive swap above, not unregister here and re-register a task later.
+  // After this runs `registeredRef.current` is false, so the passive cleanup
+  // above is a no-op, and under StrictMode the passive effect re-registers.
+  const reregisterRef = useRef(false);
+  useLayoutEffect(() => {
+    // A Suspense boundary that re-suspends runs layout cleanups but keeps
+    // passive effects mounted, then re-runs only layout mounts on reveal: put
+    // back what this cleanup took out, or the entry would stay gone for good.
+    if (reregisterRef.current) {
+      reregisterRef.current = false;
+      registerRef.current();
+    }
+    return () => {
+      if (registeredRef.current) {
+        unregisterRef.current();
+        reregisterRef.current = true;
+      }
+    };
+  }, []);
 
   // Keep the registry's copy of the declaration in step with the OPTIONS —
   // automatically.
