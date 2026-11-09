@@ -3,8 +3,8 @@
  * `SUPPORTED_ACTIONS` (the early gate, and the accepted list an unknown-verb
  * refusal names when the element advertises none), the `StandardAction` union
  * (`../core/types`, the type an element's advertised `actions` and
- * `inferActions` are held to), and the verbs `performAction`'s FALLBACK
- * dispatch runs: its top-level `if (action === '…') { … return … }` arms plus
+ * `inferActions` are held to), and the verbs `performAction`'s dispatch
+ * runs: its top-level `if (action === '…') { … return … }` arms plus
  * the `switch (action as StandardAction)` cases.
  *
  * Post-merge follow-up to ui-bridge#332, which pinned the relay's copy of this
@@ -17,10 +17,6 @@
  * arm passes the gate and then throws "unknown action". Either way the
  * refusal's suggestion and the executor disagree, which is the #331 defect
  * class on this door.
- *
- * NOT covered: when ui-bridge-auto is installed, every verb but the inline
- * `hoverClick` / `hover` / `unhover` arms is delegated to ui-bridge-auto's own
- * `performAction`, whose dispatcher lives in that repo and is not pinned here.
  *
  * The sources are read through the TypeScript AST, so a commented-out entry,
  * case or arm is absent here exactly as it is absent at runtime.
@@ -170,7 +166,7 @@ describe('HTTP executor verb parity', () => {
     expect([...gate].sort()).toEqual([...new Set(standardActionUnion())].sort());
   });
 
-  it("SUPPORTED_ACTIONS equals the verbs performAction's fallback dispatch runs", () => {
+  it("SUPPORTED_ACTIONS equals the verbs performAction's dispatch runs", () => {
     expect([...supportedActions()].sort()).toEqual([...new Set(dispatchedVerbs())].sort());
   });
 });

@@ -113,7 +113,6 @@ export default defineConfig([
       'path',
       'url',
       'fs',
-      '@qontinui/ui-bridge-auto',
       '@tauri-apps/api',
       '@tauri-apps/api/event',
     ],
