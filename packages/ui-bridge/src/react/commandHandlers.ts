@@ -98,6 +98,7 @@ import type { StableElementRef } from '../core/stable-ref';
 import type { AnyCapturedEvent } from '../debug/browser-capture-types';
 import { buildComponentNotFoundError } from '../server/component-not-found';
 import { componentActionRequestFromWire } from '../server/component-action-invocation';
+import { selectorTypeMatches } from '../server/selector-match';
 import { diagnoseSnapshotPageHealth } from '../server/page-health';
 import {
   readValuePrimitive,
@@ -3608,10 +3609,7 @@ export async function executeCommand(
         const domEl = el.element ?? null;
         const elType = typeof el.type === 'string' ? el.type.toLowerCase() : '';
         const elTag = (domEl?.tagName ?? '').toLowerCase();
-        if (selector.type) {
-          const needle = selector.type.toLowerCase();
-          if (!elType.includes(needle) && !elTag.includes(needle)) return false;
-        }
+        if (selector.type && !selectorTypeMatches(selector.type, elType, elTag)) return false;
         if (selector.id && el.id !== selector.id) return false;
 
         const ariaLabel = (domEl ? readAriaLabelAttr(domEl) : null) ?? undefined;
