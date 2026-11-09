@@ -51,7 +51,11 @@ IDs are generated deterministically from element content:
 
 The format is: `{type}-{label-slug}[-{context}][-{index}]`
 
-- **type**: Element type (button, input, link, select, etc.)
+- **type**: The element's type — the one every discovery path reports
+  (button, input, link, select, textbox, combobox, form, dialog, …). A
+  contenteditable element is `textbox-…`, a `<form>` is `form-…`, a
+  `role="dialog"` is `dialog-…`; a `role="tablist"`, a `role="status"` and a
+  non-native `role="spinbutton"` are `generic-…`.
 - **label**: Slugified from text content, aria-label, title, placeholder, or name
 - **context**: Optional ancestor context (nearest id, data-testid, aria-label, or landmark tag) for disambiguation
 - **index**: Optional numeric suffix when siblings of the same type exist

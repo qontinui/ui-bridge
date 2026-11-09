@@ -54,9 +54,9 @@ recommendation.
 | Option | Type | Default | Meaning |
 |--------|------|---------|---------|
 | `id` | `string` | — | **Required.** Unique element identifier |
-| `type` | `ElementType` | auto-detected | Element type |
+| `type` | `ElementType` | auto-detected | Element type (inferred as every discovery path infers it) |
 | `label` | `string` | — | Human-readable label |
-| `actions` | `StandardAction[]` | derived from the element | Override the available actions |
+| `actions` | `StandardAction[]` | derived from the element | Override the available actions. The default is the type's verbs plus what the element itself takes ([Actions](../concepts/actions.md)), even when `type` is declared |
 | `customActions` | `Record<string, CustomAction>` | — | Named handlers callable via `trigger` |
 | `autoRegister` | `boolean` | `true` | Register as soon as the ref attaches |
 | `onStateChange` | `(state: ElementState) => void` | — | State-change callback |

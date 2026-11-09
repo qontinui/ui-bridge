@@ -121,7 +121,8 @@ results = client.ai.search(text_contains="Submit")
 # By ARIA role
 results = client.ai.search(role="button")
 
-# By element type
+# By element type ("input" also finds role="textbox"; "select" also finds
+# role="combobox" and role="listbox")
 results = client.ai.search(element_type="input")
 
 # Combined criteria
