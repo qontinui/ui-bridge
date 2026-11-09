@@ -6,6 +6,7 @@
  */
 
 import type { ElementDesignData, ExtendedComputedStyles } from '../core/types';
+import { answersToNamedType } from '../core/element-kind';
 import type {
   DesignTokens,
   StyleGuideConfig,
@@ -172,7 +173,9 @@ export function evaluateConstraint(
  * Check if a rule matches an element.
  */
 function ruleMatchesElement(rule: StyleRule, elementData: ElementDesignData): boolean {
-  if (rule.elementType && elementData.type !== rule.elementType) {
+  // A rule names a type; it applies to the name's whole family (`input` also
+  // an ARIA `textbox`, `select` also a `combobox`) — `core/element-kind`.
+  if (rule.elementType && !answersToNamedType(elementData.type, rule.elementType)) {
     return false;
   }
   if (rule.selector) {
@@ -190,7 +193,11 @@ function ruleMatchesElement(rule: StyleRule, elementData: ElementDesignData): bo
     if (sel.startsWith('#') && id !== sel.slice(1)) {
       return false;
     }
-    if (!sel.startsWith('.') && !sel.startsWith('#') && elementData.type !== sel) {
+    if (
+      !sel.startsWith('.') &&
+      !sel.startsWith('#') &&
+      !answersToNamedType(elementData.type, sel)
+    ) {
       return false;
     }
   }

@@ -291,6 +291,76 @@ export function mediaElementKind(mediaType: MediaType, element: Element): Elemen
   return mediaType === 'background-image' ? inferElementType(element) : mediaType;
 }
 
+/**
+ * The ARIA role each kind implies, for a node that carries no `role` of its
+ * own: what a reader comparing roles (a search criterion, an effect's
+ * predicted change) should treat the kind as. A `Record` over the union, so a
+ * new kind is a compile error until it is mapped.
+ */
+const IMPLIED_ARIA_ROLES: Record<ElementType, string | undefined> = {
+  button: 'button',
+  input: 'textbox',
+  select: 'combobox',
+  checkbox: 'checkbox',
+  radio: 'radio',
+  link: 'link',
+  form: undefined,
+  textarea: 'textbox',
+  menu: 'menu',
+  menuitem: 'menuitem',
+  tab: 'tab',
+  dialog: 'dialog',
+  disclosure: 'group',
+  custom: undefined,
+  switch: 'switch',
+  slider: 'slider',
+  combobox: 'combobox',
+  listbox: 'listbox',
+  option: 'option',
+  textbox: 'textbox',
+  generic: undefined,
+  image: 'img',
+  video: undefined,
+  canvas: undefined,
+  svg: 'img',
+  picture: 'img',
+};
+
+/** The ARIA role a kind implies (`input` → `textbox`), or `undefined`. */
+export function impliedAriaRole(type: string): string | undefined {
+  return Object.prototype.hasOwnProperty.call(IMPLIED_ARIA_ROLES, type)
+    ? IMPLIED_ARIA_ROLES[type as ElementType]
+    : undefined;
+}
+
+/**
+ * Kinds a person or an agent NAMES interchangeably. The inferrer keeps them
+ * apart, because their verbs differ (a native `<input>` takes `type`, an ARIA
+ * `textbox` does not), but "the email field" means either, and before the
+ * inferrers converged the registry path reported every role="textbox" as
+ * `input` and every role="combobox" or "listbox" as `select`. So a reader that
+ * matches a type a caller named — a query, a filter, a criterion, a selector,
+ * a style rule — matches the name's whole family; a reader that classifies an
+ * element by its own type reads the precise kind.
+ */
+const NAMED_TYPE_FAMILIES: readonly (readonly ElementType[])[] = [
+  ['input', 'textbox'],
+  ['select', 'combobox', 'listbox'],
+];
+
+/** The kinds a caller-named type answers to, lower-cased: its family, else itself. */
+export function namedTypeFamily(named: string): readonly string[] {
+  const lower = named.toLowerCase();
+  return (
+    NAMED_TYPE_FAMILIES.find((family) => (family as readonly string[]).includes(lower)) ?? [lower]
+  );
+}
+
+/** Whether an element of kind `type` answers to the caller-named type `named`. */
+export function answersToNamedType(type: string | undefined, named: string): boolean {
+  return type !== undefined && namedTypeFamily(named).includes(type.toLowerCase());
+}
+
 // ---------------------------------------------------------------------------
 // Structure: the predicates the dispatchers' arms test (control/element-arms.ts)
 // ---------------------------------------------------------------------------

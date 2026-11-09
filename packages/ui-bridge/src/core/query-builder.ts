@@ -13,6 +13,7 @@
 
 import { isInteractionBlocked, readInteractionBlockers } from './a11y';
 import type { UIBridgeRegistry } from './registry';
+import { answersToNamedType } from './element-kind';
 import type { RegisteredElement, ElementState, ElementType } from './types';
 
 /**
@@ -228,7 +229,9 @@ export class UIQuery {
   }
 
   /**
-   * Filter to elements with a specific ElementType in the registry.
+   * Filter to elements with a specific ElementType in the registry — or one
+   * of the kinds named the same way (`input` also an ARIA `textbox`; `select`
+   * also a `combobox` or `listbox`).
    */
   withType(type: ElementType): UIQuery {
     const parent = this.resolveElements;
@@ -237,7 +240,8 @@ export class UIQuery {
       for (const reg of this.registry.getAllElements()) {
         if (reg.mounted) registered.set(reg.element, reg);
       }
-      return parent().filter((el) => registered.get(el)?.type === type);
+      // The named type answers for its family (`core/element-kind`).
+      return parent().filter((el) => answersToNamedType(registered.get(el)?.type, type));
     });
   }
 

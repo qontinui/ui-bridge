@@ -63,7 +63,12 @@ import {
   scanDOMForInteractiveElementsWithRefs,
   countDOMInteractiveElements,
 } from './dom-fallback';
-import { matchesElementSelector, type MatchableElement } from './selector-match';
+import {
+  matchesElementSelector,
+  selectorTypeMatches,
+  type MatchableElement,
+} from './selector-match';
+import { answersToNamedType } from '../core/element-kind';
 import { buildComponentNotFoundError } from './component-not-found';
 import { describeInnerFailure } from './inner-failure';
 import {
@@ -3945,8 +3950,9 @@ export function createHandlers(
         // Apply type/role filters if specified
         let filteredElements = aiElements;
         if (criteria.type) {
-          filteredElements = filteredElements.filter(
-            ({ element }) => element.type.toLowerCase() === criteria.type!.toLowerCase()
+          // A named type answers for its family (`core/element-kind`).
+          filteredElements = filteredElements.filter(({ element }) =>
+            answersToNamedType(element.type, criteria.type!)
           );
         }
         if (criteria.role) {
@@ -6489,8 +6495,7 @@ export function createHandlers(
         if (selector.type) {
           const elType = (typeof el.type === 'string' ? el.type : '').toLowerCase();
           const elTag = (typeof el.tagName === 'string' ? el.tagName : '').toLowerCase();
-          const needle = selector.type.toLowerCase();
-          if (!elType.includes(needle) && !elTag.includes(needle)) return false;
+          if (!selectorTypeMatches(selector.type, elType, elTag)) return false;
         }
         // Delegate id/title/aria_label/text to the shared matcher so this stays
         // in lockstep with getElements / relay-handlers.

@@ -50,7 +50,13 @@ import {
   readInteractionBlockers,
 } from './a11y';
 import { createStableRef } from './stable-ref';
-import { inferActions, inferElementType, mediaElementKind } from './element-kind';
+import {
+  answersToNamedType,
+  impliedAriaRole,
+  inferActions,
+  inferElementType,
+  mediaElementKind,
+} from './element-kind';
 import {
   computeSnapshotIdentity,
   computeMountFold,
@@ -2201,7 +2207,7 @@ export class UIBridgeRegistry {
 
       // Role matching
       if (criteria.role) {
-        const role = element.element.getAttribute('role') || this.inferRole(element.type);
+        const role = element.element.getAttribute('role') || impliedAriaRole(element.type);
         if (role?.toLowerCase() === criteria.role.toLowerCase()) {
           scores.role = 1.0;
           if (1.0 > maxScore) {
@@ -2211,9 +2217,10 @@ export class UIBridgeRegistry {
         }
       }
 
-      // Type matching
+      // Type matching: the type a caller names answers for its whole family
+      // (`input` finds a role="textbox" too; `select`, a combobox).
       if (criteria.type) {
-        if (element.type === criteria.type) {
+        if (answersToNamedType(element.type, criteria.type)) {
           const typeScore = 0.9;
           scores.role = Math.max(scores.role ?? 0, typeScore);
           if (typeScore > maxScore) {
@@ -2345,41 +2352,6 @@ export class UIBridgeRegistry {
       id: element.id,
       labelText: element.label,
     });
-  }
-
-  /**
-   * Infer ARIA role from element type
-   */
-  private inferRole(type: ElementType): string | undefined {
-    const roleMap: Record<ElementType, string | undefined> = {
-      button: 'button',
-      input: 'textbox',
-      select: 'combobox',
-      checkbox: 'checkbox',
-      radio: 'radio',
-      link: 'link',
-      form: undefined,
-      textarea: 'textbox',
-      menu: 'menu',
-      menuitem: 'menuitem',
-      tab: 'tab',
-      dialog: 'dialog',
-      disclosure: 'group',
-      custom: undefined,
-      switch: 'switch',
-      slider: 'slider',
-      combobox: 'combobox',
-      listbox: 'listbox',
-      option: 'option',
-      textbox: 'textbox',
-      generic: undefined,
-      image: 'img',
-      video: undefined,
-      canvas: undefined,
-      svg: 'img',
-      picture: 'img',
-    };
-    return roleMap[type];
   }
 
   /**
