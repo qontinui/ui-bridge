@@ -817,9 +817,12 @@ counted:
 - a Tauri `invoke()` command (the runner UI's main channel to its
   backend), or a request the Rust side makes on the UI's behalf;
 - a call through a `fetch` reference a module captured before any
-  interceptor wrapped `window.fetch`. The first stub registration
-  installs one, and a network-request tracking command can install the
-  SDK's own earlier, which matches the same stubs.
+  stub-matching interceptor wrapped `window.fetch`. The first stub
+  registration installs one, and so does the SDK's relay
+  `getNetworkRequests` (`installNetworkInterceptor`, which reads the same
+  stub registry). The tracker that `GET /control/network-requests`
+  installs matches no stub, so a reference captured after it but before
+  the first stub registration still calls the real `fetch`.
 
 For those a count of 0 means "not counted", not "not sent". So this
 recipe applies only to a control whose request is a page `window.fetch`
