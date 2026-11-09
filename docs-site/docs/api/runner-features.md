@@ -1477,9 +1477,12 @@ below). The structural patterns (code injection, prototype pollution,
 cookie access, `window.open`, redirects and reloads, `crypto.subtle`)
 apply to every request. The four network patterns (`fetch(`, `XMLHttpRequest`,
 `navigator.sendBeacon`, `WebSocket`) apply unless the request sets
-`allowNetworkRequests: true`. Do not work around the guard: set the
-flag, or stub the request and trigger it through the UI (see "Network
-stubs" above). An agent-issued `page/evaluate` is never user evidence.
+`allowNetworkRequests: true`. The runner applies the same guard on both
+of its evaluate paths: the frontend handler, and the direct-eval
+fallback it takes when its IPC evaluate to the main window fails, which
+refuses with the same message and `hint`. Do not work around the guard:
+set the flag, or stub the request and trigger it through the UI (see
+"Network stubs" above). An agent-issued `page/evaluate` is never user evidence.
 
 ### Tauri command errors — JSON.stringify, not String
 
