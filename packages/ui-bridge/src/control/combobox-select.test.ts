@@ -162,10 +162,15 @@ describe('combobox select — one implementation behind both action paths', () =
       'executeElementAction',
       { id: entry.id, request: { action: 'select', value: 'shipped' } },
       bridge
-    )) as { success: boolean; error?: string };
+    )) as {
+      success: boolean;
+      error?: string;
+      failureDetails?: { context?: { refusal?: string } };
+    };
 
     expect(res.success).toBe(false);
-    expect(res.error).toContain('Cannot select on BUTTON');
+    expect(res.failureDetails?.context?.refusal).toBe('element-kind');
+    expect(res.error).toContain('select is not supported on <button>');
     expect(res.error).toContain('role="combobox"');
   });
 

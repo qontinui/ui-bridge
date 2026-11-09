@@ -216,6 +216,10 @@ const FIXTURES: Fixture[] = [
     html: `<input type="checkbox" role="switch" ${T}>`,
   },
   { name: '<button role="tab">', html: `<button role="tab" ${T}>t</button>` },
+  {
+    name: '<input type="number" role="spinbutton">',
+    html: `<input type="number" role="spinbutton" ${T}>`,
+  },
 
   // Media, registered through the media scanner.
   { name: '<canvas>', html: `<canvas ${T}></canvas>`, media: true },

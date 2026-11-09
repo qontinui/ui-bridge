@@ -196,6 +196,42 @@ describe('a media-fact filter never passes a row it cannot evaluate — and says
   });
 });
 
+describe('interactive_only never passes a media row, whatever it advertises', () => {
+  // Media rows read the verb table like every other row (a registered canvas
+  // takes `sendKeys`), so "has an action" no longer tells them apart. The
+  // predicate excludes them by their classification, exactly as it excludes
+  // content — the classification the contradiction refusal below and the
+  // executor's own media arm use.
+  const verbs = ['click', 'sendKeys', 'focus'];
+  const canvas = mediaRow('board', { mediaType: 'canvas' }, { type: 'canvas', actions: verbs });
+  const image = mediaRow('hero', {}, { actions: verbs });
+  // A canvas the INTERACTIVE scanner registered (a focusable one) is an
+  // interactive row of the canvas kind: what it counted as before, it still is.
+  const focusableCanvas: FindFilterableElement = {
+    id: 'game',
+    type: 'canvas',
+    actions: verbs,
+    category: 'interactive',
+    state: { visible: true },
+  };
+
+  it('drops media rows and keeps interactive ones', () => {
+    expect(
+      filterIds([button, canvas, image, focusableCanvas, heading], { interactiveOnly: true })
+    ).toEqual(['save', 'game']);
+  });
+
+  it('control: without interactive_only every row is kept', () => {
+    expect(filterIds([button, canvas, image, focusableCanvas, heading], {})).toEqual([
+      'save',
+      'board',
+      'hero',
+      'game',
+      'title',
+    ]);
+  });
+});
+
 describe('srcPattern reads the §4.6-scrubbed src', () => {
   it('cannot probe a URL inside a redaction boundary', () => {
     const redacted = mediaRow(

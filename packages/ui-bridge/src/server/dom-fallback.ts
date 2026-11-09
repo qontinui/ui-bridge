@@ -15,7 +15,8 @@ import {
   type RedactionVerdict,
 } from '../core/redaction';
 import { truncateCodePoints } from '../core/text';
-import type { StandardAction } from '../core/types';
+import type { ElementType, StandardAction } from '../core/types';
+import { inferActions, inferElementType } from '../core/element-kind';
 import {
   computeVisibleText,
   readAriaLabelAttr,
@@ -54,63 +55,6 @@ const INTERACTIVE_SELECTORS = [
 ];
 
 const COMBINED_SELECTOR = INTERACTIVE_SELECTORS.join(', ');
-
-/** Infer element type from a raw DOM element. */
-function inferType(el: HTMLElement): string {
-  const tag = el.tagName.toLowerCase();
-  const role = el.getAttribute('role');
-  if (role) return role;
-  if (tag === 'a') return 'link';
-  if (tag === 'button') return 'button';
-  if (tag === 'select') return 'select';
-  if (tag === 'textarea') return 'textarea';
-  if (tag === 'details' || tag === 'summary') return 'disclosure';
-  if (tag === 'input') {
-    const inputType = (el as HTMLInputElement).type?.toLowerCase() ?? 'text';
-    if (inputType === 'checkbox') return 'checkbox';
-    if (inputType === 'radio') return 'radio';
-    if (inputType === 'submit' || inputType === 'button' || inputType === 'reset') return 'button';
-    return 'input';
-  }
-  if (el.hasAttribute('contenteditable')) return 'textbox';
-  return 'interactive';
-}
-
-/**
- * Infer supported actions from element type. Typed `StandardAction[]` so a
- * misspelled verb is a compile error rather than a verb every executor refuses
- * (the same narrowing ui-bridge#333 gave the executor's list).
- */
-function inferActions(type: string): StandardAction[] {
-  switch (type) {
-    case 'button':
-      return ['click'];
-    case 'link':
-      return ['click'];
-    case 'input':
-    case 'textbox':
-    case 'textarea':
-      return ['click', 'type', 'clear', 'focus'];
-    case 'checkbox':
-    case 'radio':
-    case 'switch':
-    case 'disclosure':
-      return ['click', 'toggle'];
-    case 'select':
-    case 'combobox':
-    case 'listbox':
-      return ['click', 'select'];
-    case 'tab':
-    case 'menuitem':
-    case 'option':
-      return ['click'];
-    case 'slider':
-    case 'spinbutton':
-      return ['click', 'setValue'];
-    default:
-      return ['click'];
-  }
-}
 
 /** Get the accessible label for an element. */
 function getLabel(el: HTMLElement): string {
@@ -187,7 +131,7 @@ function generateId(el: HTMLElement, index: number): string {
 
   // Semantic fallback: tag + type + text snippet
   const tag = el.tagName.toLowerCase();
-  const type = inferType(el);
+  const type = inferElementType(el);
   const text = getLabel(el)
     .slice(0, 30)
     .replace(/[^a-zA-Z0-9]/g, '-')
@@ -201,9 +145,11 @@ function generateId(el: HTMLElement, index: number): string {
 
 export interface DOMFallbackElement {
   id: string;
-  type: string;
+  /** The ONE inferrer's kind (`core/element-kind`), as every other path reports it. */
+  type: ElementType;
   label: string;
-  actions: string[];
+  /** The kind's verbs plus the node's own (`core/element-kind` `inferActions`). */
+  actions: StandardAction[];
   visible: boolean;
   tagName: string;
   /**
@@ -283,7 +229,7 @@ export function scanDOMForInteractiveElementsWithRefs(
     }
     seenIds.add(id);
 
-    const type = inferType(el);
+    const type = inferElementType(el);
     const rect = el.getBoundingClientRect();
     // The interaction blockers, unfolded once (`enabled` below is the derived
     // fold). Same helper as the registry serializer and the click-path
@@ -304,7 +250,7 @@ export function scanDOMForInteractiveElementsWithRefs(
       id,
       type,
       label: computeDomFallbackLabel(el, verdict),
-      actions: inferActions(type),
+      actions: inferActions(type, el),
       visible: isVisible(el),
       tagName: el.tagName.toLowerCase(),
       state: {
