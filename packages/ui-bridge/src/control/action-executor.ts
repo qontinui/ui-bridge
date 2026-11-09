@@ -1326,6 +1326,17 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   /**
+   * The live node an unregistered id names, as `executeAction` would resolve
+   * it: the discovery cache (a `find()` / `discover()` row), else the DOM by
+   * identifier. `undefined` when neither holds a connected node.
+   */
+  private resolveUnregisteredNode(elementId: string): HTMLElement | undefined {
+    const cached = this.discoveryCache.get(elementId);
+    if (cached?.isConnected) return cached;
+    return findElementByIdentifier(elementId) ?? undefined;
+  }
+
+  /**
    * Execute an action on an element
    */
   async executeAction(
@@ -1357,7 +1368,18 @@ export class DefaultActionExecutor implements ActionExecutor {
       const isCtrTarget = !registered && getGlobalCtr().has(elementId);
       // A CTR target may go on to resolve, but only with a verb to run on it.
       if (!registered?.customActions?.[actionName] && (!isCtrTarget || !hasVerb)) {
-        const hint = unknownActionHintFor(hasVerb ? actionName : wireAction, registered?.id, registered);
+        // An id the registry does not hold may still name a node `find()` /
+        // `discover()` scanned (the discovery cache) or one the DOM resolves:
+        // the refusal lists THAT node's verbs, as its scanned row advertised
+        // them — not the global list, which suggested `sendKeys` for `press`
+        // on a scanned button.
+        const scanned = registered ? undefined : this.resolveUnregisteredNode(elementId);
+        const hint = unknownActionHintFor(
+          hasVerb ? actionName : wireAction,
+          registered?.id ?? (scanned ? elementId : undefined),
+          registered,
+          registered?.actions ?? (scanned ? inferActions(inferElementType(scanned), scanned) : [])
+        );
         const message = hint.message;
         return {
           success: false,

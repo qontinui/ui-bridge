@@ -78,7 +78,8 @@ const SYNONYMS_BY_FOLDED = new Map<string, readonly string[]>(
  * - A spelling-only difference is fixed (`sendkeys`, `send_keys` or
  *   ` sendKeys ` → `sendKeys`); see {@link foldVerb}.
  * - Otherwise the first synonym candidate the element accepts, spelled as the
- *   element spells it.
+ *   element spells it, the keyboard verbs' candidates ordered for the element
+ *   ({@link orderForElement}).
  * - Otherwise `undefined`.
  */
 export function suggestAction(requested: unknown, accepted: readonly string[]): string | undefined {
@@ -94,11 +95,33 @@ export function suggestAction(requested: unknown, accepted: readonly string[]): 
   }
   const spellingFixed = byFolded.get(folded);
   if (spellingFixed !== undefined) return spellingFixed;
-  for (const candidate of SYNONYMS_BY_FOLDED.get(folded) ?? []) {
+  for (const candidate of orderForElement(SYNONYMS_BY_FOLDED.get(folded) ?? [], byFolded)) {
     const match = byFolded.get(foldVerb(candidate));
     if (match !== undefined) return match;
   }
   return undefined;
+}
+
+/**
+ * The keyboard verbs' candidates (`press` → `sendKeys`, `click`), ordered by
+ * what the element is. Every web element accepts `sendKeys`, so the fixed
+ * order would answer `press` on a button with `sendKeys`. On an element that
+ * takes text entry — it accepts `type` — a key press is keyboard input, so
+ * `sendKeys` leads; on any other element `click` does. The synonym table keeps
+ * its one fixed order; only the suggestion reorders.
+ */
+function orderForElement(
+  candidates: readonly string[],
+  byFolded: ReadonlyMap<string, string>
+): readonly string[] {
+  if (byFolded.has(foldVerb('type'))) return candidates;
+  const keys = candidates.indexOf('sendKeys');
+  const click = candidates.indexOf('click');
+  if (keys === -1 || click === -1 || click < keys) return candidates;
+  const reordered = [...candidates];
+  reordered[keys] = 'click';
+  reordered[click] = 'sendKeys';
+  return reordered;
 }
 
 /** The structured half of an unknown-action refusal. */

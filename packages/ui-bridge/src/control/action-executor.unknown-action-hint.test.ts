@@ -71,6 +71,53 @@ describe('DefaultActionExecutor — unknown action', () => {
     expect('didYouMean' in (res.failureDetails?.context ?? {})).toBe(false);
   });
 
+  // Phase 4 of plan 2026-11-09-an-elements-advertised-verbs-depend-on-which-path-found-it:
+  // an id the registry does not hold but that RESOLVES — a find()/discover()
+  // row, or a node the DOM finds by identifier — gets its own verbs, as its
+  // scanned row advertised them, not the global list. Every element accepts
+  // `sendKeys`, so the global list answered `press` on a button with it.
+  it('`press` on a SCANNED button suggests `click`, from the row it was found by', async () => {
+    const button = document.createElement('button');
+    button.setAttribute('data-testid', 'scanned-save');
+    button.textContent = 'Save';
+    container.appendChild(button);
+    const found = await executor.find({ selector: '[data-testid="scanned-save"]' });
+    const row = found.elements[0];
+    expect(row.registered).toBe(false);
+    expect(row.actions).toContain('sendKeys');
+
+    const res = await executor.executeAction(row.id, { action: 'press' });
+
+    expect(res.success).toBe(false);
+    expect(res.failureDetails?.errorCode).toBe('UB-UNSUPPORTED-ACTION');
+    expect(res.failureDetails?.context).toEqual({
+      action: 'press',
+      didYouMean: 'click',
+      supportedActions: row.actions,
+    });
+    expect(res.error).toBe(
+      `Unknown action 'press' for element '${row.id}'. ` +
+        `This element accepts: ${row.actions.join(', ')}. Did you mean 'click'?`
+    );
+  });
+
+  it('`press` on a scanned text input suggests `sendKeys`, resolved from the DOM', async () => {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.setAttribute('data-testid', 'scanned-name');
+    container.appendChild(input);
+
+    // Never found or registered: the gate resolves it by identifier.
+    const res = await executor.executeAction('scanned-name', { action: 'press' });
+
+    expect(res.failureDetails?.errorCode).toBe('UB-UNSUPPORTED-ACTION');
+    expect(res.failureDetails?.context).toMatchObject({ didYouMean: 'sendKeys' });
+    expect(res.failureDetails?.context?.supportedActions).toContain('type');
+    expect(res.error).toMatch(
+      /^Unknown action 'press' for element 'scanned-name'\. This element accepts: /
+    );
+  });
+
   it('an unregistered target gets the built-in list and still a suggestion', async () => {
     const res = await executor.executeAction('nowhere', { action: 'dblclick' });
     expect(res.error).toMatch(/^Unknown action 'dblclick'\. Supported: click, hoverClick, /);
