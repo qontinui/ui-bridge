@@ -167,10 +167,10 @@ version = 1
 # > recorded it as a bare `{"dev": true}` stub — a package npm could not read —
 # > and, because that phantom won the hoist at `node_modules/@qontinui/`, the
 # > real sibling was forced into a duplicate nested link under
-# > `packages/ui-bridge/node_modules/`. The optional peer dependency that
-# > `packages/ui-bridge/src/control/action-executor.ts` then delegated DOM
-# > actions to was therefore unresolvable from the monorepo root on a
-# > correctly-laid-out dev box. That is fixed in the same PR as this note; the
+# > `packages/ui-bridge/node_modules/`. The package `packages/ui-bridge` then
+# > declared as an optional peer dependency was therefore unresolvable from the
+# > monorepo root on a correctly-laid-out dev box (by then the executor no longer
+# > imported it; it read only a host-set global). That is fixed in the same PR as this note; the
 # > phantom lock entry and the duplicate nested link are both gone.
 #
 # Still NO [[siblings]] declaration, and the reason is unchanged by that fix:
