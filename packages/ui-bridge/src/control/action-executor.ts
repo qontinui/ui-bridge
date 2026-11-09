@@ -3,49 +3,11 @@
  *
  * Executes actions on registered elements and components.
  *
- * When @qontinui/ui-bridge-auto is available (optional peer dep), DOM action
- * execution delegates to its canonical perform* functions. This ensures a
- * single source of truth for action semantics across the ecosystem.
- * When ui-bridge-auto is not installed, falls back to inline implementations.
+ * Every DOM action this executor performs is dispatched to its own `perform*`
+ * methods (and the `control/` helpers they call). `@qontinui/ui-bridge-auto`
+ * has its own `performAction` for that package's direct consumers; this
+ * executor never hands an action to it.
  */
-
-type PerformActionFn = (
-  element: HTMLElement,
-  action: string,
-  params?: Record<string, unknown>
-) => Promise<void>;
-let _canonicalPerformAction: PerformActionFn | null | undefined;
-
-interface UIBridgeAutoModule {
-  performAction?: PerformActionFn;
-}
-
-function getCanonicalPerformAction(): PerformActionFn | null {
-  if (_canonicalPerformAction !== undefined) return _canonicalPerformAction;
-  let mod: UIBridgeAutoModule | undefined;
-  if (typeof globalThis !== 'undefined') {
-    const g = globalThis as Record<string, unknown>;
-    const direct = g.__QONTINUI_UI_BRIDGE_AUTO__;
-    if (direct && typeof direct === 'object') {
-      mod = direct as UIBridgeAutoModule;
-    } else {
-      const loader = g.__QONTINUI_UI_BRIDGE_AUTO_LOADER__;
-      if (typeof loader === 'function') {
-        try {
-          const loaded = (loader as () => unknown)();
-          if (loaded && typeof loaded === 'object') {
-            mod = loaded as UIBridgeAutoModule;
-          }
-        } catch {
-          mod = undefined;
-        }
-      }
-    }
-  }
-  _canonicalPerformAction =
-    mod && typeof mod.performAction === 'function' ? mod.performAction : null;
-  return _canonicalPerformAction;
-}
 
 import { pageScrollContainer } from './page-scroll-container';
 import type { UIBridgeRegistry } from '../core/registry';
@@ -2931,18 +2893,12 @@ export class DefaultActionExecutor implements ActionExecutor {
     }
 
     // `hoverClick` is a SDK-native composite action (hover-reveal → click).
-    // It is intentionally handled here, BEFORE delegating to ui-bridge-auto:
-    // ui-bridge-auto's `performAction` has no `hoverClick` case and would throw
-    // "Unknown action". Keeping it inline guarantees the behavior regardless of
-    // whether the optional auto package is installed.
     if (action === 'hoverClick') {
       return this.performHoverClick(element, params);
     }
 
     // `hover` / `unhover` force and release the real CSS `:hover` state
-    // (`forced-hover.ts`). Handled here, before the canonical delegation, for
-    // the same reason as `hoverClick`: ui-bridge-auto's `hover` only fires
-    // synthetic events, which never set `:hover`, and it has no `unhover`.
+    // (`forced-hover.ts`).
     if (action === 'hover') {
       return this.performForcedHover(element, params);
     }
@@ -2952,26 +2908,6 @@ export class DefaultActionExecutor implements ActionExecutor {
       return out;
     }
 
-    // Delegate to ui-bridge-auto's canonical action implementation if available.
-    // This ensures a single source of truth for action semantics.
-    const canonical = getCanonicalPerformAction();
-    if (canonical) {
-      // Inject a resolver so ui-bridge-auto can look up target.elementId via our
-      // registry (drag actions take { target: { elementId } } descriptors).
-      const enriched =
-        action === 'drag' && params && !('resolveElement' in params)
-          ? {
-              ...params,
-              resolveElement: (id: string): HTMLElement | null => {
-                const reg = this.registry.getElement(id);
-                return reg?.element ?? findElementByIdentifier(id);
-              },
-            }
-          : params;
-      return canonical(element, action, enriched);
-    }
-
-    // Fallback: inline implementations (used when ui-bridge-auto is not installed).
     // There is deliberately no implicit parent-hover before an action: a
     // hover-revealed control is driven by an explicit `hover` (or
     // `hoverClick`), which forces the real CSS state instead of guessing at
@@ -3004,8 +2940,8 @@ export class DefaultActionExecutor implements ActionExecutor {
         // Already-in-viewport short-circuit: return success without calling
         // the underlying scroll so a pre-click "scroll into view" never logs
         // as a confusing failure when the element is already on screen.
-        // Mirrors `performScrollIntoView` in @qontinui/ui-bridge-auto so both
-        // execution paths report the same shape.
+        // `performScrollIntoView` in @qontinui/ui-bridge-auto returns the same
+        // shape.
         if (
           typeof window !== 'undefined' &&
           window.innerWidth > 0 &&
