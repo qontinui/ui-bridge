@@ -45,24 +45,24 @@ buttons in the nav").
 The body is a `SearchCriteria` object. **At least one criterion** is
 required; all are optional and combined with AND.
 
-| Field            | Type                    | Notes                                                                 |
-| ---------------- | ----------------------- | --------------------------------------------------------------------- |
-| `text`           | `string`                | Exact visible-text match (e.g. `"Start Extraction"`).                 |
-| `textContains`   | `string`                | Partial visible-text match (substring).                               |
-| `accessibleName` | `string`                | Accessible-name match (`aria-label`, associated `<label>`).           |
-| `placeholder`    | `string`                | Input placeholder text.                                               |
-| `role`           | `string`                | ARIA role: `"button"`, `"link"`, `"textbox"`, etc.                    |
-| `type`           | `ElementType`           | Element type — narrower than `role` (e.g. `"input"`, `"select"`).     |
-| `idPattern`      | `string`                | Element-id pattern, supports `*` wildcards.                           |
-| `selector`       | `string`                | CSS selector applied to the rendered DOM.                             |
-| `xpath`          | `string`                | XPath expression.                                                     |
-| `dataAttributes` | `Record<string,string>` | Match `data-*` attributes by exact value.                             |
-| `near`           | `string`                | Spatial proximity hint (e.g. `"near the URL input"`).                 |
-| `within`         | `string`                | Container hint (e.g. `"within the login form"`).                      |
-| `fuzzy`          | `boolean`               | Enable fuzzy matching. Default `true` when `text`/`textContains` set. |
-| `fuzzyThreshold` | `number`                | Confidence floor for fuzzy matches, `0..1`. Default `0.7`.            |
-| `includeContent` | `boolean`               | Include non-interactive content elements in results.                  |
-| `contentOnly`    | `boolean`               | Restrict to content elements (paragraphs, headings, etc.).            |
+| Field            | Type                    | Notes                                                                                                                                                 |
+| ---------------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `text`           | `string`                | Exact visible-text match (e.g. `"Start Extraction"`).                                                                                                 |
+| `textContains`   | `string`                | Partial visible-text match (substring).                                                                                                               |
+| `accessibleName` | `string`                | Accessible-name match (`aria-label`, associated `<label>`).                                                                                           |
+| `placeholder`    | `string`                | Input placeholder text.                                                                                                                               |
+| `role`           | `string`                | ARIA role: `"button"`, `"link"`, `"textbox"`, etc.                                                                                                    |
+| `type`           | `ElementType`           | Element type — narrower than `role` (e.g. `"input"`, `"select"`). `"input"` also matches `"textbox"`, and `"select"` also `"combobox"` / `"listbox"`. |
+| `idPattern`      | `string`                | Element-id pattern, supports `*` wildcards.                                                                                                           |
+| `selector`       | `string`                | CSS selector applied to the rendered DOM.                                                                                                             |
+| `xpath`          | `string`                | XPath expression.                                                                                                                                     |
+| `dataAttributes` | `Record<string,string>` | Match `data-*` attributes by exact value.                                                                                                             |
+| `near`           | `string`                | Spatial proximity hint (e.g. `"near the URL input"`).                                                                                                 |
+| `within`         | `string`                | Container hint (e.g. `"within the login form"`).                                                                                                      |
+| `fuzzy`          | `boolean`               | Enable fuzzy matching. Default `true` when `text`/`textContains` set.                                                                                 |
+| `fuzzyThreshold` | `number`                | Confidence floor for fuzzy matches, `0..1`. Default `0.7`.                                                                                            |
+| `includeContent` | `boolean`               | Include non-interactive content elements in results.                                                                                                  |
+| `contentOnly`    | `boolean`               | Restrict to content elements (paragraphs, headings, etc.).                                                                                            |
 
 > **Common mistake:** the documented `{ query, filters, limit }`
 > envelope from earlier docs is **partially wired**. `query` is mapped
@@ -114,7 +114,21 @@ wrapping a `SearchResponse`:
           "tagName": "button",
           "type": "button",
           "semanticType": "action-button",
-          "actions": ["focus", "blur", "click", "hover", "middleClick"],
+          "actions": [
+            "click",
+            "hoverClick",
+            "doubleClick",
+            "rightClick",
+            "middleClick",
+            "sendKeys",
+            "focus",
+            "blur",
+            "hover",
+            "unhover",
+            "scroll",
+            "scrollIntoView",
+            "drag"
+          ],
           "aliases": ["btn", "home", "main", "click", "start", "button", "dashboard"],
           "description": "\"Home\" button",
           "labelText": "Home",

@@ -245,7 +245,11 @@ The bare `/element/:id`:
 {
   "id": "input-foo",
   "type": "input",
-  "actions": ["focus", "blur", "type", "clear", "click"],
+  "actions": [
+    "click", "hoverClick", "doubleClick", "rightClick", "middleClick",
+    "type", "sendKeys", "clear", "focus", "blur", "hover", "unhover",
+    "scroll", "scrollIntoView", "setValue", "drag", "autocomplete"
+  ],
   "state": {
     "value": "user@example.com",
     "visible": true,
@@ -369,17 +373,19 @@ If an action returns `success: false` with `error: "... requires a 'X' parameter
 > the verb is absent from THAT element's list — not that the verb is unknown to
 > the bridge.
 
-> **Auto-registered inputs now advertise `setValue` and `sendKeys`.** Because
-> that list is enforced, a verb missing from it is unreachable even when the
-> SDK implements it — and the inferred lists were missing several that it does.
-> An element the bridge typed automatically (rather than one declaring its own
-> `actions`) now advertises:
->
-> | Inferred type | Added |
-> |---|---|
-> | `input`, `textarea` | `setValue`, `sendKeys` |
-> | `select` | `setValue` (not `type` / `clear`, which only mutate input/textarea values) |
-> | `form` | `submit`, `reset` |
+> **One list, whichever path found the element.** Because that list is
+> enforced, it must name exactly what the SDK performs: a verb missing from it
+> is unreachable, and a verb it names but the SDK refuses tells an agent to do
+> something that fails. Auto-registration, `registerElement` without `actions`,
+> `find()` / `discover()` rows and the DOM fallback used to infer it four
+> different ways; they now read one table (see
+> [Actions](../concepts/actions.md)). So an auto-registered `<input>` advertises
+> `setValue`, `sendKeys` and `autocomplete`, a `<form>` (or a control a form
+> owns) `submit` and `reset`, a `role="switch"` `toggle`, and every element —
+> a canvas included — `sendKeys`. A verb an element does not list is refused
+> with `failureDetails.context.refusal: "element-kind"` instead of reported as a
+> success that did nothing (`clear` on a `<div>`, `check` on a text field,
+> `toggle` on a plain button).
 >
 > If you previously worked around `UNSUPPORTED_ACTION` on an input — driving it
 > with `type` plus a `clear`, or declaring `actions` by hand purely to get
@@ -869,7 +875,11 @@ lives at `data.element`; runner-up candidates (if any) live at
       "tagName": "button",
       "type": "button",
       "semanticType": "action-button",
-      "actions": ["focus", "blur", "click", "hover", "middleClick"],
+      "actions": [
+        "click", "hoverClick", "doubleClick", "rightClick", "middleClick",
+        "sendKeys", "focus", "blur", "hover", "unhover", "scroll",
+        "scrollIntoView", "drag"
+      ],
       "aliases": ["btn", "home", "main", "click", "start", "button", "dashboard"],
       "description": "\"Home\" button",
       "labelText": "Home",

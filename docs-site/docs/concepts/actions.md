@@ -8,46 +8,43 @@ Actions are operations that can be performed on UI elements. UI Bridge provides 
 
 ## Standard Actions
 
-These actions are automatically available based on element type:
+An element's `actions` list names exactly what both action paths — the SDK/HTTP
+executor and the relay — perform on it. A built-in verb the element does not
+list is refused, with `failureDetails.context.refusal: "element-kind"` on the
+failure, never reported as a success that did nothing. The list is the same
+whichever way the element was found: `registerElement` without an `actions`
+option, auto-registration, `find()` / `discover()`, or the server's DOM
+fallback.
 
-### Button Actions
+### Every element
 
-| Action        | Description                |
-| ------------- | -------------------------- |
-| `click`       | Click the button           |
-| `doubleClick` | Double-click the button    |
-| `rightClick`  | Right-click (context menu) |
-| `focus`       | Focus the button           |
-| `blur`        | Remove focus               |
-| `hover`       | Hover over the button      |
+| Action                                              | Description                                                      |
+| --------------------------------------------------- | ---------------------------------------------------------------- |
+| `click`, `doubleClick`, `rightClick`, `middleClick` | Pointer clicks (refused while the element is hidden or disabled) |
+| `hoverClick`                                        | Force the CSS `:hover` state, then click                         |
+| `hover`, `unhover`                                  | Force / release the CSS `:hover` state                           |
+| `focus`, `blur`                                     | Focus / remove focus                                             |
+| `scroll`, `scrollIntoView`                          | Scroll the element's container / bring the element on screen     |
+| `sendKeys`                                          | Key events to the element: a canvas, a terminal pane, an editor  |
+| `drag`                                              | Drag to a position or onto another element                       |
 
-### Input Actions
+### By what the element is
 
-| Action  | Description              |
-| ------- | ------------------------ |
-| `click` | Click the input          |
-| `type`  | Type text into the input |
-| `clear` | Clear the input value    |
-| `focus` | Focus the input          |
-| `blur`  | Remove focus             |
+| Element                                                                        | Adds                                        |
+| ------------------------------------------------------------------------------ | ------------------------------------------- |
+| Text `<input>` (text, search, email, url, tel, password, number), `<textarea>` | `type`, `clear`, `setValue`, `autocomplete` |
+| Range, colour, date/time or hidden `<input>`                                   | `setValue`                                  |
+| `<select>`                                                                     | `select`, `setValue`                        |
+| `role="combobox"`, or a control carrying `aria-expanded`                       | `select`                                    |
+| Checkbox `<input>`, `role="checkbox"`, `role="switch"`                         | `check`, `uncheck`, `toggle`                |
+| Radio `<input>`                                                                | `check`, `uncheck`                          |
+| `role="radio"`                                                                 | `check`                                     |
+| `<details>`, its `<summary>`, `<dialog>`, a control carrying `aria-expanded`   | `toggle`                                    |
+| A `<form>`, or any element inside one or owned by one through `form="…"`       | `submit`, `reset`                           |
 
-### Select Actions
-
-| Action   | Description      |
-| -------- | ---------------- |
-| `click`  | Click the select |
-| `select` | Select an option |
-| `focus`  | Focus the select |
-| `blur`   | Remove focus     |
-
-### Checkbox/Radio Actions
-
-| Action    | Description            |
-| --------- | ---------------------- |
-| `click`   | Toggle the checkbox    |
-| `check`   | Check (set to true)    |
-| `uncheck` | Uncheck (set to false) |
-| `toggle`  | Toggle current state   |
+An ARIA textbox (`role="textbox"`, or a contenteditable element) takes none of
+the value verbs: `sendKeys` is how it is typed into. A file `<input>` takes none
+of them either.
 
 ## Using Actions
 
