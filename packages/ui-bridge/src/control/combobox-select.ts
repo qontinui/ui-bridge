@@ -33,8 +33,10 @@
  */
 
 import { readAriaLabelAttr } from '../core/a11y';
-import type { SelectAction } from './types';
+import { hasExpandedState } from '../core/element-kind';
+import type { AutocompleteAction, SelectAction } from './types';
 import { sdkDispatch } from '../core/sdk-dispatch';
+import { applyValueMutation } from './value-mutation';
 
 /** Why a combobox select could not be completed. */
 export type ComboboxSelectFailure =
@@ -64,7 +66,9 @@ const DROPDOWN_ATTEMPT_INTERVAL_MS = 50;
  * used since the combobox arm was added.
  */
 export function isComboboxLike(element: HTMLElement): boolean {
-  return element.getAttribute('role') === 'combobox' || element.hasAttribute('aria-expanded');
+  // `hasExpandedState` is the predicate `core/element-kind` advertises `select`
+  // from on a node that is not a combobox by role.
+  return element.getAttribute('role') === 'combobox' || hasExpandedState(element);
 }
 
 /**
@@ -276,4 +280,48 @@ export function comboboxSelect(
       setTimeout(tryFindOption, 0);
     }
   });
+}
+
+/** Gap between suggestion-popup lookups while an autocomplete waits, in ms. */
+const SUGGESTION_POLL_INTERVAL_MS = 100;
+
+/**
+ * ONE implementation of `autocomplete`, for both dispatchers: type the search
+ * text into the field, wait for the suggestion popup, and click the suggestion
+ * matching `selectValue` (else the search text itself). The popup is found the
+ * way a combobox's is ({@link findOpenDropdown}).
+ *
+ * The caller has already checked the field is a text field and that
+ * `searchText` is present. Never silently successful: a popup that never
+ * offers the value is a typed failure, as for {@link comboboxSelect}.
+ */
+export async function autocompleteSelect(
+  field: HTMLInputElement | HTMLTextAreaElement,
+  options: Pick<AutocompleteAction, 'searchText' | 'suggestionTimeout' | 'clear'> & {
+    selectValue?: string;
+  }
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  const timeout = options.suggestionTimeout ?? 2000;
+  const selectValue = options.selectValue || options.searchText;
+
+  if (options.clear !== false) {
+    applyValueMutation(field, { value: '', mode: 'clear', blur: false });
+  }
+  applyValueMutation(field, { value: options.searchText, mode: 'append', blur: false });
+
+  const startTime = Date.now();
+  while (Date.now() - startTime < timeout) {
+    await new Promise((r) => setTimeout(r, SUGGESTION_POLL_INTERVAL_MS));
+    const dropdown = findOpenDropdown(field);
+    if (!dropdown) continue;
+    const match = findDropdownOption(dropdown, selectValue);
+    if (match) {
+      sdkDispatch(() => match.click());
+      return { ok: true };
+    }
+  }
+  return {
+    ok: false,
+    message: `Autocomplete: no matching suggestion for "${selectValue}" within ${timeout}ms`,
+  };
 }

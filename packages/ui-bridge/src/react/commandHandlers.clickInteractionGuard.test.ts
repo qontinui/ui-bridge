@@ -36,6 +36,7 @@ type ActionResult = {
     errorCode?: string;
     elementState?: Record<string, unknown>;
     suggestedActions?: Array<{ command?: string }>;
+    context?: { action?: string; refusal?: string };
   };
 };
 
@@ -296,52 +297,36 @@ describe('relay click-like pre-check agrees with ElementState.enabled', () => {
     });
   }
 
-  it("submit's no-form click fallback answers to the same refusal as click", async () => {
-    // Positive control: an unblocked form-less control is clicked.
-    const free = button('submit-free');
-    container.appendChild(free);
-    getGlobalRegistry().registerElement('el-submit-free', free, { type: 'button' });
-    let freeClicked = false;
-    free.addEventListener('click', () => {
-      freeClicked = true;
-    });
-    expect((await relay('el-submit-free', 'submit')).success).toBe(true);
-    expect(freeClicked).toBe(true);
+  it('submit with no owner form is the typed refusal and clicks nothing — no route around the guard', async () => {
+    // `submit` on a form-less control used to fall back to a CLICK, which made
+    // it a second door to `click` that the guard above had to cover. It is the
+    // typed element-kind refusal now, as on the HTTP executor, so it clicks
+    // nothing whether or not the control is clickable.
+    for (const [id, block] of [
+      ['submit-free', (_el: HTMLButtonElement) => {}],
+      ['submit-blocked', (el: HTMLButtonElement) => (el.style.pointerEvents = 'none')],
+      ['submit-aria', (el: HTMLButtonElement) => el.setAttribute('aria-disabled', 'true')],
+    ] as const) {
+      const el = button(id);
+      block(el);
+      container.appendChild(el);
+      getGlobalRegistry().registerElement(`el-${id}`, el, { type: 'button' });
+      let clicked = false;
+      el.addEventListener('click', () => {
+        clicked = true;
+      });
 
-    const blocked = button('submit-blocked');
-    blocked.style.pointerEvents = 'none';
-    container.appendChild(blocked);
-    getGlobalRegistry().registerElement('el-submit-blocked', blocked, { type: 'button' });
-    let blockedClicked = false;
-    blocked.addEventListener('click', () => {
-      blockedClicked = true;
-    });
+      const result = await relay(`el-${id}`, 'submit');
 
-    const result = await relay('el-submit-blocked', 'submit');
-
-    expect(result.success).toBe(false);
-    expect(result.failureDetails?.errorCode).toBe('ELEMENT_NOT_ENABLED');
-    expect(result.error).toContain('pointer-events:none');
-    expect(result.error).toContain('submit was not dispatched');
-    expect(result.failureDetails?.suggestedActions?.[0]?.command).toBe('hoverClick');
-    expect(blockedClicked).toBe(false);
-
-    // The aria-disabled arm: refused too, and it is not hover advice.
-    const aria = button('submit-aria');
-    aria.setAttribute('aria-disabled', 'true');
-    container.appendChild(aria);
-    getGlobalRegistry().registerElement('el-submit-aria', aria, { type: 'button' });
-    let ariaClicked = false;
-    aria.addEventListener('click', () => {
-      ariaClicked = true;
-    });
-    const ariaResult = await relay('el-submit-aria', 'submit');
-    expect(ariaResult.success).toBe(false);
-    expect(ariaResult.error).toContain('aria-disabled=true');
-    expect(ariaResult.failureDetails?.suggestedActions?.map((a) => a.command)).not.toContain(
-      'hoverClick'
-    );
-    expect(ariaClicked).toBe(false);
+      expect(result.success, id).toBe(false);
+      expect(result.failureDetails?.errorCode, id).toBe('UNSUPPORTED_ACTION');
+      expect(result.failureDetails?.context, id).toEqual({
+        action: 'submit',
+        refusal: 'element-kind',
+      });
+      expect(result.error, id).toContain('has no owner form');
+      expect(clicked, id).toBe(false);
+    }
   });
 
   it('submit inside a form still submits; reset outside a form is refused, not a silent success', async () => {
