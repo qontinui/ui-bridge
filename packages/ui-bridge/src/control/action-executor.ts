@@ -3923,12 +3923,17 @@ export class DefaultActionExecutor implements ActionExecutor {
     }
   }
 
-  private inferActions(element: HTMLElement): string[] {
+  // Typed `StandardAction[]`, not `string[]`: these verbs are advertised by
+  // discovery (`actions`) and listed by the unknown-verb refusal, so a
+  // misspelled one would be a verb the executor itself refuses. The compiler
+  // holds them to the union; `action-executor.verbParity.test.ts` holds the
+  // union to `SUPPORTED_ACTIONS` and to `performAction`'s fallback dispatch.
+  private inferActions(element: HTMLElement): StandardAction[] {
     const type = this.inferElementType(element);
     // `hoverClick` is advertised alongside `click` on every clickable type so a
     // hover-gated control (pointer-events:none until group-hover) is drivable
     // in one call without a page/evaluate workaround.
-    const baseActions = [
+    const baseActions: StandardAction[] = [
       'focus',
       'blur',
       'hover',
