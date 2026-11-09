@@ -2224,7 +2224,12 @@ export async function executeCommand(
           }
           default: {
             const custom = Object.keys(registered?.customActions ?? {});
-            const own = [...(registered?.actions ?? []), ...custom];
+            // Only what THIS door runs: an element may advertise a verb this
+            // switch has no case for, and suggesting it would earn a second refusal.
+            const own = [
+              ...(registered?.actions ?? []).filter((verb) => RELAY_ELEMENT_ACTIONS.includes(verb)),
+              ...custom,
+            ];
             const hint = describeUnknownAction(request.action, {
               elementId: registered?.id,
               accepted: own.length > 0 ? own : [...RELAY_ELEMENT_ACTIONS, ...custom],

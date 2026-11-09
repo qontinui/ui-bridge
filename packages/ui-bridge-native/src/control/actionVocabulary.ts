@@ -18,8 +18,8 @@
  * DELIBERATELY NOT AN IMPORT. `@qontinui/ui-bridge` is an OPTIONAL
  * peerDependency of this package (see the header of `core/abortable.ts`), so a
  * consumer may install `@qontinui/ui-bridge-native` alone. The runner's
- * Phase 1 copy (in flight, `src-tauri/src/mcp/ui_bridge/action_vocabulary.rs`)
- * will mirror this table. Each copy's tests assert the entries as literals; keep
+ * copy (`src-tauri/src/mcp/ui_bridge/action_vocabulary.rs`) carries the same
+ * table. Each copy's tests assert the entries as literals; keep
  * them in sync.
  */
 
@@ -67,6 +67,9 @@ const SYNONYMS_BY_LOWER = new Map<string, readonly string[]>(
  * - Otherwise `undefined`.
  */
 export function suggestAction(requested: string, accepted: readonly string[]): string | undefined {
+  // The verb arrives off the wire: a body with no `action` must be refused,
+  // not crash here on `.toLowerCase()`.
+  if (typeof requested !== 'string') return undefined;
   if (accepted.includes(requested)) return undefined;
   const lower = requested.toLowerCase();
   const byLower = new Map(accepted.map((verb) => [verb.toLowerCase(), verb]));

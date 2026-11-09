@@ -16,8 +16,8 @@
  *
  * `@qontinui/ui-bridge-native` keeps a package-local copy
  * (`src/control/actionVocabulary.ts`), because `@qontinui/ui-bridge` is only
- * an optional peer of that package. The runner's Phase 1 copy (in flight,
- * `src-tauri/src/mcp/ui_bridge/action_vocabulary.rs`) will mirror this table. Each
+ * an optional peer of that package. The runner carries the same table in
+ * `src-tauri/src/mcp/ui_bridge/action_vocabulary.rs`. Each
  * copy's tests assert the entries as literals; keep them in sync.
  */
 
@@ -65,6 +65,9 @@ const SYNONYMS_BY_LOWER = new Map<string, readonly string[]>(
  * - Otherwise `undefined`.
  */
 export function suggestAction(requested: string, accepted: readonly string[]): string | undefined {
+  // The verb arrives off the wire: a body with no `action` must be refused,
+  // not crash here on `.toLowerCase()`.
+  if (typeof requested !== 'string') return undefined;
   if (accepted.includes(requested)) return undefined;
   const lower = requested.toLowerCase();
   const byLower = new Map(accepted.map((verb) => [verb.toLowerCase(), verb]));

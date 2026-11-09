@@ -585,14 +585,22 @@ export function createHandlers(
             errorCode = 'UB-ELEM-NOT-INTERACTABLE';
           }
 
-          const failureDetails = createFailureDetails(
-            errorCode,
-            actionResult.error || 'Action failed',
-            {
+          // An unknown-verb refusal already says what it is, and its context
+          // carries `supportedActions` / `didYouMean`. Sniffing its message would
+          // drop those and read the element id and verb list it now names (an id
+          // containing `hidden` would become a retryable UB-ELEM-NOT-VISIBLE).
+          const executorDetails = (actionResult as { failureDetails?: ActionFailureDetails })
+            .failureDetails;
+          const unsupported =
+            executorDetails?.errorCode === 'UB-UNSUPPORTED-ACTION' ? executorDetails : undefined;
+          if (unsupported) errorCode = unsupported.errorCode;
+
+          const failureDetails =
+            unsupported ??
+            createFailureDetails(errorCode, actionResult.error || 'Action failed', {
               elementId: id,
               durationMs: Date.now() - startTime,
-            }
-          );
+            });
 
           // Return a proper failure envelope — don't wrap in success() which
           // creates double-wrapping: {success: true, data: {success: false}}

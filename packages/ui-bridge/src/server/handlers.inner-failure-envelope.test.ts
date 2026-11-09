@@ -58,6 +58,47 @@ describe('direct executeElementAction · an executor failure is an OUTER failure
     expect(data.failureDetails?.errorCode).toBeTruthy();
   });
 
+  it('an unknown verb keeps its typed refusal and hint through the door', async () => {
+    const host = document.createElement('button');
+    container.appendChild(host);
+    // `hidden` in the id: the message now names the id, so a message sniff would
+    // turn this into a retryable UB-ELEM-NOT-VISIBLE.
+    registry.registerElement('sidebar.hidden-toggle', host, {
+      type: 'button',
+      actions: ['click', 'focus'],
+    });
+
+    const result = await handlers.executeElementAction!('sidebar.hidden-toggle', {
+      action: 'press',
+    });
+
+    expect(result.success).toBe(false);
+    expect((result as { code?: string }).code).toBe('UB-UNSUPPORTED-ACTION');
+    const details = (
+      result.data as {
+        failureDetails?: {
+          errorCode?: string;
+          retryRecommended?: boolean;
+          context?: { didYouMean?: string; supportedActions?: string[] };
+        };
+      }
+    ).failureDetails;
+    expect(details?.errorCode).toBe('UB-UNSUPPORTED-ACTION');
+    expect(details?.context?.didYouMean).toBe('click');
+    expect(details?.context?.supportedActions).toEqual(['click', 'focus']);
+  });
+
+  it('a body with no action is refused, not crashed on', async () => {
+    const host = document.createElement('button');
+    container.appendChild(host);
+    registry.registerElement('save', host, { type: 'button', actions: ['click'] });
+
+    const result = await handlers.executeElementAction!('save', {} as { action: string });
+
+    expect(result.success).toBe(false);
+    expect(String(result.error)).not.toContain('toLowerCase');
+  });
+
   it("a custom-action handler's typed throw keeps its own code on the envelope", async () => {
     const host = document.createElement('div');
     container.appendChild(host);
