@@ -219,6 +219,28 @@ const RELAY_ELEMENT_ACTIONS: readonly string[] = [
   'sendKeys',
   'drag',
 ];
+
+/**
+ * The verbs an unknown-verb refusal may list (and suggest) on this door: the
+ * element's advertised actions that this relay actually runs, plus its custom
+ * actions, so the suggestion is never a verb the relay would refuse in turn.
+ * The switch below runs any verb it has a case for, whatever the element
+ * advertises, so when the element advertises no verb the relay runs AND has no
+ * custom actions (a content or media element, whose registry entry carries
+ * `actions: []`, or one advertising only verbs the relay has no case for) the
+ * refusal lists every verb the relay runs. An element with custom actions but
+ * no runnable advertised verb lists only those, as the HTTP executor does.
+ */
+function relayAcceptedVerbs(
+  registered: { actions?: readonly string[]; customActions?: Record<string, unknown> } | undefined
+): string[] {
+  const custom = Object.keys(registered?.customActions ?? {});
+  const own = [
+    ...(registered?.actions ?? []).filter((verb) => RELAY_ELEMENT_ACTIONS.includes(verb)),
+    ...custom,
+  ];
+  return own.length > 0 ? own : [...RELAY_ELEMENT_ACTIONS, ...custom];
+}
 /** Browser-side global __UI_BRIDGE__ */
 interface UIBridgeGlobal {
   browserCapture?: BrowserCapture;
@@ -1857,15 +1879,10 @@ export async function executeCommand(
       // {"toString":"x"} throws on that coercion, and the catch below would
       // throw it again on release.
       if (typeof (request as { action?: unknown } | undefined)?.action !== 'string') {
-        const custom = Object.keys(registered?.customActions ?? {});
-        const own = [
-          ...(registered?.actions ?? []).filter((verb) => RELAY_ELEMENT_ACTIONS.includes(verb)),
-          ...custom,
-        ];
         const wireAction: unknown = (request as { action?: unknown } | undefined)?.action;
         const hint = describeUnknownAction(wireAction, {
           elementId: registered?.id,
-          accepted: own.length > 0 ? own : [...RELAY_ELEMENT_ACTIONS, ...custom],
+          accepted: relayAcceptedVerbs(registered),
         });
         const failure = createActionFailure(id, 'UNSUPPORTED_ACTION', hint.message, startTime);
         return refuse({
@@ -2394,11 +2411,9 @@ export async function executeCommand(
             break;
           }
           default: {
-            const custom = Object.keys(registered?.customActions ?? {});
-            const own = [...(registered?.actions ?? []), ...custom];
             const hint = describeUnknownAction(request.action, {
               elementId: registered?.id,
-              accepted: own.length > 0 ? own : [...RELAY_ELEMENT_ACTIONS, ...custom],
+              accepted: relayAcceptedVerbs(registered),
             });
             const failure = createActionFailure(id, 'UNSUPPORTED_ACTION', hint.message, startTime);
             return refuse({

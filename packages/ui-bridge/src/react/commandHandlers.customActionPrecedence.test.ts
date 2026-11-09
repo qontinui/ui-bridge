@@ -267,3 +267,35 @@ describe('relay executeElementAction · a non-string verb is refused, never thro
     host.remove();
   });
 });
+
+describe('relay executeElementAction · an unknown-verb suggestion is a verb this door runs', () => {
+  afterEach(() => getGlobalRegistry().clear());
+
+  it('an element advertising no verbs still gets the relay set and a suggestion', async () => {
+    const host = document.createElement('h2');
+    makeVisible(host);
+    document.body.appendChild(host);
+    getGlobalRegistry().registerElement('heading-1', host, { type: 'custom', actions: [] } as never);
+    const res = await relayAction('heading-1', { action: 'scrollintoview' });
+    expect(res.success).toBe(false);
+    expect(String(res.error)).toContain("Did you mean 'scrollIntoView'?");
+    expect(String(res.error)).not.toContain('accepts: .');
+    host.remove();
+  });
+
+  it('does not suggest an advertised verb the relay has no case for', async () => {
+    const host = document.createElement('input');
+    makeVisible(host);
+    document.body.appendChild(host);
+    // `autocomplete` is a valid StandardAction, but the relay switch has no case for it.
+    getGlobalRegistry().registerElement('search', host, {
+      type: 'input',
+      actions: ['autocomplete'],
+    } as never);
+    const res = await relayAction('search', { action: 'Autocomplete' });
+    expect(res.success).toBe(false);
+    expect(String(res.error)).toMatch(/^Unknown action 'Autocomplete'/);
+    expect(String(res.error)).not.toContain("Did you mean 'autocomplete'");
+    host.remove();
+  });
+});
