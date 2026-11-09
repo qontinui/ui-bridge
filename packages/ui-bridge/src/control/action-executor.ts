@@ -49,7 +49,11 @@ function getCanonicalPerformAction(): PerformActionFn | null {
 
 import { pageScrollContainer } from './page-scroll-container';
 import type { UIBridgeRegistry } from '../core/registry';
-import { serializeRegisteredElement, serializeRegisteredComponent } from '../core/registry';
+import {
+  inferElementType,
+  serializeRegisteredElement,
+  serializeRegisteredComponent,
+} from '../core/registry';
 import { serializeElementCustomActions } from '../core/element-actions';
 import type {
   WaitOptions,
@@ -2554,7 +2558,7 @@ export class DefaultActionExecutor implements ActionExecutor {
     return {
       element: el,
       id,
-      type: registered?.type || this.inferElementType(el),
+      type: registered?.type || inferElementType(el),
       // §4.6: `label` scrubs on the CONTENT axis regardless of dev-set vs
       // scraped origin (resolved design decision — one field can't
       // discriminate, and a dev who wraps a subtree intends it hidden). A
@@ -3870,66 +3874,22 @@ export class DefaultActionExecutor implements ActionExecutor {
     );
   }
 
-  private inferElementType(element: HTMLElement): string {
-    const tagName = element.tagName.toLowerCase();
-    const role = element.getAttribute('role');
-
-    if (role) {
-      switch (role) {
-        case 'button':
-          return 'button';
-        case 'textbox':
-          return 'input';
-        case 'checkbox':
-          return 'checkbox';
-        case 'radio':
-          return 'radio';
-        case 'link':
-          return 'link';
-        case 'listbox':
-        case 'combobox':
-          return 'select';
-        case 'menu':
-          return 'menu';
-        case 'menuitem':
-          return 'menuitem';
-        case 'tab':
-          return 'tab';
-        case 'dialog':
-          return 'dialog';
-      }
-    }
-
-    switch (tagName) {
-      case 'button':
-        return 'button';
-      case 'input': {
-        const type = (element as HTMLInputElement).type;
-        if (type === 'checkbox') return 'checkbox';
-        if (type === 'radio') return 'radio';
-        if (type === 'submit' || type === 'button') return 'button';
-        return 'input';
-      }
-      case 'textarea':
-        return 'textarea';
-      case 'select':
-        return 'select';
-      case 'a':
-        return 'link';
-      case 'form':
-        return 'form';
-      default:
-        return 'custom';
-    }
-  }
-
   // Typed `StandardAction[]`, not `string[]`: these verbs are advertised by
   // discovery (`actions`) and listed by the unknown-verb refusal, so a
   // misspelled one would be a verb the executor itself refuses. The compiler
   // holds them to the union; `action-executor.verbParity.test.ts` holds the
   // union to `SUPPORTED_ACTIONS` and to `performAction`'s fallback dispatch.
+  //
+  // Its type comes from the registry's `inferElementType`. Its verb TABLE is
+  // still this copy, not the registry's `inferActions`: the two disagree
+  // (sendKeys, form, dialog, setValue), the runner gates on a scanned row's
+  // `actions` (`useControlEvents.ts` falls back to the `discover()` row), and
+  // neither table is the executor's real capability. With `useAutoRegister`'s
+  // and `dom-fallback`'s that makes four tables; plan
+  // `2026-11-09-an-elements-advertised-verbs-depend-on-which-path-found-it`
+  // converges them behind a dispatch-backed test.
   private inferActions(element: HTMLElement): StandardAction[] {
-    const type = this.inferElementType(element);
+    const type = inferElementType(element);
     // `hoverClick` is advertised alongside `click` on every clickable type so a
     // hover-gated control (pointer-events:none until group-hover) is drivable
     // in one call without a page/evaluate workaround.

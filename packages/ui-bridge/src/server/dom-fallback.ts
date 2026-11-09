@@ -15,6 +15,7 @@ import {
   type RedactionVerdict,
 } from '../core/redaction';
 import { truncateCodePoints } from '../core/text';
+import type { StandardAction } from '../core/types';
 import {
   computeVisibleText,
   readAriaLabelAttr,
@@ -75,8 +76,12 @@ function inferType(el: HTMLElement): string {
   return 'interactive';
 }
 
-/** Infer supported actions from element type. */
-function inferActions(type: string): string[] {
+/**
+ * Infer supported actions from element type. Typed `StandardAction[]` so a
+ * misspelled verb is a compile error rather than a verb every executor refuses
+ * (the same narrowing ui-bridge#333 gave the executor's list).
+ */
+function inferActions(type: string): StandardAction[] {
   switch (type) {
     case 'button':
       return ['click'];

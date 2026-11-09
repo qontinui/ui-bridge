@@ -943,9 +943,15 @@ function inferActions(type: ElementType): StandardAction[] {
 }
 
 /**
- * Infer element type from HTML element
+ * Infer element type from HTML element. Also the `type` of the executor's
+ * `find()` / `discover()` row for a DOM-scanned node the registry does not
+ * hold (`DefaultActionExecutor`), so a scanned node reports the type a
+ * `registerElement` call without an explicit `type` would infer. The executor
+ * used to keep a verbatim copy. `react/useAutoRegister.ts` still infers its
+ * own, more precise types and passes them explicitly; converging the two is
+ * plan `2026-11-09-an-elements-advertised-verbs-depend-on-which-path-found-it`.
  */
-function inferElementType(element: HTMLElement): ElementType {
+export function inferElementType(element: HTMLElement): ElementType {
   const tagName = element.tagName.toLowerCase();
   const role = element.getAttribute('role');
 
