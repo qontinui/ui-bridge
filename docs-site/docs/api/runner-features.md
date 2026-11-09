@@ -652,7 +652,7 @@ The holder-side `HoldingLockBanner` surfaces an advisory countdown
 `(auto-yield in Ns)` when the policy is enabled and a waiter is
 present, so the holder isn't surprised by the involuntary release.
 
-## Network stubs (fetch short-circuit)
+## Network stubs (fetch short-circuit, runner only)
 
 Prefer this over monkey-patching `window.fetch` via `page/evaluate`.
 Stubs live in a module-level SDK singleton — they survive React
@@ -736,8 +736,9 @@ curl -s -X POST $BASE/control/network/verify-stub \
 
 # 4. Delete YOUR stub by its id, whatever step 3 answered. Never the
 #    clear-all DELETE /control/network/stubs: it drops other sessions'
-#    stubs too.
-curl -X DELETE "$BASE/control/network/stubs/$ID"
+#    stubs too. Skip it when step 1 got no id, so no request is ever
+#    sent to /control/network/stubs/ or /control/network/stubs/null.
+[ -n "$ID" ] && [ "$ID" != null ] && curl -X DELETE "$BASE/control/network/stubs/$ID"
 # → {"success":true,"data":{"id":"stub_…","deleted":true}}
 ```
 
@@ -768,10 +769,15 @@ refuses the verify-stub call (it names the refusal).
 was registered — requests the page makes on its own (a poll) and any
 fetch issued from `page/evaluate` included. Pick a `urlPattern` that
 only the control's request matches, and send no evaluate fetch to it.
-Only `window.fetch` is intercepted: a request the UI makes through
-`XMLHttpRequest`, `navigator.sendBeacon`, a `WebSocket` or an
-`EventSource` is neither stubbed nor counted, so for one of those a
-count of 0 means "not counted", not "not sent".
+Only `window.fetch` is intercepted, and only calls made after the first
+stub registration installed the interceptor. A request the UI makes
+through `XMLHttpRequest`, `navigator.sendBeacon`, a `WebSocket` or an
+`EventSource`, a Tauri `invoke()` command (the runner UI's main channel
+to its backend) or a request the Rust side makes on the UI's behalf, and
+a call through a `fetch` reference a module captured before that
+registration, is neither stubbed nor counted: for those a count of 0
+means "not counted", not "not sent". So this recipe applies only to a
+control whose request is a page `window.fetch` call.
 
 **A network call from `page/evaluate`** needs the request to opt in.
 The static guard refuses `fetch(`, `XMLHttpRequest`,
