@@ -769,15 +769,21 @@ refuses the verify-stub call (it names the refusal).
 was registered — requests the page makes on its own (a poll) and any
 fetch issued from `page/evaluate` included. Pick a `urlPattern` that
 only the control's request matches, and send no evaluate fetch to it.
-Only `window.fetch` is intercepted, and only calls made after the first
-stub registration installed the interceptor. A request the UI makes
-through `XMLHttpRequest`, `navigator.sendBeacon`, a `WebSocket` or an
-`EventSource`, a Tauri `invoke()` command (the runner UI's main channel
-to its backend) or a request the Rust side makes on the UI's behalf, and
-a call through a `fetch` reference a module captured before that
-registration, is neither stubbed nor counted: for those a count of 0
-means "not counted", not "not sent". So this recipe applies only to a
-control whose request is a page `window.fetch` call.
+Only `window.fetch` calls are intercepted. These are neither stubbed nor
+counted:
+
+- a request the UI makes through `XMLHttpRequest`,
+  `navigator.sendBeacon`, a `WebSocket` or an `EventSource`;
+- a Tauri `invoke()` command (the runner UI's main channel to its
+  backend), or a request the Rust side makes on the UI's behalf;
+- a call through a `fetch` reference a module captured before any
+  interceptor wrapped `window.fetch`. The first stub registration
+  installs one, and a network-request tracking command can install the
+  SDK's own earlier, which matches the same stubs.
+
+For those a count of 0 means "not counted", not "not sent". So this
+recipe applies only to a control whose request is a page `window.fetch`
+call.
 
 **A network call from `page/evaluate`** needs the request to opt in.
 The static guard refuses `fetch(`, `XMLHttpRequest`,
