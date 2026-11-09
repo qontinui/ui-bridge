@@ -108,8 +108,8 @@ export const ELEMENT_KIND_ACTIONS: Record<ElementType, readonly StandardAction[]
   // role="checkbox" is clicked when `aria-checked` disagrees; a checkbox
   // <input> is set directly.
   checkbox: [...EVERY_ELEMENT, 'check', 'uncheck', 'toggle'],
-  // A role="radio" cannot be unchecked by clicking it (a checkbox <input> of
-  // type radio can be, from its structure), and nothing toggles a radio.
+  // A role="radio" cannot be unchecked by clicking it (a radio <input> can be
+  // set unchecked directly, from its structure), and nothing toggles a radio.
   radio: [...EVERY_ELEMENT, 'check'],
   link: EVERY_ELEMENT,
   form: [...EVERY_ELEMENT, 'submit', 'reset'],
