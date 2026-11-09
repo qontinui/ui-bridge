@@ -4,7 +4,7 @@
  * Register a native element with UI Bridge for control and observation.
  */
 
-import { useRef, useEffect, useCallback, useMemo, useState } from 'react';
+import { useRef, useEffect, useLayoutEffect, useCallback, useMemo, useState } from 'react';
 import { StyleSheet } from 'react-native';
 import type {
   NativeElementType,
@@ -644,6 +644,26 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
       }
     };
   }, [autoRegister, bridge, id]);
+
+  // Unregister AT COMMIT on unmount (a passive cleanup runs a task later for a
+  // non-discrete unmount, leaving the element listed with its DOM gone). Deps
+  // are [] so a churning `bridge` or an `id` change keeps the passive swap above.
+  const reregisterRef = useRef(false);
+  useLayoutEffect(() => {
+    // A Suspense boundary that re-suspends runs layout cleanups but keeps
+    // passive effects mounted, then re-runs only layout mounts on reveal: put
+    // back what this cleanup took out, or the entry would stay gone for good.
+    if (reregisterRef.current) {
+      reregisterRef.current = false;
+      registerRef.current();
+    }
+    return () => {
+      if (registeredRef.current) {
+        unregisterRef.current();
+        reregisterRef.current = true;
+      }
+    };
+  }, []);
 
   // Layout-on-mount fallback with backoff retry.
   //
