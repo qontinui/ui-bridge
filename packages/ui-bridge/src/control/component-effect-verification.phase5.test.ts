@@ -16,6 +16,7 @@ import { DefaultActionExecutor } from './action-executor';
 import {
   createDefaultSignatureRegistry,
   createInferredSignatureRegistry,
+  type SignatureLookup,
 } from './effect-signatures';
 import {
   getGlobalActionWindowRegistry,
@@ -122,6 +123,42 @@ describe('Phase 5 — component-action effect verification', () => {
 
     expect(res.success).toBe(true);
     expect(res.effectVerification).toBeUndefined();
+  });
+
+  // The relay and server hops hand `verifyEffect` on unchecked, so the gate is
+  // where a non-boolean must be refused as an instruction. A signature resolves
+  // here without being declared on the action and the executor-wide flag is
+  // off, which leaves `verifyEffect` as the only switch.
+  it('only a boolean true turns verification on: "true" and 1 do not', async () => {
+    const lookup: SignatureLookup = {
+      resolve: () => undefined,
+      resolveComponentSignature: (componentId, actionId) =>
+        componentId === 'drawer' && actionId === 'open' ? appearSignature('panel-gate') : undefined,
+    };
+    const executor = new DefaultActionExecutor(registry, undefined, {
+      signatureRegistry: lookup,
+    });
+    registry.registerComponent('drawer', {
+      name: 'Drawer',
+      actions: [{ id: 'open', handler: reveal('panel-gate') }],
+    });
+
+    // Control: the boolean does verify, so each absence below is the gate's.
+    const control = await executor.executeComponentAction('drawer', {
+      action: 'open',
+      verifyEffect: true,
+    });
+    expect(control.effectVerification).toBeDefined();
+
+    for (const verifyEffect of ['true', 1]) {
+      const res = await executor.executeComponentAction('drawer', {
+        action: 'open',
+        verifyEffect: verifyEffect as unknown as boolean,
+      });
+
+      expect(res.success).toBe(true);
+      expect(res.effectVerification).toBeUndefined();
+    }
   });
 
   it('a wrong prediction is DATA, not a failure — the action still succeeds', async () => {
