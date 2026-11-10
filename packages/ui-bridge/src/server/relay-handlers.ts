@@ -40,6 +40,11 @@ import type { Recency as RecencyType } from '../core/recency';
 import { Recency, isSatisfiedBy, parseRecency } from '../core/recency';
 import { findElements } from '../core/find';
 import { computeSnapshotSignature } from '../core/snapshot-signature';
+import {
+  isProjectionRequestError,
+  parseProjectionRequest,
+  type ElementProjectionRequest,
+} from '../core/element-projection';
 import type { ElementQuery } from '../core/find';
 import {
   applyCanonicalFindFilter,
@@ -49,11 +54,6 @@ import {
   type FindFilterableElement,
   type FindUnevaluated,
 } from '../core/find-filter';
-import {
-  isProjectionRequestError,
-  parseProjectionRequest,
-  type ElementProjectionRequest,
-} from '../core/element-projection';
 
 // ============================================================================
 // Helpers
