@@ -19,7 +19,6 @@ import { UI_BRIDGE_ROUTES } from './types';
 import { mapInternalErrorCode } from './error-mapper';
 import type {
   ControlActionRequest,
-  ComponentActionRequest,
   FindRequest,
   WorkflowRunRequest,
 } from '@qontinui/ui-bridge/control';
@@ -334,13 +333,12 @@ export function createControlHandlers(handlers: UIBridgeServerHandlers) {
         request: NextRequest,
         context: NextRouteContext<{ id: string; actionId: string }>
       ): Promise<Response> {
-        const body = await bodyOf<Omit<ComponentActionRequest, 'action'>>(request);
+        // The same handler the catch-all route uses, so both read the body
+        // alike: request fields hoisted, every other key a param.
+        const body = await bodyOf<Record<string, unknown>>(request);
         if (body instanceof Response) return body;
         const { id, actionId } = await context.params;
-        const result = await handlers.executeComponentAction(id, {
-          ...body,
-          action: actionId,
-        });
+        const result = await handlers.invokeComponentAction(id, actionId, body);
         return jsonResponse(result);
       },
     },

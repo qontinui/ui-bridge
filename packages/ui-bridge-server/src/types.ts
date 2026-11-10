@@ -152,6 +152,22 @@ export interface UIBridgeServerHandlers {
     id: string,
     request: ComponentActionRequest
   ) => Promise<APIResponse<ComponentActionResponse>>;
+  /**
+   * `POST /control/component/:id/action/:actionId`, the HTTP binding of
+   * `executeComponentAction`. Its parameter list matches the route
+   * (`params: ['id', 'actionId']`, then the body), so every adapter hands it
+   * exactly what its signature names. The route used to be served by
+   * `executeComponentAction` itself, which took the URL's `actionId` as its
+   * request, so the executor was handed nothing. The body may be the wrapped
+   * `{ params: {...} }` shape or the flat shape the action's `paramSchema`
+   * advertises; the request fields (`timeoutMs`, `verifyEffect`, `requestId`)
+   * are hoisted, never merged into params.
+   */
+  invokeComponentAction: (
+    id: string,
+    actionId: string,
+    request?: Record<string, unknown>
+  ) => Promise<APIResponse<ComponentActionResponse>>;
 
   // Find endpoints
   find: (request?: FindRequest) => Promise<APIResponse<FindResponse>>;
@@ -327,7 +343,7 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   {
     method: 'POST',
     path: '/control/component/:id/action/:actionId',
-    handler: 'executeComponentAction',
+    handler: 'invokeComponentAction',
     params: ['id', 'actionId'],
     bodyRequired: true,
   },

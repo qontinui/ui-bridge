@@ -5,7 +5,6 @@
  */
 
 import type { UIBridgeServerHandlers } from './types';
-import { componentActionRequestFields } from './component-action-request';
 import type {
   BridgeEvent,
   BridgeEventType,
@@ -408,16 +407,11 @@ export class UIBridgeWSHandler {
     clientId: string,
     message: WSClientMessage & { type: 'executeComponentAction' }
   ): Promise<void> {
-    const { componentId } = message.payload;
-    // Every request field the payload carries, read through the one list, each
-    // as it is: the executor validates them. Read by list rather than
-    // destructured from the typed payload, because this package resolves
-    // `@qontinui/ui-bridge` by range and an older install's payload type does
-    // not declare every field.
-    const result = await this.handlers.executeComponentAction(
-      componentId,
-      componentActionRequestFields(message.payload)
-    );
+    // The payload minus the key that names the component: the request whole,
+    // so a field a later `@qontinui/ui-bridge` adds is carried. The direct
+    // handler checks `requestId` and `verifyEffect` (`withCheckedFields`).
+    const { componentId, ...request } = message.payload;
+    const result = await this.handlers.executeComponentAction(componentId, request);
 
     this.sendResponse(clientId, message.id, result.success, result.data, result.error);
   }

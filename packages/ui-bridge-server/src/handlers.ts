@@ -16,7 +16,7 @@ import type {
   FindResponse,
   WorkflowRunResponse,
 } from '@qontinui/ui-bridge/control';
-import { componentActionRequestFields } from './component-action-request';
+import { componentActionInvocation, withCheckedFields } from './component-action-request';
 import { diagnosePageHealth, pageHealthUnknown } from './page-health';
 import type { PageHealthObservation } from './page-health';
 import type { RenderLogEntry } from '@qontinui/ui-bridge/render-log';
@@ -725,11 +725,28 @@ export function createHandlers(
       request: ComponentActionRequest
     ): Promise<APIResponse<ComponentActionResponse>> => {
       try {
-        // Every request field, read through the one list, each as it is. See
-        // `ActionExecutorLike` above.
+        // The request whole, so a field a later `@qontinui/ui-bridge` adds is
+        // carried, with `requestId` and `verifyEffect` checked here as well.
+        // See `component-action-request.ts` and `ActionExecutorLike` above.
+        const result = await actionExecutor.executeComponentAction(id, withCheckedFields(request));
+        return success(result) as APIResponse<ComponentActionResponse>;
+      } catch (err) {
+        return error((err as Error).message, 'COMPONENT_ACTION_ERROR');
+      }
+    },
+
+    // `POST /control/component/:id/action/:actionId`: the route's own handler,
+    // whose parameters match its URL params, so every adapter hands it
+    // `(id, actionId, body)` and the body becomes the request.
+    invokeComponentAction: async (
+      id: string,
+      actionId: string,
+      body?: Record<string, unknown>
+    ): Promise<APIResponse<ComponentActionResponse>> => {
+      try {
         const result = await actionExecutor.executeComponentAction(
           id,
-          componentActionRequestFields(request)
+          componentActionInvocation(actionId, body)
         );
         return success(result) as APIResponse<ComponentActionResponse>;
       } catch (err) {

@@ -189,18 +189,14 @@ describe('WebSocket handler forwards verifyEffect and requestId', () => {
     });
   });
 
-  // The hop does not filter it. The executor is the one place that decides what
-  // a request field means, and it treats only a boolean `verifyEffect` as an
-  // instruction (`@qontinui/ui-bridge`'s
-  // `react/commandHandlers.effectVerification.relay.test.ts` drives the real
-  // executor).
-  it('hands a non-boolean verifyEffect on as it is, for the executor to judge', async () => {
+  it('ignores a non-boolean verifyEffect', async () => {
     const ws = new UIBridgeWSHandler(makeHandlers());
 
     send(ws, { componentId: 'login-form', action: 'submit', verifyEffect: 'true' });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(seen).toEqual([{ id: 'login-form', action: 'submit', verifyEffect: 'true' }]);
+    expect(seen).toHaveLength(1);
+    expect(seen[0].verifyEffect).toBeUndefined();
   });
 });
 
