@@ -82,9 +82,18 @@ Get details for a specific element.
 
 ```http
 GET /control/element/:id/state
+GET /control/element/:id/state?properties=border-top-color,--color-accent&attributes=lang,aria-label
 ```
 
 Get current state of an element.
+
+`properties` and `attributes` (comma-separated) ask for a request-scoped
+projection: the computed values of the named CSS properties (`var()`
+resolved) and the allow-listed attributes (`lang`, `dir`, `id`, `role`,
+`title`, `alt`, `href`, `aria-*`), answered in `projection` beside the state.
+The names, bounds, redaction and the `unmeasured` list are those of
+[`POST /control/find`](./discovery-endpoints.md#style-and-attribute-projection);
+a malformed list is refused with `UB-VALIDATION-ERROR`.
 
 **Response:**
 

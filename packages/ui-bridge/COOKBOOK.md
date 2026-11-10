@@ -28,7 +28,9 @@ value, visible text, `aria-label`, accessible name, `title`, `placeholder`,
 search aliases, the label-derived id slug, and media `alt`/`src`/`srcset`/
 `poster` — across **all** element projections: snapshots (`/control/snapshot`,
 `/control/elements`), search (`/ai/search`, the internal registry search),
-discovery (`/control/find`, `/control/discover`), forms (`/control/forms`,
+discovery (`/control/find`, `/control/discover`) and its request-scoped
+`properties` / `attributes` projection (free-text and URL attributes, custom
+properties and `url()`/string values; colours and lengths pass), forms (`/control/forms`,
 `getForms`), the page-analysis family (`/ai/analyze/*`, `/ai/summary`),
 render-log capture, session recording, and the framework-store adapters
 (Formik / React Hook Form) — **and** the arbitrary-selector reads
@@ -467,3 +469,36 @@ interacting at all. It now returns the HTTP handler's shape,
 `{ elementId, stateStyles: StateStyles[], timestamp }`, with each state really
 applied: `hover`/`active` forced as above, `focus` through `el.focus()`. A held
 agent hover is suspended for the read and re-applied afterwards.
+
+## 9. Read the styles and attributes a check needs
+
+`computedStyles` on an element's state is a fixed, light set — it rides in
+every snapshot. A check that needs `border-inline-start-color`, the `outline-*`
+longhands, `hyphens`, a design token, or an attribute such as `lang` asks for
+exactly those names on the request that needs them:
+
+```bash
+# On every row a find returns
+curl -s -X POST "$BASE/control/find" -H 'Content-Type: application/json' \
+  -d '{"text":"Save","properties":["border-top-color","outline-offset","--color-accent"],"attributes":["lang","aria-label"]}' \
+  | jq '.data.elements[] | {id, projection}'
+
+# On one element
+curl -s "$BASE/control/element/save-btn/state?properties=hyphens,--color-accent&attributes=lang" \
+  | jq '.data.projection'
+```
+
+Values are COMPUTED (`var()` arrives resolved). An absent attribute reads
+`null`. A name that could not be read — a custom property the element does not
+set, a property the engine does not compute — is listed in
+`projection.unmeasured` with its code instead of reading as `""`. Only `lang`,
+`dir`, `id`, `role`, `title`, `alt`, `href` and `aria-*` attributes are
+readable; any other name, an invalid property name, or more than 32 names is
+refused with `UB-VALIDATION-ERROR`.
+
+The same read backs the `ai/assert` style and attribute checks
+(`cssProperty`, `cssPropertyInSet`, `cssPropertyRange`, `tokenCompliance`,
+`attribute`), on both transports. A check that cannot read its value answers
+`outcome: "unmeasured"` with the reason in `unmeasured` — `passed` is `false`,
+so it never passes a gate, but it is counted in `unmeasuredCount`, apart from
+`failedCount`.

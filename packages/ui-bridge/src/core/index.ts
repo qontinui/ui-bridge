@@ -145,6 +145,27 @@ export type {
   FindUnevaluated,
 } from './find-filter';
 
+// Request-scoped style / attribute projection — the ONE read behind
+// `properties` / `attributes` on find, discover and element state, and behind
+// the `ai/assert` style and attribute checks.
+export {
+  MAX_PROJECTED_NAMES,
+  MAX_PROJECTION_NAME_LENGTH,
+  PROJECTABLE_ATTRIBUTES,
+  ProjectionRequestError,
+  cssPropertyName,
+  isProjectableAttribute,
+  isProjectablePropertyName,
+  isProjectionRequestError,
+  parseProjectionRequest,
+  projectElement,
+} from './element-projection';
+export type {
+  ElementProjection,
+  ElementProjectionRequest,
+  ProjectionUnmeasured,
+} from './element-projection';
+
 // Readers for a media row's observation envelope (`mediaMetadata`).
 export { isMediaObservation, mediaFactsOf, unmeasuredMediaDimension } from './media-observation';
 

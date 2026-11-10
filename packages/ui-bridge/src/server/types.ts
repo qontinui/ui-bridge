@@ -25,7 +25,8 @@ import type {
   ComponentActionPredictRequest,
   ComponentActionPredictResponse,
 } from '../control';
-import type { FillResult } from '../core/types';
+import type { ElementState, FillResult } from '../core/types';
+import type { ElementProjection } from '../core/element-projection';
 import type { PageHealthObservation } from './page-health';
 import type {
   VisionAnalyzeResponse,
@@ -392,6 +393,43 @@ export interface SpawnHeadlessResponse {
 }
 
 /**
+ * Query of `GET /control/element/:id/state`: the request-scoped projection.
+ *
+ * Over HTTP each list is a comma-separated string
+ * (`?properties=border-top-color,--color-accent&attributes=lang,aria-label`); a
+ * repeated key and an in-process caller's array are read the same way. The
+ * names, the allow-list, the bounds and what each read answers are those of
+ * `POST /control/find`'s `properties` / `attributes` — see
+ * `core/element-projection.ts`. A malformed list is refused
+ * (`UB-VALIDATION-ERROR`) before anything is read.
+ */
+export interface ElementStateQuery {
+  /** CSS property names (standard, camel-cased, or custom `--name`) whose computed values to read. */
+  properties?: string | string[];
+  /** Attribute names to read: `lang`, `dir`, `id`, `role`, `title`, `alt`, `href`, `aria-*`. */
+  attributes?: string | string[];
+  /** Per-tab routing, as on every queried route. */
+  tabId?: string;
+}
+
+/**
+ * Response of `GET /control/element/:id/state`: the element's canonical
+ * {@link ElementState} with its id, the legacy `isVisible` / `isEnabled` /
+ * `text` aliases, and the projection when the query asked for one.
+ */
+export type ElementStateResponse = Partial<ElementState> & {
+  id: string;
+  /** @deprecated read `visible`. */
+  isVisible?: boolean;
+  /** @deprecated read `enabled`. */
+  isEnabled?: boolean;
+  /** @deprecated read `textContent`. */
+  text?: string;
+  /** The requested `properties` / `attributes`, read off the live element. */
+  projection?: ElementProjection;
+};
+
+/**
  * Per-user tab scoping context (§4.2) — threaded as the final positional
  * argument of every relay-dispatching handler.
  *
@@ -404,7 +442,7 @@ export interface SpawnHeadlessResponse {
  *
  * The reason this is a dedicated final-arg `context` object instead of a
  * field in the request body / query: many handlers (e.g. `captureSnapshot`,
- * `clearRenderLog`, `getElementState(id)`) have zero-arg or args-without-bag
+ * `clearRenderLog`, `getElementReactState(id)`) have zero-arg or args-without-bag
  * signatures, so there is no body/query for the adapter to splice
  * `__callerUserId` into. Without this explicit channel, those handlers
  * would bypass per-user scoping entirely and silently dispatch to whichever
@@ -488,7 +526,16 @@ export interface UIBridgeServerHandlers {
     options?: { recency?: string },
     context?: HandlerContext
   ) => Promise<APIResponse<ControlSnapshot['elements'][0]>>;
-  getElementState: (id: string, context?: HandlerContext) => Promise<APIResponse<unknown>>;
+  /**
+   * `GET /control/element/:id/state`. `query` carries the request-scoped
+   * projection ({@link ElementStateQuery}); the answer is an
+   * {@link ElementStateResponse}.
+   */
+  getElementState: (
+    id: string,
+    query?: ElementStateQuery,
+    context?: HandlerContext
+  ) => Promise<APIResponse<unknown>>;
   getElementReactState: (
     id: string,
     context?: HandlerContext
@@ -1823,7 +1870,13 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     params: ['id'],
     queryRequired: true,
   },
-  { method: 'GET', path: '/control/element/:id/state', handler: 'getElementState', params: ['id'] },
+  {
+    method: 'GET',
+    path: '/control/element/:id/state',
+    handler: 'getElementState',
+    params: ['id'],
+    queryRequired: true,
+  },
   {
     method: 'GET',
     path: '/control/element/:id/react-state',

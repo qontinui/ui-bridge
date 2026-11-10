@@ -21,6 +21,7 @@ import type {
   APIResponse,
   CapabilitiesResponse,
   DOMChangeEvent,
+  ElementStateQuery,
   HandlerContext,
   StateSummary,
 } from './types';
@@ -48,6 +49,11 @@ import {
   type FindFilterableElement,
   type FindUnevaluated,
 } from '../core/find-filter';
+import {
+  isProjectionRequestError,
+  parseProjectionRequest,
+  type ElementProjectionRequest,
+} from '../core/element-projection';
 
 // ============================================================================
 // Helpers
@@ -1050,23 +1056,64 @@ export function createRelayHandlers(
       return success(element);
     },
 
-    async getElementState(id, context) {
+    async getElementState(id, query?: ElementStateQuery, context?: HandlerContext) {
+      // The request-scoped projection (`properties` / `attributes`) is
+      // validated HERE, before anything is queued: a malformed list never
+      // reaches a tab. What travels is the normalised request (arrays).
+      let projection: ElementProjectionRequest | undefined;
+      try {
+        projection = parseProjectionRequest(query, 'query');
+      } catch (err) {
+        if (isProjectionRequestError(err)) return error(`element state ${err.message}`, err.code);
+        throw err;
+      }
+      const payload = { id, ...(projection ?? {}) };
       // Per-user tab scoping (§4.2): the adapter threads the
       // authenticated caller's userId via the `context` final argument so
       // the dispatch is gated on the caller's tabs, NEVER on whichever
       // tab happens to be `primaryTabId` (which could belong to a
-      // different user).
-      const liveOpts = context?.callerUserId
-        ? { ownerCheck: { userId: context.callerUserId } }
-        : undefined;
+      // different user). Now that the route takes its query, `?tabId=` pins
+      // the read too, as it does for `getElement`.
+      const { targetTabId, callerUserId } = extractTabRouting(query ?? {});
+      const effectiveUserId = scopedCaller(callerUserId, context);
+      const ownerCheck = effectiveUserId ? { ownerCheck: { userId: effectiveUserId } } : undefined;
+
+      // P0 (plan 2026-06-12 item 1): a PINNED read must never fall back to
+      // the shared cross-tab cache — propagate the routing/timeout error.
+      if (targetTabId !== undefined) {
+        return relayCommand('getElementState', payload, { targetTabId, ...ownerCheck });
+      }
+
       try {
-        const result = await relay.queueCommand('getElementState', { id }, liveOpts);
+        const result = await relay.queueCommand('getElementState', payload, ownerCheck);
+        // The browser's typed refusal is a failure, never `success` wrapping
+        // `{ success: false }`.
+        const innerFailure = readRelayInnerFailure(result);
+        if (innerFailure) {
+          return {
+            success: false,
+            error: innerFailure.message,
+            code: innerFailure.code as APIResponse['code'],
+            data: result,
+            timestamp: Date.now(),
+          };
+        }
         if (result) return success(result);
       } catch {
         // Relay failed — fall back to state from the caller's cached
         // snapshot, which holds only tabs the caller owns (§4.2).
       }
-      const scope = scopeOf(context?.callerUserId);
+      // The cached snapshot is serialized JSON: no node behind it to read a
+      // projection from. Refused, typed — never answered with a state that
+      // silently lacks the values asked for.
+      if (projection) {
+        return error(
+          `Element state for ${id}: the relay's cached snapshot carries no DOM node, so it ` +
+            'cannot read the requested `properties` / `attributes` (browser disconnected)',
+          'UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD'
+        );
+      }
+      const scope = scopeOf(effectiveUserId);
       const element = scope.cache.controlSnapshot.elements.find((e) => e.id === id);
       if (element && 'state' in element) return success((element as { state: unknown }).state);
       return error(`Element state for ${id} not available (browser disconnected)`, 'NOT_FOUND');
@@ -1275,6 +1322,15 @@ export function createRelayHandlers(
         (typeof (payload as { tabId?: unknown }).tabId === 'string'
           ? ((payload as { tabId: string }).tabId as string)
           : undefined);
+      // A malformed projection (`properties` / `attributes`) is refused HERE,
+      // before anything is queued. The tab's canonical filter would refuse it
+      // too, but a request that can only be refused never has to reach a tab.
+      try {
+        parseProjectionRequest(payload, 'body');
+      } catch (err) {
+        if (isProjectionRequestError(err)) return error(`find ${err.message}`, err.code);
+        throw err;
+      }
       const result = await relayCommand<FindResponse>('find', payload, { targetTabId, context });
       if (result.success) return result;
       // The browser ANSWERED with a typed refusal (a request the canonical

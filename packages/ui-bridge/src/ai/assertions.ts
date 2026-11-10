@@ -17,7 +17,16 @@ import type {
   SearchResult,
   AIDiscoveredElement,
 } from './types';
-import type { UiBridgeErrorCode } from '../diagnostics';
+import { UNKNOWN_CODE_DIAGNOSTICS, type UiBridgeErrorCode } from '../diagnostics';
+import type { UnknownCode } from '../observation/observation';
+import {
+  cssPropertyName,
+  isProjectionRequestError,
+  liveElementOf,
+  parseProjectionRequest,
+  projectElement,
+  type ElementProjectionRequest,
+} from '../core/element-projection';
 
 /**
  * Stable `UB-ASSERT-*` diagnostic code for a failed assertion.
@@ -124,12 +133,33 @@ export const DEFAULT_ASSERTION_CONFIG: AssertionConfig = {
 };
 
 /**
+ * Why a style or attribute check could not read the value it judges: the
+ * observation `code`, the prose, and the diagnostic code the result carries.
+ */
+interface UnmeasuredRead {
+  code: UnknownCode;
+  detail: string;
+  failureCode: UiBridgeErrorCode;
+}
+
+/** `background-color` → `backgroundColor`: the key `ElementState.computedStyles` uses. */
+function computedStylesKey(cssName: string): string {
+  return cssName.replace(/-([a-z])/g, (_m, c: string) => c.toUpperCase());
+}
+
+/**
  * Assertion executor class
  */
 export class AssertionExecutor {
   private config: AssertionConfig;
   private searchEngine: SearchEngine;
   private elements: Array<DiscoveredElement | AIDiscoveredElement> = [];
+  /**
+   * The live node behind each element that has one (a registry element's
+   * `.element`), keyed by id: what the style and attribute checks read through
+   * the projection. Elements that crossed a wire carry none.
+   */
+  private liveNodes = new Map<string, Element>();
 
   constructor(config: Partial<AssertionConfig> = {}) {
     this.config = { ...DEFAULT_ASSERTION_CONFIG, ...config };
@@ -142,6 +172,11 @@ export class AssertionExecutor {
   updateElements(elements: Array<DiscoveredElement | AIDiscoveredElement>): void {
     this.elements = elements;
     this.searchEngine.updateElements(elements);
+    this.liveNodes = new Map();
+    for (const el of elements as Array<{ id?: unknown; element?: unknown }>) {
+      const node = liveElementOf(el.element);
+      if (node && typeof el.id === 'string') this.liveNodes.set(el.id, node);
+    }
   }
 
   /**
@@ -214,6 +249,7 @@ export class AssertionExecutor {
     const results: AssertionResult[] = [];
     let passedCount = 0;
     let failedCount = 0;
+    let unmeasuredCount = 0;
 
     for (const assertion of request.assertions) {
       const result = await this.assert(assertion);
@@ -222,9 +258,11 @@ export class AssertionExecutor {
       if (result.passed) {
         passedCount++;
       } else {
-        failedCount++;
+        // An unmeasured check is neither a pass nor a failure of the page.
+        if (result.outcome === 'unmeasured') unmeasuredCount++;
+        else failedCount++;
 
-        // Stop on first failure if configured
+        // Stop on the first result that keeps an 'all' batch from passing.
         if (request.stopOnFailure) {
           // Mark remaining assertions as skipped
           break;
@@ -232,14 +270,17 @@ export class AssertionExecutor {
       }
     }
 
-    // Determine overall pass/fail
-    const passed = request.mode === 'all' ? failedCount === 0 : passedCount > 0;
+    // Determine overall pass/fail. An unmeasured check never passes an 'all'
+    // batch: what could not be read was not shown to hold.
+    const passed =
+      request.mode === 'all' ? failedCount === 0 && unmeasuredCount === 0 : passedCount > 0;
 
     return {
       passed,
       results,
       passedCount,
       failedCount,
+      unmeasuredCount,
       durationMs: performance.now() - startTime,
       timestamp: Date.now(),
     };
@@ -564,7 +605,7 @@ export class AssertionExecutor {
       case 'attribute':
         return this.assertAttribute(
           element!,
-          request.attributeName!,
+          request.attributeName,
           request.expected,
           elementDescription,
           request.message,
@@ -583,7 +624,7 @@ export class AssertionExecutor {
       case 'cssProperty':
         return this.assertCssProperty(
           element!,
-          request.propertyName!,
+          request.propertyName,
           request.expected,
           elementDescription,
           request.message,
@@ -593,7 +634,7 @@ export class AssertionExecutor {
       case 'cssPropertyInSet':
         return this.assertCssPropertyInSet(
           element!,
-          request.propertyName!,
+          request.propertyName,
           request.allowedValues || [],
           elementDescription,
           request.message,
@@ -603,7 +644,7 @@ export class AssertionExecutor {
       case 'cssPropertyRange':
         return this.assertCssPropertyRange(
           element!,
-          request.propertyName!,
+          request.propertyName,
           request.range || {},
           elementDescription,
           request.message,
@@ -613,7 +654,7 @@ export class AssertionExecutor {
       case 'tokenCompliance':
         return this.assertTokenCompliance(
           element!,
-          request.propertyName!,
+          request.propertyName,
           request.tokenPath || '',
           request.expected,
           elementDescription,
@@ -942,39 +983,39 @@ export class AssertionExecutor {
   }
 
   /**
-   * Assert attribute value (placeholder for DOM attribute assertions)
+   * Assert attribute value.
+   *
+   * `placeholder` is read off the element's search projection (already
+   * §4.6-scrubbed). Every other name is read through the request-scoped
+   * projection (`core/element-projection.ts`) off the element's live node — the
+   * same allow-list and the same scrub as `/control/find`'s `attributes` — so an
+   * absent attribute is a measured `null`, and a name the projection refuses or
+   * cannot read makes the check UNMEASURED, never a failure with no value.
    */
   private assertAttribute(
     element: AIDiscoveredElement,
-    attributeName: string,
+    attributeName: string | undefined,
     expectedValue: unknown,
     description: string,
     message?: string,
     startTime: number = performance.now()
   ): AssertionResult {
-    // Note: Would need DOM access for actual attribute checking
-    // For now, handle known attributes from state
     let actualValue: unknown;
-
-    switch (attributeName.toLowerCase()) {
-      case 'placeholder':
-        actualValue = element.placeholder;
-        break;
-      case 'title':
-        actualValue = element.title;
-        break;
-      default:
-        return this.createResult(
-          false,
-          element.id,
+    if (attributeName?.toLowerCase() === 'placeholder') {
+      actualValue = element.placeholder;
+    } else {
+      const read = this.readProjected(element, 'attribute', attributeName);
+      if ('unmeasured' in read) {
+        return this.unmeasuredResult(
+          element,
           description,
           expectedValue,
-          undefined,
-          `Cannot check attribute "${attributeName}" without DOM access`,
-          'Use the server API to check element attributes',
-          startTime,
-          element.state
+          `attribute "${attributeName ?? ''}"`,
+          read.unmeasured,
+          startTime
         );
+      }
+      actualValue = read.value;
     }
 
     const passed = actualValue === expectedValue;
@@ -988,7 +1029,7 @@ export class AssertionExecutor {
       passed
         ? undefined
         : message ||
-            `Attribute "${attributeName}" is "${actualValue}" but expected "${expectedValue}"`,
+            `Attribute "${attributeName}" is ${actualValue === null ? 'absent' : `"${String(actualValue)}"`} but expected "${String(expectedValue)}"`,
       undefined,
       startTime,
       element.state
@@ -1020,33 +1061,140 @@ export class AssertionExecutor {
   }
 
   /**
+   * Read one CSS property or attribute of `element` for a check.
+   *
+   * With a live node: through the projection (`core/element-projection.ts`) —
+   * the computed value (`var()` resolved) of any standard, camel-cased or
+   * custom property, and the allow-listed attributes, §4.6-scrubbed. Without
+   * one (an element that crossed a wire): the fixed `ElementState.computedStyles`
+   * subset for a property it carries, and the search projection's `title`.
+   * Anything else, and any name the projection refuses or cannot read, comes
+   * back UNMEASURED with its code — never as `''`.
+   */
+  private readProjected(
+    element: AIDiscoveredElement,
+    kind: 'property' | 'attribute',
+    name: string | undefined
+  ): { value: string | null } | { unmeasured: UnmeasuredRead } {
+    const option = kind === 'property' ? 'propertyName' : 'attributeName';
+    if (typeof name !== 'string' || name === '') {
+      return {
+        unmeasured: {
+          code: 'no_expectation',
+          detail: `the assertion names no \`${option}\``,
+          failureCode: 'UB-VALIDATION-ERROR',
+        },
+      };
+    }
+    let request: ElementProjectionRequest | undefined;
+    try {
+      request = parseProjectionRequest(
+        kind === 'property' ? { properties: [name] } : { attributes: [name] },
+        'body'
+      );
+    } catch (err) {
+      if (!isProjectionRequestError(err)) throw err;
+      // A name the projection refuses cannot be judged: the assertion itself is
+      // malformed. Unmeasured, coded as the validation failure it is.
+      return {
+        unmeasured: { code: 'no_expectation', detail: err.message, failureCode: err.code },
+      };
+    }
+
+    const node = this.liveNodes.get(element.id);
+    if (node && request) {
+      const projection = projectElement(node, request);
+      const miss = projection.unmeasured[0];
+      if (miss) {
+        return {
+          unmeasured: {
+            code: miss.code,
+            detail: miss.detail,
+            failureCode: UNKNOWN_CODE_DIAGNOSTICS[miss.code],
+          },
+        };
+      }
+      const value =
+        kind === 'property' ? projection.properties?.[name] : projection.attributes?.[name];
+      if (value !== undefined) return { value };
+    }
+
+    // No live node: what the element's serialized state carries.
+    if (kind === 'property') {
+      const key = computedStylesKey(cssPropertyName(name));
+      const styles = element.state?.computedStyles as Record<string, unknown> | undefined;
+      const value = styles?.[key];
+      if (typeof value === 'string' && value !== '') return { value };
+    } else if (name.toLowerCase() === 'title' && typeof element.title === 'string') {
+      return { value: element.title };
+    }
+    return {
+      unmeasured: {
+        code: 'capability_unavailable_in_build',
+        detail:
+          `${kind === 'property' ? 'computed style' : 'attribute'} \`${name}\` not available: ` +
+          'this element has no live DOM node to read it from' +
+          (kind === 'property' ? ', and its state carries no such computed style' : ''),
+        failureCode: 'UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD',
+      },
+    };
+  }
+
+  /**
+   * The result of a check that could not read its value: `outcome:
+   * 'unmeasured'`, `passed: false` (it never passes a gate), no `actual`, and
+   * the code that says why — never a failure with `actual: ''`.
+   */
+  private unmeasuredResult(
+    element: AIDiscoveredElement,
+    description: string,
+    expected: unknown,
+    what: string,
+    unmeasured: UnmeasuredRead,
+    startTime: number
+  ): AssertionResult {
+    const result = this.createResult(
+      false,
+      element.id,
+      description,
+      expected,
+      undefined,
+      `Cannot check ${what}: ${unmeasured.detail}`,
+      unmeasured.failureCode === 'UB-VALIDATION-ERROR'
+        ? 'Name a CSS property or an allow-listed attribute (lang, dir, id, role, title, alt, href, aria-*)'
+        : 'The value could not be read here: assert against an element with a live DOM node',
+      startTime,
+      element.state
+    );
+    result.outcome = 'unmeasured';
+    result.unmeasured = { code: unmeasured.code, detail: unmeasured.detail };
+    result.failureCode = unmeasured.failureCode;
+    return result;
+  }
+
+  /**
    * Assert CSS property value is in a set of allowed values
    */
   private assertCssPropertyInSet(
     element: AIDiscoveredElement,
-    propertyName: string,
+    propertyName: string | undefined,
     allowedValues: string[],
     description: string,
     message?: string,
     startTime: number = performance.now()
   ): AssertionResult {
-    const computedStyles = element.state.computedStyles;
-    if (!computedStyles) {
-      return this.createResult(
-        false,
-        element.id,
+    const read = this.readProjected(element, 'property', propertyName);
+    if ('unmeasured' in read) {
+      return this.unmeasuredResult(
+        element,
         description,
         allowedValues,
-        undefined,
-        'Computed styles not available',
-        'Request element state with computed styles',
-        startTime,
-        element.state
+        `CSS property "${propertyName ?? ''}"`,
+        read.unmeasured,
+        startTime
       );
     }
-
-    const styleKey = propertyName as keyof typeof computedStyles;
-    const actualValue = computedStyles[styleKey] || '';
+    const actualValue = read.value ?? '';
     const normalizedActual = actualValue.trim().toLowerCase();
     const passed = allowedValues.some((v) => v.trim().toLowerCase() === normalizedActual);
 
@@ -1071,32 +1219,28 @@ export class AssertionExecutor {
    */
   private assertCssPropertyRange(
     element: AIDiscoveredElement,
-    propertyName: string,
+    propertyName: string | undefined,
     range: { min?: number; max?: number },
     description: string,
     message?: string,
     startTime: number = performance.now()
   ): AssertionResult {
-    const computedStyles = element.state.computedStyles;
-    if (!computedStyles) {
-      return this.createResult(
-        false,
-        element.id,
+    const read = this.readProjected(element, 'property', propertyName);
+    if ('unmeasured' in read) {
+      return this.unmeasuredResult(
+        element,
         description,
         range,
-        undefined,
-        'Computed styles not available',
-        'Request element state with computed styles',
-        startTime,
-        element.state
+        `CSS property "${propertyName ?? ''}"`,
+        read.unmeasured,
+        startTime
       );
     }
-
-    const styleKey = propertyName as keyof typeof computedStyles;
-    const actualValue = computedStyles[styleKey] || '';
+    const actualValue = read.value ?? '';
     const numericValue = parseFloat(actualValue);
 
     if (isNaN(numericValue)) {
+      // Measured, and not a number: the range does not hold.
       return this.createResult(
         false,
         element.id,
@@ -1136,28 +1280,13 @@ export class AssertionExecutor {
    */
   private assertTokenCompliance(
     element: AIDiscoveredElement,
-    propertyName: string,
+    propertyName: string | undefined,
     tokenPath: string,
     expectedTokenValue: unknown,
     description: string,
     message?: string,
     startTime: number = performance.now()
   ): AssertionResult {
-    const computedStyles = element.state.computedStyles;
-    if (!computedStyles) {
-      return this.createResult(
-        false,
-        element.id,
-        description,
-        expectedTokenValue,
-        undefined,
-        'Computed styles not available',
-        'Request element state with computed styles',
-        startTime,
-        element.state
-      );
-    }
-
     if (expectedTokenValue === undefined) {
       return this.createResult(
         false,
@@ -1172,8 +1301,18 @@ export class AssertionExecutor {
       );
     }
 
-    const styleKey = propertyName as keyof typeof computedStyles;
-    const actualValue = (computedStyles[styleKey] || '').trim().toLowerCase();
+    const read = this.readProjected(element, 'property', propertyName);
+    if ('unmeasured' in read) {
+      return this.unmeasuredResult(
+        element,
+        description,
+        expectedTokenValue,
+        `CSS property "${propertyName ?? ''}"`,
+        read.unmeasured,
+        startTime
+      );
+    }
+    const actualValue = (read.value ?? '').trim().toLowerCase();
     const expectedStr = String(expectedTokenValue).trim().toLowerCase();
     const passed = actualValue === expectedStr;
 
@@ -1198,29 +1337,24 @@ export class AssertionExecutor {
    */
   private assertCssProperty(
     element: AIDiscoveredElement,
-    propertyName: string,
+    propertyName: string | undefined,
     expectedValue: unknown,
     description: string,
     message?: string,
     startTime: number = performance.now()
   ): AssertionResult {
-    const computedStyles = element.state.computedStyles;
-    if (!computedStyles) {
-      return this.createResult(
-        false,
-        element.id,
+    const read = this.readProjected(element, 'property', propertyName);
+    if ('unmeasured' in read) {
+      return this.unmeasuredResult(
+        element,
         description,
         expectedValue,
-        undefined,
-        'Computed styles not available',
-        'Request element state with computed styles',
-        startTime,
-        element.state
+        `CSS property "${propertyName ?? ''}"`,
+        read.unmeasured,
+        startTime
       );
     }
-
-    const styleKey = propertyName as keyof typeof computedStyles;
-    const actualValue = computedStyles[styleKey];
+    const actualValue = read.value;
     const passed = actualValue === expectedValue;
 
     return this.createResult(
@@ -1255,6 +1389,7 @@ export class AssertionExecutor {
   ): AssertionResult {
     return {
       passed,
+      outcome: passed ? 'passed' : 'failed',
       target,
       targetDescription,
       expected,

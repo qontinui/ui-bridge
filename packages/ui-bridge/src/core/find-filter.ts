@@ -59,10 +59,21 @@
  * snapshot from an SDK build that predates it), a media question asked of a
  * registry that has nothing registered, and requests that contradict
  * themselves (`mediaOnly` with `interactiveOnly`, …), which no row can match.
+ *
+ * `properties` / `attributes` are not filters but a request-scoped projection
+ * (`core/element-projection.ts`). They are VALIDATED here, so every arm refuses
+ * a malformed list identically, and handed back on
+ * `CanonicalFindContext.projection` for each call site to read off the rows it
+ * returns.
  */
 
 import type { UiBridgeErrorCode } from '../diagnostics';
 import type { UnknownCode } from '../observation/observation';
+import {
+  isProjectionRequestError,
+  parseProjectionRequest,
+  type ElementProjectionRequest,
+} from './element-projection';
 import { isMediaObservation, mediaFactsOf, unmeasuredMediaDimension } from './media-observation';
 import { hasNestedQuantifiers } from './param-schema';
 import { scrubMediaMetadata, verdictFromState, verdictOf } from './redaction';
@@ -205,6 +216,21 @@ export interface CanonicalFindCriteria {
    * does not apply (an SVG, a broken image) simply does not match.
    */
   oversizeThreshold?: number | null;
+  /**
+   * NOT a filter: a request-scoped style projection. Each returned row carries
+   * the computed value of every named CSS property (standard, camel-cased, or
+   * custom `--name`; `var()` resolved) in `projection.properties`. Validated
+   * here, so every arm refuses a malformed list the same way
+   * (`UB-VALIDATION-ERROR`); read by `core/element-projection.ts`. Needs a
+   * live DOM: a transport whose rows carry none refuses it, typed.
+   */
+  properties?: readonly string[] | null;
+  /**
+   * NOT a filter: a request-scoped attribute projection over the allow-list
+   * (`lang`, `dir`, `id`, `role`, `title`, `alt`, `href`, `aria-*`), answered
+   * in `projection.attributes`. Any other name is refused. See `properties`.
+   */
+  attributes?: readonly string[] | null;
 }
 
 /** Which transport ran the filter — named in every refusal. */
@@ -282,6 +308,13 @@ export interface CanonicalFindContext {
    * it onto the response as `unevaluated`.
    */
   unevaluated?: FindUnevaluated[];
+  /**
+   * OUTPUT. Set by the filter when the request asked for a projection
+   * (`properties` / `attributes`): the validated names to read. Call sites read
+   * each RETURNED row through `projectElement(<the row's node>, projection)`
+   * and attach the answer as the row's `projection`. Left untouched otherwise.
+   */
+  projection?: ElementProjectionRequest;
 }
 
 /** Resolve the live DOM node for an element, when one is attached. */
@@ -361,6 +394,7 @@ interface ResolvedCriteria {
   missingAltOnly: boolean;
   srcPattern?: string;
   oversizeThreshold?: number;
+  projection?: ElementProjectionRequest;
 }
 
 function refuse(
@@ -433,6 +467,13 @@ function resolveCriteria(raw: CanonicalFindCriteria, ctx: CanonicalFindContext):
   const role = readString(ctx, c, 'role');
   const label = readString(ctx, c, 'label');
   const srcPattern = readString(ctx, c, 'srcPattern');
+  let projection: ElementProjectionRequest | undefined;
+  try {
+    projection = parseProjectionRequest(c, 'body');
+  } catch (err) {
+    if (!isProjectionRequestError(err)) throw err;
+    refuse(ctx, 'UB-VALIDATION-ERROR', [err.option], `find ${err.message}`);
+  }
   return {
     interactiveOnly:
       readBool(ctx, c, 'interactive_only') ?? readBool(ctx, c, 'interactiveOnly') ?? false,
@@ -458,6 +499,7 @@ function resolveCriteria(raw: CanonicalFindCriteria, ctx: CanonicalFindContext):
     missingAltOnly: readBool(ctx, c, 'missingAltOnly') ?? false,
     srcPattern: srcPattern || undefined,
     oversizeThreshold,
+    projection,
   };
 }
 
@@ -663,6 +705,30 @@ export function applyCanonicalFindFilter<T extends FindFilterableElement>(
         invalid(ctx, 'selector', `is not a valid CSS selector: ${r.selector}`);
       }
     }
+  }
+
+  // A projection reads each returned row's live node. Rows that are serialized
+  // JSON (a relay's cached snapshot) have none, so the request is refused,
+  // typed, as `root` / `selector` are — never answered with rows that silently
+  // lack the values asked for. A single row without a node (a DOM-less
+  // registry double) answers its names as unmeasured instead.
+  if (r.projection) {
+    const projectionOptions = [
+      ...(r.projection.properties ? ['properties'] : []),
+      ...(r.projection.attributes ? ['attributes'] : []),
+    ];
+    if (ctx.liveDom === false || typeof document === 'undefined') {
+      refuse(
+        ctx,
+        'UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD',
+        projectionOptions,
+        `the ${ctx.transport ?? 'direct'} transport cannot read ${projectionOptions
+          .map((o) => `\`${o}\``)
+          .join(' / ')}: its rows carry no DOM node`,
+        'capability_unavailable_in_build'
+      );
+    }
+    ctx.projection = r.projection;
   }
 
   // Media-fact predicates read a row's observation envelope. A media row
