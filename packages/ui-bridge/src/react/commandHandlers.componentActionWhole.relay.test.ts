@@ -30,6 +30,7 @@ import {
   relayQueueingInto,
 } from './__tests__/relay-into-listener';
 import { createRelayHandlers } from '../server/relay-handlers';
+import { createNextRouteHandlers } from '../server/nextjs';
 
 function registryLike(): RegistryLike {
   const reg = getGlobalRegistry();
@@ -118,17 +119,33 @@ describe('the listener hands the executor the wire request whole', () => {
 describe('POST /control/component/:id/action/:actionId carries a new request field to the executor', () => {
   it('over the relay: invokeComponentAction, then componentActionInvocation, then the listener', async () => {
     const spy = vi.spyOn(DefaultActionExecutor.prototype, 'executeComponentAction');
-    // Entered through createRelayHandlers, the server half the relay route uses,
-    // with only the tab replaced by the listener.
-    const handlers = createRelayHandlers(
-      relayQueueingInto((action, payload) => listener(action, overTheWire(payload)))
-    );
-
-    const res = overTheWire(
-      await asIfARequestField('futureOptIn', () =>
-        handlers.invokeComponentAction('plain', 'go', { layoutId: 'single', futureOptIn: 'x' })
+    // Entered where an app serving the relay is entered: the Next.js catch-all
+    // route over createRelayHandlers, with only the browser tab replaced by the
+    // listener.
+    const routes = createNextRouteHandlers(
+      createRelayHandlers(
+        relayQueueingInto((action, payload) => listener(action, overTheWire(payload)))
       )
     );
+    const url = 'http://localhost/api/ui-bridge/control/component/plain/action/go';
+    const request = Object.assign(
+      new Request(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ layoutId: 'single', futureOptIn: 'x' }),
+      }),
+      { nextUrl: new URL(url) }
+    );
+
+    const reply = await asIfARequestField('futureOptIn', () =>
+      routes.POST(
+        request as never,
+        {
+          params: { path: ['control', 'component', 'plain', 'action', 'go'] },
+        } as never
+      )
+    );
+    const res = (await reply.json()) as Record<string, unknown>;
 
     expect(res.success).toBe(true);
     expect(spy).toHaveBeenCalledTimes(1);
