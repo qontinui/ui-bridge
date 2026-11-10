@@ -20,6 +20,7 @@ import type {
 } from '../core';
 import { RecordingSessionManager } from '../recording/session-manager';
 import type { CooccurrenceExportData } from '../recording/types';
+import { componentActionRequestFields } from './component-action-invocation';
 
 /**
  * WebSocket-like interface for compatibility
@@ -509,7 +510,7 @@ export class UIBridgeWSHandler {
     clientId: string,
     message: WSClientMessage & { type: 'executeComponentAction' }
   ): Promise<void> {
-    const { componentId, action, params, timeoutMs, verifyEffect, requestId } = message.payload;
+    const { componentId } = message.payload;
     if (!this.handlers.executeComponentAction) {
       this.sendResponse(
         clientId,
@@ -520,15 +521,14 @@ export class UIBridgeWSHandler {
       );
       return;
     }
-    // `timeoutMs` forwarded — it is the only cancellation a WS caller has.
-    // `verifyEffect` forwarded only as a boolean: it is an instruction.
-    const result = await this.handlers.executeComponentAction(componentId, {
-      action,
-      params,
-      timeoutMs,
-      verifyEffect: typeof verifyEffect === 'boolean' ? verifyEffect : undefined,
-      requestId: typeof requestId === 'string' ? requestId : undefined,
-    });
+    // Every request field the payload carries, read through the one list, each
+    // as it is: the executor validates them. `timeoutMs` is the only
+    // cancellation a WS caller has, and `verifyEffect` counts as an
+    // instruction only when it is a boolean.
+    const result = await this.handlers.executeComponentAction(
+      componentId,
+      componentActionRequestFields(message.payload)
+    );
 
     this.sendResponse(clientId, message.id, result.success, result.data, result.error);
   }

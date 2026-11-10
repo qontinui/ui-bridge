@@ -11,10 +11,12 @@ import type {
   ActionExecutor,
   ControlActionRequest,
   ControlActionResponse,
+  ComponentActionRequest,
   ComponentActionResponse,
   FindResponse,
   WorkflowRunResponse,
 } from '@qontinui/ui-bridge/control';
+import { componentActionRequestFields } from './component-action-request';
 import { diagnosePageHealth, pageHealthUnknown } from './page-health';
 import type { PageHealthObservation } from './page-health';
 import type { RenderLogEntry } from '@qontinui/ui-bridge/render-log';
@@ -103,31 +105,15 @@ export interface ActionExecutorLike {
    * — never one without the other.
    */
   executeAction(elementId: string, request: ControlActionRequest): Promise<unknown>;
-  executeComponentAction(
-    componentId: string,
-    request: {
-      action: string;
-      params?: Record<string, unknown>;
-      /**
-       * Wire-reachable cancellation (plan
-       * `2026-08-20-ui-bridge-action-declaration-shape`, Phase 3). An
-       * `AbortSignal` cannot be JSON-serialized, so this is the ONLY way an
-       * out-of-process caller can call off a hung handler — dropping it here
-       * is what made `ComponentActionRequest.timeoutMs` unreachable from every
-       * HTTP and WebSocket entry point. Validated and clamped by the executor
-       * (`normalizeActionTimeoutMs`); never passed to a timer unchecked.
-       */
-      timeoutMs?: number;
-      /**
-       * Per-request effect-verification override
-       * (`ComponentActionRequest.verifyEffect`). Dropping it here left it
-       * unreachable from every HTTP and WebSocket caller of this package.
-       */
-      verifyEffect?: boolean;
-      /** Echoed on the response so a caller can correlate it. */
-      requestId?: string;
-    }
-  ): Promise<unknown>;
+  /**
+   * The WHOLE {@link ComponentActionRequest}, for the reason given on
+   * `executeAction` above. A narrowed literal here used to be a hand-written
+   * copy of the request's fields, which the handler below forwarded one by
+   * one. That is how `timeoutMs`, and later `verifyEffect` and `requestId`,
+   * went missing for every HTTP and WebSocket caller of this package. The
+   * executor validates each field it reads.
+   */
+  executeComponentAction(componentId: string, request: ComponentActionRequest): Promise<unknown>;
   /** Optional find method for filtered element discovery */
   find?(request?: unknown): Promise<unknown>;
 }
@@ -736,24 +722,15 @@ export function createHandlers(
 
     executeComponentAction: async (
       id: string,
-      request: {
-        action: string;
-        params?: Record<string, unknown>;
-        timeoutMs?: number;
-        verifyEffect?: unknown;
-        requestId?: unknown;
-      }
+      request: ComponentActionRequest
     ): Promise<APIResponse<ComponentActionResponse>> => {
       try {
-        const result = await actionExecutor.executeComponentAction(id, {
-          action: request.action,
-          params: request.params,
-          // Forwarded, not dropped. See `ActionExecutorLike` above.
-          timeoutMs: request.timeoutMs,
-          verifyEffect:
-            typeof request.verifyEffect === 'boolean' ? request.verifyEffect : undefined,
-          requestId: typeof request.requestId === 'string' ? request.requestId : undefined,
-        });
+        // Every request field, read through the one list, each as it is. See
+        // `ActionExecutorLike` above.
+        const result = await actionExecutor.executeComponentAction(
+          id,
+          componentActionRequestFields(request)
+        );
         return success(result) as APIResponse<ComponentActionResponse>;
       } catch (err) {
         return error((err as Error).message, 'COMPONENT_ACTION_ERROR');

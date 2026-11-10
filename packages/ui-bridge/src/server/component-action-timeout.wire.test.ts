@@ -23,10 +23,10 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { createHandlers, type RegistryLike } from './handlers';
 import { createControlHandlers } from './nextjs';
 import { UIBridgeWSHandler } from './websocket-handler';
-import { createRelayHandlers } from './relay-handlers';
-import { CommandRelay } from './command-relay';
+import type { createRelayHandlers } from './relay-handlers';
 import { resetGlobalRegistry, getGlobalRegistry } from '../core/registry';
 import type { UIBridgeServerHandlers } from './types';
+import { asIfARequestField, relayDispatchingTo } from '../react/__tests__/relay-into-listener';
 
 /** Every request the executor was handed, in order. */
 let seen: Array<Record<string, unknown>>;
@@ -215,17 +215,14 @@ describe('relay handlers, HTTP route arm (invokeComponentAction)', () => {
     dispatched: Array<Record<string, unknown>>;
   } {
     const dispatched: Array<Record<string, unknown>> = [];
-    const relay = new CommandRelay({
-      globalPrefix: `__uiBridgeTimeoutWireTest_${Math.random().toString(36).slice(2, 10)}`,
-    });
     // Intercept at the dispatch boundary: `queueCommand` is what carries the
     // normalized request to the browser, so whatever lands here is what the
     // in-page handler receives.
-    relay.queueCommand = (async (action: string, payload: Record<string, unknown>) => {
+    const handlers = relayDispatchingTo(async (action, payload) => {
       dispatched.push({ action, ...payload });
-      return { success: true } as never;
-    }) as typeof relay.queueCommand;
-    return { handlers: createRelayHandlers(relay), dispatched };
+      return { success: true };
+    });
+    return { handlers, dispatched };
   }
 
   it('hoists timeoutMs onto the request instead of merging it into params', async () => {
@@ -307,7 +304,12 @@ describe('WebSocket handler forwards verifyEffect and requestId', () => {
     });
   });
 
-  it('ignores a non-boolean verifyEffect', async () => {
+  // The hop does not filter it. The executor is the one place that decides what
+  // a request field means, and it treats only a boolean `verifyEffect` as an
+  // instruction ("a non-boolean verifyEffect is not forwarded as an
+  // instruction" in `react/commandHandlers.effectVerification.relay.test.ts`
+  // drives the real executor).
+  it('hands a non-boolean verifyEffect on as it is, for the executor to judge', async () => {
     const ws = new UIBridgeWSHandler(
       createHandlers(
         makeRegistryLike(),
@@ -318,7 +320,22 @@ describe('WebSocket handler forwards verifyEffect and requestId', () => {
     send(ws, { componentId: 'login-form', action: 'submit', verifyEffect: 'true' });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(seen).toHaveLength(1);
-    expect(seen[0].verifyEffect).toBeUndefined();
+    expect(seen).toEqual([{ id: 'login-form', action: 'submit', verifyEffect: 'true' }]);
+  });
+
+  it('carries a request field added to the list, and leaves componentId behind', async () => {
+    const ws = new UIBridgeWSHandler(
+      createHandlers(
+        makeRegistryLike(),
+        recordingExecutor() as never
+      ) as unknown as Partial<UIBridgeServerHandlers>
+    );
+
+    await asIfARequestField('futureOptIn', async () => {
+      send(ws, { componentId: 'login-form', action: 'submit', params: {}, futureOptIn: 'x' });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(seen).toEqual([{ id: 'login-form', action: 'submit', params: {}, futureOptIn: 'x' }]);
   });
 });

@@ -5,6 +5,7 @@
  */
 
 import type { UIBridgeServerHandlers } from './types';
+import { componentActionRequestFields } from './component-action-request';
 import type {
   BridgeEvent,
   BridgeEventType,
@@ -407,23 +408,16 @@ export class UIBridgeWSHandler {
     clientId: string,
     message: WSClientMessage & { type: 'executeComponentAction' }
   ): Promise<void> {
-    const { componentId, action, params, timeoutMs } = message.payload;
-    // Read by name rather than destructured from the typed payload: this
-    // package resolves `@qontinui/ui-bridge` by range, and an older install's
-    // payload type does not declare these two fields.
-    const { verifyEffect, requestId } = message.payload as {
-      verifyEffect?: unknown;
-      requestId?: unknown;
-    };
-    // `timeoutMs` forwarded — it is the only cancellation a WS caller has.
-    // `verifyEffect` forwarded only as a boolean: it is an instruction.
-    const result = await this.handlers.executeComponentAction(componentId, {
-      action,
-      params,
-      timeoutMs,
-      verifyEffect: typeof verifyEffect === 'boolean' ? verifyEffect : undefined,
-      requestId: typeof requestId === 'string' ? requestId : undefined,
-    });
+    const { componentId } = message.payload;
+    // Every request field the payload carries, read through the one list, each
+    // as it is: the executor validates them. Read by list rather than
+    // destructured from the typed payload, because this package resolves
+    // `@qontinui/ui-bridge` by range and an older install's payload type does
+    // not declare every field.
+    const result = await this.handlers.executeComponentAction(
+      componentId,
+      componentActionRequestFields(message.payload)
+    );
 
     this.sendResponse(clientId, message.id, result.success, result.data, result.error);
   }

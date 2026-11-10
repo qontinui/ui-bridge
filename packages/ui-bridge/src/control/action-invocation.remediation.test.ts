@@ -304,6 +304,69 @@ describe('timeoutMs is validated at the executor (review #1)', () => {
   });
 });
 
+// Plan 2026-11-10-ui-bridge-relay-and-assert-batch-drop-fields-and-headless-leaks-chromium,
+// Phase 5. The relay listener and the server hops used to drop a non-string
+// `requestId` on the way. They now hand the executor the request whole, so the
+// executor is where it is checked, the same as `timeoutMs` above. Every
+// response echoes it, success or failure.
+describe('requestId is validated at the executor', () => {
+  let registry: UIBridgeRegistry;
+  let executor: DefaultActionExecutor;
+
+  beforeEach(() => {
+    registry = new UIBridgeRegistry();
+    executor = new DefaultActionExecutor(registry);
+    registry.registerComponent('cmp', {
+      name: 'Cmp',
+      actions: [
+        { id: 'go', handler: () => 'ok' },
+        {
+          id: 'boom',
+          handler: () => {
+            throw new Error('boom');
+          },
+        },
+      ],
+    });
+  });
+
+  it('echoes a string requestId', async () => {
+    const res = await executor.executeComponentAction('cmp', { action: 'go', requestId: 'req-1' });
+
+    expect(res.success).toBe(true);
+    expect(res.requestId).toBe('req-1');
+  });
+
+  it('drops a non-string requestId instead of echoing it back', async () => {
+    const res = await executor.executeComponentAction('cmp', {
+      action: 'go',
+      requestId: 42 as unknown as string,
+    });
+
+    expect(res.success).toBe(true);
+    expect(res.result).toBe('ok');
+    expect(res.requestId).toBeUndefined();
+  });
+
+  it('drops it on the failure paths too', async () => {
+    const malformed = { not: 'a string' } as unknown as string;
+
+    const missing = await executor.executeComponentAction('cmp', {
+      action: 'nope',
+      requestId: malformed,
+    });
+    const thrown = await executor.executeComponentAction('cmp', {
+      action: 'boom',
+      requestId: malformed,
+    });
+
+    expect(missing.success).toBe(false);
+    expect(missing.requestId).toBeUndefined();
+    expect(thrown.success).toBe(false);
+    expect(thrown.requestId).toBeUndefined();
+  });
+});
+
 describe('a validator fault is not reported as a handler failure (review #9)', () => {
   let registry: UIBridgeRegistry;
   let executor: DefaultActionExecutor;

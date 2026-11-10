@@ -2128,10 +2128,18 @@ export class DefaultActionExecutor implements ActionExecutor {
    */
   async executeComponentAction(
     componentId: string,
-    request: ComponentActionRequest,
+    wireRequest: ComponentActionRequest,
     options: ComponentActionInvokeOptions = {}
   ): Promise<ComponentActionResponse> {
     const startTime = performance.now();
+    // `requestId` is WIRE data, and every response below echoes it. The relay
+    // listener and the HTTP and WebSocket hops hand the request on whole, so
+    // this is where a non-string one is caught: dropped, never echoed back.
+    // `timeoutMs` and `verifyEffect` are checked where they are read.
+    const request: ComponentActionRequest = {
+      ...wireRequest,
+      requestId: typeof wireRequest.requestId === 'string' ? wireRequest.requestId : undefined,
+    };
 
     try {
       const component = this.registry.getComponent(componentId);

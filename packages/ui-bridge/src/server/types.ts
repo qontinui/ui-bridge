@@ -573,7 +573,10 @@ export interface UIBridgeServerHandlers {
    * (`params: ['id','actionId']`, then the body, then the context), so the
    * adapters hand it exactly what its signature names. The body may be the
    * wrapped `{ params: {...} }` shape or the flat shape the action's
-   * `paramSchema` advertises; `timeoutMs` and `requestId` are request fields.
+   * `paramSchema` advertises. The request fields (`timeoutMs`, `verifyEffect`,
+   * `requestId`: the keys of `COMPONENT_ACTION_REQUEST_FIELDS` in
+   * `component-action-invocation.ts`, other than `action` and `params`) are
+   * hoisted onto the request, never merged into params.
    */
   invokeComponentAction: (
     id: string,

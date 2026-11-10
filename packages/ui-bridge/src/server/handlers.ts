@@ -30,6 +30,7 @@ import type {
   ActionExecutor,
   ControlActionRequest,
   ControlActionResponse,
+  ComponentActionRequest,
   ComponentActionResponse,
   ControlSnapshot,
   DiscoveredElement,
@@ -206,7 +207,10 @@ import type {
   EvaluateRequest,
 } from '../specs/quality-types';
 import { listContexts } from '../specs/quality-contexts';
-import { componentActionInvocation } from './component-action-invocation';
+import {
+  componentActionInvocation,
+  componentActionRequestFromWire,
+} from './component-action-invocation';
 import {
   captureQualityBaseline,
   diffQualityBaseline,
@@ -509,32 +513,15 @@ export interface ActionExecutorLike {
    * — never one without the other.
    */
   executeAction(elementId: string, request: ControlActionRequest): Promise<unknown>;
-  executeComponentAction(
-    componentId: string,
-    request: {
-      action: string;
-      params?: Record<string, unknown>;
-      /**
-       * Wire-reachable cancellation (plan
-       * `2026-08-20-ui-bridge-action-declaration-shape`, Phase 3). An
-       * `AbortSignal` cannot be JSON-serialized, so this is the ONLY way an
-       * out-of-process caller can call off a hung handler — dropping it here
-       * is what made `ComponentActionRequest.timeoutMs` unreachable from every
-       * HTTP and WebSocket entry point. Validated and clamped by the executor
-       * (`normalizeActionTimeoutMs`); never passed to a timer unchecked.
-       */
-      timeoutMs?: number;
-      /**
-       * Per-request effect-verification override
-       * (`ComponentActionRequest.verifyEffect`): `true` verifies this call,
-       * `false` declines even a declared signature's verification. Dropping it
-       * here left both arms unreachable from every HTTP caller.
-       */
-      verifyEffect?: boolean;
-      /** Echoed on the response so a caller can correlate it. */
-      requestId?: string;
-    }
-  ): Promise<unknown>;
+  /**
+   * The WHOLE {@link ComponentActionRequest}, for the reason given on
+   * `executeAction` above. A narrowed literal here used to be a hand-written
+   * copy of the request's fields, which the handlers below forwarded one by
+   * one. That is how `timeoutMs`, and later `verifyEffect` and `requestId`,
+   * went missing for every HTTP and WebSocket caller. The executor validates
+   * each field it reads (`timeoutMs`, `verifyEffect`, `requestId`).
+   */
+  executeComponentAction(componentId: string, request: ComponentActionRequest): Promise<unknown>;
   /**
    * Phase 6 — the predict route's executor arm.
    *
@@ -2153,26 +2140,14 @@ export function createHandlers(
       }
     },
 
-    executeComponentAction: async (
-      id: string,
-      request: {
-        action: string;
-        params?: Record<string, unknown>;
-        timeoutMs?: number;
-        verifyEffect?: boolean;
-        requestId?: string;
-      }
-    ) => {
+    executeComponentAction: async (id: string, request: ComponentActionRequest) => {
       try {
-        const result = await actionExecutor.executeComponentAction(id, {
-          action: request.action,
-          params: request.params,
-          // Forwarded, not dropped. See `ActionExecutorLike` above.
-          timeoutMs: request.timeoutMs,
-          verifyEffect:
-            typeof request.verifyEffect === 'boolean' ? request.verifyEffect : undefined,
-          requestId: typeof request.requestId === 'string' ? request.requestId : undefined,
-        });
+        // The request whole, normalized the way the relay listener's twin arm
+        // normalizes it. See `ActionExecutorLike` above.
+        const result = await actionExecutor.executeComponentAction(
+          id,
+          componentActionRequestFromWire(request)
+        );
         return success(result) as APIResponse<ComponentActionResponse>;
       } catch (err) {
         return error((err as Error).message, 'COMPONENT_ACTION_ERROR');
@@ -2190,13 +2165,7 @@ export function createHandlers(
     ): Promise<APIResponse<ComponentActionResponse>> => {
       const { request } = componentActionInvocation(actionId, body);
       try {
-        const result = await actionExecutor.executeComponentAction(id, {
-          action: request.action,
-          params: request.params,
-          timeoutMs: request.timeoutMs,
-          verifyEffect: request.verifyEffect,
-          requestId: request.requestId,
-        });
+        const result = await actionExecutor.executeComponentAction(id, request);
         return success(result) as APIResponse<ComponentActionResponse>;
       } catch (err) {
         return error((err as Error).message, 'COMPONENT_ACTION_ERROR');
