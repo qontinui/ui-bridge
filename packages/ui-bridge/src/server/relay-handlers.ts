@@ -21,6 +21,7 @@ import type {
   APIResponse,
   CapabilitiesResponse,
   DOMChangeEvent,
+  ElementStateQuery,
   HandlerContext,
   StateSummary,
 } from './types';
@@ -48,6 +49,11 @@ import {
   type FindFilterableElement,
   type FindUnevaluated,
 } from '../core/find-filter';
+import {
+  isProjectionRequestError,
+  parseProjectionRequest,
+  type ElementProjectionRequest,
+} from '../core/element-projection';
 
 // ============================================================================
 // Helpers
@@ -1137,15 +1143,35 @@ export function createRelayHandlers(
       return success(element, fallbackMeta);
     },
 
-    async getElementState(id, context) {
+    async getElementState(id, query?: ElementStateQuery, context?: HandlerContext) {
+      // The request-scoped projection (`properties` / `attributes`) is
+      // validated HERE, before anything is queued: a malformed list never
+      // reaches a tab. What travels is the normalised request (arrays).
+      let projection: ElementProjectionRequest | undefined;
+      try {
+        projection = parseProjectionRequest(query, 'query');
+      } catch (err) {
+        if (isProjectionRequestError(err)) return error(`element state ${err.message}`, err.code);
+        throw err;
+      }
+      const payload = { id, ...(projection ?? {}) };
       // Per-user tab scoping (§4.2): the adapter threads the
       // authenticated caller's userId via the `context` final argument so
       // the dispatch is gated on the caller's tabs, NEVER on whichever
       // tab happens to be `primaryTabId` (which could belong to a
-      // different user).
-      const liveOpts = context?.callerUserId
-        ? { ownerCheck: { userId: context.callerUserId } }
-        : undefined;
+      // different user). Now that the route takes its query, `?tabId=` pins
+      // the read too, as it does for `getElement`.
+      const { targetTabId, callerUserId } = extractTabRouting(query ?? {});
+      const effectiveUserId = scopedCaller(callerUserId, context);
+      const ownerCheck = effectiveUserId ? { userId: effectiveUserId } : undefined;
+      const liveOpts = ownerCheck ? { ownerCheck } : undefined;
+
+      // P0 (plan 2026-06-12 item 1): a PINNED read must never fall back to
+      // the shared cross-tab cache — propagate the routing/timeout error.
+      if (targetTabId !== undefined) {
+        return relayCommand('getElementState', payload, { targetTabId, ...liveOpts });
+      }
+
       // Live first, and a LIVE answer is the answer, under the rule
       // `getElement`'s unpinned read follows: the tab's state is a success,
       // and a failure the tab reported is a failure envelope — the
@@ -1159,18 +1185,28 @@ export function createRelayHandlers(
       // `_meta.fallback` with the cause.
       let noLiveAnswer: string;
       try {
-        const result = await relay.queueCommand('getElementState', { id }, liveOpts);
+        const result = await relay.queueCommand('getElementState', payload, liveOpts);
         const innerFailure = readRelayInnerFailure(result);
         if (innerFailure) return relayInnerFailureResponse(innerFailure, result);
         return success(result);
       } catch (e) {
         const cause = noLiveAnswerCause('getElementState', e);
-        if (cause === undefined) return relayErrorResponse(e, liveOpts?.ownerCheck);
+        if (cause === undefined) return relayErrorResponse(e, ownerCheck);
         noLiveAnswer = cause;
+      }
+      // The cached snapshot is serialized JSON: no node behind it to read a
+      // projection from. Refused, typed — never answered with a state that
+      // silently lacks the values asked for.
+      if (projection) {
+        return error(
+          `Element state for ${id}: the relay's cached snapshot carries no DOM node, so it ` +
+            `cannot read the requested \`properties\` / \`attributes\` (no live answer: ${noLiveAnswer})`,
+          'UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD'
+        );
       }
       // Every answer from here on is the cache's, the not-found included.
       const fallbackMeta = cacheFallbackMeta('getElementState', noLiveAnswer);
-      const scope = scopeOf(context?.callerUserId);
+      const scope = scopeOf(effectiveUserId);
       const element = scope.cache.controlSnapshot.elements.find((e) => e.id === id);
       if (element && 'state' in element) {
         return success((element as { state: unknown }).state, fallbackMeta);
@@ -1387,6 +1423,15 @@ export function createRelayHandlers(
         (typeof (payload as { tabId?: unknown }).tabId === 'string'
           ? ((payload as { tabId: string }).tabId as string)
           : undefined);
+      // A malformed projection (`properties` / `attributes`) is refused HERE,
+      // before anything is queued. The tab's canonical filter would refuse it
+      // too, but a request that can only be refused never has to reach a tab.
+      try {
+        parseProjectionRequest(payload, 'body');
+      } catch (err) {
+        if (isProjectionRequestError(err)) return error(`find ${err.message}`, err.code);
+        throw err;
+      }
       const result = await relayCommand<FindResponse>('find', payload, { targetTabId, context });
       if (result.success) return result;
       // The browser ANSWERED with a typed refusal (a request the canonical
