@@ -101,6 +101,28 @@ the first registered tab is returned, which may belong to someone else. Pass
 `pinnedTabId` when the page pins its tab id (`ui-bridge-inject --tab-id` does).
 The poll then returns that tab and no other.
 
+### A launch that fails cleans up after itself
+
+`launchHeadlessTab` either resolves with a tab that is yours to `close()`, or
+rejects having already closed the browser it started. After a rejection there
+is no handle to receive and nothing to clean up:
+
+- The inputs are checked before Chromium is spawned: `deviceScaleFactor`,
+  `colorScheme`, and the `storageStatePath` file, which is read and parsed
+  then. A bad one rejects with no browser launched.
+- Once Chromium is running, a step that throws (creating the context, an init
+  script, opening the page, the first navigation, the registration wait)
+  closes the browser first and then rejects with the original error: the same
+  error object, not a wrapper, and never the close's own failure. If that
+  close fails too, the launcher reports it on stderr.
+
+A registration wait that runs out is not a failure: the launch resolves with
+`uiBridgeRegistered: false`, and the tab is still yours to close.
+
+Up to 0.7.0, a launch whose first navigation failed (or any earlier step after
+the browser started) rejected with Chromium still running and no handle to
+close it, so a long-lived caller leaked one browser per failed launch.
+
 ### Device pixel ratio and colour scheme
 
 `deviceScaleFactor` and `colorScheme` are browser-CONTEXT options (in the
