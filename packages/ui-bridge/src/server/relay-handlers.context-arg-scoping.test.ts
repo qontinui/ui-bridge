@@ -189,7 +189,8 @@ describe('relay-handlers · context-arg scoping (§4.2 follow-up)', () => {
   });
 
   // -------------------------------------------------------------------------
-  // getElementState(id) — id-only signature, must accept context.
+  // getElementState(id, query) — its query carries only the projection, so
+  // the caller identity still travels in the trailing context.
   // -------------------------------------------------------------------------
 
   describe('getElementState(id)', () => {
@@ -198,7 +199,7 @@ describe('relay-handlers · context-arg scoping (§4.2 follow-up)', () => {
       const spy = vi.spyOn(relay, 'queueCommand').mockResolvedValue({ visible: true } as never);
       const handlers = createRelayHandlers(relay);
 
-      await handlers.getElementState!('elem-x', { callerUserId: 'alice' });
+      await handlers.getElementState!('elem-x', undefined, { callerUserId: 'alice' });
 
       expect(spy).toHaveBeenCalledTimes(1);
       const [action, payload, opts] = spy.mock.calls[0]!;
@@ -218,7 +219,7 @@ describe('relay-handlers · context-arg scoping (§4.2 follow-up)', () => {
       // The relay must NOT dispatch to bob's tab even though it's
       // primaryTabId; the ownerCheck scopes to alice's owned tabs
       // (none) and SDK_DISCONNECTs.
-      await handlers.getElementState!('elem-x', { callerUserId: 'alice' });
+      await handlers.getElementState!('elem-x', undefined, { callerUserId: 'alice' });
 
       expect(spy).toHaveBeenCalledTimes(1);
       const [, , opts] = spy.mock.calls[0]!;

@@ -160,6 +160,7 @@ import type {
   ControlBatchResponse,
 } from './types';
 import { applyCanonicalFindFilter, type CanonicalFindContext } from '../core/find-filter';
+import { projectElement } from '../core/element-projection';
 import { mediaFactsOf } from '../core/media-observation';
 import {
   forcePseudoState,
@@ -2578,11 +2579,17 @@ export class DefaultActionExecutor implements ActionExecutor {
       transport: 'executor',
       registrySize: this.registry.getAllElements().length,
     };
+    // The request-scoped projection (`properties` / `attributes`) is read off
+    // each RETURNED row's live node before the node is dropped from the row.
     const elements: DiscoveredElement[] = applyCanonicalFindFilter(
       candidates,
       criteria,
       filterCtx
-    ).map(({ element: _element, ...row }) => row);
+    ).map(({ element, ...row }) =>
+      filterCtx.projection
+        ? { ...row, projection: projectElement(element, filterCtx.projection) }
+        : row
+    );
 
     return {
       elements,

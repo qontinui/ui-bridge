@@ -11,6 +11,8 @@
  *   "checkbox is not checked"  → { target: "checkbox", type: "unchecked" }
  */
 
+import type { AssertionRequest, BatchAssertionRequest, SearchCriteria } from './types';
+
 /** Input for the NL assertion parser. Target can be a string or a structured search criteria object. */
 export interface NLAssertionInput {
   target?: unknown;
@@ -19,28 +21,51 @@ export interface NLAssertionInput {
   assertion?: string;
 }
 
-/** Output from the NL assertion parser */
+/** The three fields the parser resolves; every other field of the input rides along unchanged. */
 export interface NLAssertionOutput {
-  target: string;
+  /** An element id or description, or the caller's structured `SearchCriteria` kept as an object. */
+  target: string | SearchCriteria;
   type: string;
   expected?: unknown;
+}
+
+/** A structured target (a `SearchCriteria` object) stays an object; anything else is an id string. */
+function structuredTarget(target: unknown): string | SearchCriteria {
+  return typeof target === 'object' && target !== null
+    ? (target as SearchCriteria)
+    : String(target);
 }
 
 /**
  * Parse a natural language assertion into a structured form.
  *
- * If `target` and `type` are already present, passes them through.
- * Otherwise, parses the `assertion` string into { target, type, expected }.
+ * If `target` and `type` are already present, the request is passed through
+ * WHOLE. Otherwise the `assertion` string is parsed into `{ target, type,
+ * expected }`, again over the whole request. Either way every field the parser
+ * does not resolve — `attributeName`, `propertyName`, `allowedValues`, `range`,
+ * `tokenPath`, `timeout`, `message`, `fuzzy`, `relatedTarget`, `minGap` — rides
+ * along. Until 2026-11-10 the structured branch returned only the three
+ * resolved fields, and both transports that call this (the relay's
+ * `aiAssert` / `aiAssertBatch` command handlers) forwarded only those, so an
+ * `attribute` or `cssProperty*` assertion sent through the relay reached the
+ * executor without the name it checks; a `SearchCriteria` target was turned
+ * into the string `"[object Object]"`.
  */
-export function parseNLAssertion(input: NLAssertionInput): NLAssertionOutput {
+export function parseNLAssertion<T extends NLAssertionInput>(input: T): T & NLAssertionOutput {
   // If already structured with target and type, pass through
   if (input.target && input.type) {
-    return { target: String(input.target), type: input.type, expected: input.expected };
+    return {
+      ...input,
+      target: structuredTarget(input.target),
+      type: input.type,
+      expected: input.expected,
+    };
   }
 
   const text = input.assertion ?? '';
   if (!text) {
     return {
+      ...input,
       target: String(input.target ?? ''),
       type: String(input.type ?? 'exists'),
       expected: input.expected,
@@ -59,7 +84,7 @@ export function parseNLAssertion(input: NLAssertionInput): NLAssertionOutput {
           .replace(/\s*(is\s+)?visible.*/, '')
           .replace(/\b(there\s+are|on\s+the\s+page)\b/g, '')
           .trim() || text;
-      return { target, type: 'hidden' };
+      return { ...input, target, type: 'hidden' };
     }
     // "not disabled" → enabled
     if (/\bdisabled\b/.test(lc)) {
@@ -68,7 +93,7 @@ export function parseNLAssertion(input: NLAssertionInput): NLAssertionOutput {
           .replace(/.*?(no|not|isn't|aren't)\s+/, '')
           .replace(/\s*(is\s+)?disabled.*/, '')
           .trim() || text;
-      return { target, type: 'enabled' };
+      return { ...input, target, type: 'enabled' };
     }
     // "not checked" → unchecked
     if (/\bchecked\b/.test(lc)) {
@@ -77,7 +102,7 @@ export function parseNLAssertion(input: NLAssertionInput): NLAssertionOutput {
           .replace(/.*?(no|not|isn't|aren't)\s+/, '')
           .replace(/\s*(is\s+)?checked.*/, '')
           .trim() || text;
-      return { target, type: 'unchecked' };
+      return { ...input, target, type: 'unchecked' };
     }
     // "not enabled" → disabled
     if (/\benabled\b/.test(lc)) {
@@ -86,7 +111,7 @@ export function parseNLAssertion(input: NLAssertionInput): NLAssertionOutput {
           .replace(/.*?(no|not|isn't|aren't)\s+/, '')
           .replace(/\s*(is\s+)?enabled.*/, '')
           .trim() || text;
-      return { target, type: 'disabled' };
+      return { ...input, target, type: 'disabled' };
     }
     // "not exist" / "not present" → notExists
     if (/\b(exist|present|on the page)\b/.test(lc)) {
@@ -96,7 +121,7 @@ export function parseNLAssertion(input: NLAssertionInput): NLAssertionOutput {
           .replace(/\s*(exist|present|on the page).*/, '')
           .replace(/\b(there\s+are|there\s+is)\b/g, '')
           .trim() || text;
-      return { target, type: 'notExists' };
+      return { ...input, target, type: 'notExists' };
     }
     // Generic negative — default to notExists
     const target =
@@ -104,7 +129,7 @@ export function parseNLAssertion(input: NLAssertionInput): NLAssertionOutput {
         .replace(/.*?(no|not|isn't|aren't)\s+/, '')
         .replace(/\b(on the page|visible|exist)\b/g, '')
         .trim() || text;
-    return { target, type: 'notExists' };
+    return { ...input, target, type: 'notExists' };
   }
 
   // Positive patterns: "X is visible", "X exists", "X is enabled", etc.
@@ -141,6 +166,7 @@ export function parseNLAssertion(input: NLAssertionInput): NLAssertionOutput {
         const match = lc.match(/contains?\s+['"](.+?)['"]/);
         if (match) {
           return {
+            ...input,
             target: target.replace(/['"].*?['"]/g, '').trim() || text,
             type,
             expected: match[1],
@@ -150,13 +176,42 @@ export function parseNLAssertion(input: NLAssertionInput): NLAssertionOutput {
 
       // For "empty" → hasValue with expected empty string
       if (type === 'hasValue' && input.expected === undefined) {
-        return { target, type, expected: '' };
+        return { ...input, target, type, expected: '' };
       }
 
-      return { target, type };
+      return { ...input, target, type };
     }
   }
 
   // Default: treat the entire assertion as a target with "exists" type
-  return { target: text, type: 'exists' };
+  return { ...input, target: text, type: 'exists' };
+}
+
+/**
+ * Normalise an `ai/assert/batch` request — THE one implementation both
+ * transports use (the in-process `aiAssertBatch` handlers and the relay's
+ * `aiAssertBatch` command): each entry parsed by {@link parseNLAssertion} (a
+ * bare string is an NL assertion), `mode` defaulted to `'all'`, and every other
+ * field — `stopOnFailure` included — passed through. A non-array `assertions`
+ * is refused rather than read as an empty batch.
+ */
+export function normalizeAssertionBatch(request: {
+  assertions?: unknown;
+  mode?: 'all' | 'any' | null;
+  stopOnFailure?: boolean;
+}): BatchAssertionRequest {
+  const raw = request.assertions ?? [];
+  if (!Array.isArray(raw)) {
+    throw new TypeError(`assertions must be an array, got ${typeof raw}`);
+  }
+  return {
+    ...request,
+    mode: request.mode || 'all',
+    assertions: raw.map(
+      (a: unknown) =>
+        parseNLAssertion(
+          typeof a === 'string' ? { assertion: a } : ((a ?? {}) as NLAssertionInput)
+        ) as unknown as AssertionRequest
+    ),
+  };
 }

@@ -25,6 +25,7 @@ import type {
   SpawnHeadlessRequest,
   SpawnHeadlessResponse,
   RunnerWindowsList,
+  ElementStateQuery,
 } from './types';
 import type {
   ActionExecutor,
@@ -56,6 +57,13 @@ import {
   type CanonicalFindContext,
   type FindFilterableElement,
 } from '../core/find-filter';
+import {
+  isProjectionRequestError,
+  liveElementOf,
+  parseProjectionRequest,
+  projectElement,
+  type ElementProjectionRequest,
+} from '../core/element-projection';
 import { diagnoseSnapshotPageHealth } from './page-health';
 import { buildVisibilityReport } from './visibility-report';
 import {
@@ -119,7 +127,6 @@ import type {
   NLActionResponse,
   AssertionRequest,
   AssertionResult,
-  AssertionType,
   BatchAssertionRequest,
   BatchAssertionResult,
   SemanticSnapshot,
@@ -152,7 +159,7 @@ import type {
   FindResult,
   FindContext,
 } from '../ai';
-import { parseNLAssertion as parseNLAssertionShared } from '../ai/nl-assertion-parser';
+import { normalizeAssertionBatch, parseNLAssertion } from '../ai/nl-assertion-parser';
 import { find } from '../ai/find';
 import { stateSourceFromRegistry, type StateRegistryLike } from '../ai/timeline-recorder';
 import { captureFormSnapshot, diffFormSnapshots } from '../ai/form-diff';
@@ -292,40 +299,6 @@ interface HeadlessLauncherModule {
     uiBridgeRegistered: boolean;
     tabId: string | null;
   }>;
-}
-
-/**
- * Parse a natural language assertion into a structured AssertionRequest.
- * Delegates to the shared NL assertion parser and merges result back into the request.
- */
-function parseNLAssertion(request: AssertionRequest & { assertion?: string }): AssertionRequest {
-  // If already structured with target and type, pass through
-  if (request.target && request.type) return request;
-
-  const parsed = parseNLAssertionShared(request);
-  return {
-    ...request,
-    target: parsed.target,
-    type: parsed.type as AssertionType,
-    expected: parsed.expected,
-  };
-}
-
-/**
- * Normalize a batch assertion request: parse NL strings and ensure mode is set.
- */
-function normalizeBatchAssertions(
-  request: BatchAssertionRequest & { assertions?: (AssertionRequest | string)[] }
-): BatchAssertionRequest {
-  return {
-    ...request,
-    mode: request.mode || 'all',
-    assertions: (request.assertions || []).map((a: AssertionRequest | string) =>
-      typeof a === 'string'
-        ? parseNLAssertion({ assertion: a } as AssertionRequest & { assertion: string })
-        : parseNLAssertion(a as AssertionRequest & { assertion?: string })
-    ),
-  };
 }
 
 /**
@@ -1481,6 +1454,10 @@ export function createHandlers(
         findRequest,
         filterCtx
       );
+      // The live node behind each returned row, for the request-scoped
+      // projection (`properties` / `attributes`) read below.
+      let nodes: unknown[] = elements.map((el) => (el as FindFilterableElement).element);
+      let projection: ElementProjectionRequest | undefined = filterCtx.projection;
 
       // DOM fallback: when registry returns 0 elements, scan the DOM directly.
       // The scan keeps each node until filtering is done, so `root`,
@@ -1488,13 +1465,20 @@ export function createHandlers(
       if (elements.length === 0) {
         const domElements = scanDOMForInteractiveElementsWithRefs();
         if (domElements.length > 0) {
-          elements = applyCanonicalFindFilter(domElements, findRequest, {
-            transport: 'server',
-          }).map(({ element: _element, ...data }) => data);
+          const fallbackCtx: CanonicalFindContext = { transport: 'server' };
+          const kept = applyCanonicalFindFilter(domElements, findRequest, fallbackCtx);
+          nodes = kept.map((row) => row.element);
+          elements = kept.map(({ element: _element, ...data }) => data);
+          projection = fallbackCtx.projection;
         }
       }
 
-      const materialized = materializeElements(elements);
+      const materialized = projection
+        ? materializeElements(elements).map((row, i) => ({
+            ...row,
+            projection: projectElement(liveElementOf(nodes[i]), projection),
+          }))
+        : materializeElements(elements);
       return success({
         elements: materialized,
         // Folded over exactly the array being returned — see
@@ -1670,13 +1654,49 @@ export function createHandlers(
       }
     },
 
-    getElementState: async (id: string): Promise<APIResponse<unknown>> => {
+    /**
+     * `GET /control/element/:id/state` — the element's canonical state, in the
+     * shape the relay's `getElementState` command answers (`{ id, ...state }`
+     * plus the legacy `isVisible` / `isEnabled` / `text` aliases), and — when
+     * the query asks — the request-scoped projection (`properties` /
+     * `attributes`, comma-separated). A malformed projection is refused
+     * (`UB-VALIDATION-ERROR`) before anything is read.
+     *
+     * A registry entry exposes its state through `getState()`; a DOM-fallback
+     * entry carries a built `state`. This handler used to read `.state` only,
+     * so on a registry element it answered `success` with no data at all.
+     */
+    getElementState: async (
+      id: string,
+      query?: ElementStateQuery
+    ): Promise<APIResponse<unknown>> => {
       try {
-        const element = registry.getElement(id) as { state?: unknown } | undefined;
+        let projection: ElementProjectionRequest | undefined;
+        try {
+          projection = parseProjectionRequest(query, 'query');
+        } catch (err) {
+          if (isProjectionRequestError(err)) {
+            return error(`element state ${err.message}`, err.code);
+          }
+          throw err;
+        }
+        const element = registry.getElement(id) as
+          | { state?: ElementState; getState?: () => ElementState; element?: unknown }
+          | undefined;
         if (!element) {
           return error(`Element not found: ${id}`, 'NOT_FOUND');
         }
-        return success(element.state);
+        const state = element.getState?.() ?? element.state;
+        return success({
+          id,
+          ...state,
+          isVisible: state?.visible,
+          isEnabled: state?.enabled,
+          text: state?.textContent,
+          ...(projection
+            ? { projection: projectElement(liveElementOf(element.element), projection) }
+            : {}),
+        });
       } catch (err) {
         return error((err as Error).message, 'ELEMENT_STATE_ERROR');
       }
@@ -3119,7 +3139,7 @@ export function createHandlers(
         }
         // Refresh elements before batch assertion
         refreshElements();
-        const normalized = normalizeBatchAssertions(request);
+        const normalized = normalizeAssertionBatch(request);
         const result = await assertionExecutor.assertBatch(normalized);
         return success(result);
       } catch (err) {
@@ -7304,7 +7324,7 @@ export function createAIHandlers(
     ): Promise<APIResponse<BatchAssertionResult>> => {
       try {
         refreshElements();
-        const normalized = normalizeBatchAssertions(request);
+        const normalized = normalizeAssertionBatch(request);
         const result = await assertionExecutor.assertBatch(normalized);
         return { success: true, data: result, timestamp: Date.now() };
       } catch (err) {
