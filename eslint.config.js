@@ -347,6 +347,9 @@ export default tseslint.config(
           'packages/ui-bridge/src/ai/semantic-snapshot.ts',
           'packages/ui-bridge/src/control/action-executor.ts',
           'packages/ui-bridge/src/control/media-override.ts',
+          // `vision/assert`'s in-tab evaluator: element text reaches a result
+          // detail only through scrubContentByVerdict.
+          'packages/ui-bridge/src/vision/dom-assertions.ts',
         ],
         // redaction-surface:projection-modules:end
         // redaction-surface:projection-module-ignores:start

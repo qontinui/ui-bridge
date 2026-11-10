@@ -23,7 +23,8 @@
     "packages/ui-bridge/src/render-log/dom-capture.ts",
     "packages/ui-bridge/src/server/dom-fallback.ts",
     "packages/ui-bridge/src/server/handlers.ts",
-    "packages/ui-bridge/src/server/page-primitives.ts"
+    "packages/ui-bridge/src/server/page-primitives.ts",
+    "packages/ui-bridge/src/vision/dom-assertions.ts"
   ],
   "routes": [
     "DELETE /ai/bookmark/:name -> deleteBookmark",

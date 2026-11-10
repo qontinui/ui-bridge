@@ -1,11 +1,16 @@
 /**
  * Wire shapes of the runner-served `/vision/*` routes.
  *
- * The SDK does not implement these routes (its handlers answer
- * `RUNNER_REQUIRED` → `UB-CAPABILITY-UNAVAILABLE`); the runner does, in
+ * The runner implements these routes, in
  * `qontinui-runner/src-tauri/src/mcp/ui_bridge/vision_routes.rs`, over the
  * `qontinui-vision-core` types in qontinui-schemas. They are declared here so a
- * TypeScript consumer gets a compile-time shape instead of `unknown`.
+ * TypeScript consumer gets a compile-time shape instead of `unknown`. The SDK's
+ * handlers answer every route but one with `RUNNER_REQUIRED` →
+ * `UB-CAPABILITY-UNAVAILABLE`. The exception is `vision/assert`: the SDK
+ * evaluates the five snapshot-reading kinds in the tab
+ * (`./dom-assertions`, a port of vision-core held to it by a shared
+ * conformance fixture) and answers every other kind per result with
+ * `unknown{capability_unavailable_in_build}`.
  *
  * Field names are the runner's camelCase wire names; enum VALUES are
  * snake_case (vision-core convention). `vision/extract` and `vision/describe`
@@ -20,7 +25,8 @@
  * | `vision/extract` | `runner/vision-extract` |
  * | `vision/describe` | `runner/vision-describe` |
  * | `vision/analyze` | `vision-core/<analyzer>` (e.g. `vision-core/layout`) |
- * | `vision/assert` | `vision-core/assertions` |
+ * | `vision/assert` (runner) | `vision-core/assertions` |
+ * | `vision/assert` (SDK, in the tab) | `sdk/vision-assertions` |
  * | `frame` on analyze / assert | `runner/vision-frame` |
  * | `control/page-health` (runner) | `runner/page-health` |
  *
@@ -447,9 +453,39 @@ export type TextMatchKind = 'contains' | 'exact' | 'regex';
 export type WcagLevel = 'aa' | 'aaa';
 export type TypographyDimension = 'font_family' | 'font_size' | 'line_height';
 
+/** An sRGB colour, each channel an integer 0-255 (vision-core `Rgb`). */
+export interface VisionRgb {
+  r: number;
+  g: number;
+  b: number;
+}
+
 /**
- * One assertion of the 12-type DSL (vision-core `Assertion`), echoed back on
- * each result. Variant tags and field names are snake_case on the wire.
+ * A rectangle in an image's NATURAL frame, as fractions (0 to 1) of its width
+ * and height (vision-core `NaturalRegion`).
+ */
+export interface VisionNaturalRegion {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * One assertion of the 23-type DSL (vision-core `Assertion`,
+ * `rust-vision-core/src/assertions/mod.rs`), echoed back on each result.
+ * Variant tags and field names are snake_case on the wire.
+ *
+ * Integer fields are vision-core's unsigned types (`tolerance_px`,
+ * `axis_tolerance_px`, `max_hamming` are `u32`; `ms` is `u64`; `Rgb` channels
+ * are `u8`), so a negative or fractional value is refused, as vision-core's
+ * deserializer refuses it. On the echo every optional field is present —
+ * `null` when it was not given, or its default (`require_overlap: true`,
+ * `level: "aa"`, `kind: "contains"`, `dimensions: []`) — because that is how
+ * vision-core serializes the variant back.
+ *
+ * `animation_settled` once took a `settle_frames` count no caller ever
+ * supplied; vision-core ignores the key if sent, and so does this type.
  */
 export type VisionAssertion =
   | { type: 'no_overlap'; elements: [string, string]; tolerance_px?: number | null }
@@ -466,14 +502,34 @@ export type VisionAssertion =
   | {
       type: 'color_within';
       element: string;
-      expected: { r: number; g: number; b: number };
+      expected: VisionRgb;
       delta_e_max?: number | null;
     }
   | { type: 'typography_consistent'; elements: string[]; dimensions?: TypographyDimension[] }
   | { type: 'no_layout_shift_since'; baseline: string; tolerance_px?: number | null }
   | { type: 'no_clipping'; region?: VisionRegion | null }
-  | { type: 'animation_settled'; region?: VisionRegion | null; settle_frames?: number | null }
-  | { type: 'contrast_meets_wcag'; element: string; level?: WcagLevel };
+  | { type: 'animation_settled'; region?: VisionRegion | null }
+  | { type: 'settled_within'; ms: number }
+  | { type: 'state_entered_within'; state: string; ms: number }
+  | { type: 'contrast_meets_wcag'; element: string; level?: WcagLevel }
+  | {
+      type: 'image_palette_within';
+      element: string;
+      palette: VisionRgb[];
+      max_delta_e?: number | null;
+      min_coverage?: number | null;
+    }
+  | { type: 'no_near_duplicate_images'; max_hamming?: number | null }
+  | { type: 'no_placeholder_images'; element?: string | null }
+  | { type: 'image_focal_visible'; element: string; focal: VisionNaturalRegion }
+  | { type: 'transparent_image_legible'; element: string; min_ratio?: number | null }
+  | { type: 'salience_order'; cta_id: string }
+  | { type: 'image_sharpness_at_least'; element: string; min_sharpness?: number | null }
+  | { type: 'image_blockiness_within'; element: string; max_blockiness?: number | null }
+  | { type: 'text_over_image_contrast'; min_ratio?: number | null; percentile?: number | null };
+
+/** Every {@link VisionAssertion} `type`, in vision-core's declaration order. */
+export type VisionAssertionKind = VisionAssertion['type'];
 
 /** One evaluated assertion. */
 export interface VisionAssertionResult {
@@ -491,6 +547,16 @@ export interface VisionAssertionResult {
 /**
  * `vision/assert`.
  *
+ * Two producers answer it. The runner evaluates vision-core over a
+ * caller-supplied snapshot (producer `vision-core/assertions`). The SDK
+ * (`createRelayHandlers` / `createHandlers`, no runner) measures the live tab
+ * and evaluates the five snapshot-reading kinds — `contrast_meets_wcag`,
+ * `text_fits_container`, `no_overlap`, `element_above`, `no_clipping` — with a
+ * port of vision-core (producer `sdk/vision-assertions`). Every other kind is
+ * answered per result with `unknown{capability_unavailable_in_build}`: never
+ * refused, never passed. The SDK captures no frame, so its `frame` is
+ * `unknown{capability_unavailable_in_build}`.
+ *
  * **Runner build requirement:** this shape matches qontinui-runner builds
  * carrying plan 2026-09-20-ui-bridge-observations-distinguish-cannot-see-from-
  * not-present-and-carry-provenance Phase 2. Older runners serve the previous
@@ -501,21 +567,40 @@ export interface VisionAssertResponse {
   results: VisionAssertionResult[];
   /** How many results landed in each outcome. */
   outcomeCounts: { passed: number; failed: number; unknown: number };
-  /** Roll-up with fixed precedence failed > unknown > passed. */
+  /**
+   * Roll-up with fixed precedence failed > unknown > passed. An EMPTY
+   * assertion list is `unknown` with `unknownCodes: ["no_results"]`, never
+   * `passed`.
+   */
   outcome: AssertionOutcome;
+  /**
+   * The distinct codes of the `unknown` results, in first-seen order;
+   * `["no_results"]` for an empty assertion list, `[]` when nothing was
+   * unknown. The shape of vision-core's shared outcome fold. The SDK always
+   * sends it; a runner serves it only from the build carrying plan
+   * 2026-11-07-the-runner-vision-assert-reads-an-empty-assertion-list-as-unknown.
+   */
+  unknownCodes?: UnknownCode[];
   /**
    * The frame this call captured, as an observation (producer
    * `runner/vision-frame`; no assertion reads it). Same codes as on analyze:
    * attempted-and-failed capture → `producer_failed`; an unknown `target` is
-   * an HTTP 404.
+   * an HTTP 404. The SDK's in-tab evaluator captures none:
+   * `unknown{capability_unavailable_in_build}`.
    */
   frame: Observation<AnalyzedFrameInfo>;
-  /** Present exactly when a snapshot was supplied. */
+  /**
+   * Present exactly when a snapshot was supplied (runner), or — from the
+   * SDK — counted over the elements the tab measured.
+   */
   coverage?: SnapshotCoverage;
   /** RFC3339 — when the assertions finished evaluating. Never absent. */
   evaluatedAt: string;
   snapshotAttribution: SnapshotAttribution;
-  /** Envelope provenance (producer `vision-core/assertions`). */
+  /**
+   * Envelope provenance (producer `vision-core/assertions` from the runner,
+   * `sdk/vision-assertions` from the SDK).
+   */
   provenance: ObservationProvenance;
 }
 
