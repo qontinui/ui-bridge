@@ -27,7 +27,9 @@ import {
   listener,
   overTheWire,
   relayIntoListener,
+  relayQueueingInto,
 } from './__tests__/relay-into-listener';
+import { createRelayHandlers } from '../server/relay-handlers';
 
 function registryLike(): RegistryLike {
   const reg = getGlobalRegistry();
@@ -116,7 +118,11 @@ describe('the listener hands the executor the wire request whole', () => {
 describe('POST /control/component/:id/action/:actionId carries a new request field to the executor', () => {
   it('over the relay: invokeComponentAction, then componentActionInvocation, then the listener', async () => {
     const spy = vi.spyOn(DefaultActionExecutor.prototype, 'executeComponentAction');
-    const handlers = relayIntoListener();
+    // Entered through createRelayHandlers, the server half the relay route uses,
+    // with only the tab replaced by the listener.
+    const handlers = createRelayHandlers(
+      relayQueueingInto((action, payload) => listener(action, overTheWire(payload)))
+    );
 
     const res = overTheWire(
       await asIfARequestField('futureOptIn', () =>

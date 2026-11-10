@@ -33,15 +33,26 @@ export async function listener(
   return overTheWire(await executeCommand(action, payload as never, emptyBridge));
 }
 
-/** Relay handlers whose dispatch boundary calls `dispatch` instead of queueing for a tab. */
-export function relayDispatchingTo(
+/**
+ * A `CommandRelay` whose `queueCommand` calls `dispatch` instead of queueing for
+ * a tab. A test that must show it enters through `createRelayHandlers` itself
+ * passes this to `createRelayHandlers` in its own body.
+ */
+export function relayQueueingInto(
   dispatch: (action: string, payload: Record<string, unknown>) => Promise<unknown>
-): ReturnType<typeof createRelayHandlers> {
+): CommandRelay {
   const relay = new CommandRelay({
     globalPrefix: `__uiBridgeRelayTest_${Math.random().toString(36).slice(2, 10)}`,
   });
   relay.queueCommand = dispatch as typeof relay.queueCommand;
-  return createRelayHandlers(relay);
+  return relay;
+}
+
+/** Relay handlers whose dispatch boundary calls `dispatch` instead of queueing for a tab. */
+export function relayDispatchingTo(
+  dispatch: (action: string, payload: Record<string, unknown>) => Promise<unknown>
+): ReturnType<typeof createRelayHandlers> {
+  return createRelayHandlers(relayQueueingInto(dispatch));
 }
 
 /**
