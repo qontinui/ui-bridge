@@ -31,6 +31,7 @@ import {
   projectElement,
   type ElementProjectionRequest,
 } from '../core/element-projection';
+import { pageSentinelState, resolvePageSentinel } from '../core/page-sentinel';
 import { truncateCodePoints } from '../core/text';
 import {
   buildKeyboardEventInit,
@@ -1765,7 +1766,13 @@ export async function executeCommand(
         return { success: false, error: `element state ${err.message}`, code: err.code };
       }
       const el = getElement(payload.id as string);
-      if (!el) throw new Error(`Element ${payload.id} not found`);
+      if (!el) {
+        // The `document` sentinel names `<html>`, which has no registration:
+        // its read answers the projection off it (core/page-sentinel.ts).
+        const page = resolvePageSentinel(payload.id, 'read');
+        if (page) return pageSentinelState(payload.id as string, page, projection);
+        throw new Error(`Element ${payload.id} not found`);
+      }
       const state = el.getState();
       // Spread the full canonical `ElementState` so callers see every field
       // the SDK populates (role, accessibleName, normalizedRect,
@@ -1891,18 +1898,20 @@ export async function executeCommand(
         }
       }
 
-      // Page-level sentinel IDs ("document", "body", "window") resolve to
-      // document.documentElement for scroll actions, bypassing the element registry.
-      const isPageScrollSentinel =
-        request.action === 'scroll' && (id === 'document' || id === 'body' || id === 'window');
+      // A page sentinel ("document", "body", "window") scrolls the page: the
+      // shared resolver names `<html>` for it, bypassing the element registry
+      // — for an id the registry does not hold, the precedence every sentinel
+      // site applies (core/page-sentinel.ts).
+      const pageScrollTarget =
+        request.action === 'scroll' && !getElement(id) ? resolvePageSentinel(id, 'scroll') : null;
 
       let dom: HTMLElement;
       // The element's own registration, kept so the custom-action lookup below
       // can consult it. A page sentinel has no registration and therefore no
       // custom actions.
       let registered: RegisteredElement | undefined;
-      if (isPageScrollSentinel) {
-        dom = document.documentElement;
+      if (pageScrollTarget) {
+        dom = pageScrollTarget;
       } else {
         const el = getElement(id);
         if (!el)

@@ -27,6 +27,8 @@ import {
   projectElement,
   type ElementProjectionRequest,
 } from '../core/element-projection';
+import { resolvePageSentinel } from '../core/page-sentinel';
+import { trustDeveloperContent } from '../core/redaction';
 
 /**
  * Stable `UB-ASSERT-*` diagnostic code for a failed assertion.
@@ -142,6 +144,18 @@ interface UnmeasuredRead {
   failureCode: UiBridgeErrorCode;
 }
 
+/**
+ * The checks that read a value through the projection — and so the only ones a
+ * page sentinel (`document`, which names `<html>`) can be the operand of.
+ */
+const PROJECTED_CHECKS: ReadonlySet<AssertionType> = new Set<AssertionType>([
+  'attribute',
+  'cssProperty',
+  'cssPropertyInSet',
+  'cssPropertyRange',
+  'tokenCompliance',
+]);
+
 /** `background-color` → `backgroundColor`: the key `ElementState.computedStyles` uses. */
 function computedStylesKey(cssName: string): string {
   return cssName.replace(/-([a-z])/g, (_m, c: string) => c.toUpperCase());
@@ -160,6 +174,8 @@ export class AssertionExecutor {
    * the projection. Elements that crossed a wire carry none.
    */
   private liveNodes = new Map<string, Element>();
+  /** The node behind an operand that is no registered element: a page sentinel's `<html>`. */
+  private operandNodes = new WeakMap<AIDiscoveredElement, Element>();
 
   constructor(config: Partial<AssertionConfig> = {}) {
     this.config = { ...DEFAULT_ASSERTION_CONFIG, ...config };
@@ -185,6 +201,16 @@ export class AssertionExecutor {
   async assert(request: AssertionRequest): Promise<AssertionResult> {
     const startTime = performance.now();
     const timeout = request.timeout ?? this.config.defaultTimeout;
+
+    // The `document` page sentinel names `<html>`, which has no registration:
+    // a style or attribute check reads it through the projection.
+    const page = this.pageSentinelOperand(request);
+    if (page) {
+      return this.withFailureCode(
+        await this.executeAssertion(request, page, timeout, startTime),
+        request.type
+      );
+    }
 
     // Find the target element with full search metadata
     const searchResult = this.findElementDetailed(request.target, request.fuzzy !== false);
@@ -224,6 +250,32 @@ export class AssertionExecutor {
       result.searchDetails = searchDetails;
     }
     return this.withFailureCode(result, request.type);
+  }
+
+  /**
+   * The operand for a check whose target is a `read` page sentinel
+   * (`document` → `<html>`, `core/page-sentinel.ts`), or `null`. Only the
+   * checks that read through the projection take one, and a registered element
+   * with the same id wins — the precedence every sentinel site applies.
+   */
+  private pageSentinelOperand(request: AssertionRequest): AIDiscoveredElement | null {
+    const target = request.target;
+    if (!PROJECTED_CHECKS.has(request.type) || typeof target !== 'string') return null;
+    if (this.elements.some((el) => el.id === target)) return null;
+    const node = resolvePageSentinel(target, 'read');
+    if (!node) return null;
+    const operand = {
+      id: target,
+      type: 'document',
+      tagName: 'html',
+      actions: [],
+      registered: false,
+      description: trustDeveloperContent('the page (<html>)'),
+      aliases: [],
+      suggestedActions: [],
+    } as unknown as AIDiscoveredElement;
+    this.operandNodes.set(operand, node);
+    return operand;
   }
 
   /**
@@ -1101,7 +1153,7 @@ export class AssertionExecutor {
       };
     }
 
-    const node = this.liveNodes.get(element.id);
+    const node = this.operandNodes.get(element) ?? this.liveNodes.get(element.id);
     if (node && request) {
       const projection = projectElement(node, request);
       const miss = projection.unmeasured[0];

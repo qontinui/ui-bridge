@@ -161,6 +161,7 @@ import type {
 } from './types';
 import { applyCanonicalFindFilter, type CanonicalFindContext } from '../core/find-filter';
 import { projectElement } from '../core/element-projection';
+import { resolvePageSentinel } from '../core/page-sentinel';
 import { mediaFactsOf } from '../core/media-observation';
 import {
   forcePseudoState,
@@ -1538,13 +1539,14 @@ export class DefaultActionExecutor implements ActionExecutor {
         this.discoveryCache.delete(elementId);
       }
 
-      // Resolve page-level sentinel IDs for scroll actions.
-      // "document", "body", and "window" are virtual element IDs that target
-      // the page scroll container directly, without requiring a registered element.
+      // Resolve page-level sentinel IDs for scroll actions: "document", "body"
+      // and "window" name the page scroll container directly, without a
+      // registered element — only when nothing above resolved the id, the
+      // precedence every sentinel site applies (core/page-sentinel.ts).
       if (!element && request.action === 'scroll') {
-        const sentinel = elementId.toLowerCase();
-        if (sentinel === 'document' || sentinel === 'body' || sentinel === 'window') {
-          element = document.documentElement;
+        const page = resolvePageSentinel(elementId, 'scroll');
+        if (page) {
+          element = page;
           recordHit('page-sentinel');
         }
       }
