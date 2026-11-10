@@ -302,4 +302,59 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('the projection reads what Chromium compu
     expect(result).toMatchObject({ passed: true, failedCount: 0, unmeasuredCount: 0 });
     await page.close();
   }, 60_000);
+
+  it('the document sentinel reads <html> — its :root tokens and lang — on both arms', async () => {
+    const page = await openPage();
+    const { inProcess, relay, asserted, registered } = await page.evaluate(async () => {
+      const viaHandlers = await window.UB.inProcess().getElementState('document', {
+        properties: '--brand,--space',
+        attributes: 'lang',
+      });
+      const viaRelay = await window.UB.executeCommand(
+        'getElementState',
+        { id: 'document', properties: ['--brand', '--space'], attributes: ['lang'] },
+        window.UB.bridge()
+      );
+      const batch = await window.UB.executeCommand(
+        'aiAssertBatch',
+        {
+          mode: 'all',
+          assertions: [
+            { target: 'document', type: 'attribute', attributeName: 'lang', expected: 'de' },
+            {
+              target: 'document',
+              type: 'cssProperty',
+              propertyName: '--brand',
+              expected: '#00aaff',
+            },
+          ],
+        },
+        window.UB.bridge()
+      );
+      return {
+        inProcess: viaHandlers.data,
+        relay: viaRelay,
+        asserted: batch,
+        registered: window.UB.bridge().elements.some(
+          (e: { element: Element }) => e.element === document.documentElement
+        ),
+      };
+    });
+    const expected = {
+      id: 'document',
+      sentinel: 'document',
+      tagName: 'html',
+      projection: {
+        properties: { '--brand': '#00aaff', '--space': '3px' },
+        attributes: { lang: 'de' },
+        unmeasured: [],
+      },
+    };
+    expect(inProcess).toEqual(expected);
+    expect(relay).toEqual(expected);
+    expect(asserted).toMatchObject({ passed: true, passedCount: 2, unmeasuredCount: 0 });
+    // <html> is read through the sentinel, never registered.
+    expect(registered).toBe(false);
+    await page.close();
+  }, 60_000);
 });

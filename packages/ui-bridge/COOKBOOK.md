@@ -527,3 +527,59 @@ The same read backs the `ai/assert` style and attribute checks
 `outcome: "unmeasured"` with the reason in `unmeasured` — `passed` is `false`,
 so it never passes a gate, but it is counted in `unmeasuredCount`, apart from
 `failedCount`.
+
+## 10. Address the elements a page hides from the registry
+
+Auto-registration (`AutoRegisterProvider` / `useAutoRegister`) registers
+interactive elements that look visible right now. Three kinds of element a
+check still needs to name fall outside that, and each has an existing,
+declarative way in — no new registration path:
+
+**Text that is not a control — `data-ui-bridge-content`.** A span, card,
+badge or pill is not interactive, so nothing registers it. Mark it and it
+appears as a `kind: "content"` row whose id is the attribute's value:
+
+```html
+<span data-ui-bridge-content="order-total">€ 1.204,00</span>
+```
+
+**A skip link hidden until it is focused — `data-ui-bridge-persist="true"`.**
+A skip link is built not to look visible until a keyboard user tabs to it
+(`sr-only`, `opacity-0 focus:opacity-100`, `-translate-y-full
+focus:translate-y-0`), so the visibility gate skips it. The persist attribute
+bypasses that gate for the one element that carries it; the exclude selectors
+and the interactive-selector match still apply:
+
+```html
+<a href="#main" class="sr-only focus:not-sr-only" data-ui-bridge-persist="true">
+  Skip to content
+</a>
+```
+
+It then registers like any link — `data-ui-bridge-id` is stamped on it — and
+is addressable by that id, as an element-state read or an `ai/assert` target
+(`{"target": {"idPattern": "<id>"}, …}`). The hook-wide `persistWhileMounted: true` does the
+same for every element, which is rarely what you want.
+
+**The page itself — the `document` sentinel.** `<html>` gets no registry
+entry: a box that contains everything would sit in every snapshot and every
+hit-test. The id `document` names it instead, for reads and assertion
+operands, on every transport:
+
+```bash
+# <html lang>, <html dir> and a :root design token
+curl -s "$BASE/control/element/document/state?attributes=lang,dir&properties=--color-accent" \
+  | jq '.data'
+# → { "id": "document", "sentinel": "document", "tagName": "html",
+#     "projection": { "properties": { "--color-accent": "#00aaff" },
+#                     "attributes": { "lang": "de", "dir": "ltr" }, "unmeasured": [] } }
+
+curl -s -X POST "$BASE/ai/assert" -H 'Content-Type: application/json' \
+  -d '{"target":"document","type":"attribute","attributeName":"lang","expected":"de"}' \
+  | jq '.data | {outcome, actual}'
+```
+
+Only `document` names an element for a read. `body` and `window` remain what
+they always were — page sentinels for a `scroll` action, where all three
+scroll the page. An element an app registers under one of these ids wins over
+the sentinel everywhere.

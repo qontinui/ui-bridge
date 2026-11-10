@@ -103,6 +103,11 @@ The names, bounds, redaction and the `unmeasured` list are those of
 [`POST /control/find`](./discovery-endpoints.md#style-and-attribute-projection);
 a malformed list is refused with `UB-VALIDATION-ERROR`.
 
+The id `document` names `<html>` itself, which has no registration: its state
+read answers `{ id, sentinel: "document", tagName: "html" }` plus the
+projection asked for (`?attributes=lang,dir&properties=--color-accent`). A
+registered element with that id wins over the sentinel.
+
 **Response:**
 
 ```json
