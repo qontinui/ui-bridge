@@ -63,6 +63,7 @@ import {
   projectElement,
   type ElementProjectionRequest,
 } from '../core/element-projection';
+import { isPageSentinelId, pageSentinelState, resolvePageSentinel } from '../core/page-sentinel';
 import { diagnoseSnapshotPageHealth } from './page-health';
 import { buildVisibilityReport } from './visibility-report';
 import {
@@ -1695,6 +1696,10 @@ export function createHandlers(
           | { state?: ElementState; getState?: () => ElementState; element?: unknown }
           | undefined;
         if (!element) {
+          // The `document` sentinel names `<html>`, which has no registration:
+          // its read answers the projection off it (core/page-sentinel.ts).
+          const page = resolvePageSentinel(id, 'read');
+          if (page) return success(pageSentinelState(id, page, projection));
           return error(`Element not found: ${id}`, 'NOT_FOUND');
         }
         const state = element.getState?.() ?? element.state;
@@ -1763,10 +1768,11 @@ export function createHandlers(
         // though the DOM node exists.
         await awaitDOMSettled();
         // Pre-flight registry check.
-        // Page-level sentinel IDs ("document", "body", "window") bypass the registry
-        // check — the action executor resolves them to document.documentElement directly.
+        // A page sentinel ("document", "body", "window") on a scroll bypasses it:
+        // the action executor resolves the sentinel through the same shared
+        // resolver (core/page-sentinel.ts).
         const isPageScrollSentinel =
-          request.action === 'scroll' && (id === 'document' || id === 'body' || id === 'window');
+          request.action === 'scroll' && isPageSentinelId(id, 'scroll');
         let element = isPageScrollSentinel ? true : registry.getElement(id);
 
         // Auto-rediscover: if the element isn't in the registry, refresh the

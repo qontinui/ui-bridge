@@ -166,6 +166,17 @@ export type {
   ProjectionUnmeasured,
 } from './element-projection';
 
+// Page-level sentinel ids (`document`, `body`, `window`) — the ONE resolver
+// every sentinel site asks: a scroll of the page, and a read of `<html>`
+// (`document` only), which has no registry entry.
+export {
+  PAGE_SENTINEL_IDS,
+  isPageSentinelId,
+  pageSentinelState,
+  resolvePageSentinel,
+} from './page-sentinel';
+export type { PageSentinelId, PageSentinelState, PageSentinelUse } from './page-sentinel';
+
 // Readers for a media row's observation envelope (`mediaMetadata`).
 export { isMediaObservation, mediaFactsOf, unmeasuredMediaDimension } from './media-observation';
 

@@ -484,3 +484,143 @@ describe('the relay with its tab unreachable', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 3: the `document` page sentinel names `<html>` — which has no registry
+// entry — for the reads above and as an `ai/assert` operand, on both
+// transports. One resolver serves every site (core/page-sentinel.ts).
+// ---------------------------------------------------------------------------
+
+describe.each(transports)('the document sentinel on the $name transport', ({ mount }) => {
+  /** `<html lang="de" dir="ltr" style="--page-tone: #123456">`, restored afterwards. */
+  function decorateRoot(): void {
+    const root = document.documentElement;
+    root.setAttribute('lang', 'de');
+    root.setAttribute('dir', 'ltr');
+    root.style.setProperty('--page-tone', '#123456');
+  }
+
+  afterEach(() => {
+    const root = document.documentElement;
+    root.removeAttribute('lang');
+    root.removeAttribute('dir');
+    root.removeAttribute('style');
+  });
+
+  it('a scroll of each page sentinel, in any case, scrolls the page — one resolver for every site', async () => {
+    await mount();
+    // jsdom implements no element scrolling: give it a scrollBy to observe.
+    const native = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollBy');
+    if (!native) HTMLElement.prototype.scrollBy = function () {} as HTMLElement['scrollBy'];
+    const scroll = vi.spyOn(HTMLElement.prototype, 'scrollBy');
+    try {
+      for (const id of ['Document', 'body', 'WINDOW']) {
+        scroll.mockClear();
+        const reply = await post(`/control/element/${id}/action`, {
+          action: 'scroll',
+          params: { direction: 'down' },
+        });
+        expect(reply.success, `${id}: ${reply.error}`).toBe(true);
+        expect(scroll.mock.contexts[0], id).toBe(
+          document.scrollingElement ?? document.documentElement
+        );
+      }
+    } finally {
+      scroll.mockRestore();
+      if (!native) delete (HTMLElement.prototype as Partial<HTMLElement>).scrollBy;
+    }
+  });
+
+  it('GET /control/element/document/state reads the projection off <html>', async () => {
+    await mount();
+    decorateRoot();
+    const reply = await get(
+      '/control/element/document/state?attributes=lang,dir,title&properties=--page-tone,--unset'
+    );
+    expect(reply.success, reply.error).toBe(true);
+    expect(reply.data).toEqual({
+      id: 'document',
+      sentinel: 'document',
+      tagName: 'html',
+      projection: {
+        properties: { '--page-tone': '#123456' },
+        attributes: { lang: 'de', dir: 'ltr', title: null },
+        unmeasured: [expect.objectContaining({ name: '--unset', code: 'input_missing' })],
+      },
+    });
+    // <html> is reached through the sentinel, never registered.
+    expect(
+      getGlobalRegistry()
+        .getAllElements()
+        .some((e) => e.element === document.documentElement)
+    ).toBe(false);
+  });
+
+  it('a read of the sentinel without a query carries its identity alone', async () => {
+    await mount();
+    const reply = await get('/control/element/document/state');
+    expect(reply.success, reply.error).toBe(true);
+    expect(reply.data).toEqual({ id: 'document', sentinel: 'document', tagName: 'html' });
+  });
+
+  it('only `document` names an element for a read: `window` and `body` do not', async () => {
+    await mount();
+    for (const id of ['window', 'body']) {
+      const reply = await get(`/control/element/${id}/state?attributes=lang`);
+      expect(reply.success, `${id} must not resolve for a read`).toBe(false);
+    }
+  });
+
+  it('ai/assert takes the sentinel as the operand of its style and attribute checks', async () => {
+    await mount();
+    decorateRoot();
+    const reply = await post('/ai/assert/batch', {
+      skipSettle: true,
+      mode: 'all',
+      assertions: [
+        { target: 'document', type: 'attribute', attributeName: 'lang', expected: 'de' },
+        {
+          target: 'document',
+          type: 'cssProperty',
+          propertyName: '--page-tone',
+          expected: '#123456',
+        },
+        { target: 'document', type: 'attribute', attributeName: 'dir', expected: 'rtl' },
+      ],
+    });
+    expect(reply.success, reply.error).toBe(true);
+    const results = reply.data!.results as Array<Record<string, unknown>>;
+    expect(results.map((r) => [r.target, r.outcome, r.actual])).toEqual([
+      ['document', 'passed', 'de'],
+      ['document', 'passed', '#123456'],
+      ['document', 'failed', 'ltr'],
+    ]);
+  });
+
+  it('a registered element named `document` wins over the sentinel', async () => {
+    await mount();
+    decorateRoot();
+    const own = document.createElement('div');
+    own.setAttribute('lang', 'en');
+    own.textContent = 'document viewer';
+    document.body.appendChild(own);
+    getGlobalRegistry().registerElement('document', own, { type: 'generic', label: 'document' });
+
+    const state = await get('/control/element/document/state?attributes=lang');
+    expect(state.success, state.error).toBe(true);
+    expect(state.data).toMatchObject({
+      id: 'document',
+      projection: { attributes: { lang: 'en' } },
+    });
+    expect(state.data).not.toHaveProperty('sentinel');
+
+    const assert = await post('/ai/assert', {
+      skipSettle: true,
+      target: 'document',
+      type: 'attribute',
+      attributeName: 'lang',
+      expected: 'en',
+    });
+    expect(assert.data).toMatchObject({ outcome: 'passed', actual: 'en' });
+  });
+});
