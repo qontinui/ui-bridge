@@ -2787,8 +2787,12 @@ export async function executeCommand(
       // Through the executor, not `compAction.handler(...)` — see
       // `ipcActionExecutor`. The component/action pre-checks above stay only
       // because they produce this channel's richer not-found prose; the
-      // executor re-resolves both and would answer identically.
-      return await runComponentActionViaExecutor(registry, compId, request);
+      // executor re-resolves both and would answer identically. The action
+      // handed on is the id the lookup found, which is the request's own.
+      return await runComponentActionViaExecutor(registry, compId, {
+        ...request,
+        action: compAction.id,
+      });
     }
 
     case 'getComponentState': {
@@ -2835,7 +2839,7 @@ export async function executeCommand(
         };
       }
       // Through the executor — see `ipcActionExecutor` and the twin above.
-      return await runComponentActionViaExecutor(registry, id, request);
+      return await runComponentActionViaExecutor(registry, id, { ...request, action: action.id });
     }
 
     /**

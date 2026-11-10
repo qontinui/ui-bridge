@@ -26,9 +26,10 @@
  *     so none reaches the action handler as a parameter.
  *
  * The other transports carry the request as an object of its own, so they
- * need no split. The relay listener and the whole-request handlers pass it on
- * whole (`componentActionRequestFromWire`). The WebSocket handler, whose
- * payload also carries `componentId`, takes the listed fields out of it
+ * need no split. The relay listener passes it on whole
+ * (`componentActionRequestFromWire`), and the whole-request server handler
+ * takes it as typed. The WebSocket handler, whose payload also carries
+ * `componentId`, takes the listed fields out of it
  * (`componentActionRequestFields`).
  */
 
@@ -119,11 +120,12 @@ export function componentActionInvocation(
 /**
  * The request fields `source` carries, each as it is, and no other key: the
  * request out of a payload that mixes it with keys of its own transport.
+ *
+ * Partial, because nothing here proves `action` is present. A caller supplies
+ * the action it has already read, as the WebSocket handler does.
  */
-export function componentActionRequestFields(source: object): ComponentActionRequest {
-  return Object.fromEntries(
-    Object.entries(source).filter(([key]) => isRequestField(key))
-  ) as unknown as ComponentActionRequest;
+export function componentActionRequestFields(source: object): Partial<ComponentActionRequest> {
+  return Object.fromEntries(Object.entries(source).filter(([key]) => isRequestField(key)));
 }
 
 /**
@@ -135,13 +137,17 @@ export function componentActionRequestFields(source: object): ComponentActionReq
  * executor reads the request by field name and validates what it reads, so a
  * field that no hop has heard of still reaches it instead of being dropped on
  * the way.
+ *
+ * Partial, because the wire may name no action at all. The caller narrows
+ * `action` before the request reaches the executor: the relay listener looks
+ * the action up on the component and hands on the id it found.
  */
-export function componentActionRequestFromWire(source: object): ComponentActionRequest {
+export function componentActionRequestFromWire(source: object): Partial<ComponentActionRequest> {
   const {
     id: _id,
     componentId: _componentId,
     actionId,
     ...request
   } = source as Record<string, unknown>;
-  return { ...request, action: (actionId ?? request.action) as string } as ComponentActionRequest;
+  return { ...request, action: actionId ?? request.action } as Partial<ComponentActionRequest>;
 }

@@ -207,10 +207,7 @@ import type {
   EvaluateRequest,
 } from '../specs/quality-types';
 import { listContexts } from '../specs/quality-contexts';
-import {
-  componentActionInvocation,
-  componentActionRequestFromWire,
-} from './component-action-invocation';
+import { componentActionInvocation } from './component-action-invocation';
 import {
   captureQualityBaseline,
   diffQualityBaseline,
@@ -2142,12 +2139,8 @@ export function createHandlers(
 
     executeComponentAction: async (id: string, request: ComponentActionRequest) => {
       try {
-        // The request whole, normalized the way the relay listener's twin arm
-        // normalizes it. See `ActionExecutorLike` above.
-        const result = await actionExecutor.executeComponentAction(
-          id,
-          componentActionRequestFromWire(request)
-        );
+        // The request whole. See `ActionExecutorLike` above.
+        const result = await actionExecutor.executeComponentAction(id, request);
         return success(result) as APIResponse<ComponentActionResponse>;
       } catch (err) {
         return error((err as Error).message, 'COMPONENT_ACTION_ERROR');

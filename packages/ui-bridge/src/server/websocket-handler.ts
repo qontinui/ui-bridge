@@ -510,7 +510,7 @@ export class UIBridgeWSHandler {
     clientId: string,
     message: WSClientMessage & { type: 'executeComponentAction' }
   ): Promise<void> {
-    const { componentId } = message.payload;
+    const { componentId, action } = message.payload;
     if (!this.handlers.executeComponentAction) {
       this.sendResponse(
         clientId,
@@ -525,10 +525,10 @@ export class UIBridgeWSHandler {
     // as it is: the executor validates them. `timeoutMs` is the only
     // cancellation a WS caller has, and `verifyEffect` counts as an
     // instruction only when it is a boolean.
-    const result = await this.handlers.executeComponentAction(
-      componentId,
-      componentActionRequestFields(message.payload)
-    );
+    const result = await this.handlers.executeComponentAction(componentId, {
+      ...componentActionRequestFields(message.payload),
+      action,
+    });
 
     this.sendResponse(clientId, message.id, result.success, result.data, result.error);
   }
