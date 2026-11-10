@@ -183,6 +183,29 @@ describe('POST /control/component/:id/action/:actionId carries a new request fie
   });
 });
 
+describe('the relay predict arm (predictComponentAction)', () => {
+  // The relay hands the predict request to the listener as it came, and the
+  // listener hands `requestId` to the executor as it came. So the executor is
+  // where a non-string one is caught.
+  it('echoes a string requestId and drops a non-string one', async () => {
+    const handlers = relayIntoListener();
+
+    const echoed = overTheWire(
+      await handlers.predictComponentAction('plain', 'go', { requestId: 'req-p' })
+    );
+    const dropped = overTheWire(
+      await handlers.predictComponentAction('plain', 'go', {
+        requestId: 42 as unknown as string,
+      })
+    );
+
+    expect(echoed.success).toBe(true);
+    expect((echoed.data as Record<string, unknown>).requestId).toBe('req-p');
+    expect(dropped.success).toBe(true);
+    expect('requestId' in (dropped.data as Record<string, unknown>)).toBe(false);
+  });
+});
+
 describe('the listener hands the relay caller the executor response whole', () => {
   it('a response field the listener has never heard of reaches the caller', async () => {
     const response = {

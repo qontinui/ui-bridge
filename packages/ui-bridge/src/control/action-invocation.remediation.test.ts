@@ -365,6 +365,86 @@ describe('requestId is validated at the executor', () => {
     expect(thrown.success).toBe(false);
     expect(thrown.requestId).toBeUndefined();
   });
+
+  // The element path echoes `requestId` on every response too.
+  describe('on an element action (executeAction)', () => {
+    let el: HTMLButtonElement;
+
+    beforeEach(() => {
+      el = document.createElement('button');
+      document.body.appendChild(el);
+      registry.registerElement('btn', el, {
+        type: 'button',
+        actions: ['click'],
+        customActions: { summon: { id: 'summon', handler: () => 'summoned' } },
+      });
+    });
+
+    afterEach(() => {
+      el.remove();
+    });
+
+    it('echoes a string requestId', async () => {
+      const res = await executor.executeAction('btn', { action: 'summon', requestId: 'req-e' });
+
+      expect(res.success).toBe(true);
+      expect(res.requestId).toBe('req-e');
+    });
+
+    it('drops a non-string requestId on success', async () => {
+      const res = await executor.executeAction('btn', {
+        action: 'summon',
+        requestId: 42 as unknown as string,
+      });
+
+      expect(res.success).toBe(true);
+      expect(res.result).toBe('summoned');
+      expect(res.requestId).toBeUndefined();
+    });
+
+    it('drops it when the verb is unknown and when the element is missing', async () => {
+      const malformed = { not: 'a string' } as unknown as string;
+
+      const unknownVerb = await executor.executeAction('btn', {
+        action: 'no-such-verb',
+        requestId: malformed,
+      });
+      const missingElement = await executor.executeAction('no-such-element', {
+        action: 'click',
+        requestId: malformed,
+      });
+
+      expect(unknownVerb.success).toBe(false);
+      expect(unknownVerb.failureDetails?.errorCode).toBe('UB-UNSUPPORTED-ACTION');
+      expect(unknownVerb.requestId).toBeUndefined();
+      expect(missingElement.success).toBe(false);
+      expect(missingElement.requestId).toBeUndefined();
+    });
+  });
+
+  // A prediction carries the caller's `requestId` back on every answer too.
+  describe('on a prediction (predictComponentAction)', () => {
+    it('echoes a string requestId', async () => {
+      const res = await executor.predictComponentAction('cmp', 'go', { requestId: 'req-p' });
+
+      expect(res.success).toBe(true);
+      expect(res.requestId).toBe('req-p');
+    });
+
+    it('drops a non-string requestId on an answer and on a refusal', async () => {
+      const answered = await executor.predictComponentAction('cmp', 'go', {
+        requestId: 42 as unknown as string,
+      });
+      const refused = await executor.predictComponentAction('no-such-component', 'go', {
+        requestId: 42 as unknown as string,
+      });
+
+      expect(answered.success).toBe(true);
+      expect(answered.requestId).toBeUndefined();
+      expect(refused.success).toBe(false);
+      expect(refused.requestId).toBeUndefined();
+    });
+  });
 });
 
 describe('a validator fault is not reported as a handler failure (review #9)', () => {
