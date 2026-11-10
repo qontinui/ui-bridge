@@ -1,0 +1,625 @@
+{
+  "version": 1,
+  "generated_from": "qontinui-vision-core",
+  "cases": [
+    {
+      "id": "contrast-aa-normal-text-passes-at-4-54",
+      "kind": "contrast_meets_wcag",
+      "snapshot": {"elements": [{"id": "t", "fg_color": {"r": 118, "g": 118, "b": 118}, "bg_color": {"r": 255, "g": 255, "b": 255}}]},
+      "assertion": {"type": "contrast_meets_wcag", "element": "t"},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "contrast-aa-normal-text-fails-at-4-48",
+      "kind": "contrast_meets_wcag",
+      "snapshot": {"elements": [{"id": "t", "fg_color": {"r": 119, "g": 119, "b": 119}, "bg_color": {"r": 255, "g": 255, "b": 255}}]},
+      "assertion": {"type": "contrast_meets_wcag", "element": "t"},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "contrast-aa-explicit-level-normal-text-fails-at-4-48",
+      "kind": "contrast_meets_wcag",
+      "snapshot": {"elements": [{"id": "t", "fg_color": {"r": 119, "g": 119, "b": 119}, "bg_color": {"r": 255, "g": 255, "b": 255}}]},
+      "assertion": {"type": "contrast_meets_wcag", "element": "t", "level": "aa"},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "contrast-aaa-normal-text-passes-at-7-00",
+      "kind": "contrast_meets_wcag",
+      "snapshot": {"elements": [{"id": "t", "fg_color": {"r": 89, "g": 89, "b": 89}, "bg_color": {"r": 255, "g": 255, "b": 255}, "font_size_px": 16}]},
+      "assertion": {"type": "contrast_meets_wcag", "element": "t", "level": "aaa"},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "contrast-aaa-normal-text-fails-at-4-54",
+      "kind": "contrast_meets_wcag",
+      "snapshot": {"elements": [{"id": "t", "fg_color": {"r": 118, "g": 118, "b": 118}, "bg_color": {"r": 255, "g": 255, "b": 255}, "font_size_px": 16}]},
+      "assertion": {"type": "contrast_meets_wcag", "element": "t", "level": "aaa"},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "contrast-unknown-without-bg-color",
+      "kind": "contrast_meets_wcag",
+      "snapshot": {"elements": [{"id": "t", "fg_color": {"r": 0, "g": 0, "b": 0}}]},
+      "assertion": {"type": "contrast_meets_wcag", "element": "t"},
+      "expected": {"outcome": "unknown", "code": "input_missing"}
+    },
+    {
+      "id": "contrast-unknown-without-fg-color",
+      "kind": "contrast_meets_wcag",
+      "snapshot": {"elements": [{"id": "t", "bg_color": {"r": 255, "g": 255, "b": 255}}]},
+      "assertion": {"type": "contrast_meets_wcag", "element": "t"},
+      "expected": {"outcome": "unknown", "code": "input_missing"}
+    },
+    {
+      "id": "contrast-unknown-without-either-color",
+      "kind": "contrast_meets_wcag",
+      "snapshot": {"elements": [{"id": "t", "font_size_px": 32}]},
+      "assertion": {"type": "contrast_meets_wcag", "element": "t"},
+      "expected": {"outcome": "unknown", "code": "input_missing"}
+    },
+    {
+      "id": "contrast-unknown-when-the-element-is-not-in-the-snapshot",
+      "kind": "contrast_meets_wcag",
+      "snapshot": {"elements": [{"id": "other", "fg_color": {"r": 0, "g": 0, "b": 0}, "bg_color": {"r": 255, "g": 255, "b": 255}}]},
+      "assertion": {"type": "contrast_meets_wcag", "element": "t"},
+      "expected": {"outcome": "unknown", "code": "input_missing"}
+    },
+    {
+      "id": "contrast-aa-24px-text-is-large-and-passes-at-3-54",
+      "kind": "contrast_meets_wcag",
+      "snapshot": {"elements": [{"id": "t", "fg_color": {"r": 136, "g": 136, "b": 136}, "bg_color": {"r": 255, "g": 255, "b": 255}, "font_size_px": 24}]},
+      "assertion": {"type": "contrast_meets_wcag", "element": "t"},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "contrast-aa-23-99px-text-is-normal-and-fails-at-3-54",
+      "kind": "contrast_meets_wcag",
+      "snapshot": {"elements": [{"id": "t", "fg_color": {"r": 136, "g": 136, "b": 136}, "bg_color": {"r": 255, "g": 255, "b": 255}, "font_size_px": 23.99}]},
+      "assertion": {"type": "contrast_meets_wcag", "element": "t"},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "contrast-aa-bold-18-66px-text-is-large-and-passes-at-3-54",
+      "kind": "contrast_meets_wcag",
+      "snapshot": {"elements": [{"id": "t", "fg_color": {"r": 136, "g": 136, "b": 136}, "bg_color": {"r": 255, "g": 255, "b": 255}, "font_size_px": 18.66, "font_weight": 700}]},
+      "assertion": {"type": "contrast_meets_wcag", "element": "t"},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "contrast-aa-bold-18-65px-text-is-normal-and-fails-at-3-54",
+      "kind": "contrast_meets_wcag",
+      "snapshot": {"elements": [{"id": "t", "fg_color": {"r": 136, "g": 136, "b": 136}, "bg_color": {"r": 255, "g": 255, "b": 255}, "font_size_px": 18.65, "font_weight": 700}]},
+      "assertion": {"type": "contrast_meets_wcag", "element": "t"},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "contrast-aa-weight-699-18-66px-text-is-normal-and-fails-at-3-54",
+      "kind": "contrast_meets_wcag",
+      "snapshot": {"elements": [{"id": "t", "fg_color": {"r": 136, "g": 136, "b": 136}, "bg_color": {"r": 255, "g": 255, "b": 255}, "font_size_px": 18.66, "font_weight": 699}]},
+      "assertion": {"type": "contrast_meets_wcag", "element": "t"},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "contrast-aa-black-weight-20px-text-is-large-and-passes-at-3-54",
+      "kind": "contrast_meets_wcag",
+      "snapshot": {"elements": [{"id": "t", "fg_color": {"r": 136, "g": 136, "b": 136}, "bg_color": {"r": 255, "g": 255, "b": 255}, "font_size_px": 20, "font_weight": 900}]},
+      "assertion": {"type": "contrast_meets_wcag", "element": "t"},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "contrast-aa-unmeasured-weight-18-66px-text-is-normal-and-fails-at-3-54",
+      "kind": "contrast_meets_wcag",
+      "snapshot": {"elements": [{"id": "t", "fg_color": {"r": 136, "g": 136, "b": 136}, "bg_color": {"r": 255, "g": 255, "b": 255}, "font_size_px": 18.66}]},
+      "assertion": {"type": "contrast_meets_wcag", "element": "t"},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "contrast-aa-unmeasured-size-keeps-normal-thresholds-even-when-bold",
+      "kind": "contrast_meets_wcag",
+      "snapshot": {"elements": [{"id": "t", "fg_color": {"r": 136, "g": 136, "b": 136}, "bg_color": {"r": 255, "g": 255, "b": 255}, "font_weight": 700}]},
+      "assertion": {"type": "contrast_meets_wcag", "element": "t"},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "contrast-aa-large-text-fails-at-2-85",
+      "kind": "contrast_meets_wcag",
+      "snapshot": {"elements": [{"id": "t", "fg_color": {"r": 153, "g": 153, "b": 153}, "bg_color": {"r": 255, "g": 255, "b": 255}, "font_size_px": 24}]},
+      "assertion": {"type": "contrast_meets_wcag", "element": "t"},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "contrast-aaa-large-text-passes-at-4-54",
+      "kind": "contrast_meets_wcag",
+      "snapshot": {"elements": [{"id": "t", "fg_color": {"r": 118, "g": 118, "b": 118}, "bg_color": {"r": 255, "g": 255, "b": 255}, "font_size_px": 24}]},
+      "assertion": {"type": "contrast_meets_wcag", "element": "t", "level": "aaa"},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "contrast-aaa-bold-large-text-passes-at-4-54",
+      "kind": "contrast_meets_wcag",
+      "snapshot": {"elements": [{"id": "t", "fg_color": {"r": 118, "g": 118, "b": 118}, "bg_color": {"r": 255, "g": 255, "b": 255}, "font_size_px": 19, "font_weight": 700}]},
+      "assertion": {"type": "contrast_meets_wcag", "element": "t", "level": "aaa"},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "contrast-aaa-large-text-fails-at-4-48",
+      "kind": "contrast_meets_wcag",
+      "snapshot": {"elements": [{"id": "t", "fg_color": {"r": 119, "g": 119, "b": 119}, "bg_color": {"r": 255, "g": 255, "b": 255}, "font_size_px": 24}]},
+      "assertion": {"type": "contrast_meets_wcag", "element": "t", "level": "aaa"},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "text-fits-both-arms-measured-passes",
+      "kind": "text_fits_container",
+      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 200, "h": 20}, "text": "Save changes", "scroll_width_px": 120, "scroll_height_px": 20}]},
+      "assertion": {"type": "text_fits_container", "element": "label"},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "text-fits-content-exactly-filling-the-box-passes",
+      "kind": "text_fits_container",
+      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 120, "h": 20}, "text": "Save changes", "scroll_width_px": 120, "scroll_height_px": 20}]},
+      "assertion": {"type": "text_fits_container", "element": "label"},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "text-fits-horizontal-overflow-fails",
+      "kind": "text_fits_container",
+      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 80, "h": 20}, "text": "Save changes", "scroll_width_px": 160, "scroll_height_px": 20}]},
+      "assertion": {"type": "text_fits_container", "element": "label"},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "text-fits-measured-vertical-overflow-fails",
+      "kind": "text_fits_container",
+      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 200, "h": 20}, "text": "Save changes", "scroll_width_px": 120, "scroll_height_px": 40}]},
+      "assertion": {"type": "text_fits_container", "element": "label"},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "text-fits-measured-height-supersedes-a-failing-estimate",
+      "kind": "text_fits_container",
+      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 200, "h": 16}, "text": "Save changes", "font_size_px": 16, "scroll_width_px": 120, "scroll_height_px": 16}]},
+      "assertion": {"type": "text_fits_container", "element": "label"},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "text-fits-measured-height-supersedes-a-passing-estimate",
+      "kind": "text_fits_container",
+      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 200, "h": 20}, "text": "Save changes", "font_size_px": 10, "scroll_width_px": 120, "scroll_height_px": 30}]},
+      "assertion": {"type": "text_fits_container", "element": "label"},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "text-fits-vertical-estimate-fallback-passes",
+      "kind": "text_fits_container",
+      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 200, "h": 20}, "text": "Save changes", "font_size_px": 10, "scroll_width_px": 120}]},
+      "assertion": {"type": "text_fits_container", "element": "label"},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "text-fits-vertical-estimate-fallback-fails",
+      "kind": "text_fits_container",
+      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 200, "h": 6}, "text": "Save changes", "font_size_px": 16, "scroll_width_px": 120}]},
+      "assertion": {"type": "text_fits_container", "element": "label"},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "text-fits-vertical-estimate-rounds-the-needed-height-up",
+      "kind": "text_fits_container",
+      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 200, "h": 19}, "text": "Save changes", "font_size_px": 13, "scroll_width_px": 120}]},
+      "assertion": {"type": "text_fits_container", "element": "label"},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "text-fits-unmeasured-horizontal-arm-is-unknown",
+      "kind": "text_fits_container",
+      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 200, "h": 20}, "text": "Save changes", "scroll_height_px": 20}]},
+      "assertion": {"type": "text_fits_container", "element": "label"},
+      "expected": {"outcome": "unknown", "code": "input_missing"}
+    },
+    {
+      "id": "text-fits-unmeasured-horizontal-arm-is-unknown-beside-a-fitting-estimate",
+      "kind": "text_fits_container",
+      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 80, "h": 20}, "text": "Save changes", "font_size_px": 10}]},
+      "assertion": {"type": "text_fits_container", "element": "label"},
+      "expected": {"outcome": "unknown", "code": "input_missing"}
+    },
+    {
+      "id": "text-fits-unmeasured-vertical-arm-is-unknown",
+      "kind": "text_fits_container",
+      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 200, "h": 20}, "text": "Save changes", "scroll_width_px": 120}]},
+      "assertion": {"type": "text_fits_container", "element": "label"},
+      "expected": {"outcome": "unknown", "code": "input_missing"}
+    },
+    {
+      "id": "text-fits-nothing-measured-is-unknown",
+      "kind": "text_fits_container",
+      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 200, "h": 20}, "text": "Save changes"}]},
+      "assertion": {"type": "text_fits_container", "element": "label"},
+      "expected": {"outcome": "unknown", "code": "input_missing"}
+    },
+    {
+      "id": "text-fits-horizontal-overflow-fails-with-the-vertical-arm-unmeasured",
+      "kind": "text_fits_container",
+      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 80, "h": 20}, "text": "Save changes", "scroll_width_px": 160}]},
+      "assertion": {"type": "text_fits_container", "element": "label"},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "text-fits-vertical-overflow-fails-with-the-horizontal-arm-unmeasured",
+      "kind": "text_fits_container",
+      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 200, "h": 20}, "text": "Save changes", "scroll_height_px": 40}]},
+      "assertion": {"type": "text_fits_container", "element": "label"},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "text-fits-unknown-without-geometry",
+      "kind": "text_fits_container",
+      "snapshot": {"elements": [{"id": "label", "text": "Save changes", "scroll_width_px": 120, "scroll_height_px": 20}]},
+      "assertion": {"type": "text_fits_container", "element": "label"},
+      "expected": {"outcome": "unknown", "code": "input_missing"}
+    },
+    {
+      "id": "text-fits-unknown-when-the-element-is-not-in-the-snapshot",
+      "kind": "text_fits_container",
+      "snapshot": {"elements": [{"id": "other", "bbox": {"x": 0, "y": 0, "w": 200, "h": 20}, "text": "Save", "scroll_width_px": 10, "scroll_height_px": 10}]},
+      "assertion": {"type": "text_fits_container", "element": "label"},
+      "expected": {"outcome": "unknown", "code": "input_missing"}
+    },
+    {
+      "id": "text-fits-element-without-text-passes",
+      "kind": "text_fits_container",
+      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 200, "h": 20}}]},
+      "assertion": {"type": "text_fits_container", "element": "label"},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "no-overlap-disjoint-passes",
+      "kind": "no_overlap",
+      "snapshot": {"elements": [
+        {"id": "a", "bbox": {"x": 0, "y": 0, "w": 50, "h": 50}},
+        {"id": "b", "bbox": {"x": 100, "y": 100, "w": 50, "h": 50}}
+      ]},
+      "assertion": {"type": "no_overlap", "elements": ["a", "b"]},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "no-overlap-intersecting-fails",
+      "kind": "no_overlap",
+      "snapshot": {"elements": [
+        {"id": "a", "bbox": {"x": 0, "y": 0, "w": 100, "h": 50}},
+        {"id": "b", "bbox": {"x": 50, "y": 0, "w": 100, "h": 50}}
+      ]},
+      "assertion": {"type": "no_overlap", "elements": ["a", "b"]},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "no-overlap-touching-edges-pass",
+      "kind": "no_overlap",
+      "snapshot": {"elements": [
+        {"id": "a", "bbox": {"x": 0, "y": 0, "w": 100, "h": 50}},
+        {"id": "b", "bbox": {"x": 100, "y": 0, "w": 100, "h": 50}}
+      ]},
+      "assertion": {"type": "no_overlap", "elements": ["a", "b"]},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "no-overlap-negative-origin-intersecting-fails",
+      "kind": "no_overlap",
+      "snapshot": {"elements": [
+        {"id": "a", "bbox": {"x": -40, "y": -20, "w": 60, "h": 40}},
+        {"id": "b", "bbox": {"x": 0, "y": 0, "w": 50, "h": 50}}
+      ]},
+      "assertion": {"type": "no_overlap", "elements": ["a", "b"]},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "no-overlap-overlap-within-tolerance-passes",
+      "kind": "no_overlap",
+      "snapshot": {"elements": [
+        {"id": "a", "bbox": {"x": 0, "y": 0, "w": 100, "h": 50}},
+        {"id": "b", "bbox": {"x": 96, "y": 0, "w": 100, "h": 50}}
+      ]},
+      "assertion": {"type": "no_overlap", "elements": ["a", "b"], "tolerance_px": 4},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "no-overlap-overlap-beyond-tolerance-fails",
+      "kind": "no_overlap",
+      "snapshot": {"elements": [
+        {"id": "a", "bbox": {"x": 0, "y": 0, "w": 100, "h": 50}},
+        {"id": "b", "bbox": {"x": 90, "y": 0, "w": 100, "h": 50}}
+      ]},
+      "assertion": {"type": "no_overlap", "elements": ["a", "b"], "tolerance_px": 4},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "no-overlap-tolerance-inset-is-capped-at-half-the-first-box",
+      "kind": "no_overlap",
+      "snapshot": {"elements": [
+        {"id": "a", "bbox": {"x": 0, "y": 0, "w": 100, "h": 9}},
+        {"id": "b", "bbox": {"x": 0, "y": 0, "w": 100, "h": 6}}
+      ]},
+      "assertion": {"type": "no_overlap", "elements": ["a", "b"], "tolerance_px": 10},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "no-overlap-unknown-when-an-element-is-not-in-the-snapshot",
+      "kind": "no_overlap",
+      "snapshot": {"elements": [{"id": "a", "bbox": {"x": 0, "y": 0, "w": 50, "h": 50}}]},
+      "assertion": {"type": "no_overlap", "elements": ["a", "b"]},
+      "expected": {"outcome": "unknown", "code": "input_missing"}
+    },
+    {
+      "id": "no-overlap-unknown-when-an-element-has-no-geometry",
+      "kind": "no_overlap",
+      "snapshot": {"elements": [
+        {"id": "a"},
+        {"id": "b", "bbox": {"x": 100, "y": 100, "w": 50, "h": 50}}
+      ]},
+      "assertion": {"type": "no_overlap", "elements": ["a", "b"]},
+      "expected": {"outcome": "unknown", "code": "input_missing"}
+    },
+    {
+      "id": "element-above-higher-paint-rank-passes",
+      "kind": "element_above",
+      "snapshot": {"elements": [
+        {"id": "menu", "bbox": {"x": 0, "y": 0, "w": 200, "h": 300}, "z_index": 2},
+        {"id": "panel", "bbox": {"x": 100, "y": 50, "w": 400, "h": 400}, "z_index": 1}
+      ]},
+      "assertion": {"type": "element_above", "elements": ["menu", "panel"]},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "element-above-explicit-require-overlap-higher-paint-rank-passes",
+      "kind": "element_above",
+      "snapshot": {"elements": [
+        {"id": "menu", "bbox": {"x": 0, "y": 0, "w": 200, "h": 300}, "z_index": 2},
+        {"id": "panel", "bbox": {"x": 100, "y": 50, "w": 400, "h": 400}, "z_index": 1}
+      ]},
+      "assertion": {"type": "element_above", "elements": ["menu", "panel"], "require_overlap": true},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "element-above-lower-paint-rank-fails",
+      "kind": "element_above",
+      "snapshot": {"elements": [
+        {"id": "menu", "bbox": {"x": 0, "y": 0, "w": 200, "h": 300}, "z_index": 1},
+        {"id": "panel", "bbox": {"x": 100, "y": 50, "w": 400, "h": 400}, "z_index": 9}
+      ]},
+      "assertion": {"type": "element_above", "elements": ["menu", "panel"]},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "element-above-equal-paint-rank-fails",
+      "kind": "element_above",
+      "snapshot": {"elements": [
+        {"id": "menu", "bbox": {"x": 0, "y": 0, "w": 200, "h": 300}, "z_index": 5},
+        {"id": "panel", "bbox": {"x": 100, "y": 50, "w": 400, "h": 400}, "z_index": 5}
+      ]},
+      "assertion": {"type": "element_above", "elements": ["menu", "panel"]},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "element-above-producer-attribution-confirms-passes",
+      "kind": "element_above",
+      "snapshot": {"elements": [
+        {"id": "menu", "bbox": {"x": 0, "y": 0, "w": 200, "h": 300}},
+        {"id": "panel", "bbox": {"x": 100, "y": 50, "w": 400, "h": 400}, "occluded_by": "menu"}
+      ]},
+      "assertion": {"type": "element_above", "elements": ["menu", "panel"]},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "element-above-producer-attribution-refutes-fails",
+      "kind": "element_above",
+      "snapshot": {"elements": [
+        {"id": "menu", "bbox": {"x": 0, "y": 0, "w": 200, "h": 300}, "occluded_by": "panel"},
+        {"id": "panel", "bbox": {"x": 100, "y": 50, "w": 400, "h": 400}}
+      ]},
+      "assertion": {"type": "element_above", "elements": ["menu", "panel"]},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "element-above-attribution-outranks-paint-rank",
+      "kind": "element_above",
+      "snapshot": {"elements": [
+        {"id": "menu", "bbox": {"x": 0, "y": 0, "w": 200, "h": 300}, "z_index": 1},
+        {"id": "panel", "bbox": {"x": 100, "y": 50, "w": 400, "h": 400}, "z_index": 9, "occluded_by": "menu"}
+      ]},
+      "assertion": {"type": "element_above", "elements": ["menu", "panel"]},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "element-above-attribution-to-a-third-element-falls-back-to-paint-rank",
+      "kind": "element_above",
+      "snapshot": {"elements": [
+        {"id": "menu", "bbox": {"x": 0, "y": 0, "w": 200, "h": 300}, "z_index": 2},
+        {"id": "panel", "bbox": {"x": 100, "y": 50, "w": 400, "h": 400}, "z_index": 1, "occluded_by": "toast"}
+      ]},
+      "assertion": {"type": "element_above", "elements": ["menu", "panel"]},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "element-above-no-ordering-evidence-is-unknown",
+      "kind": "element_above",
+      "snapshot": {"elements": [
+        {"id": "menu", "bbox": {"x": 0, "y": 0, "w": 200, "h": 300}},
+        {"id": "panel", "bbox": {"x": 100, "y": 50, "w": 400, "h": 400}}
+      ]},
+      "assertion": {"type": "element_above", "elements": ["menu", "panel"]},
+      "expected": {"outcome": "unknown", "code": "input_missing"}
+    },
+    {
+      "id": "element-above-one-paint-rank-missing-is-unknown",
+      "kind": "element_above",
+      "snapshot": {"elements": [
+        {"id": "menu", "bbox": {"x": 0, "y": 0, "w": 200, "h": 300}, "z_index": 5},
+        {"id": "panel", "bbox": {"x": 100, "y": 50, "w": 400, "h": 400}}
+      ]},
+      "assertion": {"type": "element_above", "elements": ["menu", "panel"]},
+      "expected": {"outcome": "unknown", "code": "input_missing"}
+    },
+    {
+      "id": "element-above-disjoint-boxes-fail-when-overlap-is-required",
+      "kind": "element_above",
+      "snapshot": {"elements": [
+        {"id": "menu", "bbox": {"x": 0, "y": 0, "w": 100, "h": 100}, "z_index": 2},
+        {"id": "panel", "bbox": {"x": 300, "y": 300, "w": 100, "h": 100}, "z_index": 1}
+      ]},
+      "assertion": {"type": "element_above", "elements": ["menu", "panel"]},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "element-above-touching-boxes-do-not-overlap-and-fail",
+      "kind": "element_above",
+      "snapshot": {"elements": [
+        {"id": "menu", "bbox": {"x": 0, "y": 0, "w": 100, "h": 100}, "z_index": 2},
+        {"id": "panel", "bbox": {"x": 100, "y": 0, "w": 100, "h": 100}, "z_index": 1}
+      ]},
+      "assertion": {"type": "element_above", "elements": ["menu", "panel"]},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "element-above-disjoint-boxes-are-ordered-when-overlap-is-not-required",
+      "kind": "element_above",
+      "snapshot": {"elements": [
+        {"id": "menu", "bbox": {"x": 0, "y": 0, "w": 100, "h": 100}, "z_index": 2},
+        {"id": "panel", "bbox": {"x": 300, "y": 300, "w": 100, "h": 100}, "z_index": 1}
+      ]},
+      "assertion": {"type": "element_above", "elements": ["menu", "panel"], "require_overlap": false},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "element-above-no-geometry-is-unknown-when-overlap-is-required",
+      "kind": "element_above",
+      "snapshot": {"elements": [
+        {"id": "menu", "z_index": 2},
+        {"id": "panel", "bbox": {"x": 100, "y": 50, "w": 400, "h": 400}, "z_index": 1}
+      ]},
+      "assertion": {"type": "element_above", "elements": ["menu", "panel"]},
+      "expected": {"outcome": "unknown", "code": "input_missing"}
+    },
+    {
+      "id": "element-above-no-geometry-is-not-read-when-overlap-is-not-required",
+      "kind": "element_above",
+      "snapshot": {"elements": [
+        {"id": "menu", "z_index": 2},
+        {"id": "panel", "z_index": 1}
+      ]},
+      "assertion": {"type": "element_above", "elements": ["menu", "panel"], "require_overlap": false},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "element-above-unknown-when-an-element-is-not-in-the-snapshot",
+      "kind": "element_above",
+      "snapshot": {"elements": [{"id": "menu", "bbox": {"x": 0, "y": 0, "w": 200, "h": 300}, "z_index": 2}]},
+      "assertion": {"type": "element_above", "elements": ["menu", "panel"]},
+      "expected": {"outcome": "unknown", "code": "input_missing"}
+    },
+    {
+      "id": "no-clipping-children-inside-their-parent-pass",
+      "kind": "no_clipping",
+      "snapshot": {"elements": [
+        {"id": "card", "bbox": {"x": 100, "y": 100, "w": 300, "h": 200}},
+        {"id": "title", "bbox": {"x": 120, "y": 120, "w": 200, "h": 40}, "parent_id": "card"},
+        {"id": "button", "bbox": {"x": 300, "y": 250, "w": 80, "h": 32}, "parent_id": "card"}
+      ]},
+      "assertion": {"type": "no_clipping"},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "no-clipping-child-exactly-filling-its-parent-passes",
+      "kind": "no_clipping",
+      "snapshot": {"elements": [
+        {"id": "card", "bbox": {"x": 100, "y": 100, "w": 300, "h": 200}},
+        {"id": "fill", "bbox": {"x": 100, "y": 100, "w": 300, "h": 200}, "parent_id": "card"}
+      ]},
+      "assertion": {"type": "no_clipping"},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "no-clipping-child-past-its-parent-fails",
+      "kind": "no_clipping",
+      "snapshot": {"elements": [
+        {"id": "card", "bbox": {"x": 100, "y": 100, "w": 300, "h": 200}},
+        {"id": "badge", "bbox": {"x": 380, "y": 90, "w": 60, "h": 24}, "parent_id": "card"}
+      ]},
+      "assertion": {"type": "no_clipping"},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "no-clipping-without-any-parent-id-is-unknown",
+      "kind": "no_clipping",
+      "snapshot": {"elements": [
+        {"id": "card", "bbox": {"x": 100, "y": 100, "w": 300, "h": 200}},
+        {"id": "badge", "bbox": {"x": 380, "y": 90, "w": 60, "h": 24}}
+      ]},
+      "assertion": {"type": "no_clipping"},
+      "expected": {"outcome": "unknown", "code": "input_missing"}
+    },
+    {
+      "id": "no-clipping-empty-snapshot-is-unknown",
+      "kind": "no_clipping",
+      "snapshot": {"elements": []},
+      "assertion": {"type": "no_clipping"},
+      "expected": {"outcome": "unknown", "code": "input_missing"}
+    },
+    {
+      "id": "no-clipping-without-any-parent-id-is-unknown-inside-a-region",
+      "kind": "no_clipping",
+      "snapshot": {"elements": [
+        {"id": "card", "bbox": {"x": 100, "y": 100, "w": 300, "h": 200}},
+        {"id": "badge", "bbox": {"x": 380, "y": 90, "w": 60, "h": 24}}
+      ]},
+      "assertion": {"type": "no_clipping", "region": {"x": 0, "y": 0, "w": 1000, "h": 1000}},
+      "expected": {"outcome": "unknown", "code": "input_missing"}
+    },
+    {
+      "id": "no-clipping-region-containing-the-offender-fails",
+      "kind": "no_clipping",
+      "snapshot": {"elements": [
+        {"id": "card", "bbox": {"x": 100, "y": 100, "w": 300, "h": 200}},
+        {"id": "badge", "bbox": {"x": 380, "y": 90, "w": 60, "h": 24}, "parent_id": "card"}
+      ]},
+      "assertion": {"type": "no_clipping", "region": {"x": 350, "y": 50, "w": 200, "h": 100}},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "no-clipping-region-that-misses-the-offender-passes",
+      "kind": "no_clipping",
+      "snapshot": {"elements": [
+        {"id": "card", "bbox": {"x": 100, "y": 100, "w": 300, "h": 200}},
+        {"id": "title", "bbox": {"x": 120, "y": 120, "w": 200, "h": 40}, "parent_id": "card"},
+        {"id": "badge", "bbox": {"x": 380, "y": 90, "w": 60, "h": 24}, "parent_id": "card"}
+      ]},
+      "assertion": {"type": "no_clipping", "region": {"x": 100, "y": 110, "w": 150, "h": 60}},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "no-clipping-skips-a-parent-without-geometry",
+      "kind": "no_clipping",
+      "snapshot": {"elements": [
+        {"id": "card", "bbox": {"x": 100, "y": 100, "w": 300, "h": 200}},
+        {"id": "title", "bbox": {"x": 120, "y": 120, "w": 200, "h": 40}, "parent_id": "card"},
+        {"id": "ghost-parent"},
+        {"id": "stray", "bbox": {"x": 900, "y": 900, "w": 50, "h": 50}, "parent_id": "ghost-parent"}
+      ]},
+      "assertion": {"type": "no_clipping"},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "no-clipping-skips-a-child-without-geometry",
+      "kind": "no_clipping",
+      "snapshot": {"elements": [
+        {"id": "card", "bbox": {"x": 100, "y": 100, "w": 300, "h": 200}},
+        {"id": "title", "bbox": {"x": 120, "y": 120, "w": 200, "h": 40}, "parent_id": "card"},
+        {"id": "hidden-child", "parent_id": "card"}
+      ]},
+      "assertion": {"type": "no_clipping"},
+      "expected": {"outcome": "passed", "code": null}
+    }
+  ]
+}
