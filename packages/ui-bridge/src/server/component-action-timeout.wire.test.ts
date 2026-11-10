@@ -26,7 +26,13 @@ import { UIBridgeWSHandler } from './websocket-handler';
 import type { createRelayHandlers } from './relay-handlers';
 import { resetGlobalRegistry, getGlobalRegistry } from '../core/registry';
 import type { UIBridgeServerHandlers } from './types';
-import { asIfARequestField, relayDispatchingTo } from '../react/__tests__/relay-into-listener';
+import { DefaultActionExecutor } from '../control/action-executor';
+import {
+  asIfARequestField,
+  overTheWire,
+  relayDispatchingTo,
+  relayIntoListener,
+} from '../react/__tests__/relay-into-listener';
 
 /** Every request the executor was handed, in order. */
 let seen: Array<Record<string, unknown>>;
@@ -337,5 +343,62 @@ describe('WebSocket handler forwards verifyEffect and requestId', () => {
     });
 
     expect(seen).toEqual([{ id: 'login-form', action: 'submit', params: {}, futureOptIn: 'x' }]);
+  });
+});
+
+// A semantic change made by plan
+// 2026-11-10-ui-bridge-relay-and-assert-batch-drop-fields-and-headless-leaks-chromium,
+// Phase 5. The route used to DROP a `timeoutMs` that was not a number, so the
+// action ran with no timeout at all. It now hoists the value as it is, and the
+// executor refuses it with UB-VALIDATION-ERROR before the handler runs, the
+// same answer every other transport already gave.
+describe('a non-number timeoutMs on POST /control/component/:id/action/:actionId is refused', () => {
+  let calls: number;
+
+  beforeEach(() => {
+    calls = 0;
+    getGlobalRegistry().registerComponent('counted', {
+      name: 'Counted',
+      actions: [
+        {
+          id: 'go',
+          handler: () => {
+            calls += 1;
+            return 'ran';
+          },
+        },
+      ],
+    });
+  });
+
+  function expectRefused(data: Record<string, unknown>): void {
+    expect(data.success).toBe(false);
+    expect((data.failureDetails as Record<string, unknown>).errorCode).toBe('UB-VALIDATION-ERROR');
+    expect(data.error).toBe(
+      'Action "go" on component "counted" was rejected: timeoutMs must be a number of milliseconds, received "5000".'
+    );
+    expect(calls).toBe(0);
+  }
+
+  it('on the direct route (server/handlers.ts invokeComponentAction)', async () => {
+    const handlers = createHandlers(
+      makeRegistryLike(),
+      new DefaultActionExecutor(getGlobalRegistry())
+    );
+
+    const res = overTheWire(
+      await handlers.invokeComponentAction('counted', 'go', { timeoutMs: '5000' })
+    );
+
+    expectRefused(res.data as Record<string, unknown>);
+  });
+
+  it('over the relay (invokeComponentAction, then the listener)', async () => {
+    const res = overTheWire(
+      await relayIntoListener().invokeComponentAction('counted', 'go', { timeoutMs: '5000' })
+    );
+
+    expect(res.success).toBe(false);
+    expectRefused(res.data as Record<string, unknown>);
   });
 });
