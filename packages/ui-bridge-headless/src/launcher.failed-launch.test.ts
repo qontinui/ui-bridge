@@ -12,6 +12,11 @@
  * 2026-11-10-ui-bridge-relay-and-assert-batch-drop-fields-and-headless-leaks-chromium,
  * Phase 2). The launcher now owns that cleanup.
  *
+ * The fake browser's `close()` settles on a LATER macrotask, never at once, and
+ * each failure case reads whether it had settled at the moment the rejection
+ * arrived. So a launcher that fired the close and rejected without awaiting it
+ * fails here, not only one that never closes.
+ *
  * These cases pin the contract against a fake Playwright. The sibling
  * `launcher.failed-navigation.smoke.test.ts` reads it off a real Chromium.
  */
@@ -24,6 +29,14 @@ import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, type Mock } 
 /** The post-launch steps the fake can make reject, in the order the launcher runs them. */
 type FailingStep = 'newContext' | 'addInitScript#1' | 'addInitScript#2' | 'newPage' | 'goto';
 
+/** The fake `Browser` the mocked `chromium.launch` returns. */
+interface FakeBrowser {
+  newContext: Mock;
+  close: Mock;
+  /** Whether the promise `close()` returned has settled, resolved or rejected. */
+  closeSettled: boolean;
+}
+
 const fake = vi.hoisted(() => ({
   /** How many times `chromium.launch` ran. */
   launches: 0,
@@ -34,7 +47,7 @@ const fake = vi.hoisted(() => ({
   /** Whether `browser.close()` itself rejects as well. */
   closeRejects: false,
   /** Every fake browser `chromium.launch` returned, in launch order. */
-  browsers: [] as { close: Mock }[],
+  browsers: [] as FakeBrowser[],
   /** The arguments of every `context.addInitScript` call, in call order. */
   initScriptCalls: [] as unknown[][],
 }));
@@ -68,14 +81,24 @@ vi.mock('playwright', () => {
             return page;
           }),
         };
-        const browser = {
+        const browser: FakeBrowser = {
           newContext: vi.fn(async () => {
             rejectIfFailingAt('newContext');
             return context;
           }),
-          close: vi.fn(async () => {
-            if (fake.closeRejects) throw new Error('fake browser.close rejected');
-          }),
+          // Settles on a LATER macrotask: only a caller that awaits the close
+          // sees it settled.
+          close: vi.fn(
+            () =>
+              new Promise<void>((resolve, reject) => {
+                setTimeout(() => {
+                  browser.closeSettled = true;
+                  if (fake.closeRejects) reject(new Error('fake browser.close rejected'));
+                  else resolve();
+                }, 0);
+              })
+          ),
+          closeSettled: false,
         };
         fake.browsers.push(browser);
         return browser;
@@ -133,21 +156,46 @@ function walkEveryStep(): LaunchHeadlessTabOptions {
   };
 }
 
+/** Every line a `process.stderr.write` spy received. */
+function writtenLines(spy: { mock: { calls: unknown } }): string[] {
+  return (spy.mock.calls as unknown[][]).map((call) => String(call[0]));
+}
+
 /**
  * Make `step` reject, launch, and assert the contract: the launch rejects with
  * THAT error object (identity, not just its message), exactly one browser was
- * launched, and that browser was closed exactly once.
+ * launched, and that browser was closed exactly once, with the close already
+ * SETTLED when the rejection arrived.
  */
 async function expectFailedLaunchClosesItsBrowser(step: FailingStep): Promise<void> {
   const original = new Error(`fake ${step} rejected`);
   fake.failAt = step;
   fake.error = original;
 
-  await expect(launchHeadlessTab(walkEveryStep())).rejects.toBe(original);
+  // Read the close's state AT THE MOMENT the rejection arrives. A launcher that
+  // fired browser.close() and rejected without awaiting it gets here while the
+  // close is still pending.
+  let closeSettledWhenRejected: boolean | undefined;
+  const launch = launchHeadlessTab(walkEveryStep()).catch((error: unknown) => {
+    closeSettledWhenRejected = fake.browsers[0]?.closeSettled;
+    throw error;
+  });
 
+  await expect(launch).rejects.toBe(original);
   expect(fake.launches).toBe(1);
   expect(fake.browsers).toHaveLength(1);
   expect(fake.browsers[0]!.close).toHaveBeenCalledTimes(1);
+  expect(closeSettledWhenRejected).toBe(true);
+}
+
+/** The error `launch` rejects with; a launch that resolves fails the test, saying so. */
+async function rejectionOf(launch: Promise<unknown>): Promise<unknown> {
+  return launch.then(
+    () => {
+      throw new Error('expected the launch to reject, and it resolved');
+    },
+    (error: unknown) => error
+  );
 }
 
 describe('launchHeadlessTab — a step after the launch rejects: the browser is closed and the original error surfaces', () => {
@@ -180,23 +228,43 @@ describe('launchHeadlessTab — a step after the launch rejects: the browser is 
     try {
       fake.closeRejects = true;
       await expectFailedLaunchClosesItsBrowser('goto');
-      const written = (stderr.mock.calls as unknown as unknown[][]).map((c) => String(c[0]));
-      expect(written.some((line) => line.includes('fake browser.close rejected'))).toBe(true);
+      expect(
+        writtenLines(stderr).some((line) => line.includes('fake browser.close rejected'))
+      ).toBe(true);
     } finally {
       stderr.mockRestore();
     }
   });
 });
 
-describe('launchHeadlessTab — a launch that succeeds is unchanged', () => {
+describe('launchHeadlessTab — a launch that succeeds, and its close()', () => {
   it('leaves the browser open; close() closes it once, and a second close() is a no-op', async () => {
     const tab = await launchHeadlessTab(walkEveryStep());
     const browser = fake.browsers[0]!;
     expect(browser.close).not.toHaveBeenCalled();
 
     await tab.close();
+    expect(browser.closeSettled).toBe(true);
     await tab.close();
     expect(browser.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('close() whose browser.close fails resolves, reports the failure on stderr, and stays idempotent', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const tab = await launchHeadlessTab(walkEveryStep());
+      fake.closeRejects = true;
+
+      await expect(tab.close()).resolves.toBeUndefined();
+      await expect(tab.close()).resolves.toBeUndefined();
+
+      expect(fake.browsers[0]!.close).toHaveBeenCalledTimes(1);
+      expect(
+        writtenLines(stderr).some((line) => line.includes('fake browser.close rejected'))
+      ).toBe(true);
+    } finally {
+      stderr.mockRestore();
+    }
   });
 });
 
@@ -220,4 +288,46 @@ describe('launchHeadlessTab — a storageState file that cannot be used is refus
     ).rejects.toBeInstanceOf(SyntaxError);
     expect(fake.launches).toBe(0);
   });
+
+  it.each([
+    {
+      holds: 'null',
+      file: 'shape-null.json',
+      content: 'null',
+      reason: /must hold a JSON object, got null/,
+    },
+    {
+      holds: 'an array',
+      file: 'shape-array.json',
+      content: '[]',
+      reason: /must hold a JSON object, got an array/,
+    },
+    {
+      holds: '"cookies" that is not an array',
+      file: 'shape-cookies.json',
+      content: '{"cookies":"not-an-array","origins":[]}',
+      reason: /"cookies" must be an array when present, got a string/,
+    },
+    {
+      holds: '"origins" that is not an array',
+      file: 'shape-origins.json',
+      content: '{"cookies":[],"origins":{}}',
+      reason: /"origins" must be an array when present, got an object/,
+    },
+  ])(
+    'a file holding $holds rejects with an error naming the file, and launches nothing',
+    async ({ file, content, reason }) => {
+      const path = join(dir, file);
+      writeFileSync(path, content);
+
+      const error = await rejectionOf(
+        launchHeadlessTab({ url: 'http://app.local/', headless: true, storageStatePath: path })
+      );
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain(path);
+      expect((error as Error).message).toMatch(reason);
+      expect(fake.launches).toBe(0);
+    }
+  );
 });

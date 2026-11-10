@@ -107,17 +107,25 @@ The poll then returns that tab and no other.
 rejects having already closed the browser it started. After a rejection there
 is no handle to receive and nothing to clean up:
 
-- The inputs are checked before Chromium is spawned: `deviceScaleFactor`,
-  `colorScheme`, and the `storageStatePath` file, which is read and parsed
-  then. A bad one rejects with no browser launched.
-- Once Chromium is running, a step that throws (creating the context, an init
-  script, opening the page, the first navigation, the registration wait)
-  closes the browser first and then rejects with the original error: the same
-  error object, not a wrapper, and never the close's own failure. If that
-  close fails too, the launcher reports it on stderr.
+- Before Chromium is spawned, `deviceScaleFactor` and `colorScheme` are
+  validated, and the `storageStatePath` file is read, parsed as JSON and
+  checked to hold an object whose `cookies` and `origins` are arrays when
+  present. A failure there rejects with no browser launched: with the read
+  error, the JSON parse error, or an error naming the file and what is wrong
+  with its shape. Nothing deeper in the file is checked at this point.
+- Once Chromium is running, a step that throws closes the browser first and
+  then rejects with the original error: the same error object, not a wrapper,
+  and never the close's own failure. The steps are creating the context (which
+  is also where Playwright refuses storageState content that passed the shape
+  check, such as a malformed cookie), an init script, opening the page, the
+  first navigation and the registration wait. If that close fails too, the
+  launcher reports it on stderr.
 
 A registration wait that runs out is not a failure: the launch resolves with
 `uiBridgeRegistered: false`, and the tab is still yours to close.
+
+`tab.close()` resolves even when closing the browser fails, and reports that
+failure on stderr the same way. Calling it again is a no-op.
 
 Up to 0.7.0, a launch whose first navigation failed (or any earlier step after
 the browser started) rejected with Chromium still running and no handle to

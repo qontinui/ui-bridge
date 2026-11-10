@@ -199,9 +199,13 @@ export interface LaunchHeadlessTabOptions {
    * authenticated. A legacy artifact WITHOUT `__sessionStorage` is read + passed
    * through unchanged.
    *
-   * The file is read and parsed BEFORE Chromium launches, so an unreadable or
-   * malformed one rejects the launch (with the read or parse error) and no
-   * browser is started.
+   * BEFORE Chromium launches, the file is read, parsed as JSON and checked to
+   * hold an object whose `cookies` and `origins` are arrays when present. A
+   * file that fails any of those rejects the launch with no browser started:
+   * with the read error, the JSON parse error, or an error naming the file and
+   * what is wrong with its shape. Content past that shape (a malformed cookie
+   * entry, say) is Playwright's to judge in `newContext`, after the launch; a
+   * refusal there still closes the browser before the launch rejects.
    */
   storageStatePath?: string;
 }
@@ -215,7 +219,8 @@ export interface HeadlessTab {
   browser: Browser;
   /**
    * Close the browser and all associated resources. Safe to call multiple
-   * times; subsequent calls resolve immediately.
+   * times; subsequent calls resolve immediately. Resolves even when closing
+   * the browser fails: that failure is reported on stderr, not thrown.
    */
   close(): Promise<void>;
   /**
@@ -383,24 +388,73 @@ function originOf(url: string): string | undefined {
   }
 }
 
+/** A JSON value as an error message names it: `null`, `an array`, `a string`, `an object`, … */
+function describeJsonValue(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'an array';
+  const type = typeof value;
+  return /^[aeiou]/.test(type) ? `an ${type}` : `a ${type}`;
+}
+
 /**
- * Close the browser that a failed {@link launchHeadlessTab} launched.
+ * Read a `storageStatePath` file, BEFORE any browser launches.
  *
- * Awaited BEFORE the launch's original error is rethrown, so the browser is
- * already closed when the rejection reaches the caller. Only this close's own
- * error is swallowed: the error the caller must see is the one that failed the
- * launch, never the teardown's. It is still reported on stderr, because a close
- * that failed may have left a Chromium running.
+ * Exactly this is checked: the file reads, its content parses as JSON, and it
+ * holds an object whose `cookies` and `origins` are arrays when present. A read
+ * or parse failure throws that error unchanged; a shape failure throws an error
+ * naming the file and what is wrong with it. Nothing deeper is checked here:
+ * content past that shape (a malformed cookie entry, say) is Playwright's to
+ * judge in `newContext`, after the launch, where a refusal closes the browser
+ * like any other post-launch failure.
  */
-async function closeAfterFailedLaunch(browser: Browser): Promise<void> {
+function readStorageStateFile(path: string): StorageStateArtifact {
+  const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(
+      `storageState file ${path} must hold a JSON object, got ${describeJsonValue(parsed)}`
+    );
+  }
+  for (const key of ['cookies', 'origins'] as const) {
+    const value = (parsed as Record<string, unknown>)[key];
+    if (value !== undefined && !Array.isArray(value)) {
+      throw new Error(
+        `storageState file ${path}: "${key}" must be an array when present, got ${describeJsonValue(value)}`
+      );
+    }
+  }
+  return parsed as StorageStateArtifact;
+}
+
+/**
+ * Close `browser`, and report a close that fails on stderr instead of throwing it.
+ *
+ * The one close path of this module: a tab's `close()` and a failed launch
+ * both go through it. Neither may throw the close's own error (`close()` is
+ * best-effort teardown, and a failed launch must reject with ITS error), and
+ * neither stays silent about it, because a close that failed may have left a
+ * Chromium running.
+ */
+async function closeBrowserReportingFailure(browser: Browser, what: string): Promise<void> {
   try {
     await browser.close();
   } catch (closeError) {
     const detail = closeError instanceof Error ? closeError.message : String(closeError);
     process.stderr.write(
-      `[ui-bridge] the launch failed, and closing its browser failed too: ${detail}\n`
+      `[ui-bridge] could not close ${what}, so a Chromium may still be running: ${detail}\n`
     );
   }
+}
+
+/**
+ * Close the browser that a failed {@link launchHeadlessTab} launched.
+ *
+ * Awaited BEFORE the launch's original error is rethrown, so the browser is
+ * already closed when the rejection reaches the caller. A close that fails is
+ * reported, never thrown: the caller must see the error that failed the
+ * launch, never the teardown's.
+ */
+function closeAfterFailedLaunch(browser: Browser): Promise<void> {
+  return closeBrowserReportingFailure(browser, 'the browser of a failed launch');
 }
 
 /**
@@ -411,13 +465,16 @@ async function closeAfterFailedLaunch(browser: Browser): Promise<void> {
  * A launch that rejects owns its cleanup, so a caller never receives, and
  * never needs, a handle to close:
  *
- *   - The inputs are checked BEFORE Chromium is spawned: `deviceScaleFactor`,
- *     `colorScheme`, and the `storageStatePath` file, which is read and parsed
- *     here. A bad one rejects with no browser launched.
- *   - Once Chromium is running, a step that throws (`newContext`, an init
- *     script, `newPage`, the first navigation, the registration wait) closes
- *     the browser and only then rejects, with the ORIGINAL error: the same
- *     object, never a wrapper and never the close's own failure.
+ *   - BEFORE Chromium is spawned, `deviceScaleFactor` and `colorScheme` are
+ *     validated, and the `storageStatePath` file is read, parsed as JSON and
+ *     checked to hold an object whose `cookies` and `origins` are arrays when
+ *     present. A failure there rejects with no browser launched.
+ *   - Once Chromium is running, a step that throws closes the browser and only
+ *     then rejects, with the ORIGINAL error: the same object, never a wrapper
+ *     and never the close's own failure (that is reported on stderr). The
+ *     steps are `newContext` (which is also where Playwright refuses
+ *     storageState content that passed the shape check above), an init
+ *     script, `newPage`, the first navigation and the registration wait.
  *
  * Up to 0.7.0 such a step threw with the browser still running and no handle
  * returned, so one Chromium leaked per failed first page load until the
@@ -460,13 +517,14 @@ export async function launchHeadlessTab(
   // legacy artifact without `__sessionStorage` round-trips to an equivalent
   // cleaned object → behavior is unchanged.
   //
-  // Read BEFORE Chromium launches, like the checks above: an unreadable or
-  // malformed file then rejects the launch with no browser to clean up.
+  // Read BEFORE Chromium launches, like the checks above: a file that does not
+  // read, parse as JSON, or hold an object whose `cookies` and `origins` are
+  // arrays when present rejects the launch with no browser to clean up
+  // (readStorageStateFile says exactly what it checks).
   let storageStateSeed: Record<string, unknown> | undefined;
   let sessionStorageMap: Record<string, Record<string, string>> | null = null;
   if (storageStatePath) {
-    const parsed = JSON.parse(readFileSync(storageStatePath, 'utf8')) as StorageStateArtifact;
-    const split = splitSessionStorageArtifact(parsed);
+    const split = splitSessionStorageArtifact(readStorageStateFile(storageStatePath));
     storageStateSeed = split.storageState;
     sessionStorageMap = split.sessionStorage;
   }
@@ -547,12 +605,9 @@ export async function launchHeadlessTab(
     let closed = false;
     const close = async (): Promise<void> => {
       if (closed) return;
+      // Set before the await, so a second call, even a concurrent one, is a no-op.
       closed = true;
-      try {
-        await browser.close();
-      } catch {
-        // ignore — best-effort teardown
-      }
+      await closeBrowserReportingFailure(browser, "the tab's browser");
     };
 
     const navigate = async (nextUrl: string): Promise<void> => {
