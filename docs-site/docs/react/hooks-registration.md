@@ -220,9 +220,16 @@ function LoginForm() {
 ```
 
 Handlers are wrapped at registration time in a stable delegator that looks the
-handler up again on each call, so a handler closing over React state always sees
-current values rather than the closure captured at registration. `state` and
-`computed` are read the same way.
+handler up again on each call, as of the latest committed render, so a handler
+closing over React state sees the values on screen rather than the closure
+captured at registration. `state` and `computed` are read the same way.
+
+A call to an action that the latest committed render withdrew (one that exists
+only while a row is selected, say, called just after the row is deselected) runs
+no handler. The registry may still list the action for a moment, because the
+withdrawal is republished from a passive effect, but the call fails with its own
+message naming the action, under `UB-UNSUPPORTED-ACTION`: the code an action the
+registry no longer lists gets.
 
 The rest of the declaration is republished when its value changes: an action's
 `label`, `description`, `paramSchema` or `effect`, the list of actions itself,

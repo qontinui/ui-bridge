@@ -7,6 +7,7 @@
 import { useEffect, useLayoutEffect, useCallback, useRef, useState } from 'react';
 import type { IREffect, RegisteredNativeComponent } from '../core/types';
 import type { UpdateComponentMetaOptions } from '../core/registry';
+import { ComponentActionUnavailableError } from '../../core/component-action-unavailable';
 import { useUIBridgeNativeOptional } from './UIBridgeNativeProvider';
 
 /**
@@ -105,7 +106,11 @@ export interface UseUIComponentOptions {
   name: string;
   /** Description */
   description?: string;
-  /** Actions available on this component */
+  /**
+   * Actions available on this component. A call runs the handler of the latest
+   * committed render; a call to an action that render withdrew fails, even
+   * before the registry stops listing it.
+   */
   actions?: ComponentActionDef[];
   /** Child element IDs owned by this component */
   elementIds?: string[];
@@ -252,14 +257,19 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
   // The declared list is tracked on identity, so calls reach the latest closures.
   const actionsRef = useRef(options.actions || []);
   const actionsSignature = publishedActionsSignature(options.actions);
-  useEffect(() => {
+  // Layout effect: passive effects flush a task after a non-discrete commit, and a
+  // call in that gap would run the previous render's handler.
+  useLayoutEffect(() => {
     actionsRef.current = options.actions || [];
   }, [options.actions]);
 
   // The imperative list holds until the declared actions change VALUE (the
   // call site has said something newer) or the id changes (it was installed
   // for the old one). Compared by hand rather than by effect deps, so a list
-  // installed before this hook's first effect runs is kept.
+  // installed before this hook's first effect runs is kept. The reset stays
+  // PASSIVE, unlike the declared ref above, so that it lands in the same flush
+  // as the republish that withdraws the list from the registry: what the
+  // registry lists and what a call resolves change together.
   const imperativeActionsRef = useRef<ComponentActionDef[] | null>(null);
   const imperativeHoldKey = JSON.stringify([id, actionsSignature]);
   const imperativeHoldKeyRef = useRef(imperativeHoldKey);
@@ -292,18 +302,29 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
   // for the life of the mount, so a handler reading component state read it as
   // it was at mount.
   //
+  // When the latest committed render provides NO handler for the id, the call
+  // is REFUSED with `ComponentActionUnavailableError`. That is a commit that
+  // withdrew the action, called before the passive republish takes it out of
+  // the registry. The handler captured at publish is never the fallback: it may
+  // be many renders old, and act on an item the screen no longer shows. The
+  // native executor answers the throw with `success: false`, its message and its
+  // `stack` (an unknown action gets `Action not found: …` and no stack).
+  //
   // Every other field is spread rather than re-listed: the registry closes the
   // field list once (`toRegisteredComponentActions`), and a second closed list
   // here is only a second place to drop `paramSchema` / `effect` from, which is
   // what happened to each of them once.
   const toRegistryActions = useCallback(
     () =>
-      publishedActions().map(({ handler: declaredHandler, ...rest }) => ({
+      publishedActions().map(({ handler: _publishedHandler, ...rest }) => ({
         ...rest,
-        handler: (params?: unknown, handlerOptions?: { signal?: AbortSignal }) =>
-          (findAction(rest.id)?.handler ?? declaredHandler)(params, handlerOptions),
+        handler: (params?: unknown, handlerOptions?: { signal?: AbortSignal }) => {
+          const current = findAction(rest.id);
+          if (!current) throw new ComponentActionUnavailableError(id, rest.id);
+          return current.handler(params, handlerOptions);
+        },
       })),
-    [publishedActions, findAction]
+    [publishedActions, findAction, id]
   );
 
   // --- Element ids -----------------------------------------------------------

@@ -7,6 +7,7 @@
 import { useEffect, useCallback, useRef, useMemo } from 'react';
 import { useIsomorphicLayoutEffect } from './useIsomorphicLayoutEffect';
 import type { IREffect, RegisteredComponent } from '../core/types';
+import { ComponentActionUnavailableError } from '../core/component-action-unavailable';
 import type { EffectSignature } from '../control/effect-types';
 import { useUIBridgeOptional } from './UIBridgeProvider';
 
@@ -142,7 +143,9 @@ export interface UseUIComponentOptions {
    * Actions available on this component. Re-published when a label,
    * description, `paramSchema`, `effect` or the list itself changes, or when an
    * action gains or loses a `signature`. A changed handler needs no re-publish
-   * because calls look up the latest one.
+   * because calls look up the latest one, as of the latest committed render. A
+   * call to an action that render withdrew fails, even before the registry stops
+   * listing it.
    */
   actions?: ComponentActionDef[];
   /** Child element IDs owned by this component */
@@ -152,7 +155,7 @@ export interface UseUIComponentOptions {
   /**
    * Function to get the current component state. Called at read time through a
    * stable wrapper, so a fresh inline `() => ({ open })` on each render is read
-   * as of the latest render, not the closure from registration.
+   * as of the latest committed render, not the closure from registration.
    */
   state?: () => Record<string, unknown>;
   /** Computed properties exposed by the component */
@@ -287,7 +290,10 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
 
   // The declared list is tracked on identity, so calls reach the latest closures.
   const actionsSignature = publishedActionsSignature(options.actions);
-  useEffect(() => {
+  // Layout effect, not passive: a non-discrete update commits the DOM and runs
+  // layout effects synchronously but flushes passive effects a task later, and a
+  // bridge request handled in that gap would run the previous render's handler.
+  useIsomorphicLayoutEffect(() => {
     actionsRef.current = options.actions || [];
   }, [options.actions]);
 
@@ -297,7 +303,10 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
   // the call site has said something newer, or until the id changes: it was
   // installed for the old one. Compared by hand rather than by effect deps, so a
   // list installed before this hook's first effect runs (from a child's effect)
-  // and StrictMode's simulated remount both keep it.
+  // and StrictMode's simulated remount both keep it. The reset stays PASSIVE,
+  // unlike the declared ref above, so that it lands in the same flush as the
+  // republish that withdraws the installed list from the registry: an installed
+  // action stays callable for exactly as long as the registry lists it.
   const imperativeActionsRef = useRef<ComponentActionDef[] | null>(null);
   const imperativeHoldKey = JSON.stringify([id, actionsSignature]);
   const imperativeHoldKeyRef = useRef(imperativeHoldKey);
@@ -323,6 +332,26 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
       : (declared ?? installed);
   }, []);
 
+  // Every published handler wrapper calls through here. It runs the handler the
+  // latest committed render provides, and REFUSES when that render provides none:
+  // a commit that withdrew the action reaches the registry only with the passive
+  // republish, so a call in between still finds it listed. Returning nothing
+  // there reported a success no handler earned; the executor answers the refusal
+  // as it does an unknown action.
+  const invokeCommitted = useCallback(
+    (
+      componentId: string,
+      actionId: string,
+      params?: unknown,
+      options?: { signal?: AbortSignal }
+    ): unknown => {
+      const current = findAction(actionId);
+      if (!current) throw new ComponentActionUnavailableError(componentId, actionId);
+      return current.handler(params, options);
+    },
+    [findAction]
+  );
+
   // By VALUE for the same reason, and a new value keeps the auto-tracked elements:
   // they are still mounted and still owned, whatever the call site declares. An
   // `id` or `bridge` change starts over from the declared list: the auto-track
@@ -339,7 +368,8 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [elementIdsSignature, id, bridge]);
 
-  useEffect(() => {
+  // Layout effect for the same reason as `actionsRef` above.
+  useIsomorphicLayoutEffect(() => {
     stateRef.current = options.state;
     computedRef.current = options.computed;
   }, [options.state, options.computed]);
@@ -396,16 +426,14 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
           // wrapper type-checks either way.
           effect: a.effect,
           signature: a.signature,
-          // Stable wrapper: always delegates to the latest handler in actionsRef
-          // so that handlers closing over React state see current values, not
-          // the stale closure captured at registration time.
+          // Stable wrapper: always delegates to the latest committed handler
+          // (`invokeCommitted`) so that handlers closing over React state see
+          // current values, not the stale closure captured at registration time.
           // Forwards BOTH arguments. Dropping `options` here would silently
           // strip the Phase 3 cancellation signal on its way to the author's
           // handler — the wrapper type-checks either way.
-          handler: (params?: unknown, options?: { signal?: AbortSignal }) => {
-            const current = findAction(actionId);
-            return current?.handler(params, options);
-          },
+          handler: (params?: unknown, options?: { signal?: AbortSignal }) =>
+            invokeCommitted(id, actionId, params, options),
         };
       }),
       elementIds: elementIdsRef.current,
@@ -424,7 +452,7 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
     createGetComputed,
     getLatestState,
     publishedActions,
-    findAction,
+    invokeCommitted,
   ]);
 
   // Unregister the component
@@ -582,10 +610,8 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
           // Forwards BOTH arguments. Dropping `options` here would silently
           // strip the Phase 3 cancellation signal on its way to the author's
           // handler — the wrapper type-checks either way.
-          handler: (params?: unknown, options?: { signal?: AbortSignal }) => {
-            const current = findAction(actionId);
-            return current?.handler(params, options);
-          },
+          handler: (params?: unknown, options?: { signal?: AbortSignal }) =>
+            invokeCommitted(id, actionId, params, options),
         };
       }),
       elementIds: elementIdsRef.current,

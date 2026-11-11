@@ -104,7 +104,15 @@ export interface UseUIComponentOptions {
   name: string;
   /** Description */
   description?: string;
-  /** Actions available on this component */
+  /**
+   * Actions available on this component. A call runs the handler of the latest
+   * committed render; a call to an action that render withdrew fails, even
+   * before the registry stops listing it. Leaving the option out declares no
+   * actions, so dropping it withdraws the list it declared before. A list
+   * installed with `updateActions` at a call site that never declares
+   * `actions` stays; dropping a declared option clears an installed list too,
+   * as any change of the declared actions' value does (see `updateActions`).
+   */
   actions?: ComponentActionDef[];
   /** Child element IDs owned by this component */
   elementIds?: string[];
@@ -140,8 +148,10 @@ export interface UseUIComponentReturn {
    * plays for `useUIElement`.
    *
    * If you pass BOTH the `actions` option and call this, the option wins on the
-   * next render that changes its signature: the declarative lane is the one the
-   * republish effect re-asserts.
+   * next render that changes its signature (dropping the option counts): the
+   * declarative lane is the one the republish effect re-asserts. Until then an
+   * action id in both lists runs whichever handler was supplied last, and the
+   * installed list survives a change of `id`, `name` or `description`.
    */
   updateActions: (actions: ComponentActionDef[]) => void;
   /**
@@ -162,6 +172,23 @@ export interface UseUIComponentReturn {
    * published shape.
    */
   registeredComponent: RegisteredNativeComponent | null;
+}
+
+/**
+ * The refusal a registered trampoline throws when the latest committed render
+ * provides no handler for its action: this package's copy of the parent
+ * package's `ComponentActionUnavailableError`, with the same name and message.
+ * The native executor answers it like any handler throw, with `success: false`,
+ * this message and the throw's `stack`; an unknown action gets
+ * `Action not found: …` and no stack.
+ */
+function withdrawnActionError(componentId: string, actionId: string): Error {
+  const error = new Error(
+    `Action "${actionId}" is no longer declared by component "${componentId}": ` +
+      'its latest committed render withdrew it. Read the component again before calling one of its actions.'
+  );
+  error.name = 'ComponentActionUnavailableError';
+  return error;
 }
 
 /**
@@ -235,6 +262,8 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
   const publishedIdRef = useRef<string | null>(null);
   const registeredRef = useRef(false);
   const registeredIdRef = useRef<string | null>(null);
+  // The DECLARED lane: the `actions` option. A list installed through
+  // `updateActions` lives apart from it, in `imperativeActionsRef` below.
   const actionsRef = useRef(options.actions || []);
   const elementIdsRef = useRef(options.elementIds || []);
 
@@ -252,13 +281,57 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
   const elementIdsSignature = JSON.stringify(options.elementIds ?? []);
 
   // Track the declared `actions` on every render, so the trampoline below always
-  // resolves to the CURRENT closure. Only when the option is actually SUPPLIED:
-  // overwriting unconditionally — which is what `options.actions || []` did —
-  // wipes an action list installed through the imperative `updateActions` lane
-  // on the very next render of a call site that declares no `actions` option.
-  useEffect(() => {
-    if (options.actions !== undefined) actionsRef.current = options.actions;
+  // resolves to the CURRENT closure. An absent option declares NO actions, as in
+  // the parent package's hooks: dropping it withdraws the list it declared, and
+  // the republish effect below publishes that withdrawal. (This used to write
+  // only a supplied option, because one shared ref also held the `updateActions`
+  // list and an absent option would have wiped it; that list has its own lane
+  // now. Kept, the guard left a dropped list listed and callable for good.)
+  // Layout effect: passive effects flush a task after a non-discrete commit, and a
+  // call in that gap would run the previous render's handler.
+  useLayoutEffect(() => {
+    actionsRef.current = options.actions || [];
   }, [options.actions]);
+
+  // The IMPERATIVE lane: the list `updateActions` installed. With one ref for
+  // both, the declared sync overwrote an install on the next render, and a call
+  // could not tell an installed action, which must stay callable, from a declared
+  // one the latest commit withdrew, which must not run.
+  //
+  // It holds until the declared actions change VALUE (dropping the option counts:
+  // an absent option declares an empty list), the point at which the republish
+  // effect below re-asserts the declared lane. An `id`, `name` or `description`
+  // change does not end it, unlike in the parent package's native hook: a
+  // declared-less call site's installed list has always followed its id.
+  // Compared by hand rather than by effect deps, so a list installed before this
+  // hook's first effect runs is kept. The reset is PASSIVE and declared before
+  // the republish effect, so the registry stops listing the list in the same
+  // flush that stops resolving it.
+  const imperativeActionsRef = useRef<ComponentActionDef[] | null>(null);
+  const imperativeHoldKeyRef = useRef(actionsSignature);
+  useEffect(() => {
+    if (imperativeHoldKeyRef.current === actionsSignature) return;
+    imperativeHoldKeyRef.current = actionsSignature;
+    imperativeActionsRef.current = null;
+  }, [actionsSignature]);
+
+  const publishedActions = useCallback(
+    (): ComponentActionDef[] => imperativeActionsRef.current ?? actionsRef.current,
+    []
+  );
+  // For an id in both lanes, whichever handler was supplied last. An install
+  // snapshots the declared list it was made against; while the declared ref still
+  // holds that very list, the install is newer, and once a render supplies a new
+  // array (an inline `actions` option does on every render) the declared closure
+  // is.
+  const declaredAtInstallRef = useRef<ComponentActionDef[] | null>(null);
+  const findAction = useCallback((actionId: string): ComponentActionDef | undefined => {
+    const declared = actionsRef.current.find((x) => x.id === actionId);
+    const installed = imperativeActionsRef.current?.find((x) => x.id === actionId);
+    return actionsRef.current === declaredAtInstallRef.current
+      ? (installed ?? declared)
+      : (declared ?? installed);
+  }, []);
 
   // `elementIds` carries no closures, so it is re-asserted only when the
   // DECLARED value actually changes. Doing it every render instead would undo
@@ -272,13 +345,20 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [elementIdsSignature]);
 
-  // Map the declared actions into the registry's shape.
+  // Map the published actions (the installed list while it holds, else the
+  // declared one) into the registry's shape.
   //
-  // The handler is a trampoline that resolves through `actionsRef.current` at
-  // INVOKE time. Without it the registry holds the closure from the render that
+  // The handler is a trampoline that resolves through the two lanes at INVOKE
+  // time. Without it the registry holds the closure from the render that
   // registered the component, for the life of the mount — so an action handler
   // reading component state read that state as it was at mount, and
   // `updateActions` was the only escape from a staleness nothing announced.
+  //
+  // When neither lane provides the id, the call is REFUSED. That is a declared
+  // action the latest commit withdrew, called before the passive republish takes
+  // it out of the registry. The handler captured at publish is never the
+  // fallback: it may be many renders old, and act on an item the screen no
+  // longer shows.
   //
   // Everything else is spread rather than re-listed field by field. The
   // hand-rolled list this replaces is the exact silent-drop trap this file's own
@@ -288,14 +368,15 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
   // closed list here is only a second place to forget.
   const toRegistryActions = useCallback(
     () =>
-      actionsRef.current.map(({ handler: declaredHandler, ...rest }) => ({
+      publishedActions().map(({ handler: _publishedHandler, ...rest }) => ({
         ...rest,
         handler: (params?: unknown, handlerOptions?: { signal?: AbortSignal }) => {
-          const latest = actionsRef.current.find((a) => a.id === rest.id);
-          return (latest?.handler ?? declaredHandler)(params, handlerOptions);
+          const current = findAction(rest.id);
+          if (!current) throw withdrawnActionError(id, rest.id);
+          return current.handler(params, handlerOptions);
         },
       })),
-    []
+    [publishedActions, findAction, id]
   );
 
   // Register the component
@@ -379,7 +460,8 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
   // Update actions dynamically
   const updateActions = useCallback(
     (actions: ComponentActionDef[]) => {
-      actionsRef.current = actions;
+      imperativeActionsRef.current = actions;
+      declaredAtInstallRef.current = actionsRef.current;
 
       // Publish in place. This used to unregister and re-register, which emitted
       // a spurious `component:unregistered`/`component:registered` pair and left
@@ -493,10 +575,12 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
   // same shape `updateLabel` was for elements before #176 auto-published the
   // `label` option.
   //
-  // Only the fields the call site actually DECLARES are re-asserted: a hook used
-  // purely imperatively (no `actions` / `elementIds` option) must not have its
-  // `updateActions` / `addElement` work overwritten by an empty declarative
-  // lane.
+  // The actions are re-asserted on every run: what gets published is the
+  // `updateActions` list while it holds, else the declared one, so a hook used
+  // purely imperatively keeps its list, and a dropped `actions` option publishes
+  // its withdrawal. `elementIds` is re-asserted only when the call site DECLARES
+  // it: a hook driven by `addElement` alone must not have that work overwritten
+  // by an empty declarative lane.
   //
   // Gated on `registered` rather than `registeredRef` so it runs on the commit
   // that FOLLOWS registration, and keyed on the value signatures rather than the
@@ -507,7 +591,7 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
     const changed = bridge.registry.updateComponentMeta(targetId, {
       name,
       description,
-      ...(options.actions !== undefined ? { actions: toRegistryActions() } : {}),
+      actions: toRegistryActions(),
       ...(options.elementIds !== undefined ? { elementIds: elementIdsRef.current } : {}),
     });
     if (changed) {
