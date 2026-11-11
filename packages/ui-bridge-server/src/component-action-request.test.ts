@@ -29,6 +29,7 @@ import { createHandlers, type RegistryLike } from './handlers';
 import { UIBridgeWSHandler } from './websocket-handler';
 import { createExpressApp, createExpressRouter } from './express';
 import { createNextRouteHandlers } from './nextjs';
+import { StandaloneServer } from './standalone';
 import type { UIBridgeServerHandlers } from './types';
 
 let seen: Array<Record<string, unknown>>;
@@ -233,10 +234,13 @@ describe('POST /control/component/:id/action/:actionId reaches the action throug
   };
 
   let server: Server | undefined;
+  let standalone: StandaloneServer | undefined;
 
   afterEach(async () => {
     if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
     server = undefined;
+    await standalone?.stop();
+    standalone = undefined;
   });
 
   async function listen(app: Parameters<typeof createServer>[1]): Promise<number> {
@@ -254,12 +258,28 @@ describe('POST /control/component/:id/action/:actionId reaches the action throug
     return listen(app);
   }
 
+  /**
+   * StandaloneServer, which serves the same route table with its own router,
+   * on a port the OS picks. The port is given explicitly because the default
+   * is 9876, the live runner's.
+   */
+  async function standaloneServer(): Promise<number> {
+    standalone = new StandaloneServer(makeHandlers(), {
+      host: '127.0.0.1',
+      port: 0,
+      log: () => {},
+    });
+    await standalone.start();
+    return standalone.getAddress()!.port;
+  }
+
   it.each([
     [
       'createExpressApp',
       () => listen(createExpressApp(makeHandlers()) as Parameters<typeof createServer>[1]),
     ],
     ['createExpressRouter({ useBodyParser: true })', routerApp],
+    ['StandaloneServer', standaloneServer],
   ])('through %s', async (_name, start) => {
     const port = await start();
 
