@@ -407,9 +407,11 @@ const FORMATTED_VALUE_INPUT_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * `<input>` types whose value is only ever SET whole (`setValue`): a range
- * position or a hidden value, plus the formatted ones above. Typing
- * characters into a range or hidden input is no user gesture.
+ * `<input>` types `setValue` writes a whole value into: a range position or a
+ * hidden value, plus the formatted ones above. A range takes no `type` or
+ * `clear` (its value is a number the browser clamps: typed characters write a
+ * wrong value, and an empty one snaps back to the midpoint); a hidden input
+ * takes both ({@link hiddenInput}).
  */
 const VALUE_INPUT_TYPES: ReadonlySet<string> = new Set([
   'range',
@@ -440,12 +442,23 @@ export function formattedValueInput(element: Element): HTMLInputElement | null {
 }
 
 /**
- * The field `type` writes to: a text field ({@link textEntryControl}), which
- * the typed text is appended to, or a date, time or colour `<input>`
- * ({@link formattedValueInput}), whose whole value the typed text becomes.
+ * A hidden `<input>`. Its value is a plain string with no sanitization, so
+ * `type` appends to it and `clear` empties it, as the base executor did. It
+ * has no rendering, so a dispatcher that refuses invisible elements (the
+ * relay) refuses every verb on it, which is state, not kind.
+ */
+export function hiddenInput(element: Element): HTMLInputElement | null {
+  return element instanceof HTMLInputElement && element.type === 'hidden' ? element : null;
+}
+
+/**
+ * The field `type` writes to: a text field ({@link textEntryControl}) or a
+ * hidden `<input>` ({@link hiddenInput}), which the typed text is appended
+ * to, or a date, time or colour `<input>` ({@link formattedValueInput}),
+ * whose whole value the typed text becomes.
  */
 export function typeControl(element: Element): HTMLInputElement | HTMLTextAreaElement | null {
-  return textEntryControl(element) ?? formattedValueInput(element);
+  return textEntryControl(element) ?? formattedValueInput(element) ?? hiddenInput(element);
 }
 
 /** A file `<input>`. */
@@ -615,7 +628,7 @@ export function resolveOwnerForm(element: Element): HTMLFormElement | null {
 export function structuralActions(element: Element): StandardAction[] {
   const verbs: StandardAction[] = [];
   if (textEntryControl(element)) verbs.push(...TEXT_ENTRY_VERBS);
-  else if (formattedValueInput(element)) verbs.push('type', 'clear', 'setValue');
+  else if (typeControl(element)) verbs.push('type', 'clear', 'setValue');
   else if (valueControl(element)) verbs.push('setValue');
   if (fileInput(element)) verbs.push('clear');
   if (element instanceof HTMLSelectElement) verbs.push('select', 'setValue');
