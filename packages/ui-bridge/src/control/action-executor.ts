@@ -3,57 +3,15 @@
  *
  * Executes actions on registered elements and components.
  *
- * When @qontinui/ui-bridge-auto is available (optional peer dep), DOM action
- * execution delegates to its canonical perform* functions. This ensures a
- * single source of truth for action semantics across the ecosystem.
- * When ui-bridge-auto is not installed, falls back to inline implementations.
+ * Every DOM action this executor performs is dispatched to its own `perform*`
+ * methods (and the `control/` helpers they call). `@qontinui/ui-bridge-auto`
+ * has its own `performAction` for that package's direct consumers; this
+ * executor never hands an action to it.
  */
-
-type PerformActionFn = (
-  element: HTMLElement,
-  action: string,
-  params?: Record<string, unknown>
-) => Promise<void>;
-let _canonicalPerformAction: PerformActionFn | null | undefined;
-
-interface UIBridgeAutoModule {
-  performAction?: PerformActionFn;
-}
-
-function getCanonicalPerformAction(): PerformActionFn | null {
-  if (_canonicalPerformAction !== undefined) return _canonicalPerformAction;
-  let mod: UIBridgeAutoModule | undefined;
-  if (typeof globalThis !== 'undefined') {
-    const g = globalThis as Record<string, unknown>;
-    const direct = g.__QONTINUI_UI_BRIDGE_AUTO__;
-    if (direct && typeof direct === 'object') {
-      mod = direct as UIBridgeAutoModule;
-    } else {
-      const loader = g.__QONTINUI_UI_BRIDGE_AUTO_LOADER__;
-      if (typeof loader === 'function') {
-        try {
-          const loaded = (loader as () => unknown)();
-          if (loaded && typeof loaded === 'object') {
-            mod = loaded as UIBridgeAutoModule;
-          }
-        } catch {
-          mod = undefined;
-        }
-      }
-    }
-  }
-  _canonicalPerformAction =
-    mod && typeof mod.performAction === 'function' ? mod.performAction : null;
-  return _canonicalPerformAction;
-}
 
 import { pageScrollContainer } from './page-scroll-container';
 import type { UIBridgeRegistry } from '../core/registry';
-import {
-  inferElementType,
-  serializeRegisteredElement,
-  serializeRegisteredComponent,
-} from '../core/registry';
+import { serializeRegisteredElement, serializeRegisteredComponent } from '../core/registry';
 import { serializeElementCustomActions } from '../core/element-actions';
 import type {
   WaitOptions,
@@ -70,13 +28,8 @@ import type { BrowserEventCapture } from '../debug/browser-capture';
 import { classifyEvent, filterBySeverity } from '../debug/error-severity';
 import { computeFingerprint, extractSourceLocation } from '../debug/error-fingerprint';
 import { fillSingleField } from './fill-form';
-import { applyValueMutation, readLiveValue } from './value-mutation';
-import {
-  comboboxSelect,
-  findDropdownOption,
-  findOpenDropdown,
-  isComboboxLike,
-} from './combobox-select';
+import { readLiveValue } from './value-mutation';
+import { autocompleteSelect, comboboxSelect } from './combobox-select';
 import {
   readAriaLabelAttr,
   readAriaLabelledbyAttr,
@@ -217,6 +170,26 @@ import {
   type ForcedPseudoReport,
 } from './forced-hover';
 import { sdkDispatch } from '../core/sdk-dispatch';
+// The ONE inferrer and verb table (plan
+// `2026-11-09-an-elements-advertised-verbs-depend-on-which-path-found-it`).
+import {
+  inferActions,
+  inferElementType,
+  isTypedWithKeys,
+  textEntryControl,
+} from '../core/element-kind';
+import {
+  ELEMENT_KIND_REFUSAL,
+  checkArm,
+  clearArm,
+  formOwnerArm,
+  selectArm,
+  setValueArm,
+  textEntryArm,
+  toggleArm,
+  typeArm,
+  type ElementKindRefusal,
+} from './element-arms';
 
 /**
  * What `find()`'s DOM scan matches when the caller passes no `selector`: the
@@ -285,14 +258,31 @@ function unknownActionHintFor(
   action: unknown,
   elementId: string | undefined,
   registered: RegisteredElement | undefined,
-  advertised: readonly string[] = registered?.actions ?? []
+  advertised: readonly string[] = registered?.actions ?? [],
+  kind: string | undefined = registered?.type
 ): UnknownActionHint {
   const custom = Object.keys(registered?.customActions ?? {});
   const own = [...advertised, ...custom];
   return describeUnknownAction(action, {
     elementId,
     accepted: own.length > 0 ? own : [...SUPPORTED_ACTIONS, ...custom],
+    // D4: the suggestion orders by element KIND — a text box is typed with
+    // `sendKeys`, though it advertises no `type`.
+    keyboardEntry: isTypedWithKeys(kind),
   });
+}
+
+/**
+ * The request's `requestId` when it is a string, otherwise `undefined`.
+ *
+ * `requestId` is wire data, and every response echoes it, on success and on
+ * failure alike. The transports in front of the executor hand it on unchecked,
+ * so the executor, the one place every transport passes through, is where a
+ * non-string one is dropped instead of echoed back. `request` itself may be
+ * missing: a batch step with no action object arrives as `undefined`.
+ */
+function validRequestId(request: { requestId?: unknown } | undefined): string | undefined {
+  return typeof request?.requestId === 'string' ? request.requestId : undefined;
 }
 
 /**
@@ -626,22 +616,6 @@ export function dispatchMiddleClick(element: HTMLElement, options?: MouseAction)
   element.dispatchEvent(createMouseEvent('auxclick', element, opts));
 }
 
-/**
- * The form `element` submits or resets: itself, else its OWNER form — which a
- * control's `form="…"` attribute can point away from its `closest('form')` —
- * else the enclosing one. Shared by the HTTP executor and the React IPC relay.
- */
-export function resolveOwnerForm(element: HTMLElement): HTMLFormElement | null {
-  if (element instanceof HTMLFormElement) return element;
-  // A `form="…"` attribute decides the owner outright — one naming a missing
-  // id means NO owner (the browser submits nothing), not the enclosing form.
-  if ('form' in element && element.hasAttribute('form')) {
-    const owner = (element as { form?: unknown }).form;
-    return owner instanceof HTMLFormElement ? owner : null;
-  }
-  return element.closest('form');
-}
-
 type ValidatableControl = HTMLElement & { validity: ValidityState; name?: string };
 
 /**
@@ -824,17 +798,34 @@ class ElementNotVisibleError extends Error {
 
 /**
  * The action was refused by its own argument/target validation BEFORE it
- * touched the page: `type` on a non-input, malformed `sendKeys`, a missing
- * `value`, a refused or form-less `submit`/`reset`, an unknown verb. A plain
- * `Error` subclass, so the failure response is unchanged (`UB-ACTION-FAILED`
- * with the same message); the type exists so `releaseAfter` can tell "did not
- * dispatch" from "dispatched and failed", and keep a held forced hover for the
- * retry instead of releasing it.
+ * touched the page: a verb the element has no arm for (the
+ * {@link ElementKindRefusalError} subclass), malformed `sendKeys`, a missing
+ * `value`, a `submit` the form's constraint validation refused, an unknown
+ * verb. A plain `Error` subclass, so the failure response stays
+ * `UB-ACTION-FAILED` with the same message; the type exists so `releaseAfter`
+ * can tell "did not dispatch" from "dispatched and failed", and keep a held
+ * forced hover for the retry instead of releasing it.
  */
 export class ActionValidationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'ActionValidationError';
+  }
+}
+
+/**
+ * The typed element-kind refusal: a built-in verb has no arm for this element
+ * (`./element-arms`). `executeAction` reports it as `UB-ACTION-FAILED` with
+ * `failureDetails.context.refusal: 'element-kind'` — the marker that tells
+ * "this element does not take this verb" apart from a dispatched failure,
+ * whatever the message says. The relay's refusal carries the same marker.
+ */
+export class ElementKindRefusalError extends ActionValidationError {
+  readonly refusal = ELEMENT_KIND_REFUSAL;
+
+  constructor(refusal: ElementKindRefusal) {
+    super(refusal.message);
+    this.name = 'ElementKindRefusalError';
   }
 }
 
@@ -887,6 +878,36 @@ export function readHandlerErrorEnvelope(error: unknown): HandlerErrorEnvelope |
     fields[key] = (error as Record<string, unknown>)[key];
   }
   return { code, fields };
+}
+
+/**
+ * Where a key edits a text field: its selection, or — for an input type with
+ * no selection API (email, number), whose `selectionStart` reads `null` and
+ * throws when set — the end of its value.
+ */
+interface FieldCaret {
+  start: number;
+  end: number;
+  /** The field has a selection API, so the caret can be moved after the edit. */
+  settable: boolean;
+}
+
+function caretOf(field: HTMLInputElement | HTMLTextAreaElement): FieldCaret {
+  const start = field.selectionStart;
+  const end = field.selectionEnd;
+  if (start === null || end === null) {
+    const atEnd = field.value.length;
+    return { start: atEnd, end: atEnd, settable: false };
+  }
+  return { start, end, settable: true };
+}
+
+function placeCaret(
+  field: HTMLInputElement | HTMLTextAreaElement,
+  at: number,
+  caret: FieldCaret
+): void {
+  if (caret.settable) field.selectionStart = field.selectionEnd = at;
 }
 
 /**
@@ -1316,6 +1337,22 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   /**
+   * The live node an unregistered id names, in `executeAction`'s resolution
+   * order past the registry: the DOM by identifier, then the discovery cache
+   * (a `find()` / `discover()` row). `executeAction` tries the CTR between the
+   * two; this skips it, because the unknown-verb gate that calls it lets a CTR
+   * id carrying a verb through untouched, and resolving one here would
+   * self-heal its selectors (`resolveInDOM`) for a refusal. `undefined` when
+   * neither holds a connected node.
+   */
+  private resolveUnregisteredNode(elementId: string): HTMLElement | undefined {
+    const byIdentifier = findElementByIdentifier(elementId);
+    if (byIdentifier) return byIdentifier;
+    const cached = this.discoveryCache.get(elementId);
+    return cached?.isConnected ? cached : undefined;
+  }
+
+  /**
    * Execute an action on an element
    */
   async executeAction(
@@ -1331,6 +1368,8 @@ export class DefaultActionExecutor implements ActionExecutor {
     // A held forced hover released by this action's dispatch — reported on the
     // failure response too, not only on success.
     let heldRelease: ForcedHoverActionReport['released'];
+    // Echoed on every response below. See `validRequestId`.
+    const requestId = validRequestId(request);
 
     // Validate action name early — check built-in actions first. `request` is
     // wire input: a batch step with no `action` object reaches here as
@@ -1344,8 +1383,27 @@ export class DefaultActionExecutor implements ActionExecutor {
       const registered = this.registry.getElement(elementId);
       const isCtrTarget = !registered && getGlobalCtr().has(elementId);
       // A CTR target may go on to resolve, but only with a verb to run on it.
-      if (!registered?.customActions?.[actionName] && (!isCtrTarget || !hasVerb)) {
-        const hint = unknownActionHintFor(hasVerb ? actionName : wireAction, registered?.id, registered);
+      const ctrPassesThrough = isCtrTarget && hasVerb;
+      // An id the registry does not hold may still name a node `find()` /
+      // `discover()` scanned (the discovery cache) or one the DOM resolves —
+      // and that node may itself be registered under ANOTHER id. Its own
+      // registration decides, as it does once `performAction` resolves it:
+      // its declared verbs and custom actions, not a re-inference.
+      const scanned =
+        registered || ctrPassesThrough ? undefined : this.resolveUnregisteredNode(elementId);
+      const scannedOwner = scanned ? this.registry.findByDOMElement(scanned) : undefined;
+      const owner = registered ?? scannedOwner;
+      if (!owner?.customActions?.[actionName] && !ctrPassesThrough) {
+        // The refusal lists THAT node's verbs — its registration's, else as its
+        // scanned row advertised them — not the global list, which suggested
+        // `sendKeys` for `press` on a scanned button.
+        const hint = unknownActionHintFor(
+          hasVerb ? actionName : wireAction,
+          registered?.id ?? (scanned ? elementId : undefined),
+          owner,
+          owner?.actions ?? (scanned ? inferActions(inferElementType(scanned), scanned) : []),
+          owner?.type ?? (scanned ? inferElementType(scanned) : undefined)
+        );
         const message = hint.message;
         return {
           success: false,
@@ -1357,7 +1415,7 @@ export class DefaultActionExecutor implements ActionExecutor {
           }),
           durationMs: performance.now() - startTime,
           timestamp: Date.now(),
-          requestId: (request as ControlActionRequest | undefined)?.requestId,
+          requestId,
         };
       }
     }
@@ -1409,7 +1467,7 @@ export class DefaultActionExecutor implements ActionExecutor {
           snapshotFreshness: freshness,
           durationMs: performance.now() - startTime,
           timestamp: Date.now(),
-          requestId: request.requestId,
+          requestId,
         };
       }
     }
@@ -1531,7 +1589,7 @@ export class DefaultActionExecutor implements ActionExecutor {
           snapshotFreshness,
           durationMs: performance.now() - startTime,
           timestamp: Date.now(),
-          requestId: request.requestId,
+          requestId,
         };
       }
 
@@ -1572,7 +1630,7 @@ export class DefaultActionExecutor implements ActionExecutor {
             snapshotFreshness,
             durationMs: performance.now() - startTime,
             timestamp: Date.now(),
-            requestId: request.requestId,
+            requestId,
             waitDurationMs,
           };
         }
@@ -1658,7 +1716,7 @@ export class DefaultActionExecutor implements ActionExecutor {
               action: request.action,
               elementId,
               params: actionParams as Record<string, unknown> | undefined,
-              requestId: request.requestId,
+              requestId,
             };
             const verified = await this.getEffectVerifier().verifyAction(
               effectParams,
@@ -1670,7 +1728,7 @@ export class DefaultActionExecutor implements ActionExecutor {
             // Phase 2: record the verified cycle into the process-global effect
             // store so the read-only `GET /effects/recent` endpoint can surface it.
             getGlobalEffectStore().record({
-              requestId: request.requestId,
+              requestId,
               action: request.action,
               elementId,
               outcome: effectVerification.outcome,
@@ -1797,7 +1855,7 @@ export class DefaultActionExecutor implements ActionExecutor {
         ...(forcedHover ? { forcedHover } : {}),
         durationMs: performance.now() - startTime,
         timestamp: Date.now(),
-        requestId: request.requestId,
+        requestId,
         waitDurationMs,
         idleWaitMs,
       };
@@ -1853,6 +1911,14 @@ export class DefaultActionExecutor implements ActionExecutor {
           visibilityReason: error.visibilityReason,
           durationMs: performance.now() - startTime,
         });
+      } else if (error instanceof ElementKindRefusalError) {
+        // The marker survives the flattening to `UB-ACTION-FAILED`: a caller
+        // keys on `context.refusal`, never on the message.
+        failureDetails = buildActionFailureDetails('UB-ACTION-FAILED', message, {
+          elementId,
+          context: { action: request.action, refusal: error.refusal },
+          durationMs: performance.now() - startTime,
+        });
       } else {
         // An unknown verb raised inside dispatch reports the same errorCode as
         // the early gate (`UB-UNSUPPORTED-ACTION`), not a generic failure.
@@ -1887,7 +1953,7 @@ export class DefaultActionExecutor implements ActionExecutor {
         ...forcedHoverOnFailure(error, heldRelease),
         durationMs: performance.now() - startTime,
         timestamp: Date.now(),
-        requestId: request.requestId,
+        requestId,
         waitDurationMs,
       };
     }
@@ -2026,6 +2092,8 @@ export class DefaultActionExecutor implements ActionExecutor {
     request: ComponentActionPredictRequest = {}
   ): Promise<ComponentActionPredictResponse> {
     const startTime = performance.now();
+    // Echoed on every answer below. See `validRequestId`.
+    const requestId = validRequestId(request);
     const ok = (prediction: ComponentActionPrediction): ComponentActionPredictResponse => ({
       ...prediction,
       success: true,
@@ -2047,7 +2115,7 @@ export class DefaultActionExecutor implements ActionExecutor {
     if (!component) {
       const message = `Component "${componentId}" not found. Components are only available when their page is active.`;
       return fail(
-        unresolvedComponentActionPrediction(componentId, actionId, message, request.requestId),
+        unresolvedComponentActionPrediction(componentId, actionId, message, requestId),
         message,
         'COMPONENT_NOT_FOUND'
       );
@@ -2058,7 +2126,7 @@ export class DefaultActionExecutor implements ActionExecutor {
       const available = component.actions.map((a) => a.id).join(', ');
       const message = `Action "${actionId}" not found on component "${componentId}". Available actions: ${available}`;
       return fail(
-        unresolvedComponentActionPrediction(componentId, actionId, message, request.requestId),
+        unresolvedComponentActionPrediction(componentId, actionId, message, requestId),
         message,
         'ACTION_NOT_FOUND'
       );
@@ -2076,7 +2144,7 @@ export class DefaultActionExecutor implements ActionExecutor {
           actionId,
           effect: action.effect,
           params: request.params,
-          requestId: request.requestId,
+          requestId,
         })
       );
     }
@@ -2091,7 +2159,7 @@ export class DefaultActionExecutor implements ActionExecutor {
       // a capture failure as "nobody described this action" would blame the
       // author for an infrastructure fault and hide the real one.
       return fail(
-        unresolvedComponentActionPrediction(componentId, actionId, message, request.requestId),
+        unresolvedComponentActionPrediction(componentId, actionId, message, requestId),
         message,
         'SNAPSHOT_CAPTURE_FAILED'
       );
@@ -2105,7 +2173,7 @@ export class DefaultActionExecutor implements ActionExecutor {
           effect: action.effect,
           arms,
           params: request.params,
-          requestId: request.requestId,
+          requestId,
           pre,
         })
       );
@@ -2116,7 +2184,7 @@ export class DefaultActionExecutor implements ActionExecutor {
       const detail = err instanceof Error ? err.message : String(err);
       const message = `The effect signature for "${componentId}.${actionId}" threw while predicting: ${detail}`;
       return fail(
-        unresolvedComponentActionPrediction(componentId, actionId, message, request.requestId),
+        unresolvedComponentActionPrediction(componentId, actionId, message, requestId),
         message,
         'SIGNATURE_PREDICT_FAILED'
       );
@@ -2128,10 +2196,19 @@ export class DefaultActionExecutor implements ActionExecutor {
    */
   async executeComponentAction(
     componentId: string,
-    request: ComponentActionRequest,
+    wireRequest: ComponentActionRequest,
     options: ComponentActionInvokeOptions = {}
   ): Promise<ComponentActionResponse> {
     const startTime = performance.now();
+    // `requestId` is WIRE data, and every response below echoes it. The relay
+    // listener hands the request on whole, and the HTTP and WebSocket hops hand
+    // on the listed request fields unchecked, so this is where a non-string one
+    // is caught (see `validRequestId`). `timeoutMs` and `verifyEffect` are
+    // checked where they are read.
+    const request: ComponentActionRequest = {
+      ...wireRequest,
+      requestId: validRequestId(wireRequest),
+    };
 
     try {
       const component = this.registry.getComponent(componentId);
@@ -2548,6 +2625,7 @@ export class DefaultActionExecutor implements ActionExecutor {
     registered: RegisteredElement | undefined
   ): ExecutorFindCandidate {
     const id = registered?.id || this.getElementId(el);
+    const type = registered?.type || inferElementType(el);
 
     // Cache unregistered elements so executeAction can resolve them later
     if (!registered) {
@@ -2558,7 +2636,7 @@ export class DefaultActionExecutor implements ActionExecutor {
     return {
       element: el,
       id,
-      type: registered?.type || inferElementType(el),
+      type,
       // §4.6: `label` scrubs on the CONTENT axis regardless of dev-set vs
       // scraped origin (resolved design decision — one field can't
       // discriminate, and a dev who wraps a subtree intends it hidden). A
@@ -2567,7 +2645,7 @@ export class DefaultActionExecutor implements ActionExecutor {
       tagName: el.tagName.toLowerCase(),
       role: el.getAttribute('role') || undefined,
       accessibleName: scrubContent(this.getAccessibleName(el), el),
-      actions: registered?.actions || this.inferActions(el),
+      actions: registered?.actions || inferActions(type, el),
       // The element's APP-DEFINED actions, kept in their own field rather
       // than merged into `actions` — the canonical split. Without this a
       // discover consumer reads `actions: []` off a pane that in fact
@@ -2614,6 +2692,7 @@ export class DefaultActionExecutor implements ActionExecutor {
       tagName: el.element.tagName.toLowerCase(),
       role: el.element.getAttribute('role') || undefined,
       accessibleName: scrubbedContentLabel ?? state.textContent,
+      // Outside the verb table (`core/element-kind`): a `ContentType` is not an `ElementType`.
       actions: [],
       // A content element carries no BUILT-IN actions, but a consumer may
       // still have declared custom ones on it, and `executeAction`
@@ -2649,9 +2728,9 @@ export class DefaultActionExecutor implements ActionExecutor {
       // altText is CONTENT — a redacted <img>'s alt describes the secret;
       // its src/srcset/poster ARE the rendered secret (scrubbed below).
       accessibleName: scrubContent(el.label || facts?.altText, el.element),
-      actions: [],
-      // See the content row — no built-in actions, but declared custom ones
-      // are dispatchable and must be advertised.
+      // The verbs its registration read from the table — a canvas takes
+      // `sendKeys` — and, as on every row, its declared custom actions.
+      actions: el.actions,
       customActions: serializeElementCustomActions(el.customActions),
       state,
       registered: true,
@@ -2931,18 +3010,12 @@ export class DefaultActionExecutor implements ActionExecutor {
     }
 
     // `hoverClick` is a SDK-native composite action (hover-reveal → click).
-    // It is intentionally handled here, BEFORE delegating to ui-bridge-auto:
-    // ui-bridge-auto's `performAction` has no `hoverClick` case and would throw
-    // "Unknown action". Keeping it inline guarantees the behavior regardless of
-    // whether the optional auto package is installed.
     if (action === 'hoverClick') {
       return this.performHoverClick(element, params);
     }
 
     // `hover` / `unhover` force and release the real CSS `:hover` state
-    // (`forced-hover.ts`). Handled here, before the canonical delegation, for
-    // the same reason as `hoverClick`: ui-bridge-auto's `hover` only fires
-    // synthetic events, which never set `:hover`, and it has no `unhover`.
+    // (`forced-hover.ts`).
     if (action === 'hover') {
       return this.performForcedHover(element, params);
     }
@@ -2952,26 +3025,6 @@ export class DefaultActionExecutor implements ActionExecutor {
       return out;
     }
 
-    // Delegate to ui-bridge-auto's canonical action implementation if available.
-    // This ensures a single source of truth for action semantics.
-    const canonical = getCanonicalPerformAction();
-    if (canonical) {
-      // Inject a resolver so ui-bridge-auto can look up target.elementId via our
-      // registry (drag actions take { target: { elementId } } descriptors).
-      const enriched =
-        action === 'drag' && params && !('resolveElement' in params)
-          ? {
-              ...params,
-              resolveElement: (id: string): HTMLElement | null => {
-                const reg = this.registry.getElement(id);
-                return reg?.element ?? findElementByIdentifier(id);
-              },
-            }
-          : params;
-      return canonical(element, action, enriched);
-    }
-
-    // Fallback: inline implementations (used when ui-bridge-auto is not installed).
     // There is deliberately no implicit parent-hover before an action: a
     // hover-revealed control is driven by an explicit `hover` (or
     // `hoverClick`), which forces the real CSS state instead of guessing at
@@ -3004,8 +3057,8 @@ export class DefaultActionExecutor implements ActionExecutor {
         // Already-in-viewport short-circuit: return success without calling
         // the underlying scroll so a pre-click "scroll into view" never logs
         // as a confusing failure when the element is already on screen.
-        // Mirrors `performScrollIntoView` in @qontinui/ui-bridge-auto so both
-        // execution paths report the same shape.
+        // `performScrollIntoView` in @qontinui/ui-bridge-auto returns the same
+        // shape.
         if (
           typeof window !== 'undefined' &&
           window.innerWidth > 0 &&
@@ -3067,7 +3120,8 @@ export class DefaultActionExecutor implements ActionExecutor {
           action,
           owner?.id,
           owner,
-          owner?.actions ?? this.inferActions(element)
+          owner?.actions ?? inferActions(inferElementType(element), element),
+          owner?.type ?? inferElementType(element)
         );
         throw new UnknownActionError(hint);
       }
@@ -3087,8 +3141,19 @@ export class DefaultActionExecutor implements ActionExecutor {
     // Use native click() which works with React's event delegation.
     // dispatchEvent(new MouseEvent('click')) does NOT trigger React onClick
     // because React 17+ delegates events at the root and doesn't intercept
-    // programmatically dispatched events.
-    sdkDispatch(() => element.click());
+    // programmatically dispatched events. An SVG element has no click() — it
+    // is not an HTMLElement — so it gets the dispatched click, which is all a
+    // listener on it can receive; without this every click-like verb threw on
+    // a registered <svg>.
+    sdkDispatch(() => {
+      if (typeof element.click === 'function') {
+        element.click();
+      } else {
+        element.dispatchEvent(
+          new MouseEvent('click', { bubbles: true, cancelable: true, composed: true })
+        );
+      }
+    });
 
     // Anchor navigation fallback (native click already handles this,
     // but keep for elements inside anchors where element !== anchor)
@@ -3190,9 +3255,8 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   private async performType(element: HTMLElement, options?: TypeAction): Promise<void> {
-    if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement)) {
-      throw new ActionValidationError('Type action requires an input or textarea element');
-    }
+    const arm = typeArm(element);
+    if (!arm.ok) throw new ElementKindRefusalError(arm);
 
     // Validate that the caller provided the required `text` parameter.
     // Without this guard, a missing/misspelled key (e.g. callers sending
@@ -3212,15 +3276,11 @@ export class DefaultActionExecutor implements ActionExecutor {
       );
     }
 
-    // Route through the single shared value-mutation helper so the full focus →
-    // input → onChange → change lifecycle is emitted consistently across every
-    // executor surface. `clear` appends after emptying; otherwise we append to
-    // the existing value (preserving the prior per-char-append end state).
-    applyValueMutation(element, {
-      value: options.text,
-      mode: options.clear ? 'clear-then-append' : 'append',
-      blur: false,
-    });
+    // The arm routes through the single shared value-mutation helper, so the
+    // full focus → input → onChange → change lifecycle is emitted on every
+    // executor surface: appended to a text field (after emptying it under
+    // `clear`), or written whole into a date, time or colour input.
+    arm.apply(options.text, options.clear === true);
   }
 
   /**
@@ -3257,6 +3317,11 @@ export class DefaultActionExecutor implements ActionExecutor {
 
     element.focus();
     const delay = options.delay || 0;
+    // A key edits the VALUE of a text field only. The value of a checkbox, a
+    // file, a colour or a button <input> is not text a key edits: writing into
+    // it corrupted it, or threw. Every element still receives the key events,
+    // which is what `sendKeys` is for on a canvas or a terminal pane.
+    const field = textEntryControl(element);
 
     for (const { key, modifiers } of normalized.keys) {
       const mods = modifiers || {};
@@ -3270,54 +3335,44 @@ export class DefaultActionExecutor implements ActionExecutor {
       );
 
       // Fire keypress for printable characters only (no modifiers except shift)
-      const isInputElement =
-        element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement;
-      if (
-        key.length === 1 &&
-        !NON_PRINTABLE_KEYS.has(key) &&
-        !mods.ctrl &&
-        !mods.alt &&
-        !mods.meta
-      ) {
+      const unmodified = !mods.ctrl && !mods.alt && !mods.meta;
+      if (key.length === 1 && !NON_PRINTABLE_KEYS.has(key) && unmodified) {
         element.dispatchEvent(
           new KeyboardEvent('keypress', buildKeyboardEventInit(key, mods, 'keypress'))
         );
-        // Insert character into input/textarea value (keypress alone doesn't update .value)
-        if (isInputElement) {
-          const start = element.selectionStart ?? element.value.length;
-          const end = element.selectionEnd ?? start;
-          element.value = element.value.slice(0, start) + key + element.value.slice(end);
-          element.selectionStart = element.selectionEnd = start + 1;
-          element.dispatchEvent(
+        // Insert character into the field's value (keypress alone doesn't update .value)
+        if (field) {
+          const caret = caretOf(field);
+          field.value = field.value.slice(0, caret.start) + key + field.value.slice(caret.end);
+          placeCaret(field, caret.start + 1, caret);
+          field.dispatchEvent(
             new InputEvent('input', { bubbles: true, data: key, inputType: 'insertText' })
           );
         }
-      } else if (key === 'Backspace' && isInputElement && !mods.ctrl && !mods.alt && !mods.meta) {
+      } else if (key === 'Backspace' && field && unmodified) {
         // Handle Backspace: remove character before cursor
-        const start = element.selectionStart ?? element.value.length;
-        const end = element.selectionEnd ?? start;
-        if (start !== end) {
-          element.value = element.value.slice(0, start) + element.value.slice(end);
-          element.selectionStart = element.selectionEnd = start;
-        } else if (start > 0) {
-          element.value = element.value.slice(0, start - 1) + element.value.slice(start);
-          element.selectionStart = element.selectionEnd = start - 1;
+        const caret = caretOf(field);
+        if (caret.start !== caret.end) {
+          field.value = field.value.slice(0, caret.start) + field.value.slice(caret.end);
+          placeCaret(field, caret.start, caret);
+        } else if (caret.start > 0) {
+          field.value = field.value.slice(0, caret.start - 1) + field.value.slice(caret.start);
+          placeCaret(field, caret.start - 1, caret);
         }
-        element.dispatchEvent(
+        field.dispatchEvent(
           new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' })
         );
-      } else if (key === 'Delete' && isInputElement && !mods.ctrl && !mods.alt && !mods.meta) {
+      } else if (key === 'Delete' && field && unmodified) {
         // Handle Delete: remove character after cursor (or selection)
-        const start = element.selectionStart ?? element.value.length;
-        const end = element.selectionEnd ?? start;
-        if (start !== end) {
-          element.value = element.value.slice(0, start) + element.value.slice(end);
-          element.selectionStart = element.selectionEnd = start;
-        } else if (start < element.value.length) {
-          element.value = element.value.slice(0, start) + element.value.slice(start + 1);
-          element.selectionStart = element.selectionEnd = start;
+        const caret = caretOf(field);
+        if (caret.start !== caret.end) {
+          field.value = field.value.slice(0, caret.start) + field.value.slice(caret.end);
+          placeCaret(field, caret.start, caret);
+        } else if (caret.start < field.value.length) {
+          field.value = field.value.slice(0, caret.start) + field.value.slice(caret.start + 1);
+          placeCaret(field, caret.start, caret);
         }
-        element.dispatchEvent(
+        field.dispatchEvent(
           new InputEvent('input', { bubbles: true, inputType: 'deleteContentForward' })
         );
       }
@@ -3331,12 +3386,17 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   private performClear(element: HTMLElement): void {
-    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
-      applyValueMutation(element, { value: '', mode: 'clear', blur: false });
-    }
+    // Not a silent success on an element with no value to clear: that is a
+    // status signal that observes nothing.
+    const arm = clearArm(element);
+    if (!arm.ok) throw new ElementKindRefusalError(arm);
+    arm.apply();
   }
 
   private async performSelect(element: HTMLElement, options?: SelectAction): Promise<void> {
+    const arm = selectArm(element);
+    if (!arm.ok) throw new ElementKindRefusalError(arm);
+
     // Validate that the caller provided a `value`. Without this guard, a
     // missing or misspelled key produces `[undefined]` below, the loop
     // matches no <option>, and the action returns success with the select
@@ -3350,35 +3410,31 @@ export class DefaultActionExecutor implements ActionExecutor {
     // Handle Radix/headless combobox elements (render as <button> with
     // role="combobox"). Shared with the React relay path so the two cannot
     // disagree about the same element — see `control/combobox-select.ts`.
-    if (!(element instanceof HTMLSelectElement)) {
-      if (isComboboxLike(element)) {
-        const outcome = await comboboxSelect(element, options);
-        if (!outcome.ok) {
-          // A dead end is a typed failure, never a resolved promise the caller
-          // reports as success.
-          throw new Error(outcome.message);
-        }
-        return;
+    if (arm.arm === 'combobox') {
+      const outcome = await comboboxSelect(element, options);
+      if (!outcome.ok) {
+        // A dead end is a typed failure, never a resolved promise the caller
+        // reports as success.
+        throw new Error(outcome.message);
       }
-      throw new ActionValidationError(
-        `Cannot select on ${element.tagName}. Use a <select> element or a combobox (role="combobox").`
-      );
+      return;
     }
+    const select = arm.control;
 
     const values = Array.isArray(options?.value) ? options.value : [options?.value];
 
     // Save the old value before any changes — needed for React's value tracker.
     // Raw live read (written back to the tracker, never emitted to a client).
-    const previousValue = readLiveValue(element);
+    const previousValue = readLiveValue(select);
 
     if (!options?.additive) {
-      for (const option of element.options) {
+      for (const option of select.options) {
         option.selected = false;
       }
     }
 
     let selectedValue: string | undefined;
-    for (const option of element.options) {
+    for (const option of select.options) {
       const matchValue = options?.byLabel ? option.text : option.value;
       if (values.includes(matchValue)) {
         option.selected = true;
@@ -3391,21 +3447,21 @@ export class DefaultActionExecutor implements ActionExecutor {
     // React's intercepted setter, which also updates the tracker — making
     // React think old === new and skip the onChange call.
     // Fix: reset the tracker to the previous value so React detects the diff.
-    const tracker = (element as unknown as { _valueTracker?: { setValue(v: string): void } })
+    const tracker = (select as unknown as { _valueTracker?: { setValue(v: string): void } })
       ._valueTracker;
     if (tracker) {
       tracker.setValue(previousValue);
     }
     // Also try calling React's onChange handler directly via internal props.
     // React 18+ stores event handlers on __reactProps$<key> on the DOM element.
-    const el = element as unknown as Record<string, unknown>;
+    const el = select as unknown as Record<string, unknown>;
     const reactPropsKey = Object.keys(el).find((k) => k.startsWith('__reactProps$'));
     if (reactPropsKey) {
       const props = el[reactPropsKey] as Record<string, unknown> | undefined;
       if (props?.onChange && typeof props.onChange === 'function') {
         const syntheticEvent = {
-          target: element,
-          currentTarget: element,
+          target: select,
+          currentTarget: select,
           type: 'change',
           bubbles: true,
           preventDefault: () => {},
@@ -3424,57 +3480,31 @@ export class DefaultActionExecutor implements ActionExecutor {
         'value'
       )?.set;
       if (nativeSelectValueSetter) {
-        nativeSelectValueSetter.call(element, selectedValue);
+        nativeSelectValueSetter.call(select, selectedValue);
       }
     }
 
     // Dispatch events — React's event delegation will pick these up
-    element.dispatchEvent(new Event('input', { bubbles: true }));
-    element.dispatchEvent(new Event('change', { bubbles: true }));
+    select.dispatchEvent(new Event('input', { bubbles: true }));
+    select.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
   /**
-   * Handle autocomplete inputs: type search text, wait for suggestions,
-   * then click the matching suggestion.
+   * Handle autocomplete inputs: type search text, wait for suggestions, then
+   * click the matching suggestion — the one implementation both dispatchers
+   * share (`combobox-select.ts` `autocompleteSelect`).
    */
   private async performAutocomplete(
     element: HTMLElement,
     options?: import('./types').AutocompleteAction
   ): Promise<void> {
+    const arm = textEntryArm(element, 'autocomplete');
+    if (!arm.ok) throw new ElementKindRefusalError(arm);
     if (!options?.searchText) {
       throw new ActionValidationError('Autocomplete action requires searchText parameter');
     }
-
-    const timeout = options.suggestionTimeout ?? 2000;
-    const selectValue = options.selectValue || options.searchText;
-
-    // Clear and type the search text
-    if (options.clear !== false) {
-      await this.performClear(element);
-    }
-    await this.performType(element, { text: options.searchText });
-
-    // Wait for suggestions to appear by polling for dropdown/listbox
-    const startTime = Date.now();
-    const pollInterval = 100;
-
-    while (Date.now() - startTime < timeout) {
-      await new Promise((r) => setTimeout(r, pollInterval));
-
-      // Look for suggestion containers
-      const dropdown = findOpenDropdown(element);
-      if (!dropdown) continue;
-
-      const match = findDropdownOption(dropdown, selectValue);
-      if (match) {
-        sdkDispatch(() => match.click());
-        return;
-      }
-    }
-
-    throw new Error(
-      `Autocomplete: no matching suggestion for "${selectValue}" within ${timeout}ms`
-    );
+    const outcome = await autocompleteSelect(arm.control, options);
+    if (!outcome.ok) throw new Error(outcome.message);
   }
 
   private performFocus(element: HTMLElement): void {
@@ -3605,126 +3635,51 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   private performCheck(element: HTMLElement, checked: boolean): void {
-    if (
-      element instanceof HTMLInputElement &&
-      (element.type === 'checkbox' || element.type === 'radio')
-    ) {
-      if (element.checked !== checked) {
-        element.checked = checked;
-        element.dispatchEvent(new Event('change', { bubbles: true }));
-      }
-    } else if (element.getAttribute('role') === 'switch') {
-      // React switch components toggle via click
-      const isChecked = element.getAttribute('aria-checked') === 'true';
-      if (isChecked !== checked) {
-        sdkDispatch(() => element.click());
-      }
-    }
+    // Not a silent success on an element with no checked state: that is a
+    // status signal that observes nothing.
+    const arm = checkArm(element, checked);
+    if (!arm.ok) throw new ElementKindRefusalError(arm);
+    arm.apply();
   }
 
   private performToggle(element: HTMLElement): void {
-    // Checkbox: flip the native `checked` property + fire change (legacy path).
-    if (element instanceof HTMLInputElement && element.type === 'checkbox') {
-      element.checked = !element.checked;
-      element.dispatchEvent(new Event('change', { bubbles: true }));
-      return;
-    }
-
-    // Item 2: `<details>` — flip the `open` property (not the attribute, so
-    // React's controlled pattern doesn't diverge from the DOM) and dispatch
-    // the native `toggle` event that any onToggle/onSummaryClick listeners
-    // expect. Works whether the <details> is uncontrolled (pure DOM) or
-    // React-controlled via a custom onToggle handler.
-    if (element instanceof HTMLDetailsElement) {
-      element.open = !element.open;
-      element.dispatchEvent(new Event('toggle', { bubbles: false }));
-      return;
-    }
-
-    // Item 2: `<dialog>` — showModal() / close() are the idiomatic API.
-    // Guarded because jsdom historically lacked `HTMLDialogElement` support;
-    // in that case we fall through to a synthetic click so tests on older
-    // environments still exercise the handler.
-    if (typeof HTMLDialogElement !== 'undefined' && element instanceof HTMLDialogElement) {
-      if (element.open) {
-        element.close();
-      } else if (typeof element.showModal === 'function') {
-        element.showModal();
-      } else {
-        // Rare: a polyfilled <dialog> without showModal — just flip the
-        // attribute so downstream consumers see the state change.
-        element.setAttribute('open', '');
-        element.dispatchEvent(new Event('close', { bubbles: false }));
-      }
-      return;
-    }
-
-    // Item 2: anything carrying aria-expanded (disclosure buttons) — flip
-    // the attribute so screen readers reflect the state, then dispatch a
-    // synthetic click so the framework's real click handler (React
-    // onClick, etc.) runs and manages any associated visual collapse.
-    const ariaExpanded = element.getAttribute('aria-expanded');
-    if (ariaExpanded !== null) {
-      const next = ariaExpanded === 'true' ? 'false' : 'true';
-      element.setAttribute('aria-expanded', next);
-      sdkDispatch(() => element.click());
-      return;
-    }
-
-    // Switch role: native path — just click.
-    if (element.getAttribute('role') === 'switch') {
-      sdkDispatch(() => element.click());
-      return;
-    }
-
-    // Generic fallback: a synthetic click covers the "I forgot to mark this
-    // as a disclosure but the click handler does the right thing" case.
-    sdkDispatch(() => element.click());
+    // Its checkbox, details/summary, dialog, aria-expanded and switch arms
+    // (`./element-arms`). An element with none is refused, not clicked: a
+    // generic click reported success over whatever the click did or did not do.
+    const arm = toggleArm(element);
+    if (!arm.ok) throw new ElementKindRefusalError(arm);
+    arm.apply();
   }
 
   private performSetValue(element: HTMLElement, params?: Record<string, unknown>): void {
+    // An element with no value to set used to fall through to a silent
+    // success; a file <input> threw the browser's own error. Both are the
+    // typed refusal now, matching the relay.
+    const arm = setValueArm(element);
+    if (!arm.ok) throw new ElementKindRefusalError(arm);
     const value = params?.value as string | undefined;
     if (value === undefined) {
       throw new ActionValidationError('setValue requires a "value" parameter');
     }
-    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
-      applyValueMutation(element, { value, mode: 'replace', blur: false });
-    } else if (element instanceof HTMLSelectElement) {
-      element.value = value;
-      element.dispatchEvent(new Event('change', { bubbles: true }));
-    } else {
-      // Falling through silently returned success on an element that has no
-      // value to set — the caller saw `success: true` and an unchanged page.
-      // Throwing matches `performSubmit`'s "no form found" arm and the relay's
-      // `UNSUPPORTED_ACTION` for the same case (`react/commandHandlers.ts`).
-      throw new ActionValidationError(
-        `setValue is not supported on <${element.tagName.toLowerCase()}> — it applies to input, textarea and select elements.`
-      );
-    }
+    arm.apply(value);
   }
 
   private performSubmit(element: HTMLElement): void {
-    const form = resolveOwnerForm(element);
-    if (form) {
-      // `requestSubmit()` fires the one cancelable `submit` event itself, so a
-      // handler's `preventDefault` is honoured. A hand-dispatched `submit`
-      // before it made every handler run twice.
-      const refused = requestFormSubmit(form, element);
-      if (refused) throw new ActionValidationError(refused);
-    } else {
-      throw new ActionValidationError('No form found for submit action');
-    }
+    const arm = formOwnerArm(element, 'submit');
+    if (!arm.ok) throw new ElementKindRefusalError(arm);
+    // `requestSubmit()` fires the one cancelable `submit` event itself, so a
+    // handler's `preventDefault` is honoured. A hand-dispatched `submit`
+    // before it made every handler run twice.
+    const refused = requestFormSubmit(arm.form, element);
+    if (refused) throw new ActionValidationError(refused);
   }
 
   private performReset(element: HTMLElement): void {
-    const form = resolveOwnerForm(element);
-    if (form) {
-      // `reset()` fires the `reset` event itself; dispatching another made
-      // every handler run twice.
-      form.reset();
-    } else {
-      throw new ActionValidationError('No form found for reset action');
-    }
+    const arm = formOwnerArm(element, 'reset');
+    if (!arm.ok) throw new ElementKindRefusalError(arm);
+    // `reset()` fires the `reset` event itself; dispatching another made every
+    // handler run twice.
+    arm.form.reset();
   }
 
   private performDrag(
@@ -3872,57 +3827,6 @@ export class DefaultActionExecutor implements ActionExecutor {
     return (
       readTitleAttr(element) || readScrubbedText(element, undefined, { maxLen: 50 }) || undefined
     );
-  }
-
-  // Typed `StandardAction[]`, not `string[]`: these verbs are advertised by
-  // discovery (`actions`) and listed by the unknown-verb refusal, so a
-  // misspelled one would be a verb the executor itself refuses. The compiler
-  // holds them to the union; `action-executor.verbParity.test.ts` holds the
-  // union to `SUPPORTED_ACTIONS` and to `performAction`'s fallback dispatch.
-  //
-  // Its type comes from the registry's `inferElementType`. Its verb TABLE is
-  // still this copy, not the registry's `inferActions`: the two disagree
-  // (sendKeys, form, dialog, setValue), the runner gates on a scanned row's
-  // `actions` (`useControlEvents.ts` falls back to the `discover()` row), and
-  // neither table is the executor's real capability. With `useAutoRegister`'s
-  // and `dom-fallback`'s that makes four tables; plan
-  // `2026-11-09-an-elements-advertised-verbs-depend-on-which-path-found-it`
-  // converges them behind a dispatch-backed test.
-  private inferActions(element: HTMLElement): StandardAction[] {
-    const type = inferElementType(element);
-    // `hoverClick` is advertised alongside `click` on every clickable type so a
-    // hover-gated control (pointer-events:none until group-hover) is drivable
-    // in one call without a page/evaluate workaround.
-    const baseActions: StandardAction[] = [
-      'focus',
-      'blur',
-      'hover',
-      'unhover',
-      'sendKeys',
-      'scroll',
-      'scrollIntoView',
-    ];
-
-    switch (type) {
-      case 'button':
-        return [...baseActions, 'click', 'hoverClick', 'doubleClick', 'rightClick', 'middleClick'];
-      case 'input':
-        return [...baseActions, 'click', 'hoverClick', 'type', 'clear'];
-      case 'textarea':
-        return [...baseActions, 'click', 'hoverClick', 'type', 'clear'];
-      case 'select':
-        return [...baseActions, 'click', 'hoverClick', 'select'];
-      case 'checkbox':
-        return [...baseActions, 'click', 'hoverClick', 'check', 'uncheck', 'toggle'];
-      case 'radio':
-        return [...baseActions, 'click', 'hoverClick', 'check'];
-      case 'link':
-        return [...baseActions, 'click', 'hoverClick'];
-      case 'tab':
-        return [...baseActions, 'click', 'hoverClick', 'middleClick'];
-      default:
-        return [...baseActions, 'click', 'hoverClick'];
-    }
   }
 
   // ---------------------------------------------------------------------------

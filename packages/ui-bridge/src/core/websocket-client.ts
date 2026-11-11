@@ -16,6 +16,7 @@ import type {
   ActionRequest,
   ActionResponse,
 } from './types';
+import type { ComponentActionRequest } from '../control/types';
 
 /**
  * Generate unique message ID
@@ -362,23 +363,23 @@ export class UIBridgeWSClient {
      */
     timeoutMs?: number,
     /**
-     * Per-request options carried on the wire alongside `timeoutMs`:
-     * `verifyEffect` is the effect-verification override (see
-     * `ComponentActionRequest.verifyEffect`); `requestId` is echoed back.
+     * Every other `ComponentActionRequest` field (`verifyEffect`, the
+     * effect-verification override; `requestId`, echoed back; `timeoutMs`).
+     * The bag goes on the wire whole, so a request field added later is sent
+     * with no edit here. A positional `timeoutMs` wins over the bag's.
      */
-    options?: { verifyEffect?: boolean; requestId?: string }
+    options?: Omit<ComponentActionRequest, 'action' | 'params'>
   ): Promise<ActionResponse> {
     const response = await this.sendRequest<ActionResponse>({
       id: generateId(),
       type: 'executeComponentAction',
       timestamp: Date.now(),
       payload: {
+        ...options,
         componentId,
         action,
         params,
-        timeoutMs,
-        verifyEffect: options?.verifyEffect,
-        requestId: options?.requestId,
+        timeoutMs: timeoutMs ?? options?.timeoutMs,
       },
     });
 

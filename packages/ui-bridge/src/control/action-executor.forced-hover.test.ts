@@ -295,12 +295,15 @@ describe('DefaultActionExecutor — forced hover', () => {
       action: 'type',
       params: { text: 'x' },
     });
+    // Both are the typed element-kind refusal: nothing was dispatched.
     expect(typed.success).toBe(false);
-    expect(typed.error).toMatch(/requires an input or textarea/);
+    expect(typed.failureDetails?.context?.refusal).toBe('element-kind');
+    expect(typed.error).toMatch(/^type is not supported on/);
     expect(typed.forcedHover).toBeUndefined();
     const submitted = await executor.executeAction('header', { action: 'submit' });
     expect(submitted.success).toBe(false);
-    expect(submitted.error).toMatch(/No form found/);
+    expect(submitted.failureDetails?.context?.refusal).toBe('element-kind');
+    expect(submitted.error).toMatch(/has no owner form/);
     expect(getForcedPseudoState()).not.toBeNull();
     expect(pointerEvents(f.tool)).toBe('auto');
   });

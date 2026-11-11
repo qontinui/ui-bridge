@@ -237,6 +237,10 @@ Network (every mode; applied to the page once it is ready, before any action):
                                captureTimeline {"reload":true} loads throttled.
   --no-cache                   Disable the HTTP cache too (Network.setCacheDisabled):
                                a warm cache would let a "slow" reload paint at once.
+                               It does NOT reach the document's in-memory image
+                               cache: a URL this page already decoded is answered
+                               at once, throttle or not -- give a repeated
+                               mediaOverride candidate its own URL (e.g. ?2).
                                What was applied is stamped as "network" on every
                                captureTimeline result, each capture-matrix cell, and
                                the relay info line; CDP has no getter, so the stamp

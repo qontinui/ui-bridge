@@ -39,6 +39,7 @@ import type {
 import type { ControlSnapshot } from '../control/types';
 import { computeDiff, hasSignificantChanges } from './semantic-diff';
 import { truncateCodePoints } from '../core/text';
+import { answersToNamedType } from '../core/element-kind';
 import type { SemanticDiffConfig } from './semantic-diff';
 import type { SemanticSnapshotManager } from './semantic-snapshot';
 import type { CompositeIdleDetector } from '../idle';
@@ -629,7 +630,7 @@ export class ChangeTracker {
           if (matcher.text && !e.description.toLowerCase().includes(matcher.text.toLowerCase())) {
             return false;
           }
-          if (matcher.type && e.type !== matcher.type) {
+          if (matcher.type && !answersToNamedType(e.type, matcher.type)) {
             return false;
           }
           return true;
@@ -718,7 +719,7 @@ export class ChangeTracker {
       const { min, type, text } = predicate.elementCount;
       // Count matching appeared elements
       const matchingAppeared = diff.changes.appeared.filter((e) => {
-        if (type && e.type !== type) return false;
+        if (type && !answersToNamedType(e.type, type)) return false;
         if (text && !e.description.toLowerCase().includes(text.toLowerCase())) return false;
         return true;
       });

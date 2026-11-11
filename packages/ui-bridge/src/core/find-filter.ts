@@ -65,13 +65,14 @@ import type { UiBridgeErrorCode } from '../diagnostics';
 import type { UnknownCode } from '../observation/observation';
 import { isMediaObservation, mediaFactsOf, unmeasuredMediaDimension } from './media-observation';
 import { hasNestedQuantifiers } from './param-schema';
+import { answersToNamedType, impliedAriaRole } from './element-kind';
 import { scrubMediaMetadata, verdictFromState, verdictOf } from './redaction';
 import type { MediaFacts, MediaObservation } from './types';
 
 /**
  * Unified interactive type-set — the superset of every type-set the four
  * divergent copies used. An element passes the `interactive_only` predicate
- * when its `kind`/`category` is not `'content'` AND (its type is in this set
+ * when it is neither a content nor a media row AND (its type is in this set
  * OR it has at least one action).
  */
 export const INTERACTIVE_ELEMENT_TYPES: ReadonlySet<string> = new Set([
@@ -708,8 +709,12 @@ export function applyCanonicalFindFilter<T extends FindFilterableElement>(
     if (r.interactiveOnly) {
       // Semantic content entries (cards/badges/pills opted in via
       // `data-ui-bridge-content`) are never interactive, even if they
-      // inherited actions.
-      if (content) return false;
+      // inherited actions. Nor are media rows: they advertise the verbs every
+      // element takes (`core/element-kind` — a canvas takes `sendKeys`), so
+      // "has an action" no longer tells them apart, and an image is not a
+      // control. Excluded by the same classification the refusal above and the
+      // executor's own media arm use.
+      if (content || media) return false;
       const isInteractive =
         (el.type !== undefined && INTERACTIVE_ELEMENT_TYPES.has(el.type)) ||
         (el.actions !== undefined && el.actions.length > 0);
@@ -718,16 +723,28 @@ export function applyCanonicalFindFilter<T extends FindFilterableElement>(
 
     if (r.includeHidden === false && !isConsideredVisible(el)) return false;
 
-    if (r.typeFilter && el.type !== r.typeFilter) return false;
+    // A type the caller names answers for its whole family: `input` also finds
+    // an ARIA textbox, `select` a combobox or listbox (`core/element-kind`).
+    if (r.typeFilter && !answersToNamedType(el.type, r.typeFilter)) return false;
     if (r.types && r.types.length > 0) {
-      if (el.type === undefined || !r.types.includes(el.type)) return false;
+      if (!r.types.some((named) => answersToNamedType(el.type, named))) return false;
     }
 
     if (r.roleLc !== undefined) {
       const domRole = liveElement(el)?.getAttribute('role')?.toLowerCase();
       const elRole = el.role?.toLowerCase();
       const typeAsRole = el.type?.toLowerCase();
-      if (domRole !== r.roleLc && elRole !== r.roleLc && typeAsRole !== r.roleLc) return false;
+      // The role a role-less row's kind implies: a native <input> is a
+      // `textbox`, a native <select> a `combobox`.
+      const impliedRole = el.type === undefined ? undefined : impliedAriaRole(el.type);
+      if (
+        domRole !== r.roleLc &&
+        elRole !== r.roleLc &&
+        typeAsRole !== r.roleLc &&
+        impliedRole !== r.roleLc
+      ) {
+        return false;
+      }
     }
 
     if (r.labelLc !== undefined) {

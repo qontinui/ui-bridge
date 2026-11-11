@@ -76,6 +76,40 @@ describe('suggestAction', () => {
     expect(suggestAction('scrollTo', ['scrollIntoView'])).toBe('scrollIntoView');
   });
 
+  // D4 (plan 2026-11-09-an-elements-advertised-verbs-depend-on-which-path-found-it):
+  // every web element accepts `sendKeys`, so the keyboard verbs' candidates are
+  // ordered by element kind. A text-entry element (it accepts `type`) keeps
+  // `sendKeys` first; any other puts `click` first. The table above is unchanged.
+  it('orders the keyboard candidates by element: sendKeys on text entry, click elsewhere', () => {
+    const buttonWithKeys = ['click', 'hoverClick', 'sendKeys', 'focus', 'blur'];
+    const inputWithClick = ['click', 'type', 'sendKeys', 'clear', 'focus'];
+    expect(suggestAction('press', buttonWithKeys)).toBe('click');
+    expect(suggestAction('press', ['sendKeys', 'click'])).toBe('click');
+    expect(suggestAction('keyDown', buttonWithKeys)).toBe('click');
+    expect(suggestAction('key', buttonWithKeys)).toBe('click');
+    expect(suggestAction('press', inputWithClick)).toBe('sendKeys');
+    expect(suggestAction('keypress', inputWithClick)).toBe('sendKeys');
+    expect(suggestAction('PRESS', ['TYPE', 'sendKeys', 'click'])).toBe('sendKeys');
+    // With only one of the two accepted, that one, whatever the element.
+    expect(suggestAction('press', ['sendKeys', 'focus'])).toBe('sendKeys');
+    expect(suggestAction('press', ['click', 'type'])).toBe('click');
+    // Other candidate lists are untouched by the reorder.
+    expect(suggestAction('tap', ['press', 'click'])).toBe('click');
+  });
+
+  // A text box typed with keys (an ARIA textbox, a contenteditable) accepts no
+  // `type`, so only the caller can say what it is: `keyboardEntry`.
+  it('keyboardEntry keeps sendKeys first on a text box that accepts no type', () => {
+    const textBox = ['click', 'hoverClick', 'sendKeys', 'focus', 'blur'];
+    expect(suggestAction('press', textBox)).toBe('click');
+    expect(suggestAction('press', textBox, { keyboardEntry: true })).toBe('sendKeys');
+    expect(suggestAction('keyDown', textBox, { keyboardEntry: true })).toBe('sendKeys');
+    expect(suggestAction('press', ['click', 'focus'], { keyboardEntry: true })).toBe('click');
+    expect(
+      describeUnknownAction('press', { accepted: textBox, keyboardEntry: true }).didYouMean
+    ).toBe('sendKeys');
+  });
+
   it('matches the synonym key case-insensitively', () => {
     expect(suggestAction('PRESS', terminalInput)).toBe('sendKeys');
     expect(suggestAction('DblClick', ['doubleClick'])).toBe('doubleClick');

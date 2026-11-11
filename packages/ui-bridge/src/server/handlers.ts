@@ -30,6 +30,7 @@ import type {
   ActionExecutor,
   ControlActionRequest,
   ControlActionResponse,
+  ComponentActionRequest,
   ComponentActionResponse,
   ControlSnapshot,
   DiscoveredElement,
@@ -62,7 +63,12 @@ import {
   scanDOMForInteractiveElementsWithRefs,
   countDOMInteractiveElements,
 } from './dom-fallback';
-import { matchesElementSelector, type MatchableElement } from './selector-match';
+import {
+  matchesElementSelector,
+  selectorTypeMatches,
+  type MatchableElement,
+} from './selector-match';
+import { answersToNamedType } from '../core/element-kind';
 import { buildComponentNotFoundError } from './component-not-found';
 import { describeInnerFailure } from './inner-failure';
 import {
@@ -509,32 +515,15 @@ export interface ActionExecutorLike {
    * — never one without the other.
    */
   executeAction(elementId: string, request: ControlActionRequest): Promise<unknown>;
-  executeComponentAction(
-    componentId: string,
-    request: {
-      action: string;
-      params?: Record<string, unknown>;
-      /**
-       * Wire-reachable cancellation (plan
-       * `2026-08-20-ui-bridge-action-declaration-shape`, Phase 3). An
-       * `AbortSignal` cannot be JSON-serialized, so this is the ONLY way an
-       * out-of-process caller can call off a hung handler — dropping it here
-       * is what made `ComponentActionRequest.timeoutMs` unreachable from every
-       * HTTP and WebSocket entry point. Validated and clamped by the executor
-       * (`normalizeActionTimeoutMs`); never passed to a timer unchecked.
-       */
-      timeoutMs?: number;
-      /**
-       * Per-request effect-verification override
-       * (`ComponentActionRequest.verifyEffect`): `true` verifies this call,
-       * `false` declines even a declared signature's verification. Dropping it
-       * here left both arms unreachable from every HTTP caller.
-       */
-      verifyEffect?: boolean;
-      /** Echoed on the response so a caller can correlate it. */
-      requestId?: string;
-    }
-  ): Promise<unknown>;
+  /**
+   * The WHOLE {@link ComponentActionRequest}, for the reason given on
+   * `executeAction` above. A narrowed literal here used to be a hand-written
+   * copy of the request's fields, which the handlers below forwarded one by
+   * one. That is how `timeoutMs`, and later `verifyEffect` and `requestId`,
+   * went missing for every HTTP and WebSocket caller. The executor validates
+   * each field it reads (`timeoutMs`, `verifyEffect`, `requestId`).
+   */
+  executeComponentAction(componentId: string, request: ComponentActionRequest): Promise<unknown>;
   /**
    * Phase 6 — the predict route's executor arm.
    *
@@ -2153,26 +2142,10 @@ export function createHandlers(
       }
     },
 
-    executeComponentAction: async (
-      id: string,
-      request: {
-        action: string;
-        params?: Record<string, unknown>;
-        timeoutMs?: number;
-        verifyEffect?: boolean;
-        requestId?: string;
-      }
-    ) => {
+    executeComponentAction: async (id: string, request: ComponentActionRequest) => {
       try {
-        const result = await actionExecutor.executeComponentAction(id, {
-          action: request.action,
-          params: request.params,
-          // Forwarded, not dropped. See `ActionExecutorLike` above.
-          timeoutMs: request.timeoutMs,
-          verifyEffect:
-            typeof request.verifyEffect === 'boolean' ? request.verifyEffect : undefined,
-          requestId: typeof request.requestId === 'string' ? request.requestId : undefined,
-        });
+        // The request whole. See `ActionExecutorLike` above.
+        const result = await actionExecutor.executeComponentAction(id, request);
         return success(result) as APIResponse<ComponentActionResponse>;
       } catch (err) {
         return error((err as Error).message, 'COMPONENT_ACTION_ERROR');
@@ -2190,13 +2163,7 @@ export function createHandlers(
     ): Promise<APIResponse<ComponentActionResponse>> => {
       const { request } = componentActionInvocation(actionId, body);
       try {
-        const result = await actionExecutor.executeComponentAction(id, {
-          action: request.action,
-          params: request.params,
-          timeoutMs: request.timeoutMs,
-          verifyEffect: request.verifyEffect,
-          requestId: request.requestId,
-        });
+        const result = await actionExecutor.executeComponentAction(id, request);
         return success(result) as APIResponse<ComponentActionResponse>;
       } catch (err) {
         return error((err as Error).message, 'COMPONENT_ACTION_ERROR');
@@ -3983,8 +3950,9 @@ export function createHandlers(
         // Apply type/role filters if specified
         let filteredElements = aiElements;
         if (criteria.type) {
-          filteredElements = filteredElements.filter(
-            ({ element }) => element.type.toLowerCase() === criteria.type!.toLowerCase()
+          // A named type answers for its family (`core/element-kind`).
+          filteredElements = filteredElements.filter(({ element }) =>
+            answersToNamedType(element.type, criteria.type!)
           );
         }
         if (criteria.role) {
@@ -6527,8 +6495,7 @@ export function createHandlers(
         if (selector.type) {
           const elType = (typeof el.type === 'string' ? el.type : '').toLowerCase();
           const elTag = (typeof el.tagName === 'string' ? el.tagName : '').toLowerCase();
-          const needle = selector.type.toLowerCase();
-          if (!elType.includes(needle) && !elTag.includes(needle)) return false;
+          if (!selectorTypeMatches(selector.type, elType, elTag)) return false;
         }
         // Delegate id/title/aria_label/text to the shared matcher so this stays
         // in lockstep with getElements / relay-handlers.

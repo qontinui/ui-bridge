@@ -71,6 +71,147 @@ describe('DefaultActionExecutor — unknown action', () => {
     expect('didYouMean' in (res.failureDetails?.context ?? {})).toBe(false);
   });
 
+  // Phase 4 of plan 2026-11-09-an-elements-advertised-verbs-depend-on-which-path-found-it:
+  // an id the registry does not hold but that RESOLVES — a find()/discover()
+  // row, or a node the DOM finds by identifier — gets its own verbs, as its
+  // scanned row advertised them, not the global list. Every element accepts
+  // `sendKeys`, so the global list answered `press` on a button with it.
+  it('`press` on a SCANNED button suggests `click`, from the row it was found by', async () => {
+    const button = document.createElement('button');
+    button.setAttribute('data-testid', 'scanned-save');
+    button.textContent = 'Save';
+    container.appendChild(button);
+    const found = await executor.find({ selector: '[data-testid="scanned-save"]' });
+    const row = found.elements[0];
+    expect(row.registered).toBe(false);
+    expect(row.actions).toContain('sendKeys');
+
+    const res = await executor.executeAction(row.id, { action: 'press' });
+
+    expect(res.success).toBe(false);
+    expect(res.failureDetails?.errorCode).toBe('UB-UNSUPPORTED-ACTION');
+    expect(res.failureDetails?.context).toEqual({
+      action: 'press',
+      didYouMean: 'click',
+      supportedActions: row.actions,
+    });
+    expect(res.error).toBe(
+      `Unknown action 'press' for element '${row.id}'. ` +
+        `This element accepts: ${row.actions.join(', ')}. Did you mean 'click'?`
+    );
+  });
+
+  it('`press` on a scanned text input suggests `sendKeys`, resolved from the DOM', async () => {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.setAttribute('data-testid', 'scanned-name');
+    container.appendChild(input);
+
+    // Never found or registered: the gate resolves it by identifier.
+    const res = await executor.executeAction('scanned-name', { action: 'press' });
+
+    expect(res.failureDetails?.errorCode).toBe('UB-UNSUPPORTED-ACTION');
+    expect(res.failureDetails?.context).toMatchObject({ didYouMean: 'sendKeys' });
+    expect(res.failureDetails?.context?.supportedActions).toContain('type');
+    expect(res.error).toMatch(
+      /^Unknown action 'press' for element 'scanned-name'\. This element accepts: /
+    );
+  });
+
+  // The gate resolves an unregistered id in executeAction's own order — the DOM
+  // by identifier before the discovery cache — so the refusal lists the verbs
+  // of the node the action would actually have run on.
+  it('the gate resolves an unregistered id by identifier before the discovery cache', async () => {
+    const button = document.createElement('button');
+    button.className = 'gate-order-probe';
+    button.textContent = 'Save';
+    container.appendChild(button);
+    const found = await executor.find({ selector: '.gate-order-probe' });
+    const row = found.elements[0];
+    expect(row.registered).toBe(false);
+    expect(row.actions).not.toContain('type');
+
+    // A node the DOM resolves by that same id, which executeAction would pick
+    // before the cached row.
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.id = row.id;
+    container.appendChild(input);
+
+    const res = await executor.executeAction(row.id, { action: 'press' });
+
+    expect(res.failureDetails?.errorCode).toBe('UB-UNSUPPORTED-ACTION');
+    expect(res.failureDetails?.context?.supportedActions).toContain('type');
+    expect(res.failureDetails?.context).toMatchObject({ didYouMean: 'sendKeys' });
+  });
+
+  // D4 on text boxes: an ARIA textbox or a contenteditable advertises no `type`
+  // — it is typed into with `sendKeys` — so `press` there is keyboard input.
+  it.each([
+    [
+      'a contenteditable',
+      () => {
+        const el = document.createElement('div');
+        el.setAttribute('contenteditable', 'true');
+        return el;
+      },
+    ],
+    [
+      'a role="textbox"',
+      () => {
+        const el = document.createElement('div');
+        el.setAttribute('role', 'textbox');
+        return el;
+      },
+    ],
+  ])('`press` on %s suggests `sendKeys`, registered or scanned', async (_name, make) => {
+    const registeredBox = make();
+    container.appendChild(registeredBox);
+    const row = registry.registerElement('editor', registeredBox);
+    expect(row.type).toBe('textbox');
+    expect(row.actions).toEqual(expect.arrayContaining(['click', 'sendKeys']));
+    expect(row.actions).not.toContain('type');
+    const res = await executor.executeAction('editor', { action: 'press' });
+    expect(res.failureDetails?.context).toMatchObject({ didYouMean: 'sendKeys' });
+
+    const scannedBox = make();
+    scannedBox.setAttribute('data-testid', 'scanned-editor');
+    container.appendChild(scannedBox);
+    const scanned = await executor.executeAction('scanned-editor', { action: 'keydown' });
+    expect(scanned.failureDetails?.context).toMatchObject({ didYouMean: 'sendKeys' });
+  });
+
+  // The gate's id is not the node's registry key, but the node it resolves IS
+  // registered (under another id). Its registration decides — its declared
+  // verbs and custom actions — exactly as it does once performAction resolves
+  // the node, not a re-inference from its tag.
+  it("the gate reads the resolved node's own registration before inferring", async () => {
+    const button = document.createElement('button');
+    button.setAttribute('data-testid', 'alias-save');
+    button.textContent = 'Save';
+    container.appendChild(button);
+    let ran = 0;
+    registry.registerElement('save-button', button, {
+      type: 'button',
+      label: 'Save',
+      actions: ['click', 'focus'],
+      customActions: { publish: { id: 'publish', handler: () => void ran++ } },
+    });
+
+    const res = await executor.executeAction('alias-save', { action: 'press' });
+    expect(res.failureDetails?.errorCode).toBe('UB-UNSUPPORTED-ACTION');
+    expect(res.failureDetails?.context).toEqual({
+      action: 'press',
+      didYouMean: 'click',
+      supportedActions: ['click', 'focus', 'publish'],
+    });
+
+    // A custom action of that registration passes the gate and runs.
+    const custom = await executor.executeAction('alias-save', { action: 'publish' });
+    expect(custom.success).toBe(true);
+    expect(ran).toBe(1);
+  });
+
   it('an unregistered target gets the built-in list and still a suggestion', async () => {
     const res = await executor.executeAction('nowhere', { action: 'dblclick' });
     expect(res.error).toMatch(/^Unknown action 'dblclick'\. Supported: click, hoverClick, /);
@@ -200,5 +341,18 @@ describe('relay executeElementAction — unknown action', () => {
       didYouMean: 'sendKeys',
       supportedActions: ['focus', 'sendKeys'],
     });
+  });
+
+  it('`press` on a contenteditable suggests `sendKeys`, not `click`', async () => {
+    host.setAttribute('contenteditable', 'true');
+    const row = getGlobalRegistry().registerElement('editor', host);
+    expect(row.type).toBe('textbox');
+    const res = (await executeCommand(
+      'executeElementAction',
+      { id: 'editor', request: { action: 'press' } },
+      emptyBridge
+    )) as { success: boolean; failureDetails: { context: unknown } };
+    expect(res.success).toBe(false);
+    expect(res.failureDetails.context).toMatchObject({ didYouMean: 'sendKeys' });
   });
 });

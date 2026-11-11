@@ -54,4 +54,46 @@ describe('UIBridgeWSClient.executeComponentAction', () => {
       action: 'open',
     });
   });
+
+  // The options bag is `Omit<ComponentActionRequest, 'action' | 'params'>` and
+  // goes on the wire whole, so a request field added later is sent without an
+  // edit here.
+  it('sends the whole options bag, a field the client has never heard of included', async () => {
+    const client = new UIBridgeWSClient({ url: 'ws://127.0.0.1:1/ws', autoReconnect: false });
+    const sent = captureSend(client);
+    const options = { requestId: 'req-f', futureOptIn: 'x' };
+
+    await client.executeComponentAction('drawer', 'open', undefined, undefined, options);
+
+    expect(JSON.parse(JSON.stringify(sent[0].payload))).toEqual({
+      componentId: 'drawer',
+      action: 'open',
+      requestId: 'req-f',
+      futureOptIn: 'x',
+    });
+  });
+
+  it('takes timeoutMs from the options bag when no positional one is given', async () => {
+    const client = new UIBridgeWSClient({ url: 'ws://127.0.0.1:1/ws', autoReconnect: false });
+    const sent = captureSend(client);
+
+    await client.executeComponentAction('drawer', 'open', undefined, undefined, {
+      timeoutMs: 250,
+    });
+
+    expect(JSON.parse(JSON.stringify(sent[0].payload))).toEqual({
+      componentId: 'drawer',
+      action: 'open',
+      timeoutMs: 250,
+    });
+  });
+
+  it('lets the positional timeoutMs win over the options bag’s', async () => {
+    const client = new UIBridgeWSClient({ url: 'ws://127.0.0.1:1/ws', autoReconnect: false });
+    const sent = captureSend(client);
+
+    await client.executeComponentAction('drawer', 'open', undefined, 500, { timeoutMs: 250 });
+
+    expect((sent[0].payload as Record<string, unknown>).timeoutMs).toBe(500);
+  });
 });

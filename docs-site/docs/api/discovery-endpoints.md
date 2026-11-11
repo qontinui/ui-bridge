@@ -86,7 +86,21 @@ fact that could not be measured, with the reason.
         "tagName": "button",
         "role": "button",
         "accessibleName": "Submit",
-        "actions": ["click", "focus", "blur", "hover"],
+        "actions": [
+          "click",
+          "hoverClick",
+          "doubleClick",
+          "rightClick",
+          "middleClick",
+          "sendKeys",
+          "focus",
+          "blur",
+          "hover",
+          "unhover",
+          "scroll",
+          "scrollIntoView",
+          "drag"
+        ],
         "state": {
           "visible": true,
           "enabled": true,
@@ -106,7 +120,25 @@ fact that could not be measured, with the reason.
         "tagName": "input",
         "role": "textbox",
         "accessibleName": "Email address",
-        "actions": ["click", "type", "clear", "focus", "blur"],
+        "actions": [
+          "click",
+          "hoverClick",
+          "doubleClick",
+          "rightClick",
+          "middleClick",
+          "type",
+          "sendKeys",
+          "clear",
+          "focus",
+          "blur",
+          "hover",
+          "unhover",
+          "scroll",
+          "scrollIntoView",
+          "setValue",
+          "drag",
+          "autocomplete"
+        ],
         "state": {
           "visible": true,
           "enabled": true,
@@ -145,23 +177,37 @@ fact that could not be measured, with the reason.
 
 ## Element Types
 
-Discovery returns these element types:
+Every path that finds an element — discovery, registration without an explicit
+`type`, auto-registration and the DOM fallback — reports one of these types,
+and the same `actions` for it (see [Actions](../concepts/actions.md)):
 
-| Type       | Elements                                               |
-| ---------- | ------------------------------------------------------ |
-| `button`   | `<button>`, `<input type="submit">`, `[role="button"]` |
-| `input`    | `<input type="text">`, `<input type="email">`, etc.    |
-| `textarea` | `<textarea>`                                           |
-| `select`   | `<select>`, `[role="listbox"]`                         |
-| `checkbox` | `<input type="checkbox">`, `[role="checkbox"]`         |
-| `radio`    | `<input type="radio">`, `[role="radio"]`               |
-| `link`     | `<a>`, `[role="link"]`                                 |
-| `form`     | `<form>`                                               |
-| `menu`     | `[role="menu"]`                                        |
-| `menuitem` | `[role="menuitem"]`                                    |
-| `tab`      | `[role="tab"]`                                         |
-| `dialog`   | `<dialog>`, `[role="dialog"]`                          |
-| `custom`   | Other interactive elements                             |
+| Type                                         | Elements                                                                        |
+| -------------------------------------------- | ------------------------------------------------------------------------------- |
+| `button`                                     | `<button>`, `<input type="submit">`, `<input type="button">`, `[role="button"]` |
+| `input`                                      | Any other `<input>`: text, email, number, date, colour, file, reset, …          |
+| `textarea`                                   | `<textarea>`                                                                    |
+| `textbox`                                    | `[role="textbox"]`, a contenteditable element                                   |
+| `select`                                     | `<select>`                                                                      |
+| `combobox`                                   | `[role="combobox"]`                                                             |
+| `listbox`                                    | `[role="listbox"]`                                                              |
+| `option`                                     | `<option>`, `[role="option"]`                                                   |
+| `checkbox`                                   | `<input type="checkbox">`, `[role="checkbox"]`                                  |
+| `radio`                                      | `<input type="radio">`, `[role="radio"]`                                        |
+| `switch`                                     | `[role="switch"]`                                                               |
+| `slider`                                     | `<input type="range">`, `[role="slider"]`                                       |
+| `link`                                       | `<a>`, `[role="link"]`                                                          |
+| `form`                                       | `<form>`                                                                        |
+| `menu`                                       | `[role="menu"]`                                                                 |
+| `menuitem`                                   | `[role="menuitem"]`                                                             |
+| `tab`                                        | `[role="tab"]`                                                                  |
+| `dialog`                                     | `<dialog>`, `[role="dialog"]`                                                   |
+| `disclosure`                                 | `<details>`, the `<summary>` that opens one                                     |
+| `image`, `svg`, `video`, `canvas`, `picture` | `<img>`, `[role="img"]`, `<svg>`, `<video>`, `<canvas>`, `<picture>`            |
+| `generic`                                    | Any other element                                                               |
+
+`custom` is reported only for a registration that declares it. A query or
+filter that names `input` also finds `textbox` elements, and one that names
+`select` also finds `combobox` and `listbox` elements.
 
 ## Examples
 

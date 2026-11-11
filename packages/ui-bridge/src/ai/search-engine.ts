@@ -26,6 +26,7 @@ import { getGlobalAnnotationStore } from '../annotations';
 import { getGlobalRegistry } from '../core/registry';
 import { serializeElementCustomActions } from '../core/element-actions';
 import { truncateCodePoints } from '../core/text';
+import { answersToNamedType } from '../core/element-kind';
 import {
   verdictOf,
   verdictFromState,
@@ -796,11 +797,11 @@ export class SearchEngine {
       | Array<{ id: string; confidence: number; scores: SearchResult['scores'] }>
       | undefined;
     if (debugEnabled) {
-      const criteriaTypeLower = criteria.type?.toLowerCase();
+      const criteriaType = criteria.type;
       candidateElementsForDebug = this.cachedElements
         .filter((el) => {
           const idHit = el.id.toLowerCase().includes('advanced');
-          const typeHit = criteriaTypeLower ? el.type.toLowerCase() === criteriaTypeLower : false;
+          const typeHit = criteriaType ? answersToNamedType(el.type, criteriaType) : false;
           return idHit || typeHit;
         })
         .map((el) => ({
@@ -880,10 +881,7 @@ export class SearchEngine {
         // be dragged down by, e.g., a role mismatch that contributes
         // weight but score=0.
         const scored = this.scoreElement(searchable, criteria);
-        const reasons = [
-          `exact literal match: "${literalNeedles[0]}"`,
-          ...scored.matchReasons,
-        ];
+        const reasons = [`exact literal match: "${literalNeedles[0]}"`, ...scored.matchReasons];
         exactMatches.push({
           element: scored.element,
           confidence: 1.0,
@@ -1288,9 +1286,10 @@ export class SearchEngine {
       totalWeight += this.config.roleWeight;
     }
 
-    // Type matching
+    // Type matching: a named type answers for its whole family (`input` finds
+    // an ARIA textbox too, `select` a combobox) — `core/element-kind`.
     if (criteria.type) {
-      const typeMatch = searchable.type.toLowerCase() === criteria.type.toLowerCase();
+      const typeMatch = answersToNamedType(searchable.type, criteria.type);
       if (typeMatch) {
         matchReasons.push(`type: ${criteria.type}`);
         weightedScore += 1.0 * this.config.roleWeight;
@@ -2087,8 +2086,8 @@ export class SearchEngine {
     const text = (searchable.textContent || searchable.ariaLabel || '').toLowerCase();
     const type = searchable.type.toLowerCase();
 
-    // Form-related
-    if (type === 'input' || type === 'textarea') {
+    // Form-related (an ARIA textbox is a text input too)
+    if (type === 'input' || type === 'textarea' || type === 'textbox') {
       if (searchable.placeholder?.toLowerCase().includes('email') || text.includes('email')) {
         return 'email-input';
       }

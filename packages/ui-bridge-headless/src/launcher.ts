@@ -198,6 +198,14 @@ export interface LaunchHeadlessTabOptions {
    * reads its bearer token from sessionStorage (qontinui-web) lands
    * authenticated. A legacy artifact WITHOUT `__sessionStorage` is read + passed
    * through unchanged.
+   *
+   * BEFORE Chromium launches, the file is read, parsed as JSON and checked to
+   * hold an object whose `cookies` and `origins` are arrays when present. A
+   * file that fails any of those rejects the launch with no browser started:
+   * with the read error, the JSON parse error, or an error naming the file and
+   * what is wrong with its shape. Content past that shape (a malformed cookie
+   * entry, say) is Playwright's to judge in `newContext`, after the launch; a
+   * refusal there still closes the browser before the launch rejects.
    */
   storageStatePath?: string;
 }
@@ -211,7 +219,8 @@ export interface HeadlessTab {
   browser: Browser;
   /**
    * Close the browser and all associated resources. Safe to call multiple
-   * times; subsequent calls resolve immediately.
+   * times; subsequent calls resolve immediately. Resolves even when closing
+   * the browser fails: that failure is reported on stderr, not thrown.
    */
   close(): Promise<void>;
   /**
@@ -379,10 +388,97 @@ function originOf(url: string): string | undefined {
   }
 }
 
+/** A JSON value as an error message names it: `null`, `an array`, `a string`, `an object`, … */
+function describeJsonValue(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'an array';
+  const type = typeof value;
+  return /^[aeiou]/.test(type) ? `an ${type}` : `a ${type}`;
+}
+
+/**
+ * Read a `storageStatePath` file, BEFORE any browser launches.
+ *
+ * Exactly this is checked: the file reads, its content parses as JSON, and it
+ * holds an object whose `cookies` and `origins` are arrays when present. A read
+ * or parse failure throws that error unchanged; a shape failure throws an error
+ * naming the file and what is wrong with it. Nothing deeper is checked here:
+ * content past that shape (a malformed cookie entry, say) is Playwright's to
+ * judge in `newContext`, after the launch, where a refusal closes the browser
+ * like any other post-launch failure.
+ */
+function readStorageStateFile(path: string): StorageStateArtifact {
+  const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(
+      `storageState file ${path} must hold a JSON object, got ${describeJsonValue(parsed)}`
+    );
+  }
+  for (const key of ['cookies', 'origins'] as const) {
+    const value = (parsed as Record<string, unknown>)[key];
+    if (value !== undefined && !Array.isArray(value)) {
+      throw new Error(
+        `storageState file ${path}: "${key}" must be an array when present, got ${describeJsonValue(value)}`
+      );
+    }
+  }
+  return parsed as StorageStateArtifact;
+}
+
+/**
+ * Close `browser`, and report a close that fails on stderr instead of throwing it.
+ *
+ * The one close path of this module: a tab's `close()` and a failed launch
+ * both go through it. Neither may throw the close's own error (`close()` is
+ * best-effort teardown, and a failed launch must reject with ITS error), and
+ * neither stays silent about it, because a close that failed may have left a
+ * Chromium running.
+ */
+async function closeBrowserReportingFailure(browser: Browser, what: string): Promise<void> {
+  try {
+    await browser.close();
+  } catch (closeError) {
+    const detail = closeError instanceof Error ? closeError.message : String(closeError);
+    process.stderr.write(
+      `[ui-bridge] could not close ${what}, so a Chromium may still be running: ${detail}\n`
+    );
+  }
+}
+
+/**
+ * Close the browser that a failed {@link launchHeadlessTab} launched.
+ *
+ * Awaited BEFORE the launch's original error is rethrown, so the browser is
+ * already closed when the rejection reaches the caller. A close that fails is
+ * reported, never thrown: the caller must see the error that failed the
+ * launch, never the teardown's.
+ */
+function closeAfterFailedLaunch(browser: Browser): Promise<void> {
+  return closeBrowserReportingFailure(browser, 'the browser of a failed launch');
+}
+
 /**
  * Launch a Playwright Chromium browser and keep the tab open until `close()`
  * is called. Resolves once the page has loaded and (optionally) UI Bridge
  * has confirmed the tab's registration.
+ *
+ * A launch that rejects owns its cleanup, so a caller never receives, and
+ * never needs, a handle to close:
+ *
+ *   - BEFORE Chromium is spawned, `deviceScaleFactor` and `colorScheme` are
+ *     validated, and the `storageStatePath` file is read, parsed as JSON and
+ *     checked to hold an object whose `cookies` and `origins` are arrays when
+ *     present. A failure there rejects with no browser launched.
+ *   - Once Chromium is running, a step that throws closes the browser and only
+ *     then rejects, with the ORIGINAL error: the same object, never a wrapper
+ *     and never the close's own failure (that is reported on stderr). The
+ *     steps are `newContext` (which is also where Playwright refuses
+ *     storageState content that passed the shape check above), an init
+ *     script, `newPage`, the first navigation and the registration wait.
+ *
+ * Up to 0.7.0 such a step threw with the browser still running and no handle
+ * returned, so one Chromium leaked per failed first page load until the
+ * process exited (coord finding 45a8ff13).
  */
 export async function launchHeadlessTab(
   options: LaunchHeadlessTabOptions
@@ -412,11 +508,6 @@ export async function launchHeadlessTab(
     throw new Error(`colorScheme must be 'light' or 'dark' (got ${String(colorScheme)})`);
   }
 
-  const browser = await chromium.launch({
-    headless,
-    ...(launchArgs && launchArgs.length > 0 ? { args: launchArgs } : {}),
-  });
-
   // Resolve the storageState seed. When a path is given we READ the file here
   // (rather than handing the path to Playwright) so we can split off the custom
   // `__sessionStorage` key: Playwright validates the storageState schema and
@@ -425,101 +516,116 @@ export async function launchHeadlessTab(
   // the sessionStorage map (if any) drives an addInitScript restore below. A
   // legacy artifact without `__sessionStorage` round-trips to an equivalent
   // cleaned object → behavior is unchanged.
+  //
+  // Read BEFORE Chromium launches, like the checks above: a file that does not
+  // read, parse as JSON, or hold an object whose `cookies` and `origins` are
+  // arrays when present rejects the launch with no browser to clean up
+  // (readStorageStateFile says exactly what it checks).
   let storageStateSeed: Record<string, unknown> | undefined;
   let sessionStorageMap: Record<string, Record<string, string>> | null = null;
   if (storageStatePath) {
-    const parsed = JSON.parse(readFileSync(storageStatePath, 'utf8')) as StorageStateArtifact;
-    const split = splitSessionStorageArtifact(parsed);
+    const split = splitSessionStorageArtifact(readStorageStateFile(storageStatePath));
     storageStateSeed = split.storageState;
     sessionStorageMap = split.sessionStorage;
   }
 
-  const context = await browser.newContext({
-    viewport: { width: viewportWidth, height: viewportHeight },
-    ...(deviceScaleFactor !== undefined ? { deviceScaleFactor } : {}),
-    ...(colorScheme !== undefined ? { colorScheme } : {}),
-    userAgent,
-    ...(storageStateSeed ? { storageState: storageStateSeed as never } : {}),
+  const browser = await chromium.launch({
+    headless,
+    ...(launchArgs && launchArgs.length > 0 ? { args: launchArgs } : {}),
   });
 
-  // sessionStorage restore (Playwright's storageState can't carry it). The
-  // init-script runs in the page realm before any page script on EVERY
-  // navigation — exactly when the app first reads its token — and repopulates
-  // sessionStorage for the matching origin. Registered before the first page so
-  // it covers the initial navigation too.
-  if (sessionStorageMap && Object.keys(sessionStorageMap).length > 0) {
-    await context.addInitScript(restoreSessionStorageInitScript, sessionStorageMap);
-  }
-
-  // Register init scripts before the first page is created so they run in
-  // the page realm before any of the target's own scripts execute. Order is
-  // preserved — callers that need a config global available to a later
-  // bundle script should list the config script first.
-  for (const content of initScripts ?? []) {
-    await context.addInitScript({ content });
-  }
-
-  const page = await context.newPage();
-
-  if (forwardConsole) {
-    // Every type goes to stderr. stdout is reserved for machine output: a
-    // caller such as inject-cli emits one JSON line per action there, and a
-    // `[browser.log]` line interleaved with them breaks its consumer's parse.
-    page.on('console', (msg) => {
-      process.stderr.write(`[browser.${msg.type()}] ${msg.text()}\n`);
+  // From here on a Chromium process exists. A step that throws before the
+  // handle below is returned would leave it running with nothing for the
+  // caller to close, so a failed launch closes its own browser and then
+  // rethrows the original error.
+  try {
+    const context = await browser.newContext({
+      viewport: { width: viewportWidth, height: viewportHeight },
+      ...(deviceScaleFactor !== undefined ? { deviceScaleFactor } : {}),
+      ...(colorScheme !== undefined ? { colorScheme } : {}),
+      userAgent,
+      ...(storageStateSeed ? { storageState: storageStateSeed as never } : {}),
     });
-    page.on('pageerror', (err) => {
-      process.stderr.write(`[browser.pageerror] ${err.message}\n`);
-    });
-  }
 
-  if (onPageUrl) {
-    page.on('framenavigated', (frame) => {
-      if (frame === page.mainFrame()) {
-        onPageUrl(frame.url());
-      }
-    });
-  }
-
-  await page.goto(url, { waitUntil: 'load' });
-  const finalUrl = page.url();
-
-  let uiBridgeRegistered = false;
-  let tabId: string | null = null;
-  if (uiBridgeBase) {
-    const result = await waitForUiBridgeRegistration(
-      uiBridgeBase,
-      waitForUiBridgeMs,
-      { authToken, callerUserId },
-      { pinnedTabId, expectedOrigin: originOf(finalUrl) }
-    );
-    uiBridgeRegistered = result.ok;
-    tabId = result.tabId;
-  }
-
-  let closed = false;
-  const close = async (): Promise<void> => {
-    if (closed) return;
-    closed = true;
-    try {
-      await browser.close();
-    } catch {
-      // ignore — best-effort teardown
+    // sessionStorage restore (Playwright's storageState can't carry it). The
+    // init-script runs in the page realm before any page script on EVERY
+    // navigation — exactly when the app first reads its token — and repopulates
+    // sessionStorage for the matching origin. Registered before the first page so
+    // it covers the initial navigation too.
+    if (sessionStorageMap && Object.keys(sessionStorageMap).length > 0) {
+      await context.addInitScript(restoreSessionStorageInitScript, sessionStorageMap);
     }
-  };
 
-  const navigate = async (nextUrl: string): Promise<void> => {
-    await page.goto(nextUrl, { waitUntil: 'load' });
-  };
+    // Register init scripts before the first page is created so they run in
+    // the page realm before any of the target's own scripts execute. Order is
+    // preserved — callers that need a config global available to a later
+    // bundle script should list the config script first.
+    for (const content of initScripts ?? []) {
+      await context.addInitScript({ content });
+    }
 
-  return {
-    page,
-    context,
-    browser,
-    close,
-    navigate,
-    finalUrl,
-    uiBridgeRegistered,
-    tabId,
-  };
+    const page = await context.newPage();
+
+    if (forwardConsole) {
+      // Every type goes to stderr. stdout is reserved for machine output: a
+      // caller such as inject-cli emits one JSON line per action there, and a
+      // `[browser.log]` line interleaved with them breaks its consumer's parse.
+      page.on('console', (msg) => {
+        process.stderr.write(`[browser.${msg.type()}] ${msg.text()}\n`);
+      });
+      page.on('pageerror', (err) => {
+        process.stderr.write(`[browser.pageerror] ${err.message}\n`);
+      });
+    }
+
+    if (onPageUrl) {
+      page.on('framenavigated', (frame) => {
+        if (frame === page.mainFrame()) {
+          onPageUrl(frame.url());
+        }
+      });
+    }
+
+    await page.goto(url, { waitUntil: 'load' });
+    const finalUrl = page.url();
+
+    let uiBridgeRegistered = false;
+    let tabId: string | null = null;
+    if (uiBridgeBase) {
+      const result = await waitForUiBridgeRegistration(
+        uiBridgeBase,
+        waitForUiBridgeMs,
+        { authToken, callerUserId },
+        { pinnedTabId, expectedOrigin: originOf(finalUrl) }
+      );
+      uiBridgeRegistered = result.ok;
+      tabId = result.tabId;
+    }
+
+    let closed = false;
+    const close = async (): Promise<void> => {
+      if (closed) return;
+      // Set before the await, so a second call, even a concurrent one, is a no-op.
+      closed = true;
+      await closeBrowserReportingFailure(browser, "the tab's browser");
+    };
+
+    const navigate = async (nextUrl: string): Promise<void> => {
+      await page.goto(nextUrl, { waitUntil: 'load' });
+    };
+
+    return {
+      page,
+      context,
+      browser,
+      close,
+      navigate,
+      finalUrl,
+      uiBridgeRegistered,
+      tabId,
+    };
+  } catch (err) {
+    await closeAfterFailedLaunch(browser);
+    throw err;
+  }
 }

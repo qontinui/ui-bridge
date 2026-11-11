@@ -373,7 +373,6 @@ describe('find/discover payloads advertise custom actions', () => {
       const response = await executor.find({ includeHidden: true, includeMedia: true });
       const element = response.elements.find((e) => e.id === 'pane-media');
       expect(element).toBeDefined();
-      expect(element!.actions).toEqual([]);
       expect(element!.customActions).toEqual(EXPECTED_CUSTOM_ACTIONS);
       expectUndefaultedEffect(element!.customActions);
 
@@ -381,6 +380,11 @@ describe('find/discover payloads advertise custom actions', () => {
         registry.getElement('pane-media') as RegisteredElement
       ) as unknown as Record<string, unknown>;
       expect(element!.customActions).toEqual(canonical.customActions);
+      // Its built-in verbs are the ones its registration read from the verb
+      // table (`core/element-kind`) — the snapshot row's, keyboard input
+      // included — not an empty list the snapshot contradicts.
+      expect(element!.actions).toEqual(canonical.actions);
+      expect(element!.actions).toContain('sendKeys');
     });
 
     it('leaves customActions ABSENT for an unregistered DOM-scanned node', async () => {

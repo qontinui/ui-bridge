@@ -275,7 +275,10 @@ describe('relay executeElementAction · an unknown-verb suggestion is a verb thi
     const host = document.createElement('h2');
     makeVisible(host);
     document.body.appendChild(host);
-    getGlobalRegistry().registerElement('heading-1', host, { type: 'custom', actions: [] } as never);
+    getGlobalRegistry().registerElement('heading-1', host, {
+      type: 'custom',
+      actions: [],
+    } as never);
     const res = await relayAction('heading-1', { action: 'scrollintoview' });
     expect(res.success).toBe(false);
     expect(String(res.error)).toContain("Did you mean 'scrollIntoView'?");
@@ -287,15 +290,30 @@ describe('relay executeElementAction · an unknown-verb suggestion is a verb thi
     const host = document.createElement('input');
     makeVisible(host);
     document.body.appendChild(host);
-    // `autocomplete` is a valid StandardAction, but the relay switch has no case for it.
+    // `press` is the NATIVE vocabulary's verb; a caller can still declare it on
+    // a web element, and the relay switch has no case for it.
+    getGlobalRegistry().registerElement('search', host, {
+      type: 'input',
+      actions: ['press'],
+    } as never);
+    const res = await relayAction('search', { action: 'Press' });
+    expect(res.success).toBe(false);
+    expect(String(res.error)).toMatch(/^Unknown action 'Press'/);
+    expect(String(res.error)).not.toContain("Did you mean 'press'");
+    host.remove();
+  });
+
+  it('suggests autocomplete, which the relay now runs as the executor does', async () => {
+    const host = document.createElement('input');
+    makeVisible(host);
+    document.body.appendChild(host);
     getGlobalRegistry().registerElement('search', host, {
       type: 'input',
       actions: ['autocomplete'],
-    } as never);
+    });
     const res = await relayAction('search', { action: 'Autocomplete' });
     expect(res.success).toBe(false);
-    expect(String(res.error)).toMatch(/^Unknown action 'Autocomplete'/);
-    expect(String(res.error)).not.toContain("Did you mean 'autocomplete'");
+    expect(String(res.error)).toContain("Did you mean 'autocomplete'?");
     host.remove();
   });
 });

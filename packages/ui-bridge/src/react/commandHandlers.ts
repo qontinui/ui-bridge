@@ -58,7 +58,6 @@ import {
   DefaultActionExecutor,
   getClickRefusal,
   requestFormSubmit,
-  resolveOwnerForm,
   dispatchRightClick,
   dispatchMiddleClick,
 } from '../control/action-executor';
@@ -72,8 +71,25 @@ import {
 import { captureStateVariations, INTERACTION_STATES } from '../ai/design-inspector';
 import type { InteractionStateName } from '../core/types';
 import { inertAbortSignal } from '../core/abortable';
-import type { ComponentActionRequest, DragAction, MouseAction } from '../control/types';
-import { comboboxSelect, isComboboxLike } from '../control/combobox-select';
+import type {
+  AutocompleteAction,
+  ComponentActionRequest,
+  ComponentActionResponse,
+  DragAction,
+  MouseAction,
+} from '../control/types';
+import { autocompleteSelect, comboboxSelect } from '../control/combobox-select';
+import {
+  checkArm,
+  clearArm,
+  formOwnerArm,
+  selectArm,
+  setValueArm,
+  textEntryArm,
+  toggleArm,
+  typeArm,
+  type ElementKindRefusal,
+} from '../control/element-arms';
 import { performDragSequence } from '../control/drag-sequence';
 import { pageScrollContainer, pageViewportContext } from '../control/page-scroll-container';
 import { findElementByIdentifier } from '../core/element-identifier';
@@ -83,6 +99,8 @@ import { createStableRef, resolveStableRef } from '../core/stable-ref';
 import type { StableElementRef } from '../core/stable-ref';
 import type { AnyCapturedEvent } from '../debug/browser-capture-types';
 import { buildComponentNotFoundError } from '../server/component-not-found';
+import { componentActionRequestFromWire } from '../server/component-action-invocation';
+import { selectorTypeMatches } from '../server/selector-match';
 import { diagnoseSnapshotPageHealth } from '../server/page-health';
 import {
   readValuePrimitive,
@@ -119,6 +137,7 @@ import {
   type WaitForElementState,
   type ElementSnapshot,
 } from '../ai/wait-for-element';
+import { isTypedWithKeys } from '../core/element-kind';
 import { mapInternalErrorCode } from '../diagnostics';
 import { describeUnknownAction, unknownActionContext } from '../control/actionVocabulary';
 import { devControlsDisabledResponse, devControlsEnabled } from '../core/dev-controls';
@@ -218,6 +237,7 @@ const RELAY_ELEMENT_ACTIONS: readonly string[] = [
   'reset',
   'sendKeys',
   'drag',
+  'autocomplete',
 ];
 
 /**
@@ -226,9 +246,10 @@ const RELAY_ELEMENT_ACTIONS: readonly string[] = [
  * actions, so the suggestion is never a verb the relay would refuse in turn.
  * The switch below runs any verb it has a case for, whatever the element
  * advertises, so when the element advertises no verb the relay runs AND has no
- * custom actions (a content or media element, whose registry entry carries
+ * custom actions (a content element, whose registry entry carries
  * `actions: []`, or one advertising only verbs the relay has no case for) the
- * refusal lists every verb the relay runs. An element with custom actions but
+ * refusal lists every verb the relay runs. A media element is not that case:
+ * its row carries its kind's verbs (`core/element-kind`), like any other. An element with custom actions but
  * no runnable advertised verb lists only those, as the HTTP executor does.
  */
 function relayAcceptedVerbs(
@@ -406,9 +427,10 @@ function createActionFailure(
 }
 
 /**
- * The relay's refusal envelope for a click `getClickRefusal` blocked — shared
- * by the pre-dispatch guard and `submit`'s no-form click fallback so both name
- * the same signals and give the same advice.
+ * The relay's refusal envelope for a click `getClickRefusal` blocked, from the
+ * pre-dispatch guard. (`submit` used to share it through a no-form click
+ * fallback; that fallback is gone — a form-less `submit` is the element-kind
+ * refusal.)
  */
 function createClickRefusalFailure(
   id: string,
@@ -435,6 +457,29 @@ function createClickRefusalFailure(
     });
   }
   return failure;
+}
+
+/**
+ * The relay's typed element-kind refusal: a built-in verb has no arm for this
+ * element (`control/element-arms.ts`). `failureDetails.context.refusal` carries
+ * the same `'element-kind'` marker the HTTP executor's refusal does, so a
+ * caller keys on it whichever door it reached; `errorCode` stays the relay's
+ * `UNSUPPORTED_ACTION`.
+ */
+function createKindRefusalFailure(
+  id: string,
+  action: string,
+  refusal: ElementKindRefusal,
+  startTime: number
+) {
+  const failure = createActionFailure(id, 'UNSUPPORTED_ACTION', refusal.message, startTime);
+  return {
+    ...failure,
+    failureDetails: {
+      ...failure.failureDetails,
+      context: { action, refusal: refusal.refusal },
+    },
+  };
 }
 
 /**
@@ -523,56 +568,22 @@ function ipcActionExecutor(registry: ReturnType<typeof getGlobalRegistry>): Defa
 }
 
 /**
- * Invoke a component action through {@link ipcActionExecutor} and reshape the
- * response into this channel's `{ success, result?, error?, timestamp }`
- * envelope.
+ * Invoke a component action through {@link ipcActionExecutor} and answer with
+ * the executor's response whole.
  *
- * The extra fields the executor produces (`failureDetails`, `durationMs`,
- * `effectVerification`, `requestId`) are passed through additively —
- * `JSON.stringify` drops the undefined ones, so an ordinary success is
- * byte-identical to what this seam emitted before.
- *
- * `effectVerification` is the predicted-vs-observed verdict. Leaving it off
- * here made every component action driven through the relay unverifiable: the
- * executor computed the verdict and this envelope threw it away, so a caller
- * could only ever read `unknown`.
+ * Whole, not a hand-listed envelope. The list this replaced first left out
+ * `effectVerification`, which made every component action driven through the
+ * relay unverifiable. It still left out `stack`, and it would have dropped the
+ * next field added to `ComponentActionResponse` the same way. The direct
+ * server route already returns the executor's response unchanged, so the two
+ * channels now answer alike.
  */
 async function runComponentActionViaExecutor(
   registry: ReturnType<typeof getGlobalRegistry>,
   componentId: string,
   request: ComponentActionRequest
-): Promise<Record<string, unknown>> {
-  const response = await ipcActionExecutor(registry).executeComponentAction(componentId, request);
-  return {
-    success: response.success,
-    result: response.result,
-    error: response.error,
-    failureDetails: response.failureDetails,
-    effectVerification: response.effectVerification,
-    durationMs: response.durationMs,
-    timestamp: response.timestamp,
-    requestId: response.requestId,
-  };
-}
-
-/**
- * The per-request fields of a wire `ComponentActionRequest` that this channel
- * forwards to the executor besides `action` and `params`.
- *
- * Read off the payload by name and type rather than spread, so a malformed
- * value is dropped instead of reaching the executor (which treats only a
- * boolean `verifyEffect` as an instruction). `verifyEffect` is the
- * effect-verification switch: before it was forwarded here, `true` could not
- * opt one relay call in and `false` could not decline a declared signature.
- */
-function wireComponentRequestFields(
-  source: Record<string, unknown>
-): Pick<ComponentActionRequest, 'timeoutMs' | 'verifyEffect' | 'requestId'> {
-  return {
-    timeoutMs: source.timeoutMs as number | undefined,
-    verifyEffect: typeof source.verifyEffect === 'boolean' ? source.verifyEffect : undefined,
-    requestId: typeof source.requestId === 'string' ? source.requestId : undefined,
-  };
+): Promise<ComponentActionResponse> {
+  return ipcActionExecutor(registry).executeComponentAction(componentId, request);
 }
 
 /**
@@ -1883,6 +1894,7 @@ export async function executeCommand(
         const hint = describeUnknownAction(wireAction, {
           elementId: registered?.id,
           accepted: relayAcceptedVerbs(registered),
+          keyboardEntry: isTypedWithKeys(registered?.type),
         });
         const failure = createActionFailure(id, 'UNSUPPORTED_ACTION', hint.message, startTime);
         return refuse({
@@ -2124,14 +2136,13 @@ export async function executeCommand(
             };
           }
           case 'toggle': {
-            if (dom instanceof HTMLInputElement && dom.type === 'checkbox') {
-              dom.checked = !dom.checked;
-              dom.dispatchEvent(new Event('change', { bubbles: true }));
-            } else if (dom.getAttribute('role') === 'switch') {
-              dispatchRealClick(dom);
-            } else {
-              dispatchRealClick(dom); // generic toggle via pointer+click
-            }
+            // The executor's arms, shared: a checkbox, details/summary, dialog,
+            // aria-expanded or ARIA switch/checkbox — never a click on an element
+            // that has none of them.
+            const arm = toggleArm(dom);
+            if (!arm.ok)
+              return refuse(createKindRefusalFailure(id, request.action, arm, startTime));
+            arm.apply();
             break;
           }
           case 'doubleClick':
@@ -2144,58 +2155,61 @@ export async function executeCommand(
             dispatchMiddleClick(dom, request.params as MouseAction | undefined);
             break;
           case 'type': {
-            if (dom instanceof HTMLInputElement || dom instanceof HTMLTextAreaElement) {
-              const text = (request.params?.text as string) || request.text || '';
-              applyValueMutation(dom, {
-                value: text,
-                mode: request.params?.clear || request.clear ? 'clear-then-append' : 'append',
-                blur: false,
-              });
-            } else
-              return refuse(
-                createActionFailure(
-                  id,
-                  'UNSUPPORTED_ACTION',
-                  `Cannot type into ${dom.tagName}`,
-                  startTime
-                )
-              );
+            const arm = typeArm(dom);
+            if (!arm.ok)
+              return refuse(createKindRefusalFailure(id, request.action, arm, startTime));
+            const text = (request.params?.text as string) || request.text || '';
+            arm.apply(text, Boolean(request.params?.clear || request.clear));
             break;
           }
           case 'clear': {
-            if (dom instanceof HTMLInputElement || dom instanceof HTMLTextAreaElement) {
-              applyValueMutation(dom, { value: '', mode: 'clear', blur: false });
-            } else
-              return refuse(
-                createActionFailure(
-                  id,
-                  'UNSUPPORTED_ACTION',
-                  `Cannot clear ${dom.tagName}`,
-                  startTime
-                )
-              );
+            const arm = clearArm(dom);
+            if (!arm.ok)
+              return refuse(createKindRefusalFailure(id, request.action, arm, startTime));
+            arm.apply();
             break;
           }
           case 'setValue': {
-            if (dom instanceof HTMLInputElement || dom instanceof HTMLTextAreaElement) {
-              const val = request.value || (request.params?.value as string) || '';
-              applyValueMutation(dom, { value: val, mode: 'replace', blur: false });
-            } else
+            // A <select> too, as on the executor: a registered select advertises
+            // `setValue`, and this door used to refuse it.
+            const arm = setValueArm(dom);
+            if (!arm.ok)
+              return refuse(createKindRefusalFailure(id, request.action, arm, startTime));
+            arm.apply(request.value || (request.params?.value as string) || '');
+            break;
+          }
+          case 'autocomplete': {
+            const arm = textEntryArm(dom, 'autocomplete');
+            if (!arm.ok)
+              return refuse(createKindRefusalFailure(id, request.action, arm, startTime));
+            const options = request.params as AutocompleteAction | undefined;
+            if (!options?.searchText)
               return refuse(
                 createActionFailure(
                   id,
-                  'UNSUPPORTED_ACTION',
-                  `Cannot set value on ${dom.tagName}`,
+                  'INVALID_PARAMS',
+                  'Autocomplete action requires searchText parameter',
                   startTime
                 )
               );
+            const outcome = await autocompleteSelect(arm.control, options);
+            if (!outcome.ok) {
+              // The field was typed into: a missing suggestion is an outcome of
+              // a dispatched action, not a refusal.
+              return settleDispatched(
+                createActionFailure(id, 'UB-ACTION-FAILED', outcome.message, startTime)
+              );
+            }
             break;
           }
           case 'select': {
-            if (dom instanceof HTMLSelectElement) {
-              dom.value = request.value || '';
-              dom.dispatchEvent(new Event('change', { bubbles: true }));
-            } else if (isComboboxLike(dom)) {
+            const arm = selectArm(dom);
+            if (!arm.ok)
+              return refuse(createKindRefusalFailure(id, request.action, arm, startTime));
+            if (arm.arm === 'native') {
+              arm.control.value = request.value || '';
+              arm.control.dispatchEvent(new Event('change', { bubbles: true }));
+            } else {
               // A Radix/shadcn `<SelectTrigger>` is a `<button role="combobox">`.
               // The snapshot reports it as `role: "combobox"`, and the HTTP
               // action-executor has serviced it for months — this path used to
@@ -2215,82 +2229,39 @@ export async function executeCommand(
                   createActionFailure(id, 'UB-ACTION-FAILED', outcome.message, startTime)
                 );
               }
-            } else
-              return refuse(
-                createActionFailure(
-                  id,
-                  'UNSUPPORTED_ACTION',
-                  `Cannot select on ${dom.tagName}. Use a <select> element or a combobox ` +
-                    `(role="combobox").`,
-                  startTime
-                )
-              );
-            break;
-          }
-          case 'check': {
-            if (dom instanceof HTMLInputElement) {
-              dom.checked = true;
-              dom.dispatchEvent(new Event('change', { bubbles: true }));
-            } else
-              return refuse(
-                createActionFailure(
-                  id,
-                  'UNSUPPORTED_ACTION',
-                  `Cannot check ${dom.tagName}`,
-                  startTime
-                )
-              );
-            break;
-          }
-          case 'uncheck': {
-            if (dom instanceof HTMLInputElement) {
-              dom.checked = false;
-              dom.dispatchEvent(new Event('change', { bubbles: true }));
-            } else
-              return refuse(
-                createActionFailure(
-                  id,
-                  'UNSUPPORTED_ACTION',
-                  `Cannot uncheck ${dom.tagName}`,
-                  startTime
-                )
-              );
-            break;
-          }
-          case 'submit': {
-            const form = resolveOwnerForm(dom);
-            if (form) {
-              const refused = requestFormSubmit(form, dom);
-              if (refused)
-                return refuse(
-                  createActionFailure(id, 'ACTION_REJECTED', `Element ${id}: ${refused}`, startTime)
-                );
-            } else {
-              // No form: the fallback IS a click, so it answers to the same
-              // refusal verdict as a plain `click` — otherwise `submit` is a
-              // route around the guard above on an aria-disabled /
-              // pointer-events:none control.
-              const refusal = getClickRefusal(dom, 'click');
-              if (refusal)
-                return refuse(createClickRefusalFailure(id, 'submit', refusal, startTime));
-              dispatchRealClick(dom);
             }
             break;
           }
-          case 'reset': {
-            const form = resolveOwnerForm(dom);
-            if (!form)
-              // Matches the executor's `performReset` "No form found" arm;
-              // falling through reported success with nothing reset.
+          case 'check':
+          case 'uncheck': {
+            // The executor's arms, shared: a checkbox or radio <input>, or an
+            // ARIA switch / checkbox / radio — not any <input> (a text field has
+            // no checked state), and a role="switch" is no longer refused here.
+            const arm = checkArm(dom, request.action === 'check');
+            if (!arm.ok)
+              return refuse(createKindRefusalFailure(id, request.action, arm, startTime));
+            arm.apply();
+            break;
+          }
+          case 'submit': {
+            // No owner form is the typed refusal, as on the executor. A click
+            // fallback here used to report success for an element with no form
+            // to submit.
+            const arm = formOwnerArm(dom, 'submit');
+            if (!arm.ok)
+              return refuse(createKindRefusalFailure(id, request.action, arm, startTime));
+            const refused = requestFormSubmit(arm.form, dom);
+            if (refused)
               return refuse(
-                createActionFailure(
-                  id,
-                  'UNSUPPORTED_ACTION',
-                  `Cannot reset ${dom.tagName}: no form found`,
-                  startTime
-                )
+                createActionFailure(id, 'ACTION_REJECTED', `Element ${id}: ${refused}`, startTime)
               );
-            form.reset();
+            break;
+          }
+          case 'reset': {
+            const arm = formOwnerArm(dom, 'reset');
+            if (!arm.ok)
+              return refuse(createKindRefusalFailure(id, request.action, arm, startTime));
+            arm.form.reset();
             break;
           }
           case 'sendKeys': {
@@ -2414,6 +2385,7 @@ export async function executeCommand(
             const hint = describeUnknownAction(request.action, {
               elementId: registered?.id,
               accepted: relayAcceptedVerbs(registered),
+              keyboardEntry: isTypedWithKeys(registered?.type),
             });
             const failure = createActionFailure(id, 'UNSUPPORTED_ACTION', hint.message, startTime);
             return refuse({
@@ -2792,7 +2764,10 @@ export async function executeCommand(
 
     case 'execute_component_action': {
       const compId = (payload.componentId ?? payload.id) as string;
-      const actionId = (payload.actionId ?? payload.action) as string;
+      // The payload whole, minus the keys that name the component and the
+      // action: see `componentActionRequestFromWire`.
+      const request = componentActionRequestFromWire(payload);
+      const actionId = request.action;
       const comp = registry.getComponent(compId);
       if (!comp) {
         return {
@@ -2812,11 +2787,11 @@ export async function executeCommand(
       // Through the executor, not `compAction.handler(...)` — see
       // `ipcActionExecutor`. The component/action pre-checks above stay only
       // because they produce this channel's richer not-found prose; the
-      // executor re-resolves both and would answer identically.
+      // executor re-resolves both and would answer identically. The action
+      // handed on is the id the lookup found, which is the request's own.
       return await runComponentActionViaExecutor(registry, compId, {
-        action: actionId,
-        params: payload.params as Record<string, unknown> | undefined,
-        ...wireComponentRequestFields(payload as Record<string, unknown>),
+        ...request,
+        action: compAction.id,
       });
     }
 
@@ -2839,21 +2814,14 @@ export async function executeCommand(
     }
 
     case 'executeComponentAction': {
-      const { id, request } = payload as {
+      // The relay forwards the whole `ComponentActionRequest`, and this arm
+      // hands it on whole. `actionId` is the IPC spelling of `action`.
+      const { id, request: wire } = payload as {
         id: string;
-        // `timeoutMs` is the wire-reachable half of cancellation — the relay
-        // forwards the whole `ComponentActionRequest`, so failing to read it
-        // here is what made it unreachable on this channel.
-        request: {
-          action: string;
-          actionId?: string;
-          params?: P;
-          timeoutMs?: number;
-          verifyEffect?: boolean;
-          requestId?: string;
-        };
+        request: ComponentActionRequest & { actionId?: string };
       };
-      const actionId = request.actionId ?? request.action;
+      const request = componentActionRequestFromWire(wire);
+      const actionId = request.action;
       const comp = registry.getComponent(id);
       if (!comp) {
         return {
@@ -2871,11 +2839,7 @@ export async function executeCommand(
         };
       }
       // Through the executor — see `ipcActionExecutor` and the twin above.
-      return await runComponentActionViaExecutor(registry, id, {
-        action: actionId,
-        params: request.params as Record<string, unknown> | undefined,
-        ...wireComponentRequestFields(request as Record<string, unknown>),
-      });
+      return await runComponentActionViaExecutor(registry, id, { ...request, action: action.id });
     }
 
     /**
@@ -3648,10 +3612,7 @@ export async function executeCommand(
         const domEl = el.element ?? null;
         const elType = typeof el.type === 'string' ? el.type.toLowerCase() : '';
         const elTag = (domEl?.tagName ?? '').toLowerCase();
-        if (selector.type) {
-          const needle = selector.type.toLowerCase();
-          if (!elType.includes(needle) && !elTag.includes(needle)) return false;
-        }
+        if (selector.type && !selectorTypeMatches(selector.type, elType, elTag)) return false;
         if (selector.id && el.id !== selector.id) return false;
 
         const ariaLabel = (domEl ? readAriaLabelAttr(domEl) : null) ?? undefined;

@@ -7,6 +7,7 @@
  */
 
 import type { ElementDesignData } from '../core/types';
+import { answersToNamedType } from '../core/element-kind';
 import type { QualityMetricId, MetricResult, MetricFinding, MetricFunction } from './quality-types';
 import {
   parseColor,
@@ -47,8 +48,11 @@ function isInteractive(el: ElementDesignData): boolean {
   const t = el.type.toLowerCase();
   return (
     t === 'button' ||
-    t === 'input' ||
-    t === 'select' ||
+    // An ARIA textbox and a combobox/listbox, as their native twins; a range
+    // <input> is the `slider` kind.
+    answersToNamedType(t, 'input') ||
+    answersToNamedType(t, 'select') ||
+    t === 'slider' ||
     t === 'textarea' ||
     t === 'link' ||
     t === 'a' ||
@@ -91,8 +95,11 @@ const CONTENT_BEARING_TYPES = new Set([
   'metric-value',
   'badge',
   'input',
+  'textbox',
   'textarea',
   'select',
+  'combobox',
+  'listbox',
   'list-item',
   'table-cell',
   'table-header',
@@ -1348,7 +1355,7 @@ export const cardConsistency: MetricFunction = (elements) => {
 export const inputConsistency: MetricFunction = (elements) => {
   const inputs = elements.filter((el) => {
     const t = el.type.toLowerCase();
-    return t === 'input' || t === 'textarea' || t === 'select';
+    return answersToNamedType(t, 'input') || t === 'textarea' || answersToNamedType(t, 'select');
   });
 
   if (inputs.length < 2)
