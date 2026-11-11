@@ -244,9 +244,10 @@ describe('the route body becomes the request (invokeComponentAction)', () => {
  * must equal the engine's with that step applied, and each copy must hand on
  * the row's literal.
  *
- * Not compared: the relay's routing fields (`tabId`, `targetTabId`,
- * `__callerUserId`), which the engine lifts off a body before dispatch. This
- * package has no relay and no caller scoping to lift them for.
+ * Kept out of the table: the relay's routing fields (`tabId`, `targetTabId`,
+ * `__callerUserId`). The engine routes on them and keeps them out of params;
+ * this package has no relay and no caller scoping, so it hands them on as
+ * params. That second difference is pinned by its own test after the table.
  */
 describe("the route's split is @qontinui/ui-bridge's", () => {
   const ROWS: Array<{
@@ -327,24 +328,35 @@ describe("the route's split is @qontinui/ui-bridge's", () => {
   // The routing-key difference the table cannot carry (every row asserts the
   // copies agree): pinned here so a change to either side's handling of it
   // fails a test instead of only contradicting the docblock above.
-  it('differs on the relay routing keys: kept as params here, lifted by the engine', () => {
-    const body = {
-      tabId: 't1',
-      targetTabId: 't2',
-      a: 1,
-      params: { inner: { __callerUserId: 'u1' } },
+  it('differs on the relay routing keys: kept as params here, routed by the engine', () => {
+    // At the top level of the body: the engine lifts each into routing.
+    const flat = { tabId: 't1', targetTabId: 't2', __callerUserId: 'u0', a: 1 };
+    // Inside an explicit params: the engine drops each, and strips the
+    // reserved key at any depth; routing reads only the body's top level.
+    const explicit = {
+      params: {
+        tabId: 'p1',
+        targetTabId: 'p2',
+        __callerUserId: 'p0',
+        b: 2,
+        inner: { __callerUserId: 'u1' },
+      },
     };
 
-    expect(componentActionInvocation('submit', body).params).toStrictEqual({
+    expect(componentActionInvocation('submit', flat).params).toStrictEqual(flat);
+    expect(engineComponentActionInvocation('submit', flat).request.params).toStrictEqual({ a: 1 });
+    expect(engineComponentActionInvocation('submit', flat).routing).toStrictEqual({
       tabId: 't1',
       targetTabId: 't2',
-      a: 1,
-      inner: { __callerUserId: 'u1' },
+      __callerUserId: 'u0',
     });
-    expect(engineComponentActionInvocation('submit', body).request.params).toStrictEqual({
-      a: 1,
+
+    expect(componentActionInvocation('submit', explicit).params).toStrictEqual(explicit.params);
+    expect(engineComponentActionInvocation('submit', explicit).request.params).toStrictEqual({
+      b: 2,
       inner: {},
     });
+    expect(engineComponentActionInvocation('submit', explicit).routing).toStrictEqual({});
   });
 });
 
