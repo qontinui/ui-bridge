@@ -111,7 +111,7 @@ export interface UseUIComponentOptions {
    * actions, so dropping it withdraws the list it declared before. A list
    * installed with `updateActions` at a call site that never declares
    * `actions` stays; dropping a declared option clears an installed list too,
-   * as any change of the declared actions does (see `updateActions`).
+   * as any change of the declared actions' value does (see `updateActions`).
    */
   actions?: ComponentActionDef[];
   /** Child element IDs owned by this component */
