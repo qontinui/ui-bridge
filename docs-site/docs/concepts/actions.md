@@ -30,28 +30,52 @@ fallback.
 
 ### By what the element is
 
-| Element                                                                          | Adds                                        |
-| -------------------------------------------------------------------------------- | ------------------------------------------- |
-| Text `<input>` (text, search, email, url, tel, password, number), `<textarea>`   | `type`, `clear`, `setValue`, `autocomplete` |
-| Date, time, datetime-local, month, week or colour `<input>`                      | `type`, `clear`, `setValue`                 |
-| Range or hidden `<input>`                                                        | `setValue`                                  |
-| File `<input>`                                                                   | `clear`                                     |
-| `<select>`                                                                       | `select`, `setValue`                        |
-| `role="combobox"`, or a control carrying `aria-haspopup="listbox"`               | `select`                                    |
-| Checkbox `<input>`, `role="checkbox"`, `role="switch"`                           | `check`, `uncheck`, `toggle`                |
-| Radio `<input>`                                                                  | `check`, `uncheck`                          |
-| `role="radio"`                                                                   | `check`                                     |
-| `<details>`, its `<summary>`, `<dialog>`, a control carrying `aria-expanded`     | `toggle`                                    |
-| A toggle button (`aria-pressed`), `role="menuitemcheckbox"` or `"menuitemradio"` | `toggle`                                    |
-| A `<form>`, or any element inside one or owned by one through `form="…"`         | `submit`, `reset`                           |
+| Element                                                                                                                                       | Adds                                        |
+| --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| Text `<input>` (text, search, email, url, tel, password, number), `<textarea>`                                                                | `type`, `clear`, `setValue`, `autocomplete` |
+| Date, time, datetime-local, month, week, colour or hidden `<input>`                                                                           | `type`, `clear`, `setValue`                 |
+| Range `<input>`                                                                                                                               | `setValue`                                  |
+| File `<input>`                                                                                                                                | `clear`                                     |
+| `<select>`                                                                                                                                    | `select`, `setValue`                        |
+| `role="combobox"`; `aria-haspopup="listbox"`; any other non-`false` `aria-haspopup` whose `aria-controls` / `aria-owns` is a `role="listbox"` | `select`                                    |
+| Checkbox `<input>`, `role="checkbox"`, `role="switch"`, `role="menuitemcheckbox"`                                                             | `check`, `uncheck`, `toggle`                |
+| Radio `<input>`                                                                                                                               | `check`, `uncheck`                          |
+| `role="radio"`, `role="menuitemradio"`                                                                                                        | `check`                                     |
+| `<details>`, the `<summary>` of a `<details>`, `<dialog>`, a control carrying `aria-expanded`                                                 | `toggle`                                    |
+| A toggle button (`aria-pressed`)                                                                                                              | `toggle`                                    |
+| A `<form>`, or any element inside one or owned by one through `form="…"`                                                                      | `submit`, `reset`                           |
 
 An ARIA textbox (`role="textbox"`, or a contenteditable element) takes none of
 the value verbs: `sendKeys` is how it is typed into. A date, time or colour
 `<input>` holds one formatted value the browser sanitizes whole, so `type`
 writes the typed text as that whole value (`type "10:30"` sets a time input to
 10:30) and `clear` empties it — a colour, which cannot be empty, returns to
-`#000000`. `clear` on a file `<input>` empties its selection; nothing can type
-a value into one.
+`#000000`. A hidden `<input>` is appended to and cleared like a text field
+(through the HTTP executor; the relay refuses every verb on an invisible
+element). `clear` on a file `<input>` empties its selection; nothing can type
+a value into one. A radio, `role="radio"` or `role="menuitemradio"` only
+selects — clicking a checked one changes nothing — so it takes `check`, never
+`toggle`.
+
+### Verbs no longer advertised
+
+Before the four inference paths converged on one table, some of them listed
+verbs the SDK did not perform on the element: the call failed, or reported
+success over an unchanged page. Those verbs are now refused with
+`failureDetails.context.refusal: "element-kind"`. Each has a replacement:
+
+| Element                                                                    | No longer listed            | What it did                                                                                             | Use instead                                                   |
+| -------------------------------------------------------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| Reset or image `<input>`                                                   | `type`, `clear`, `setValue` | Rewrote the button's label                                                                              | `click` (or `reset` / `submit` on the form)                   |
+| Radio `<input>`, `role="radio"`                                            | `toggle`                    | Clicked; a checked radio stayed checked                                                                 | `check` (`uncheck` on a radio `<input>`)                      |
+| Radio `<input>`, `role="radio"`, `<option>`, `role="option"`, `role="tab"` | `select`                    | Listed by auto-registration only; `select` refused them                                                 | `click`, or `select` on the owning `<select>` / combobox      |
+| Range `<input>`                                                            | `type`, `clear`             | `type` appended characters and wrote a wrong value; `clear` changed nothing (an empty range snaps back) | `setValue`                                                    |
+| `role="textbox"`, contenteditable                                          | `type`, `clear`, `setValue` | Failed, or reported success with nothing changed                                                        | `sendKeys`                                                    |
+| `role="listbox"`                                                           | `select`, `setValue`        | Failed, or reported success with nothing changed                                                        | `click` its option, or `select` on the combobox that opens it |
+| `role="combobox"` that is not an `<input>`                                 | `setValue`, `type`          | Failed, or reported success with nothing changed                                                        | `select`                                                      |
+| `role="slider"`, `role="spinbutton"` that is not an `<input>`              | `setValue`                  | Failed, or reported success with nothing changed                                                        | `sendKeys` (arrow keys), or `drag` a slider                   |
+| File `<input>`                                                             | `type`, `setValue`          | Threw: a script cannot write a file into one                                                            | none; `clear` empties the selection                           |
+| `<summary>` outside a `<details>`                                          | `toggle`                    | Clicked an element with nothing to disclose                                                             | `click`                                                       |
 
 ## Using Actions
 
