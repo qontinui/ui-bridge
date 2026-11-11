@@ -13,7 +13,12 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { answersToNamedType, impliedAriaRole, namedTypeFamily } from './element-kind';
+import {
+  answersToNamedType,
+  impliedAriaRole,
+  inferElementType,
+  namedTypeFamily,
+} from './element-kind';
 import { applyCanonicalFindFilter, type FindFilterableElement } from './find-filter';
 import { matchesElementSelector, selectorTypeMatches } from '../server/selector-match';
 import { find } from '../ai/find';
@@ -40,6 +45,31 @@ describe('namedTypeFamily / answersToNamedType', () => {
     expect(answersToNamedType('textbox', 'button')).toBe(false);
     expect(answersToNamedType('textarea', 'input')).toBe(false);
     expect(answersToNamedType(undefined, 'input')).toBe(false);
+  });
+});
+
+/**
+ * Auto-registered ids are `{type}-{slug}`, and specs pin them, so a role whose
+ * verbs are `generic`'s must stay `generic` (ROLE_KINDS): a kind of its own
+ * would rename every such id.
+ */
+describe('inferElementType keeps id-bearing kinds stable', () => {
+  const div = (attrs: Record<string, string>): HTMLElement => {
+    const el = document.createElement('div');
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+    return el;
+  };
+
+  it('a role="tablist" div is generic', () => {
+    expect(inferElementType(div({ role: 'tablist' }))).toBe('generic');
+  });
+
+  it('a role="status" div is generic', () => {
+    expect(inferElementType(div({ role: 'status' }))).toBe('generic');
+  });
+
+  it('a non-native role="spinbutton" div is generic', () => {
+    expect(inferElementType(div({ role: 'spinbutton', 'aria-valuenow': '1' }))).toBe('generic');
   });
 });
 
