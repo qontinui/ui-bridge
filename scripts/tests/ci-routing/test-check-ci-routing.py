@@ -62,7 +62,7 @@ case("coord-pools line disagrees with runs-on", 1, "coord-pools pool",
 
 case("routed runs-on with no coord-pools line", 1, "not directly under",
      lambda r: mutate(r, "ci-integrity-selftest.yml",
-                      "    # coord-pools: [self-hosted, Linux, X64, ram-16g] | [ubuntu-latest]\n", ""))
+                      "    # coord-pools: [self-hosted, Linux, X64, ram-16g] | [ubuntu-24.04]\n", ""))
 
 case("--self-hosted-labels differs between workflows", 1, "pool label set",
      lambda r: mutate(r, "ci.yml", "--self-hosted-labels self-hosted,Linux,X64,ram-16g",
@@ -84,7 +84,7 @@ case("router invocation with its pin removed", 1, "router invocation(s) but 0",
                       "          %s\n" % PIN, "          %s-\n" % PIN))
 
 case("hosted floor literal changed", 1, "hosted-floor literal",
-     lambda r: mutate(r, "smoke-test.yml", "|| '[\"ubuntu-latest\"]') }}",
+     lambda r: mutate(r, "smoke-test.yml", "|| '[\"ubuntu-24.04\"]') }}",
                       "|| '[\"ubuntu-22.04\"]') }}"))
 
 
@@ -96,7 +96,7 @@ case("runs-on folded over several lines", 1, "spans several lines",
      lambda r: mutate(r, "docs.yml", "runs-on: ubuntu-latest", "runs-on: >-\n      ubuntu-latest"))
 
 case("router invoked but no job routed", 1, "no job's runs-on reads",
-     lambda r: mutate(r, "smoke-test.yml", "needs.route.outputs.labels", "'[\"ubuntu-latest\"]'"))
+     lambda r: mutate(r, "smoke-test.yml", "needs.route.outputs.labels", "'[\"ubuntu-24.04\"]'"))
 
 
 def no_routing(r):

@@ -36,7 +36,7 @@ import re
 import sys
 
 ROUTER = os.path.join(".github", "scripts", "route-ci-lane.py")
-HOSTED = ["ubuntu-latest"]
+HOSTED = ["ubuntu-24.04"]
 
 RE_FLAG = re.compile(r"--self-hosted-labels\s+(\S+)")
 RE_PIN = re.compile(r"^\s*want=\"?([0-9a-f]{40})\"?\s*$")
