@@ -13,6 +13,13 @@
  * `action-executor.ts` and `react/commandHandlers.ts` import) and injected
  * into each page. The Tailwind fixture CSS is real Tailwind v4.2.4 output in
  * both shapes it ships: see `__fixtures__/tailwind-v4-hover.ts`.
+ *
+ * Phase 5a: the bundle also carries real React, `UIBridgeProvider` and
+ * `AutoRegisterProvider`, so the last block proves the rescan handshake end to
+ * end — a control hidden by its OWN `opacity-0`, which discovery never
+ * registers at rest, is registered by the hover, reported as `appeared`, and
+ * clickable by its new id. jsdom has no `:hover` and no transitions, so there is
+ * no jsdom stand-in for this block.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -145,8 +152,11 @@ beforeAll(async () => {
   const out = await build({
     stdin: {
       contents: `
+        import { createRoot } from 'react-dom/client';
+        import { UIBridgeProvider } from './react/UIBridgeProvider';
+        import { AutoRegisterProvider } from './react/AutoRegisterProvider';
         export * from './control/forced-hover';
-        export { UIBridgeRegistry } from './core/registry';
+        export { UIBridgeRegistry, getGlobalRegistry } from './core/registry';
         export { DefaultActionExecutor } from './control/action-executor';
         export const registryOf = () => ({
           getAllElements: () => Array.from(document.querySelectorAll('[data-id]')).map((element) => ({
@@ -154,15 +164,46 @@ beforeAll(async () => {
             element,
           })),
         });
+
+        let scheduleClicks = 0;
+        export const scheduleClickCount = () => scheduleClicks;
+
+        // A queue row as qontinui-web's SortableQueueItem draws it: a visible
+        // drag handle, and an own-opacity-0 group-hover:opacity-100 button.
+        function QueueRow({ transition }) {
+          const reveal = 'opacity-0 group-hover:opacity-100' +
+            (transition ? ' transition-opacity duration-150' : '');
+          return (
+            <div className="group" id="row">
+              <button type="button" id="handle" aria-label="Drag to reorder">drag</button>
+              <span>Nightly build</span>
+              <button type="button" id="schedule" aria-label="Schedule" className={reveal}
+                onClick={() => { scheduleClicks += 1; }}>schedule</button>
+            </div>
+          );
+        }
+
+        /** Mount the row under the real providers: discovery is useAutoRegister's own. */
+        export function mountQueueRow(container, transition) {
+          scheduleClicks = 0;
+          createRoot(container).render(
+            <UIBridgeProvider>
+              <AutoRegisterProvider enabled>
+                <QueueRow transition={transition} />
+              </AutoRegisterProvider>
+            </UIBridgeProvider>
+          );
+        }
       `,
       resolveDir: SRC,
-      loader: 'ts',
+      loader: 'tsx',
     },
     bundle: true,
     format: 'iife',
     globalName: 'FH',
     platform: 'browser',
     target: 'chrome120',
+    jsx: 'automatic',
     write: false,
     logLevel: 'silent',
     define: { __SDK_VERSION__: '"smoke"', 'process.env.NODE_ENV': '"test"' },
@@ -697,3 +738,171 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('forcePseudoState (real Chromium)', () =>
     await page.close();
   }, 30_000);
 });
+
+/** `transition-opacity duration-150`: the fixture CSS ships `duration-200` only. */
+const DURATION_150_CSS = `.duration-150 { --tw-duration: 150ms; transition-duration: 150ms; }`;
+
+/**
+ * Open a page with the Tailwind build CSS, mount the queue row under real React
+ * providers, and wait until discovery has registered the drag handle. The CSS
+ * is in place BEFORE the mount, so the schedule button's first style is
+ * opacity 0 and no rest-state fade runs.
+ */
+async function openQueueRow(transition: boolean): Promise<Page> {
+  const page = await openPage(`<div id="app"></div>`);
+  await page.addStyleTag({ content: TAILWIND_V4_BUILD_CSS });
+  await page.addStyleTag({ content: DURATION_150_CSS });
+  await page.evaluate(
+    (t) => window.FH.mountQueueRow(document.getElementById('app'), t),
+    transition
+  );
+  await page.waitForFunction(
+    () => document.getElementById('handle')?.hasAttribute('data-ui-bridge-id') === true,
+    null,
+    { timeout: 10_000 }
+  );
+  await page.waitForFunction(() => document.getAnimations().length === 0);
+  return page;
+}
+
+/** The fixture's premise: at rest discovery has NOT registered the own-hidden button. */
+const scheduleRegistered = (page: Page): Promise<boolean> =>
+  page.evaluate(() => {
+    const schedule = document.getElementById('schedule');
+    return window.FH.getGlobalRegistry()
+      .getAllElements()
+      .some((entry: { element?: Element }) => entry.element === schedule);
+  });
+
+describe.skipIf(!PLAYWRIGHT_AVAILABLE)(
+  'a forced hover registers the controls it reveals (real Chromium, real React)',
+  () => {
+    for (const [variant, transition] of [
+      ['instant', false],
+      ['transition-opacity duration-150', true],
+    ] as const) {
+      it(`${variant}: hover reports the own-opacity-0 button with appeared: true`, async () => {
+        const page = await openQueueRow(transition);
+        expect(await scheduleRegistered(page)).toBe(false);
+        expect(await read(page, '#schedule')).toEqual({ opacity: '0', pe: 'auto' });
+
+        const out = await page.evaluate(async () => {
+          const executor = new window.FH.DefaultActionExecutor(window.FH.getGlobalRegistry());
+          const handleId = document.getElementById('handle')!.getAttribute('data-ui-bridge-id');
+          const hover = await executor.executeAction(handleId, { action: 'hover' });
+          return {
+            success: hover.success,
+            applied: hover.forcedHover?.applied,
+            scheduleId: document.getElementById('schedule')!.getAttribute('data-ui-bridge-id'),
+          };
+        });
+        expect(out.success).toBe(true);
+        expect(out.scheduleId).toBeTruthy();
+        expect(out.applied).toMatchObject({
+          complete: true,
+          unreadableSheets: 0,
+          settled: true,
+          revealedComplete: true,
+        });
+        expect(out.applied.rescanners).toBeGreaterThanOrEqual(1);
+        expect(out.applied.revealedIncompleteReason).toBeUndefined();
+        // The rescan cost, recorded as Phase 1 recorded the sheet walk's
+        // `scanMs`: both discovery rescans on a real React page, synchronous
+        // scan included. `revealedComplete: true` above already says each call
+        // came in under RESCAN_TIMEOUT_MS.
+        console.info(
+          `[forced-hover smoke] ${variant}: rescanMs=${out.applied.rescanMs} scanMs=${out.applied.scanMs}`
+        );
+        expect(Number.isFinite(out.applied.rescanMs)).toBe(true);
+        expect(out.applied.rescanMs).toBeGreaterThanOrEqual(0);
+        const entry = out.applied.revealed.find((r: { id: string }) => r.id === out.scheduleId);
+        expect(entry).toMatchObject({ appeared: true });
+        expect(entry.changes).toEqual(
+          expect.arrayContaining([{ property: 'opacity', before: null, after: '1' }])
+        );
+        expect(entry.rect.width).toBeGreaterThan(0);
+        // Only the control the hover revealed: the handle was registered at rest.
+        expect(out.applied.revealed.map((r: { id: string }) => r.id)).toEqual([out.scheduleId]);
+        expect(await read(page, '#schedule')).toEqual({ opacity: '1', pe: 'auto' });
+        await page.evaluate(() => window.FH.releaseForcedPseudoState());
+        await page.close();
+      }, 30_000);
+
+      it(`${variant}: hover, then click the revealed button by its new id: dispatched, released, verified`, async () => {
+        const page = await openQueueRow(transition);
+        expect(await scheduleRegistered(page)).toBe(false);
+        const out = await page.evaluate(async () => {
+          const executor = new window.FH.DefaultActionExecutor(window.FH.getGlobalRegistry());
+          const handleId = document.getElementById('handle')!.getAttribute('data-ui-bridge-id');
+          const hover = await executor.executeAction(handleId, { action: 'hover' });
+          const scheduleId = hover.forcedHover?.applied?.revealed?.[0]?.id;
+          const click = await executor.executeAction(scheduleId, { action: 'click' });
+          return {
+            scheduleId,
+            clickSuccess: click.success,
+            clickError: click.error,
+            clicks: window.FH.scheduleClickCount(),
+            released: click.forcedHover?.released,
+            held: window.FH.getForcedPseudoState(),
+            opacity: getComputedStyle(document.getElementById('schedule')!).opacity,
+          };
+        });
+        expect(out.scheduleId).toBeTruthy();
+        expect(out.clickError).toBeUndefined();
+        expect(out.clickSuccess).toBe(true);
+        expect(out.clicks).toBe(1);
+        expect(out.released).toMatchObject({
+          released: true,
+          reason: 'next-action',
+          restore: 'verified',
+          drift: [],
+        });
+        expect(out.released.checked).toEqual(
+          expect.arrayContaining([{ id: out.scheduleId, appeared: true, verdict: 'pass' }])
+        );
+        expect(out.held).toBeNull();
+        expect(out.opacity).toBe('0');
+        await page.close();
+      }, 30_000);
+
+      it(`${variant}: hover, then unhover: verified, and checked names the button`, async () => {
+        const page = await openQueueRow(transition);
+        expect(await scheduleRegistered(page)).toBe(false);
+        const out = await page.evaluate(async () => {
+          const registry = window.FH.getGlobalRegistry();
+          const executor = new window.FH.DefaultActionExecutor(registry);
+          const handleId = document.getElementById('handle')!.getAttribute('data-ui-bridge-id');
+          const hover = await executor.executeAction(handleId, { action: 'hover' });
+          const scheduleId = hover.forcedHover?.applied?.revealed?.[0]?.id;
+          const hoveredVisible = registry.getElement(scheduleId)?.getState().visible;
+          const unhover = await executor.executeAction(handleId, { action: 'unhover' });
+          return {
+            scheduleId,
+            hoveredVisible,
+            released: unhover.forcedHover?.released,
+            // It stays registered after release, reporting itself not visible.
+            stillRegistered: registry.getElement(scheduleId) !== undefined,
+            restVisible: registry.getElement(scheduleId)?.getState().visible,
+            held: window.FH.getForcedPseudoState(),
+          };
+        });
+        expect(out.scheduleId).toBeTruthy();
+        expect(out.hoveredVisible).toBe(true);
+        expect(out.released).toMatchObject({
+          released: true,
+          reason: 'explicit',
+          restore: 'verified',
+          drift: [],
+        });
+        expect(out.released.checked).toEqual(
+          expect.arrayContaining([{ id: out.scheduleId, appeared: true, verdict: 'pass' }])
+        );
+        expect(out.stillRegistered).toBe(true);
+        expect(out.restVisible).toBe(false);
+        expect(out.held).toBeNull();
+        expect(await read(page, '#schedule')).toEqual({ opacity: '0', pe: 'auto' });
+        await page.close();
+      }, 30_000);
+    }
+  }
+);
