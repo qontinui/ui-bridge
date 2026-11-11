@@ -245,9 +245,10 @@ const RELAY_ELEMENT_ACTIONS: readonly string[] = [
  * actions, so the suggestion is never a verb the relay would refuse in turn.
  * The switch below runs any verb it has a case for, whatever the element
  * advertises, so when the element advertises no verb the relay runs AND has no
- * custom actions (a content or media element, whose registry entry carries
+ * custom actions (a content element, whose registry entry carries
  * `actions: []`, or one advertising only verbs the relay has no case for) the
- * refusal lists every verb the relay runs. An element with custom actions but
+ * refusal lists every verb the relay runs. A media element is not that case:
+ * its row carries its kind's verbs (`core/element-kind`), like any other. An element with custom actions but
  * no runnable advertised verb lists only those, as the HTTP executor does.
  */
 function relayAcceptedVerbs(
@@ -425,9 +426,10 @@ function createActionFailure(
 }
 
 /**
- * The relay's refusal envelope for a click `getClickRefusal` blocked — shared
- * by the pre-dispatch guard and `submit`'s no-form click fallback so both name
- * the same signals and give the same advice.
+ * The relay's refusal envelope for a click `getClickRefusal` blocked, from the
+ * pre-dispatch guard. (`submit` used to share it through a no-form click
+ * fallback; that fallback is gone — a form-less `submit` is the element-kind
+ * refusal.)
  */
 function createClickRefusalFailure(
   id: string,
