@@ -45,6 +45,14 @@
 // bundler parses them. They are also built with `minify: true`, which strips
 // every comment, so a hint could not survive into them anyway.
 //
+// EXCLUDED: every package whose package.json says `"private": true` (today
+// packages/ui-bridge-extension). A private package is never published, so no
+// consumer's bundler ever reads its dist: the extension's dist is loaded by
+// Chrome from its manifest. Its esbuild bundles also inline ui-bridge-wrapper's
+// SOURCE and drop every comment, so the wrapper's hinted import of its optional
+// headless peer reappears bare there; the wrapper's OWN dist, which is what a
+// consumer installs, is checked. Excluded packages are named in the tally.
+//
 // A RUN THAT CHECKED NOTHING IS NOT A PASS. It exits 2 (UNKNOWN), never 0, when
 // it finds no dist file to read; when a workspace package that declares a
 // `build` script has no dist/ (a partial build would otherwise pass on whatever
@@ -86,7 +94,9 @@ function parseArgs(argv) {
       root = path.resolve(argv[i + 1]);
       i += 1;
     } else {
-      process.stderr.write(`check-dynamic-import-hints: unknown argument ${JSON.stringify(argv[i])}\n`);
+      process.stderr.write(
+        `check-dynamic-import-hints: unknown argument ${JSON.stringify(argv[i])}\n`
+      );
       process.exit(2);
     }
   }
@@ -95,14 +105,18 @@ function parseArgs(argv) {
 
 const byName = (a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
 
-/** True when `pkgDir/package.json` declares a `build` script, so it should have a dist/. */
-function declaresBuild(pkgDir) {
+/** `pkgDir/package.json`, or null when there is none (e.g. packages/ui-bridge-python). */
+function readManifest(pkgDir) {
   try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8'));
-    return typeof (pkg.scripts && pkg.scripts.build) === 'string';
+    return JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8'));
   } catch {
-    return false; // no package.json (e.g. packages/ui-bridge-python): nothing is built here
+    return null;
   }
+}
+
+/** True when the manifest declares a `build` script, so the package should have a dist/. */
+function declaresBuild(pkg) {
+  return Boolean(pkg) && typeof (pkg.scripts && pkg.scripts.build) === 'string';
 }
 
 function walk(dir, onFile) {
@@ -115,7 +129,7 @@ function walk(dir, onFile) {
 
 /** Every dist file the check reads, the ones it deliberately skips, and the packages it could not read. */
 function collectTargets(root) {
-  const targets = { files: [], excluded: [], unbuilt: [], packages: 0 };
+  const targets = { files: [], excluded: [], unbuilt: [], privatePackages: [], packages: 0 };
   const packagesDir = path.join(root, 'packages');
   if (!fs.existsSync(packagesDir)) return targets;
 
@@ -123,8 +137,13 @@ function collectTargets(root) {
     if (!entry.isDirectory()) continue;
     const pkgDir = path.join(packagesDir, entry.name);
     const distDir = path.join(pkgDir, 'dist');
+    const manifest = readManifest(pkgDir);
+    if (manifest && manifest.private === true) {
+      targets.privatePackages.push(entry.name); // never published, so never bundled by a consumer (header)
+      continue;
+    }
     if (!fs.existsSync(distDir)) {
-      if (declaresBuild(pkgDir)) targets.unbuilt.push(entry.name);
+      if (declaresBuild(manifest)) targets.unbuilt.push(entry.name);
       continue;
     }
     targets.packages += 1;
@@ -143,7 +162,10 @@ function collectTargets(root) {
  * the first newline — so both are read to see every comment in it.
  */
 function commentsAt(text, pos) {
-  return [...(ts.getTrailingCommentRanges(text, pos) || []), ...(ts.getLeadingCommentRanges(text, pos) || [])];
+  return [
+    ...(ts.getTrailingCommentRanges(text, pos) || []),
+    ...(ts.getLeadingCommentRanges(text, pos) || []),
+  ];
 }
 
 /** The text of every comment inside `call`'s parentheses, wherever between the tokens it sits. */
@@ -181,7 +203,9 @@ function scanFile(file) {
   // file with any parse error, or a compiler that no longer exposes the list,
   // counts as NOT READ rather than as clean.
   if (!Array.isArray(source.parseDiagnostics)) {
-    return { unreadable: 'this typescript version exposes no parseDiagnostics to confirm the parse' };
+    return {
+      unreadable: 'this typescript version exposes no parseDiagnostics to confirm the parse',
+    };
   }
   if (source.parseDiagnostics.length > 0) {
     const first = source.parseDiagnostics[0];
@@ -198,9 +222,9 @@ function scanFile(file) {
         imports.push({ literal: true });
       } else {
         const comments = commentsInside(node, text);
-        const missing = REQUIRED_HINTS.filter((hint) => !comments.some((c) => hint.pattern.test(c))).map(
-          (hint) => hint.name
-        );
+        const missing = REQUIRED_HINTS.filter(
+          (hint) => !comments.some((c) => hint.pattern.test(c))
+        ).map((hint) => hint.name);
         const { line, character } = source.getLineAndCharacterOfPosition(node.getStart(source));
         imports.push({
           literal: false,
@@ -243,14 +267,20 @@ function main() {
   const tally =
     `${targets.files.length} file(s) in ${targets.packages} package dist(s); ` +
     `${literal} literal-specifier import() call(s) not checked; ` +
-    `${targets.excluded.length} ${EXCLUDED_SUFFIX} file(s) excluded`;
+    `${targets.excluded.length} ${EXCLUDED_SUFFIX} file(s) excluded; ` +
+    `${targets.privatePackages.length} private package(s) excluded` +
+    (targets.privatePackages.length > 0 ? ` (${targets.privatePackages.join(', ')})` : '');
 
   const unknown = [];
   if (targets.files.length === 0) {
-    unknown.push(`no built file to read under ${rel(path.join(root, 'packages'))}/*/dist — run \`npm run build\` first`);
+    unknown.push(
+      `no built file to read under ${rel(path.join(root, 'packages'))}/*/dist — run \`npm run build\` first`
+    );
   }
   for (const name of targets.unbuilt) {
-    unknown.push(`packages/${name} declares a build script but has no dist/ — its output was never checked`);
+    unknown.push(
+      `packages/${name} declares a build script but has no dist/ — its output was never checked`
+    );
   }
   unknown.push(...unreadable.map((line) => `${line} — its imports were never read`));
 
@@ -279,7 +309,9 @@ function main() {
   }
 
   if (unknown.length > 0) {
-    process.stderr.write(`\nDynamic import hint check UNKNOWN — not everything was checked, so this is not a pass:\n`);
+    process.stderr.write(
+      `\nDynamic import hint check UNKNOWN — not everything was checked, so this is not a pass:\n`
+    );
     for (const line of unknown) process.stderr.write(`  - ${line}\n`);
     process.stderr.write(`(${hinted} hinted; ${tally}.)\n`);
     process.exit(2);

@@ -64,7 +64,12 @@ function runOn(files) {
       }
     }
     const run = spawnSync(process.execPath, [CHECK, '--root', root], { encoding: 'utf8' });
-    return { status: run.status, stdout: run.stdout, stderr: run.stderr, out: run.stdout + run.stderr };
+    return {
+      status: run.status,
+      stdout: run.stdout,
+      stderr: run.stderr,
+      out: run.stdout + run.stderr,
+    };
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -141,12 +146,15 @@ test('a hint OUTSIDE the parentheses does not count', () => {
       '/* webpackIgnore: true */ /* turbopackIgnore: true */\nconst m = await import(specifier);\n',
   });
   assert.equal(r.status, 1, r.out);
-  assert.match(r.stderr, /index\.js:2:17 {2}import\(specifier\) — missing webpackIgnore: true, turbopackIgnore: true/);
+  assert.match(
+    r.stderr,
+    /index\.js:2:17 {2}import\(specifier\) — missing webpackIgnore: true, turbopackIgnore: true/
+  );
 });
 
 test('a literal import("x") is not checked, and is counted as such', () => {
   const r = runOn({
-    'packages/sdk/dist/index.js': "await import('x');\nawait import(\"y\");\nawait import(`z`);\n",
+    'packages/sdk/dist/index.js': 'await import(\'x\');\nawait import("y");\nawait import(`z`);\n',
   });
   assert.equal(r.status, 0, r.out);
   assert.match(r.stdout, /ok: 0 computed import\(\) call\(s\) checked/);
@@ -176,7 +184,8 @@ test('"import(" inside a string, a comment, a method name or import.meta is not 
 
 test('a minified return import(t) in a *.global.js file is excluded', () => {
   const r = runOn({
-    'packages/sdk/dist/injected/bundle.global.js': '"use strict";(()=>{async function a(t){return import(t)}})();\n',
+    'packages/sdk/dist/injected/bundle.global.js':
+      '"use strict";(()=>{async function a(t){return import(t)}})();\n',
     'packages/sdk/dist/index.js': MULTI_LINE_HINTED,
   });
   assert.equal(r.status, 0, r.out);
@@ -185,16 +194,51 @@ test('a minified return import(t) in a *.global.js file is excluded', () => {
 
 test('the same minified call under any other name is read, and fails (the exclusion is by name)', () => {
   const r = runOn({
-    'packages/sdk/dist/injected/bundle.js': '"use strict";(()=>{async function a(t){return import(t)}})();\n',
+    'packages/sdk/dist/injected/bundle.js':
+      '"use strict";(()=>{async function a(t){return import(t)}})();\n',
   });
   assert.equal(r.status, 1, r.out);
   assert.match(r.stderr, /packages\/sdk\/dist\/injected\/bundle\.js:1:47 {2}import\(t\) — missing/);
 });
 
+test('a private package is excluded and named, however its dist reads; a published one beside it is still read', () => {
+  const r = runOn({
+    'packages/extension/package.json': JSON.stringify({
+      name: 'ext',
+      private: true,
+      scripts: { build: 'node build.mjs' },
+    }),
+    'packages/extension/dist/content/live-relay.js': BARE,
+    'packages/sdk/dist/index.js': MULTI_LINE_HINTED,
+  });
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.stdout, /1 private package\(s\) excluded \(extension\)/);
+  assert.match(r.stdout, /ok: 1 computed import\(\) call\(s\) checked/);
+});
+
+test('a package that is not private is read even when its dist is all it has', () => {
+  const r = runOn({
+    'packages/extension/package.json': JSON.stringify({
+      name: 'ext',
+      private: false,
+      scripts: { build: 'x' },
+    }),
+    'packages/extension/dist/content/live-relay.js': BARE,
+  });
+  assert.equal(r.status, 1, r.out);
+  assert.match(
+    r.stderr,
+    /packages\/extension\/dist\/content\/live-relay\.js:3:\d+ {2}import\(specifier\) — missing/
+  );
+});
+
 test('a bare import in a .cjs file fails', () => {
   const r = runOn({ 'packages/wrapper/dist/inject-cli.cjs': `"use strict";\n${BARE}` });
   assert.equal(r.status, 1, r.out);
-  assert.match(r.stderr, /packages\/wrapper\/dist\/inject-cli\.cjs:4:21 {2}import\(specifier\) — missing/);
+  assert.match(
+    r.stderr,
+    /packages\/wrapper\/dist\/inject-cli\.cjs:4:21 {2}import\(specifier\) — missing/
+  );
 });
 
 test('declaration, source-map and json files are not read', () => {
@@ -239,7 +283,10 @@ test('a dist file that does not parse is UNKNOWN: its imports were never read', 
     'packages/sdk/dist/broken.js': 'export const a = (;\n',
   });
   assert.equal(r.status, 2, r.out);
-  assert.match(r.stderr, /packages\/sdk\/dist\/broken\.js: does not parse \(line 1: .+\) — its imports were never read/);
+  assert.match(
+    r.stderr,
+    /packages\/sdk\/dist\/broken\.js: does not parse \(line 1: .+\) — its imports were never read/
+  );
 });
 
 test('a definite failure outranks UNKNOWN (exit 1), and still reports the UNKNOWN part', () => {
@@ -248,7 +295,10 @@ test('a definite failure outranks UNKNOWN (exit 1), and still reports the UNKNOW
     'packages/unbuilt/package.json': BUILD_PKG,
   });
   assert.equal(r.status, 1, r.out);
-  assert.match(r.stderr, /also UNKNOWN: packages\/unbuilt declares a build script but has no dist\//);
+  assert.match(
+    r.stderr,
+    /also UNKNOWN: packages\/unbuilt declares a build script but has no dist\//
+  );
 });
 
 if (failed) {
