@@ -303,8 +303,8 @@ async function main() {
   const publishable = publishableDirs();
 
   // name -> current source version, for the staleness rule. Only packages that
-  // live in this monorepo can be checked that way; a sibling-repo package like
-  // @qontinui/ui-bridge-auto gets the form rules and nothing more.
+  // live in this monorepo can be checked that way; a package from a sibling
+  // repo gets the form rules and nothing more.
   const workspaceVersions = new Map();
   for (const { json } of manifests) {
     if (json.name && json.version) workspaceVersions.set(json.name, json.version);
