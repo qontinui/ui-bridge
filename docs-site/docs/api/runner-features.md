@@ -382,7 +382,13 @@ If an action returns `success: false` with `error: "... requires a 'X' parameter
 > [Actions](../concepts/actions.md)). So an auto-registered `<input>` advertises
 > `setValue`, `sendKeys` and `autocomplete`, a `<form>` (or a control a form
 > owns) `submit` and `reset`, a `role="switch"` `toggle`, and every element —
-> a canvas included — `sendKeys`. A verb an element does not list is refused
+> a canvas included — `sendKeys`. A date, time or colour `<input>` keeps
+> `type`, `clear` and `setValue` (`type "10:30"` sets a time input), and a file
+> `<input>` keeps `clear`. `select` is listed only on a node that opens a
+> listbox (`role="combobox"` or `aria-haspopup="listbox"`), not on every
+> `aria-expanded` trigger: an accordion button `toggle`s. A toggle button
+> (`aria-pressed`) and a `role="menuitemcheckbox"` / `"menuitemradio"` list
+> `toggle`. A verb an element does not list is refused
 > with `failureDetails.context.refusal: "element-kind"` instead of reported as a
 > success that did nothing (`clear` on a `<div>`, `check` on a text field,
 > `toggle` on a plain button).
