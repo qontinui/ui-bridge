@@ -97,6 +97,19 @@ describe('suggestAction', () => {
     expect(suggestAction('tap', ['press', 'click'])).toBe('click');
   });
 
+  // A text box typed with keys (an ARIA textbox, a contenteditable) accepts no
+  // `type`, so only the caller can say what it is: `keyboardEntry`.
+  it('keyboardEntry keeps sendKeys first on a text box that accepts no type', () => {
+    const textBox = ['click', 'hoverClick', 'sendKeys', 'focus', 'blur'];
+    expect(suggestAction('press', textBox)).toBe('click');
+    expect(suggestAction('press', textBox, { keyboardEntry: true })).toBe('sendKeys');
+    expect(suggestAction('keyDown', textBox, { keyboardEntry: true })).toBe('sendKeys');
+    expect(suggestAction('press', ['click', 'focus'], { keyboardEntry: true })).toBe('click');
+    expect(
+      describeUnknownAction('press', { accepted: textBox, keyboardEntry: true }).didYouMean
+    ).toBe('sendKeys');
+  });
+
   it('matches the synonym key case-insensitively', () => {
     expect(suggestAction('PRESS', terminalInput)).toBe('sendKeys');
     expect(suggestAction('DblClick', ['doubleClick'])).toBe('doubleClick');

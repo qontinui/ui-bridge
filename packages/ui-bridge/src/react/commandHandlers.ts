@@ -137,6 +137,7 @@ import {
   type WaitForElementState,
   type ElementSnapshot,
 } from '../ai/wait-for-element';
+import { isTypedWithKeys } from '../core/element-kind';
 import { mapInternalErrorCode } from '../diagnostics';
 import { describeUnknownAction, unknownActionContext } from '../control/actionVocabulary';
 import { devControlsDisabledResponse, devControlsEnabled } from '../core/dev-controls';
@@ -1893,6 +1894,7 @@ export async function executeCommand(
         const hint = describeUnknownAction(wireAction, {
           elementId: registered?.id,
           accepted: relayAcceptedVerbs(registered),
+          keyboardEntry: isTypedWithKeys(registered?.type),
         });
         const failure = createActionFailure(id, 'UNSUPPORTED_ACTION', hint.message, startTime);
         return refuse({
@@ -2383,6 +2385,7 @@ export async function executeCommand(
             const hint = describeUnknownAction(request.action, {
               elementId: registered?.id,
               accepted: relayAcceptedVerbs(registered),
+              keyboardEntry: isTypedWithKeys(registered?.type),
             });
             const failure = createActionFailure(id, 'UNSUPPORTED_ACTION', hint.message, startTime);
             return refuse({
