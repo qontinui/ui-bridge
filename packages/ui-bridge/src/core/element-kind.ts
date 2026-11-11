@@ -513,24 +513,48 @@ export function hasExpandedState(element: Element): boolean {
   return element.hasAttribute('aria-expanded');
 }
 
-/** The menu-item roles whose checked state a click flips. */
-const CLICK_CHECKED_MENU_ROLES: ReadonlySet<string> = new Set([
+/**
+ * The ARIA roles whose `aria-checked` a click FLIPS: `check`, `uncheck` and
+ * `toggle` click one when its state disagrees (or, for `toggle`, always).
+ * `menuitemcheckbox` is Radix `DropdownMenu.CheckboxItem`.
+ */
+const ARIA_FLIP_CHECKED_ROLES: ReadonlySet<string> = new Set([
+  'checkbox',
+  'switch',
   'menuitemcheckbox',
-  'menuitemradio',
 ]);
+
+/**
+ * The ARIA roles a click only SELECTS: clicking a checked one leaves it
+ * checked, so `check` clicks one that is unchecked and nothing unchecks or
+ * toggles one. `menuitemradio` is Radix `DropdownMenu.RadioItem`.
+ */
+const ARIA_SELECT_ONLY_ROLES: ReadonlySet<string> = new Set(['radio', 'menuitemradio']);
+
+/**
+ * How a click drives this node's `aria-checked`, read from its `role`:
+ * `'flip'` (a checkbox, switch or menu checkbox item), `'select-only'` (a
+ * radio or menu radio item), else `null`. The ATTRIBUTE, as an author wrote
+ * it. `control/element-arms.ts` `checkArm` and `toggleArm` key on it.
+ */
+export function ariaCheckedClickMode(element: Element): 'flip' | 'select-only' | null {
+  const role = element.getAttribute('role');
+  if (role === null) return null;
+  if (ARIA_FLIP_CHECKED_ROLES.has(role)) return 'flip';
+  if (ARIA_SELECT_ONLY_ROLES.has(role)) return 'select-only';
+  return null;
+}
 
 /**
  * The node carries a pressed or checked state a CLICK flips, which `toggle`
  * drives by clicking it: a toggle button (`aria-pressed`, as Radix `Toggle`
- * renders), or a `role="menuitemcheckbox"` / `"menuitemradio"` (Radix
- * `DropdownMenu.CheckboxItem` / `RadioItem`). A menu radio item, like any
- * radio, only selects: clicking a checked one leaves it checked. The
- * ATTRIBUTES, as an author wrote them.
+ * renders), or a role whose `aria-checked` a click flips
+ * ({@link ariaCheckedClickMode} `'flip'`). Not a radio or menu radio item:
+ * clicking a checked one changes nothing, so a toggle there would report
+ * success over an unchanged page. The ATTRIBUTES, as an author wrote them.
  */
 export function hasClickToggledState(element: Element): boolean {
-  if (element.hasAttribute('aria-pressed')) return true;
-  const role = element.getAttribute('role');
-  return role !== null && CLICK_CHECKED_MENU_ROLES.has(role);
+  return element.hasAttribute('aria-pressed') || ariaCheckedClickMode(element) === 'flip';
 }
 
 /**
@@ -583,6 +607,9 @@ export function structuralActions(element: Element): StandardAction[] {
   }
   if (disclosureDetails(element) || nativeDialog(element)) verbs.push('toggle');
   if (hasExpandedState(element) || hasClickToggledState(element)) verbs.push('toggle');
+  const checkedMode = ariaCheckedClickMode(element);
+  if (checkedMode === 'flip') verbs.push('check', 'uncheck');
+  else if (checkedMode === 'select-only') verbs.push('check');
   if (opensListbox(element)) verbs.push('select');
   if (resolveOwnerForm(element)) verbs.push('submit', 'reset');
   return verbs;

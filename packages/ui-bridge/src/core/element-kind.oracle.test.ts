@@ -725,11 +725,6 @@ describe('toggle on click-toggled state: the framework handler runs on both disp
       `<div role="menuitemcheckbox" aria-checked="false" ${T}>wrap</div>`,
       'aria-checked',
     ],
-    [
-      'a menu radio item',
-      `<div role="menuitemradio" aria-checked="false" ${T}>left</div>`,
-      'aria-checked',
-    ],
   ])('%s advertises toggle and flips through its own click handler', async (_name, html, attr) => {
     for (const via of ['executor', 'relay'] as const) {
       getGlobalRegistry().clear();
@@ -745,4 +740,76 @@ describe('toggle on click-toggled state: the framework handler runs on both disp
       expect(target.getAttribute(attr), via).toBe('true');
     }
   });
+
+  /** Mount `html` with a click handler that flips `aria-checked`, as Radix's CheckboxItem does. */
+  function mountFlipping(html: string): HTMLElement {
+    getGlobalRegistry().clear();
+    const target = mount({ name: html, html });
+    target.addEventListener('click', () =>
+      target.setAttribute(
+        'aria-checked',
+        target.getAttribute('aria-checked') === 'true' ? 'false' : 'true'
+      )
+    );
+    getGlobalRegistry().registerElement('oracle-target', target);
+    return target;
+  }
+
+  it.each(['executor', 'relay'] as const)(
+    'the %s checks and unchecks a menu checkbox item by clicking it when its state disagrees',
+    async (via) => {
+      const html = `<div role="menuitemcheckbox" aria-checked="false" ${T}>wrap</div>`;
+      let target = mountFlipping(html);
+      expect(getGlobalRegistry().getElement('oracle-target')?.actions).toEqual(
+        expect.arrayContaining(['check', 'uncheck', 'toggle'])
+      );
+      expect(await dispatch(via, 'check')).toMatchObject({ success: true });
+      expect(target.getAttribute('aria-checked')).toBe('true');
+      // Already checked: a second check leaves it checked.
+      expect(await dispatch(via, 'check')).toMatchObject({ success: true });
+      expect(target.getAttribute('aria-checked')).toBe('true');
+      target = mountFlipping(html.replace('"false"', '"true"'));
+      expect(await dispatch(via, 'uncheck')).toMatchObject({ success: true });
+      expect(target.getAttribute('aria-checked')).toBe('false');
+    }
+  );
+
+  // Radix `DropdownMenu.RadioItem` only SELECTS: clicking a checked item leaves
+  // it checked. So `toggle` on one would report success over an unchanged page
+  // — it is refused — and `check` is how it is selected.
+  it.each(['executor', 'relay'] as const)(
+    'the %s refuses toggle on a menu radio item and checks it by click',
+    async (via) => {
+      const html = `<div role="menuitemradio" aria-checked="false" ${T}>left</div>`;
+      getGlobalRegistry().clear();
+      const target = mount({ name: html, html });
+      let clicks = 0;
+      target.addEventListener('click', () => {
+        clicks++;
+        target.setAttribute('aria-checked', 'true');
+      });
+      const registered = getGlobalRegistry().registerElement('oracle-target', target);
+      expect(registered.actions).toContain('check');
+      expect(registered.actions).not.toContain('toggle');
+      expect(registered.actions).not.toContain('uncheck');
+
+      expect(await dispatch(via, 'toggle')).toMatchObject({
+        success: false,
+        refusal: 'element-kind',
+      });
+      expect(clicks).toBe(0);
+
+      expect(await dispatch(via, 'check')).toMatchObject({ success: true });
+      expect(target.getAttribute('aria-checked')).toBe('true');
+      expect(clicks).toBe(1);
+      // Checked already: check clicks nothing.
+      expect(await dispatch(via, 'check')).toMatchObject({ success: true });
+      expect(clicks).toBe(1);
+
+      expect(await dispatch(via, 'uncheck')).toMatchObject({
+        success: false,
+        refusal: 'element-kind',
+      });
+    }
+  );
 });
