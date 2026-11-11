@@ -231,16 +231,37 @@ function describeRelayBusError(error: unknown): string {
  *    host the client dialled, which ioredis took from the configured URL;
  *  - anything else as its `name`.
  *
- * Credential spans are stripped from all three before the cut to 160 characters.
+ * Credential spans are stripped from all three before the cut to 160 characters,
+ * and so is every occurrence of `secrets` — the configured URL's password — so a
+ * server or proxy reply that repeats a bare AUTH argument cannot carry it out.
  */
-function renderRelayBusError(error: unknown): string {
+function renderRelayBusError(error: unknown, secrets: readonly string[] = []): string {
   let described: string;
   try {
     described = describeRelayBusError(error);
   } catch {
     described = 'unreadable error'; // a throwing getter must not turn a handled failure into a thrown one
   }
-  return described.replace(CREDENTIAL_SPAN, '$1').slice(0, LAST_ERROR_MAX_CHARS);
+  let rendered = described.replace(CREDENTIAL_SPAN, '$1');
+  for (const secret of secrets) rendered = rendered.split(secret).join('[redacted]');
+  return rendered.slice(0, LAST_ERROR_MAX_CHARS);
+}
+
+/** The password a `redis://` / `rediss://` URL carries, decoded and raw, for {@link renderRelayBusError}. */
+function urlSecrets(url: string): string[] {
+  try {
+    const raw = new URL(url).password;
+    if (raw === '') return [];
+    let decoded = raw;
+    try {
+      decoded = decodeURIComponent(raw);
+    } catch {
+      /* a malformed escape: the raw form is still redacted */
+    }
+    return [...new Set([raw, decoded])].filter((secret) => secret !== '');
+  } catch {
+    return []; // not a WHATWG-parseable URL; the constructor reports that itself
+  }
 }
 
 const WARN_INTERVAL_MS = 60_000;
@@ -282,9 +303,13 @@ export class RedisRelayBus implements RelayBus {
   /** See {@link RelayBusReadiness.lastError}. */
   private lastError: string | null = null;
 
-  private constructor(pub: RedisLike, sub: RedisLike) {
+  /** The configured URL's password, never rendered into {@link lastError} or a log line. */
+  private readonly secrets: readonly string[];
+
+  private constructor(pub: RedisLike, sub: RedisLike, secrets: readonly string[]) {
     this.pub = pub;
     this.sub = sub;
+    this.secrets = secrets;
     this.pub.on('error', (err) => this.noteError('pub connection error', err));
     this.sub.on('error', (err) => this.noteError('sub connection error', err));
     this.sub.on('message', (channel, message) => {
@@ -327,8 +352,16 @@ export class RedisRelayBus implements RelayBus {
       );
     }
     const pub = new Redis(url, options.redisOptions);
-    const sub = pub.duplicate();
-    return new RedisRelayBus(pub, sub);
+    let sub: RedisLike;
+    try {
+      sub = pub.duplicate();
+    } catch (error) {
+      void Promise.resolve()
+        .then(() => pub.quit())
+        .catch(() => undefined); // never leave the publisher's socket open behind a refusal
+      throw error;
+    }
+    return new RedisRelayBus(pub, sub, urlSecrets(url));
   }
 
   /**
@@ -352,7 +385,7 @@ export class RedisRelayBus implements RelayBus {
 
   /** Record `error` as {@link RelayBusReadiness.lastError} and log it within the per-process budget. */
   private noteError(what: string, error: unknown): void {
-    const rendered = renderRelayBusError(error);
+    const rendered = renderRelayBusError(error, this.secrets);
     this.lastError = rendered;
     warnAtMostOncePerMinute(`[ui-bridge] relay bus ${what}: ${rendered}`);
   }
@@ -360,10 +393,18 @@ export class RedisRelayBus implements RelayBus {
   /**
    * Fire and forget one write, handling its rejection. Every write this bus sends
    * without awaiting goes through here: an unhandled one would surface as an
-   * `unhandledRejection` the moment the database refuses commands.
+   * `unhandledRejection` the moment the database refuses commands. It takes a
+   * thunk, called at once, so that a client which throws synchronously is
+   * handled the same way as one that rejects.
    */
-  private fireAndForget(op: string, write: Promise<unknown>): void {
-    void Promise.resolve(write).catch((error: unknown) => this.noteError(`${op} failed`, error));
+  private fireAndForget(op: string, write: () => Promise<unknown>): void {
+    let pending: Promise<unknown>;
+    try {
+      pending = Promise.resolve(write());
+    } catch (error) {
+      pending = Promise.reject(error);
+    }
+    void pending.catch((error: unknown) => this.noteError(`${op} failed`, error));
   }
 
   private addHandler(channel: string, handler: (env: never) => void): () => void {
@@ -371,7 +412,7 @@ export class RedisRelayBus implements RelayBus {
     if (!set) {
       set = new Set();
       this.handlers.set(channel, set);
-      this.fireAndForget('subscribe', this.sub.subscribe(channel));
+      this.fireAndForget('subscribe', () => this.sub.subscribe(channel));
     }
     set.add(handler);
     return () => {
@@ -380,14 +421,14 @@ export class RedisRelayBus implements RelayBus {
       s.delete(handler);
       if (s.size === 0) {
         this.handlers.delete(channel);
-        this.fireAndForget('unsubscribe', this.sub.unsubscribe(channel));
+        this.fireAndForget('unsubscribe', () => this.sub.unsubscribe(channel));
       }
     };
   }
 
   publishCommand(env: RelayCommandEnvelope): void {
     const channel = env.targetTabId ? `${CMD_TAB_PREFIX}${env.targetTabId}` : CMD_BROADCAST;
-    this.fireAndForget('publish', this.pub.publish(channel, JSON.stringify(env)));
+    this.fireAndForget('publish', () => this.pub.publish(channel, JSON.stringify(env)));
   }
 
   subscribeCommands(tabId: string, handler: (env: RelayCommandEnvelope) => void): () => void {
@@ -400,8 +441,7 @@ export class RedisRelayBus implements RelayBus {
   }
 
   publishResponse(env: RelayResponseEnvelope): void {
-    this.fireAndForget(
-      'publish',
+    this.fireAndForget('publish', () =>
       this.pub.publish(`${RESP_PREFIX}${env.commandId}`, JSON.stringify(env))
     );
   }
@@ -411,20 +451,20 @@ export class RedisRelayBus implements RelayBus {
   }
 
   registerTab(tabId: string, ttlSeconds: number): void {
-    this.fireAndForget(
-      'set',
+    this.fireAndForget('set', () =>
       this.pub.set(`${TAB_PRESENCE_PREFIX}${tabId}`, '1', 'EX', Math.max(1, ttlSeconds))
     );
   }
 
   unregisterTab(tabId: string): void {
-    this.fireAndForget('del', this.pub.del(`${TAB_PRESENCE_PREFIX}${tabId}`));
+    this.fireAndForget('del', () => this.pub.del(`${TAB_PRESENCE_PREFIX}${tabId}`));
   }
 
   async isTabKnown(tabId: string): Promise<boolean> {
     try {
       return (await this.pub.exists(`${TAB_PRESENCE_PREFIX}${tabId}`)) > 0;
-    } catch {
+    } catch (error) {
+      this.noteError('exists failed', error);
       return false;
     }
   }

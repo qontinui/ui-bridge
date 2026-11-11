@@ -496,3 +496,82 @@ describe('RedisRelayBus.readiness().lastError — a closed shape, never URL-deri
     }
   });
 });
+
+describe('RedisRelayBus — the review follow-ups', () => {
+  it('(7) never renders the configured password, even in a server reply that repeats it bare', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const { createRedisRelayBus } = await loadRelayBus();
+      const fake = fakeRedis();
+      const bus = await createRedisRelayBus('rediss://default:pw%2Fs3cr3t@host:6379', {
+        Redis: fake.Redis,
+      });
+      if (!bus) throw new Error('expected a bus');
+
+      fake.clients[0].emit('error', new ReplyError('ERR invalid password pw/s3cr3t'));
+      expect(bus.readiness().lastError).toBe('ERR invalid password [redacted]');
+      fake.clients[1].emit('error', new ReplyError('ERR auth pw%2Fs3cr3t refused'));
+      expect(bus.readiness().lastError).toBe('ERR auth [redacted] refused');
+      for (const call of warn.mock.calls) expect(String(call[0])).not.toContain('s3cr3t');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a failed isTabKnown read is recorded in lastError and answers false', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const { createRedisRelayBus } = await loadRelayBus();
+      const fake = fakeRedis();
+      const bus = await createRedisRelayBus('redis://h:1', { Redis: fake.Redis });
+      if (!bus) throw new Error('expected a bus');
+      fake.clients[0].exists = () => Promise.reject(new ReplyError(RATE_LIMITED));
+
+      expect(await bus.isTabKnown('tab-1')).toBe(false);
+      expect(bus.readiness().lastError).toBe(RATE_LIMITED);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a client whose write throws synchronously does not throw out of the bus, and is recorded', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const { createRedisRelayBus } = await loadRelayBus();
+      const fake = fakeRedis();
+      const bus = await createRedisRelayBus('redis://h:1', { Redis: fake.Redis });
+      if (!bus) throw new Error('expected a bus');
+      fake.clients[0].publish = () => {
+        throw new ReplyError('ERR thrown, not rejected');
+      };
+
+      expect(() =>
+        bus.publishCommand({ commandId: 'c', action: 'click', payload: null, timestamp: 1 })
+      ).not.toThrow();
+      await settle();
+      expect(bus.readiness().lastError).toBe('ERR thrown, not rejected');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a duplicate() that throws rejects the create and closes the publisher it built', async () => {
+    const { createRedisRelayBus } = await loadRelayBus();
+    const quits: string[] = [];
+    class Redis extends fakeRedis().Redis {
+      duplicate(): FakeClient {
+        throw new Error('no second connection');
+      }
+      quit(): Promise<unknown> {
+        quits.push('quit');
+        return Promise.resolve('OK');
+      }
+    }
+
+    await expect(createRedisRelayBus('redis://h:1', { Redis })).rejects.toThrow(
+      'no second connection'
+    );
+    await settle();
+    expect(quits).toEqual(['quit']);
+  });
+});
