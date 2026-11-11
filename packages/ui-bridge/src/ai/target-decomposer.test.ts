@@ -402,15 +402,15 @@ describe('decomposeTarget', () => {
       ['notes text area', 'textarea'],
       ['notes text field', 'textarea'],
       ['notes text box', 'textarea'],
-      // input
+      // input, and the ARIA textbox kind (the search matches either for both)
       ['username input', 'input'],
       ['username field', 'input'],
-      ['username textbox', 'input'],
-      // select
+      ['username textbox', 'textbox'],
+      // select, and the ARIA combobox kind (likewise)
       ['country drop down', 'select'],
       ['country dropdown', 'select'],
-      ['country combo box', 'select'],
-      ['country combobox', 'select'],
+      ['country combo box', 'combobox'],
+      ['country combobox', 'combobox'],
       ['country select', 'select'],
       // checkbox / radio
       ['terms check box', 'checkbox'],

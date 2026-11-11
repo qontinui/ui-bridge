@@ -141,7 +141,7 @@ When using `prefer-existing` strategy, IDs are generated in this order:
 
 1. `data-testid` attribute
 2. `id` attribute (skips React auto-generated IDs like `:r1a:`)
-3. Semantic (generated from type + label/content + context)
+3. Semantic (generated from the element's type + label/content + context)
 
 ```html
 <!-- Uses "submit-btn" -->
@@ -156,23 +156,28 @@ When using `prefer-existing` strategy, IDs are generated in this order:
 
 ## Interactive Elements
 
-Auto-registration detects these elements by default:
+Auto-registration detects these elements by default. Each is reported with the
+type the one inferrer gives it — the same type `registerElement`, `find()` and
+the DOM fallback report — and that type is the prefix of its semantic id:
 
-| Element       | Selector                                          |
-| ------------- | ------------------------------------------------- |
-| Links         | `a[href]`                                         |
-| Buttons       | `button`, `[role="button"]`                       |
-| Inputs        | `input`, `textarea`, `[role="textbox"]`           |
-| Selects       | `select`, `[role="combobox"]`, `[role="listbox"]` |
-| Checkboxes    | `input[type="checkbox"]`, `[role="checkbox"]`     |
-| Radio buttons | `input[type="radio"]`, `[role="radio"]`           |
-| Tabs          | `[role="tab"]`                                    |
-| Menu items    | `[role="menuitem"]`                               |
-| Sliders       | `input[type="range"]`, `[role="slider"]`          |
-| Switches      | `[role="switch"]`                                 |
-| Focusable     | `[tabindex]:not([tabindex="-1"])`                 |
-| Editable      | `[contenteditable="true"]`                        |
-| Explicit      | `[data-ui-element]`, `[data-testid]`              |
+| Element       | Selector                                                    | Reported type                                                                   |
+| ------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| Links         | `a[href]`, `[role="link"]`                                  | `link`                                                                          |
+| Buttons       | `button`, `[role="button"]`                                 | `button`                                                                        |
+| Inputs        | `input` (not hidden), `textarea`                            | by `<input>` type: `input`, `button`, `checkbox`, `radio`, `slider`; `textarea` |
+| Text boxes    | `[role="textbox"]`, `[contenteditable="true"]`              | `textbox`                                                                       |
+| Selects       | `select`, `[role="combobox"]`, `[role="listbox"]`           | `select`, `combobox`, `listbox`                                                 |
+| Options       | `[role="option"]`                                           | `option`                                                                        |
+| Checkboxes    | `input[type="checkbox"]`, `[role="checkbox"]`               | `checkbox`                                                                      |
+| Radio buttons | `input[type="radio"]`, `[role="radio"]`                     | `radio`                                                                         |
+| Tabs          | `[role="tab"]`, `[role="tablist"]`                          | `tab`; a tablist is `generic`                                                   |
+| Menu items    | `[role="menuitem"]`                                         | `menuitem`                                                                      |
+| Sliders       | `input[type="range"]`, `[role="slider"]`                    | `slider`                                                                        |
+| Switches      | `[role="switch"]`                                           | `switch`                                                                        |
+| Disclosures   | `details`                                                   | `disclosure`                                                                    |
+| Other roles   | `[role="spinbutton"]`, `[role="status"]`                    | `generic` (an `<input type="number">` stays `input`)                            |
+| Focusable     | `[tabindex]:not([tabindex="-1"])`                           | by role, then tag; else `generic`                                               |
+| Explicit      | `[data-ui-element]`, `[data-testid]`, `[data-ui-bridge-id]` | by role, then tag; else `generic`                                               |
 
 ### Adding Custom Selectors
 

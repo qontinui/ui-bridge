@@ -13,6 +13,7 @@ import type {
   SemanticSnapshot,
 } from './types';
 import { truncateCodePoints } from '../core/text';
+import { answersToNamedType, namedTypeFamily } from '../core/element-kind';
 
 /**
  * Configuration for summary generation
@@ -70,12 +71,15 @@ export function generatePageSummary(
     const counts = countElementTypes(elements);
     const countParts: string[] = [];
 
+    // An ARIA textbox counts as an input and an ARIA combobox or listbox as a
+    // dropdown, as their names do (`core/element-kind` `namedTypeFamily`).
+    const inputs = familyCount(counts, 'input');
+    const dropdowns = familyCount(counts, 'select');
     if (counts.button > 0)
       countParts.push(`${counts.button} button${counts.button > 1 ? 's' : ''}`);
-    if (counts.input > 0) countParts.push(`${counts.input} input${counts.input > 1 ? 's' : ''}`);
+    if (inputs > 0) countParts.push(`${inputs} input${inputs > 1 ? 's' : ''}`);
     if (counts.link > 0) countParts.push(`${counts.link} link${counts.link > 1 ? 's' : ''}`);
-    if (counts.select > 0)
-      countParts.push(`${counts.select} dropdown${counts.select > 1 ? 's' : ''}`);
+    if (dropdowns > 0) countParts.push(`${dropdowns} dropdown${dropdowns > 1 ? 's' : ''}`);
     if (counts.checkbox > 0)
       countParts.push(`${counts.checkbox} checkbox${counts.checkbox > 1 ? 'es' : ''}`);
 
@@ -357,6 +361,11 @@ function countElementTypes(elements: AIDiscoveredElement[]): Record<string, numb
   return counts;
 }
 
+/** The count of every kind that answers to the named `type`. */
+function familyCount(counts: Record<string, number>, named: string): number {
+  return namedTypeFamily(named).reduce((sum, kind) => sum + (counts[kind] ?? 0), 0);
+}
+
 /**
  * Detect forms from elements
  */
@@ -364,9 +373,9 @@ function detectForms(elements: AIDiscoveredElement[]): FormAnalysis[] {
   // Group inputs by common patterns (this is a simplified heuristic)
   const formElements = elements.filter(
     (el) =>
-      el.type === 'input' ||
+      answersToNamedType(el.type, 'input') ||
       el.type === 'textarea' ||
-      el.type === 'select' ||
+      answersToNamedType(el.type, 'select') ||
       el.type === 'checkbox'
   );
 
@@ -463,7 +472,7 @@ function getKeyElements(elements: AIDiscoveredElement[]): AIDiscoveredElement[] 
 
   // Add primary inputs
   const primaryInputs = elements.filter(
-    (el) => (el.type === 'input' || el.type === 'textarea') && el.state.visible
+    (el) => (answersToNamedType(el.type, 'input') || el.type === 'textarea') && el.state.visible
   );
   keyElements.push(...primaryInputs.slice(0, 3));
 
@@ -502,8 +511,13 @@ function formatElementType(type: string): string {
   const typeLabels: Record<string, string> = {
     button: 'button',
     input: 'input field',
+    textbox: 'text box',
     textarea: 'text area',
     select: 'dropdown',
+    combobox: 'dropdown',
+    listbox: 'list box',
+    option: 'option',
+    disclosure: 'disclosure',
     checkbox: 'checkbox',
     radio: 'radio button',
     link: 'link',
@@ -551,19 +565,18 @@ export function inferPageType(
   if (titleLower.includes('search')) return 'search';
 
   // Element-based detection
+  const isInput = (el: AIDiscoveredElement): boolean => answersToNamedType(el.type, 'input');
   const hasLoginForm =
-    elements.some((el) => el.type === 'input' && el.semanticType === 'email-input') &&
-    elements.some((el) => el.type === 'input' && el.semanticType === 'password-input');
+    elements.some((el) => isInput(el) && el.semanticType === 'email-input') &&
+    elements.some((el) => isInput(el) && el.semanticType === 'password-input');
   if (hasLoginForm) return 'login';
 
-  const hasSearchInput = elements.some(
-    (el) => el.type === 'input' && el.semanticType === 'search-input'
-  );
+  const hasSearchInput = elements.some((el) => isInput(el) && el.semanticType === 'search-input');
   if (hasSearchInput) return 'search';
 
   // Check for form presence
   const inputCount = elements.filter(
-    (el) => el.type === 'input' || el.type === 'textarea' || el.type === 'select'
+    (el) => isInput(el) || el.type === 'textarea' || answersToNamedType(el.type, 'select')
   ).length;
   if (inputCount >= 3) return 'form';
 

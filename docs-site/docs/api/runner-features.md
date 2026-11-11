@@ -245,7 +245,11 @@ The bare `/element/:id`:
 {
   "id": "input-foo",
   "type": "input",
-  "actions": ["focus", "blur", "type", "clear", "click"],
+  "actions": [
+    "click", "hoverClick", "doubleClick", "rightClick", "middleClick",
+    "type", "sendKeys", "clear", "focus", "blur", "hover", "unhover",
+    "scroll", "scrollIntoView", "setValue", "drag", "autocomplete"
+  ],
   "state": {
     "value": "user@example.com",
     "visible": true,
@@ -369,17 +373,26 @@ If an action returns `success: false` with `error: "... requires a 'X' parameter
 > the verb is absent from THAT element's list — not that the verb is unknown to
 > the bridge.
 
-> **Auto-registered inputs now advertise `setValue` and `sendKeys`.** Because
-> that list is enforced, a verb missing from it is unreachable even when the
-> SDK implements it — and the inferred lists were missing several that it does.
-> An element the bridge typed automatically (rather than one declaring its own
-> `actions`) now advertises:
->
-> | Inferred type | Added |
-> |---|---|
-> | `input`, `textarea` | `setValue`, `sendKeys` |
-> | `select` | `setValue` (not `type` / `clear`, which only mutate input/textarea values) |
-> | `form` | `submit`, `reset` |
+> **One list, whichever path found the element.** Because that list is
+> enforced, it must name exactly what the SDK performs: a verb missing from it
+> is unreachable, and a verb it names but the SDK refuses tells an agent to do
+> something that fails. Auto-registration, `registerElement` without `actions`,
+> `find()` / `discover()` rows and the DOM fallback used to infer it four
+> different ways; they now read one table (see
+> [Actions](../concepts/actions.md)). So an auto-registered `<input>` advertises
+> `setValue`, `sendKeys` and `autocomplete`, a `<form>` (or a control a form
+> owns) `submit` and `reset`, a `role="switch"` `toggle`, and every element —
+> a canvas included — `sendKeys`. A date, time, colour or hidden `<input>`
+> keeps `type`, `clear` and `setValue` (`type "10:30"` sets a time input), and a
+> file `<input>` keeps `clear`. `select` is listed only on a node that opens a
+> listbox (`role="combobox"`, `aria-haspopup="listbox"`, or an `aria-haspopup`
+> whose `aria-controls` / `aria-owns` is a listbox), not on every
+> `aria-expanded` trigger: an accordion button `toggle`s. A toggle button
+> (`aria-pressed`) and a `role="menuitemcheckbox"` list `toggle`; a
+> `role="menuitemradio"`, like a radio, lists `check`. A verb an element does not list is refused
+> with `failureDetails.context.refusal: "element-kind"` instead of reported as a
+> success that did nothing (`clear` on a `<div>`, `check` on a text field,
+> `toggle` on a plain button).
 >
 > If you previously worked around `UNSUPPORTED_ACTION` on an input — driving it
 > with `type` plus a `clear`, or declaring `actions` by hand purely to get
@@ -387,6 +400,33 @@ If an action returns `success: false` with `error: "... requires a 'X' parameter
 > this note. `setValue` on an element with no value to set (a `<div>`, say) now
 > fails with a message naming the tag instead of reporting success against an
 > unchanged page.
+>
+> Some verbs one of the four paths used to list are **no longer listed**,
+> because on that element they failed, did nothing, or did something other than
+> the verb means (rewrote a button's label, clicked a radio on but never off,
+> wrote a clamped range value). A workflow that relied on one of those effects
+> stops working with this release. Use the replacement:
+>
+> - reset / image `<input>`: `type`, `clear`, `setValue` (they rewrote the
+>   button's label) — use `click`, or `reset` / `submit` on the form;
+> - radio `<input>` and `role="radio"`: `toggle` — use `check`;
+> - radio, `<option>`, `role="option"`, `role="tab"`: `select` (listed by
+>   auto-registration only, refused by `select`) — use `click`;
+> - range `<input>`: `type` (wrote a wrong value) and `clear` (changed
+>   nothing) — use `setValue`;
+> - `role="textbox"` and contenteditable: `type`, `clear`, `setValue` (failed,
+>   or changed nothing) — use `sendKeys`;
+> - `role="listbox"`: `select`, `setValue` — `click` its option, or `select` on
+>   the combobox that opens it;
+> - a `role="combobox"` that is not an `<input>`: `setValue`, `type` — use
+>   `select`;
+> - a non-native `role="slider"` / `role="spinbutton"`: `setValue` — use
+>   `sendKeys` (arrow keys), or `drag` a slider;
+> - file `<input>`: `type`, `setValue` (threw) — nothing writes a file; `clear`
+>   empties the selection;
+> - a `<summary>` outside a `<details>`: `toggle` — use `click`.
+>
+> The full per-element table is in [Actions](../concepts/actions.md#verbs-no-longer-advertised).
 
 ## Page navigation
 
@@ -869,7 +909,11 @@ lives at `data.element`; runner-up candidates (if any) live at
       "tagName": "button",
       "type": "button",
       "semanticType": "action-button",
-      "actions": ["focus", "blur", "click", "hover", "middleClick"],
+      "actions": [
+        "click", "hoverClick", "doubleClick", "rightClick", "middleClick",
+        "sendKeys", "focus", "blur", "hover", "unhover", "scroll",
+        "scrollIntoView", "drag"
+      ],
       "aliases": ["btn", "home", "main", "click", "start", "button", "dashboard"],
       "description": "\"Home\" button",
       "labelText": "Home",

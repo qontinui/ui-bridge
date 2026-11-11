@@ -11,6 +11,8 @@
  * different results for the same X. This module is the single source of truth.
  */
 
+import { answersToNamedType, namedTypeFamily } from '../core/element-kind';
+
 /**
  * Narrow shape the matcher needs. Covers both the live-DOM `materialized`
  * element (has `title`/`ariaLabel`/`label`/`id`/`type`) and the relay cache
@@ -98,7 +100,9 @@ export function revealsEntryMatches(query: string, entry: string): boolean {
 export function matchesElementSelector(el: MatchableElement, selector: ElementSelector): boolean {
   if (selector.id && el.id !== selector.id) return false;
 
-  if (selector.type && el.type !== selector.type) return false;
+  // A named type answers for its family: `input` also an ARIA `textbox`,
+  // `select` also a `combobox` or `listbox` (`core/element-kind`).
+  if (selector.type && !answersToNamedType(el.type, selector.type)) return false;
 
   if (selector.title) {
     const needle = selector.title.toLowerCase();
@@ -138,4 +142,16 @@ export function matchesElementSelector(el: MatchableElement, selector: ElementSe
   }
 
   return true;
+}
+
+/**
+ * The wait-for selector's `type` (`waitForElementByCondition` and its relay
+ * twin): a case-insensitive substring of the element's type or of its tag
+ * name. A named type with a family (`input`, `select`, …) matches through any
+ * kind in it, so `input` still finds a role="textbox" whose tag is a `div`.
+ */
+export function selectorTypeMatches(named: string, type: string, tagName: string): boolean {
+  const kind = type.toLowerCase();
+  const tag = tagName.toLowerCase();
+  return namedTypeFamily(named).some((needle) => kind.includes(needle) || tag.includes(needle));
 }

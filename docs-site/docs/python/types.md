@@ -365,6 +365,13 @@ entry.metadata  # dict | None
 
 ## Enum Types
 
+These enums name a subset of the vocabulary. The element models carry `type`
+and `actions` as plain strings, so they hold every value the SDK reports — the
+element types in [Discovery Endpoints](../api/discovery-endpoints.md#element-types)
+(`textbox`, `combobox`, `switch`, `generic`, …) and the verbs in
+[Actions](../concepts/actions.md) (`sendKeys`, `setValue`, `hoverClick`,
+`submit`, …). Compare against the strings, not only these members.
+
 ### ElementType
 
 ```python

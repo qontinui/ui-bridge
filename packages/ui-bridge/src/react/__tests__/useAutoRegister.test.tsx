@@ -198,6 +198,42 @@ function PersistHarness({ persistWhileMounted }: { persistWhileMounted?: boolean
   return null;
 }
 
+describe('useAutoRegister — id stability', () => {
+  let registry: UIBridgeRegistry;
+
+  beforeEach(() => {
+    registry = new UIBridgeRegistry();
+    mockBridge = createMockBridge(registry);
+  });
+
+  afterEach(() => {
+    cleanup();
+    mockBridge = null;
+    document.body.innerHTML = '';
+  });
+
+  // A Radix `Tabs.List` renders `<div role="tablist">`. Its id is derived from
+  // its kind, so the kind must stay `generic` or every pinned id is renamed.
+  it('a Radix-style TabsList (div role=tablist) gets a generic-… id', async () => {
+    const fixture = document.createElement('div');
+    fixture.innerHTML = `
+      <div role="tablist" aria-label="Settings" aria-orientation="horizontal">
+        <button role="tab" aria-selected="true">General</button>
+      </div>
+    `;
+    document.body.appendChild(fixture);
+
+    render(<AutoRegisterHarness />);
+    await new Promise((r) => setTimeout(r, 5));
+
+    const tablist = fixture.querySelector<HTMLElement>('[role="tablist"]')!;
+    const registered = registry.findByDOMElement(tablist);
+    expect(registered?.type).toBe('generic');
+    expect(registered?.id).toMatch(/^generic-/);
+    expect(tablist.getAttribute('data-ui-bridge-id')).toMatch(/^generic-/);
+  });
+});
+
 describe('useAutoRegister — persistWhileMounted', () => {
   let registry: UIBridgeRegistry;
 

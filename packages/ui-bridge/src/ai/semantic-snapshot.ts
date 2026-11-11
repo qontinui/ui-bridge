@@ -17,6 +17,7 @@ import type {
 } from './types';
 import { SearchEngine } from './search-engine';
 import { truncateCodePoints } from '../core/text';
+import { answersToNamedType, impliedAriaRole } from '../core/element-kind';
 import { generatePageSummary, inferPageType } from './summary-generator';
 import {
   generateAliases,
@@ -292,7 +293,8 @@ export class SemanticSnapshotManager {
       // (already trimmed + scrubbed) directly.
       label: scrubContentByVerdict(element.label, redactionVerdict),
       tagName: this.inferTagName(element.type),
-      role: this.inferRole(element.type),
+      // `core/element-kind`'s one map, which names every kind.
+      role: impliedAriaRole(element.type),
       accessibleName:
         scrubContentByVerdict(element.label, redactionVerdict) ?? element.state.textContent,
       actions: element.actions,
@@ -429,9 +431,9 @@ export class SemanticSnapshotManager {
   private detectImplicitForm(elements: AIDiscoveredElement[]): FormState | null {
     const inputs = elements.filter(
       (el) =>
-        el.type === 'input' ||
+        answersToNamedType(el.type, 'input') ||
         el.type === 'textarea' ||
-        el.type === 'select' ||
+        answersToNamedType(el.type, 'select') ||
         el.type === 'checkbox'
     );
 
@@ -469,7 +471,10 @@ export class SemanticSnapshotManager {
     // Find form fields (simplified - would need DOM relationship data)
     const inputs = allElements.filter(
       (el) =>
-        (el.type === 'input' || el.type === 'textarea' || el.type === 'select') && el.state.visible
+        (answersToNamedType(el.type, 'input') ||
+          el.type === 'textarea' ||
+          answersToNamedType(el.type, 'select')) &&
+        el.state.visible
     );
 
     const fields = this.analyzeFormFields(inputs);
@@ -504,7 +509,10 @@ export class SemanticSnapshotManager {
       const redactionVerdict = verdictFromState(input.state);
       return {
         id: input.id,
-        label: scrubContentRequired(input.accessibleName || input.label || input.id, redactionVerdict),
+        label: scrubContentRequired(
+          input.accessibleName || input.label || input.id,
+          redactionVerdict
+        ),
         type: input.type,
         value: scrubValueRequired(input.state.value || '', redactionVerdict),
         valid,
@@ -631,26 +639,6 @@ export class SemanticSnapshotManager {
   }
 
   /**
-   * Infer ARIA role from element type
-   */
-  private inferRole(type: string): string | undefined {
-    const roleMap: Record<string, string> = {
-      button: 'button',
-      input: 'textbox',
-      textarea: 'textbox',
-      select: 'combobox',
-      checkbox: 'checkbox',
-      radio: 'radio',
-      link: 'link',
-      dialog: 'dialog',
-      menu: 'menu',
-      menuitem: 'menuitem',
-      tab: 'tab',
-    };
-    return roleMap[type];
-  }
-
-  /**
    * Infer semantic type
    */
   private inferSemanticType(element: ControlSnapshot['elements'][0]): string {
@@ -677,7 +665,8 @@ export class SemanticSnapshotManager {
       return 'action-button';
     }
 
-    if (type === 'input') {
+    // An ARIA textbox is a text input too.
+    if (type === 'input' || type === 'textbox') {
       if (text.includes('email') || element.id.includes('email')) return 'email-input';
       if (text.includes('password') || element.id.includes('password')) return 'password-input';
       if (text.includes('search') || element.id.includes('search')) return 'search-input';

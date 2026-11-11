@@ -203,7 +203,9 @@ rewrote a value meanwhile) or `verified: false` is an unknown one.
 `mediaOverrideList` returning `active: []` proves nothing is still overridden.
 `--throttle <slow-3g|fast-3g|latency=<ms>,down=<kbps>,up=<kbps>>` applies CDP
 network emulation once the page is ready (it persists across a reload) and
-`--no-cache` disables the HTTP cache; what Chromium accepted is stamped as
+`--no-cache` disables the HTTP cache (not the document's in-memory image cache:
+a URL the page already decoded is answered at once, throttle or not, so give a
+repeated `mediaOverride` candidate its own URL, e.g. `cand.png?2`); what Chromium accepted is stamped as
 `network` on timeline results, matrix cells and the relay info line.
 `captureTimeline` screenshots the page `frames` times, `intervalMs` apart, each
 frame stamped with its offset; `"reload":true` starts the clock at a fresh

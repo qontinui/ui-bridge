@@ -32,6 +32,8 @@
  *   the same ranking.
  */
 
+import { answersToNamedType } from './element-kind';
+
 /**
  * Minimal element shape consumed by {@link findElements}. Matches the
  * serialized entries in both `BridgeSnapshot.elements` and
@@ -125,7 +127,8 @@ export function findElements(
     const el = elements[i];
 
     // Hard filters first — cheap rejections before scoring.
-    if (q.type && el.type !== q.type) continue;
+    // A named type answers for its family (`core/element-kind`).
+    if (q.type && !answersToNamedType(el.type, q.type)) continue;
     if (q.origin && el.origin !== q.origin) continue;
     if (q.visibleOnly && el.visible !== true) continue;
     if (q.contextPathContains) {
@@ -170,7 +173,7 @@ export function findElements(
           reasons.push(`label~${token}`);
         }
         // Each metadata field — single exact-ish match per field per token.
-        if (eqCI(el.type, token)) {
+        if (answersToNamedType(el.type, token)) {
           score += FIELD_WEIGHTS.type;
           reasons.push(`type=${el.type}`);
         }

@@ -346,7 +346,8 @@ export interface ElementState {
 }
 
 /**
- * Types of UI elements that can be registered
+ * Types of UI elements that can be registered. `core/element-kind.ts` infers
+ * one from a node and holds the verbs each advertises.
  */
 export type ElementType =
   | 'button'
