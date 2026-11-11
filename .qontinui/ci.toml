@@ -155,22 +155,25 @@ version = 1
 # carry a `file:` sibling spec.
 #
 # package.json's devDependencies declare
-# `"@qontinui/ui-bridge-auto": "file:../ui-bridge-auto"`, and
-# packages/ui-bridge/package.json declares the same package at
-# `file:../../../ui-bridge-auto` — different depths, but both now resolve to the
-# SAME place, `<workspace>/ui-bridge-auto`, which is where the sibling actually
-# lives and where the executor materialises one (a PEER of the worktree).
+# `"@qontinui/ui-bridge-auto": "file:../ui-bridge-auto"`, which resolves to
+# `<workspace>/ui-bridge-auto`, where the sibling actually lives and where the
+# executor materialises one (a PEER of the worktree). No code imports it: it is
+# the declaration scripts/check-docs-symbols.cjs reads to accept the docs'
+# `@qontinui/ui-bridge-auto` imports as a real first-party package, and that
+# check fails without it. packages/ui-bridge/package.json no longer names the
+# package: the action executor's delegation to it was deleted, and its optional
+# peer dependency and `file:../../../ui-bridge-auto` devDependency with it.
 #
 # > The root spec used to read `file:../../ui-bridge-auto`, one level too deep,
 # > resolving to a directory that exists on no machine and in no lane. The lock
 # > recorded it as a bare `{"dev": true}` stub — a package npm could not read —
 # > and, because that phantom won the hoist at `node_modules/@qontinui/`, the
 # > real sibling was forced into a duplicate nested link under
-# > `packages/ui-bridge/node_modules/`. The optional peer dependency that
-# > `packages/ui-bridge/src/control/action-executor.ts` delegates DOM actions to
-# > was therefore unresolvable from the monorepo root on a correctly-laid-out dev
-# > box. That is fixed in the same PR as this note; the phantom lock entry and
-# > the duplicate nested link are both gone.
+# > `packages/ui-bridge/node_modules/`. The package `packages/ui-bridge` then
+# > declared as an optional peer dependency was therefore unresolvable from the
+# > monorepo root on a correctly-laid-out dev box (by then the executor no longer
+# > imported it; it read only a host-set global). That is fixed in the same PR as this note; the
+# > phantom lock entry and the duplicate nested link are both gone.
 #
 # Still NO [[siblings]] declaration, and the reason is unchanged by that fix:
 # ci.yml checks the sibling repo out in NO job, and `npm ci` is green there
