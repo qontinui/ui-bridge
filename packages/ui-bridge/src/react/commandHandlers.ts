@@ -81,6 +81,7 @@ import {
   forcePseudoState,
   releaseHeldAfterDispatch,
   releaseForcedPseudoState,
+  revealSourceOf,
   type ForcedHoverActionReport,
   type ForcedPseudoReleaseReport,
 } from '../control/forced-hover';
@@ -2123,7 +2124,9 @@ export async function executeCommand(
       // A missing or non-string verb never reaches this point: the payload
       // grammar at the top of this case refuses it as INVALID_REQUEST, so
       // `request.action` is a non-empty string from here on.
-      const revealSource = { getAllElements: () => registry.getAllElements() };
+      // The registry and its discovery rescan, shared by both relay arms
+      // (`hover`, `hoverClick`), exactly as the executor's `revealSource()`.
+      const revealSource = revealSourceOf(registry);
       try {
         // Custom-action precedence — a registered handler wins over a
         // same-named built-in. This is the SAME defect, and the same fix, as
