@@ -340,6 +340,15 @@ name = "browser-test-placement"
 command = ["npm", "run", "browser-tests:check-placement"]
 
 [[steps]]
+name = "dynamic-import-hints-self-test"
+# parity: ci.yml lint-and-test "Dynamic import hint check self-test"
+# ci.yml "Dynamic import hint check self-test" → `dist:check-import-hints:test` =
+# `node scripts/check-dynamic-import-hints.test.cjs`. Pins the dist check below
+# against fixtures, and runs BEFORE it: a regression in what that check
+# recognises turns it QUIET rather than red.
+command = ["npm", "run", "dist:check-import-hints:test"]
+
+[[steps]]
 name = "lint"
 # parity: ci.yml lint-and-test "Lint"
 # ci.yml "Lint" → `lint` = `eslint "packages/*/src/**/*.{ts,tsx}"
@@ -366,6 +375,17 @@ name = "build-again"
 # Deleting this step would reopen that class silently.
 command = ["npm", "run", "build"]
 timeout_secs = 7200
+
+[[steps]]
+name = "dynamic-import-hints"
+# parity: ci.yml lint-and-test "Dynamic import hint check"
+# ci.yml "Dynamic import hint check" → `dist:check-import-hints` =
+# `node scripts/check-dynamic-import-hints.cjs`. Refuses a built dist whose
+# import() has a computed specifier without the webpackIgnore/turbopackIgnore
+# hints: a consumer that bundles it cannot resolve the import at run time (the
+# defect that kept the SDK's Redis relay bus from ever starting). Reads
+# packages/*/dist, so it follows the two builds; with nothing built it exits 2.
+command = ["npm", "run", "dist:check-import-hints"]
 
 [[steps]]
 name = "typecheck"

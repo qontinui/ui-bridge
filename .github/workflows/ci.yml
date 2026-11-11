@@ -343,6 +343,15 @@ jobs:
         # test with its own playwright import or executablePath( gate.
         run: npm run browser-tests:check-placement
 
+      - name: Dynamic import hint check self-test
+        # Pins the check run after "Build again" against fixtures: a commented
+        # multi-line call passes, a bare import(specifier) fails, a literal is
+        # ignored, a *.global.js bundle is excluded, and a tree with nothing
+        # built is UNKNOWN rather than a pass. It runs BEFORE the check for the
+        # reason the self-tests above do: a regression in what the check
+        # recognises turns it QUIET, not red.
+        run: npm run dist:check-import-hints:test
+
       - name: Lint
         run: npm run lint
 
@@ -359,6 +368,16 @@ jobs:
         # it; CI could not. Re-running the build over the populated tree is the
         # cheap reproduction of that state, and keeps the class fixed.
         run: npm run build
+
+      - name: Dynamic import hint check
+        # Refuses a built dist whose import() has a computed specifier without
+        # `webpackIgnore: true` and `turbopackIgnore: true`. A consumer that
+        # BUNDLES such a file (qontinui-web, through webpack) turns the import
+        # into an expression context that throws "Cannot find module" at run
+        # time even where the module is installed — which is how the SDK's Redis
+        # relay bus never started in production. Runs after the builds because
+        # it reads packages/*/dist; with nothing built it exits 2, not 0.
+        run: npm run dist:check-import-hints
 
       - name: Type check
         run: npm run typecheck
