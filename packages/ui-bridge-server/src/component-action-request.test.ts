@@ -323,6 +323,29 @@ describe("the route's split is @qontinui/ui-bridge's", () => {
     expect(here).toStrictEqual(row.request);
     expect(engine).toStrictEqual(row.engineRequest ?? row.request);
   });
+
+  // The routing-key difference the table cannot carry (every row asserts the
+  // copies agree): pinned here so a change to either side's handling of it
+  // fails a test instead of only contradicting the docblock above.
+  it('differs on the relay routing keys: kept as params here, lifted by the engine', () => {
+    const body = {
+      tabId: 't1',
+      targetTabId: 't2',
+      a: 1,
+      params: { inner: { __callerUserId: 'u1' } },
+    };
+
+    expect(componentActionInvocation('submit', body).params).toStrictEqual({
+      tabId: 't1',
+      targetTabId: 't2',
+      a: 1,
+      inner: { __callerUserId: 'u1' },
+    });
+    expect(engineComponentActionInvocation('submit', body).request.params).toStrictEqual({
+      a: 1,
+      inner: {},
+    });
+  });
 });
 
 describe('POST /control/component/:id/action/:actionId reaches the action through every adapter', () => {
@@ -343,8 +366,11 @@ describe('POST /control/component/:id/action/:actionId reaches the action throug
   afterEach(async () => {
     if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
     server = undefined;
-    await standalone?.stop();
+    // Cleared before the await: a stop() that rejects (after a start() that
+    // failed) must not leave the dead instance for the next test's cleanup.
+    const started = standalone;
     standalone = undefined;
+    await started?.stop();
   });
 
   async function listen(app: Parameters<typeof createServer>[1]): Promise<number> {
@@ -393,8 +419,12 @@ describe('POST /control/component/:id/action/:actionId reaches the action throug
       body: JSON.stringify(BODY),
     });
 
-    expect(response.status).toBe(200);
-    expect(((await response.json()) as Record<string, unknown>).success).toBe(true);
+    // Status and body together, so a 500 fails with its error text in the diff
+    // (StandaloneServer's log is silenced here).
+    expect({ status: response.status, body: await response.json() }).toMatchObject({
+      status: 200,
+      body: { success: true },
+    });
     expect(seen).toEqual([EXPECTED]);
   });
 
