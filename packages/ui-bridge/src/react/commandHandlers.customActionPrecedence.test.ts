@@ -22,6 +22,7 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { executeCommand, type BridgeAccess } from './commandHandlers';
 import { getGlobalRegistry } from '../core/registry';
+import { ELEMENT_ACTION_PAYLOAD_SHAPE } from './element-command-payload';
 
 const emptyBridge: BridgeAccess = {
   elements: [],
@@ -250,7 +251,12 @@ describe('relay executeElementAction · a registered handler wins over a same-na
 describe('relay executeElementAction · a non-string verb is refused, never thrown', () => {
   afterEach(() => getGlobalRegistry().clear());
 
-  it('refuses {"toString":"x"} as UNSUPPORTED_ACTION on an element with custom actions', async () => {
+  // A missing or non-string verb is a mis-shaped payload, so the payload
+  // grammar (`./element-command-payload.ts`) refuses it as INVALID_REQUEST,
+  // naming the accepted shape, before the case reaches any verb lookup. What
+  // this test pins is unchanged: the refusal is returned and typed, never a
+  // thrown TypeError, even for a parsed {"toString":"x"}.
+  it('refuses {"toString":"x"} as a typed INVALID_REQUEST on an element with custom actions', async () => {
     const host = document.createElement('div');
     makeVisible(host);
     document.body.appendChild(host);
@@ -261,8 +267,11 @@ describe('relay executeElementAction · a non-string verb is refused, never thro
     for (const request of [JSON.parse('{"action":{"toString":"x"}}'), {}, { action: 42 }]) {
       const res = await relayAction('pane', request as Record<string, unknown>);
       expect(res.success).toBe(false);
-      expect((res.failureDetails as { errorCode?: string } | undefined)?.errorCode).toBeTruthy();
-      expect(String(res.error)).toMatch(/^Unknown action /);
+      expect((res.failureDetails as { errorCode?: string } | undefined)?.errorCode).toBe(
+        'INVALID_REQUEST'
+      );
+      expect(String(res.error)).toMatch(/^executeElementAction payload refused: /);
+      expect(String(res.error)).toContain(ELEMENT_ACTION_PAYLOAD_SHAPE);
     }
     host.remove();
   });

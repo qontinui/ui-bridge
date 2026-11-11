@@ -1969,26 +1969,9 @@ export async function executeCommand(
           ? { ...response, forcedHover: { ...forcedHover, released: heldRelease } }
           : response;
       };
-      // The verb is wire input. Refuse a missing or non-string one HERE, before
-      // anything uses it as a property key: a parsed object such as
-      // {"toString":"x"} throws on that coercion, and the catch below would
-      // throw it again on release.
-      if (typeof (request as { action?: unknown } | undefined)?.action !== 'string') {
-        const wireAction: unknown = (request as { action?: unknown } | undefined)?.action;
-        const hint = describeUnknownAction(wireAction, {
-          elementId: registered?.id,
-          accepted: relayAcceptedVerbs(registered),
-          keyboardEntry: isTypedWithKeys(registered?.type),
-        });
-        const failure = createActionFailure(id, 'UNSUPPORTED_ACTION', hint.message, startTime);
-        return refuse({
-          ...failure,
-          failureDetails: {
-            ...failure.failureDetails,
-            context: { action: null, ...unknownActionContext(hint) },
-          },
-        });
-      }
+      // A missing or non-string verb never reaches this point: the payload
+      // grammar at the top of this case refuses it as INVALID_REQUEST, so
+      // `request.action` is a non-empty string from here on.
       const revealSource = { getAllElements: () => registry.getAllElements() };
       try {
         // Custom-action precedence — a registered handler wins over a
