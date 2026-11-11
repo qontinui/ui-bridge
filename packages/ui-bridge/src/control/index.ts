@@ -68,6 +68,16 @@ export type {
   ReleaseAfterOptions,
 } from './forced-hover';
 
+// Request-field lists (browser-safe; the server entry is not needed for these)
+export { CONTROL_ACTION_REQUEST_FIELDS } from './request-fields';
+export {
+  COMPONENT_ACTION_REQUEST_FIELDS,
+  componentActionInvocation,
+  componentActionRequestFromWire,
+  componentActionRequestFields,
+  type ComponentActionInvocation,
+} from '../server/component-action-invocation';
+
 // Form fill utility
 export { fillFormFields } from './fill-form';
 
