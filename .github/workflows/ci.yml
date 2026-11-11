@@ -28,24 +28,28 @@ permissions:
 jobs:
   # -- Where the Linux jobs run ------------------------------------------------
   #
-  # On a push (main and coord's merge-candidate*/** refs) or a workflow_dispatch,
-  # this job decides whether every job below runs on the self-hosted pool
+  # On a push (main and coord's merge-candidate*/** refs), a workflow_dispatch
+  # or a same-repo pull_request, this job decides whether every job below runs on the self-hosted pool
   # `[self-hosted, Linux, X64, ram-16g]` -- on 2026-11-03 the repo-level
   # registrations nawa-uib-1..6, each carrying the classes ram-2g..ram-40g --
   # or on the free GitHub-hosted `ubuntu-latest` floor.
   #
-  # WHAT REACHES THE POOL. This workflow never routes a pull_request run there:
-  # this job does not run for one, and each routed job's `runs-on` sends a
-  # pull_request to the floor by itself, independently of this job's `if`.
-  # Routing is gated on an ALLOWLIST of events (push, workflow_dispatch), not on
-  # "not a pull_request", so a trigger added later (pull_request_target,
-  # workflow_run, issue_comment) stays on the floor until someone routes it on
-  # purpose (decision_record self-hosted-runners-on-public-repos, condition 3).
-  # Two things this file does NOT decide: a fork PR that edits `runs-on` itself
-  # is held by the repo's fork-PR approval policy, `all_external_contributors`
-  # (that decision_record's condition 1), and a PR's code DOES run on the pool
-  # once coord pushes it to a merge-candidate ref -- by design, that is the
-  # candidate CI this routing exists to move.
+  # WHAT REACHES THE POOL. Same-repo pull_request runs route exactly like a
+  # push (decision_record self-hosted-runners-on-public-repos, amendment
+  # 2026-11-04; policy production-and-cost
+  # external-prs-are-prohibited-so-public-repo-ci-is-not-a-trust-boundary):
+  # external PRs are prohibited on every qontinui repo, so a PR run executes
+  # the same code a push run would, and repo visibility is never a reason to
+  # keep it hosted. Until 2026-11-11 every pull_request stayed on the floor,
+  # and this repo's PR CI queued behind the org's shared hosted pool (29 runs
+  # queued, 0 in progress, while 21 of 34 org self-hosted runners idled).
+  # A FORK pull_request (head repo != this repo) still goes to the floor: the
+  # optional free guard that record allows on top of condition 1, the fork-PR
+  # approval policy `all_external_contributors`, which stays.
+  # Routing is gated on an ALLOWLIST of events (push, workflow_dispatch,
+  # same-repo pull_request), not on "not a fork", so a trigger added later
+  # (pull_request_target, workflow_run, issue_comment) stays on the floor until
+  # someone routes it on purpose (that record's condition 3).
   #
   # WHY. The org's free hosted pool (about 20 concurrent jobs) is shared by
   # every public repo's PR CI, and coord's merge train waits behind it. Over the
@@ -99,7 +103,7 @@ jobs:
   # smoke-test.yml and ci-integrity-selftest.yml route their Linux jobs the same
   # way, with their own `route` job.
   route:
-    if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && vars.UIBRIDGE_CI_LINUX_LANE == 'auto' }}
+    if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && vars.UIBRIDGE_CI_LINUX_LANE == 'auto' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -142,22 +146,24 @@ jobs:
 
   lint-and-test:
     # `route` above decides this job's pool. `!cancelled()` is load-bearing: on
-    # a pull_request `route` is SKIPPED, and a job that needs a skipped job is
-    # skipped too unless its `if` says otherwise -- which would turn this
-    # required context into `skipped` (= passing to coord) on every PR.
+    # a fork pull_request or a non-`auto` lane `route` is SKIPPED, and a job
+    # that needs a skipped job is skipped too unless its `if` says otherwise --
+    # which would turn this required context into `skipped` (= passing to
+    # coord).
     needs: route
     if: ${{ !cancelled() }}
 
-    # The pool only on a FIRST attempt of a push or workflow_dispatch run, and
-    # then only when the lane is forced `self-hosted` or `route` said so under
-    # `auto` (its `labels` output). The attempt and event gate covers BOTH
-    # lanes, so a pull_request or a re-run reaches the floor here whatever
-    # `route` did. The hosted floor for everything else: a pull_request, any
-    # re-run, the `hosted`/unset lane, a route job that produced nothing.
+    # The pool only on a FIRST attempt of a push, workflow_dispatch or
+    # same-repo pull_request run, and then only when the lane is forced
+    # `self-hosted` or `route` said so under `auto` (its `labels` output). The
+    # attempt and event gate covers BOTH lanes, so a fork pull_request or a
+    # re-run reaches the floor here whatever `route` did. The hosted floor for
+    # everything else: a fork pull_request, any re-run, the `hosted`/unset
+    # lane, a route job that produced nothing.
     # The check name comes from the job and its matrix value, never from the
     # pool, so it is `lint-and-test (22.x)` on both.
     # coord-pools: [self-hosted, Linux, X64, ram-16g] | [ubuntu-latest]
-    runs-on: ${{ fromJSON(github.run_attempt == 1 && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (vars.UIBRIDGE_CI_LINUX_LANE == 'self-hosted' && '["self-hosted","Linux","X64","ram-16g"]' || needs.route.outputs.labels) || '["ubuntu-latest"]') }}
+    runs-on: ${{ fromJSON(github.run_attempt == 1 && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && (vars.UIBRIDGE_CI_LINUX_LANE == 'self-hosted' && '["self-hosted","Linux","X64","ram-16g"]' || needs.route.outputs.labels) || '["ubuntu-latest"]') }}
     # A backstop: on the pool a hung job holds one of six registrations for the
     # 360-minute default. Slowest seen (samples, 2026-11-03): 9.5 min hosted,
     # 15.2 min pool (pool times track the host's load). Generous on purpose: a
@@ -397,16 +403,16 @@ jobs:
     # (scripts/check-ci-manifest.cjs lists it in EXCLUDED_JOBS); on that lane the
     # suite runs and these smokes skip, exactly as they do in lint-and-test.
     #
-    # It runs on GitHub's hosted runners, or -- routed by `route`, on a push or
-    # dispatch -- on the self-hosted pool, whose hosts carry Chromium's system
+    # It runs on GitHub's hosted runners, or -- routed by `route`, on a push, a
+    # dispatch or a same-repo PR -- on the self-hosted pool, whose hosts carry Chromium's system
     # libraries already. A pool job must not use sudo, so there it installs the
     # browser WITHOUT `--with-deps` (the two install steps below).
     needs: route
     if: ${{ !cancelled() }}
     # Routed by `route` (its comment says how): the pool on a first attempt of a
-    # push or workflow_dispatch run when the lane says so, else the hosted floor.
+    # push, dispatch or same-repo PR run when the lane says so, else the floor.
     # coord-pools: [self-hosted, Linux, X64, ram-16g] | [ubuntu-latest]
-    runs-on: ${{ fromJSON(github.run_attempt == 1 && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (vars.UIBRIDGE_CI_LINUX_LANE == 'self-hosted' && '["self-hosted","Linux","X64","ram-16g"]' || needs.route.outputs.labels) || '["ubuntu-latest"]') }}
+    runs-on: ${{ fromJSON(github.run_attempt == 1 && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && (vars.UIBRIDGE_CI_LINUX_LANE == 'self-hosted' && '["self-hosted","Linux","X64","ram-16g"]' || needs.route.outputs.labels) || '["ubuntu-latest"]') }}
     # Backstop for a hung job (slowest seen 2026-11-03: 5.3 min hosted, 8.5 pool).
     timeout-minutes: 30
 
@@ -474,10 +480,10 @@ jobs:
     needs: route
     if: ${{ !cancelled() }}
     # Routed by `route` (its comment says how): the pool on a first attempt of a
-    # push or workflow_dispatch run when the lane says so, else the hosted floor.
+    # push, dispatch or same-repo PR run when the lane says so, else the floor.
     # The check names stay `python-tests (3.10)` / `(3.11)` / `(3.12)`.
     # coord-pools: [self-hosted, Linux, X64, ram-16g] | [ubuntu-latest]
-    runs-on: ${{ fromJSON(github.run_attempt == 1 && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (vars.UIBRIDGE_CI_LINUX_LANE == 'self-hosted' && '["self-hosted","Linux","X64","ram-16g"]' || needs.route.outputs.labels) || '["ubuntu-latest"]') }}
+    runs-on: ${{ fromJSON(github.run_attempt == 1 && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && (vars.UIBRIDGE_CI_LINUX_LANE == 'self-hosted' && '["self-hosted","Linux","X64","ram-16g"]' || needs.route.outputs.labels) || '["ubuntu-latest"]') }}
     # Backstop for a hung job (slowest seen 2026-11-03: 0.9 min hosted, 1.7 pool).
     timeout-minutes: 15
 
@@ -543,9 +549,9 @@ jobs:
     needs: route
     if: ${{ !cancelled() }}
     # Routed by `route` (its comment says how): the pool on a first attempt of a
-    # push or workflow_dispatch run when the lane says so, else the hosted floor.
+    # push, dispatch or same-repo PR run when the lane says so, else the floor.
     # coord-pools: [self-hosted, Linux, X64, ram-16g] | [ubuntu-latest]
-    runs-on: ${{ fromJSON(github.run_attempt == 1 && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (vars.UIBRIDGE_CI_LINUX_LANE == 'self-hosted' && '["self-hosted","Linux","X64","ram-16g"]' || needs.route.outputs.labels) || '["ubuntu-latest"]') }}
+    runs-on: ${{ fromJSON(github.run_attempt == 1 && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && (vars.UIBRIDGE_CI_LINUX_LANE == 'self-hosted' && '["self-hosted","Linux","X64","ram-16g"]' || needs.route.outputs.labels) || '["ubuntu-latest"]') }}
     # Backstop for a hung job (slowest seen 2026-11-03: 1.9 min hosted, 4.1 pool).
     timeout-minutes: 20
 

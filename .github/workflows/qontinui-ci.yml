@@ -46,16 +46,17 @@ permissions:
 
 jobs:
   # Where `build` runs: the self-hosted pool `[self-hosted, Linux, X64,
-  # ram-16g]` or the hosted `ubuntu-latest` floor, decided on a push or
-  # workflow_dispatch by the fleet's router (a verbatim copy of ccfg
+  # ram-16g]` or the hosted `ubuntu-latest` floor, decided on a push,
+  # workflow_dispatch or same-repo pull_request by the fleet's router (a verbatim copy of ccfg
   # `scripts/route-ci-lane.py`) under the repo variable UIBRIDGE_CI_LINUX_LANE
   # (auto | self-hosted | hosted, unset = hosted). This workflow never routes a
-  # pull_request run to the pool, and every re-run goes to the floor. ci.yml's
+  # FORK pull_request run to the pool (a same-repo one routes like a push), and
+  # every re-run goes to the floor. ci.yml's
   # `route` job carries the full explanation: the lanes, the overflow signal,
   # why re-runs are hosted and why the routed job runs under `!cancelled()`.
   # Change the label set here, in `build`'s `runs-on`, and in ci.yml together.
   route:
-    if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && vars.UIBRIDGE_CI_LINUX_LANE == 'auto' }}
+    if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && vars.UIBRIDGE_CI_LINUX_LANE == 'auto' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -97,14 +98,14 @@ jobs:
             --hosted-on-rerun
 
   build:
-    # `!cancelled()` keeps a skipped `route` (every pull_request) from skipping
+    # `!cancelled()` keeps a skipped `route` (a fork PR, a forced lane) from skipping
     # this job, which coord would read as passing.
     needs: route
     if: ${{ !cancelled() }}
-    # The pool on a first attempt of a push or workflow_dispatch run when the
+    # The pool on a first attempt of a push, dispatch or same-repo PR run when the
     # lane says so, else the hosted floor. The check name stays `build`.
     # coord-pools: [self-hosted, Linux, X64, ram-16g] | [ubuntu-latest]
-    runs-on: ${{ fromJSON(github.run_attempt == 1 && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (vars.UIBRIDGE_CI_LINUX_LANE == 'self-hosted' && '["self-hosted","Linux","X64","ram-16g"]' || needs.route.outputs.labels) || '["ubuntu-latest"]') }}
+    runs-on: ${{ fromJSON(github.run_attempt == 1 && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && (vars.UIBRIDGE_CI_LINUX_LANE == 'self-hosted' && '["self-hosted","Linux","X64","ram-16g"]' || needs.route.outputs.labels) || '["ubuntu-latest"]') }}
     # Backstop for a hung job: on the pool it would hold one of six
     # registrations for the 360-minute default (slowest seen 2026-11-03:
     # 7.3 min hosted, 10.8 min pool).
