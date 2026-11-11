@@ -236,6 +236,12 @@ const FIXTURES: Fixture[] = [
     html: `<button aria-haspopup="menu" aria-expanded="false" ${T}>menu</button>`,
   },
   {
+    // The older spelling of a listbox trigger: `aria-haspopup="true"` naming
+    // its listbox through `aria-controls`. Its own listbox, so no popup flag.
+    name: '<button aria-haspopup="true" aria-controls=listbox> (listbox trigger)',
+    html: `<button aria-haspopup="true" aria-expanded="false" aria-controls="oracle-lb" ${T}>pick</button><div id="oracle-lb" role="listbox"><div role="option" data-value="a">a</div></div>`,
+  },
+  {
     name: '<div role="button" aria-haspopup="listbox"> (select-only trigger)',
     html: `<div role="button" tabindex="0" aria-haspopup="listbox" ${T}>pick</div>`,
     popup: true,
@@ -678,6 +684,14 @@ describe('select is advertised only on a node that opens a listbox', () => {
       'an aria-haspopup="true" button',
       `<button aria-haspopup="true" aria-expanded="false" ${T}>m</button>`,
     ],
+    [
+      'an aria-haspopup="false" button controlling a listbox',
+      `<button aria-haspopup="false" aria-expanded="false" aria-controls="lb" ${T}>m</button><div id="lb" role="listbox"></div>`,
+    ],
+    [
+      'an aria-haspopup="true" button controlling a menu',
+      `<button aria-haspopup="true" aria-expanded="false" aria-controls="mn" ${T}>m</button><div id="mn" role="menu"></div>`,
+    ],
   ])('%s toggles and does not advertise select', (_name, html) => {
     const actions = actionsOf(html);
     expect(actions).toContain('toggle');
@@ -689,6 +703,14 @@ describe('select is advertised only on a node that opens a listbox', () => {
     [
       'an aria-haspopup="listbox" trigger',
       `<div role="button" aria-haspopup="listbox" ${T}>p</div>`,
+    ],
+    [
+      'an aria-haspopup="true" trigger whose aria-controls is a listbox',
+      `<button aria-haspopup="true" aria-controls="lb" ${T}>p</button><div id="lb" role="listbox"></div>`,
+    ],
+    [
+      'an aria-haspopup trigger whose aria-owns lists a listbox',
+      `<button aria-haspopup="dialog" aria-owns="x lb" ${T}>p</button><div id="lb" role="listbox"></div>`,
     ],
   ])('%s advertises select', (_name, html) => {
     expect(actionsOf(html)).toContain('select');
