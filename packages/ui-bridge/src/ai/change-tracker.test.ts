@@ -10,6 +10,7 @@ import type { ControlSnapshot } from '../control/types';
 import type { SemanticSnapshotManager } from './semantic-snapshot';
 import type { CompositeIdleDetector } from '../idle';
 import { __resetGlobalBookmarkStoreForTest } from './bookmarks';
+import { UIBridgeRegistry } from '../core/registry';
 
 // ============================================================================
 // Tauri event mock (Phase 2a) — shared state captured across hoisted vi.mock
@@ -414,6 +415,25 @@ describe('ChangeTracker', () => {
       const drained = tracker.drainBuffer();
       expect(drained.count).toBe(2);
       expect(tracker.peekBuffer()).toEqual([]);
+    });
+
+    it('does not record the registry stamp: registerElement writing data-ui-bridge-id is not a page change', async () => {
+      await tracker.enableBuffer();
+      const el = document.createElement('div');
+      document.body.appendChild(el);
+      await new Promise((r) => setTimeout(r, 0));
+      tracker.drainBuffer();
+
+      // `registerElement` stamps every registration that carries no stamp.
+      new UIBridgeRegistry().registerElement('stamped-node', el, { type: 'generic' });
+      expect(el.getAttribute('data-ui-bridge-id')).toBe('stamped-node');
+      el.setAttribute('data-state', 'open');
+      await new Promise((r) => setTimeout(r, 0));
+
+      const { dom } = tracker.drainBuffer();
+      expect(dom.map((e) => e.attribute_name)).toEqual(['data-state']);
+      tracker.disableBuffer();
+      el.remove();
     });
 
     it('should evict oldest entries when buffer exceeds limit', () => {

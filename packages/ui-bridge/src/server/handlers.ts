@@ -101,7 +101,7 @@ import {
   readScrubbedText,
   REDACTED_VALUE,
 } from '../core/redaction';
-import type { ElementState } from '../core/types';
+import type { CanvasCoverage, CanvasCoverageMeasured, ElementState } from '../core/types';
 import { isMediaObservation } from '../core/media-observation';
 import type { RenderLogEntry } from '../render-log';
 import type { ActionFailureDetails, FillResult } from '../core';
@@ -460,6 +460,13 @@ export interface RegistryLike {
    * silently claiming no overlay was expected.
    */
   getModalContext?(): SnapshotModalContext | undefined;
+  /**
+   * The canvas census, for `/control/visibility`'s `canvasCoverage`.
+   * `undefined` means the census threw; a registry that does not implement
+   * it at all is reported as `page-sdk-lacks-coverage`. Either withholds a
+   * `clear` verdict.
+   */
+  getCanvasCoverage?(): CanvasCoverageMeasured | undefined;
   getRenderLog?(): RenderLogEntry[];
   clearRenderLog?(): void;
   captureSnapshot?(): unknown;
@@ -902,6 +909,22 @@ function createFailureDetails(
  * const server = new StandaloneServer(handlers);
  * ```
  */
+/**
+ * The live registry's canvas census, as `/control/visibility` reports it. A
+ * registry without the accessor predates it; with no `document` there is
+ * nothing to count; otherwise an accessor that answers `undefined` threw.
+ * None of them is "no canvases", so each withholds `clear`.
+ */
+function inPageCanvasCoverage(registry: RegistryLike): CanvasCoverage {
+  if (typeof registry.getCanvasCoverage !== 'function') {
+    return { state: 'unavailable', reason: 'page-sdk-lacks-coverage' };
+  }
+  if (typeof document === 'undefined') {
+    return { state: 'unavailable', reason: 'no-document' };
+  }
+  return registry.getCanvasCoverage() ?? { state: 'unavailable', reason: 'accessor-threw' };
+}
+
 // Module-level heartbeat tracking for health detection
 let lastHeartbeatTimestamp = 0;
 
@@ -5538,6 +5561,7 @@ export function createHandlers(
             occludedBy?: string;
             occludedPct?: number;
             textContent?: string;
+            paintsText?: boolean;
           };
         }>;
 
@@ -5551,9 +5575,11 @@ export function createHandlers(
                 occludedBy: state?.occludedBy,
                 occludedPct: state?.occludedPct,
                 textContent: state?.textContent,
+                paintsText: state?.paintsText,
               };
             }),
             modalContext: registry.getModalContext?.(),
+            canvasCoverage: inPageCanvasCoverage(registry),
             minRatio: params?.minRatio,
             includeExpected: params?.includeExpected,
           })

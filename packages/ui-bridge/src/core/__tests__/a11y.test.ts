@@ -250,4 +250,31 @@ describe('serializeRegisteredElement (A.5 fields populate end-to-end)', () => {
     expect(el.accessibleName).toBeUndefined();
     expect(el.text).toBeUndefined();
   });
+
+  it('does not name a node by the data-ui-bridge-id the registry stamped itself', () => {
+    const registry = getGlobalRegistry();
+    const div = document.createElement('div');
+    container.appendChild(div);
+
+    registry.registerElement('container', div, { type: 'custom' });
+
+    // The stamp is there (describeOccluder names the node by it) but it is
+    // registry bookkeeping, not a developer affordance, so no derived name.
+    expect(div.getAttribute('data-ui-bridge-id')).toBe('container');
+    const el = registry.createSnapshot().elements[0];
+    expect(el.accessibleName).toBeUndefined();
+  });
+
+  it('still names a node by a developer-written data-ui-bridge-id (derived rung)', () => {
+    const registry = getGlobalRegistry();
+    const div = document.createElement('div');
+    div.setAttribute('data-ui-bridge-id', 'dev-panel');
+    container.appendChild(div);
+
+    registry.registerElement('dev-panel', div, { type: 'custom' });
+
+    const el = registry.createSnapshot().elements[0];
+    expect(el.accessibleName).toBe('dev-panel');
+    expect(el.nameSource).toBe('derived');
+  });
 });
