@@ -558,18 +558,37 @@ export function hasClickToggledState(element: Element): boolean {
 }
 
 /**
- * The node opens a listbox `select` can pick an option from: `role="combobox"`,
- * or `aria-haspopup="listbox"` (a select-only trigger such as MUI's
- * `role="button"` Select). Not `aria-haspopup="menu"` or `"true"` (which ARIA
- * defines as `menu`): a menu's items are `menuitem`s, not options, so a
- * `select` on its trigger has nothing to choose. The ATTRIBUTES, as an author
- * wrote them; `control/combobox-select.ts` `isComboboxLike` is this predicate.
+ * The node opens a listbox `select` can pick an option from:
+ *
+ * - `role="combobox"`;
+ * - `aria-haspopup="listbox"` (a select-only trigger such as MUI's
+ *   `role="button"` Select);
+ * - any other non-`false` `aria-haspopup` whose `aria-controls` / `aria-owns`
+ *   names a `role="listbox"` — an older spelling (`aria-haspopup="true"`) of a
+ *   listbox trigger, which the base `select` drove.
+ *
+ * Not a bare `aria-haspopup="menu"` or `"true"` (which ARIA defines as `menu`):
+ * a menu's items are `menuitem`s, not options, so a `select` on its trigger
+ * has nothing to choose. The ATTRIBUTES, as an author wrote them;
+ * `control/combobox-select.ts` `isComboboxLike` is this predicate.
  */
 export function opensListbox(element: Element): boolean {
-  return (
-    element.getAttribute('role') === 'combobox' ||
-    element.getAttribute('aria-haspopup')?.trim().toLowerCase() === 'listbox'
-  );
+  if (element.getAttribute('role') === 'combobox') return true;
+  const popup = element.getAttribute('aria-haspopup')?.trim().toLowerCase();
+  if (popup === undefined || popup === '' || popup === 'false') return false;
+  if (popup === 'listbox') return true;
+  return controlsListbox(element);
+}
+
+/** An `aria-controls` / `aria-owns` id of `element` names a `role="listbox"`. */
+function controlsListbox(element: Element): boolean {
+  const doc = element.ownerDocument;
+  for (const attr of ['aria-controls', 'aria-owns']) {
+    for (const id of (element.getAttribute(attr) ?? '').split(/\s+/)) {
+      if (id !== '' && doc.getElementById(id)?.getAttribute('role') === 'listbox') return true;
+    }
+  }
+  return false;
 }
 
 /**
