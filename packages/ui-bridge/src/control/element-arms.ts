@@ -88,7 +88,7 @@ export function textEntryArm(
 }
 
 /**
- * `type`: append the text to a text field, or — on a date, time or colour
+ * `type`: append the text to a text field or a hidden `<input>`, or — on a date, time or colour
  * `<input>`, whose value the browser sanitizes whole — make the text its whole
  * value. `clearFirst` empties a text field before appending (`clear: true`).
  */
@@ -97,7 +97,11 @@ export function typeArm(
 ): ArmOutcome<{ apply: (text: string, clearFirst: boolean) => void }> {
   const control = typeControl(element);
   if (!control) {
-    return refused('type', element, `${TEXT_ENTRY_TARGETS}, or ${FORMATTED_VALUE_TARGETS}`);
+    return refused(
+      'type',
+      element,
+      `${TEXT_ENTRY_TARGETS}, ${FORMATTED_VALUE_TARGETS}, or a hidden <input>`
+    );
   }
   const whole = formattedValueInput(control) !== null;
   return {
@@ -121,7 +125,7 @@ export function clearArm(element: HTMLElement): ArmOutcome<{ apply: () => void }
     return refused(
       'clear',
       element,
-      `${TEXT_ENTRY_TARGETS}, ${FORMATTED_VALUE_TARGETS}, or a file <input>`
+      `${TEXT_ENTRY_TARGETS}, ${FORMATTED_VALUE_TARGETS}, or a hidden or file <input>`
     );
   }
   return {

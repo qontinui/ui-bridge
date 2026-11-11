@@ -835,3 +835,55 @@ describe('toggle on click-toggled state: the framework handler runs on both disp
     }
   );
 });
+
+/**
+ * A hidden `<input>` is not an oracle fixture: it has no rendering, so the
+ * relay refuses every verb on it for visibility (state, not kind), at base and
+ * now. The executor, which the base appended to and cleared one through, does
+ * the value verbs: they are restored and advertised.
+ */
+describe('a hidden input takes type, clear and setValue on the executor', () => {
+  async function onHidden(
+    value: string,
+    verb: StandardAction,
+    params: Record<string, unknown>
+  ): Promise<{ outcome: Outcome; target: HTMLInputElement }> {
+    getGlobalRegistry().clear();
+    host.innerHTML = `<input type="hidden" value="${value}" ${T}>`;
+    const target = host.querySelector(`[${T}]`) as HTMLInputElement;
+    getGlobalRegistry().registerElement('oracle-target', target);
+    return { outcome: await dispatch('executor', verb, params), target };
+  }
+
+  it('advertises type, clear and setValue, and not autocomplete', () => {
+    host.innerHTML = `<input type="hidden" ${T}>`;
+    const el = host.querySelector(`[${T}]`) as HTMLElement;
+    const actions = new UIBridgeRegistry().registerElement('h', el).actions;
+    expect(actions).toEqual(expect.arrayContaining(['type', 'clear', 'setValue']));
+    expect(actions).not.toContain('autocomplete');
+  });
+
+  it('type appends to the value', async () => {
+    const { outcome, target } = await onHidden('tok', 'type', { text: '-en' });
+    expect(outcome).toMatchObject({ success: true });
+    expect(target.value).toBe('tok-en');
+  });
+
+  it('type with clear replaces the value', async () => {
+    const { outcome, target } = await onHidden('old', 'type', { text: 'new', clear: true });
+    expect(outcome).toMatchObject({ success: true });
+    expect(target.value).toBe('new');
+  });
+
+  it('clear empties it', async () => {
+    const { outcome, target } = await onHidden('tok', 'clear', {});
+    expect(outcome).toMatchObject({ success: true });
+    expect(target.value).toBe('');
+  });
+
+  it('setValue writes it whole', async () => {
+    const { outcome, target } = await onHidden('tok', 'setValue', { value: 'abc' });
+    expect(outcome).toMatchObject({ success: true });
+    expect(target.value).toBe('abc');
+  });
+});
