@@ -118,6 +118,33 @@ describe('DefaultActionExecutor — unknown action', () => {
     );
   });
 
+  // The gate resolves an unregistered id in executeAction's own order — the DOM
+  // by identifier before the discovery cache — so the refusal lists the verbs
+  // of the node the action would actually have run on.
+  it('the gate resolves an unregistered id by identifier before the discovery cache', async () => {
+    const button = document.createElement('button');
+    button.className = 'gate-order-probe';
+    button.textContent = 'Save';
+    container.appendChild(button);
+    const found = await executor.find({ selector: '.gate-order-probe' });
+    const row = found.elements[0];
+    expect(row.registered).toBe(false);
+    expect(row.actions).not.toContain('type');
+
+    // A node the DOM resolves by that same id, which executeAction would pick
+    // before the cached row.
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.id = row.id;
+    container.appendChild(input);
+
+    const res = await executor.executeAction(row.id, { action: 'press' });
+
+    expect(res.failureDetails?.errorCode).toBe('UB-UNSUPPORTED-ACTION');
+    expect(res.failureDetails?.context?.supportedActions).toContain('type');
+    expect(res.failureDetails?.context).toMatchObject({ didYouMean: 'sendKeys' });
+  });
+
   it('an unregistered target gets the built-in list and still a suggestion', async () => {
     const res = await executor.executeAction('nowhere', { action: 'dblclick' });
     expect(res.error).toMatch(/^Unknown action 'dblclick'\. Supported: click, hoverClick, /);

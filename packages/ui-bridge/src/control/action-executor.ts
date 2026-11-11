@@ -1328,14 +1328,19 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   /**
-   * The live node an unregistered id names, as `executeAction` would resolve
-   * it: the discovery cache (a `find()` / `discover()` row), else the DOM by
-   * identifier. `undefined` when neither holds a connected node.
+   * The live node an unregistered id names, in `executeAction`'s resolution
+   * order past the registry: the DOM by identifier, then the discovery cache
+   * (a `find()` / `discover()` row). `executeAction` tries the CTR between the
+   * two; this skips it, because the unknown-verb gate that calls it lets a CTR
+   * id carrying a verb through untouched, and resolving one here would
+   * self-heal its selectors (`resolveInDOM`) for a refusal. `undefined` when
+   * neither holds a connected node.
    */
   private resolveUnregisteredNode(elementId: string): HTMLElement | undefined {
+    const byIdentifier = findElementByIdentifier(elementId);
+    if (byIdentifier) return byIdentifier;
     const cached = this.discoveryCache.get(elementId);
-    if (cached?.isConnected) return cached;
-    return findElementByIdentifier(elementId) ?? undefined;
+    return cached?.isConnected ? cached : undefined;
   }
 
   /**
