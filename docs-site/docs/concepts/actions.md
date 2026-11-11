@@ -8,46 +8,75 @@ Actions are operations that can be performed on UI elements. UI Bridge provides 
 
 ## Standard Actions
 
-These actions are automatically available based on element type:
+An element's `actions` list names exactly what both action paths — the SDK/HTTP
+executor and the relay — perform on it. A built-in verb the element does not
+list is refused, with `failureDetails.context.refusal: "element-kind"` on the
+failure, never reported as a success that did nothing. The list is the same
+whichever way the element was found: `registerElement` without an `actions`
+option, auto-registration, `find()` / `discover()`, or the server's DOM
+fallback.
 
-### Button Actions
+### Every element
 
-| Action        | Description                |
-| ------------- | -------------------------- |
-| `click`       | Click the button           |
-| `doubleClick` | Double-click the button    |
-| `rightClick`  | Right-click (context menu) |
-| `focus`       | Focus the button           |
-| `blur`        | Remove focus               |
-| `hover`       | Hover over the button      |
+| Action                                              | Description                                                      |
+| --------------------------------------------------- | ---------------------------------------------------------------- |
+| `click`, `doubleClick`, `rightClick`, `middleClick` | Pointer clicks (refused while the element is hidden or disabled) |
+| `hoverClick`                                        | Force the CSS `:hover` state, then click                         |
+| `hover`, `unhover`                                  | Force / release the CSS `:hover` state                           |
+| `focus`, `blur`                                     | Focus / remove focus                                             |
+| `scroll`, `scrollIntoView`                          | Scroll the element's container / bring the element on screen     |
+| `sendKeys`                                          | Key events to the element: a canvas, a terminal pane, an editor  |
+| `drag`                                              | Drag to a position or onto another element                       |
 
-### Input Actions
+### By what the element is
 
-| Action  | Description              |
-| ------- | ------------------------ |
-| `click` | Click the input          |
-| `type`  | Type text into the input |
-| `clear` | Clear the input value    |
-| `focus` | Focus the input          |
-| `blur`  | Remove focus             |
+| Element                                                                                                                                       | Adds                                        |
+| --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| Text `<input>` (text, search, email, url, tel, password, number), `<textarea>`                                                                | `type`, `clear`, `setValue`, `autocomplete` |
+| Date, time, datetime-local, month, week, colour or hidden `<input>`                                                                           | `type`, `clear`, `setValue`                 |
+| Range `<input>`                                                                                                                               | `setValue`                                  |
+| File `<input>`                                                                                                                                | `clear`                                     |
+| `<select>`                                                                                                                                    | `select`, `setValue`                        |
+| `role="combobox"`; `aria-haspopup="listbox"`; any other non-`false` `aria-haspopup` whose `aria-controls` / `aria-owns` is a `role="listbox"` | `select`                                    |
+| Checkbox `<input>`, `role="checkbox"`, `role="switch"`, `role="menuitemcheckbox"`                                                             | `check`, `uncheck`, `toggle`                |
+| Radio `<input>`                                                                                                                               | `check`, `uncheck`                          |
+| `role="radio"`, `role="menuitemradio"`                                                                                                        | `check`                                     |
+| `<details>`, the `<summary>` of a `<details>`, `<dialog>`, a control carrying `aria-expanded`                                                 | `toggle`                                    |
+| A toggle button (`aria-pressed`)                                                                                                              | `toggle`                                    |
+| A `<form>`, or any element inside one or owned by one through `form="…"`                                                                      | `submit`, `reset`                           |
 
-### Select Actions
+An ARIA textbox (`role="textbox"`, or a contenteditable element) takes none of
+the value verbs: `sendKeys` is how it is typed into. A date, time or colour
+`<input>` holds one formatted value the browser sanitizes whole, so `type`
+writes the typed text as that whole value (`type "10:30"` sets a time input to
+10:30) and `clear` empties it — a colour, which cannot be empty, returns to
+`#000000`. A hidden `<input>` is appended to and cleared like a text field
+(through the HTTP executor; the relay refuses every verb on an invisible
+element). `clear` on a file `<input>` empties its selection; nothing can type
+a value into one. A radio, `role="radio"` or `role="menuitemradio"` only
+selects — clicking a checked one changes nothing — so it takes `check`, never
+`toggle`.
 
-| Action   | Description      |
-| -------- | ---------------- |
-| `click`  | Click the select |
-| `select` | Select an option |
-| `focus`  | Focus the select |
-| `blur`   | Remove focus     |
+### Verbs no longer advertised
 
-### Checkbox/Radio Actions
+Before the four inference paths converged on one table, some of them listed
+verbs that, on that element, failed, reported success over an unchanged page,
+or did something other than the verb means (rewrote a button's label, clicked
+a radio on but never off, wrote a clamped range value). Those verbs are now refused with
+`failureDetails.context.refusal: "element-kind"`. Each has a replacement:
 
-| Action    | Description            |
-| --------- | ---------------------- |
-| `click`   | Toggle the checkbox    |
-| `check`   | Check (set to true)    |
-| `uncheck` | Uncheck (set to false) |
-| `toggle`  | Toggle current state   |
+| Element                                                                    | No longer listed            | What it did                                                                                             | Use instead                                                   |
+| -------------------------------------------------------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| Reset or image `<input>`                                                   | `type`, `clear`, `setValue` | Rewrote the button's label                                                                              | `click` (or `reset` / `submit` on the form)                   |
+| Radio `<input>`, `role="radio"`                                            | `toggle`                    | Clicked; a checked radio stayed checked                                                                 | `check` (`uncheck` on a radio `<input>`)                      |
+| Radio `<input>`, `role="radio"`, `<option>`, `role="option"`, `role="tab"` | `select`                    | Listed by auto-registration only; `select` refused them                                                 | `click`, or `select` on the owning `<select>` / combobox      |
+| Range `<input>`                                                            | `type`, `clear`             | `type` appended characters and wrote a wrong value; `clear` changed nothing (an empty range snaps back) | `setValue`                                                    |
+| `role="textbox"`, contenteditable                                          | `type`, `clear`, `setValue` | Failed, or reported success with nothing changed                                                        | `sendKeys`                                                    |
+| `role="listbox"`                                                           | `select`, `setValue`        | Failed, or reported success with nothing changed                                                        | `click` its option, or `select` on the combobox that opens it |
+| `role="combobox"` that is not an `<input>`                                 | `setValue`, `type`          | Failed, or reported success with nothing changed                                                        | `select`                                                      |
+| `role="slider"`, `role="spinbutton"` that is not an `<input>`              | `setValue`                  | Failed, or reported success with nothing changed                                                        | `sendKeys` (arrow keys), or `drag` a slider                   |
+| File `<input>`                                                             | `type`, `setValue`          | Threw: a script cannot write a file into one                                                            | none; `clear` empties the selection                           |
+| `<summary>` outside a `<details>`                                          | `toggle`                    | Clicked an element with nothing to disclose                                                             | `click`                                                       |
 
 ## Using Actions
 

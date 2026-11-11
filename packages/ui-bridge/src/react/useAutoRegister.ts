@@ -26,7 +26,8 @@ import {
   readTitleAttr,
   readInnerText,
 } from '../core/a11y';
-import type { ElementType, StandardAction, ElementLogLevel } from '../core/types';
+import type { ElementLogLevel } from '../core/types';
+import { inferActions, inferElementType } from '../core/element-kind';
 import type { ContentDiscoveryOptions } from './content-discovery';
 import {
   CONTENT_SELECTORS,
@@ -128,7 +129,7 @@ const INTERACTIVE_SELECTORS = [
   'input:not([type="hidden"])',
   'select',
   'textarea',
-  'details', // Disclosure widget — registered with a `toggle` action (Item 2)
+  'details', // Disclosure widget — a `disclosure`, which toggles (Item 2)
   '[role="button"]',
   '[role="link"]',
   '[role="checkbox"]',
@@ -187,105 +188,6 @@ const EMPTY_SELECTORS: string[] = [];
  * full-document style pass. The initial scan walks the whole root, as before.
  */
 const MUTATION_BACKGROUND_SCAN_LIMIT = 500;
-
-/**
- * Infer element type from DOM element
- */
-function inferElementType(element: HTMLElement): ElementType {
-  const role = element.getAttribute('role');
-  if (role) {
-    const roleMap: Record<string, ElementType> = {
-      button: 'button',
-      link: 'link',
-      checkbox: 'checkbox',
-      radio: 'radio',
-      menuitem: 'menuitem',
-      tab: 'tab',
-      switch: 'switch',
-      slider: 'slider',
-      combobox: 'combobox',
-      listbox: 'listbox',
-      option: 'option',
-      textbox: 'textbox',
-    };
-    if (role in roleMap) {
-      return roleMap[role];
-    }
-  }
-
-  const tagName = element.tagName.toLowerCase();
-  switch (tagName) {
-    case 'a':
-      return 'link';
-    case 'button':
-      return 'button';
-    case 'input': {
-      const type = (element as HTMLInputElement).type?.toLowerCase() || 'text';
-      switch (type) {
-        case 'checkbox':
-          return 'checkbox';
-        case 'radio':
-          return 'radio';
-        case 'range':
-          return 'slider';
-        case 'submit':
-        case 'button':
-          return 'button';
-        default:
-          return 'input';
-      }
-    }
-    case 'select':
-      return 'select';
-    case 'textarea':
-      return 'textarea';
-    case 'option':
-      return 'option';
-    case 'details':
-    case 'summary':
-      return 'disclosure';
-    default:
-      return 'generic';
-  }
-}
-
-/**
- * Infer actions for element type
- */
-function inferActions(type: ElementType): StandardAction[] {
-  const baseActions: StandardAction[] = ['focus', 'blur'];
-
-  const typeActions: Record<ElementType, StandardAction[]> = {
-    button: [...baseActions, 'click', 'hover', 'unhover', 'middleClick'],
-    link: [...baseActions, 'click', 'hover', 'unhover'],
-    input: [...baseActions, 'type', 'clear', 'click'],
-    textarea: [...baseActions, 'type', 'clear', 'click'],
-    textbox: [...baseActions, 'type', 'clear', 'click'],
-    checkbox: [...baseActions, 'check', 'uncheck', 'toggle', 'click'],
-    radio: [...baseActions, 'click', 'select'],
-    select: [...baseActions, 'select', 'click'],
-    combobox: [...baseActions, 'select', 'type', 'click'],
-    listbox: [...baseActions, 'select', 'click'],
-    option: [...baseActions, 'select', 'click'],
-    switch: [...baseActions, 'toggle', 'click'],
-    slider: [...baseActions, 'setValue', 'click', 'drag'],
-    tab: [...baseActions, 'click', 'select', 'middleClick'],
-    menuitem: [...baseActions, 'click'],
-    dialog: [...baseActions],
-    disclosure: [...baseActions, 'click', 'toggle'],
-    menu: [...baseActions],
-    form: [...baseActions, 'submit', 'reset'],
-    custom: [...baseActions, 'click'],
-    generic: [...baseActions, 'click'],
-    image: [],
-    video: [],
-    canvas: [],
-    svg: [],
-    picture: [],
-  };
-
-  return typeActions[type] || baseActions;
-}
 
 /**
  * Get accessible label for element
@@ -887,9 +789,9 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
         return;
       }
 
-      // Item 2 — `<details>` gets a stable `details-<summary-slug>` id and
-      // a `toggle` action up front, so disclosure widgets become drivable
-      // without `useUIElement`. `data-ui-bridge-test-id` still wins (Item 10).
+      // Item 2 — `<details>` gets a stable `details-<summary-slug>` id (its
+      // `toggle` comes from the verb table, as a `disclosure`).
+      // `data-ui-bridge-test-id` still wins (Item 10).
       const isDetails = element.tagName.toLowerCase() === 'details';
 
       // If the element already carries a `data-ui-bridge-id` — e.g. a
@@ -938,12 +840,10 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
         return;
       }
 
+      // The one inferrer and verb table (`core/element-kind`): a `<details>`
+      // is a `disclosure`, which toggles, like every other path reports it.
       const type = inferElementType(element);
-      // `<details>` gets the dedicated `toggle` action only — interactive-hover
-      // and focus are still useful to expose so existing workflows keep working.
-      const actions: StandardAction[] = isDetails
-        ? ['toggle', 'focus', 'blur']
-        : inferActions(type);
+      const actions = inferActions(type, element);
       const label = getAccessibleLabel(element);
 
       const registered = bridge.registry.registerElement(id, element, {

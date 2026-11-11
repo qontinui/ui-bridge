@@ -18,6 +18,7 @@ import type { SearchEngine } from './search-engine';
 import { probeLiteralMatches } from './search-engine';
 import { decomposeTarget, isSoftTypeHint } from './target-decomposer';
 import type { DecomposedTarget } from './target-decomposer';
+import { answersToNamedType } from '../core/element-kind';
 
 // ============================================================================
 // Types
@@ -426,9 +427,11 @@ export function find(
     // B2 — strict mode disables B4's hard-pinned synonym relaxation.
     opts.strict !== true
   ) {
-    const cachedTypeLower = String(criteria.type).toLowerCase();
+    const namedType = String(criteria.type);
     const cachedSummaries = engine.getCachedElementSummaries();
-    const typeIsPresent = cachedSummaries.some((el) => el.type.toLowerCase() === cachedTypeLower);
+    // The named type answers for its family, as the search's own type match
+    // does (`core/element-kind` `answersToNamedType`).
+    const typeIsPresent = cachedSummaries.some((el) => answersToNamedType(el.type, namedType));
     if (!typeIsPresent) {
       const relaxed: SearchCriteria = { ...criteria };
       delete relaxed.type;
@@ -462,11 +465,7 @@ export function find(
       });
       // Re-apply the same context/state/ordinal filters so the debug list
       // reflects the same view the primary search saw.
-      let debugResults = applyContextScoring(
-        debugResponse.results,
-        opts.context || {},
-        engine
-      );
+      let debugResults = applyContextScoring(debugResponse.results, opts.context || {}, engine);
       if (decomposed.stateFilter) {
         debugResults = applyStateFilter(debugResults, decomposed.stateFilter);
       }
@@ -476,9 +475,7 @@ export function find(
       // Sort by confidence (applyContextScoring already sorts, but state /
       // ordinal filters can disturb order) and take the top N.
       debugResults.sort((a, b) => b.confidence - a.confidence);
-      alternatives = debugResults
-        .slice(0, DEBUG_ALTERNATIVES_LIMIT)
-        .map((r) => toCandidate(r));
+      alternatives = debugResults.slice(0, DEBUG_ALTERNATIVES_LIMIT).map((r) => toCandidate(r));
     }
 
     return {

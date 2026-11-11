@@ -34,7 +34,11 @@ Returns all registered elements.
       "id": "submit-btn",
       "type": "button",
       "label": "Submit Button",
-      "actions": ["click", "focus", "blur", "hover"],
+      "actions": [
+        "click", "hoverClick", "doubleClick", "rightClick", "middleClick",
+        "sendKeys", "focus", "blur", "hover", "unhover", "scroll",
+        "scrollIntoView", "drag"
+      ],
       "state": {
         "visible": true,
         "enabled": true,
@@ -62,7 +66,11 @@ Get details for a specific element.
     "id": "email-input",
     "type": "input",
     "label": "Email Input",
-    "actions": ["click", "type", "clear", "focus", "blur"],
+    "actions": [
+      "click", "hoverClick", "doubleClick", "rightClick", "middleClick",
+      "type", "sendKeys", "clear", "focus", "blur", "hover", "unhover",
+      "scroll", "scrollIntoView", "setValue", "drag", "autocomplete"
+    ],
     "identifier": {
       "uiId": "email-input",
       "xpath": "/html/body/form/input",

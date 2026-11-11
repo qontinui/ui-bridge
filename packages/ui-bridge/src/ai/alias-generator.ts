@@ -114,8 +114,15 @@ const SYNONYMS: Record<string, string[]> = {
 const ELEMENT_ACTION_WORDS: Record<string, string[]> = {
   button: ['button', 'btn', 'click'],
   input: ['input', 'field', 'textbox', 'box'],
+  // An ARIA textbox (role="textbox", a contenteditable) is named like an input.
+  textbox: ['textbox', 'input', 'field', 'box', 'editor'],
   textarea: ['textarea', 'text area', 'text field', 'multiline'],
   select: ['select', 'dropdown', 'combo', 'picker', 'chooser'],
+  // ARIA comboboxes and listboxes are named like a native select.
+  combobox: ['combobox', 'combo', 'dropdown', 'select', 'picker', 'chooser'],
+  listbox: ['listbox', 'list', 'select', 'picker', 'chooser'],
+  option: ['option', 'choice', 'item'],
+  disclosure: ['disclosure', 'details', 'expander', 'accordion'],
   checkbox: ['checkbox', 'check', 'tick'],
   radio: ['radio', 'option', 'choice'],
   link: ['link', 'anchor', 'href'],
@@ -626,7 +633,7 @@ export function generatePurpose(input: AliasGeneratorInput): string | undefined 
     return 'Selects one option from a group';
   }
 
-  if (type === 'select') {
+  if (type === 'select' || type === 'combobox' || type === 'listbox') {
     return 'Selects an option from a dropdown';
   }
 
@@ -670,7 +677,13 @@ export function generateSuggestedActions(input: AliasGeneratorInput): string[] {
       actions.push(`type into "${text || 'this text area'}"`);
       actions.push('clear the content');
       break;
+    case 'textbox':
+      // No value to write: keyboard input is how an ARIA textbox is typed into.
+      actions.push(`send keys to "${text || 'this text box'}"`);
+      break;
     case 'select':
+    case 'combobox':
+    case 'listbox':
       actions.push(`select an option from "${text || 'this dropdown'}"`);
       break;
     case 'checkbox':
