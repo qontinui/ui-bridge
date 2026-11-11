@@ -14,21 +14,32 @@
  *   - A5: the whole-request hops hand the request on minus their own keys, not
  *     by a field list, so a field that a later `@qontinui/ui-bridge` adds is
  *     carried even though this package's list predates it.
+ *   - The route's body-to-request split is a second copy of the engine's, so a
+ *     table runs both copies over the same bodies.
  *
- * Every expectation is a hand-written literal.
+ * Every expectation is a hand-written literal, except where a test compares
+ * this package's copy with the engine's.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { COMPONENT_ACTION_REQUEST_FIELDS } from './component-action-request';
-// The engine's list, read from source: this package resolves
-// `@qontinui/ui-bridge` by range, and no published version exports it.
-import { COMPONENT_ACTION_REQUEST_FIELDS as ENGINE_FIELDS } from '../../ui-bridge/src/server/component-action-invocation';
+import {
+  COMPONENT_ACTION_REQUEST_FIELDS,
+  componentActionInvocation,
+  withCheckedFields,
+} from './component-action-request';
+// The engine's list and split, read from source: this package resolves
+// `@qontinui/ui-bridge` by range, and no published version exports them.
+import {
+  COMPONENT_ACTION_REQUEST_FIELDS as ENGINE_FIELDS,
+  componentActionInvocation as engineComponentActionInvocation,
+} from '../../ui-bridge/src/server/component-action-invocation';
 import { createHandlers, type RegistryLike } from './handlers';
 import { UIBridgeWSHandler } from './websocket-handler';
 import { createExpressApp, createExpressRouter } from './express';
 import { createNextRouteHandlers } from './nextjs';
+import { StandaloneServer } from './standalone';
 import type { UIBridgeServerHandlers } from './types';
 
 let seen: Array<Record<string, unknown>>;
@@ -220,6 +231,135 @@ describe('the route body becomes the request (invokeComponentAction)', () => {
   });
 });
 
+/**
+ * This package's `componentActionInvocation` and `@qontinui/ui-bridge`'s, run
+ * over the same bodies. The copy here exists because no published
+ * `@qontinui/ui-bridge` exports the engine's, so this table is what keeps the
+ * two rules in step. Each row is one rule of the split.
+ *
+ * Over these bodies the copies differ in one step, by design: the engine hoists
+ * a request field as it is and leaves it to its executor to validate, while
+ * this package also drops a non-string `requestId` and a non-boolean
+ * `verifyEffect` itself (`withCheckedFields`, A4). So this package's request
+ * must equal the engine's with that step applied, and each copy must hand on
+ * the row's literal.
+ *
+ * Kept out of the table: the relay's routing fields (`tabId`, `targetTabId`,
+ * `__callerUserId`). The engine routes on them and keeps them out of params;
+ * this package has no relay and no caller scoping, so it hands them on as
+ * params. That second difference is pinned by its own test after the table.
+ */
+describe("the route's split is @qontinui/ui-bridge's", () => {
+  const ROWS: Array<{
+    rule: string;
+    actionId: string;
+    body: Record<string, unknown> | undefined;
+    /** The request this package hands on. */
+    request: Record<string, unknown>;
+    /** The request the engine hands on, where it differs from `request`. */
+    engineRequest?: Record<string, unknown>;
+  }> = [
+    {
+      rule: 'hoists every listed request field',
+      actionId: 'submit',
+      body: { timeoutMs: 900, requestId: 'req-p', verifyEffect: true, a: 1 },
+      request: {
+        action: 'submit',
+        params: { a: 1 },
+        timeoutMs: 900,
+        requestId: 'req-p',
+        verifyEffect: true,
+      },
+    },
+    {
+      rule: 'makes every unknown key a param',
+      actionId: 'submit',
+      body: { user: 'ada', size: 1, futureOptIn: 'x' },
+      request: { action: 'submit', params: { user: 'ada', size: 1, futureOptIn: 'x' } },
+    },
+    {
+      rule: 'lets an explicit params object win over a flat key',
+      actionId: 'submit',
+      body: { size: 1, user: 'ada', params: { size: 2, extra: true } },
+      request: { action: 'submit', params: { size: 2, user: 'ada', extra: true } },
+    },
+    {
+      rule: 'keeps a body key named action a param, the route naming the action',
+      actionId: 'dispatch',
+      body: { action: 'increment' },
+      request: { action: 'dispatch', params: { action: 'increment' } },
+    },
+    {
+      rule: 'never makes a malformed requestId or verifyEffect a param',
+      actionId: 'submit',
+      body: { requestId: 42, verifyEffect: 'true', a: 1 },
+      request: { action: 'submit', params: { a: 1 } },
+      engineRequest: { action: 'submit', params: { a: 1 }, requestId: 42, verifyEffect: 'true' },
+    },
+    {
+      rule: 'keeps a key named like an Object.prototype member a param',
+      actionId: 'submit',
+      body: { toString: 'x' },
+      request: { action: 'submit', params: { toString: 'x' } },
+    },
+    {
+      rule: 'ignores a params that is not an object',
+      actionId: 'submit',
+      body: { params: ['x'], a: 1 },
+      request: { action: 'submit', params: { a: 1 } },
+    },
+    {
+      rule: 'reads no body as no params',
+      actionId: 'submit',
+      body: undefined,
+      request: { action: 'submit', params: {} },
+    },
+  ];
+
+  it.each(ROWS.map((row) => [row.rule, row] as const))('%s', (_rule, row) => {
+    const here = componentActionInvocation(row.actionId, row.body);
+    const engine = engineComponentActionInvocation(row.actionId, row.body).request;
+
+    expect(here).toStrictEqual(withCheckedFields(engine));
+    expect(here).toStrictEqual(row.request);
+    expect(engine).toStrictEqual(row.engineRequest ?? row.request);
+  });
+
+  // The routing-key difference the table cannot carry (every row asserts the
+  // copies agree): pinned here so a change to either side's handling of it
+  // fails a test instead of only contradicting the docblock above.
+  it('differs on the relay routing keys: kept as params here, routed by the engine', () => {
+    // At the top level of the body: the engine lifts each into routing.
+    const flat = { tabId: 't1', targetTabId: 't2', __callerUserId: 'u0', a: 1 };
+    // Inside an explicit params: the engine drops each, and strips the
+    // reserved key at any depth; routing reads only the body's top level.
+    const explicit = {
+      params: {
+        tabId: 'p1',
+        targetTabId: 'p2',
+        __callerUserId: 'p0',
+        b: 2,
+        inner: { __callerUserId: 'u1' },
+      },
+    };
+
+    expect(componentActionInvocation('submit', flat).params).toStrictEqual(flat);
+    expect(engineComponentActionInvocation('submit', flat).request.params).toStrictEqual({ a: 1 });
+    expect(engineComponentActionInvocation('submit', flat).routing).toStrictEqual({
+      tabId: 't1',
+      targetTabId: 't2',
+      __callerUserId: 'u0',
+    });
+
+    expect(componentActionInvocation('submit', explicit).params).toStrictEqual(explicit.params);
+    expect(engineComponentActionInvocation('submit', explicit).request.params).toStrictEqual({
+      b: 2,
+      inner: {},
+    });
+    expect(engineComponentActionInvocation('submit', explicit).routing).toStrictEqual({});
+  });
+});
+
 describe('POST /control/component/:id/action/:actionId reaches the action through every adapter', () => {
   const BASE = '/ui-bridge';
   const PATH = `${BASE}/control/component/login-form/action/submit`;
@@ -233,10 +373,16 @@ describe('POST /control/component/:id/action/:actionId reaches the action throug
   };
 
   let server: Server | undefined;
+  let standalone: StandaloneServer | undefined;
 
   afterEach(async () => {
     if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
     server = undefined;
+    // Cleared before the await: a stop() that rejects (after a start() that
+    // failed) must not leave the dead instance for the next test's cleanup.
+    const started = standalone;
+    standalone = undefined;
+    await started?.stop();
   });
 
   async function listen(app: Parameters<typeof createServer>[1]): Promise<number> {
@@ -254,12 +400,28 @@ describe('POST /control/component/:id/action/:actionId reaches the action throug
     return listen(app);
   }
 
+  /**
+   * StandaloneServer, which serves the same route table with its own router,
+   * on a port the OS picks. The port is given explicitly because the default
+   * is 9876, the live runner's.
+   */
+  async function standaloneServer(): Promise<number> {
+    standalone = new StandaloneServer(makeHandlers(), {
+      host: '127.0.0.1',
+      port: 0,
+      log: () => {},
+    });
+    await standalone.start();
+    return standalone.getAddress()!.port;
+  }
+
   it.each([
     [
       'createExpressApp',
       () => listen(createExpressApp(makeHandlers()) as Parameters<typeof createServer>[1]),
     ],
     ['createExpressRouter({ useBodyParser: true })', routerApp],
+    ['StandaloneServer', standaloneServer],
   ])('through %s', async (_name, start) => {
     const port = await start();
 
@@ -269,8 +431,12 @@ describe('POST /control/component/:id/action/:actionId reaches the action throug
       body: JSON.stringify(BODY),
     });
 
-    expect(response.status).toBe(200);
-    expect(((await response.json()) as Record<string, unknown>).success).toBe(true);
+    // Status and body together, so a 500 fails with its error text in the diff
+    // (StandaloneServer's log is silenced here).
+    expect({ status: response.status, body: await response.json() }).toMatchObject({
+      status: 200,
+      body: { success: true },
+    });
     expect(seen).toEqual([EXPECTED]);
   });
 

@@ -126,8 +126,8 @@
 //     is precisely what makes `ui-bridge` and `@anthropic/ui-bridge` failures
 //     rather than "some external package".
 //   - The SUBPATH and SYMBOLS of a first-party package this repo declares but
-//     does not contain — `@qontinui/ui-bridge-auto`, a `packages/ui-bridge`
-//     peer dep that lives in a sibling repo. See readDeclaredExternalPackages.
+//     does not contain — `@qontinui/ui-bridge-auto`, a root devDependency
+//     that lives in a sibling repo. See readDeclaredExternalPackages.
 //     Only its PACKAGE NAME is checked — it must appear in the root or a
 //     `packages/*` manifest and sit in an owned scope, so a typo of it still
 //     fails. Its SUBPATH and its SYMBOLS are NOT checked: there is no `exports`
@@ -418,8 +418,8 @@ function readWorkspacePackages() {
  * Why this set has to exist. IN_SCOPE_PACKAGE claims every specifier whose name
  * mentions `ui-bridge`, but the resolution universe is `packages/*` alone. That
  * gap makes the checker assert `unknown-package` — "not a package in this
- * workspace" — about `@qontinui/ui-bridge-auto`, which `packages/ui-bridge`
- * names in its own `peerDependencies` and which lives in a sibling repo that
+ * workspace" — about `@qontinui/ui-bridge-auto`, which the root manifest
+ * names in its `devDependencies` and which lives in a sibling repo that
  * simply is not checked out here. Documenting it is correct; the verdict was
  * the thing that was wrong. Declaring correct documentation to be debt and
  * parking it in the ledger would be the exact "widen the exclusions until it
