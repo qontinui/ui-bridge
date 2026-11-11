@@ -65,6 +65,7 @@ import {
   forcePseudoState,
   releaseHeldAfterDispatch,
   releaseForcedPseudoState,
+  revealSourceOf,
   type ForcedHoverActionReport,
   type ForcedPseudoReleaseReport,
 } from '../control/forced-hover';
@@ -1905,7 +1906,9 @@ export async function executeCommand(
           },
         });
       }
-      const revealSource = { getAllElements: () => registry.getAllElements() };
+      // The registry and its discovery rescan, shared by both relay arms
+      // (`hover`, `hoverClick`), exactly as the executor's `revealSource()`.
+      const revealSource = revealSourceOf(registry);
       try {
         // Custom-action precedence — a registered handler wins over a
         // same-named built-in. This is the SAME defect, and the same fix, as

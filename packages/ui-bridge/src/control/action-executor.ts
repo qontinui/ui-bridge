@@ -165,6 +165,7 @@ import {
   forcePseudoState,
   releaseAfter,
   releaseForcedPseudoState,
+  revealSourceOf,
   type ForcedHoverActionReport,
   type ForcedPseudoElementSource,
   type ForcedPseudoReport,
@@ -3164,10 +3165,13 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   /**
-   * The registry, as the forced-hover module reads it for `revealed`.
+   * The registry, as the forced-hover module reads it for `revealed`: its
+   * elements, and its discovery rescan, so a control the hover reveals is
+   * registered and reported (`appeared: true`) with an id a `click` accepts.
+   * Shared by `hover` and `hoverClick`, and carried into a re-applied hold.
    */
   private revealSource(): ForcedPseudoElementSource {
-    return { getAllElements: () => this.registry.getAllElements() };
+    return revealSourceOf(this.registry);
   }
 
   /**

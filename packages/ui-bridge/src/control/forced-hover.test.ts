@@ -24,7 +24,10 @@ import {
   rewritePseudoSelector,
   selectorHasPseudo,
   composedAncestry,
+  revealSourceOf,
+  RESCAN_TIMEOUT_MS,
   __resetForcedPseudoStateForTest,
+  type ForcedPseudoElementSource,
 } from './forced-hover';
 
 const ATTR = 'data-ui-bridge-pseudo-hover';
@@ -283,6 +286,7 @@ describe('forcePseudoState — bookkeeping (jsdom)', () => {
         unmarkedElements: 0,
         restore: 'nothing_held',
         drift: [],
+        checked: [],
       });
     }
   });
@@ -377,6 +381,7 @@ describe('the hold is one per page, not one per bundle', () => {
     const olderKeys = [
       Symbol.for('ui-bridge.forcedPseudo'),
       Symbol.for('ui-bridge.forcedPseudo@v3'),
+      Symbol.for('ui-bridge.forcedPseudo@v4'),
     ];
     const saved = olderKeys.map((k) => host[k]);
     const older = olderKeys.map(() => ({ version: 3, hold: 'older-shape' }));
@@ -385,7 +390,7 @@ describe('the hold is one per page, not one per bundle', () => {
     document.body.appendChild(el);
     try {
       await forcePseudoState(el, 'hover');
-      expect(older.map((o) => o.hold)).toEqual(['older-shape', 'older-shape']);
+      expect(older.map((o) => o.hold)).toEqual(['older-shape', 'older-shape', 'older-shape']);
       expect((host[KEY] as { hold: unknown }).hold).not.toBeNull();
       expect((await releaseForcedPseudoState()).released).toBe(true);
     } finally {
@@ -553,5 +558,387 @@ describe('releaseAfter — which dispatches release the hold', () => {
     const onRelease = vi.fn();
     await releaseAfter('click', () => undefined, { onRelease });
     expect(onRelease).not.toHaveBeenCalled();
+  });
+});
+
+describe('forcePseudoState — the discovery rescan (Phase 5a, jsdom)', () => {
+  let style: HTMLStyleElement | null = null;
+  let root: HTMLDivElement | null = null;
+
+  // `.late` is an own-`opacity-0 group-hover:opacity-100` control: hidden by its
+  // OWN style at rest, so discovery never admits it until the hover is forced.
+  // `.ghost` never draws. `#rest` draws at rest but is not registered.
+  function setup(): void {
+    style = document.createElement('style');
+    style.textContent = `.late { opacity: 0; } .group:hover .late { opacity: 1; } .ghost { opacity: 0; }`;
+    document.head.appendChild(style);
+    root = document.createElement('div');
+    root.innerHTML = `<div class="group" id="g"><span id="header">h</span><button id="late" class="late">l</button><button id="ghost" class="ghost">g</button><button id="rest">r</button></div>`;
+    document.body.appendChild(root);
+  }
+
+  const el = (id: string): HTMLElement => document.getElementById(id)!;
+  const draws = (e: Element): boolean => {
+    const cs = getComputedStyle(e);
+    return cs.display !== 'none' && cs.visibility !== 'hidden' && parseFloat(cs.opacity) !== 0;
+  };
+
+  /**
+   * A registry whose discovery is modelled on `useAutoRegister`: every `rescan`
+   * registers each candidate that draws right now. `log` records every read and
+   * every rescan, in order.
+   */
+  function discovery(candidates: string[], initial: string[] = ['header']) {
+    const registered = new Map<string, Element>(initial.map((id) => [id, el(id)]));
+    const log: string[] = [];
+    const source: ForcedPseudoElementSource = {
+      getAllElements: () => {
+        log.push('getAllElements');
+        return Array.from(registered, ([id, element]) => ({ id, element }));
+      },
+      rescan: () => {
+        log.push('rescan');
+        for (const id of candidates) {
+          if (!registered.has(id) && draws(el(id))) registered.set(id, el(id));
+        }
+        return { rescanners: 1 };
+      },
+    };
+    return { registered, log, source };
+  }
+
+  afterEach(async () => {
+    await __resetForcedPseudoStateForTest();
+    style?.remove();
+    root?.remove();
+    style = null;
+    root = null;
+  });
+
+  it('rescans once before the `before` snapshot and once after the settle, and never on release', async () => {
+    setup();
+    const d = discovery(['late']);
+    await forcePseudoState(el('header'), 'hover', {
+      registry: d.source,
+      afterMark: () => {
+        d.log.push('afterMark');
+        // Fires during the settle's frame wait: the second rescan must come after it.
+        setTimeout(() => d.log.push('settle-tick'), 0);
+      },
+    });
+    expect(d.log).toEqual([
+      'rescan',
+      'getAllElements',
+      'afterMark',
+      'settle-tick',
+      'rescan',
+      'getAllElements',
+    ]);
+    await releaseForcedPseudoState();
+    expect(d.log.filter((e) => e === 'rescan')).toHaveLength(2);
+  });
+
+  it('an element the post-settle rescan registers is revealed with appeared: true; a non-drawing one is dropped', async () => {
+    setup();
+    const registered = new Map<string, Element>([['header', el('header')]]);
+    let calls = 0;
+    const report = await forcePseudoState(el('header'), 'hover', {
+      registry: {
+        getAllElements: () => Array.from(registered, ([id, element]) => ({ id, element })),
+        rescan: () => {
+          calls += 1;
+          // The post-settle call: a discovery that admits hidden elements too
+          // (`persistWhileMounted`) registers both.
+          if (calls === 2) {
+            registered.set('late', el('late'));
+            registered.set('ghost', el('ghost'));
+          }
+          return { rescanners: 1 };
+        },
+      },
+    });
+    expect(report.revealed).toEqual([
+      expect.objectContaining({
+        id: 'late',
+        appeared: true,
+        changes: expect.arrayContaining([{ property: 'opacity', before: null, after: '1' }]),
+      }),
+    ]);
+    expect(report).toMatchObject({ rescanners: 1, revealedComplete: true });
+    expect(report.revealedIncompleteReason).toBeUndefined();
+    expect(Number.isFinite(report.rescanMs)).toBe(true);
+    expect(report.rescanMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('an element that draws at rest but was never registered is NOT reported as revealed (the baseline rescan)', async () => {
+    setup();
+    const d = discovery(['rest', 'late']);
+    const report = await forcePseudoState(el('header'), 'hover', { registry: d.source });
+    // `#rest` was registered by the baseline call, so it is in `before` and
+    // unchanged. Only the control the hover revealed is reported.
+    expect(report.revealed.map((r) => r.id)).toEqual(['late']);
+    expect(report.revealed[0].appeared).toBe(true);
+    expect(d.registered.has('rest')).toBe(true);
+    const release = await releaseForcedPseudoState();
+    expect(release.restore).toBe('verified');
+    expect(release.drift).toEqual([]);
+  });
+
+  it('release verifies an appeared element: it passes once it stops drawing, and `checked` names it', async () => {
+    setup();
+    const d = discovery(['late']);
+    await forcePseudoState(el('header'), 'hover', { registry: d.source });
+    const release = await releaseForcedPseudoState('explicit');
+    expect(release.restore).toBe('verified');
+    expect(release.checked).toEqual(
+      expect.arrayContaining([
+        { id: 'late', appeared: true, verdict: 'pass' },
+        { id: 'header', appeared: false, verdict: 'pass' },
+      ])
+    );
+    // It stays registered: a later hover reports it with real before values.
+    expect(d.registered.has('late')).toBe(true);
+    const again = await forcePseudoState(el('header'), 'hover', { registry: d.source });
+    expect(again.revealed).toEqual([
+      expect.objectContaining({
+        id: 'late',
+        appeared: false,
+        changes: [{ property: 'opacity', before: '0', after: '1' }],
+      }),
+    ]);
+  });
+
+  it('an appeared element that still draws after release is restored_with_drift, with checked verdict drift', async () => {
+    setup();
+    const d = discovery(['late']);
+    await forcePseudoState(el('header'), 'hover', { registry: d.source });
+    // The app pins it visible during the hold; jsdom has no layout, so give it a box.
+    const late = el('late');
+    late.style.opacity = '1';
+    late.getBoundingClientRect = () => new DOMRect(0, 0, 40, 20);
+    const release = await releaseForcedPseudoState('explicit');
+    expect(release.restore).toBe('restored_with_drift');
+    expect(release.checked).toEqual(
+      expect.arrayContaining([{ id: 'late', appeared: true, verdict: 'drift' }])
+    );
+    expect(release.drift).toEqual(
+      expect.arrayContaining([{ id: 'late', property: 'opacity', before: null, after: '1' }])
+    );
+  });
+
+  it('an appeared element unmounted during the hold is disconnected, which still verifies', async () => {
+    setup();
+    const d = discovery(['late']);
+    await forcePseudoState(el('header'), 'hover', { registry: d.source });
+    el('late').remove();
+    const release = await releaseForcedPseudoState('explicit');
+    expect(release.restore).toBe('verified');
+    expect(release.checked).toEqual(
+      expect.arrayContaining([{ id: 'late', appeared: true, verdict: 'disconnected' }])
+    );
+  });
+
+  it('a throwing rescan makes revealed incomplete (rescan-threw) and never fails the hover', async () => {
+    setup();
+    const registered = [{ id: 'header', element: el('header') }];
+    const report = await forcePseudoState(el('header'), 'hover', {
+      registry: {
+        getAllElements: () => registered,
+        rescan: () => {
+          throw new Error('discovery blew up');
+        },
+      },
+    });
+    expect(report.rulesRewritten).toBe(1);
+    expect(report).toMatchObject({
+      rescanners: 0,
+      revealedComplete: false,
+      revealedIncompleteReason: 'rescan-threw',
+    });
+  });
+
+  it('a rejecting rescan, or one that fails only after the settle, is rescan-threw too', async () => {
+    setup();
+    const rejecting = await forcePseudoState(el('header'), 'hover', {
+      registry: {
+        getAllElements: () => [],
+        rescan: () => Promise.reject(new Error('async blew up')),
+      },
+    });
+    expect(rejecting).toMatchObject({
+      revealedComplete: false,
+      revealedIncompleteReason: 'rescan-threw',
+    });
+    let calls = 0;
+    const late = await forcePseudoState(el('header'), 'hover', {
+      registry: {
+        getAllElements: () => [],
+        rescan: () => {
+          calls += 1;
+          if (calls === 2) throw new Error('post-settle blew up');
+          return { rescanners: 1 };
+        },
+      },
+    });
+    // The baseline call's count is what is known.
+    expect(late).toMatchObject({
+      rescanners: 1,
+      revealedComplete: false,
+      revealedIncompleteReason: 'rescan-threw',
+    });
+  });
+
+  it('a hanging rescan is bounded and reported as rescan-timeout', async () => {
+    setup();
+    const started = Date.now();
+    const report = await forcePseudoState(el('header'), 'hover', {
+      registry: {
+        getAllElements: () => [{ id: 'header', element: el('header') }],
+        rescan: () => new Promise<{ rescanners: number }>(() => undefined),
+      },
+    });
+    const elapsed = Date.now() - started;
+    expect(report).toMatchObject({
+      revealedComplete: false,
+      revealedIncompleteReason: 'rescan-timeout',
+    });
+    // Two bounded calls, not an unbounded wait.
+    expect(elapsed).toBeGreaterThanOrEqual(2 * RESCAN_TIMEOUT_MS - 20);
+    expect(elapsed).toBeLessThan(2 * RESCAN_TIMEOUT_MS + 1_000);
+    expect(getForcedPseudoState()).not.toBeNull();
+  });
+
+  it('a rescan whose SYNCHRONOUS scan overruns the budget is rescan-timeout, though its registrations landed', async () => {
+    setup();
+    const registered = new Map<string, Element>([['header', el('header')]]);
+    let calls = 0;
+    const report = await forcePseudoState(el('header'), 'hover', {
+      registry: {
+        getAllElements: () => Array.from(registered, ([id, element]) => ({ id, element })),
+        // The shape of `UIBridgeRegistry.requestDiscoveryRescan`: all the work
+        // is synchronous and the promise is already settled when it returns.
+        rescan: () => {
+          calls += 1;
+          if (calls === 2) {
+            const end = performance.now() + RESCAN_TIMEOUT_MS + 50;
+            while (performance.now() < end) {
+              // a slow synchronous scan
+            }
+            registered.set('late', el('late'));
+          }
+          return Promise.resolve({ rescanners: 1 });
+        },
+      },
+    });
+    expect(report).toMatchObject({
+      rescanners: 1,
+      revealedComplete: false,
+      revealedIncompleteReason: 'rescan-timeout',
+    });
+    expect(report.rescanMs).toBeGreaterThanOrEqual(RESCAN_TIMEOUT_MS + 50);
+    // Late, not lost: what it registered is still reported.
+    expect(report.revealed).toEqual([expect.objectContaining({ id: 'late', appeared: true })]);
+  });
+
+  it('a baseline that ran no rescanner is never a complete reveal, even when the post-settle call ran one', async () => {
+    setup();
+    const d = discovery(['rest', 'late']);
+    let calls = 0;
+    const report = await forcePseudoState(el('header'), 'hover', {
+      registry: {
+        getAllElements: d.source.getAllElements,
+        // No discovery installed for the baseline; one installed by the
+        // post-settle call (a provider that mounted in between).
+        rescan: () => {
+          calls += 1;
+          if (calls === 1) return { rescanners: 0 };
+          return d.source.rescan!();
+        },
+      },
+    });
+    expect(report).toMatchObject({
+      rescanners: 1,
+      revealedComplete: false,
+      revealedIncompleteReason: 'no-baseline-rescanner',
+    });
+    // Exactly the false `appeared` the flag exists for: `#rest` drew at rest.
+    expect(report.revealed.map((r) => r.id).sort()).toEqual(['late', 'rest']);
+  });
+
+  it('after a replaced release the baseline rescan runs, so it never sees the old hold', async () => {
+    setup();
+    const d = discovery(['late']);
+    const marks = (): number => document.querySelectorAll(`[${ATTR}]`).length;
+    const source: ForcedPseudoElementSource = {
+      getAllElements: d.source.getAllElements,
+      rescan: () => {
+        d.log.push(`rescan:marks=${marks()}`);
+        return d.source.rescan!();
+      },
+    };
+    // The replaced release sends the leave events a real pointer would.
+    el('g').addEventListener('mouseleave', () => d.log.push('release:leave'));
+    await forcePseudoState(el('header'), 'hover', { registry: source });
+    const chain = composedAncestry(el('header')).length;
+    const second = await forcePseudoState(el('header'), 'hover', { registry: source });
+    expect(second.replaced).toMatchObject({ released: true, reason: 'replaced' });
+    const calls = d.log.filter((e) => e !== 'getAllElements' && e !== 'rescan');
+    expect(calls).toEqual([
+      'rescan:marks=0',
+      `rescan:marks=${chain}`,
+      'release:leave',
+      'rescan:marks=0',
+      `rescan:marks=${chain}`,
+    ]);
+  });
+
+  it('rescanners: 0 is reported as is, and never as a complete reveal', async () => {
+    setup();
+    const none = await forcePseudoState(el('header'), 'hover', {
+      registry: { getAllElements: () => [], rescan: () => ({ rescanners: 0 }) },
+    });
+    expect(none).toMatchObject({
+      rescanners: 0,
+      revealedComplete: false,
+      revealedIncompleteReason: 'no-rescanner',
+    });
+    // A source without `rescan` computes `revealed` exactly as before, and says
+    // no discovery ran.
+    const plain = await forcePseudoState(el('header'), 'hover', {
+      registry: {
+        getAllElements: () => [
+          { id: 'header', element: el('header') },
+          { id: 'late', element: el('late') },
+        ],
+      },
+    });
+    expect(plain.revealed).toEqual([
+      expect.objectContaining({
+        id: 'late',
+        appeared: false,
+        changes: [{ property: 'opacity', before: '0', after: '1' }],
+      }),
+    ]);
+    expect(plain).toMatchObject({
+      rescanners: 0,
+      revealedComplete: false,
+      revealedIncompleteReason: 'no-rescanner',
+    });
+  });
+
+  it('revealSourceOf adapts a registry, and degrades to no rescan when the registry has none', async () => {
+    let rescans = 0;
+    const withRescan = revealSourceOf({
+      getAllElements: () => [],
+      requestDiscoveryRescan: async () => {
+        rescans += 1;
+        return { rescanners: 2 };
+      },
+    });
+    expect(await withRescan.rescan!()).toEqual({ rescanners: 2 });
+    expect(rescans).toBe(1);
+    // A registry from an SDK copy that predates the method.
+    const older = revealSourceOf({ getAllElements: () => [] });
+    expect(older.rescan).toBeUndefined();
   });
 });
