@@ -181,6 +181,37 @@ describe('DefaultActionExecutor — unknown action', () => {
     expect(scanned.failureDetails?.context).toMatchObject({ didYouMean: 'sendKeys' });
   });
 
+  // The gate's id is not the node's registry key, but the node it resolves IS
+  // registered (under another id). Its registration decides — its declared
+  // verbs and custom actions — exactly as it does once performAction resolves
+  // the node, not a re-inference from its tag.
+  it("the gate reads the resolved node's own registration before inferring", async () => {
+    const button = document.createElement('button');
+    button.setAttribute('data-testid', 'alias-save');
+    button.textContent = 'Save';
+    container.appendChild(button);
+    let ran = 0;
+    registry.registerElement('save-button', button, {
+      type: 'button',
+      label: 'Save',
+      actions: ['click', 'focus'],
+      customActions: { publish: { id: 'publish', handler: () => void ran++ } },
+    });
+
+    const res = await executor.executeAction('alias-save', { action: 'press' });
+    expect(res.failureDetails?.errorCode).toBe('UB-UNSUPPORTED-ACTION');
+    expect(res.failureDetails?.context).toEqual({
+      action: 'press',
+      didYouMean: 'click',
+      supportedActions: ['click', 'focus', 'publish'],
+    });
+
+    // A custom action of that registration passes the gate and runs.
+    const custom = await executor.executeAction('alias-save', { action: 'publish' });
+    expect(custom.success).toBe(true);
+    expect(ran).toBe(1);
+  });
+
   it('an unregistered target gets the built-in list and still a suggestion', async () => {
     const res = await executor.executeAction('nowhere', { action: 'dblclick' });
     expect(res.error).toMatch(/^Unknown action 'dblclick'\. Supported: click, hoverClick, /);
