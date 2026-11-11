@@ -314,17 +314,25 @@ function LoginForm() {
 The declaration follows your options across renders. A label that carries state,
 an action that only exists conditionally (with its `effect`), or a `paramSchema`
 that widens after mount reaches the registry on the render that changes it, in
-place, with no unregister in between. The registered handler is always the
-latest render's closure, and `updateActions`, `addElement` and `removeElement`
-publish immediately. The `useUIComponent` exported from `@qontinui/ui-bridge/native`
-behaves the same from `@qontinui/ui-bridge` 0.39.0. Earlier versions of that entry
-point published the first render's declaration only.
+place, with no unregister in between. A call runs the handler of the latest
+committed render, and `updateActions`, `addElement` and `removeElement` publish
+immediately. A call to an action that the latest committed render withdrew (one
+that exists only while a row is selected, called just after the row is
+deselected) runs no handler and fails with its own message naming the action,
+even if the registry still lists the action for a moment. Dropping the `actions`
+option altogether withdraws the list it declared the same way. The
+`useUIComponent` exported from `@qontinui/ui-bridge/native` behaves the same from
+`@qontinui/ui-bridge` 0.39.0. Earlier versions of that entry point published the
+first render's declaration only.
 
 One behaviour change comes with it. From 0.39.0, an action list installed with
 `updateActions` is cleared when the component's `id` changes, or when the
 declared `actions` option changes value, and the declared list is published in
 its place. The old `/native` hook kept an `updateActions` list across an `id`
 change (while an inline `actions` array silently reset it on the next render).
+In `@qontinui/ui-bridge-native` an installed list is likewise cleared when the
+declared `actions` option changes value, dropping the option included, but it
+survives a change of `id`, `name` or `description`.
 
 ## Logging Component Renders
 
