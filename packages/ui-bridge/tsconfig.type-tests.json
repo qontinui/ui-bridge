@@ -1,0 +1,26 @@
+{
+  // Type-checks the test files whose TYPE-LEVEL assertions are load-bearing.
+  //
+  // tsconfig.json excludes **/*.test.ts, and vitest strips types without
+  // checking them, so a `// @ts-expect-error` in a test file is otherwise
+  // enforced by NOTHING: it passes whether or not the line it guards still fails
+  // to compile. `npm run typecheck` runs this config too, which makes such a
+  // directive an assertion again. List a file here only when it carries one.
+  //
+  // `files`, not `include`: a listed file that is renamed or deleted is then an
+  // error (TS6053) instead of a check that silently checks nothing.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false
+  },
+  "include": [],
+  "files": [
+    // The Redis relay bus's required constructor: a one-argument
+    // createRedisRelayBus(url) must not type-check (plan
+    // 2026-11-09-webpack-bundles-the-relay-sdks-ioredis-import-so-the-deployed-relay-bus-never-starts, D1).
+    "src/server/relay-bus.redis.test.ts"
+  ]
+}
