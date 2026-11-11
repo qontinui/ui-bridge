@@ -377,25 +377,41 @@ const TEXT_ENTRY_INPUT_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * `<input>` types whose value is SET whole and never typed: a range position,
- * a colour, a date or a time, a hidden value. Typing characters into one only
- * produces a value the browser sanitizes away.
+ * `<input>` types whose value is one formatted value — a date, a time, a
+ * colour — that the browser sanitizes whole: a string it cannot parse becomes
+ * the empty value (`#000000` for a colour, which has no empty value). Both
+ * dispatchers type into one ({@link typeControl}) by writing the typed text as
+ * the whole value, since appending characters to a valid date only produces
+ * one the browser throws away; typing `10:30` into a time input sets 10:30.
+ * `clear` empties one (a colour returns to `#000000`), and `setValue` writes
+ * one. `autocomplete` does not apply: a date or colour field offers no
+ * suggestion list to pick from.
  */
-const VALUE_INPUT_TYPES: ReadonlySet<string> = new Set([
-  'range',
+const FORMATTED_VALUE_INPUT_TYPES: ReadonlySet<string> = new Set([
   'color',
   'date',
   'datetime-local',
   'month',
   'week',
   'time',
-  'hidden',
 ]);
 
 /**
- * The text field `type`, `clear` and `autocomplete` write to: a `<textarea>`,
- * or an `<input>` of a text-entry type. Not a checkbox, radio, file or button
- * `<input>` — their `value` is not text a user types — and not a
+ * `<input>` types whose value is only ever SET whole (`setValue`): a range
+ * position or a hidden value, plus the formatted ones above. Typing
+ * characters into a range or hidden input is no user gesture.
+ */
+const VALUE_INPUT_TYPES: ReadonlySet<string> = new Set([
+  'range',
+  'hidden',
+  ...FORMATTED_VALUE_INPUT_TYPES,
+]);
+
+/**
+ * The text field `autocomplete` (and `sendKeys`' value editing) writes to: a
+ * `<textarea>`, or an `<input>` of a text-entry type. Not a checkbox, radio,
+ * file or button `<input>` — their `value` is not text a user types — not a
+ * date, time or colour `<input>` (see {@link typeControl}), and not a
  * contenteditable, whose text is not a `value` at all.
  */
 export function textEntryControl(element: Element): HTMLInputElement | HTMLTextAreaElement | null {
@@ -404,6 +420,36 @@ export function textEntryControl(element: Element): HTMLInputElement | HTMLTextA
     return element;
   }
   return null;
+}
+
+/** A date, time or colour `<input>` ({@link FORMATTED_VALUE_INPUT_TYPES}). */
+export function formattedValueInput(element: Element): HTMLInputElement | null {
+  return element instanceof HTMLInputElement && FORMATTED_VALUE_INPUT_TYPES.has(element.type)
+    ? element
+    : null;
+}
+
+/**
+ * The field `type` writes to: a text field ({@link textEntryControl}), which
+ * the typed text is appended to, or a date, time or colour `<input>`
+ * ({@link formattedValueInput}), whose whole value the typed text becomes.
+ */
+export function typeControl(element: Element): HTMLInputElement | HTMLTextAreaElement | null {
+  return textEntryControl(element) ?? formattedValueInput(element);
+}
+
+/** A file `<input>`. */
+export function fileInput(element: Element): HTMLInputElement | null {
+  return element instanceof HTMLInputElement && element.type === 'file' ? element : null;
+}
+
+/**
+ * The field `clear` empties: any field `type` writes to, or a file `<input>`,
+ * whose selection it empties (the one value a script may write to a file
+ * input is the empty string).
+ */
+export function clearControl(element: Element): HTMLInputElement | HTMLTextAreaElement | null {
+  return typeControl(element) ?? fileInput(element);
 }
 
 /**
@@ -479,7 +525,9 @@ export function resolveOwnerForm(element: Element): HTMLFormElement | null {
 export function structuralActions(element: Element): StandardAction[] {
   const verbs: StandardAction[] = [];
   if (textEntryControl(element)) verbs.push(...TEXT_ENTRY_VERBS);
+  else if (formattedValueInput(element)) verbs.push('type', 'clear', 'setValue');
   else if (valueControl(element)) verbs.push('setValue');
+  if (fileInput(element)) verbs.push('clear');
   if (element instanceof HTMLSelectElement) verbs.push('select', 'setValue');
   const checkable = checkableInput(element);
   if (checkable) {

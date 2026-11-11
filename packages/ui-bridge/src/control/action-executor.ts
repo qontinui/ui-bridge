@@ -28,7 +28,7 @@ import type { BrowserEventCapture } from '../debug/browser-capture';
 import { classifyEvent, filterBySeverity } from '../debug/error-severity';
 import { computeFingerprint, extractSourceLocation } from '../debug/error-fingerprint';
 import { fillSingleField } from './fill-form';
-import { applyValueMutation, readLiveValue } from './value-mutation';
+import { readLiveValue } from './value-mutation';
 import { autocompleteSelect, comboboxSelect } from './combobox-select';
 import {
   readAriaLabelAttr,
@@ -176,11 +176,13 @@ import { inferActions, inferElementType, textEntryControl } from '../core/elemen
 import {
   ELEMENT_KIND_REFUSAL,
   checkArm,
+  clearArm,
   formOwnerArm,
   selectArm,
   setValueArm,
   textEntryArm,
   toggleArm,
+  typeArm,
   type ElementKindRefusal,
 } from './element-arms';
 
@@ -3230,7 +3232,7 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   private async performType(element: HTMLElement, options?: TypeAction): Promise<void> {
-    const arm = textEntryArm(element, 'type');
+    const arm = typeArm(element);
     if (!arm.ok) throw new ElementKindRefusalError(arm);
 
     // Validate that the caller provided the required `text` parameter.
@@ -3251,15 +3253,11 @@ export class DefaultActionExecutor implements ActionExecutor {
       );
     }
 
-    // Route through the single shared value-mutation helper so the full focus →
-    // input → onChange → change lifecycle is emitted consistently across every
-    // executor surface. `clear` appends after emptying; otherwise we append to
-    // the existing value (preserving the prior per-char-append end state).
-    applyValueMutation(arm.control, {
-      value: options.text,
-      mode: options.clear ? 'clear-then-append' : 'append',
-      blur: false,
-    });
+    // The arm routes through the single shared value-mutation helper, so the
+    // full focus → input → onChange → change lifecycle is emitted on every
+    // executor surface: appended to a text field (after emptying it under
+    // `clear`), or written whole into a date, time or colour input.
+    arm.apply(options.text, options.clear === true);
   }
 
   /**
@@ -3367,9 +3365,9 @@ export class DefaultActionExecutor implements ActionExecutor {
   private performClear(element: HTMLElement): void {
     // Not a silent success on an element with no value to clear: that is a
     // status signal that observes nothing.
-    const arm = textEntryArm(element, 'clear');
+    const arm = clearArm(element);
     if (!arm.ok) throw new ElementKindRefusalError(arm);
-    applyValueMutation(arm.control, { value: '', mode: 'clear', blur: false });
+    arm.apply();
   }
 
   private async performSelect(element: HTMLElement, options?: SelectAction): Promise<void> {
