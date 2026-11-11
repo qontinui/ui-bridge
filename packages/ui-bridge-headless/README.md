@@ -110,9 +110,11 @@ is no handle to receive and nothing to clean up:
 - Before Chromium is spawned, `deviceScaleFactor` and `colorScheme` are
   validated, and the `storageStatePath` file is read, parsed as JSON and
   checked to hold an object whose `cookies` and `origins` are arrays when
-  present. A failure there rejects with no browser launched: with the read
-  error, the JSON parse error, or an error naming the file and what is wrong
-  with its shape. Nothing deeper in the file is checked at this point.
+  present. A failure there rejects with no browser launched: a
+  `deviceScaleFactor` or `colorScheme` failure with its validation error, and
+  a `storageStatePath` failure with the read error, the JSON parse error, or
+  an error naming the file and what is wrong with its shape. Nothing deeper in
+  the file is checked at this point.
 - Once Chromium is running, a step that throws closes the browser first and
   then rejects with the original error: the same error object, not a wrapper,
   and never the close's own failure. The steps are creating the context (which
