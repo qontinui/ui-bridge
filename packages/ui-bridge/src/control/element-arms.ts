@@ -25,6 +25,7 @@
  */
 
 import {
+  ariaCheckedClickMode,
   checkableInput,
   clearControl,
   disclosureDetails,
@@ -167,13 +168,11 @@ export function selectArm(
   );
 }
 
-/** The ARIA roles whose checked state a click flips, read from `aria-checked`. */
-const ARIA_CHECKED_ROLES: ReadonlySet<string> = new Set(['switch', 'checkbox']);
-
 /**
  * `check` / `uncheck`. A checkbox or radio `<input>` is set directly; an ARIA
- * switch or checkbox is clicked when `aria-checked` disagrees, as a user would.
- * An ARIA radio can be checked but never unchecked by clicking it.
+ * switch, checkbox or menu checkbox item is clicked when `aria-checked`
+ * disagrees, as a user would. An ARIA radio or menu radio item can be checked
+ * but never unchecked by clicking it ({@link ariaCheckedClickMode}).
  */
 export function checkArm(
   element: HTMLElement,
@@ -190,8 +189,8 @@ export function checkArm(
       },
     };
   }
-  const role = element.getAttribute('role');
-  if ((role !== null && ARIA_CHECKED_ROLES.has(role)) || (role === 'radio' && checked)) {
+  const mode = ariaCheckedClickMode(element);
+  if (mode === 'flip' || (mode === 'select-only' && checked)) {
     return {
       ok: true,
       apply: () => {
@@ -204,8 +203,9 @@ export function checkArm(
     checked ? 'check' : 'uncheck',
     element,
     checked
-      ? 'a checkbox or radio <input>, or role="checkbox", "radio" or "switch"'
-      : 'a checkbox or radio <input>, or role="checkbox" or "switch"'
+      ? 'a checkbox or radio <input>, or role="checkbox", "switch", "menuitemcheckbox", ' +
+          '"radio" or "menuitemradio"'
+      : 'a checkbox or radio <input>, or role="checkbox", "switch" or "menuitemcheckbox"'
   );
 }
 
@@ -275,11 +275,11 @@ export function toggleArm(element: HTMLElement): ArmOutcome<{ apply: () => void 
     };
   }
 
-  // An ARIA switch or checkbox, a toggle button (aria-pressed) and a menu
-  // checkbox / radio item flip on click: the framework's own handler owns the
-  // state, so the click is the gesture, and the attribute follows it.
-  const role = element.getAttribute('role');
-  if ((role !== null && ARIA_CHECKED_ROLES.has(role)) || hasClickToggledState(element)) {
+  // An ARIA switch, checkbox or menu checkbox item, and a toggle button
+  // (aria-pressed), flip on click: the framework's own handler owns the state,
+  // so the click is the gesture, and the attribute follows it. A radio or menu
+  // radio item only selects, so it is refused here.
+  if (hasClickToggledState(element)) {
     return { ok: true, apply: () => sdkDispatch(() => element.click()) };
   }
 
@@ -287,8 +287,7 @@ export function toggleArm(element: HTMLElement): ArmOutcome<{ apply: () => void 
     'toggle',
     element,
     'a checkbox <input>, <details> or its <summary>, <dialog>, a control carrying ' +
-      'aria-expanded or aria-pressed, or role="checkbox", "switch", "menuitemcheckbox" ' +
-      'or "menuitemradio"'
+      'aria-expanded or aria-pressed, or role="checkbox", "switch" or "menuitemcheckbox"'
   );
 }
 
