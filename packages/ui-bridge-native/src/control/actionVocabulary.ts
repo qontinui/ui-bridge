@@ -53,6 +53,11 @@ export const ACTION_VERB_SYNONYMS: Readonly<Record<string, readonly string[]>> =
   middle: ['middleClick'],
   mouseover: ['hover'],
   mouseenter: ['hover'],
+  // The pointer leaving: `unhover` releases the page's held forced hover, and
+  // dispatches the leave events when one is held. Suggested only where the
+  // element's advertised list carries `unhover`.
+  mouseleave: ['unhover'],
+  mouseout: ['unhover'],
   scrollTo: ['scrollIntoView'],
 });
 
