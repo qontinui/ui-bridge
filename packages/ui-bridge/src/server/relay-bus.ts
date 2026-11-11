@@ -102,43 +102,191 @@ const CMD_BROADCAST = 'uibridge:cmd:broadcast';
 const RESP_PREFIX = 'uibridge:resp:';
 
 /**
- * Minimal ioredis client surface this adapter needs. Declared structurally so
- * the package does not hard-depend on `ioredis` types (it is an
- * optionalDependency, dynamically imported only when a Redis bus is requested).
+ * The Redis client surface this adapter calls: a subset of an ioredis client,
+ * declared structurally so the SDK depends on no Redis package at all. An
+ * ioredis `Redis` instance satisfies it as it stands, with no cast.
  */
-interface RedisLike {
-  publish(channel: string, message: string): unknown;
-  subscribe(...channels: string[]): unknown;
-  unsubscribe(...channels: string[]): unknown;
+export interface RedisLike {
+  /**
+   * The connection's status, which {@link RedisRelayBus.readiness} reads. ioredis
+   * reports `wait` | `reconnecting` | `connecting` | `connect` | `ready` |
+   * `close` | `end`.
+   */
+  readonly status: string;
+  publish(channel: string, message: string): Promise<unknown>;
+  subscribe(...channels: string[]): Promise<unknown>;
+  unsubscribe(...channels: string[]): Promise<unknown>;
   on(event: 'message', cb: (channel: string, message: string) => void): unknown;
+  /** Connection errors. Listening also stops ioredis printing "Unhandled error event". */
+  on(event: 'error', cb: (err: Error) => void): unknown;
   /** SET key value with EX ttl (used: `set(key, '1', 'EX', ttl)`). */
   set(key: string, value: string, mode: string, ttlSeconds: number): Promise<unknown>;
   del(key: string): Promise<unknown>;
   exists(key: string): Promise<number>;
   quit(): Promise<unknown>;
+  /** A second connection with the same options: ioredis's `duplicate()` inherits them. */
   duplicate(): RedisLike;
+}
+
+/**
+ * A Redis client class — in practice the consumer's own `import Redis from
+ * 'ioredis'`, passed as {@link RedisRelayBusOptions.Redis}.
+ *
+ * WHY THE CONSUMER INJECTS IT. The bus used to load ioredis itself, through a
+ * dynamic `import()` whose specifier sat in a variable so that ioredis could stay
+ * an optional dependency of the SDK's own build. A consumer that BUNDLES the SDK
+ * cannot resolve such an import: webpack turns it into an expression context
+ * ("Critical dependency: the request of a dependency is an expression") whose
+ * runtime lookup throws `Cannot find module 'ioredis'` even where ioredis is
+ * installed — which is how qontinui-web's deployed relay bus never started. A
+ * static `import Redis from 'ioredis'` in the consumer's OWN code is a
+ * dependency its bundler and its file tracer both follow, so the SDK takes the
+ * class from the consumer and makes no import of a Redis client at all.
+ */
+export type RedisConstructorLike = new (
+  url: string,
+  options?: Record<string, unknown>
+) => RedisLike;
+
+/** What {@link createRedisRelayBus} and {@link RedisRelayBus.create} build a bus from. */
+export interface RedisRelayBusOptions {
+  /**
+   * The Redis client class to construct. REQUIRED, and there is no fallback: a
+   * call without it is refused with {@link RelayBusInitError} rather than
+   * resolving to a bus that can never connect (see {@link RedisConstructorLike}).
+   */
+  Redis: RedisConstructorLike;
+  /**
+   * Passed to `Redis` as its second argument — e.g. `{ lazyConnect: true }` for
+   * a construction that must open no socket. The subscriber connection inherits
+   * it through `duplicate()`.
+   */
+  redisOptions?: Record<string, unknown>;
+}
+
+/** {@link RedisRelayBus.readiness}: both connections' state, read without sending a Redis command. */
+export interface RelayBusReadiness {
+  /**
+   * `ready` only when BOTH connections are `ready`; `closed` when EITHER has
+   * ended for good (`end`: ioredis will not reconnect it); `not-ready` otherwise,
+   * including while either is still connecting or reconnecting.
+   */
+  state: 'ready' | 'not-ready' | 'closed';
+  /** The publisher connection's status. */
+  pub: string;
+  /** The subscriber connection's status. */
+  sub: string;
+  /**
+   * The most recent connection error or failed write on either connection, or
+   * `null` before the first. A closed shape that never carries text the client
+   * derived from the URL: a Redis server reply as its text, a Node system error
+   * as `<code> <syscall>` only, anything else as its `name`; credential spans
+   * stripped, at most 160 characters.
+   */
+  lastError: string | null;
+}
+
+/** Why {@link createRedisRelayBus} or {@link RedisRelayBus.create} refused to build a bus. */
+export class RelayBusInitError extends Error {
+  readonly code: 'RELAY_BUS_REDIS_CONSTRUCTOR_REQUIRED';
+
+  constructor(code: 'RELAY_BUS_REDIS_CONSTRUCTOR_REQUIRED', message: string) {
+    super(message);
+    this.name = 'RelayBusInitError';
+    this.code = code;
+  }
+}
+
+const LAST_ERROR_MAX_CHARS = 160;
+/** A URL's userinfo — `scheme://user:pass@` — cut back to `scheme://`, up to the last `@` in the run. */
+const CREDENTIAL_SPAN = /([a-z][a-z0-9+.-]*:\/\/)\S*@/gi;
+/** How ioredis words a refused ready check: `Ready check failed: <the server's reply>`. */
+const READY_CHECK_FAILED = 'Ready check failed: ';
+
+/** The unbounded, unstripped form of {@link renderRelayBusError}: which of the three shapes `error` takes. */
+function describeRelayBusError(error: unknown): string {
+  if (typeof error !== 'object' || error === null) return 'non-Error value';
+  const { name, message, code, syscall } = error as Record<string, unknown>;
+  // Node system errors first: their message spells the host the client dialled.
+  if (typeof code === 'string' && typeof syscall === 'string') return `${code} ${syscall}`;
+  if (
+    typeof message === 'string' &&
+    (name === 'ReplyError' || message.startsWith(READY_CHECK_FAILED))
+  ) {
+    return message;
+  }
+  return typeof name === 'string' && name !== '' ? name : 'non-Error value';
+}
+
+/**
+ * Render an error for {@link RelayBusReadiness.lastError}, which a consumer may
+ * serve on a shared health endpoint. Only three shapes leave this function:
+ *
+ *  - a Redis server reply — a `ReplyError` (as redis-errors names its class), or
+ *    ioredis's `Ready check failed: <reply>` — as its text. That text is the
+ *    SERVER's, and it is how a provider's refusal (`ERR … rate-limited`)
+ *    reaches an operator;
+ *  - a Node system error as `<code> <syscall>` only (`ENOTFOUND getaddrinfo`),
+ *    never its message, hostname, address or port: Node spells those from the
+ *    host the client dialled, which ioredis took from the configured URL;
+ *  - anything else as its `name`.
+ *
+ * Credential spans are stripped from all three before the cut to 160 characters.
+ */
+function renderRelayBusError(error: unknown): string {
+  let described: string;
+  try {
+    described = describeRelayBusError(error);
+  } catch {
+    described = 'unreadable error'; // a throwing getter must not turn a handled failure into a thrown one
+  }
+  return described.replace(CREDENTIAL_SPAN, '$1').slice(0, LAST_ERROR_MAX_CHARS);
+}
+
+const WARN_INTERVAL_MS = 60_000;
+/** When this process last logged a relay bus error. Module state: one budget per process, every bus shares it. */
+let lastWarnAt = Number.NEGATIVE_INFINITY;
+
+/** `console.warn` at most once per minute per process; what is not logged is still in `lastError`. */
+function warnAtMostOncePerMinute(line: string): void {
+  const now = Date.now();
+  if (now - lastWarnAt < WARN_INTERVAL_MS) return;
+  lastWarnAt = now;
+  console.warn(
+    `${line} (further relay bus errors in the next 60 s are not logged; readiness().lastError keeps the latest)`
+  );
 }
 
 const TAB_PRESENCE_PREFIX = 'uibridge:tab:';
 
 /**
- * Redis (ioredis) pub/sub implementation of {@link RelayBus}.
+ * Redis pub/sub implementation of {@link RelayBus}.
  *
  * Uses one publisher connection and one dedicated subscriber connection (Redis
  * requires a connection in subscribe mode to be used only for (un)subscribe).
  * Channels are subscribed/unsubscribed dynamically; handlers are routed by
- * channel name. `ioredis` is imported dynamically so it is only required when a
- * Redis bus is actually constructed.
+ * channel name. Both connections come from the consumer's injected Redis class
+ * ({@link RedisRelayBusOptions}); the bus imports no Redis client of its own.
+ *
+ * Construction never waits for a connection. {@link readiness} reports whether
+ * both are up, and every write the bus fires and forgets records its rejection
+ * there — and logs it, at most once a minute per process — instead of leaving
+ * it unhandled: ioredis's offline queue rejects a queued command only after its
+ * retry limit, long after the call that sent it returned.
  */
 export class RedisRelayBus implements RelayBus {
   private readonly pub: RedisLike;
   private readonly sub: RedisLike;
   /** channel -> set of handlers (untyped envelope; narrowed per channel kind). */
   private readonly handlers = new Map<string, Set<(env: never) => void>>();
+  /** See {@link RelayBusReadiness.lastError}. */
+  private lastError: string | null = null;
 
   private constructor(pub: RedisLike, sub: RedisLike) {
     this.pub = pub;
     this.sub = sub;
+    this.pub.on('error', (err) => this.noteError('pub connection error', err));
+    this.sub.on('error', (err) => this.noteError('sub connection error', err));
     this.sub.on('message', (channel, message) => {
       const set = this.handlers.get(channel);
       if (!set || set.size === 0) return;
@@ -159,22 +307,63 @@ export class RedisRelayBus implements RelayBus {
   }
 
   /**
-   * Construct a Redis-backed bus. `url` is a standard `redis://` /`rediss://`
-   * connection string. Throws if `ioredis` is not installed.
+   * Construct a Redis-backed bus: `new options.Redis(url, options.redisOptions)`
+   * for the publisher and its `duplicate()` for the subscriber. `url` is a
+   * standard `redis://` / `rediss://` connection string.
+   *
+   * Async so that every refusal arrives as a rejection: {@link RelayBusInitError}
+   * when `options.Redis` is missing (an untyped caller — the type requires it),
+   * or whatever the constructor throws (ioredis throws synchronously on a URL it
+   * cannot parse). It never waits for a connection; {@link readiness} does that.
    */
-  static async create(url: string): Promise<RedisRelayBus> {
-    // Dynamic import keeps ioredis an OPTIONAL dependency. The specifier is held
-    // in a variable so TypeScript does not statically resolve it — the module is
-    // only required at runtime when a Redis bus is actually constructed, and the
-    // package typechecks/builds without `ioredis` present.
-    const specifier = 'ioredis';
-    const mod = (await import(specifier)) as unknown as {
-      default: new (url: string) => RedisLike;
-    };
-    const Redis = mod.default;
-    const pub = new Redis(url);
+  static async create(url: string, options: RedisRelayBusOptions): Promise<RedisRelayBus> {
+    const Redis = (options as Partial<RedisRelayBusOptions> | undefined)?.Redis;
+    if (typeof Redis !== 'function') {
+      throw new RelayBusInitError(
+        'RELAY_BUS_REDIS_CONSTRUCTOR_REQUIRED',
+        'createRedisRelayBus(url, { Redis }) needs the Redis client class to construct: pass your own ' +
+          "`import Redis from 'ioredis'` as `Redis`. The SDK imports no Redis client itself, because a " +
+          'bundler cannot resolve that import for it (see RedisConstructorLike).'
+      );
+    }
+    const pub = new Redis(url, options.redisOptions);
     const sub = pub.duplicate();
     return new RedisRelayBus(pub, sub);
+  }
+
+  /**
+   * Both connections' state, read synchronously from their `status`: it sends no
+   * Redis command, so a health endpoint can call it on every read without
+   * spending a rate-limited database's budget. Readiness is lost and regained
+   * over a process's life, which is why this is read live rather than awaited
+   * once at construction.
+   */
+  readiness(): RelayBusReadiness {
+    const pub = this.pub.status;
+    const sub = this.sub.status;
+    const state: RelayBusReadiness['state'] =
+      pub === 'end' || sub === 'end'
+        ? 'closed'
+        : pub === 'ready' && sub === 'ready'
+          ? 'ready'
+          : 'not-ready';
+    return { state, pub, sub, lastError: this.lastError };
+  }
+
+  /** Record `error` as {@link RelayBusReadiness.lastError} and log it within the per-process budget. */
+  private noteError(what: string, error: unknown): void {
+    const rendered = renderRelayBusError(error);
+    this.lastError = rendered;
+    warnAtMostOncePerMinute(`[ui-bridge] relay bus ${what}: ${rendered}`);
+  }
+
+  /**
+   * Fire and forget one write, handling its rejection. Every write this bus sends
+   * without awaiting goes through here: an unhandled one would surface as an
+   * `unhandledRejection` the moment the database refuses commands.
+   */
+  private fireAndForget(op: string, write: Promise<unknown>): void {
+    void Promise.resolve(write).catch((error: unknown) => this.noteError(`${op} failed`, error));
   }
 
   private addHandler(channel: string, handler: (env: never) => void): () => void {
@@ -182,7 +371,7 @@ export class RedisRelayBus implements RelayBus {
     if (!set) {
       set = new Set();
       this.handlers.set(channel, set);
-      void this.sub.subscribe(channel);
+      this.fireAndForget('subscribe', this.sub.subscribe(channel));
     }
     set.add(handler);
     return () => {
@@ -191,14 +380,14 @@ export class RedisRelayBus implements RelayBus {
       s.delete(handler);
       if (s.size === 0) {
         this.handlers.delete(channel);
-        void this.sub.unsubscribe(channel);
+        this.fireAndForget('unsubscribe', this.sub.unsubscribe(channel));
       }
     };
   }
 
   publishCommand(env: RelayCommandEnvelope): void {
     const channel = env.targetTabId ? `${CMD_TAB_PREFIX}${env.targetTabId}` : CMD_BROADCAST;
-    void this.pub.publish(channel, JSON.stringify(env));
+    this.fireAndForget('publish', this.pub.publish(channel, JSON.stringify(env)));
   }
 
   subscribeCommands(tabId: string, handler: (env: RelayCommandEnvelope) => void): () => void {
@@ -211,7 +400,10 @@ export class RedisRelayBus implements RelayBus {
   }
 
   publishResponse(env: RelayResponseEnvelope): void {
-    void this.pub.publish(`${RESP_PREFIX}${env.commandId}`, JSON.stringify(env));
+    this.fireAndForget(
+      'publish',
+      this.pub.publish(`${RESP_PREFIX}${env.commandId}`, JSON.stringify(env))
+    );
   }
 
   subscribeResponse(commandId: string, handler: (env: RelayResponseEnvelope) => void): () => void {
@@ -219,11 +411,14 @@ export class RedisRelayBus implements RelayBus {
   }
 
   registerTab(tabId: string, ttlSeconds: number): void {
-    void this.pub.set(`${TAB_PRESENCE_PREFIX}${tabId}`, '1', 'EX', Math.max(1, ttlSeconds));
+    this.fireAndForget(
+      'set',
+      this.pub.set(`${TAB_PRESENCE_PREFIX}${tabId}`, '1', 'EX', Math.max(1, ttlSeconds))
+    );
   }
 
   unregisterTab(tabId: string): void {
-    void this.pub.del(`${TAB_PRESENCE_PREFIX}${tabId}`);
+    this.fireAndForget('del', this.pub.del(`${TAB_PRESENCE_PREFIX}${tabId}`));
   }
 
   async isTabKnown(tabId: string): Promise<boolean> {
@@ -241,11 +436,26 @@ export class RedisRelayBus implements RelayBus {
 }
 
 /**
- * Build a {@link RelayBus} from a Redis URL, or `null` when `url` is empty/unset
- * (the in-memory single-process default). Returns a promise because the ioredis
- * import is dynamic.
+ * Build a {@link RedisRelayBus} from a Redis URL and the consumer's own Redis
+ * client class, or `null` when `url` is empty or unset — the in-memory,
+ * single-process default, for which nothing is constructed.
+ *
+ * `options.Redis` is REQUIRED and is constructed with the trimmed URL and
+ * `options.redisOptions`; {@link RedisConstructorLike} says why the SDK takes it
+ * from the consumer instead of importing a Redis client itself:
+ *
+ *   `createRedisRelayBus(process.env.REDIS_URL, { Redis })`, where the
+ *   consumer's module has `import Redis from 'ioredis'`.
+ *
+ * Rejects with {@link RelayBusInitError} (`code:
+ * 'RELAY_BUS_REDIS_CONSTRUCTOR_REQUIRED'`) when `options.Redis` is missing, and
+ * with the constructor's own error when it throws. The bus it resolves to may
+ * not be connected yet — read {@link RedisRelayBus.readiness} for that.
  */
-export async function createRedisRelayBus(url: string | undefined | null): Promise<RelayBus | null> {
+export async function createRedisRelayBus(
+  url: string | undefined | null,
+  options: RedisRelayBusOptions
+): Promise<RedisRelayBus | null> {
   if (!url || !url.trim()) return null;
-  return RedisRelayBus.create(url.trim());
+  return RedisRelayBus.create(url.trim(), options);
 }
