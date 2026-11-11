@@ -33,7 +33,9 @@ fallback.
 | Element                                                                        | Adds                                        |
 | ------------------------------------------------------------------------------ | ------------------------------------------- |
 | Text `<input>` (text, search, email, url, tel, password, number), `<textarea>` | `type`, `clear`, `setValue`, `autocomplete` |
-| Range, colour, date/time or hidden `<input>`                                   | `setValue`                                  |
+| Date, time, datetime-local, month, week or colour `<input>`                    | `type`, `clear`, `setValue`                 |
+| Range or hidden `<input>`                                                      | `setValue`                                  |
+| File `<input>`                                                                 | `clear`                                     |
 | `<select>`                                                                     | `select`, `setValue`                        |
 | `role="combobox"`, or a control carrying `aria-expanded`                       | `select`                                    |
 | Checkbox `<input>`, `role="checkbox"`, `role="switch"`                         | `check`, `uncheck`, `toggle`                |
@@ -43,8 +45,12 @@ fallback.
 | A `<form>`, or any element inside one or owned by one through `form="…"`       | `submit`, `reset`                           |
 
 An ARIA textbox (`role="textbox"`, or a contenteditable element) takes none of
-the value verbs: `sendKeys` is how it is typed into. A file `<input>` takes none
-of them either.
+the value verbs: `sendKeys` is how it is typed into. A date, time or colour
+`<input>` holds one formatted value the browser sanitizes whole, so `type`
+writes the typed text as that whole value (`type "10:30"` sets a time input to
+10:30) and `clear` empties it — a colour, which cannot be empty, returns to
+`#000000`. `clear` on a file `<input>` empties its selection; nothing can type
+a value into one.
 
 ## Using Actions
 

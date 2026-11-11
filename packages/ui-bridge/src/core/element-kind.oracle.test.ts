@@ -159,6 +159,19 @@ const FIXTURES: Fixture[] = [
     'image',
   ].map((type) => ({ name: `<input type="${type}">`, html: `<input type="${type}" ${T}>` })),
   { name: '<input type="text"> inside a form', html: `<form><input type="text" ${T}></form>` },
+  // The formatted-value inputs holding a value, so `clear` and `type` replace
+  // one rather than act on an empty field.
+  ...[
+    ['date', '2024-01-02'],
+    ['datetime-local', '2024-01-02T09:00'],
+    ['month', '2024-01'],
+    ['week', '2024-W01'],
+    ['time', '09:00'],
+    ['color', '#112233'],
+  ].map(([type, value]) => ({
+    name: `<input type="${type}" value="${value}">`,
+    html: `<input type="${type}" value="${value}" ${T}>`,
+  })),
 
   // Every role, on a neutral element.
   ...[
@@ -393,8 +406,11 @@ const emptyBridge: BridgeAccess = {
 type Dispatcher = 'executor' | 'relay';
 
 /** Drive `verb` on the registered target through one dispatcher. */
-async function dispatch(via: Dispatcher, verb: StandardAction): Promise<Outcome> {
-  const params = VERB_PARAMS[verb];
+async function dispatch(
+  via: Dispatcher,
+  verb: StandardAction,
+  params: Record<string, unknown> = VERB_PARAMS[verb]
+): Promise<Outcome> {
   try {
     if (via === 'executor') {
       const res = await new DefaultActionExecutor(getGlobalRegistry()).executeAction(
@@ -476,5 +492,115 @@ describe('the inferred list is a default, never an override', () => {
       actions: ['click'],
     });
     expect(registered.actions).toEqual(['click']);
+  });
+});
+
+/**
+ * The date, time, colour and file inputs: the base (origin/main 7f766ae)
+ * advertised `type` and `clear` on every `<input>`, and both dispatchers
+ * performed them on these. The oracle above holds success; these hold the
+ * EFFECT, on both dispatchers, so a verb that "succeeds" by doing nothing fails.
+ */
+describe('date, time, colour and file inputs: the value verbs do what they say', () => {
+  const kinds = (html: string): string[] => {
+    host.innerHTML = html;
+    const el = host.querySelector<HTMLElement>(`[${TARGET}]`) as HTMLElement;
+    return [...new UIBridgeRegistry().registerElement('oracle', el).actions];
+  };
+
+  it.each([['date'], ['datetime-local'], ['month'], ['week'], ['time'], ['color']])(
+    '<input type="%s"> advertises type, clear and setValue, and not autocomplete',
+    (type) => {
+      const actions = kinds(`<input type="${type}" ${T}>`);
+      expect(actions).toEqual(expect.arrayContaining(['type', 'clear', 'setValue']));
+      expect(actions).not.toContain('autocomplete');
+    }
+  );
+
+  it('<input type="file"> advertises clear, and neither type nor setValue', () => {
+    const actions = kinds(`<input type="file" ${T}>`);
+    expect(actions).toContain('clear');
+    expect(actions).not.toContain('type');
+    expect(actions).not.toContain('setValue');
+  });
+
+  /** Mount `html`, register its target, run one verb through `via`, return the target. */
+  async function run(
+    via: Dispatcher,
+    html: string,
+    verb: StandardAction,
+    params: Record<string, unknown>
+  ): Promise<{ outcome: Outcome; target: HTMLInputElement; events: string[] }> {
+    getGlobalRegistry().clear();
+    const target = mount({ name: html, html }) as HTMLInputElement;
+    const events: string[] = [];
+    for (const type of ['input', 'change']) {
+      target.addEventListener(type, () => events.push(type));
+    }
+    getGlobalRegistry().registerElement('oracle-target', target);
+    const outcome = await dispatch(via, verb, params);
+    return { outcome, target, events };
+  }
+
+  describe.each(['executor', 'relay'] as const)('through the %s', (via) => {
+    it.each([
+      ['date', '2024-01-02', ''],
+      ['datetime-local', '2024-01-02T09:00', ''],
+      ['month', '2024-01', ''],
+      ['week', '2024-W01', ''],
+      ['time', '09:00', ''],
+      // A colour has no empty value: cleared, it is the default colour.
+      ['color', '#112233', '#000000'],
+    ])('clear empties <input type="%s" value="%s">', async (type, value, cleared) => {
+      const { outcome, target } = await run(
+        via,
+        `<input type="${type}" value="${value}" ${T}>`,
+        'clear',
+        {}
+      );
+      expect(outcome).toMatchObject({ success: true });
+      expect(target.value).toBe(cleared);
+    });
+
+    it.each([
+      ['time', '', '10:30'],
+      ['time', '09:00', '10:30'],
+      ['date', '', '2024-03-04'],
+      ['date', '2024-01-02', '2024-03-04'],
+      ['datetime-local', '', '2024-03-04T10:30'],
+      ['month', '', '2024-03'],
+      ['week', '', '2024-W10'],
+      ['color', '#112233', '#ff0000'],
+    ])('type into <input type="%s" value="%s"> sets %s', async (type, value, text) => {
+      const { outcome, target } = await run(
+        via,
+        `<input type="${type}" value="${value}" ${T}>`,
+        'type',
+        { text }
+      );
+      expect(outcome).toMatchObject({ success: true });
+      expect(target.value).toBe(text);
+    });
+
+    it('clear empties a file input and fires input and change', async () => {
+      const { outcome, target, events } = await run(via, `<input type="file" ${T}>`, 'clear', {});
+      expect(outcome).toMatchObject({ success: true });
+      expect(target.value).toBe('');
+      expect(target.files?.length ?? 0).toBe(0);
+      expect(events).toEqual(expect.arrayContaining(['input', 'change']));
+    });
+
+    it('type into a file input is the element-kind refusal', async () => {
+      const { outcome } = await run(via, `<input type="file" ${T}>`, 'type', { text: 'x' });
+      expect(outcome).toMatchObject({ success: false, refusal: 'element-kind' });
+    });
+
+    it('autocomplete on a date input is the element-kind refusal', async () => {
+      const { outcome } = await run(via, `<input type="date" ${T}>`, 'autocomplete', {
+        searchText: 'a',
+        suggestionTimeout: 10,
+      });
+      expect(outcome).toMatchObject({ success: false, refusal: 'element-kind' });
+    });
   });
 });

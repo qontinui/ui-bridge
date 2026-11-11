@@ -81,11 +81,13 @@ import type {
 import { autocompleteSelect, comboboxSelect } from '../control/combobox-select';
 import {
   checkArm,
+  clearArm,
   formOwnerArm,
   selectArm,
   setValueArm,
   textEntryArm,
   toggleArm,
+  typeArm,
   type ElementKindRefusal,
 } from '../control/element-arms';
 import { performDragSequence } from '../control/drag-sequence';
@@ -2149,22 +2151,18 @@ export async function executeCommand(
             dispatchMiddleClick(dom, request.params as MouseAction | undefined);
             break;
           case 'type': {
-            const arm = textEntryArm(dom, 'type');
+            const arm = typeArm(dom);
             if (!arm.ok)
               return refuse(createKindRefusalFailure(id, request.action, arm, startTime));
             const text = (request.params?.text as string) || request.text || '';
-            applyValueMutation(arm.control, {
-              value: text,
-              mode: request.params?.clear || request.clear ? 'clear-then-append' : 'append',
-              blur: false,
-            });
+            arm.apply(text, Boolean(request.params?.clear || request.clear));
             break;
           }
           case 'clear': {
-            const arm = textEntryArm(dom, 'clear');
+            const arm = clearArm(dom);
             if (!arm.ok)
               return refuse(createKindRefusalFailure(id, request.action, arm, startTime));
-            applyValueMutation(arm.control, { value: '', mode: 'clear', blur: false });
+            arm.apply();
             break;
           }
           case 'setValue': {

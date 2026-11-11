@@ -26,11 +26,14 @@
 
 import {
   checkableInput,
+  clearControl,
   disclosureDetails,
+  formattedValueInput,
   hasExpandedState,
   nativeDialog,
   resolveOwnerForm,
   textEntryControl,
+  typeControl,
   valueControl,
 } from '../core/element-kind';
 import { sdkDispatch } from '../core/sdk-dispatch';
@@ -71,13 +74,58 @@ function refused(action: string, element: Element, appliesTo: string): ElementKi
 const TEXT_ENTRY_TARGETS =
   'a text <input> (text, search, email, url, tel, password or number) or a <textarea>';
 
-/** `type`, `clear` and `autocomplete`: the text field they write to. */
+const FORMATTED_VALUE_TARGETS = 'a date, time or colour <input>';
+
+/** `autocomplete`: the text field it types the search text into. */
 export function textEntryArm(
   element: HTMLElement,
-  action: 'type' | 'clear' | 'autocomplete'
+  action: 'autocomplete'
 ): ArmOutcome<{ control: HTMLInputElement | HTMLTextAreaElement }> {
   const control = textEntryControl(element);
   return control ? { ok: true, control } : refused(action, element, TEXT_ENTRY_TARGETS);
+}
+
+/**
+ * `type`: append the text to a text field, or — on a date, time or colour
+ * `<input>`, whose value the browser sanitizes whole — make the text its whole
+ * value. `clearFirst` empties a text field before appending (`clear: true`).
+ */
+export function typeArm(
+  element: HTMLElement
+): ArmOutcome<{ apply: (text: string, clearFirst: boolean) => void }> {
+  const control = typeControl(element);
+  if (!control) {
+    return refused('type', element, `${TEXT_ENTRY_TARGETS}, or ${FORMATTED_VALUE_TARGETS}`);
+  }
+  const whole = formattedValueInput(control) !== null;
+  return {
+    ok: true,
+    apply: (text, clearFirst) =>
+      applyValueMutation(control, {
+        value: text,
+        mode: whole ? 'replace' : clearFirst ? 'clear-then-append' : 'append',
+        blur: false,
+      }),
+  };
+}
+
+/**
+ * `clear`: empty a text field, a date, time or colour `<input>` (a colour has
+ * no empty value and returns to `#000000`), or a file `<input>`'s selection.
+ */
+export function clearArm(element: HTMLElement): ArmOutcome<{ apply: () => void }> {
+  const control = clearControl(element);
+  if (!control) {
+    return refused(
+      'clear',
+      element,
+      `${TEXT_ENTRY_TARGETS}, ${FORMATTED_VALUE_TARGETS}, or a file <input>`
+    );
+  }
+  return {
+    ok: true,
+    apply: () => applyValueMutation(control, { value: '', mode: 'clear', blur: false }),
+  };
 }
 
 /** `setValue`: how to write a whole value into this element. */
