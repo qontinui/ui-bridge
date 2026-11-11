@@ -104,7 +104,19 @@ interface Fixture {
    * media scanner selects it — which is the path a real page takes.
    */
   media?: true;
+  /**
+   * The fixture opens a popup: a combobox's `select` or a text field's
+   * `autocomplete` drives one, so {@link suggestions} is mounted beside it.
+   * Only these fixtures get it — on a page with a listbox lying around, a
+   * `select` on an accordion trigger "succeeds" by clicking it and then the
+   * stray option, which hides exactly the over-advertising this file exists
+   * to catch.
+   */
+  popup?: boolean;
 }
+
+/** `<input>` types typed into as text, whose `autocomplete` reads a popup. */
+const TEXT_INPUT_TYPES = ['text', 'search', 'email', 'url', 'tel', 'password', 'number'];
 
 const T = TARGET;
 const FIXTURES: Fixture[] = [
@@ -116,7 +128,7 @@ const FIXTURES: Fixture[] = [
     name: '<button form="…"> owned by a form elsewhere',
     html: `<form id="oracle-owner"></form><button type="submit" form="oracle-owner" ${T}>b</button>`,
   },
-  { name: '<textarea>', html: `<textarea ${T}></textarea>` },
+  { name: '<textarea>', html: `<textarea ${T}></textarea>`, popup: true },
   {
     name: '<select>',
     html: `<select ${T}><option value="a">a</option><option value="b">b</option></select>`,
@@ -157,8 +169,16 @@ const FIXTURES: Fixture[] = [
     'reset',
     'button',
     'image',
-  ].map((type) => ({ name: `<input type="${type}">`, html: `<input type="${type}" ${T}>` })),
-  { name: '<input type="text"> inside a form', html: `<form><input type="text" ${T}></form>` },
+  ].map((type) => ({
+    name: `<input type="${type}">`,
+    html: `<input type="${type}" ${T}>`,
+    popup: TEXT_INPUT_TYPES.includes(type),
+  })),
+  {
+    name: '<input type="text"> inside a form',
+    html: `<form><input type="text" ${T}></form>`,
+    popup: true,
+  },
   // The formatted-value inputs holding a value, so `clear` and `type` replace
   // one rather than act on an empty field.
   ...[
@@ -198,12 +218,27 @@ const FIXTURES: Fixture[] = [
     html: `<div role="${role}"${
       ['checkbox', 'radio', 'switch'].includes(role) ? ' aria-checked="false"' : ''
     } ${T}>r</div>`,
+    popup: role === 'combobox',
   })),
 
-  // The attribute the toggle and select arms branch on.
+  // The attributes the toggle and select arms branch on. `aria-expanded` makes
+  // a node toggle, never a combobox; `aria-haspopup="listbox"` makes one.
   {
     name: '<button aria-expanded> (disclosure button)',
     html: `<button aria-expanded="false" ${T}>more</button>`,
+  },
+  {
+    name: '<button aria-expanded aria-controls> (accordion trigger)',
+    html: `<h3><button aria-expanded="true" aria-controls="oracle-panel" ${T}>Section</button></h3><div id="oracle-panel" role="region">panel</div>`,
+  },
+  {
+    name: '<button aria-haspopup="menu" aria-expanded> (menu button)',
+    html: `<button aria-haspopup="menu" aria-expanded="false" ${T}>menu</button>`,
+  },
+  {
+    name: '<div role="button" aria-haspopup="listbox"> (select-only trigger)',
+    html: `<div role="button" tabindex="0" aria-haspopup="listbox" ${T}>pick</div>`,
+    popup: true,
   },
 
   // Roles on native tags: the spellings component libraries render.
@@ -215,14 +250,20 @@ const FIXTURES: Fixture[] = [
     name: '<button role="checkbox">',
     html: `<button role="checkbox" aria-checked="false" ${T}>c</button>`,
   },
-  { name: '<button role="combobox">', html: `<button role="combobox" ${T}>pick</button>` },
+  {
+    name: '<button role="combobox">',
+    html: `<button role="combobox" ${T}>pick</button>`,
+    popup: true,
+  },
   {
     name: '<button role="combobox" aria-expanded> (select-only combobox trigger)',
     html: `<button role="combobox" aria-expanded="false" ${T}>pick</button>`,
+    popup: true,
   },
   {
     name: '<input role="combobox"> (editable combobox)',
     html: `<input type="text" role="combobox" ${T}>`,
+    popup: true,
   },
   {
     name: '<input type="checkbox" role="switch">',
@@ -232,6 +273,7 @@ const FIXTURES: Fixture[] = [
   {
     name: '<input type="number" role="spinbutton">',
     html: `<input type="number" role="spinbutton" ${T}>`,
+    popup: true,
   },
 
   // Media, registered through the media scanner.
@@ -256,6 +298,7 @@ let host: HTMLDivElement;
 /** Mount `fixture` fresh into the host and return its laid-out target. */
 function mount(fixture: Fixture): HTMLElement {
   host.innerHTML = fixture.html;
+  if (fixture.popup) host.appendChild(suggestions);
   const target = host.querySelector<HTMLElement>(`[${TARGET}]`);
   if (!target) throw new Error(`fixture "${fixture.name}" has no [${TARGET}] node`);
   // The interactive scanners all select `[data-testid]`, so every non-media
@@ -266,9 +309,10 @@ function mount(fixture: Fixture): HTMLElement {
 }
 
 /**
- * A listbox offering the option `a`, outside every fixture. A combobox's
- * `select` and an input's `autocomplete` drive a popup; this is the popup they
- * find, so both can SUCCEED rather than time out looking for one.
+ * A listbox offering the option `a`. A combobox's `select` and an input's
+ * `autocomplete` drive a popup; this is the popup they find, so both can
+ * SUCCEED rather than time out looking for one. Mounted only beside a fixture
+ * marked {@link Fixture.popup}.
  */
 let suggestions: HTMLDivElement;
 
@@ -299,7 +343,6 @@ beforeAll(() => {
   suggestions = document.createElement('div');
   suggestions.setAttribute('role', 'listbox');
   suggestions.innerHTML = '<div role="option" data-value="a">a</div>';
-  document.body.appendChild(suggestions);
   host = document.createElement('div');
   document.body.appendChild(host);
   document.addEventListener('submit', cancelSubmit, true);
@@ -603,4 +646,54 @@ describe('date, time, colour and file inputs: the value verbs do what they say',
       expect(outcome).toMatchObject({ success: false, refusal: 'element-kind' });
     });
   });
+});
+
+describe('select is advertised only on a node that opens a listbox', () => {
+  const actionsOf = (html: string): string[] => {
+    host.innerHTML = html;
+    const el = host.querySelector<HTMLElement>(`[${TARGET}]`) as HTMLElement;
+    return [...new UIBridgeRegistry().registerElement('oracle', el).actions];
+  };
+
+  it.each([
+    ['an accordion trigger', `<button aria-expanded="true" aria-controls="p" ${T}>s</button>`],
+    ['a disclosure button', `<button aria-expanded="false" ${T}>more</button>`],
+    ['a menu button', `<button aria-haspopup="menu" aria-expanded="false" ${T}>m</button>`],
+    [
+      'an aria-haspopup="true" button',
+      `<button aria-haspopup="true" aria-expanded="false" ${T}>m</button>`,
+    ],
+  ])('%s toggles and does not advertise select', (_name, html) => {
+    const actions = actionsOf(html);
+    expect(actions).toContain('toggle');
+    expect(actions).not.toContain('select');
+  });
+
+  it.each([
+    ['a role="combobox" button', `<button role="combobox" ${T}>p</button>`],
+    [
+      'an aria-haspopup="listbox" trigger',
+      `<div role="button" aria-haspopup="listbox" ${T}>p</div>`,
+    ],
+  ])('%s advertises select', (_name, html) => {
+    expect(actionsOf(html)).toContain('select');
+  });
+
+  it.each(['executor', 'relay'] as const)(
+    'the %s refuses select on an accordion trigger without clicking it, even with a listbox on the page',
+    async (via) => {
+      getGlobalRegistry().clear();
+      const target = mount({
+        name: 'accordion',
+        html: `<button aria-expanded="false" ${T}>s</button>`,
+        popup: true,
+      });
+      let clicks = 0;
+      target.addEventListener('click', () => clicks++);
+      getGlobalRegistry().registerElement('oracle-target', target);
+      const outcome = await dispatch(via, 'select');
+      expect(outcome).toMatchObject({ success: false, refusal: 'element-kind' });
+      expect(clicks).toBe(0);
+    }
+  );
 });

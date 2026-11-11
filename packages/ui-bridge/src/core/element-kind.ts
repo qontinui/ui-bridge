@@ -494,11 +494,28 @@ export function nativeDialog(element: Element): HTMLDialogElement | null {
 
 /**
  * The node carries `aria-expanded`: it controls a collapsible region, so
- * `toggle` flips it, and it may open a popup, so `select` drives it as a
- * combobox. The ATTRIBUTE, as an author wrote it.
+ * `toggle` flips it. The ATTRIBUTE, as an author wrote it. It does NOT make
+ * the node a combobox — an accordion or disclosure trigger carries it too, and
+ * `select` on one would click it open and report success — see
+ * {@link opensListbox}.
  */
 export function hasExpandedState(element: Element): boolean {
   return element.hasAttribute('aria-expanded');
+}
+
+/**
+ * The node opens a listbox `select` can pick an option from: `role="combobox"`,
+ * or `aria-haspopup="listbox"` (a select-only trigger such as MUI's
+ * `role="button"` Select). Not `aria-haspopup="menu"` or `"true"` (which ARIA
+ * defines as `menu`): a menu's items are `menuitem`s, not options, so a
+ * `select` on its trigger has nothing to choose. The ATTRIBUTES, as an author
+ * wrote them; `control/combobox-select.ts` `isComboboxLike` is this predicate.
+ */
+export function opensListbox(element: Element): boolean {
+  return (
+    element.getAttribute('role') === 'combobox' ||
+    element.getAttribute('aria-haspopup')?.trim().toLowerCase() === 'listbox'
+  );
 }
 
 /**
@@ -535,7 +552,8 @@ export function structuralActions(element: Element): StandardAction[] {
     if (checkable.type === 'checkbox') verbs.push('toggle');
   }
   if (disclosureDetails(element) || nativeDialog(element)) verbs.push('toggle');
-  if (hasExpandedState(element)) verbs.push('toggle', 'select');
+  if (hasExpandedState(element)) verbs.push('toggle');
+  if (opensListbox(element)) verbs.push('select');
   if (resolveOwnerForm(element)) verbs.push('submit', 'reset');
   return verbs;
 }
