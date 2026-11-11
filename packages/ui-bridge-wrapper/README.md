@@ -129,6 +129,57 @@ ui-bridge-login-web \
 ui-bridge-capture-specs --out ./spec-capture
 ```
 
+### Reading and acting on one element (`ui-bridge-inject` exec mode)
+
+Exec mode (`--exec` / `--exec-stdin`) reads and acts on single elements through
+the injected runtime's in-page dispatcher, the same one the relay drives, with
+no relay call:
+
+```bash
+# read one element, click it, read its state again
+ui-bridge-inject --url http://127.0.0.1:3000/ \
+  --exec 'getElement {"id":"open"}' \
+  --exec 'executeElementAction {"id":"open","request":{"action":"click"}}' \
+  --exec 'getElementState {"id":"open"}'
+```
+
+- `getElement {"id":"<id>"}` answers one element as a snapshot carries it:
+  identity (`id`, `type`, `tagName`, `label`, `role`, `accessibleName`),
+  `state`, box (`bbox`, `visible`) and `actions`, the same object as the
+  matching `getControlSnapshot` element, redaction included.
+  `{"elementId":"<id>"}` is accepted too; given both, they must name the same
+  element. Beside the id it takes only the dispatcher keys `settleTimeout`,
+  `skipSettle` and `targetTabId`; any other key is refused with
+  `INVALID_REQUEST`. Nothing settles first, so run `waitForSelector` before it
+  for a settled read. An unknown id, or one whose DOM node is gone, is a
+  returned `ELEMENT_NOT_FOUND` (an `error` line and exit 1), never a `null`
+  result.
+- `getElementState {"id":"<id>"}` answers the state alone. It reads `id` only,
+  and an unknown id is a thrown error (`HANDLER_ERROR`).
+- `executeElementAction {"id":"<id>","request":{"action":"click"}}` acts on one
+  element. `request` holds the verb and the fields it reads (`value`, `text`,
+  `clear`, `params`, `fromSnapshotId`, …). Two other spellings are accepted:
+  `elementId` in place of `id`, and a flat payload such as
+  `{"id":"<id>","action":"type","text":"hi"}`, which, minus `id` / `elementId`,
+  *is* the request. No field is ever silently dropped. Beside a `request`
+  object, a top-level `action` or request field must equal the same field
+  inside `request` (an agreeing duplicate is accepted); one that is only at the
+  top level, or at both levels with different values, is refused, and so are an
+  `id` and an `elementId` that name different elements. The dispatcher keys
+  stay allowed at the top level. Every refused shape is a returned
+  `INVALID_REQUEST` (an `error` line and exit 1, never a thrown `TypeError`)
+  whose message names the canonical shape
+  `{"id":"<elementId>","request":{"action":"<action>", …}}` and both accepted
+  spellings; `error.details` adds `expectedPayload` and `receivedKeys`. A
+  well-formed payload with an unknown verb is refused with
+  `UNSUPPORTED_ACTION`, naming the accepted verbs.
+
+These need `@qontinui/ui-bridge` 0.46.0 or later, the first injected runtime
+that serves `getElement` and the payload grammar. Against an older one,
+`getElement` fails with `Unknown command action: getElement`, a flat
+`executeElementAction` throws a `TypeError`, and an `elementId` one answers
+`Element undefined not found`.
+
 ### Frames, device pixel ratio and the capture matrix (`ui-bridge-inject`)
 
 `--screenshot <path>` captures a PNG frame **in lockstep** with every
@@ -210,7 +261,18 @@ repeated `mediaOverride` candidate its own URL, e.g. `cand.png?2`); what Chromiu
 `captureTimeline` screenshots the page `frames` times, `intervalMs` apart, each
 frame stamped with its offset; `"reload":true` starts the clock at a fresh
 navigation commit (the loading-to-loaded timeline) and waits for the runtime to
-settle again. `"during":{"action":"mediaOverride","payload":{...}}` runs the
+settle again. Frame 1 of a reload is the first frame the page produced after
+the commit. Right after it the new document can have no compositor frame yet,
+and Chromium refuses the screenshot (`Unable to capture screenshot`), so frame 1
+retries that refusal every 16 ms until `readyTimeoutMs` (default 30000) after
+the commit. A frame's `offsetMs` is when the screenshot that produced it was
+requested, so a frame 1 that had to wait reads tens of milliseconds, not 0, and
+a frame that took more than one attempt carries `attempts`. Under `--throttle`
+that first frame can still be the previous document's held frame; `offsetMs`
+dates it either way. Every other frame retries the same refusal only until the
+next frame's due time, so the schedule never shifts, and no other error is
+retried; a frame still refused at its deadline carries `error` and fails the
+step. `"during":{"action":"mediaOverride","payload":{...}}` runs the
 override concurrently with the frames, so the timeline shows the candidate
 arriving (under `--throttle`, its slow-network load) while the override still
 confirms decode before it answers. In `--capture-matrix` a relative `dir` lands
