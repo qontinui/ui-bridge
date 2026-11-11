@@ -258,6 +258,19 @@ function unknownActionHintFor(
 }
 
 /**
+ * The request's `requestId` when it is a string, otherwise `undefined`.
+ *
+ * `requestId` is wire data, and every response echoes it, on success and on
+ * failure alike. The transports in front of the executor hand it on unchecked,
+ * so the executor, the one place every transport passes through, is where a
+ * non-string one is dropped instead of echoed back. `request` itself may be
+ * missing: a batch step with no action object arrives as `undefined`.
+ */
+function validRequestId(request: { requestId?: unknown } | undefined): string | undefined {
+  return typeof request?.requestId === 'string' ? request.requestId : undefined;
+}
+
+/**
  * Default wait options
  */
 const DEFAULT_WAIT_OPTIONS: Required<WaitOptions> = {
@@ -1293,6 +1306,8 @@ export class DefaultActionExecutor implements ActionExecutor {
     // A held forced hover released by this action's dispatch — reported on the
     // failure response too, not only on success.
     let heldRelease: ForcedHoverActionReport['released'];
+    // Echoed on every response below. See `validRequestId`.
+    const requestId = validRequestId(request);
 
     // Validate action name early — check built-in actions first. `request` is
     // wire input: a batch step with no `action` object reaches here as
@@ -1319,7 +1334,7 @@ export class DefaultActionExecutor implements ActionExecutor {
           }),
           durationMs: performance.now() - startTime,
           timestamp: Date.now(),
-          requestId: (request as ControlActionRequest | undefined)?.requestId,
+          requestId,
         };
       }
     }
@@ -1371,7 +1386,7 @@ export class DefaultActionExecutor implements ActionExecutor {
           snapshotFreshness: freshness,
           durationMs: performance.now() - startTime,
           timestamp: Date.now(),
-          requestId: request.requestId,
+          requestId,
         };
       }
     }
@@ -1493,7 +1508,7 @@ export class DefaultActionExecutor implements ActionExecutor {
           snapshotFreshness,
           durationMs: performance.now() - startTime,
           timestamp: Date.now(),
-          requestId: request.requestId,
+          requestId,
         };
       }
 
@@ -1534,7 +1549,7 @@ export class DefaultActionExecutor implements ActionExecutor {
             snapshotFreshness,
             durationMs: performance.now() - startTime,
             timestamp: Date.now(),
-            requestId: request.requestId,
+            requestId,
             waitDurationMs,
           };
         }
@@ -1620,7 +1635,7 @@ export class DefaultActionExecutor implements ActionExecutor {
               action: request.action,
               elementId,
               params: actionParams as Record<string, unknown> | undefined,
-              requestId: request.requestId,
+              requestId,
             };
             const verified = await this.getEffectVerifier().verifyAction(
               effectParams,
@@ -1632,7 +1647,7 @@ export class DefaultActionExecutor implements ActionExecutor {
             // Phase 2: record the verified cycle into the process-global effect
             // store so the read-only `GET /effects/recent` endpoint can surface it.
             getGlobalEffectStore().record({
-              requestId: request.requestId,
+              requestId,
               action: request.action,
               elementId,
               outcome: effectVerification.outcome,
@@ -1759,7 +1774,7 @@ export class DefaultActionExecutor implements ActionExecutor {
         ...(forcedHover ? { forcedHover } : {}),
         durationMs: performance.now() - startTime,
         timestamp: Date.now(),
-        requestId: request.requestId,
+        requestId,
         waitDurationMs,
         idleWaitMs,
       };
@@ -1849,7 +1864,7 @@ export class DefaultActionExecutor implements ActionExecutor {
         ...forcedHoverOnFailure(error, heldRelease),
         durationMs: performance.now() - startTime,
         timestamp: Date.now(),
-        requestId: request.requestId,
+        requestId,
         waitDurationMs,
       };
     }
@@ -1988,6 +2003,8 @@ export class DefaultActionExecutor implements ActionExecutor {
     request: ComponentActionPredictRequest = {}
   ): Promise<ComponentActionPredictResponse> {
     const startTime = performance.now();
+    // Echoed on every answer below. See `validRequestId`.
+    const requestId = validRequestId(request);
     const ok = (prediction: ComponentActionPrediction): ComponentActionPredictResponse => ({
       ...prediction,
       success: true,
@@ -2009,7 +2026,7 @@ export class DefaultActionExecutor implements ActionExecutor {
     if (!component) {
       const message = `Component "${componentId}" not found. Components are only available when their page is active.`;
       return fail(
-        unresolvedComponentActionPrediction(componentId, actionId, message, request.requestId),
+        unresolvedComponentActionPrediction(componentId, actionId, message, requestId),
         message,
         'COMPONENT_NOT_FOUND'
       );
@@ -2020,7 +2037,7 @@ export class DefaultActionExecutor implements ActionExecutor {
       const available = component.actions.map((a) => a.id).join(', ');
       const message = `Action "${actionId}" not found on component "${componentId}". Available actions: ${available}`;
       return fail(
-        unresolvedComponentActionPrediction(componentId, actionId, message, request.requestId),
+        unresolvedComponentActionPrediction(componentId, actionId, message, requestId),
         message,
         'ACTION_NOT_FOUND'
       );
@@ -2038,7 +2055,7 @@ export class DefaultActionExecutor implements ActionExecutor {
           actionId,
           effect: action.effect,
           params: request.params,
-          requestId: request.requestId,
+          requestId,
         })
       );
     }
@@ -2053,7 +2070,7 @@ export class DefaultActionExecutor implements ActionExecutor {
       // a capture failure as "nobody described this action" would blame the
       // author for an infrastructure fault and hide the real one.
       return fail(
-        unresolvedComponentActionPrediction(componentId, actionId, message, request.requestId),
+        unresolvedComponentActionPrediction(componentId, actionId, message, requestId),
         message,
         'SNAPSHOT_CAPTURE_FAILED'
       );
@@ -2067,7 +2084,7 @@ export class DefaultActionExecutor implements ActionExecutor {
           effect: action.effect,
           arms,
           params: request.params,
-          requestId: request.requestId,
+          requestId,
           pre,
         })
       );
@@ -2078,7 +2095,7 @@ export class DefaultActionExecutor implements ActionExecutor {
       const detail = err instanceof Error ? err.message : String(err);
       const message = `The effect signature for "${componentId}.${actionId}" threw while predicting: ${detail}`;
       return fail(
-        unresolvedComponentActionPrediction(componentId, actionId, message, request.requestId),
+        unresolvedComponentActionPrediction(componentId, actionId, message, requestId),
         message,
         'SIGNATURE_PREDICT_FAILED'
       );
@@ -2090,10 +2107,19 @@ export class DefaultActionExecutor implements ActionExecutor {
    */
   async executeComponentAction(
     componentId: string,
-    request: ComponentActionRequest,
+    wireRequest: ComponentActionRequest,
     options: ComponentActionInvokeOptions = {}
   ): Promise<ComponentActionResponse> {
     const startTime = performance.now();
+    // `requestId` is WIRE data, and every response below echoes it. The relay
+    // listener hands the request on whole, and the HTTP and WebSocket hops hand
+    // on the listed request fields unchecked, so this is where a non-string one
+    // is caught (see `validRequestId`). `timeoutMs` and `verifyEffect` are
+    // checked where they are read.
+    const request: ComponentActionRequest = {
+      ...wireRequest,
+      requestId: validRequestId(wireRequest),
+    };
 
     try {
       const component = this.registry.getComponent(componentId);

@@ -312,14 +312,20 @@ describe('the ratchet fails on each misalignment it exists to catch', () => {
       misnamedContext: (request: { a?: string }, context?: { other: number }) => Promise<unknown>;
     }`;
   const fileName = resolve(HERE, '__synthetic_shapes__.ts');
+  // TypeScript hands the host its root names with forward slashes, while
+  // `resolve` spells a Windows path with backslashes, so a plain `===` never
+  // matched there and the synthetic file was never in the program. The two
+  // are compared with their separators normalized.
+  const withForwardSlashes = (path: string) => path.replace(/\\/g, '/');
+  const isSynthetic = (name: string) => withForwardSlashes(name) === withForwardSlashes(fileName);
   const host = ts.createCompilerHost({ strict: true, noEmit: true });
   const realGet = host.getSourceFile.bind(host);
   host.getSourceFile = (name, languageVersion, onError, shouldCreate) =>
-    name === fileName
+    isSynthetic(name)
       ? ts.createSourceFile(name, SYNTHETIC, languageVersion, true)
       : realGet(name, languageVersion, onError, shouldCreate);
   const realExists = host.fileExists.bind(host);
-  host.fileExists = (name) => name === fileName || realExists(name);
+  host.fileExists = (name) => isSynthetic(name) || realExists(name);
   const program = ts.createProgram({
     rootNames: [fileName],
     options: { strict: true, noEmit: true, types: [] },

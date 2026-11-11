@@ -304,6 +304,149 @@ describe('timeoutMs is validated at the executor (review #1)', () => {
   });
 });
 
+// Plan 2026-11-10-ui-bridge-relay-and-assert-batch-drop-fields-and-headless-leaks-chromium,
+// Phase 5. The relay listener and the server hops used to drop a non-string
+// `requestId` on the way. They now hand the executor the request whole, so the
+// executor is where it is checked, the same as `timeoutMs` above. Every
+// response echoes it, success or failure.
+describe('requestId is validated at the executor', () => {
+  let registry: UIBridgeRegistry;
+  let executor: DefaultActionExecutor;
+
+  beforeEach(() => {
+    registry = new UIBridgeRegistry();
+    executor = new DefaultActionExecutor(registry);
+    registry.registerComponent('cmp', {
+      name: 'Cmp',
+      actions: [
+        { id: 'go', handler: () => 'ok' },
+        {
+          id: 'boom',
+          handler: () => {
+            throw new Error('boom');
+          },
+        },
+      ],
+    });
+  });
+
+  it('echoes a string requestId', async () => {
+    const res = await executor.executeComponentAction('cmp', { action: 'go', requestId: 'req-1' });
+
+    expect(res.success).toBe(true);
+    expect(res.requestId).toBe('req-1');
+  });
+
+  it('drops a non-string requestId instead of echoing it back', async () => {
+    const res = await executor.executeComponentAction('cmp', {
+      action: 'go',
+      requestId: 42 as unknown as string,
+    });
+
+    expect(res.success).toBe(true);
+    expect(res.result).toBe('ok');
+    expect(res.requestId).toBeUndefined();
+  });
+
+  it('drops it on the failure paths too', async () => {
+    const malformed = { not: 'a string' } as unknown as string;
+
+    const missing = await executor.executeComponentAction('cmp', {
+      action: 'nope',
+      requestId: malformed,
+    });
+    const thrown = await executor.executeComponentAction('cmp', {
+      action: 'boom',
+      requestId: malformed,
+    });
+
+    expect(missing.success).toBe(false);
+    expect(missing.requestId).toBeUndefined();
+    expect(thrown.success).toBe(false);
+    expect(thrown.requestId).toBeUndefined();
+  });
+
+  // The element path echoes `requestId` on every response too.
+  describe('on an element action (executeAction)', () => {
+    let el: HTMLButtonElement;
+
+    beforeEach(() => {
+      el = document.createElement('button');
+      document.body.appendChild(el);
+      registry.registerElement('btn', el, {
+        type: 'button',
+        actions: ['click'],
+        customActions: { summon: { id: 'summon', handler: () => 'summoned' } },
+      });
+    });
+
+    afterEach(() => {
+      el.remove();
+    });
+
+    it('echoes a string requestId', async () => {
+      const res = await executor.executeAction('btn', { action: 'summon', requestId: 'req-e' });
+
+      expect(res.success).toBe(true);
+      expect(res.requestId).toBe('req-e');
+    });
+
+    it('drops a non-string requestId on success', async () => {
+      const res = await executor.executeAction('btn', {
+        action: 'summon',
+        requestId: 42 as unknown as string,
+      });
+
+      expect(res.success).toBe(true);
+      expect(res.result).toBe('summoned');
+      expect(res.requestId).toBeUndefined();
+    });
+
+    it('drops it when the verb is unknown and when the element is missing', async () => {
+      const malformed = { not: 'a string' } as unknown as string;
+
+      const unknownVerb = await executor.executeAction('btn', {
+        action: 'no-such-verb',
+        requestId: malformed,
+      });
+      const missingElement = await executor.executeAction('no-such-element', {
+        action: 'click',
+        requestId: malformed,
+      });
+
+      expect(unknownVerb.success).toBe(false);
+      expect(unknownVerb.failureDetails?.errorCode).toBe('UB-UNSUPPORTED-ACTION');
+      expect(unknownVerb.requestId).toBeUndefined();
+      expect(missingElement.success).toBe(false);
+      expect(missingElement.requestId).toBeUndefined();
+    });
+  });
+
+  // A prediction carries the caller's `requestId` back on every answer too.
+  describe('on a prediction (predictComponentAction)', () => {
+    it('echoes a string requestId', async () => {
+      const res = await executor.predictComponentAction('cmp', 'go', { requestId: 'req-p' });
+
+      expect(res.success).toBe(true);
+      expect(res.requestId).toBe('req-p');
+    });
+
+    it('drops a non-string requestId on an answer and on a refusal', async () => {
+      const answered = await executor.predictComponentAction('cmp', 'go', {
+        requestId: 42 as unknown as string,
+      });
+      const refused = await executor.predictComponentAction('no-such-component', 'go', {
+        requestId: 42 as unknown as string,
+      });
+
+      expect(answered.success).toBe(true);
+      expect(answered.requestId).toBeUndefined();
+      expect(refused.success).toBe(false);
+      expect(refused.requestId).toBeUndefined();
+    });
+  });
+});
+
 describe('a validator fault is not reported as a handler failure (review #9)', () => {
   let registry: UIBridgeRegistry;
   let executor: DefaultActionExecutor;

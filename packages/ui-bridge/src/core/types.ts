@@ -10,6 +10,7 @@ export type { CapturedError } from '../debug/browser-capture-types';
 import type { ErrorSeverity } from '../debug/error-severity';
 import type { ErrorImpact } from '../debug/error-impact';
 import type { EffectSignature, EffectVerification } from '../control/effect-types';
+import type { ComponentActionRequest } from '../control/types';
 import type { SnapshotPageContext } from '../navigation/types';
 import type { SnapshotModalContext } from '../modal/types';
 import type { SnapshotToastContext } from '../toast/types';
@@ -2913,29 +2914,16 @@ export interface WSExecuteActionMessage extends WSMessageBase {
  */
 export interface WSExecuteComponentActionMessage extends WSMessageBase {
   type: 'executeComponentAction';
-  payload: {
-    componentId: string;
-    action: string;
-    params?: Record<string, unknown>;
-    /**
-     * Wire-reachable cancellation — see {@link ComponentActionRequest.timeoutMs}
-     * (plan `2026-08-20-ui-bridge-action-declaration-shape`, Phase 3).
-     *
-     * A WebSocket caller cannot hand over an `AbortSignal`, so without this
-     * field the whole WS channel had no way to call off a hung handler. Both
-     * WS handlers (`ui-bridge` and `ui-bridge-server`, which imports this
-     * type) forward it to the executor, which validates and clamps it.
-     */
-    timeoutMs?: number;
-    /**
-     * Per-request effect-verification override — see
-     * {@link ComponentActionRequest.verifyEffect}. Both WS handlers forward a
-     * boolean value; anything else is ignored.
-     */
-    verifyEffect?: boolean;
-    /** Echoed on the response — see {@link ComponentActionRequest.requestId}. */
-    requestId?: string;
-  };
+  /**
+   * The whole {@link ComponentActionRequest} plus the component it names.
+   *
+   * Typed as the request itself rather than a hand-written copy of its fields:
+   * a copy is how `timeoutMs` (the only cancellation a WebSocket caller has)
+   * and later `verifyEffect` went missing from this channel. Both WS handlers
+   * (`ui-bridge` and `ui-bridge-server`, which imports this type) hand the
+   * request fields on, and the executor validates them.
+   */
+  payload: ComponentActionRequest & { componentId: string };
 }
 
 /**

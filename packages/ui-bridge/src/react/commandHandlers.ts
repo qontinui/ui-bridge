@@ -72,7 +72,12 @@ import {
 import { captureStateVariations, INTERACTION_STATES } from '../ai/design-inspector';
 import type { InteractionStateName } from '../core/types';
 import { inertAbortSignal } from '../core/abortable';
-import type { ComponentActionRequest, DragAction, MouseAction } from '../control/types';
+import type {
+  ComponentActionRequest,
+  ComponentActionResponse,
+  DragAction,
+  MouseAction,
+} from '../control/types';
 import { comboboxSelect, isComboboxLike } from '../control/combobox-select';
 import { performDragSequence } from '../control/drag-sequence';
 import { pageScrollContainer, pageViewportContext } from '../control/page-scroll-container';
@@ -83,6 +88,7 @@ import { createStableRef, resolveStableRef } from '../core/stable-ref';
 import type { StableElementRef } from '../core/stable-ref';
 import type { AnyCapturedEvent } from '../debug/browser-capture-types';
 import { buildComponentNotFoundError } from '../server/component-not-found';
+import { componentActionRequestFromWire } from '../server/component-action-invocation';
 import { diagnoseSnapshotPageHealth } from '../server/page-health';
 import {
   readValuePrimitive,
@@ -523,56 +529,22 @@ function ipcActionExecutor(registry: ReturnType<typeof getGlobalRegistry>): Defa
 }
 
 /**
- * Invoke a component action through {@link ipcActionExecutor} and reshape the
- * response into this channel's `{ success, result?, error?, timestamp }`
- * envelope.
+ * Invoke a component action through {@link ipcActionExecutor} and answer with
+ * the executor's response whole.
  *
- * The extra fields the executor produces (`failureDetails`, `durationMs`,
- * `effectVerification`, `requestId`) are passed through additively —
- * `JSON.stringify` drops the undefined ones, so an ordinary success is
- * byte-identical to what this seam emitted before.
- *
- * `effectVerification` is the predicted-vs-observed verdict. Leaving it off
- * here made every component action driven through the relay unverifiable: the
- * executor computed the verdict and this envelope threw it away, so a caller
- * could only ever read `unknown`.
+ * Whole, not a hand-listed envelope. The list this replaced first left out
+ * `effectVerification`, which made every component action driven through the
+ * relay unverifiable. It still left out `stack`, and it would have dropped the
+ * next field added to `ComponentActionResponse` the same way. The direct
+ * server route already returns the executor's response unchanged, so the two
+ * channels now answer alike.
  */
 async function runComponentActionViaExecutor(
   registry: ReturnType<typeof getGlobalRegistry>,
   componentId: string,
   request: ComponentActionRequest
-): Promise<Record<string, unknown>> {
-  const response = await ipcActionExecutor(registry).executeComponentAction(componentId, request);
-  return {
-    success: response.success,
-    result: response.result,
-    error: response.error,
-    failureDetails: response.failureDetails,
-    effectVerification: response.effectVerification,
-    durationMs: response.durationMs,
-    timestamp: response.timestamp,
-    requestId: response.requestId,
-  };
-}
-
-/**
- * The per-request fields of a wire `ComponentActionRequest` that this channel
- * forwards to the executor besides `action` and `params`.
- *
- * Read off the payload by name and type rather than spread, so a malformed
- * value is dropped instead of reaching the executor (which treats only a
- * boolean `verifyEffect` as an instruction). `verifyEffect` is the
- * effect-verification switch: before it was forwarded here, `true` could not
- * opt one relay call in and `false` could not decline a declared signature.
- */
-function wireComponentRequestFields(
-  source: Record<string, unknown>
-): Pick<ComponentActionRequest, 'timeoutMs' | 'verifyEffect' | 'requestId'> {
-  return {
-    timeoutMs: source.timeoutMs as number | undefined,
-    verifyEffect: typeof source.verifyEffect === 'boolean' ? source.verifyEffect : undefined,
-    requestId: typeof source.requestId === 'string' ? source.requestId : undefined,
-  };
+): Promise<ComponentActionResponse> {
+  return ipcActionExecutor(registry).executeComponentAction(componentId, request);
 }
 
 /**
@@ -2792,7 +2764,10 @@ export async function executeCommand(
 
     case 'execute_component_action': {
       const compId = (payload.componentId ?? payload.id) as string;
-      const actionId = (payload.actionId ?? payload.action) as string;
+      // The payload whole, minus the keys that name the component and the
+      // action: see `componentActionRequestFromWire`.
+      const request = componentActionRequestFromWire(payload);
+      const actionId = request.action;
       const comp = registry.getComponent(compId);
       if (!comp) {
         return {
@@ -2812,11 +2787,11 @@ export async function executeCommand(
       // Through the executor, not `compAction.handler(...)` — see
       // `ipcActionExecutor`. The component/action pre-checks above stay only
       // because they produce this channel's richer not-found prose; the
-      // executor re-resolves both and would answer identically.
+      // executor re-resolves both and would answer identically. The action
+      // handed on is the id the lookup found, which is the request's own.
       return await runComponentActionViaExecutor(registry, compId, {
-        action: actionId,
-        params: payload.params as Record<string, unknown> | undefined,
-        ...wireComponentRequestFields(payload as Record<string, unknown>),
+        ...request,
+        action: compAction.id,
       });
     }
 
@@ -2839,21 +2814,14 @@ export async function executeCommand(
     }
 
     case 'executeComponentAction': {
-      const { id, request } = payload as {
+      // The relay forwards the whole `ComponentActionRequest`, and this arm
+      // hands it on whole. `actionId` is the IPC spelling of `action`.
+      const { id, request: wire } = payload as {
         id: string;
-        // `timeoutMs` is the wire-reachable half of cancellation — the relay
-        // forwards the whole `ComponentActionRequest`, so failing to read it
-        // here is what made it unreachable on this channel.
-        request: {
-          action: string;
-          actionId?: string;
-          params?: P;
-          timeoutMs?: number;
-          verifyEffect?: boolean;
-          requestId?: string;
-        };
+        request: ComponentActionRequest & { actionId?: string };
       };
-      const actionId = request.actionId ?? request.action;
+      const request = componentActionRequestFromWire(wire);
+      const actionId = request.action;
       const comp = registry.getComponent(id);
       if (!comp) {
         return {
@@ -2871,11 +2839,7 @@ export async function executeCommand(
         };
       }
       // Through the executor — see `ipcActionExecutor` and the twin above.
-      return await runComponentActionViaExecutor(registry, id, {
-        action: actionId,
-        params: request.params as Record<string, unknown> | undefined,
-        ...wireComponentRequestFields(request as Record<string, unknown>),
-      });
+      return await runComponentActionViaExecutor(registry, id, { ...request, action: action.id });
     }
 
     /**

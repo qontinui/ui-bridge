@@ -23,10 +23,16 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { createHandlers, type RegistryLike } from './handlers';
 import { createControlHandlers } from './nextjs';
 import { UIBridgeWSHandler } from './websocket-handler';
-import { createRelayHandlers } from './relay-handlers';
-import { CommandRelay } from './command-relay';
+import type { createRelayHandlers } from './relay-handlers';
 import { resetGlobalRegistry, getGlobalRegistry } from '../core/registry';
 import type { UIBridgeServerHandlers } from './types';
+import { DefaultActionExecutor } from '../control/action-executor';
+import {
+  asIfARequestField,
+  overTheWire,
+  relayDispatchingTo,
+  relayIntoListener,
+} from '../react/__tests__/relay-into-listener';
 
 /** Every request the executor was handed, in order. */
 let seen: Array<Record<string, unknown>>;
@@ -215,17 +221,14 @@ describe('relay handlers, HTTP route arm (invokeComponentAction)', () => {
     dispatched: Array<Record<string, unknown>>;
   } {
     const dispatched: Array<Record<string, unknown>> = [];
-    const relay = new CommandRelay({
-      globalPrefix: `__uiBridgeTimeoutWireTest_${Math.random().toString(36).slice(2, 10)}`,
-    });
     // Intercept at the dispatch boundary: `queueCommand` is what carries the
     // normalized request to the browser, so whatever lands here is what the
     // in-page handler receives.
-    relay.queueCommand = (async (action: string, payload: Record<string, unknown>) => {
+    const handlers = relayDispatchingTo(async (action, payload) => {
       dispatched.push({ action, ...payload });
-      return { success: true } as never;
-    }) as typeof relay.queueCommand;
-    return { handlers: createRelayHandlers(relay), dispatched };
+      return { success: true };
+    });
+    return { handlers, dispatched };
   }
 
   it('hoists timeoutMs onto the request instead of merging it into params', async () => {
@@ -307,7 +310,12 @@ describe('WebSocket handler forwards verifyEffect and requestId', () => {
     });
   });
 
-  it('ignores a non-boolean verifyEffect', async () => {
+  // The hop does not filter it. The executor is the one place that decides what
+  // a request field means, and it treats only a boolean `verifyEffect` as an
+  // instruction ("a non-boolean verifyEffect is not forwarded as an
+  // instruction" in `react/commandHandlers.effectVerification.relay.test.ts`
+  // drives the real executor).
+  it('hands a non-boolean verifyEffect on as it is, for the executor to judge', async () => {
     const ws = new UIBridgeWSHandler(
       createHandlers(
         makeRegistryLike(),
@@ -318,7 +326,79 @@ describe('WebSocket handler forwards verifyEffect and requestId', () => {
     send(ws, { componentId: 'login-form', action: 'submit', verifyEffect: 'true' });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(seen).toHaveLength(1);
-    expect(seen[0].verifyEffect).toBeUndefined();
+    expect(seen).toEqual([{ id: 'login-form', action: 'submit', verifyEffect: 'true' }]);
+  });
+
+  it('carries a request field added to the list, and leaves componentId behind', async () => {
+    const ws = new UIBridgeWSHandler(
+      createHandlers(
+        makeRegistryLike(),
+        recordingExecutor() as never
+      ) as unknown as Partial<UIBridgeServerHandlers>
+    );
+
+    await asIfARequestField('futureOptIn', async () => {
+      send(ws, { componentId: 'login-form', action: 'submit', params: {}, futureOptIn: 'x' });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(seen).toEqual([{ id: 'login-form', action: 'submit', params: {}, futureOptIn: 'x' }]);
+  });
+});
+
+// A semantic change made by plan
+// 2026-11-10-ui-bridge-relay-and-assert-batch-drop-fields-and-headless-leaks-chromium,
+// Phase 5. The route used to DROP a `timeoutMs` that was not a number, so the
+// action ran with no timeout at all. It now hoists the value as it is, and the
+// executor refuses it with UB-VALIDATION-ERROR before the handler runs, the
+// same answer every other transport already gave.
+describe('a non-number timeoutMs on POST /control/component/:id/action/:actionId is refused', () => {
+  let calls: number;
+
+  beforeEach(() => {
+    calls = 0;
+    getGlobalRegistry().registerComponent('counted', {
+      name: 'Counted',
+      actions: [
+        {
+          id: 'go',
+          handler: () => {
+            calls += 1;
+            return 'ran';
+          },
+        },
+      ],
+    });
+  });
+
+  function expectRefused(data: Record<string, unknown>): void {
+    expect(data.success).toBe(false);
+    expect((data.failureDetails as Record<string, unknown>).errorCode).toBe('UB-VALIDATION-ERROR');
+    expect(data.error).toBe(
+      'Action "go" on component "counted" was rejected: timeoutMs must be a number of milliseconds, received "5000".'
+    );
+    expect(calls).toBe(0);
+  }
+
+  it('on the direct route (server/handlers.ts invokeComponentAction)', async () => {
+    const handlers = createHandlers(
+      makeRegistryLike(),
+      new DefaultActionExecutor(getGlobalRegistry())
+    );
+
+    const res = overTheWire(
+      await handlers.invokeComponentAction('counted', 'go', { timeoutMs: '5000' })
+    );
+
+    expectRefused(res.data as Record<string, unknown>);
+  });
+
+  it('over the relay (invokeComponentAction, then the listener)', async () => {
+    const res = overTheWire(
+      await relayIntoListener().invokeComponentAction('counted', 'go', { timeoutMs: '5000' })
+    );
+
+    expect(res.success).toBe(false);
+    expectRefused(res.data as Record<string, unknown>);
   });
 });

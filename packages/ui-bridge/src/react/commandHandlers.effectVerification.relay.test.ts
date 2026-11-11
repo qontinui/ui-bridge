@@ -24,30 +24,12 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { executeCommand, type BridgeAccess } from './commandHandlers';
 import { resetGlobalRegistry, getGlobalRegistry } from '../core/registry';
 import { DefaultActionExecutor } from '../control/action-executor';
 import { resetGlobalEffectStore } from '../control/effect-store';
 import { resetGlobalActionWindowRegistry } from '../control/action-window-registry';
 import type { EffectSignature, PredictedDelta } from '../control/effect-types';
-import { createRelayHandlers } from '../server/relay-handlers';
-import { CommandRelay } from '../server/command-relay';
-
-const emptyBridge: BridgeAccess = {
-  elements: [],
-  getElement: () => undefined,
-  components: [],
-  workflows: [],
-};
-
-/** The wire is JSON. Whatever survives this round-trip is what a caller sees. */
-function overTheWire<T>(value: T): Record<string, unknown> {
-  return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
-}
-
-async function listener(action: string, payload: Record<string, unknown>) {
-  return overTheWire(await executeCommand(action, payload as never, emptyBridge));
-}
+import { listener, overTheWire, relayIntoListener } from './__tests__/relay-into-listener';
 
 let container: HTMLDivElement;
 
@@ -214,21 +196,11 @@ describe('the listener forwards verifyEffect to the executor', () => {
   });
 });
 
+// `relayIntoListener` (in `__tests__/relay-into-listener.ts`) is a relay whose
+// dispatch boundary hands each command straight to the listener's
+// `executeCommand`, JSON round-tripped both ways, exactly as the browser tab
+// would receive and answer it.
 describe('end to end: relay server → listener → caller', () => {
-  /**
-   * A relay whose dispatch boundary hands the command straight to the
-   * listener's `executeCommand`, JSON round-tripped both ways, exactly as the
-   * browser tab would receive and answer it.
-   */
-  function relayIntoListener(): ReturnType<typeof createRelayHandlers> {
-    const relay = new CommandRelay({
-      globalPrefix: `__uiBridgeEffectRelayTest_${Math.random().toString(36).slice(2, 10)}`,
-    });
-    relay.queueCommand = (async (action: string, payload: Record<string, unknown>) =>
-      listener(action, overTheWire(payload))) as typeof relay.queueCommand;
-    return createRelayHandlers(relay);
-  }
-
   it('POST /control/component/:id/action/:actionId returns a verified pass', async () => {
     registerDrawer('panel-route');
     const handlers = relayIntoListener();
