@@ -35,13 +35,15 @@ wait and gives up the overflow.
 
 What these workflows never route to the pool, whatever the variable says:
 
-- **A `pull_request` run.** Routing is gated on an allowlist of events (`push`,
-  `workflow_dispatch`), checked in every routed job's own `runs-on`. Every PR
-  check runs on GitHub's hosted runners, exactly as before. Two things this does
-  not decide: a fork PR that edits `runs-on` itself is held by the repository's
-  fork-PR approval policy (`all_external_contributors`), and a PR's code does run
-  on the pool once coord pushes it to a `merge-candidate*` ref — that is the
-  candidate CI this exists to move.
+- **A FORK `pull_request` run** (head repo is not this repo). Routing is gated
+  on an allowlist of events (`push`, `workflow_dispatch`, and a SAME-REPO
+  `pull_request`), checked in every routed job's own `runs-on`. Same-repo PR
+  runs route exactly like pushes: external PRs are prohibited on every qontinui
+  repo, so repo visibility is not a trust boundary (decision record
+  `self-hosted-runners-on-public-repos`, amendment 2026-11-04; policy
+  `production-and-cost` `external-prs-are-prohibited-so-public-repo-ci-is-not-a-trust-boundary`).
+  The fork guard is an optional extra on top of the repository's fork-PR
+  approval policy (`all_external_contributors`), which stays.
 - **A re-run** (attempt 2 and later), so a pool that picks jobs up and then fails
   them cannot fail the retry too.
 - **`ci-integrity.yml`** (`pull_request_target`), **`docs.yml`** (the Pages
@@ -161,7 +163,8 @@ against the guard as committed in the PR, since the guard itself only ever runs
 One job:
 
 - **`lint-smoke-script`** (runs on every PR + push to `main`; Ubuntu-hosted for a
-  PR, routed to the self-hosted pool on a push — see "Where the Linux jobs run")
+  fork PR or a re-run, routed to the self-hosted pool on a push or a same-repo
+  PR — see "Where the Linux jobs run")
   - `bash -n scripts/smoke-test-runner.sh` — catches shell syntax errors early.
   - `shellcheck` — informational only; warnings do **not** fail the job.
   - Confirms `scripts["smoke-test:runner"]` exists in root `package.json`.
