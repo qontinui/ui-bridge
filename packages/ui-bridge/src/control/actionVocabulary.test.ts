@@ -46,6 +46,8 @@ describe('ACTION_VERB_SYNONYMS', () => {
       middle: ['middleClick'],
       mouseover: ['hover'],
       mouseenter: ['hover'],
+      mouseleave: ['unhover'],
+      mouseout: ['unhover'],
       scrollTo: ['scrollIntoView'],
     });
   });
@@ -74,6 +76,10 @@ describe('suggestAction', () => {
     expect(suggestAction('contextmenu', ['rightClick'])).toBe('rightClick');
     expect(suggestAction('middleclick', ['middleClick'])).toBe('middleClick');
     expect(suggestAction('mouseover', ['hover'])).toBe('hover');
+    expect(suggestAction('mouseleave', ['hover', 'unhover'])).toBe('unhover');
+    expect(suggestAction('mouseOut', ['hover', 'unhover'])).toBe('unhover');
+    // An element whose advertised list lacks `unhover` is never told to use it.
+    expect(suggestAction('mouseleave', ['hover', 'click'])).toBeUndefined();
     expect(suggestAction('scrollTo', ['scrollIntoView'])).toBe('scrollIntoView');
   });
 
