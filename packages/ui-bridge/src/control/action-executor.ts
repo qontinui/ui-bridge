@@ -72,6 +72,7 @@ import { classString } from '../core/class-name';
 // from an HTTP/WS body, so it is validated and clamped here — the one place
 // every transport funnels through — rather than reaching `setTimeout` raw.
 import { runAbortable, normalizeActionTimeoutMs, inertAbortSignal } from '../core/abortable';
+import { ComponentActionUnavailableError } from '../core/component-action-unavailable';
 // Phase 2: the executor validates action params against the action's published
 // `paramSchema` before the handler runs. See `core/param-schema.ts` for the
 // documented subset and for why `warn` is the default mode.
@@ -2517,15 +2518,25 @@ export class DefaultActionExecutor implements ActionExecutor {
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      // A `useUIComponent` wrapper refusing an action that its latest committed
+      // render withdrew while the passive republish still listed it. It gets
+      // the early gate's answer, which the same call gets once the registry has
+      // caught up: `UB-UNSUPPORTED-ACTION`, not a handler failure whose recovery
+      // says "retry", and no stack, because nothing crashed.
+      const unavailable = ComponentActionUnavailableError.is(error);
       return {
         success: false,
         error: message,
-        failureDetails: buildActionFailureDetails('UB-ACTION-FAILED', message, {
-          elementId: componentId,
-          context: { action: request.action },
-          durationMs: performance.now() - startTime,
-        }),
-        stack: error instanceof Error ? error.stack : undefined,
+        failureDetails: buildActionFailureDetails(
+          unavailable ? 'UB-UNSUPPORTED-ACTION' : 'UB-ACTION-FAILED',
+          message,
+          {
+            elementId: componentId,
+            context: { action: request.action },
+            durationMs: performance.now() - startTime,
+          }
+        ),
+        stack: !unavailable && error instanceof Error ? error.stack : undefined,
         durationMs: performance.now() - startTime,
         timestamp: Date.now(),
         requestId: request.requestId,
