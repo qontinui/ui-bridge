@@ -463,6 +463,53 @@ describe('relay executeElementAction — forced hover and auto-release', () => {
     expect(getForcedPseudoState()).toBeNull();
   });
 
+  it('hover runs the registry discovery rescan, so a control hidden by its own opacity is revealed with appeared: true', async () => {
+    // An own-`opacity-0` control the hover's CSS reveals, which discovery
+    // would not admit at rest: the rescanner registers it once it draws.
+    const extra = document.createElement('style');
+    extra.textContent = `.late { opacity: 0; } .group:hover .late { opacity: 1; }`;
+    document.head.appendChild(extra);
+    const late = document.createElement('button');
+    late.id = 'late';
+    late.className = 'late';
+    late.textContent = 'schedule';
+    f.group.appendChild(late);
+    makeVisible(late);
+    let lateClicks = 0;
+    late.addEventListener('click', () => (lateClicks += 1));
+    const reg = getGlobalRegistry();
+    const uninstall = reg.addDiscoveryRescanner(() => {
+      if (!reg.getElement('late') && getComputedStyle(late).opacity !== '0') {
+        reg.registerElement('late', late, { type: 'button' });
+      }
+    });
+    try {
+      expect(reg.getElement('late')).toBeUndefined();
+      const hover = await relay('header', { action: 'hover' });
+      expect(hover.success).toBe(true);
+      expect(hover.forcedHover.applied.rescanners).toBe(1);
+      expect(hover.forcedHover.applied.revealedComplete).toBe(true);
+      expect(hover.forcedHover.applied.revealed).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: 'late', appeared: true })])
+      );
+      // The new id is one a click accepts, and the write-class click releases.
+      const click = await relay('late', { action: 'click' });
+      expect(click.success).toBe(true);
+      expect(lateClicks).toBe(1);
+      expect(click.forcedHover.released).toMatchObject({
+        released: true,
+        reason: 'next-action',
+        restore: 'verified',
+      });
+      expect(click.forcedHover.released.checked).toEqual(
+        expect.arrayContaining([{ id: 'late', appeared: true, verdict: 'pass' }])
+      );
+    } finally {
+      uninstall();
+      extra.remove();
+    }
+  });
+
   it('hover honours holdMs and settleTimeoutMs on this path too', async () => {
     const res = await relay('tool', { action: 'hoverClick', params: { holdMs: 4321 } });
     expect(res.forcedHover.applied.holdMs).toBe(4321);

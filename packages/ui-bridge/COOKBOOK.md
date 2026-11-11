@@ -189,6 +189,9 @@ Conditions:
   forces the real CSS `:hover` state (the target and its ancestors), reports
   what it revealed under `forcedHover`, and holds it until `unhover`, the next
   `hover`, a completed write-class action such as the `click`, or `holdMs`.
+  A control hidden by its OWN style at rest (`opacity-0 group-hover:opacity-100`,
+  `hidden group-hover:block`) is not registered until then: the hover registers
+  it and lists it in `revealed` with `appeared: true` and the id to click.
 - `text-matches` — element exists AND its label/aria-label/title/textContent
   contains `text_match` (pass as a sibling field).
 
@@ -450,15 +453,52 @@ held until `unhover`, the next `hover`, a completed write-class action (`click`,
 ```bash
 curl -s -X POST "$BASE/control/element/zone-header/action" \
   -H 'Content-Type: application/json' -d '{"action":"hover","params":{"holdMs":5000}}' \
-  | jq '.data.forcedHover.applied | {rulesRewritten, unreadableSheets, complete, settled, revealed}'
+  | jq '.data.forcedHover.applied | {rulesRewritten, unreadableSheets, complete, settled,
+        rescanners, rescanMs, revealedComplete, revealedIncompleteReason, revealed}'
 curl -s -X POST "$BASE/control/element/zone-header/action" \
   -H 'Content-Type: application/json' -d '{"action":"unhover"}' \
-  | jq '.data.forcedHover.released | {released, restore, drift, selectorDrift}'
+  | jq '.data.forcedHover.released | {released, restore, drift, selectorDrift, checked}'
 ```
 
 `complete: false` means a sheet was unreadable (cross-origin) or a rewrite was
-refused: what the hover reveals is then UNKNOWN-complete. `restore` is
-`verified` only when every revealed element reads its pre-hover values again.
+refused: what the hover reveals is then UNKNOWN-complete.
+
+**Controls the hover reveals are registered by it.** Discovery admits only an
+element that draws, so a control hidden by its own `opacity-0` / `hidden` /
+`invisible` has no id at rest, and a pure-CSS reveal changes nothing discovery
+watches. So the hover asks the registry for a discovery rescan twice: before it
+reads the `before` values (everything admissible at rest joins the baseline and
+is never reported as revealed) and after the settle (what the hover made
+admissible is registered now). Such a control is in `revealed` with
+`appeared: true`, `changes` carrying `before: null`, and its new id, which a
+following `click` accepts. It stays registered after the release, reporting
+`visible: false`, so a later hover reports it with real `before` values and
+`appeared: false`. Media elements keep their own debounce and never appear here.
+
+- `rescanners`: how many discovery rescanners the registry ran (one per
+  `AutoRegisterProvider` / `useAutoRegister` root).
+- `rescanMs`: the time both rescans took, their synchronous scan included.
+- `revealedComplete`: `true` only when both rescans returned without throwing,
+  each within 250 ms, and each ran at least one rescanner. The 250 ms is
+  counted from before the call, so a slow synchronous scan counts too; a call
+  that overruns it is reported late even though its registrations landed, and
+  a promise still pending at 250 ms is abandoned. Otherwise
+  `revealedIncompleteReason` says why `revealed` may be wrong: `rescan-threw`,
+  `rescan-timeout`, `no-rescanner` (no discovery ran after the settle: the page
+  has no auto-registration, so `revealed` covers only what was registered
+  before; read `rescanners: 0` as "no discovery ran", never as "nothing was
+  revealed"), or `no-baseline-rescanner` (discovery ran after the settle but
+  not before the hover, so a control that already drew at rest may be listed
+  as `appeared`).
+
+`restore` is `verified` only when every element in `checked` passed: each
+previously registered revealed element (and the target) reads its pre-hover
+values again, and each `appeared` element stopped drawing again (display `none`,
+visibility `hidden`, opacity 0 or no box) or left the page. `checked` lists each
+one as `{ id, appeared, verdict }`, `verdict` being `pass`, `drift`,
+`disconnected` or `unreadable`. A release by a write-class action can drift
+because of the action itself (a click that schedules an item may remove its
+button's `opacity-0` for good); that is the app's state, reported the same way.
 
 **Breaking (0.38.0): the relay `getElementStateStyles` response shape.** Over
 the relay (qontinui-web, the runner's WS route) it used to return

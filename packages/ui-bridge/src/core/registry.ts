@@ -1050,6 +1050,14 @@ export class UIBridgeRegistry {
   private enrichers: SnapshotEnrichers = {};
   private snapshotExtras = new Map<string, SnapshotEnricher>();
 
+  // ── Discovery rescanners ──────────────────────────────────────────────────
+  // Installed by discovery (`useAutoRegister`) and run by
+  // `requestDiscoveryRescan`. One wrapper object per install, so the same
+  // function installed twice is two installs with two uninstalls. Owned by this
+  // instance, so two registries on one page cannot trigger each other's
+  // discovery, and deliberately NOT reset by `clear()`.
+  private discoveryRescanners = new Set<{ run: () => void }>();
+
   constructor(options: RegistryOptions = {}) {
     this.options = options;
     this.__instanceTag = Math.random().toString(36).slice(2, 8);
@@ -1063,6 +1071,52 @@ export class UIBridgeRegistry {
    */
   getInstanceTag(): string {
     return this.__instanceTag;
+  }
+
+  // ============================================================================
+  // Discovery rescan
+  // ============================================================================
+
+  /**
+   * Install a discovery rescanner: a callback that registers, synchronously,
+   * every element its discovery would admit right now. Returns its uninstall,
+   * which is idempotent. Several can be installed (one per `useAutoRegister`
+   * root), and they survive {@link clear}, which runs on a route change and on
+   * auth while the discovery that installed them stays mounted.
+   */
+  addDiscoveryRescanner(fn: () => void): () => void {
+    const entry = { run: fn };
+    this.discoveryRescanners.add(entry);
+    return () => {
+      this.discoveryRescanners.delete(entry);
+    };
+  }
+
+  /**
+   * Run every installed discovery rescanner, synchronously, and resolve in a
+   * microtask with how many ran. A forced hover calls this so a control that
+   * its CSS revealed, and that discovery therefore never saw, is registered
+   * and can be reported and clicked.
+   *
+   * There is deliberately no animation-frame wait: `requestAnimationFrame` is
+   * paused in an occluded window, and the registrations are synchronous, so a
+   * caller that awaits this reads them at once. With none installed it
+   * resolves `{ rescanners: 0 }`, which the caller must read as "no discovery
+   * ran", not as "nothing to register". A rescanner that throws does not stop
+   * the others; the promise then rejects with the first error.
+   */
+  requestDiscoveryRescan(): Promise<{ rescanners: number }> {
+    const installed = Array.from(this.discoveryRescanners);
+    let firstError: { error: unknown } | null = null;
+    for (const entry of installed) {
+      try {
+        entry.run();
+      } catch (error) {
+        firstError ??= { error };
+      }
+    }
+    if (firstError) return Promise.reject(firstError.error);
+    return Promise.resolve({ rescanners: installed.length });
   }
 
   // ============================================================================
@@ -3530,6 +3584,9 @@ export class UIBridgeRegistry {
     // registry has never been snapshotted again, which is UNKNOWN rather than
     // a stale identity the action path could reject against.
     this.lastSnapshotIdentity = null;
+    // `discoveryRescanners` is NOT cleared: they belong to the discovery that
+    // installed them, which outlives a route change or an auth re-scan (both
+    // call this) and uninstalls them itself on unmount.
   }
 
   /**

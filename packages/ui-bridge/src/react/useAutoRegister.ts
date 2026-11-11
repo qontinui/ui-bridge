@@ -730,6 +730,16 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
    */
   const shouldRegister = useCallback(
     (element: HTMLElement): boolean => {
+      // Already registered: the cheapest check first. Every check below only
+      // ever answers `false` except the final selector match, so the order is
+      // free and only changes the cost. It matters on a forced hover's
+      // discovery rescan, which walks every interactive element on the page and
+      // would otherwise pay a style read and a layout read for each registered
+      // one.
+      if (registeredElementsRef.current.has(element)) {
+        return false;
+      }
+
       // Persist-while-mounted opt-in: either the hook-wide option or a
       // per-element `data-ui-bridge-persist="true"` attribute bypasses the
       // visibility gate. The element is still subject to exclude selectors
@@ -758,11 +768,6 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       // cannot see or drive these elements — used for the "AI in control"
       // banner so the bridge can't dismiss its own indicator.
       if (isBridgeInvisible(element)) {
-        return false;
-      }
-
-      // Check if already registered
-      if (registeredElementsRef.current.has(element)) {
         return false;
       }
 
@@ -1187,6 +1192,28 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
   );
 
   /**
+   * Register what the interactive and content queues hold NOW instead of
+   * waiting out their debounce: the half of the discovery rescan
+   * (`registry.requestDiscoveryRescan`) that makes its registrations visible
+   * before it resolves. Registration itself is synchronous, so after this
+   * returns the registry holds them. Media is neither scanned by the rescan nor
+   * flushed here (its queue keeps its own debounce), so a media element is
+   * never registered by a rescan, and never in a forced hover's `revealed`.
+   */
+  const flushPendingDiscovery = useCallback((): void => {
+    if (debounceTimeoutRef.current) {
+      clearTimeout(debounceTimeoutRef.current);
+      debounceTimeoutRef.current = null;
+    }
+    if (pendingRegistrationsRef.current.size > 0) processPendingRegistrations();
+    if (contentDebounceTimeoutRef.current) {
+      clearTimeout(contentDebounceTimeoutRef.current);
+      contentDebounceTimeoutRef.current = null;
+    }
+    if (pendingContentRegistrationsRef.current.size > 0) processPendingContentRegistrations();
+  }, [processPendingRegistrations, processPendingContentRegistrations]);
+
+  /**
    * Queue content element for registration (separate debounce timer)
    */
   const queueContentRegistration = useCallback(
@@ -1268,10 +1295,15 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
   );
 
   /**
-   * Scan and register all existing interactive elements
+   * Scan and register all existing interactive elements.
+   *
+   * `includeMedia: false` is the discovery rescan's variant: media can never
+   * reach a forced hover's `revealed` (it keeps its own debounce), so the
+   * rescan skips the media pass, and with it the restarted media debounce and
+   * the background-image walk.
    */
   const scanAndRegister = useCallback(
-    (rootElement: HTMLElement): void => {
+    (rootElement: HTMLElement, { includeMedia = true }: { includeMedia?: boolean } = {}): void => {
       // Prune any leaked entries from prior effect re-runs where the
       // DOM node has since been removed. This keeps the registry bounded
       // when the outer useEffect re-runs repeatedly because a caller
@@ -1334,7 +1366,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       });
 
       // Scan media elements
-      if (mediaEnabled) {
+      if (mediaEnabled && includeMedia) {
         const mediaSelectors = MEDIA_SELECTORS.join(', ');
         const mediaElements = rootElement.querySelectorAll<HTMLElement>(mediaSelectors);
         const isMediaRegistered = (el: HTMLElement) => registeredMediaElementsRef.current.has(el);
@@ -1597,6 +1629,11 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       // `src` / `srcset`: an image swapped in place (a lazy-load library, a
       // carousel, an in-situ asset override) is a new image to consider.
       // The slot marker: a placeholder slot gaining its asset.
+      //
+      // NOT `data-ui-bridge-pseudo-*` (the forced-hover marks): at mutation
+      // time a transitioned reveal still reads opacity 0, so a scan triggered
+      // by the mark would race the transition. A forced hover asks for a
+      // rescan after its settle instead (the rescanner installed below).
       attributeFilter: ['class', 'style', 'hidden', 'src', 'srcset', IMAGE_SLOT_ATTR],
     });
 
@@ -1635,6 +1672,20 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
     };
     window.addEventListener('ui-bridge-route-change', handleRouteChange);
 
+    // The discovery rescan a forced hover requests through the registry
+    // (`requestDiscoveryRescan`), before its baseline snapshot and after its
+    // settle. A pure-CSS reveal (`opacity-0 group-hover:opacity-100`) changes
+    // no attribute the observer watches, so without this a control hidden by
+    // its own style at rest is never registered. `scanAndRegister` is
+    // non-destructive (it never clears the registry), and skips media here;
+    // the flush makes its registrations land before the rescan resolves. Installed on the
+    // registry rather than as a window event so it answers only the registry
+    // this hook registers into, and it survives `registry.clear()`.
+    const uninstallRescanner = bridge.registry.addDiscoveryRescanner(() => {
+      scanAndRegister(rootElement, { includeMedia: false });
+      flushPendingDiscovery();
+    });
+
     // Expose diagnostic flags on window.__UI_BRIDGE__
     if (typeof window !== 'undefined') {
       const w = window as unknown as Record<string, unknown>;
@@ -1647,6 +1698,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       observer.disconnect();
       window.removeEventListener('ui-bridge-auth-complete', handleAuthComplete);
       window.removeEventListener('ui-bridge-route-change', handleRouteChange);
+      uninstallRescanner();
 
       // Clear diagnostic flags
       if (typeof window !== 'undefined') {
@@ -1708,7 +1760,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       unregisterIfDisconnected(registeredContentElementsRef);
       unregisterIfDisconnected(registeredMediaElementsRef);
     };
-  }, [enabled, bridge, root, scanAndRegister, handleMutations]);
+  }, [enabled, bridge, root, scanAndRegister, handleMutations, flushPendingDiscovery]);
 }
 
 export default useAutoRegister;

@@ -666,8 +666,23 @@ class ActionResponse(BaseModel):
     forced_hover: dict[str, Any] | None = Field(None, alias="forcedHover")
     """What a ``hover``/``hoverClick``/``unhover`` forced or released:
     ``applied`` (``rulesRewritten``, ``revealed``, ``settled``, ``unreadableSheets``,
-    ``expiresAt``, ...) and/or ``released`` (``released``, ``restore``,
-    ``drift``). Also present on a write-class action that released a held hover.
+    ``expiresAt``, ``rescanners``, ``rescanMs``, ``revealedComplete``,
+    ``revealedIncompleteReason``, ...) and/or ``released`` (``released``,
+    ``restore``, ``drift``, ``checked``). Also present on a write-class action
+    that released a held hover.
+
+    A control hidden by its own style at rest is registered by the hover's
+    discovery rescan and listed in ``revealed`` with ``appeared: True`` and the
+    id to click. ``rescanners`` counts the discovery rescanners that ran and
+    ``rescanMs`` the time both rescans took. ``revealedComplete`` is true only
+    when both rescans returned within 250 ms (synchronous scan included) and
+    each ran a rescanner; else ``revealedIncompleteReason`` is
+    ``"rescan-threw"``, ``"rescan-timeout"``, ``"no-rescanner"`` or
+    ``"no-baseline-rescanner"`` and ``revealed`` may be wrong
+    (``rescanners == 0`` means no discovery ran, not that nothing was
+    revealed). ``checked`` lists every element the release verified as
+    ``{"id", "appeared", "verdict"}``, ``verdict`` being ``"pass"``,
+    ``"drift"``, ``"disconnected"`` or ``"unreadable"``.
     """
 
     model_config = {"populate_by_name": True}
