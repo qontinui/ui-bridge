@@ -402,7 +402,10 @@ If an action returns `success: false` with `error: "... requires a 'X' parameter
 > unchanged page.
 >
 > Some verbs one of the four paths used to list are **no longer listed**,
-> because the SDK never performed them on that element. Use the replacement:
+> because on that element they failed, did nothing, or did something other than
+> the verb means (rewrote a button's label, clicked a radio on but never off,
+> wrote a clamped range value). A workflow that relied on one of those effects
+> stops working with this release. Use the replacement:
 >
 > - reset / image `<input>`: `type`, `clear`, `setValue` (they rewrote the
 >   button's label) — use `click`, or `reset` / `submit` on the form;

@@ -60,8 +60,9 @@ selects — clicking a checked one changes nothing — so it takes `check`, neve
 ### Verbs no longer advertised
 
 Before the four inference paths converged on one table, some of them listed
-verbs the SDK did not perform on the element: the call failed, or reported
-success over an unchanged page. Those verbs are now refused with
+verbs that, on that element, failed, reported success over an unchanged page,
+or did something other than the verb means (rewrote a button's label, clicked
+a radio on but never off, wrote a clamped range value). Those verbs are now refused with
 `failureDetails.context.refusal: "element-kind"`. Each has a replacement:
 
 | Element                                                                    | No longer listed            | What it did                                                                                             | Use instead                                                   |
