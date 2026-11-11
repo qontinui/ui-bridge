@@ -503,6 +503,26 @@ export function hasExpandedState(element: Element): boolean {
   return element.hasAttribute('aria-expanded');
 }
 
+/** The menu-item roles whose checked state a click flips. */
+const CLICK_CHECKED_MENU_ROLES: ReadonlySet<string> = new Set([
+  'menuitemcheckbox',
+  'menuitemradio',
+]);
+
+/**
+ * The node carries a pressed or checked state a CLICK flips, which `toggle`
+ * drives by clicking it: a toggle button (`aria-pressed`, as Radix `Toggle`
+ * renders), or a `role="menuitemcheckbox"` / `"menuitemradio"` (Radix
+ * `DropdownMenu.CheckboxItem` / `RadioItem`). A menu radio item, like any
+ * radio, only selects: clicking a checked one leaves it checked. The
+ * ATTRIBUTES, as an author wrote them.
+ */
+export function hasClickToggledState(element: Element): boolean {
+  if (element.hasAttribute('aria-pressed')) return true;
+  const role = element.getAttribute('role');
+  return role !== null && CLICK_CHECKED_MENU_ROLES.has(role);
+}
+
 /**
  * The node opens a listbox `select` can pick an option from: `role="combobox"`,
  * or `aria-haspopup="listbox"` (a select-only trigger such as MUI's
@@ -552,7 +572,7 @@ export function structuralActions(element: Element): StandardAction[] {
     if (checkable.type === 'checkbox') verbs.push('toggle');
   }
   if (disclosureDetails(element) || nativeDialog(element)) verbs.push('toggle');
-  if (hasExpandedState(element)) verbs.push('toggle');
+  if (hasExpandedState(element) || hasClickToggledState(element)) verbs.push('toggle');
   if (opensListbox(element)) verbs.push('select');
   if (resolveOwnerForm(element)) verbs.push('submit', 'reset');
   return verbs;

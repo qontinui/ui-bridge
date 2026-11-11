@@ -241,6 +241,21 @@ const FIXTURES: Fixture[] = [
     popup: true,
   },
 
+  // Click-toggled state: a toggle button (Radix `Toggle`) and the menu
+  // checkbox / radio items (Radix `DropdownMenu.CheckboxItem` / `RadioItem`).
+  {
+    name: '<button aria-pressed> (toggle button)',
+    html: `<button type="button" aria-pressed="false" ${T}>bold</button>`,
+  },
+  {
+    name: '<div role="menuitemcheckbox">',
+    html: `<div role="menu"><div role="menuitemcheckbox" aria-checked="false" tabindex="-1" ${T}>wrap</div></div>`,
+  },
+  {
+    name: '<div role="menuitemradio">',
+    html: `<div role="menu"><div role="menuitemradio" aria-checked="false" tabindex="-1" ${T}>left</div></div>`,
+  },
+
   // Roles on native tags: the spellings component libraries render.
   {
     name: '<button role="switch">',
@@ -696,4 +711,38 @@ describe('select is advertised only on a node that opens a listbox', () => {
       expect(clicks).toBe(0);
     }
   );
+});
+
+describe('toggle on click-toggled state: the framework handler runs on both dispatchers', () => {
+  it.each([
+    [
+      'a toggle button',
+      `<button type="button" aria-pressed="false" ${T}>bold</button>`,
+      'aria-pressed',
+    ],
+    [
+      'a menu checkbox item',
+      `<div role="menuitemcheckbox" aria-checked="false" ${T}>wrap</div>`,
+      'aria-checked',
+    ],
+    [
+      'a menu radio item',
+      `<div role="menuitemradio" aria-checked="false" ${T}>left</div>`,
+      'aria-checked',
+    ],
+  ])('%s advertises toggle and flips through its own click handler', async (_name, html, attr) => {
+    for (const via of ['executor', 'relay'] as const) {
+      getGlobalRegistry().clear();
+      const target = mount({ name: html, html });
+      // What the component library does: its click handler owns the state.
+      target.addEventListener('click', () =>
+        target.setAttribute(attr, target.getAttribute(attr) === 'true' ? 'false' : 'true')
+      );
+      const registered = getGlobalRegistry().registerElement('oracle-target', target);
+      expect(registered.actions).toContain('toggle');
+      const outcome = await dispatch(via, 'toggle');
+      expect(outcome, via).toMatchObject({ success: true });
+      expect(target.getAttribute(attr), via).toBe('true');
+    }
+  });
 });

@@ -29,6 +29,7 @@ import {
   clearControl,
   disclosureDetails,
   formattedValueInput,
+  hasClickToggledState,
   hasExpandedState,
   nativeDialog,
   resolveOwnerForm,
@@ -274,9 +275,11 @@ export function toggleArm(element: HTMLElement): ArmOutcome<{ apply: () => void 
     };
   }
 
-  // An ARIA switch or checkbox flips on click.
+  // An ARIA switch or checkbox, a toggle button (aria-pressed) and a menu
+  // checkbox / radio item flip on click: the framework's own handler owns the
+  // state, so the click is the gesture, and the attribute follows it.
   const role = element.getAttribute('role');
-  if (role !== null && ARIA_CHECKED_ROLES.has(role)) {
+  if ((role !== null && ARIA_CHECKED_ROLES.has(role)) || hasClickToggledState(element)) {
     return { ok: true, apply: () => sdkDispatch(() => element.click()) };
   }
 
@@ -284,7 +287,8 @@ export function toggleArm(element: HTMLElement): ArmOutcome<{ apply: () => void 
     'toggle',
     element,
     'a checkbox <input>, <details> or its <summary>, <dialog>, a control carrying ' +
-      'aria-expanded, or role="checkbox" or "switch"'
+      'aria-expanded or aria-pressed, or role="checkbox", "switch", "menuitemcheckbox" ' +
+      'or "menuitemradio"'
   );
 }
 
