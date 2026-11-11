@@ -1421,19 +1421,26 @@ export class DefaultActionExecutor implements ActionExecutor {
       const registered = this.registry.getElement(elementId);
       const isCtrTarget = !registered && getGlobalCtr().has(elementId);
       // A CTR target may go on to resolve, but only with a verb to run on it.
-      if (!registered?.customActions?.[actionName] && (!isCtrTarget || !hasVerb)) {
-        // An id the registry does not hold may still name a node `find()` /
-        // `discover()` scanned (the discovery cache) or one the DOM resolves:
-        // the refusal lists THAT node's verbs, as its scanned row advertised
-        // them — not the global list, which suggested `sendKeys` for `press`
-        // on a scanned button.
-        const scanned = registered ? undefined : this.resolveUnregisteredNode(elementId);
+      const ctrPassesThrough = isCtrTarget && hasVerb;
+      // An id the registry does not hold may still name a node `find()` /
+      // `discover()` scanned (the discovery cache) or one the DOM resolves —
+      // and that node may itself be registered under ANOTHER id. Its own
+      // registration decides, as it does once `performAction` resolves it:
+      // its declared verbs and custom actions, not a re-inference.
+      const scanned =
+        registered || ctrPassesThrough ? undefined : this.resolveUnregisteredNode(elementId);
+      const scannedOwner = scanned ? this.registry.findByDOMElement(scanned) : undefined;
+      const owner = registered ?? scannedOwner;
+      if (!owner?.customActions?.[actionName] && !ctrPassesThrough) {
+        // The refusal lists THAT node's verbs — its registration's, else as its
+        // scanned row advertised them — not the global list, which suggested
+        // `sendKeys` for `press` on a scanned button.
         const hint = unknownActionHintFor(
           hasVerb ? actionName : wireAction,
           registered?.id ?? (scanned ? elementId : undefined),
-          registered,
-          registered?.actions ?? (scanned ? inferActions(inferElementType(scanned), scanned) : []),
-          registered?.type ?? (scanned ? inferElementType(scanned) : undefined)
+          owner,
+          owner?.actions ?? (scanned ? inferActions(inferElementType(scanned), scanned) : []),
+          owner?.type ?? (scanned ? inferElementType(scanned) : undefined)
         );
         const message = hint.message;
         return {
