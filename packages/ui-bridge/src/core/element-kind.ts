@@ -138,6 +138,16 @@ export const ELEMENT_KIND_ACTIONS: Record<ElementType, readonly StandardAction[]
 };
 
 /**
+ * Whether an element of kind `type` is typed into with keys although it takes
+ * no `type` verb: an ARIA textbox or a contenteditable (the `textbox` row). An
+ * unknown-verb suggestion reads it, so `press` there suggests `sendKeys`, not
+ * `click` (D4).
+ */
+export function isTypedWithKeys(type: string | undefined): boolean {
+  return type === 'textbox';
+}
+
+/**
  * The verbs an element of kind `type` advertises: its kind's row plus what its
  * own structure grants, in canonical order. `type` is the kind the element is
  * REGISTERED as, which a caller may have declared rather than had inferred.

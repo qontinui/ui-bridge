@@ -145,6 +145,42 @@ describe('DefaultActionExecutor — unknown action', () => {
     expect(res.failureDetails?.context).toMatchObject({ didYouMean: 'sendKeys' });
   });
 
+  // D4 on text boxes: an ARIA textbox or a contenteditable advertises no `type`
+  // — it is typed into with `sendKeys` — so `press` there is keyboard input.
+  it.each([
+    [
+      'a contenteditable',
+      () => {
+        const el = document.createElement('div');
+        el.setAttribute('contenteditable', 'true');
+        return el;
+      },
+    ],
+    [
+      'a role="textbox"',
+      () => {
+        const el = document.createElement('div');
+        el.setAttribute('role', 'textbox');
+        return el;
+      },
+    ],
+  ])('`press` on %s suggests `sendKeys`, registered or scanned', async (_name, make) => {
+    const registeredBox = make();
+    container.appendChild(registeredBox);
+    const row = registry.registerElement('editor', registeredBox);
+    expect(row.type).toBe('textbox');
+    expect(row.actions).toEqual(expect.arrayContaining(['click', 'sendKeys']));
+    expect(row.actions).not.toContain('type');
+    const res = await executor.executeAction('editor', { action: 'press' });
+    expect(res.failureDetails?.context).toMatchObject({ didYouMean: 'sendKeys' });
+
+    const scannedBox = make();
+    scannedBox.setAttribute('data-testid', 'scanned-editor');
+    container.appendChild(scannedBox);
+    const scanned = await executor.executeAction('scanned-editor', { action: 'keydown' });
+    expect(scanned.failureDetails?.context).toMatchObject({ didYouMean: 'sendKeys' });
+  });
+
   it('an unregistered target gets the built-in list and still a suggestion', async () => {
     const res = await executor.executeAction('nowhere', { action: 'dblclick' });
     expect(res.error).toMatch(/^Unknown action 'dblclick'\. Supported: click, hoverClick, /);
@@ -274,5 +310,18 @@ describe('relay executeElementAction — unknown action', () => {
       didYouMean: 'sendKeys',
       supportedActions: ['focus', 'sendKeys'],
     });
+  });
+
+  it('`press` on a contenteditable suggests `sendKeys`, not `click`', async () => {
+    host.setAttribute('contenteditable', 'true');
+    const row = getGlobalRegistry().registerElement('editor', host);
+    expect(row.type).toBe('textbox');
+    const res = (await executeCommand(
+      'executeElementAction',
+      { id: 'editor', request: { action: 'press' } },
+      emptyBridge
+    )) as { success: boolean; failureDetails: { context: unknown } };
+    expect(res.success).toBe(false);
+    expect(res.failureDetails.context).toMatchObject({ didYouMean: 'sendKeys' });
   });
 });

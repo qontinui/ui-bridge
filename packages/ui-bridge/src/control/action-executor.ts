@@ -172,7 +172,12 @@ import {
 import { sdkDispatch } from '../core/sdk-dispatch';
 // The ONE inferrer and verb table (plan
 // `2026-11-09-an-elements-advertised-verbs-depend-on-which-path-found-it`).
-import { inferActions, inferElementType, textEntryControl } from '../core/element-kind';
+import {
+  inferActions,
+  inferElementType,
+  isTypedWithKeys,
+  textEntryControl,
+} from '../core/element-kind';
 import {
   ELEMENT_KIND_REFUSAL,
   checkArm,
@@ -253,13 +258,17 @@ function unknownActionHintFor(
   action: unknown,
   elementId: string | undefined,
   registered: RegisteredElement | undefined,
-  advertised: readonly string[] = registered?.actions ?? []
+  advertised: readonly string[] = registered?.actions ?? [],
+  kind: string | undefined = registered?.type
 ): UnknownActionHint {
   const custom = Object.keys(registered?.customActions ?? {});
   const own = [...advertised, ...custom];
   return describeUnknownAction(action, {
     elementId,
     accepted: own.length > 0 ? own : [...SUPPORTED_ACTIONS, ...custom],
+    // D4: the suggestion orders by element KIND — a text box is typed with
+    // `sendKeys`, though it advertises no `type`.
+    keyboardEntry: isTypedWithKeys(kind),
   });
 }
 
@@ -1385,7 +1394,8 @@ export class DefaultActionExecutor implements ActionExecutor {
           hasVerb ? actionName : wireAction,
           registered?.id ?? (scanned ? elementId : undefined),
           registered,
-          registered?.actions ?? (scanned ? inferActions(inferElementType(scanned), scanned) : [])
+          registered?.actions ?? (scanned ? inferActions(inferElementType(scanned), scanned) : []),
+          registered?.type ?? (scanned ? inferElementType(scanned) : undefined)
         );
         const message = hint.message;
         return {
@@ -3103,7 +3113,8 @@ export class DefaultActionExecutor implements ActionExecutor {
           action,
           owner?.id,
           owner,
-          owner?.actions ?? inferActions(inferElementType(element), element)
+          owner?.actions ?? inferActions(inferElementType(element), element),
+          owner?.type ?? inferElementType(element)
         );
         throw new UnknownActionError(hint);
       }

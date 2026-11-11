@@ -81,8 +81,16 @@ const SYNONYMS_BY_FOLDED = new Map<string, readonly string[]>(
  *   element spells it, the keyboard verbs' candidates ordered for the element
  *   ({@link orderForElement}).
  * - Otherwise `undefined`.
+ *
+ * `options.keyboardEntry` says the element is typed into with keys although it
+ * does not accept `type` — an ARIA textbox or a contenteditable — so a key
+ * press there is keyboard input too.
  */
-export function suggestAction(requested: unknown, accepted: readonly string[]): string | undefined {
+export function suggestAction(
+  requested: unknown,
+  accepted: readonly string[],
+  options: SuggestOptions = {}
+): string | undefined {
   // The verb arrives off the wire: a body with no `action`, or a non-string
   // one, gets the refusal with no suggestion instead of a TypeError here.
   if (typeof requested !== 'string') return undefined;
@@ -95,26 +103,41 @@ export function suggestAction(requested: unknown, accepted: readonly string[]): 
   }
   const spellingFixed = byFolded.get(folded);
   if (spellingFixed !== undefined) return spellingFixed;
-  for (const candidate of orderForElement(SYNONYMS_BY_FOLDED.get(folded) ?? [], byFolded)) {
+  for (const candidate of orderForElement(
+    SYNONYMS_BY_FOLDED.get(folded) ?? [],
+    byFolded,
+    options.keyboardEntry === true
+  )) {
     const match = byFolded.get(foldVerb(candidate));
     if (match !== undefined) return match;
   }
   return undefined;
 }
 
+/** How {@link suggestAction} reads the element beyond its accepted verbs. */
+export interface SuggestOptions {
+  /**
+   * The element is typed into with keys although it does not accept `type`:
+   * an ARIA textbox or a contenteditable, whose text `sendKeys` enters.
+   */
+  keyboardEntry?: boolean;
+}
+
 /**
  * The keyboard verbs' candidates (`press` → `sendKeys`, `click`), ordered by
  * what the element is. Every web element accepts `sendKeys`, so the fixed
  * order would answer `press` on a button with `sendKeys`. On an element that
- * takes text entry — it accepts `type` — a key press is keyboard input, so
- * `sendKeys` leads; on any other element `click` does. The synonym table keeps
- * its one fixed order; only the suggestion reorders.
+ * takes text entry — it accepts `type`, or it is a text box typed with keys
+ * (`keyboardEntry`) — a key press is keyboard input, so `sendKeys` leads; on
+ * any other element `click` does. The synonym table keeps its one fixed order;
+ * only the suggestion reorders.
  */
 function orderForElement(
   candidates: readonly string[],
-  byFolded: ReadonlyMap<string, string>
+  byFolded: ReadonlyMap<string, string>,
+  keyboardEntry: boolean
 ): readonly string[] {
-  if (byFolded.has(foldVerb('type'))) return candidates;
+  if (keyboardEntry || byFolded.has(foldVerb('type'))) return candidates;
   const keys = candidates.indexOf('sendKeys');
   const click = candidates.indexOf('click');
   if (keys === -1 || click === -1 || click < keys) return candidates;
@@ -159,10 +182,12 @@ function renderVerb(requested: unknown): string {
  */
 export function describeUnknownAction(
   requested: unknown,
-  options: { accepted: readonly string[]; elementId?: string }
+  options: { accepted: readonly string[]; elementId?: string; keyboardEntry?: boolean }
 ): UnknownActionHint {
   const supportedActions = Array.from(new Set(options.accepted));
-  const didYouMean = suggestAction(requested, supportedActions);
+  const didYouMean = suggestAction(requested, supportedActions, {
+    keyboardEntry: options.keyboardEntry,
+  });
   const subject = options.elementId !== undefined ? ` for element '${options.elementId}'` : '';
   const listLabel = options.elementId !== undefined ? 'This element accepts' : 'Supported';
   const message =

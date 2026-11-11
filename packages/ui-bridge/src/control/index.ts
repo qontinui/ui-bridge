@@ -23,6 +23,7 @@ export {
   unknownActionContext,
   UnknownActionError,
   type UnknownActionHint,
+  type SuggestOptions,
 } from './actionVocabulary';
 
 // Forced CSS pseudo-state (`hover` / `unhover` / `hoverClick`)
