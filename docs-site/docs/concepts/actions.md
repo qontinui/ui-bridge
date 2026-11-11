@@ -30,19 +30,20 @@ fallback.
 
 ### By what the element is
 
-| Element                                                                        | Adds                                        |
-| ------------------------------------------------------------------------------ | ------------------------------------------- |
-| Text `<input>` (text, search, email, url, tel, password, number), `<textarea>` | `type`, `clear`, `setValue`, `autocomplete` |
-| Date, time, datetime-local, month, week or colour `<input>`                    | `type`, `clear`, `setValue`                 |
-| Range or hidden `<input>`                                                      | `setValue`                                  |
-| File `<input>`                                                                 | `clear`                                     |
-| `<select>`                                                                     | `select`, `setValue`                        |
-| `role="combobox"`, or a control carrying `aria-haspopup="listbox"`             | `select`                                    |
-| Checkbox `<input>`, `role="checkbox"`, `role="switch"`                         | `check`, `uncheck`, `toggle`                |
-| Radio `<input>`                                                                | `check`, `uncheck`                          |
-| `role="radio"`                                                                 | `check`                                     |
-| `<details>`, its `<summary>`, `<dialog>`, a control carrying `aria-expanded`   | `toggle`                                    |
-| A `<form>`, or any element inside one or owned by one through `form="…"`       | `submit`, `reset`                           |
+| Element                                                                          | Adds                                        |
+| -------------------------------------------------------------------------------- | ------------------------------------------- |
+| Text `<input>` (text, search, email, url, tel, password, number), `<textarea>`   | `type`, `clear`, `setValue`, `autocomplete` |
+| Date, time, datetime-local, month, week or colour `<input>`                      | `type`, `clear`, `setValue`                 |
+| Range or hidden `<input>`                                                        | `setValue`                                  |
+| File `<input>`                                                                   | `clear`                                     |
+| `<select>`                                                                       | `select`, `setValue`                        |
+| `role="combobox"`, or a control carrying `aria-haspopup="listbox"`               | `select`                                    |
+| Checkbox `<input>`, `role="checkbox"`, `role="switch"`                           | `check`, `uncheck`, `toggle`                |
+| Radio `<input>`                                                                  | `check`, `uncheck`                          |
+| `role="radio"`                                                                   | `check`                                     |
+| `<details>`, its `<summary>`, `<dialog>`, a control carrying `aria-expanded`     | `toggle`                                    |
+| A toggle button (`aria-pressed`), `role="menuitemcheckbox"` or `"menuitemradio"` | `toggle`                                    |
+| A `<form>`, or any element inside one or owned by one through `form="…"`         | `submit`, `reset`                           |
 
 An ARIA textbox (`role="textbox"`, or a contenteditable element) takes none of
 the value verbs: `sendKeys` is how it is typed into. A date, time or colour
