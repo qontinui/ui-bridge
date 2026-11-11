@@ -14,17 +14,27 @@
  *   - A5: the whole-request hops hand the request on minus their own keys, not
  *     by a field list, so a field that a later `@qontinui/ui-bridge` adds is
  *     carried even though this package's list predates it.
+ *   - The route's body-to-request split is a second copy of the engine's, so a
+ *     table runs both copies over the same bodies.
  *
- * Every expectation is a hand-written literal.
+ * Every expectation is a hand-written literal, except where a test compares
+ * this package's copy with the engine's.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { COMPONENT_ACTION_REQUEST_FIELDS } from './component-action-request';
-// The engine's list, read from source: this package resolves
-// `@qontinui/ui-bridge` by range, and no published version exports it.
-import { COMPONENT_ACTION_REQUEST_FIELDS as ENGINE_FIELDS } from '../../ui-bridge/src/server/component-action-invocation';
+import {
+  COMPONENT_ACTION_REQUEST_FIELDS,
+  componentActionInvocation,
+  withCheckedFields,
+} from './component-action-request';
+// The engine's list and split, read from source: this package resolves
+// `@qontinui/ui-bridge` by range, and no published version exports them.
+import {
+  COMPONENT_ACTION_REQUEST_FIELDS as ENGINE_FIELDS,
+  componentActionInvocation as engineComponentActionInvocation,
+} from '../../ui-bridge/src/server/component-action-invocation';
 import { createHandlers, type RegistryLike } from './handlers';
 import { UIBridgeWSHandler } from './websocket-handler';
 import { createExpressApp, createExpressRouter } from './express';
@@ -218,6 +228,100 @@ describe('the route body becomes the request (invokeComponentAction)', () => {
     expect(seen).toEqual([
       { id: 'login-form', action: 'submit', params: { a: 1 }, futureOptIn: 'x' },
     ]);
+  });
+});
+
+/**
+ * This package's `componentActionInvocation` and `@qontinui/ui-bridge`'s, run
+ * over the same bodies. The copy here exists because no published
+ * `@qontinui/ui-bridge` exports the engine's, so this table is what keeps the
+ * two rules in step. Each row is one rule of the split.
+ *
+ * Over these bodies the copies differ in one step, by design: the engine hoists
+ * a request field as it is and leaves it to its executor to validate, while
+ * this package also drops a non-string `requestId` and a non-boolean
+ * `verifyEffect` itself (`withCheckedFields`, A4). So this package's request
+ * must equal the engine's with that step applied, and each copy must hand on
+ * the row's literal.
+ *
+ * Not compared: the relay's routing fields (`tabId`, `targetTabId`,
+ * `__callerUserId`), which the engine lifts off a body before dispatch. This
+ * package has no relay and no caller scoping to lift them for.
+ */
+describe("the route's split is @qontinui/ui-bridge's", () => {
+  const ROWS: Array<{
+    rule: string;
+    actionId: string;
+    body: Record<string, unknown> | undefined;
+    /** The request this package hands on. */
+    request: Record<string, unknown>;
+    /** The request the engine hands on, where it differs from `request`. */
+    engineRequest?: Record<string, unknown>;
+  }> = [
+    {
+      rule: 'hoists every listed request field',
+      actionId: 'submit',
+      body: { timeoutMs: 900, requestId: 'req-p', verifyEffect: true, a: 1 },
+      request: {
+        action: 'submit',
+        params: { a: 1 },
+        timeoutMs: 900,
+        requestId: 'req-p',
+        verifyEffect: true,
+      },
+    },
+    {
+      rule: 'makes every unknown key a param',
+      actionId: 'submit',
+      body: { user: 'ada', size: 1, futureOptIn: 'x' },
+      request: { action: 'submit', params: { user: 'ada', size: 1, futureOptIn: 'x' } },
+    },
+    {
+      rule: 'lets an explicit params object win over a flat key',
+      actionId: 'submit',
+      body: { size: 1, user: 'ada', params: { size: 2, extra: true } },
+      request: { action: 'submit', params: { size: 2, user: 'ada', extra: true } },
+    },
+    {
+      rule: 'keeps a body key named action a param, the route naming the action',
+      actionId: 'dispatch',
+      body: { action: 'increment' },
+      request: { action: 'dispatch', params: { action: 'increment' } },
+    },
+    {
+      rule: 'never makes a malformed requestId or verifyEffect a param',
+      actionId: 'submit',
+      body: { requestId: 42, verifyEffect: 'true', a: 1 },
+      request: { action: 'submit', params: { a: 1 } },
+      engineRequest: { action: 'submit', params: { a: 1 }, requestId: 42, verifyEffect: 'true' },
+    },
+    {
+      rule: 'keeps a key named like an Object.prototype member a param',
+      actionId: 'submit',
+      body: { toString: 'x' },
+      request: { action: 'submit', params: { toString: 'x' } },
+    },
+    {
+      rule: 'ignores a params that is not an object',
+      actionId: 'submit',
+      body: { params: ['x'], a: 1 },
+      request: { action: 'submit', params: { a: 1 } },
+    },
+    {
+      rule: 'reads no body as no params',
+      actionId: 'submit',
+      body: undefined,
+      request: { action: 'submit', params: {} },
+    },
+  ];
+
+  it.each(ROWS.map((row) => [row.rule, row] as const))('%s', (_rule, row) => {
+    const here = componentActionInvocation(row.actionId, row.body);
+    const engine = engineComponentActionInvocation(row.actionId, row.body).request;
+
+    expect(here).toStrictEqual(withCheckedFields(engine));
+    expect(here).toStrictEqual(row.request);
+    expect(engine).toStrictEqual(row.engineRequest ?? row.request);
   });
 });
 
