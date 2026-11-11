@@ -33,7 +33,7 @@
  */
 
 import { readAriaLabelAttr } from '../core/a11y';
-import { hasExpandedState } from '../core/element-kind';
+import { opensListbox } from '../core/element-kind';
 import type { AutocompleteAction, SelectAction } from './types';
 import { sdkDispatch } from '../core/sdk-dispatch';
 import { applyValueMutation } from './value-mutation';
@@ -60,15 +60,15 @@ const DROPDOWN_ATTEMPT_INTERVAL_MS = 50;
 /**
  * Does this node present itself as a combobox?
  *
- * Deliberately the ATTRIBUTE (`role="combobox"` / `aria-expanded`), not the
- * computed ARIA role: this predicate has to agree with what a page author
- * actually wrote, and it is the same test `action-executor.performSelect` has
- * used since the combobox arm was added.
+ * Deliberately the ATTRIBUTES (`role="combobox"` / `aria-haspopup="listbox"`),
+ * not the computed ARIA role: this predicate has to agree with what a page
+ * author actually wrote. It is `core/element-kind`'s {@link opensListbox}, the
+ * predicate `select` is advertised from, so the two cannot drift. A bare
+ * `aria-expanded` no longer qualifies: accordion and disclosure triggers carry
+ * it, and `select` on one clicked it open and reported success.
  */
 export function isComboboxLike(element: HTMLElement): boolean {
-  // `hasExpandedState` is the predicate `core/element-kind` advertises `select`
-  // from on a node that is not a combobox by role.
-  return element.getAttribute('role') === 'combobox' || hasExpandedState(element);
+  return opensListbox(element);
 }
 
 /**

@@ -162,7 +162,7 @@ export function selectArm(
   return refused(
     'select',
     element,
-    'a <select> or a combobox (role="combobox", or a control carrying aria-expanded)'
+    'a <select> or a combobox (role="combobox", or a control carrying aria-haspopup="listbox")'
   );
 }
 

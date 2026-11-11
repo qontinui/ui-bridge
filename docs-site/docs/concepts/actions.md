@@ -37,7 +37,7 @@ fallback.
 | Range or hidden `<input>`                                                      | `setValue`                                  |
 | File `<input>`                                                                 | `clear`                                     |
 | `<select>`                                                                     | `select`, `setValue`                        |
-| `role="combobox"`, or a control carrying `aria-expanded`                       | `select`                                    |
+| `role="combobox"`, or a control carrying `aria-haspopup="listbox"`             | `select`                                    |
 | Checkbox `<input>`, `role="checkbox"`, `role="switch"`                         | `check`, `uncheck`, `toggle`                |
 | Radio `<input>`                                                                | `check`, `uncheck`                          |
 | `role="radio"`                                                                 | `check`                                     |
