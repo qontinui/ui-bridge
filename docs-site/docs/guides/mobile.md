@@ -597,6 +597,10 @@ again, with no new pairing.
 LAN traffic is plain HTTP. The token crosses the network only in the answer to a
 code pairing, so a cable is the stronger way to pair.
 
+The Qontinui runner does the signing for you once it is paired with a phone: see
+[mobile transport paths](../api/runner-features.md#mobile-transport-paths--required-reading-before-testing)
+for its pairing route.
+
 ## HTTP Server (Development)
 
 In development, `ui-bridge-native` can expose an HTTP server for external tools:

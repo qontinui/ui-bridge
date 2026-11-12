@@ -172,9 +172,9 @@ export interface ArmedPairingCode {
  * `X-UI-Bridge-Auth: <ts>.<nonce>.<sig>`, where `sig` is the HMAC-SHA256 tag in
  * lowercase hex.
  *
- * The runner's Rust signer, still to be written, has to reproduce this byte for
- * byte, and `pairing.test.ts` pins a vector against an independent HMAC. Changing
- * it would break every paired runner.
+ * The runner's Rust signer (`qontinui-runner` `src-tauri/src/mcp/transport/pairing.rs`)
+ * reproduces this byte for byte, and both it and `pairing.test.ts` pin the same
+ * vector against an independent HMAC. Changing it would break every paired runner.
  */
 export function canonicalSignatureInput(parts: {
   method: string;
