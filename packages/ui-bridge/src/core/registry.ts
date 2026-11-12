@@ -28,6 +28,7 @@ import type {
   StateGetter,
   ContentMetadata,
   MediaObservation,
+  MediaType,
   ElementLogLevel,
   ElementHistoryOptions,
   ElementLogEntry,
@@ -49,6 +50,13 @@ import {
   readInteractionBlockers,
 } from './a11y';
 import { createStableRef } from './stable-ref';
+import {
+  answersToNamedType,
+  impliedAriaRole,
+  inferActions,
+  inferElementType,
+  mediaElementKind,
+} from './element-kind';
 import {
   computeSnapshotIdentity,
   computeMountFold,
@@ -881,132 +889,6 @@ function isScrollContainer(element: HTMLElement, style: CSSStyleDeclaration): bo
 }
 
 /**
- * Infer available actions based on element type
- */
-function inferActions(type: ElementType): StandardAction[] {
-  const baseActions: StandardAction[] = [
-    'focus',
-    'blur',
-    'hover',
-    'unhover',
-    'scroll',
-    'scrollIntoView',
-  ];
-
-  // `hoverClick` rides alongside `click` on every clickable type: a control
-  // hidden behind a `group-hover:pointer-events-auto` rule (e.g. the runner's
-  // `ZoneHoverActions` toolbar) becomes drivable in a single dispatch instead
-  // of via a page/evaluate `.click()` workaround.
-  switch (type) {
-    case 'button':
-      return [...baseActions, 'click', 'hoverClick', 'doubleClick', 'rightClick', 'middleClick'];
-    // `setValue` and `sendKeys` are advertised wherever the executor actually
-    // implements them, because this list is ENFORCED, not merely descriptive:
-    // the runner's MCP element-action door rejects any verb absent from it
-    // (`is_action_advertised`, `src-tauri/src/mcp/ui_bridge/elements.rs`) with
-    // `UNSUPPORTED_ACTION` before the SDK is ever reached. Omitting a verb the
-    // executor supports therefore makes it unreachable for every
-    // auto-registered element, which is what happened to `setValue` (
-    // `performSetValue` handles input/textarea/select) and `sendKeys`
-    // (`performSendKeys` focuses and dispatches to any element). Only two
-    // hand-declared elements had it, added one at a time.
-    case 'input':
-      return [...baseActions, 'click', 'hoverClick', 'type', 'sendKeys', 'clear', 'setValue'];
-    case 'textarea':
-      return [...baseActions, 'click', 'hoverClick', 'type', 'sendKeys', 'clear', 'setValue'];
-    case 'select':
-      // No `type`/`clear`: `performType` and `performClear` mutate `.value` on
-      // input/textarea only. `setValue` is the select-shaped way to set one.
-      return [...baseActions, 'click', 'hoverClick', 'select', 'setValue'];
-    case 'checkbox':
-      return [...baseActions, 'click', 'hoverClick', 'check', 'uncheck', 'toggle'];
-    case 'radio':
-      return [...baseActions, 'click', 'hoverClick', 'check'];
-    case 'link':
-      return [...baseActions, 'click', 'hoverClick'];
-    case 'form':
-      // `performSubmit` / `performReset` resolve the element itself when it IS
-      // a form, so a registered form is exactly the case they were written for
-      // — it was simply never advertised, and so never reachable.
-      return ['focus', 'blur', 'submit', 'reset'];
-    case 'menu':
-    case 'menuitem':
-      return [...baseActions, 'click', 'hoverClick'];
-    case 'tab':
-      return [...baseActions, 'click', 'hoverClick', 'middleClick'];
-    case 'dialog':
-      return ['focus', 'blur'];
-    case 'custom':
-    default:
-      return [...baseActions, 'click', 'hoverClick'];
-  }
-}
-
-/**
- * Infer element type from HTML element. Also the `type` of the executor's
- * `find()` / `discover()` row for a DOM-scanned node the registry does not
- * hold (`DefaultActionExecutor`), so a scanned node reports the type a
- * `registerElement` call without an explicit `type` would infer. The executor
- * used to keep a verbatim copy. `react/useAutoRegister.ts` still infers its
- * own, more precise types and passes them explicitly; converging the two is
- * plan `2026-11-09-an-elements-advertised-verbs-depend-on-which-path-found-it`.
- */
-export function inferElementType(element: HTMLElement): ElementType {
-  const tagName = element.tagName.toLowerCase();
-  const role = element.getAttribute('role');
-
-  // Check role first
-  if (role) {
-    switch (role) {
-      case 'button':
-        return 'button';
-      case 'textbox':
-        return 'input';
-      case 'checkbox':
-        return 'checkbox';
-      case 'radio':
-        return 'radio';
-      case 'link':
-        return 'link';
-      case 'listbox':
-      case 'combobox':
-        return 'select';
-      case 'menu':
-        return 'menu';
-      case 'menuitem':
-        return 'menuitem';
-      case 'tab':
-        return 'tab';
-      case 'dialog':
-        return 'dialog';
-    }
-  }
-
-  // Check tag name
-  switch (tagName) {
-    case 'button':
-      return 'button';
-    case 'input': {
-      const inputType = (element as HTMLInputElement).type;
-      if (inputType === 'checkbox') return 'checkbox';
-      if (inputType === 'radio') return 'radio';
-      if (inputType === 'submit' || inputType === 'button') return 'button';
-      return 'input';
-    }
-    case 'textarea':
-      return 'textarea';
-    case 'select':
-      return 'select';
-    case 'a':
-      return 'link';
-    case 'form':
-      return 'form';
-    default:
-      return 'custom';
-  }
-}
-
-/**
  * Registry options
  */
 /**
@@ -1744,8 +1626,10 @@ export class UIBridgeRegistry {
       windowLabel?: string;
     } = {}
   ): RegisteredElement {
+    // `core/element-kind`: the ONE inferrer and verb table every producer reads,
+    // so a node registered here advertises what it does on every other path.
     const type = options.type ?? inferElementType(element);
-    const actions = options.actions ?? inferActions(type);
+    const actions = options.actions ?? inferActions(type, element);
 
     // Resolve the owning window. Default ("main") elements leave the
     // serialized `windowLabel` undefined so single-window snapshots are
@@ -1980,6 +1864,7 @@ export class UIBridgeRegistry {
       type: options.contentType as ElementType,
       label: options.label,
       labelSource: options.labelSource,
+      // Outside the verb table: a `ContentType` is not an `ElementType`.
       actions: [],
       category: 'content',
       contentMetadata: options.contentMetadata,
@@ -2018,7 +1903,7 @@ export class UIBridgeRegistry {
     id: string,
     element: HTMLElement,
     options: {
-      mediaType: string;
+      mediaType: MediaType;
       mediaMetadata: MediaObservation;
       label?: string;
       refreshMetadata?: (el: HTMLElement) => MediaObservation;
@@ -2026,10 +1911,14 @@ export class UIBridgeRegistry {
       origin?: 'hook' | 'auto';
     }
   ): RegisteredElement {
+    // A media element reads the verb table like any other: a registered canvas
+    // takes keyboard input (`sendKeys`), and the runner refuses every verb an
+    // element does not advertise.
+    const type = mediaElementKind(options.mediaType, element);
     const registered = this.registerElement(id, element, {
-      type: options.mediaType as ElementType,
+      type,
       label: options.label,
-      actions: [],
+      actions: inferActions(type, element),
       category: 'media',
       mediaMetadata: options.mediaMetadata,
       origin: options.origin ?? 'auto',
@@ -2318,7 +2207,7 @@ export class UIBridgeRegistry {
 
       // Role matching
       if (criteria.role) {
-        const role = element.element.getAttribute('role') || this.inferRole(element.type);
+        const role = element.element.getAttribute('role') || impliedAriaRole(element.type);
         if (role?.toLowerCase() === criteria.role.toLowerCase()) {
           scores.role = 1.0;
           if (1.0 > maxScore) {
@@ -2328,9 +2217,10 @@ export class UIBridgeRegistry {
         }
       }
 
-      // Type matching
+      // Type matching: the type a caller names answers for its whole family
+      // (`input` finds a role="textbox" too; `select`, a combobox).
       if (criteria.type) {
-        if (element.type === criteria.type) {
+        if (answersToNamedType(element.type, criteria.type)) {
           const typeScore = 0.9;
           scores.role = Math.max(scores.role ?? 0, typeScore);
           if (typeScore > maxScore) {
@@ -2462,41 +2352,6 @@ export class UIBridgeRegistry {
       id: element.id,
       labelText: element.label,
     });
-  }
-
-  /**
-   * Infer ARIA role from element type
-   */
-  private inferRole(type: ElementType): string | undefined {
-    const roleMap: Record<ElementType, string | undefined> = {
-      button: 'button',
-      input: 'textbox',
-      select: 'combobox',
-      checkbox: 'checkbox',
-      radio: 'radio',
-      link: 'link',
-      form: undefined,
-      textarea: 'textbox',
-      menu: 'menu',
-      menuitem: 'menuitem',
-      tab: 'tab',
-      dialog: 'dialog',
-      disclosure: 'group',
-      custom: undefined,
-      switch: 'switch',
-      slider: 'slider',
-      combobox: 'combobox',
-      listbox: 'listbox',
-      option: 'option',
-      textbox: 'textbox',
-      generic: undefined,
-      image: 'img',
-      video: undefined,
-      canvas: undefined,
-      svg: 'img',
-      picture: 'img',
-    };
-    return roleMap[type];
   }
 
   /**

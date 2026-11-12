@@ -1,6 +1,6 @@
 {
   "name": "@qontinui/ui-bridge",
-  "version": "0.45.0",
+  "version": "0.46.0",
   "description": "UI Bridge Framework - React hooks and providers for UI observation, control, and debugging",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -173,7 +173,6 @@
     "prepublishOnly": "node ../../scripts/check-clean-tree.cjs && npm run build"
   },
   "peerDependencies": {
-    "@qontinui/ui-bridge-auto": ">=0.1.0 <1",
     "@qontinui/ui-bridge-headless": ">=0.1.0 <1",
     "express": "^4.18.0 || ^5.0.0",
     "next": ">=13.0.0",
@@ -198,9 +197,6 @@
     "ws": {
       "optional": true
     },
-    "@qontinui/ui-bridge-auto": {
-      "optional": true
-    },
     "@qontinui/ui-bridge-headless": {
       "optional": true
     }
@@ -213,7 +209,6 @@
     "ioredis": "^5.4.1"
   },
   "devDependencies": {
-    "@qontinui/ui-bridge-auto": "file:../../../ui-bridge-auto",
     "@testing-library/dom": "^10.0.0",
     "@testing-library/react": "^16.0.0",
     "@types/express": "^5.0.0",

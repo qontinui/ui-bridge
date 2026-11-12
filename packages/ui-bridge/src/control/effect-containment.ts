@@ -16,11 +16,8 @@
  */
 
 import type { IRElementCriteria } from '../react/ir-types';
-import type {
-  SemanticSnapshot,
-  ElementChange,
-  ElementModification,
-} from '../ai/types';
+import { impliedAriaRole } from '../core/element-kind';
+import type { SemanticSnapshot, ElementChange, ElementModification } from '../ai/types';
 import type {
   PredictedDelta,
   ObservedDelta,
@@ -57,12 +54,14 @@ function criteriaMatchesChange(criteria: IRElementCriteria, change: ElementChang
     return false;
   }
   // `role` is matched against the change's `type`/`semanticType` (the diff
-  // does not surface ARIA role on appeared/disappeared changes).
+  // does not surface ARIA role on appeared/disappeared changes), and against
+  // the ARIA role its type implies: a predicted `textbox` is a native <input>
+  // as much as an ARIA one.
   if (criteria.role !== undefined) {
     const role = criteria.role.toLowerCase();
     const type = change.type?.toLowerCase() ?? '';
     const semanticType = change.semanticType?.toLowerCase() ?? '';
-    if (type !== role && semanticType !== role) return false;
+    if (type !== role && semanticType !== role && impliedAriaRole(type) !== role) return false;
   }
   if (criteria.text !== undefined) {
     if ((change.description ?? '') !== criteria.text) return false;
@@ -91,7 +90,7 @@ function someChangeMatches(criteria: IRElementCriteria, changes: ElementChange[]
 function criteriaMatchesModification(
   criteria: IRElementCriteria,
   expectKeys: string[],
-  mod: ElementModification,
+  mod: ElementModification
 ): boolean {
   if (criteria.id !== undefined && !idMatches(criteria.id, mod.elementId)) {
     return false;
@@ -159,7 +158,7 @@ function criterionInScope(criteria: IRElementCriteria, scope: ObservabilityScope
   if (!scope.elementIds || scope.elementIds.length === 0) return true;
   if (criteria.id === undefined) return true;
   return scope.elementIds.some(
-    (s) => idMatches(s, criteria.id as string) || idMatches(criteria.id as string, s),
+    (s) => idMatches(s, criteria.id as string) || idMatches(criteria.id as string, s)
   );
 }
 
@@ -195,7 +194,9 @@ function predictedSubsetOfObserved(predicted: PredictedDelta, observed: Observed
   }
   for (const m of predicted.elementsModify ?? []) {
     const expectKeys = Object.keys(m.expect ?? {});
-    if (!observed.modified.some((mod) => criteriaMatchesModification(m.criteria, expectKeys, mod))) {
+    if (
+      !observed.modified.some((mod) => criteriaMatchesModification(m.criteria, expectKeys, mod))
+    ) {
       return false;
     }
   }
@@ -271,7 +272,7 @@ function observedSubsetOfPredicted(predicted: PredictedDelta, observed: Observed
   const modifyPredictions = predicted.elementsModify ?? [];
   for (const mod of observed.modified) {
     const covered = modifyPredictions.some((m) =>
-      criteriaMatchesModification(m.criteria, Object.keys(m.expect ?? {}), mod),
+      criteriaMatchesModification(m.criteria, Object.keys(m.expect ?? {}), mod)
     );
     // A modification can also realise a predicted state (de)activation.
     const coveredByState =
@@ -311,7 +312,7 @@ function observedSubsetOfPredicted(predicted: PredictedDelta, observed: Observed
 function detectActiveNegation(
   predicted: PredictedDelta,
   observed: ObservedDelta,
-  omegaPre: SemanticSnapshot,
+  omegaPre: SemanticSnapshot
 ): boolean {
   for (const c of predicted.elementsAppear ?? []) {
     // Predicted to appear, but observed it disappear → wrong direction.
@@ -365,7 +366,7 @@ export function computeVerification(
   omegaPre: SemanticSnapshot,
   scope: ObservabilityScope,
   cause: EffectCause,
-  durationMs: number,
+  durationMs: number
 ): EffectVerification {
   const predictedSubsetObserved = predictedSubsetOfObserved(predicted, observed);
   const observedSubsetPredicted = observedSubsetOfPredicted(predicted, observed);

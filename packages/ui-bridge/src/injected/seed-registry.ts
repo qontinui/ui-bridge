@@ -79,9 +79,10 @@ function isActionable(item: DOMFallbackElementWithRef): boolean {
  * Register every interactive, media and content element under `root` into `registry`,
  * carrying the live `HTMLElement` ref. Idempotent when a shared `tracked`
  * map is supplied. Element `type` and `actions` are inferred by the registry
- * itself (`registerElement` runs `inferElementType` / `inferActions` when
- * they're omitted), guaranteeing valid `ElementType` / `StandardAction`
- * values; only the human-readable `label` is carried over from the scan.
+ * itself (`registerElement` runs `core/element-kind`'s `inferElementType` /
+ * `inferActions` when they're omitted) — the one inferrer and verb table every
+ * other path reads, so a seeded node advertises exactly what an auto-registered
+ * one does; only the human-readable `label` is carried over from the scan.
  */
 export function seedRegistryFromDom(
   registry: UIBridgeRegistry,

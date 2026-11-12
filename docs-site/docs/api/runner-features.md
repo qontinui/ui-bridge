@@ -245,7 +245,11 @@ The bare `/element/:id`:
 {
   "id": "input-foo",
   "type": "input",
-  "actions": ["focus", "blur", "type", "clear", "click"],
+  "actions": [
+    "click", "hoverClick", "doubleClick", "rightClick", "middleClick",
+    "type", "sendKeys", "clear", "focus", "blur", "hover", "unhover",
+    "scroll", "scrollIntoView", "setValue", "drag", "autocomplete"
+  ],
   "state": {
     "value": "user@example.com",
     "visible": true,
@@ -369,17 +373,26 @@ If an action returns `success: false` with `error: "... requires a 'X' parameter
 > the verb is absent from THAT element's list — not that the verb is unknown to
 > the bridge.
 
-> **Auto-registered inputs now advertise `setValue` and `sendKeys`.** Because
-> that list is enforced, a verb missing from it is unreachable even when the
-> SDK implements it — and the inferred lists were missing several that it does.
-> An element the bridge typed automatically (rather than one declaring its own
-> `actions`) now advertises:
->
-> | Inferred type | Added |
-> |---|---|
-> | `input`, `textarea` | `setValue`, `sendKeys` |
-> | `select` | `setValue` (not `type` / `clear`, which only mutate input/textarea values) |
-> | `form` | `submit`, `reset` |
+> **One list, whichever path found the element.** Because that list is
+> enforced, it must name exactly what the SDK performs: a verb missing from it
+> is unreachable, and a verb it names but the SDK refuses tells an agent to do
+> something that fails. Auto-registration, `registerElement` without `actions`,
+> `find()` / `discover()` rows and the DOM fallback used to infer it four
+> different ways; they now read one table (see
+> [Actions](../concepts/actions.md)). So an auto-registered `<input>` advertises
+> `setValue`, `sendKeys` and `autocomplete`, a `<form>` (or a control a form
+> owns) `submit` and `reset`, a `role="switch"` `toggle`, and every element —
+> a canvas included — `sendKeys`. A date, time, colour or hidden `<input>`
+> keeps `type`, `clear` and `setValue` (`type "10:30"` sets a time input), and a
+> file `<input>` keeps `clear`. `select` is listed only on a node that opens a
+> listbox (`role="combobox"`, `aria-haspopup="listbox"`, or an `aria-haspopup`
+> whose `aria-controls` / `aria-owns` is a listbox), not on every
+> `aria-expanded` trigger: an accordion button `toggle`s. A toggle button
+> (`aria-pressed`) and a `role="menuitemcheckbox"` list `toggle`; a
+> `role="menuitemradio"`, like a radio, lists `check`. A verb an element does not list is refused
+> with `failureDetails.context.refusal: "element-kind"` instead of reported as a
+> success that did nothing (`clear` on a `<div>`, `check` on a text field,
+> `toggle` on a plain button).
 >
 > If you previously worked around `UNSUPPORTED_ACTION` on an input — driving it
 > with `type` plus a `clear`, or declaring `actions` by hand purely to get
@@ -387,6 +400,33 @@ If an action returns `success: false` with `error: "... requires a 'X' parameter
 > this note. `setValue` on an element with no value to set (a `<div>`, say) now
 > fails with a message naming the tag instead of reporting success against an
 > unchanged page.
+>
+> Some verbs one of the four paths used to list are **no longer listed**,
+> because on that element they failed, did nothing, or did something other than
+> the verb means (rewrote a button's label, clicked a radio on but never off,
+> wrote a clamped range value). A workflow that relied on one of those effects
+> stops working with this release. Use the replacement:
+>
+> - reset / image `<input>`: `type`, `clear`, `setValue` (they rewrote the
+>   button's label) — use `click`, or `reset` / `submit` on the form;
+> - radio `<input>` and `role="radio"`: `toggle` — use `check`;
+> - radio, `<option>`, `role="option"`, `role="tab"`: `select` (listed by
+>   auto-registration only, refused by `select`) — use `click`;
+> - range `<input>`: `type` (wrote a wrong value) and `clear` (changed
+>   nothing) — use `setValue`;
+> - `role="textbox"` and contenteditable: `type`, `clear`, `setValue` (failed,
+>   or changed nothing) — use `sendKeys`;
+> - `role="listbox"`: `select`, `setValue` — `click` its option, or `select` on
+>   the combobox that opens it;
+> - a `role="combobox"` that is not an `<input>`: `setValue`, `type` — use
+>   `select`;
+> - a non-native `role="slider"` / `role="spinbutton"`: `setValue` — use
+>   `sendKeys` (arrow keys), or `drag` a slider;
+> - file `<input>`: `type`, `setValue` (threw) — nothing writes a file; `clear`
+>   empties the selection;
+> - a `<summary>` outside a `<details>`: `toggle` — use `click`.
+>
+> The full per-element table is in [Actions](../concepts/actions.md#verbs-no-longer-advertised).
 
 ## Page navigation
 
@@ -652,7 +692,7 @@ The holder-side `HoldingLockBanner` surfaces an advisory countdown
 `(auto-yield in Ns)` when the policy is enabled and a waiter is
 present, so the holder isn't surprised by the involuntary release.
 
-## Network stubs (fetch short-circuit)
+## Network stubs (fetch short-circuit, runner only)
 
 Prefer this over monkey-patching `window.fetch` via `page/evaluate`.
 Stubs live in a module-level SDK singleton — they survive React
@@ -683,20 +723,127 @@ curl -X DELETE $BASE/control/network/stubs
 curl -X POST $BASE/control/network/verify-stub \
   -H "Content-Type: application/json" \
   -d '{"urlPattern":"/api/v1/runners","method":"GET"}'
-# → {"matched":true,"stubId":"stub_abc","response":{...},"stubEntry":{hitCount,timesRemaining}}
+# → {"success":true,"data":{"matched":true,"stubId":"stub_abc",
+#      "response":{"status":200,"headers":{...},"body":"..."},
+#      "stubEntry":{"id":"stub_abc","urlPattern":"/api/v1/runners","method":"GET",
+#                   "timesRemaining":"always","hitCount":0}}}
+# A miss answers data:{"matched":false,"stubId":null,"response":null,"stubEntry":null}.
 ```
 
 `times: 1` stubs are consumed on the first matched fetch. `verify-stub`
 is non-consuming — `hitCount` and `timesRemaining` stay unchanged.
 
-**Triggering the stubbed fetch from `page/evaluate`:** the evaluator
-blocks the literal `fetch(` token. Dodge via indirect access:
+**Asserting that the UI made the request.** An agent-issued
+`page/evaluate` is never user evidence: no user could have issued it, so
+a request it makes says nothing about what the UI does. Stub the
+request, trigger it through the UI, and read the stub's `hitCount`. In
+the example the control is a refresh button that requests
+`GET /api/v1/runners?limit=50`:
 
 ```bash
+# 1. Stub it with times: "always", and keep its id. A times: 1 stub is
+#    REMOVED from the registry on its first match, so step 3 would answer
+#    matched:false with no hitCount left to read. With -e, a refused
+#    register (exit 1; ID reads null) or no answer (exit 4; ID empty) is
+#    reported on stderr, and step 3's id check then fails rather than
+#    reading a count.
+ID=$(curl -s -X POST $BASE/control/network/stubs \
+  -H "Content-Type: application/json" \
+  -d '{"urlPattern":"/api/v1/runners","method":"GET",
+       "response":{"status":200,"bodyJson":[]},"times":"always"}' \
+  | jq -er '.data.id') || echo "stub not registered" >&2
+
+# 2. Trigger it through the UI: act on the control a user would use, in a
+#    state a user could act on (visible, enabled, unobstructed).
+curl -X POST $BASE/control/element/<refresh-button-id>/action \
+  -H "Content-Type: application/json" \
+  -d '{"action":"click"}'
+
+# 3. Read the hit count, and only when YOUR stub answered. Probe with the
+#    control's own request, its URL as the page passes it to fetch and its
+#    method, not with your pattern: verify-stub reads urlPattern as the URL
+#    to test and answers with the first-registered stub whose pattern that
+#    URL contains, the rule the real request was matched by, so it answers
+#    with the stub that took the hit. A verify-stub with no "method"
+#    probes as "*", which matches only a stub registered with "*".
+curl -s -X POST $BASE/control/network/verify-stub \
+  -H "Content-Type: application/json" \
+  -d '{"urlPattern":"/api/v1/runners?limit=50","method":"GET"}' \
+  | jq -e --arg id "$ID" '
+      if .success != true then error("verify-stub refused: \(.error // "?")")
+      elif .data.stubEntry.id == $id then .data.stubEntry.hitCount
+      else error("answered by stub \(.data.stubEntry.id // "none"), not \($id)") end'
+
+# 4. Delete YOUR stub by its id, whatever step 3 answered. Never the
+#    clear-all DELETE /control/network/stubs: it drops other sessions'
+#    stubs too. Skip it when step 1 got no id, so no request is ever
+#    sent to /control/network/stubs/ or /control/network/stubs/null.
+[ -n "$ID" ] && [ "$ID" != null ] && curl -X DELETE "$BASE/control/network/stubs/$ID"
+# → {"success":true,"data":{"id":"stub_…","deleted":true}}
+```
+
+Stubs clear only on a hard reload, and the bridge cannot hard-reload the
+runner's page (navigate uses `pushState`, refresh does not reload), so a
+stub nobody deletes outlives your session. While it lives, its body
+replaces the real response for every request it matches, from every
+session using that page. Step 4 is what ends it.
+
+Stubs live in the page, so on a shared runner the registry holds other
+sessions' stubs too, and a request is credited to the first-registered
+stub whose pattern its URL contains. Because step 3 probes with that
+same URL, `verify-stub` answers with that same stub: when another
+session's stub registered before yours takes the request — a broader
+pattern such as `/api/v1`, or a longer one the URL still contains such
+as `/api/v1/runners?limit` — step 3 fails naming it instead of reporting
+a count, unless that stub is gone by step 3 (a `times: N` stub this
+request used up, or one its owner deleted); then your stub answers with
+an unchanged count. Run step 3 once before step 2 as well, for a
+baseline: the click's own hits are the difference, and the baseline
+read catches such a stub that was already registered then. A probe
+with your own pattern would miss the longer one and report your stub's
+unchanged count, a false "the UI made no request". With `-e`, step 3
+also fails when the runner does not answer (exit 4, no output) or
+refuses the verify-stub call (it names the refusal).
+
+`hitCount` counts every `window.fetch` call that matched since the stub
+was registered — requests the page makes on its own (a poll) and any
+fetch issued from `page/evaluate` included. Pick a `urlPattern` that
+only the control's request matches, and send no evaluate fetch to it.
+Only `window.fetch` calls are intercepted. These are neither stubbed nor
+counted:
+
+- a request the UI makes through `XMLHttpRequest`,
+  `navigator.sendBeacon`, a `WebSocket` or an `EventSource`;
+- a Tauri `invoke()` command (the runner UI's main channel to its
+  backend), or a request the Rust side makes on the UI's behalf;
+- a call through a `fetch` reference a module captured before any
+  stub-matching interceptor wrapped `window.fetch`. The first stub
+  registration installs one, and so does the SDK's relay
+  `getNetworkRequests` (`installNetworkInterceptor`, which reads the same
+  stub registry). The tracker that `GET /control/network-requests`
+  installs matches no stub, so a reference captured after it but before
+  the first stub registration still calls the real `fetch`.
+
+For those a count of 0 means "not counted", not "not sent". So this
+recipe applies only to a control whose request is a page `window.fetch`
+call.
+
+**A network call from `page/evaluate`** needs the request to opt in.
+The static guard refuses `fetch(`, `XMLHttpRequest`,
+`navigator.sendBeacon` and `WebSocket` unless the request sets
+`allowNetworkRequests: true`, which lifts those four network patterns
+and nothing else (see "JavaScript evaluation" below):
+
+```bash
+# A health probe of the runner's API (use the port $BASE points at): plumbing, not evidence.
 curl -X POST $BASE/control/page/evaluate \
   -H "Content-Type: application/json" \
-  -d '{"expression":"(async()=>{const f=window[\"fet\"+\"ch\"];const r=await f(\"/api/v1/runners\");return r.status+\" \"+(await r.text()).length})()"}'
+  -d '{"expression":"(async()=>{const r=await fetch(\"http://127.0.0.1:<port>/health\");return r.status})()",
+       "allowNetworkRequests":true}'
 ```
+
+Its answer is never user evidence either: the request came from the
+agent, not from anything a user did.
 
 ## Wait-for-element (state predicates)
 
@@ -869,7 +1016,11 @@ lives at `data.element`; runner-up candidates (if any) live at
       "tagName": "button",
       "type": "button",
       "semanticType": "action-button",
-      "actions": ["focus", "blur", "click", "hover", "middleClick"],
+      "actions": [
+        "click", "hoverClick", "doubleClick", "rightClick", "middleClick",
+        "sendKeys", "focus", "blur", "hover", "unhover", "scroll",
+        "scrollIntoView", "drag"
+      ],
       "aliases": ["btn", "home", "main", "click", "start", "button", "dashboard"],
       "description": "\"Home\" button",
       "labelText": "Home",
@@ -1335,9 +1486,18 @@ a semicolon inside a string/template/regex literal, ASI, or a final
 block statement — the call degrades to `type: "undefined"` rather than
 returning a silently wrong value.
 
-**Security filter:** the evaluator rejects expressions matching
-`\bfetch\s*\(`. Use `window["fet"+"ch"]("/url")` for fetch tests
-(see "Network stubs" above).
+**Static guard:** the evaluator refuses an expression that matches a
+prohibited pattern, with HTTP 400 and a `hint` (see "Error envelopes"
+below). The structural patterns (code injection, prototype pollution,
+cookie access, `window.open`, redirects and reloads, `crypto.subtle`)
+apply to every request. The four network patterns (`fetch(`, `XMLHttpRequest`,
+`navigator.sendBeacon`, `WebSocket`) apply unless the request sets
+`allowNetworkRequests: true`. The runner applies the same guard on both
+of its evaluate paths: the frontend handler, and the direct-eval
+fallback it takes when its IPC evaluate to the main window fails, which
+refuses with the same message and `hint`. Do not work around the guard:
+set the flag, or stub the request and trigger it through the UI (see
+"Network stubs" above). An agent-issued `page/evaluate` is never user evidence.
 
 ### Tauri command errors — JSON.stringify, not String
 
@@ -1585,16 +1745,21 @@ trial-and-error:
   "hint": { "allowedActions": ["click", "focus", "blur", "hover"] }
 }
 
-// page/evaluate rejected by the security guard
+// page/evaluate rejected by the static guard (a fetch without allowNetworkRequests)
 {
   "success": false,
-  "error": "Expression rejected: contains prohibited pattern",
-  "hint": "Use indirect access for fetch: window['fet'+'ch']('/url')"
+  "error": "JS evaluation error: Expression rejected: contains prohibited pattern (\\bfetch\\s*\\()",
+  "hint": "Network calls are blocked in page/evaluate unless the request sets allowNetworkRequests: true. To stub a response, POST /control/network/stubs and confirm it with verify-stub; to exercise a real request, trigger it through the UI. An agent-issued page/evaluate is never user evidence."
 }
 ```
 
 `closestMatches` is Levenshtein-ranked, capped at 5, edit-distance ≤ 50%
 of element-id length.
+
+The `page/evaluate` hint above is the same for all four network patterns
+(`fetch(`, `XMLHttpRequest`, `navigator.sendBeacon`, `WebSocket`); only
+the matched pattern in `error` differs. A structural-pattern refusal
+carries a generic hint instead.
 
 ### Transport-layer error codes
 

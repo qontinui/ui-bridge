@@ -115,9 +115,14 @@ interface ElementTypeSynonym {
 
 const ELEMENT_TYPE_SYNONYMS: ElementTypeSynonym[] = [
   // Inputs / form
+  // "textbox" and "combobox" name the ARIA kinds; the search matches a named
+  // type's whole family, so they still find native inputs and selects
+  // (`core/element-kind` `namedTypeFamily`).
   { type: 'textarea', synonyms: ['text area', 'text field', 'text box'] },
-  { type: 'input', synonyms: ['input', 'field', 'textbox'] },
-  { type: 'select', synonyms: ['drop down', 'dropdown', 'combo box', 'combobox', 'select'] },
+  { type: 'input', synonyms: ['input', 'field'] },
+  { type: 'textbox', synonyms: ['textbox'] },
+  { type: 'select', synonyms: ['drop down', 'dropdown', 'select'] },
+  { type: 'combobox', synonyms: ['combo box', 'combobox'] },
   { type: 'checkbox', synonyms: ['check box', 'checkbox'] },
   { type: 'radio', synonyms: ['radio button', 'radio'] },
 
@@ -190,7 +195,7 @@ interface CompiledSynonym {
 function compileSynonym(type: string, synonym: string, softHint: boolean): CompiledSynonym {
   // Multi-word synonyms require at least one whitespace between tokens — we
   // intentionally do NOT collapse "text box" to also match "textbox", because
-  // "textbox" is a distinct ARIA role that maps to `input`. The synonym table
+  // "textbox" is a distinct ARIA role (the `textbox` kind). The synonym table
   // lists both forms explicitly when they should both be recognised
   // (e.g., "drop down" + "dropdown", "check box" + "checkbox").
   const tokens = synonym.trim().split(/\s+/);

@@ -214,14 +214,21 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('in-situ asset override (real Chromium)',
 
       const plan = [
         { action: 'mediaOverride', payload: { slotId: 'hero', src: `${url}cand.png` } },
-        // The <picture> candidate ARRIVES while the timeline records it.
+        // The <picture> candidate ARRIVES while the timeline records it. It
+        // needs its OWN URL: the hero swap above already decoded cand.png, and
+        // newer Chromium (Playwright 1.65) answers a repeat of that URL from
+        // the document's in-memory image cache, which neither the throttle nor
+        // a disabled HTTP cache reaches -- so `?pic` makes the arrival real.
         {
           action: 'captureTimeline',
           payload: {
             dir: join(dir, 'tl'),
             frames: 8,
             intervalMs: 150,
-            during: { action: 'mediaOverride', payload: { slotId: 'pic', src: `${url}cand.png` } },
+            during: {
+              action: 'mediaOverride',
+              payload: { slotId: 'pic', src: `${url}cand.png?pic` },
+            },
           },
         },
         { action: 'getControlSnapshot', payload: {} },
@@ -269,7 +276,7 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('in-situ asset override (real Chromium)',
     expect(tl.during.result).toMatchObject({
       success: true,
       target: { inPicture: true },
-      ready: { currentSrc: `${url}cand.png` },
+      ready: { currentSrc: `${url}cand.png?pic` },
     });
     expect(tl.during.answeredAtMs).toBeGreaterThanOrEqual(600);
     expect(tl.frames.map((f) => f.offsetMs)).toEqual(

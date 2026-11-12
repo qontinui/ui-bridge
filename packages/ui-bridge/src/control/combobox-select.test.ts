@@ -77,6 +77,18 @@ describe('combobox select — one implementation behind both action paths', () =
     expect(isComboboxLike(document.getElementById('plain')!)).toBe(false);
   });
 
+  it('isComboboxLike takes aria-haspopup="listbox", and not a bare aria-expanded or a menu popup', () => {
+    document.body.innerHTML = `
+      <div id="listbox-trigger" role="button" aria-haspopup="listbox">pick</div>
+      <button id="accordion" aria-expanded="false">section</button>
+      <button id="menu" aria-haspopup="menu" aria-expanded="false">menu</button>
+      <button id="menu-true" aria-haspopup="true">menu</button>`;
+    expect(isComboboxLike(document.getElementById('listbox-trigger')!)).toBe(true);
+    expect(isComboboxLike(document.getElementById('accordion')!)).toBe(false);
+    expect(isComboboxLike(document.getElementById('menu')!)).toBe(false);
+    expect(isComboboxLike(document.getElementById('menu-true')!)).toBe(false);
+  });
+
   it('the REACT relay path selects on a role="combobox" button instead of refusing it', async () => {
     document.body.innerHTML = TRIGGER_HTML;
     const chosen: { value?: string } = {};
@@ -162,10 +174,15 @@ describe('combobox select — one implementation behind both action paths', () =
       'executeElementAction',
       { id: entry.id, request: { action: 'select', value: 'shipped' } },
       bridge
-    )) as { success: boolean; error?: string };
+    )) as {
+      success: boolean;
+      error?: string;
+      failureDetails?: { context?: { refusal?: string } };
+    };
 
     expect(res.success).toBe(false);
-    expect(res.error).toContain('Cannot select on BUTTON');
+    expect(res.failureDetails?.context?.refusal).toBe('element-kind');
+    expect(res.error).toContain('select is not supported on <button>');
     expect(res.error).toContain('role="combobox"');
   });
 

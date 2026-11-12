@@ -12,4 +12,5 @@ export {
   describeUnknownAction,
   unknownActionContext,
   type UnknownActionHint,
+  type SuggestOptions,
 } from './actionVocabulary';

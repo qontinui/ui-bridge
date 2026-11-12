@@ -126,22 +126,83 @@ Exec (Variant A — one-shot; presence of any --exec/--exec-stdin selects this m
     so an N-step run still prints N lines in order. Neither shadows an in-page
     action id — the injected dispatcher defines neither.
 
-  A timed multi-frame capture (CLI-side too):
+  Reading and acting on one element (in-page actions):
+
+      getElement {"id":"<id>"}
+        One element as a snapshot carries it: identity (id, type, tagName,
+        label, role, accessibleName), "state", box ("bbox", "visible") and
+        "actions" — the same object as the matching getControlSnapshot element,
+        redaction included. {"elementId":"<id>"} is accepted too; given both,
+        they must name the same element. Nothing settles first: run
+        waitForSelector before it for a settled read. Beside the id it
+        tolerates, and ignores, settleTimeout and skipSettle (it does not
+        settle), targetTabId, and the WebSocket protocol's "includeState" (the
+        state is always included); any other key is refused with
+        INVALID_REQUEST. An unknown id, or one whose DOM node is gone, is a
+        RETURNED ELEMENT_NOT_FOUND (an "error" line, exit 1), never a null
+        result.
+
+      getElementState {"id":"<id>"}
+        The state alone (visible, enabled, focused, ariaPressed, value, ...).
+        It reads "id" only, and an unknown id is a THROWN error (HANDLER_ERROR).
+
+      executeElementAction {"id":"<id>","request":{"action":"click"}}
+        Act on one element. "request" holds the verb and the fields it reads
+        ("value", "text", "clear", "params", "fromSnapshotId", ...). Two other
+        spellings are accepted:
+          {"elementId":"<id>","request":{"action":"focus"}}   "elementId" for "id"
+          {"id":"<id>","action":"type","text":"hi"}            flat: the payload,
+                                        minus "id"/"elementId", IS the request
+        No key BESIDE a "request" object is silently dropped: a top-level
+        "action" or request field ("value", "text", ...) there must equal the
+        same field inside "request" (an agreeing duplicate is accepted); one
+        that is only at the top level, or at both levels with different
+        values, is refused, and so are an "id" and an "elementId" that name
+        different elements. settleTimeout, skipSettle and targetTabId stay
+        allowed at the top level. The request fields themselves (the keys
+        inside "request", or every key of a flat payload but the id) reach
+        the action as sent, so a misspelt one there ("txt" for "text") is not
+        caught. Every refused shape is a RETURNED INVALID_REQUEST (an "error"
+        line, exit 1; never a thrown TypeError) whose message names the
+        canonical shape
+          {"id":"<elementId>","request":{"action":"<action>", …}}
+        and both accepted spellings, and names keys and the kinds of values,
+        never a value; "error.details" adds "expectedPayload" and
+        "receivedKeys". A well-formed payload with an unknown verb is refused
+        with UNSUPPORTED_ACTION, naming the accepted verbs.
+
+  A timed multi-frame capture (CLI-side, like the waits):
 
       captureTimeline {"dir":"<dir>","frames":8,"intervalMs":250,"reload":false}
         Screenshot the page 'frames' times (1..120), one every 'intervalMs'
         (0..10000), into <dir>/frame-<k>.png — the loading-to-loaded timeline
         of a slot, NOT a lockstep pair (it records movement on purpose). <dir>
         must be empty or not exist. With "reload":true the clock starts at a
-        fresh navigation commit, so frame 1 is the page before it painted; the
+        fresh navigation commit, and frame 1 is the first frame the page
+        produced after that commit. Right after the commit the new document can
+        have no compositor frame yet, and Chromium refuses the screenshot
+        ("Unable to capture screenshot"); frame 1 retries that refusal every
+        16 ms until 'readyTimeoutMs' after the commit. A frame's "offsetMs" is
+        when the screenshot that produced it was requested, so a frame 1 that
+        had to wait reads the tens of ms its retries took, not 0. Under
+        --throttle that first frame can still be the previous document's held
+        frame; "offsetMs" dates it either way. Every other frame retries the
+        same refusal only while the retry falls due before the next frame's
+        due time ("intervalMs":0 is one attempt), so retries never take a
+        later frame's slot; an attempt still under way when the next frame
+        falls due delays it by what is left of that attempt, as any slow
+        screenshot does. No other error is retried. A frame that took more
+        than one attempt says how many in "attempts". The
         reload drops any media override, and the action waits for the injected
         runtime to settle again ('readyTimeoutMs', default 30000) so the next
         step finds a drivable page. In --capture-matrix a relative <dir> lands
         inside each cell's directory.
         Result: {"success","dir","reloaded","intervalMs","startedAt",
-                 "frames":[{"index","path","offsetMs","capturedAt","width","height"}],
+                 "frames":[{"index","path","offsetMs","capturedAt","width","height",
+                            "attempts" (only when > 1)}],
                  "devicePixelRatio","cssViewport","colorScheme","runtimeReady","network"}
-        A frame that could not be taken carries "error" and fails the step.
+        A frame that could not be taken, or was still refused at its deadline,
+        carries "error" and fails the step.
         "during":{"action":"mediaOverride","payload":{...}} runs that in-page
         action CONCURRENTLY with the frames, so the timeline shows the candidate
         ARRIVING (under --throttle, its slow-network load) while the override
@@ -237,6 +298,10 @@ Network (every mode; applied to the page once it is ready, before any action):
                                captureTimeline {"reload":true} loads throttled.
   --no-cache                   Disable the HTTP cache too (Network.setCacheDisabled):
                                a warm cache would let a "slow" reload paint at once.
+                               It does NOT reach the document's in-memory image
+                               cache: a URL this page already decoded is answered
+                               at once, throttle or not -- give a repeated
+                               mediaOverride candidate its own URL (e.g. ?2).
                                What was applied is stamped as "network" on every
                                captureTimeline result, each capture-matrix cell, and
                                the relay info line; CDP has no getter, so the stamp

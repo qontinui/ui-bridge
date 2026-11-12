@@ -15,7 +15,12 @@ export {
   batch,
   controlBatch,
   MAX_BATCH_SIZE,
+  ElementKindRefusalError,
 } from './action-executor';
+// The element-kind refusal marker both dispatchers carry as
+// `failureDetails.context.refusal`, exported beside the error that holds it so a
+// caller keys on the constant instead of the string.
+export { ELEMENT_KIND_REFUSAL, type ElementKindRefusal } from './element-arms';
 export {
   ACTION_VERB_SYNONYMS,
   suggestAction,
@@ -23,6 +28,7 @@ export {
   unknownActionContext,
   UnknownActionError,
   type UnknownActionHint,
+  type SuggestOptions,
 } from './actionVocabulary';
 
 // Forced CSS pseudo-state (`hover` / `unhover` / `hoverClick`)
@@ -61,6 +67,16 @@ export type {
   ForcedPseudoHoldInfo,
   ReleaseAfterOptions,
 } from './forced-hover';
+
+// Request-field lists (browser-safe; the server entry is not needed for these)
+export { CONTROL_ACTION_REQUEST_FIELDS } from './request-fields';
+export {
+  COMPONENT_ACTION_REQUEST_FIELDS,
+  componentActionInvocation,
+  componentActionRequestFromWire,
+  componentActionRequestFields,
+  type ComponentActionInvocation,
+} from '../server/component-action-invocation';
 
 // Form fill utility
 export { fillFormFields } from './fill-form';

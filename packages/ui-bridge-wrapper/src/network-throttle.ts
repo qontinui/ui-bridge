@@ -122,6 +122,11 @@ export function cdpConditions(profile: NetworkProfile): Record<string, unknown> 
 /**
  * Apply `profile` (and, with `disableCache`, turn the HTTP cache off — a warm
  * cache would let a "slow network" reload paint instantly) to `page`.
+ *
+ * Neither reaches the document's in-memory image cache: an image URL the page
+ * has already decoded is served from memory, unthrottled, even with the HTTP
+ * cache off (observed on the Chromium Playwright 1.65 ships). A timed swap must
+ * use a URL the page has not loaded yet.
  */
 export async function applyNetworkEmulation(
   page: ThrottlePage,
