@@ -484,10 +484,26 @@ event pump.
 >
 > - **USB:** `adb forward tcp:8087 tcp:8087` from the host. Verify with
 >   `adb forward --list | grep tcp:8087`.
-> - **LAN:** the runner has to sign its requests, which it does not do yet, so an
->   app on `@qontinui/ui-bridge-native` 0.11.0 or later, unless it sets
->   `allowUnauthenticatedNetwork`, refuses its control routes from the LAN with `401 PAIRING_REQUIRED`, or `PAIRING_UNCONFIGURED` on an app with no `pairingStore`. See
->   [device pairing](../guides/mobile.md#device-pairing). Use USB.
+> - **LAN:** an app on `@qontinui/ui-bridge-native` 0.11.0 or later, unless it
+>   sets `allowUnauthenticatedNetwork`, refuses its control routes from the LAN
+>   with `401 PAIRING_REQUIRED` (`PAIRING_UNCONFIGURED` on an app with no
+>   `pairingStore`) until the runner pairs with it. Pair once with
+>   `POST http://localhost:9876/ui-bridge/devices/<id>/pair`. Over USB, on the
+>   phone's USB row (its adb serial), send `{}`: no code is needed, and the runner
+>   also does it by itself whenever it forwards or connects to a phone over a
+>   cable that adb lists. An `adb connect` over Wi-Fi is not a cable. On Wi-Fi
+>   send the 6-digit code the app's Settings shows after Pair is tapped, as
+>   `{"code": "123456"}`, within about 2 minutes; a code-less pair off a cable is
+>   refused. Prefer the cable. A Wi-Fi pairing is plain HTTP, so anyone on that
+>   network can read the token in the phone's answer. They can also pose as the
+>   phone, pass the code on to it, and get the same token, so nothing tells you
+>   it happened. From then on the runner signs every request to that phone. After the app's
+>   Settings revoke the pairing, pair again over USB, or on Wi-Fi with
+>   `"replace": true` added: any other pair that brings a different token is
+>   refused with `PAIRING_TOKEN_HELD`, and that refused pair has spent its code,
+>   so tap Pair in the app again for a new one. A local emulator needs no
+>   pairing. See
+>   [device pairing](../guides/mobile.md#device-pairing).
 > - **Cloud relay:** the app connects to the relay under the same account. Verify
 >   with `GET http://localhost:9876/ui-bridge/devices` returning at least one entry.
 > - **Local dev server:** `npx expo start` with the mobile app running
@@ -508,9 +524,9 @@ bridge".
 | Transport | Setup | When to use |
 |-----------|-------|-------------|
 | **USB** | `adb forward tcp:8087 tcp:8087` after a USB debug-enabled device is connected. Verify with `adb devices` (must show your device) and `adb forward --list` (must show the forward). | Device is wired in, fastest, most reliable. |
-| **LAN, mDNS** | Mobile app announces over mDNS; the runner's discovery service picks it up. From the host, `POST http://localhost:9876/ui-bridge/devices/<deviceId>/connect` makes it the SDK target, and control routes go through the returned `proxyUrl`. On an app with `@qontinui/ui-bridge-native` 0.11.0 or later, unless it sets `allowUnauthenticatedNetwork`, those routes answer `401 PAIRING_REQUIRED`, or `PAIRING_UNCONFIGURED` on an app with no `pairingStore`, because the runner does not sign its requests yet. | Phone on the same Wi-Fi as the dev box, on an app older than that. |
+| **LAN, mDNS** | Mobile app announces over mDNS; the runner's discovery service picks it up. From the host, `POST http://localhost:9876/ui-bridge/devices/<deviceId>/connect` makes it the SDK target, and control goes through the runner's `/ui-bridge/sdk/*` routes. On an app with `@qontinui/ui-bridge-native` 0.11.0 or later, unless it sets `allowUnauthenticatedNetwork`, pair first (`POST /ui-bridge/devices/<deviceId>/pair`, above): the connect then reports `authPath: "device-signed"` and the runner signs every request. Unpaired, the connect fails with `code: "PAIRING_REQUIRED"` and `hint.authPath: "pairing_required"`. Calling the returned `proxyUrl` yourself sends no signature, so such an app refuses it. | Phone on the same Wi-Fi as the dev box. |
 | **LAN, direct IP** | The mobile UI Bridge server binds `0.0.0.0:8087`, so a same-LAN host can reach the phone's LAN IP directly, but from `@qontinui/ui-bridge-native` 0.11.0, unless the app sets `allowUnauthenticatedNetwork`, an unsigned caller gets only `curl http://<phone-lan-ip>:8087/ui-bridge/health` and, with a code armed in the app, `POST /ui-bridge/pair`. Health reports `pairing`, `deviceId` (null until set), and `uiBridge.version` when the app passes `appInfo`. Find the IP via `Get-NetNeighbor` (Windows) / `arp -a`, or fall back to a fast parallel TCP scan (`for ip in 192.168.x.{1..254}: probe :8087`). | Finding a phone and reading its version when adb is dark. It does not drive the app. |
-| **Cloud relay** | Mobile app connected to the relay under the same account. Visible in `GET http://localhost:9876/ui-bridge/devices` with `transports[].kind: "cloud"`. Connect through the runner the same way as LAN; the relay needs no pairing, because the backend has already authenticated the account. If the phone is also on the runner's LAN, LAN outranks cloud and the connect lands on the refused route, so use USB or take the phone off that network. | Phone is remote (different network); use sparingly — round-trip latency dominates. |
+| **Cloud relay** | Mobile app connected to the relay under the same account. Visible in `GET http://localhost:9876/ui-bridge/devices` with `transports[].kind: "cloud"`. Connect through the runner the same way as LAN; the relay needs no pairing, because the backend has already authenticated the account. A phone also seen on the runner's LAN keeps both transports, and LAN is tried first: when it refuses an unpaired runner, the connect moves on to the relay and makes it the device's active transport. A later pair makes the LAN the active transport again and drops the device's live connections, so connect again afterwards. | Phone is remote (different network); use sparingly — round-trip latency dominates. |
 
 **One-shot detection** — which transport is active?
 
@@ -522,9 +538,9 @@ curl -s http://localhost:9876/ui-bridge/devices | python -c "import sys,json; d=
 ```
 
 A device whose list shows `lan` first, on `@qontinui/ui-bridge-native` 0.11.0 or
-later and without `allowUnauthenticatedNetwork`, is discoverable but cannot be
-driven, because the runner's LAN check reads only open health and the runner does
-not sign its requests yet.
+later and without `allowUnauthenticatedNetwork`, is driven over that LAN path only
+once the runner has paired with it. The runner's health check reads only the open
+health route, so the device reads healthy either way; a connect says which.
 
 If both show empty: the device isn't reachable from this machine. The
 mobile app may still be running and connected to qontinui-web's
