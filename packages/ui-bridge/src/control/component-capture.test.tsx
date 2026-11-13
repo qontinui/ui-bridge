@@ -1175,3 +1175,48 @@ describe('captureComponent — component owner notes', () => {
     );
   });
 });
+
+describe('captureComponent — a root created inside an element another root rendered', () => {
+  function setup(): { outerContainer: HTMLElement; wrap: HTMLElement } {
+    function Outer() {
+      return (
+        <div className="outer-wrap">
+          <div className="mount-point" />
+        </div>
+      );
+    }
+    const outerContainer = render(<Outer />);
+    const layer = document.createElement('div');
+    layer.id = 'nested-layer';
+    document.body.appendChild(layer);
+    function Inner() {
+      return createPortal(<p className="nested-pop" />, layer);
+    }
+    const innerRoot = createRoot(q('div.mount-point'));
+    roots.push(innerRoot);
+    act(() => innerRoot.render(<Inner />));
+    return { outerContainer, wrap: q('div.outer-wrap') };
+  }
+
+  function assertFound(result: ReturnType<typeof captureComponent>) {
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const pop = result.capture.nodes.find((n) => n.tag === 'p');
+    expect(pop?.portal?.mountTarget).toBe('body>div#nested-layer');
+  }
+
+  it('is followed from a fiber-managed root', () => {
+    const { wrap } = setup();
+    assertFound(captureComponent(fakeRegistry({ wrap }), { kind: 'element', id: 'wrap' }));
+  });
+
+  it('is followed from an unmanaged root (the outer createRoot container)', () => {
+    const { outerContainer } = setup();
+    assertFound(
+      captureComponent(fakeRegistry({ outerContainer }), {
+        kind: 'element',
+        id: 'outerContainer',
+      })
+    );
+  });
+});

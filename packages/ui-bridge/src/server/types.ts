@@ -435,12 +435,6 @@ export type ElementStateResponse = Partial<ElementState> & {
 };
 
 /**
- * The answer of `GET /control/{component,element}/:id/capture`: the capture
- * under `data`, or a typed refusal carrying `reason` at the top level beside
- * `error: 'component_capture_refused'` (contract body
- * `{ error: "component_capture_refused", reason }`).
- */
-/**
  * Query of `GET /control/{component,element}/:id/capture`. `props=true`
  * opts in to reading the owning component's (fail-closed scrubbed) props;
  * absent or anything else answers `props: null` without reading them.
@@ -451,6 +445,12 @@ export interface ComponentCaptureQuery {
   tabId?: string;
 }
 
+/**
+ * The answer of `GET /control/{component,element}/:id/capture`: the capture
+ * under `data`, or a typed refusal carrying `reason` at the top level beside
+ * `error: 'component_capture_refused'` (contract body
+ * `{ error: "component_capture_refused", reason }`).
+ */
 export type ComponentCaptureResponse = APIResponse<ComponentCapture | ComponentCaptureRefusal> & {
   reason?: ComponentCaptureRefusalReason;
 };

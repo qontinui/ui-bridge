@@ -723,10 +723,13 @@ function nearestCapturedReactParent(el: Element, pathOf: Map<Element, string>): 
  *
  * A root React does not manage (a `createRoot` container, a plain DOM
  * wrapper) has no fiber of its own: the walk then starts from the React roots
- * that render into it — the HostRoot of each top-most React-managed
- * descendant — and keeps only portals whose React parent lies inside the
- * root. `enumerable: false` says no fiber was reachable at all, so portal
- * facts are unknown rather than absent.
+ * rendering into it ({@link reactRootsInside}: React's `__reactContainer$`
+ * marker on a container, else the HostRoot of a top-most React-managed
+ * descendant). A root created with `createRoot` inside an element another
+ * root rendered is followed too: any walked host carrying the container
+ * marker starts a walk of that nested root. There is no containment filter
+ * (see the comment in the body). `enumerable: false` says no fiber was
+ * reachable at all, so portal facts are unknown rather than absent.
  */
 function findPortalHosts(root: Element): {
   found: Array<{ host: Element; reactParent: Element }>;
@@ -741,6 +744,14 @@ function findPortalHosts(root: Element): {
   // roots whose container lies inside the capture root (`reactRootsInside`),
   // and below that a React parent outside the root is a portal host already
   // captured — a portal nested in a portal — which must be kept.
+  // React roots already walked (or queued), keyed by their FiberRoot.
+  const walkedRoots = new Set<unknown>();
+  const walkNestedRoot = (container: Element): void => {
+    const nested = containerRootOf(container);
+    if (!nested || walkedRoots.has(nested.key)) return;
+    walkedRoots.add(nested.key);
+    walk(nested.current.child, container);
+  };
   const walk = (fiber: FiberLike | null | undefined, reactParent: Element): void => {
     for (let f = fiber; f; f = f.sibling) {
       if (budget <= 0) {
@@ -753,6 +764,7 @@ function findPortalHosts(root: Element): {
         if (!node.isConnected) continue;
         if (node.parentNode !== reactParent) found.push({ host: node, reactParent });
         walk(f.child, node);
+        walkNestedRoot(node);
       } else {
         walk(f.child, reactParent);
       }
@@ -762,13 +774,24 @@ function findPortalHosts(root: Element): {
   const rootFiber = hostFiberOf(root);
   if (rootFiber) {
     walk(rootFiber.child, root);
+    walkNestedRoot(root);
     return { found, exhausted, enumerable: true };
   }
 
-  const roots = reactRootsInside(root);
+  const roots = reactRootsInside(root, walkedRoots);
   if (roots.exhausted) exhausted = true;
   for (const start of roots.starts) walk(start.fiber.child, start.container);
   return { found, exhausted, enumerable: roots.starts.length > 0 };
+}
+
+/** The current HostRoot of the React root whose container `el` is, keyed by its FiberRoot. */
+function containerRootOf(el: Element): { key: unknown; current: FiberLike } | undefined {
+  const rec = el as unknown as Record<string, unknown>;
+  const markerKey = Object.keys(rec).find((k) => k.startsWith('__reactContainer$'));
+  const hostRoot = markerKey ? (rec[markerKey] as FiberLike | null | undefined) : undefined;
+  if (!hostRoot || hostRoot.tag !== FIBER_TAG.HostRoot) return undefined;
+  const fiberRoot = hostRoot.stateNode as { current?: FiberLike } | undefined;
+  return { key: fiberRoot ?? hostRoot, current: fiberRoot?.current ?? hostRoot };
 }
 
 /**
@@ -780,12 +803,14 @@ function findPortalHosts(root: Element): {
  * costs one step per React root, while non-React islands are still searched
  * for further roots.
  */
-function reactRootsInside(root: Element): {
+function reactRootsInside(
+  root: Element,
+  seen: Set<unknown>
+): {
   starts: Array<{ fiber: FiberLike; container: Element }>;
   exhausted: boolean;
 } {
   const starts: Array<{ fiber: FiberLike; container: Element }> = [];
-  const seen = new Set<unknown>();
   const doc = root.ownerDocument;
   if (!doc?.createTreeWalker) return { starts, exhausted: false };
   const walker = doc.createTreeWalker(root, 1 /* NodeFilter.SHOW_ELEMENT */);
@@ -803,6 +828,9 @@ function reactRootsInside(root: Element): {
       node = walker.nextNode();
       continue;
     }
+    // A managed node can itself be a nested root's container; deeper nested
+    // roots are followed by the fiber walk (`walkNestedRoot`).
+    recordContainerRoot(el, root, seen, starts);
     recordReactRoot(el, root, seen, starts);
     node = nextSkippingSubtree(walker);
   }
@@ -825,16 +853,11 @@ function recordContainerRoot(
   seen: Set<unknown>,
   starts: Array<{ fiber: FiberLike; container: Element }>
 ): void {
-  const rec = el as unknown as Record<string, unknown>;
-  const key = Object.keys(rec).find((k) => k.startsWith('__reactContainer$'));
-  const hostRoot = key ? (rec[key] as FiberLike | null | undefined) : undefined;
-  if (!hostRoot || hostRoot.tag !== FIBER_TAG.HostRoot) return;
-  const fiberRoot = hostRoot.stateNode as { current?: FiberLike } | undefined;
-  const current = fiberRoot?.current ?? hostRoot;
-  if (seen.has(fiberRoot ?? hostRoot)) return;
+  const nested = containerRootOf(el);
+  if (!nested || seen.has(nested.key)) return;
   if (el !== root && !root.contains(el)) return;
-  seen.add(fiberRoot ?? hostRoot);
-  starts.push({ fiber: current, container: el });
+  seen.add(nested.key);
+  starts.push({ fiber: nested.current, container: el });
 }
 
 function recordReactRoot(

@@ -160,18 +160,6 @@ function relayInnerFailureResponse<T>(
 }
 
 /**
- * A relayed component capture's answer, with its typed refusal restored.
- *
- * A refusal crosses the relay as a MESSAGE only: the in-page relay client
- * posts the dispatcher's `success: false`, `nextjs.ts` settles it through
- * `rejectCommand(commandId, message)` and the cross-instance bus re-raises
- * `new Error(message)`, so `reason`, `code` and status are gone by the time
- * `relayCommand` answers. The dispatcher therefore encodes the reason in the
- * message (`componentCaptureRefusalMessage`); this recognises it, wherever it
- * landed (`error`, or `data.error` on the resolved path), and answers the
- * same envelope as the direct handler. Every other answer passes through.
- */
-/**
  * The relayed capture command's payload: the id, the normalised `props`
  * opt-in, and the query's tab routing (which `relayCommand` lifts out).
  */
@@ -185,6 +173,18 @@ function capturePayload(id: string, query: ComponentCaptureQuery | undefined) {
   };
 }
 
+/**
+ * A relayed component capture's answer, with its typed refusal restored.
+ *
+ * A refusal crosses the relay as a MESSAGE only: the in-page relay client
+ * posts the dispatcher's `success: false`, `nextjs.ts` settles it through
+ * `rejectCommand(commandId, message)` and the cross-instance bus re-raises
+ * `new Error(message)`, so `reason`, `code` and status are gone by the time
+ * `relayCommand` answers. The dispatcher therefore encodes the reason in the
+ * message (`componentCaptureRefusalMessage`); this recognises it, wherever it
+ * landed (`error`, or `data.error` on the resolved path), and answers the
+ * same envelope as the direct handler. Every other answer passes through.
+ */
 function captureRelayAnswer(response: APIResponse<unknown>): ComponentCaptureResponse {
   if (response.success) return response as ComponentCaptureResponse;
   const refusal =
