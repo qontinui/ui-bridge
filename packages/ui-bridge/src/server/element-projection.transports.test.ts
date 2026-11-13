@@ -1008,5 +1008,32 @@ describe('the document sentinel', () => {
       });
       expect(assert.data).toMatchObject({ outcome: 'passed', actual: 'en' });
     });
+
+    it('an ai/assert target its search resolves is that element, a near match included', async () => {
+      await mount();
+      decorateRoot();
+      const docs = document.createElement('a');
+      docs.setAttribute('lang', 'fr');
+      docs.textContent = 'Documents';
+      document.body.appendChild(docs);
+      getGlobalRegistry().registerElement('nav-docs', docs, { type: 'link', label: 'Documents' });
+
+      const assert = await post('/ai/assert', {
+        skipSettle: true,
+        target: 'Document',
+        type: 'attribute',
+        attributeName: 'lang',
+        expected: 'fr',
+      });
+      expect(assert.data).toMatchObject({ outcome: 'passed', actual: 'fr' });
+
+      // The read route takes an id, and no element is registered as `Document`.
+      const state = await get('/control/element/Document/state?attributes=lang');
+      expect(state.success, state.error).toBe(true);
+      expect(state.data).toMatchObject({
+        sentinel: 'document',
+        projection: { attributes: { lang: 'de' } },
+      });
+    });
   });
 });
