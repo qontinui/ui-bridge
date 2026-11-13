@@ -29,7 +29,10 @@ import type {
  * The five terminal classifications of a predict-then-verify cycle.
  *
  * - `Confirmed`     — prediction exactly matched observation (P ⊆ O ∧ O ⊆ P).
- * - `Surprise`      — prediction held but extra unpredicted changes occurred.
+ * - `Surprise`      — prediction held but extra unpredicted changes occurred, OR
+ *                   it matched exactly but the cycle's cause is `mixed` or
+ *                   `unknown`, so the match cannot be credited to the action.
+ *                   `containment.observedSubsetPredicted` tells the two apart.
  * - `Failure`       — a predicted change simply did not happen (no active negation).
  * - `Contradiction` — a predicted change was met by its opposite (active negation).
  * - `Partial`       — part of the predicted scope was unobservable (coverage < 1).
