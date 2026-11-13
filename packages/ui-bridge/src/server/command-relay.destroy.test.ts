@@ -102,6 +102,31 @@ describe('CommandRelay.destroy()', () => {
     expect(listener).not.toHaveBeenCalled();
   });
 
+  it('does not let a warm-up settled by destroy() arm a retry down a newer stream for the same tab', async () => {
+    const r = relay({ proactiveSnapshot: true });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const snapshots = (listener: ReturnType<typeof vi.fn>) =>
+      listener.mock.calls.filter(
+        ([command]) => (command as { action?: string }).action === 'getControlSnapshot'
+      ).length;
+    const first = vi.fn();
+    r.subscribeToCommands(first, 'tab-1');
+    // S1's warm-up fires and its getControlSnapshot is pending.
+    await vi.advanceTimersByTimeAsync(500);
+    expect(snapshots(first)).toBe(1);
+
+    // destroy() settles it; S2 registers for the same tab in the same tick,
+    // before the warm-up callback resumes from its await.
+    r.destroy();
+    const second = vi.fn();
+    r.subscribeToCommands(second, 'tab-1');
+
+    // Past S2's own 500 ms warm-up and S1's 1500 ms retry.
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(snapshots(second)).toBe(1);
+    expect(snapshots(first)).toBe(1);
+  });
+
   it('rejects a pending command with RelayDestroyedError, not its timeout', async () => {
     const r = relay({ proactiveSnapshot: false });
     const client = wsClient('ws-1');
@@ -436,11 +461,20 @@ describe('CommandRelay.destroy()', () => {
       queueCommandInner: (...args: unknown[]) => Promise<unknown>;
     };
     // The only waitForConnection call is the reconnection wait (the stale
-    // client skips the initial one). Land destroy() and a fresh transport
-    // inside it; the wait then ends the way a reconnection ends it.
-    const wait = vi.spyOn(seams, 'waitForConnection').mockImplementationOnce(async () => {
-      r.destroy();
-      r.registerWebSocketClient(later);
+    // client skips the initial one). Model the order the real wait can
+    // produce: the gate opens, so the wait RESOLVES; only then, before
+    // queueCommand resumes from its `await`, destroy() runs and a fresh
+    // transport registers. (A destroy() landing while the wait is still
+    // pending rejects it with RelayDestroyedError instead, which never
+    // reaches the retry.) The `.then` below is registered on the resolved
+    // promise before queueCommand's own `await` is, so it runs first.
+    const wait = vi.spyOn(seams, 'waitForConnection').mockImplementationOnce(() => {
+      const opened = Promise.resolve();
+      void opened.then(() => {
+        r.destroy();
+        r.registerWebSocketClient(later);
+      });
+      return opened;
     });
     const inner = vi.spyOn(seams, 'queueCommandInner');
     const outcome = track(r.queueCommand('getControlSnapshot', {}));
