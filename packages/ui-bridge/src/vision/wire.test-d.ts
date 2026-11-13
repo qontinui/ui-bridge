@@ -9,6 +9,8 @@
  */
 
 import type {
+  VisionAssertion,
+  VisionAssertionKind,
   VisionCaptureRequest,
   VisionCaptureResult,
   VisionRawReason,
@@ -47,6 +49,49 @@ type RawReasonValues = Assert<
     : false
 >;
 
+// `vision/assert` (plan 2026-11-09-ui-bridge-relay-evaluates-vision-assertions-in-the-tab):
+// the union is vision-core's 23 kinds, exactly — no fewer, and no SDK-only one.
+type VisionCore23 =
+  | 'no_overlap'
+  | 'element_above'
+  | 'contains_text'
+  | 'text_fits_container'
+  | 'aligned_horizontally'
+  | 'aligned_vertically'
+  | 'color_within'
+  | 'typography_consistent'
+  | 'no_layout_shift_since'
+  | 'no_clipping'
+  | 'animation_settled'
+  | 'settled_within'
+  | 'state_entered_within'
+  | 'contrast_meets_wcag'
+  | 'image_palette_within'
+  | 'no_near_duplicate_images'
+  | 'no_placeholder_images'
+  | 'image_focal_visible'
+  | 'transparent_image_legible'
+  | 'salience_order'
+  | 'image_sharpness_at_least'
+  | 'image_blockiness_within'
+  | 'text_over_image_contrast';
+type AssertionKinds = Assert<
+  [VisionAssertionKind] extends [VisionCore23]
+    ? [VisionCore23] extends [VisionAssertionKind]
+      ? true
+      : false
+    : false
+>;
+
+// `settle_frames` was dropped from `animation_settled` with no alias: present
+// in any form, required or optional, this assertion fails.
+type AnimationSettled = Extract<VisionAssertion, { type: 'animation_settled' }>;
+type NoSettleFrames = Assert<'settle_frames' extends keyof AnimationSettled ? false : true>;
+
+const settled: VisionAssertion = { type: 'animation_settled', region: null };
+// @ts-expect-error `settle_frames` is no longer a field of the assertion
+const withFrames: VisionAssertion = { type: 'animation_settled', settle_frames: 3 };
+
 const rawReq: VisionRawRequest = { inline: true, reason: 'regression_baseline' };
 // @ts-expect-error an unlisted reason is rejected by the runner, so by the type too
 const badReason: VisionRawRequest = { reason: 'audit' };
@@ -59,6 +104,10 @@ export type {
   RawInline,
   RawReasonRequired,
   RawReasonValues,
+  AssertionKinds,
+  NoSettleFrames,
 };
 void rawReq;
 void badReason;
+void settled;
+void withFrames;

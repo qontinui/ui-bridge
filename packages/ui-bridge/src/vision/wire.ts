@@ -484,8 +484,14 @@ export interface VisionNaturalRegion {
  * `level: "aa"`, `kind: "contains"`, `dimensions: []`) — because that is how
  * vision-core serializes the variant back.
  *
- * `animation_settled` once took a `settle_frames` count no caller ever
- * supplied; vision-core ignores the key if sent, and so does this type.
+ * **Breaking** (plan
+ * 2026-11-09-ui-bridge-relay-evaluates-vision-assertions-in-the-tab): the
+ * union widened from the 12 types it declared to vision-core's 23, so an
+ * exhaustive `switch` over `type` must now handle `settled_within`,
+ * `state_entered_within` and the nine image kinds; and `animation_settled` no
+ * longer declares `settle_frames`, a count no caller ever supplied.
+ * vision-core ignores that key if sent, and so does the SDK's validator.
+ * There is no deprecated alias for either.
  */
 export type VisionAssertion =
   | { type: 'no_overlap'; elements: [string, string]; tolerance_px?: number | null }
