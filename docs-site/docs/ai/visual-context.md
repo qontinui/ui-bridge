@@ -205,7 +205,7 @@ only what the page itself can measure, and they get a verdict:
 | `text_fits_container` | A block-level element's `scrollWidth`/`scrollHeight` (borders and scrollbars included) against its border box, rounded up. An inline element is measured by its own line fragments against the content box of the block it lays out in, so a sibling's overflow is not its own. Both sides are layout pixels, so a CSS transform neither causes an overflow nor hides one. An element with no text is `unknown` |
 | `no_overlap` | Border boxes, after the `tolerance_px` inset |
 | `element_above` | Paint order from `document.elementsFromPoint` inside the pair's visible intersection (never scrolls) |
-| `no_clipping` | Each registered element against the padding box of its nearest ancestor with `overflow` `hidden` or `clip`, or `contain: paint`. A scroll container (`overflow` `auto` or `scroll`) clips only past the edge it scrolls from (its block-start and inline-start edges: left and top by default, the right one under `direction: rtl`, `vertical-rl` or `sideways-rl`, the bottom one under `sideways-lr`, swapped along a reversed flex container's reversed axes), where no scroll position reaches: what is scrolled out past its far side is reachable, and only its own box is compared further out. The page's own scroll (the viewport) is not a clip. No element inside a clipping ancestor is `unknown` |
+| `no_clipping` | Each registered element against the padding box of its nearest ancestor with `overflow` `hidden` or `clip`, or `contain: paint`. A scroll container (`overflow` `auto` or `scroll`) clips only past the edge it scrolls from (its block-start and inline-start edges: top and left by default; in a vertical writing mode the block-start edge is the right one under `vertical-rl` and `sideways-rl` and the left one under `vertical-lr` and `sideways-lr`, and the inline-start edge the top one, the bottom one under `sideways-lr`; `direction: rtl` moves the inline-start edge to the opposite side; swapped along a reversed flex container's reversed axes), where no scroll position reaches: what is scrolled out past its far side is reachable, and only its own box is compared further out. The page's own scroll (the viewport) is not a clip. No element inside a clipping ancestor is `unknown` |
 
 The tab hands every box over unrounded, and each kind rounds it as vision-core
 does: `text_fits_container` rounds its box's width and height up, and the
@@ -236,12 +236,18 @@ shadow tree does not paint. An outer box-shadow and an outline are read
 nowhere: one cast over the text by an element whose box misses it (a spotlight
 drawn with a large spread or a wide outline), and an outline that a negative
 `outline-offset` pulls inside its own box, are not seen, so contrast can pass
-on colours they darken. Beneath the text, a transparent `::before` / `::after`
-whose box the computed style does not pin down (one moved by a transform, such
-as a rotated chevron) is taken to paint nothing, so its glyphs and its border
-are not seen. A click-through `::before` / `::after` (one that computes
-`pointer-events: none`) is seen only inside its element's own box when the hit
-test can see that element, or when a transform moves it.
+on colours they darken. A positioned `::before` / `::after` is read where its
+2D transform (`transform`, `translate`, `rotate`, `scale`) places it, turned or
+scaled. One in normal flow is looked for only in its element's box, as its
+relative offsets and its own transform move it, so one that overflows that box
+is not seen past it, and one at `opacity: 0` paints nothing. A transparent one
+of the text's own element or of a layer beneath the text, whose box the
+computed style does not pin down (one its relative offsets nudge, a 3D
+transform, a motion path), is taken to paint nothing, so its glyphs and its
+border are not seen, over the text as well. A click-through
+`::before` / `::after` (one that computes `pointer-events: none`) is seen only
+inside its element's own box when the hit test can see that element, or when
+its box is not pinned down.
 Every
 other kind answers per result with `outcome: "unknown"` and
 `code: "capability_unavailable_in_build"`. A mixed batch still answers what it
@@ -265,7 +271,7 @@ keys (`tabId`) are relayed. No other key of the body reaches the tab,
 
 A request must answer within the relay's 8 s command timeout, and a Chromium
 timing smoke holds the 1000-assertion limit to it on every run. On its
-2000-node page measuring costs under a millisecond per assertion, so a full
+3200-node page measuring costs under a millisecond per assertion, so a full
 batch takes a small part of it. A request that measures contrast also walks
 the page once, reading each element's computed style, to find the layers the
 hit test cannot see. Each request also takes one registry snapshot to

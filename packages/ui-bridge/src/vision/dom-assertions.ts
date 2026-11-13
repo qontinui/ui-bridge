@@ -53,14 +53,23 @@
  *   backdrop-filter, a blend, replaced or generated content, its own text,
  *   its border, a scrollbar or an inset box-shadow over the text, a custom
  *   element with no open shadow root), is `unknown{input_missing}` naming
- *   the layer. An outer box-shadow and an outline are read nowhere: one
- *   cast over the text by an element whose box misses it, and an outline a
- *   negative `outline-offset` pulls inside its box, are not seen. Nor are
- *   the glyphs and the frame of a transparent `::before` / `::after` beneath
- *   the text whose box the computed style does not pin down (one moved by a
- *   transform, such as a rotated chevron). A click-through `::before` /
- *   `::after` outside its element's box is not seen when the hit test can
- *   see that element, or when a transform moves it. An ANCESTOR of the text
+ *   the layer. A layer listed above for what it paints outside its own box
+ *   (a stretched link's `::after` across its card) paints its own
+ *   background only inside that box. An outer box-shadow and an outline are
+ *   read nowhere: one cast over the text by an element whose box misses it,
+ *   and an outline a negative `outline-offset` pulls inside its box, are not
+ *   seen. A positioned `::before` / `::after` is read where its 2D transform
+ *   (its `transform`, `translate`, `rotate` and `scale`) places it, the
+ *   text's point taken into its own box; one in normal flow is looked for
+ *   only in its element's box, as its relative offsets and its own transform
+ *   move it, so one that overflows that box is not seen past it; one at
+ *   `opacity: 0` paints nothing. A transparent one of the text's own element
+ *   or of a layer beneath the text, whose box the computed style does not
+ *   pin down (one its relative offsets nudge, a 3D transform, a motion
+ *   path), is taken to paint nothing, so its glyphs and its frame are not
+ *   seen, over the text as well. A click-through `::before` / `::after`
+ *   outside its element's box is not seen when the hit test can see that
+ *   element, or when its box is not pinned down. An ANCESTOR of the text
  *   the hit test lists above it paints its own box beneath its content, so
  *   only what it draws over the text is read — a positioned `::before` /
  *   `::after` (a stretched link), its open shadow tree's elements above the
@@ -103,10 +112,13 @@
  *   (`overflow` `auto` or `scroll`) clips on one side only: content scrolled
  *   out past its far side is reachable, while content past the edge it
  *   scrolls from (its block-start and inline-start edges as `writing-mode`
- *   and `direction` place them: the left and top ones by default, the right
- *   one under `direction: rtl`, `vertical-rl` or `sideways-rl`, the bottom
- *   one under `sideways-lr`; a reversed flex container swaps them along its
- *   reversed axes) is out of reach at every scroll position, as a badge
+ *   and `direction` place them: the top and the left by default; in a
+ *   vertical writing mode the block-start edge is the right one under
+ *   `vertical-rl` and `sideways-rl` and the left one under `vertical-lr` and
+ *   `sideways-lr`, and the inline-start edge the top one, the bottom one
+ *   under `sideways-lr`; `direction: rtl` moves the inline-start edge to the
+ *   opposite side; a reversed flex container swaps them along its reversed
+ *   axes) is out of reach at every scroll position, as a badge
  *   pulled above a scroll container's top edge is. So the nearest scroll
  *   container settles that axis with that one edge, and an ancestor further
  *   out is compared with the scroll container's own box instead. The
@@ -375,6 +387,38 @@ function pointIn(p: { x: number; y: number }, r: VisionRegion): boolean {
   return p.x >= r.x && p.x < r.x + r.w && p.y >= r.y && p.y < r.y + r.h;
 }
 
+/** The smallest upright box holding every one of `boxes` given, or null for none. */
+function unionOf(boxes: ReadonlyArray<VisionRegion | undefined>): VisionRegion | null {
+  const present = boxes.filter((b): b is VisionRegion => b !== undefined);
+  if (present.length === 0) return null;
+  const left = Math.min(...present.map((b) => b.x));
+  const top = Math.min(...present.map((b) => b.y));
+  const right = Math.max(...present.map((b) => b.x + b.w));
+  const bottom = Math.max(...present.map((b) => b.y + b.h));
+  return { x: left, y: top, w: right - left, h: bottom - top };
+}
+
+/** `r` grown by `by` on every side. */
+function grown(r: VisionRegion, by: number): VisionRegion {
+  return { x: r.x - by, y: r.y - by, w: r.w + 2 * by, h: r.h + 2 * by };
+}
+
+/**
+ * `read`, called once and its answer kept: the page does not change while
+ * one request is evaluated, so a layer's geometry is read at most once.
+ */
+function once<T>(read: () => T): () => T {
+  let done = false;
+  let value: T;
+  return () => {
+    if (!done) {
+      value = read();
+      done = true;
+    }
+    return value;
+  };
+}
+
 /** A resolved `px` length, or NaN. */
 function pxValue(v: string): number {
   return v.endsWith('px') ? Number(v.slice(0, -2)) : NaN;
@@ -452,6 +496,111 @@ function hasFrame(st: CSSStyleDeclaration): boolean {
 /** Whether a box can show a scrollbar: it scrolls on an axis. */
 function scrolls(st: CSSStyleDeclaration): boolean {
   return /auto|scroll|overlay/.test(`${st.overflowX} ${st.overflowY}`);
+}
+
+/**
+ * Where a positioned `::before` / `::after` paints: its border box as laid
+ * out before any transform, and `toLocal`, which takes a viewport point to
+ * where that point lies in that box's own coordinates (the inverse of its
+ * transform; the point itself when there is none), or null where nothing of
+ * the box can lie (a transform that flattens it). A point lies in the
+ * painted box when its local point lies in `box`, and its frame is read at
+ * the local point, so a turned box is read as exactly as an upright one.
+ * `bounds` is the upright box in the viewport that holds the painted one,
+ * a pixel wider on each side, outside which no point lies in it.
+ */
+interface PseudoExtent {
+  box: VisionRegion;
+  bounds: VisionRegion;
+  toLocal: (p: { x: number; y: number }) => { x: number; y: number } | null;
+}
+
+/**
+ * The 2D transform functions a box's computed `translate`, `rotate`, `scale`
+ * and `transform` apply, in the order CSS applies them, a percentage
+ * `translate` resolved against the box's `size`: '' for none, null for one
+ * that is not 2D (a 3D rotation, a z translation or scale, a `matrix3d`) or
+ * not read here (a `calc()` translate).
+ */
+function transformList(st: CSSStyleDeclaration, size: { w: number; h: number }): string | null {
+  const value = (prop: string): string[] => {
+    const v = st.getPropertyValue(prop).trim();
+    return v === '' || v === 'none' ? [] : v.split(/\s+/);
+  };
+  // A translate length in px; a percentage is of the box's size on its axis.
+  const length = (v: string, along: number): string | null => {
+    const n = v.endsWith('%') ? (Number(v.slice(0, -1)) * along) / 100 : pxValue(v);
+    return Number.isFinite(n) ? `${n}px` : null;
+  };
+  const fns: string[] = [];
+  const t = value('translate');
+  if (t.length > 2 && pxValue(t[2]) !== 0) return null;
+  if (t.length > 0) {
+    const x = length(t[0], size.w);
+    const y = length(t[1] ?? '0px', size.h);
+    if (x === null || y === null) return null;
+    fns.push(`translate(${x}, ${y})`);
+  }
+  const r = value('rotate');
+  if (r.length > 1 && !(r.length === 2 && r[0] === 'z')) return null;
+  if (r.length > 0) fns.push(`rotate(${r[r.length - 1]})`);
+  const s = value('scale');
+  if (s.length > 2 && Number(s[2]) !== 1) return null;
+  if (s.length > 0) fns.push(`scale(${s[0]}, ${s[1] ?? s[0]})`);
+  const transform = st.transform ?? '';
+  if (transform.startsWith('matrix3d')) return null;
+  if (transform !== '' && transform !== 'none') fns.push(transform);
+  return fns.join(' ');
+}
+
+/**
+ * `box`, a border box laid out before its transform, with the map from the
+ * viewport into its own coordinates: the inverse of its computed
+ * `translate`, `rotate`, `scale` and `transform` about its
+ * `transform-origin`. Null when that cannot be read here: a motion path
+ * (`offset-path`), a 3D transform, a `calc()` translate, one about a box
+ * other than the border box (`transform-box`), a value `DOMMatrixReadOnly`
+ * does not parse, or no `DOMMatrixReadOnly` at all.
+ */
+function pseudoExtent(box: VisionRegion, st: CSSStyleDeclaration): PseudoExtent | null {
+  const path = st.getPropertyValue('offset-path').trim();
+  if (path !== '' && path !== 'none') return null;
+  const list = transformList(st, box);
+  if (list === null) return null;
+  if (list === '') return { box, bounds: grown(box, 1), toLocal: (p) => p };
+  const reference = st.getPropertyValue('transform-box').trim();
+  if (reference === 'content-box' || reference === 'fill-box') return null;
+  if (typeof DOMMatrixReadOnly === 'undefined') return null;
+  let matrix: DOMMatrixReadOnly;
+  let inverse: DOMMatrixReadOnly;
+  try {
+    matrix = new DOMMatrixReadOnly(list);
+    inverse = matrix.inverse();
+  } catch {
+    return null;
+  }
+  const [ox, oy] = st.transformOrigin.split(' ').map(pxValue);
+  if (!Number.isFinite(ox) || !Number.isFinite(oy)) return null;
+  const cx = box.x + ox;
+  const cy = box.y + oy;
+  const corners = [
+    [box.x, box.y],
+    [box.x + box.w, box.y],
+    [box.x, box.y + box.h],
+    [box.x + box.w, box.y + box.h],
+  ].map(([x, y]) => matrix.transformPoint({ x: x - cx, y: y - cy }));
+  const xs = corners.map((q) => q.x + cx);
+  const ys = corners.map((q) => q.y + cy);
+  const left = Math.min(...xs);
+  const top = Math.min(...ys);
+  return {
+    box,
+    bounds: grown({ x: left, y: top, w: Math.max(...xs) - left, h: Math.max(...ys) - top }, 1),
+    toLocal: (p) => {
+      const q = inverse.transformPoint({ x: p.x - cx, y: p.y - cy });
+      return Number.isFinite(q.x) && Number.isFinite(q.y) ? { x: q.x + cx, y: q.y + cy } : null;
+    },
+  };
 }
 
 /** A box size in CSS pixels, unrounded. */
@@ -581,12 +730,14 @@ interface PaintItem {
 }
 
 /**
- * A layer the hit test cannot see, and what it paints at a point: a phrase
- * naming it ("a background", "its inset box-shadow"), or null where it
- * paints nothing.
+ * A layer the hit test cannot see: `bounds`, a box outside which it paints
+ * nothing (read once, or null where it paints nowhere), and what it paints
+ * at a point: a phrase naming it ("a background", "its inset box-shadow"),
+ * or null where it paints nothing.
  */
 type HitHidden = {
   layer: Element;
+  bounds: () => VisionRegion | null;
   paintsAt: (p: { x: number; y: number }) => string | null;
 };
 
@@ -1583,7 +1734,10 @@ class TabMeasurement {
    * a backdrop-filter, a blend, replaced content, its border, a scrollbar or
    * an inset box-shadow there, generated content, its own text), stops the
    * measurement, named. A layer that paints nothing there — a transparent
-   * overlay, an empty stretched link — contributes nothing.
+   * overlay, an empty stretched link — contributes nothing, and so does its
+   * background where its own box misses `p`: a stretched link is listed
+   * across its card for its `::after`, while its own background (a button's
+   * fill) lies only on the link.
    */
   private paintAbove(
     layer: Element,
@@ -1609,10 +1763,16 @@ class TabMeasurement {
     if (isReplaced(layer)) return stop('with pixels the DOM cannot read');
     const items: PaintItem[] = [];
     // The root's or body's background is painted on the canvas, beneath
-    // everything, and a box that is not rendered paints none.
+    // everything, and a box that is not rendered paints none. A box paints
+    // its background inside itself only: one listed here for what lies
+    // outside it (a stretched link's ::after across its card) paints none
+    // at a point its box misses.
     this.canvasPaint();
     const paintsBackground =
-      this.canvasFrom !== layer && st.visibility !== 'hidden' && st.display !== 'contents';
+      this.canvasFrom !== layer &&
+      st.visibility !== 'hidden' &&
+      st.display !== 'contents' &&
+      this.boxHolds(layer, st, p);
     const clip =
       st.getPropertyValue('background-clip') || st.getPropertyValue('-webkit-background-clip');
     // A background clipped to the glyphs paints only where the layer's own
@@ -1685,12 +1845,15 @@ class TabMeasurement {
    * that paints anything there — a background colour or image, glyphs, its
    * border or an inset box-shadow — stops the measurement, named, and so
    * does one that paints any of them when the computed style does not pin
-   * its box down, since it may lie there. `true` when the only ones there
-   * are transparent (an empty stretched link), `false` when none is.
-   * `positionedOnly` reads only the ones that can lie over their own
-   * element's content: positioned, with a z-index that is not negative. One
-   * in normal flow is laid out beside that content, and one with a negative
-   * z-index paints beneath it.
+   * its box down, since it may lie there — though one in normal flow lies
+   * only where it can reach from its element's box ({@link flowReach}). One
+   * at `visibility: hidden` is not there, and one at `opacity: 0` (a hover
+   * tint at rest) paints nothing there. `true` when the only ones there are
+   * transparent (an empty stretched link) or at `opacity: 0`, `false` when
+   * none is. `positionedOnly` reads only the ones that can lie over their
+   * own element's content: positioned, with a z-index that is not negative.
+   * One in normal flow is laid out beside that content, and one with a
+   * negative z-index paints beneath it.
    */
   private generatedOver(
     layer: Element,
@@ -1701,21 +1864,28 @@ class TabMeasurement {
     let transparentThere = false;
     for (const which of ['::before', '::after'] as const) {
       const ps = this.pseudoStyle(layer, which);
-      if (['none', 'normal', ''].includes(ps.content) || ps.display === 'none') continue;
+      if (!this.pseudoShown(ps)) continue;
       if (positionedOnly && (ps.position === 'static' || Number(ps.zIndex) < 0)) continue;
       const bg = parseColor(ps.backgroundColor);
       const image = ps.backgroundImage !== 'none' && ps.backgroundImage !== '';
       const glyphs = ps.content !== '""' && ps.content !== "''";
-      const box = this.pseudoBox(layer, ps);
-      if (box && !pointIn(p, box)) continue;
+      const extent = this.pseudoBox(layer, ps);
+      const local = extent ? extent.toLocal(p) : null;
+      if (extent && (!local || !pointIn(local, extent.box))) continue;
+      const reach = extent ? null : this.flowReach(layer, ps);
+      if (reach && !pointIn(p, reach)) continue;
       // Its frame (a border, an inset box-shadow) is read where its box is
       // known; where it is not, a frame anywhere may lie there.
-      const framed = box ? frameAt(ps, insetByBorders(box, ps), 1, p) !== null : hasFrame(ps);
-      if (!image && !glyphs && bg && bg.a === 0 && !framed) {
-        if (box) transparentThere = true;
+      const framed =
+        extent && local
+          ? frameAt(ps, insetByBorders(extent.box, ps), 1, local) !== null
+          : hasFrame(ps);
+      const fades = Number(ps.opacity) === 0;
+      if (fades || (!image && !glyphs && bg && bg.a === 0 && !framed)) {
+        if (extent) transparentThere = true;
         continue;
       }
-      return stop(`with ${which} generated content that ${box ? 'covers' : 'may cover'} it`);
+      return stop(`with ${which} generated content that ${extent ? 'covers' : 'may cover'} it`);
     }
     return transparentThere;
   }
@@ -1791,20 +1961,37 @@ class TabMeasurement {
     return false;
   }
 
+  /** Whether `p` lies in `layer`'s border box — an inline box's, in one of its line fragments. */
+  private boxHolds(layer: Element, st: CSSStyleDeclaration, p: { x: number; y: number }): boolean {
+    if (st.display !== 'inline') {
+      const box = boxOf(layer);
+      return box !== undefined && pointIn(p, box);
+    }
+    return Array.from(layer.getClientRects()).some((r) =>
+      pointIn(p, { x: r.left, y: r.top, w: r.width, h: r.height })
+    );
+  }
+
   /** Does one of `layer`'s own text runs (not a descendant element's) paint at `p`? */
   private ownTextAt(layer: Element, p: { x: number; y: number }): boolean {
+    return this.ownTextRects(layer).some((r) => pointIn(p, r));
+  }
+
+  /** The line boxes of `layer`'s own text runs (not a descendant element's). */
+  private ownTextRects(layer: Element): VisionRegion[] {
     const doc = layer.ownerDocument;
-    if (typeof doc.createRange !== 'function') return false;
+    if (typeof doc.createRange !== 'function') return [];
+    const rects: VisionRegion[] = [];
     for (const child of Array.from(layer.childNodes)) {
       if (child.nodeType !== 3 || !/\S/.test(child.nodeValue ?? '')) continue;
       const range = doc.createRange();
-      if (typeof range.getClientRects !== 'function') return false;
+      if (typeof range.getClientRects !== 'function') return rects;
       range.selectNodeContents(child);
       for (const r of Array.from(range.getClientRects())) {
-        if (pointIn(p, { x: r.left, y: r.top, w: r.width, h: r.height })) return true;
+        rects.push({ x: r.left, y: r.top, w: r.width, h: r.height });
       }
     }
-    return false;
+    return rects;
   }
 
   /**
@@ -1843,7 +2030,11 @@ class TabMeasurement {
     owner: Element,
     layers: readonly Element[]
   ): { layer: Element; what: string } | null {
-    for (const { layer, paintsAt } of this.hitHiddenLayers()) {
+    for (const { layer, bounds, paintsAt } of this.hitHiddenLayers()) {
+      // Most such layers lie nowhere near the text: their kept bounds settle
+      // that without reading the layout again.
+      const reach = bounds();
+      if (!reach || !pointIn(p, reach)) continue;
       if (layers.includes(layer) || containsComposed(layer, owner)) continue;
       const what = paintsAt(p);
       if (what) return { layer, what };
@@ -1863,7 +2054,9 @@ class TabMeasurement {
    * style once, and the pseudo-elements' only for an element that computes
    * `pointer-events: none`; it does not descend into a subtree that renders
    * nothing (`display: none`) or paints nothing (`opacity: 0`). Only a
-   * request that measures contrast walks it.
+   * request that measures contrast walks it. Each layer's bounds — its box,
+   * and its own text's line boxes, which may overflow it — are read once,
+   * at the first point tested against it.
    */
   private hitHiddenLayers(): readonly HitHidden[] {
     if (this.hitHidden) return this.hitHidden;
@@ -1878,12 +2071,16 @@ class TabMeasurement {
         // A box at visibility: hidden paints nothing; its pseudo-elements may.
         if (!hidden) {
           const bg = parseColor(st.backgroundColor);
-          if ((bg && bg.a > 0) || st.backgroundImage !== 'none' || isReplaced(el)) {
+          const replaced = isReplaced(el);
+          if ((bg && bg.a > 0) || st.backgroundImage !== 'none' || replaced) {
+            const box = once(() => boxOf(el) ?? null);
+            const what = replaced ? 'replaced content' : 'a background';
             found.push({
               layer: el,
+              bounds: box,
               paintsAt: (p) => {
-                const box = boxOf(el);
-                return box && pointIn(p, box) ? 'a background' : null;
+                const b = box();
+                return b && pointIn(p, b) ? what : null;
               },
             });
           } else {
@@ -1892,6 +2089,9 @@ class TabMeasurement {
             if (framed || text) {
               found.push({
                 layer: el,
+                bounds: once(() =>
+                  unionOf([...(framed ? [boxOf(el)] : []), ...(text ? this.ownTextRects(el) : [])])
+                ),
                 paintsAt: (p) => {
                   const frame = framed ? this.frameOf(el, st, p) : null;
                   if (frame) return `its ${frame}`;
@@ -1916,17 +2116,17 @@ class TabMeasurement {
 
   /**
    * `el`'s `::before` / `::after` as a layer the hit test cannot see: one
-   * that computes `pointer-events: none`, is not `visibility: hidden`, and
-   * paints a background colour or image, glyphs or a frame ({@link
-   * hasFrame}). Where the computed style pins its box down it is read in
-   * that box — a frame alone only where it lies there — and elsewhere
-   * anywhere in `el`'s box: one in normal flow is laid out inside it, and
-   * one moved by a transform usually stays near it.
+   * that computes `pointer-events: none`, is not `visibility: hidden` or at
+   * `opacity: 0`, and paints a background colour or image, glyphs or a
+   * frame ({@link hasFrame}). Where the computed style pins its box down (a
+   * 2D transform included) it is read in that box, at the point `p` maps to
+   * — a frame alone only where it lies there. One in normal flow is read
+   * where it can reach ({@link flowReach}); elsewhere anywhere in `el`'s
+   * box, which one moved by a 3D transform usually stays near.
    */
   private hitHiddenPseudo(el: Element, which: '::before' | '::after'): HitHidden | null {
     const ps = this.pseudoStyle(el, which);
-    if (['none', 'normal', ''].includes(ps.content) || ps.display === 'none') return null;
-    if (ps.pointerEvents !== 'none' || ps.visibility === 'hidden' || ps.visibility === 'collapse') {
+    if (!this.pseudoShown(ps) || ps.pointerEvents !== 'none' || Number(ps.opacity) === 0) {
       return null;
     }
     const bg = parseColor(ps.backgroundColor);
@@ -1935,16 +2135,69 @@ class TabMeasurement {
     const frameOnly = !image && !glyphs && bg !== null && bg.a === 0;
     if (frameOnly && !hasFrame(ps)) return null;
     const positioned = ps.position === 'absolute' || ps.position === 'fixed';
+    const known = once(() => (positioned ? this.pseudoBox(el, ps) : null));
+    const near = once(() => (positioned ? null : this.flowReach(el, ps)) ?? boxOf(el) ?? null);
     return {
       layer: el,
+      bounds: () => known()?.bounds ?? near(),
       paintsAt: (p) => {
-        const known = positioned ? this.pseudoBox(el, ps) : null;
-        const box = known ?? boxOf(el);
-        if (!box || !pointIn(p, box)) return null;
-        if (known && frameOnly && !frameAt(ps, insetByBorders(known, ps), 1, p)) return null;
-        return `its ${which}`;
+        const extent = known();
+        if (extent) {
+          const local = extent.toLocal(p);
+          if (!local || !pointIn(local, extent.box)) return null;
+          if (frameOnly && !frameAt(ps, insetByBorders(extent.box, ps), 1, local)) return null;
+          return `its ${which}`;
+        }
+        const box = near();
+        return box && pointIn(p, box) ? `its ${which}` : null;
       },
     };
+  }
+
+  /**
+   * Whether a `::before` / `::after` is generated and shown: it has content,
+   * is rendered, and is not `visibility: hidden`. One at `opacity: 0` (a
+   * hover tint at rest) is shown and paints nothing; the hit test still
+   * sees it.
+   */
+  private pseudoShown(ps: CSSStyleDeclaration): boolean {
+    if (['none', 'normal', ''].includes(ps.content) || ps.display === 'none') return false;
+    return ps.visibility !== 'hidden' && ps.visibility !== 'collapse';
+  }
+
+  /**
+   * Where a `::before` / `::after` of `layer` in normal flow (static, or
+   * relatively positioned) can paint: `layer`'s box, which it is laid out
+   * in, grown by how far its relative offsets and its own transform move it
+   * from there. A transform does not apply to a plain inline box; another's
+   * 2D transform is read from the computed style against its own size, as
+   * the farthest its corners move. Null when that is not known: a 3D
+   * transform or a motion path, a size the computed style does not give, a
+   * `display: contents` element, or a box that is not in flow. One that
+   * overflows `layer`'s box is not seen past it.
+   */
+  private flowReach(layer: Element, ps: CSSStyleDeclaration): VisionRegion | null {
+    if (ps.position !== 'static' && ps.position !== 'relative') return null;
+    if (this.style(layer).display === 'contents') return null;
+    const box = boxOf(layer);
+    if (!box) return null;
+    let by = 0;
+    if (ps.position === 'relative') {
+      for (const side of ['top', 'right', 'bottom', 'left']) {
+        const offset = pxValue(ps.getPropertyValue(side));
+        if (Number.isFinite(offset)) by += Math.abs(offset);
+      }
+    }
+    if (ps.display !== 'inline') {
+      const w = pxValue(ps.width) + this.pseudoExtra(ps, 'left', 'right');
+      const h = pxValue(ps.height) + this.pseudoExtra(ps, 'top', 'bottom');
+      if (!Number.isFinite(w) || !Number.isFinite(h)) return null;
+      const extent = pseudoExtent({ x: 0, y: 0, w, h }, ps);
+      if (!extent) return null;
+      const b = extent.bounds;
+      by += Math.max(0, -b.x, -b.y, b.x + b.w - w, b.y + b.h - h);
+    }
+    return grown(box, by);
   }
 
   /**
@@ -2103,12 +2356,16 @@ class TabMeasurement {
    * pseudo-element is laid out beside the text, never under it, so only a
    * POSITIONED one can sit at the text's position. One whose box provably
    * misses `p`, or that paints nothing there, contributes nothing; so does a
-   * transparent one whose box the computed style does not pin down (a
-   * transform moves it), whose glyphs and frame are not known to reach `p`.
+   * transparent one whose box the computed style does not pin down (one its
+   * relative offsets nudge, a 3D transform), whose glyphs and frame are not
+   * known to reach `p`. One a 2D transform places is read in its own box at
+   * the point `p` maps to.
+   * One at `opacity: 0` or `visibility: hidden` paints nothing.
    * One with a negative `z-index` paints under its element's content, so it
-   * joins the backdrop, its glyphs and its frame (a border, an inset
-   * box-shadow) as unreadable operations; any other positioned pseudo that
-   * paints there may paint over the text, and the measurement stops.
+   * joins the backdrop — its colour faded by its own opacity, its glyphs and
+   * its frame (a border, an inset box-shadow) as unreadable operations; any
+   * other positioned pseudo that paints there may paint over the text, and
+   * the measurement stops.
    */
   private pseudoPaint(
     layer: Element,
@@ -2117,14 +2374,7 @@ class TabMeasurement {
     p: { x: number; y: number }
   ): PaintItem[] | null | ColorUnmeasured {
     const ps = this.pseudoStyle(layer, which);
-    if (
-      ps.content === 'none' ||
-      ps.content === 'normal' ||
-      ps.content === '' ||
-      ps.display === 'none'
-    ) {
-      return null;
-    }
+    if (!this.pseudoShown(ps) || Number(ps.opacity) === 0) return null;
     const bg = parseColor(ps.backgroundColor);
     const image = ps.backgroundImage !== 'none' && ps.backgroundImage !== '';
     const glyphs = ps.content !== '""' && ps.content !== "''";
@@ -2143,19 +2393,25 @@ class TabMeasurement {
     ) {
       return null;
     }
-    const box = this.pseudoBox(layer, ps);
-    if (box && !pointIn(p, box)) return null;
+    const extent = this.pseudoBox(layer, ps);
+    const local = extent ? extent.toLocal(p) : null;
+    if (extent && (!local || !pointIn(local, extent.box))) return null;
     // A transparent one whose box is not pinned down is taken to paint
-    // nothing here: read as lying anywhere, a rotated chevron's border would
-    // stop every text of its element. Where its box is known, its frame is
-    // read at `p`.
-    if (clear && !box) return null;
-    const frame = box ? frameAt(ps, insetByBorders(box, ps), 1, p) : null;
+    // nothing here: read as lying anywhere, an arrow its relative offsets
+    // nudge would stop every text of its element. Where its box is known,
+    // turned or not, its frame is read at the point `p` maps to.
+    if (clear && !extent) return null;
+    const frame = extent && local ? frameAt(ps, insetByBorders(extent.box, ps), 1, local) : null;
     if (clear && !glyphs && !frame) return null;
     const z = ps.zIndex === 'auto' ? NaN : Number(ps.zIndex);
-    if (box && Number.isFinite(z) && z < 0 && this.isStackingContext(layer, layerSt)) {
+    if (extent && Number.isFinite(z) && z < 0 && this.isStackingContext(layer, layerSt)) {
       const items: PaintItem[] = [];
-      if (bg && bg.a > 0) items.push({ color: bg, owner: layer, label });
+      // Its own opacity fades its one colour.
+      const opacity = Number(ps.opacity);
+      if (bg && bg.a > 0) {
+        const color = opacity < 1 ? { ...bg, a: bg.a * opacity } : bg;
+        items.push({ color, owner: layer, label });
+      }
       if (image)
         items.push({ color: null, owner: layer, label: `the background-image of ${label}` });
       if (!bg) items.push({ color: null, owner: layer, label });
@@ -2168,18 +2424,18 @@ class TabMeasurement {
     return new ColorUnmeasured({
       code: 'input_missing',
       detail:
-        `${label} is a positioned box that ${box ? 'covers' : 'may cover'} the text's position, ` +
+        `${label} is a positioned box that ${extent ? 'covers' : 'may cover'} the text's position, ` +
         'and its paint order relative to the text is not resolved in the tab',
     });
   }
 
   /**
-   * The border box of an absolutely or fixed positioned pseudo-element, from
-   * its resolved insets and size against its containing block; null when the
+   * Where an absolutely or fixed positioned pseudo-element paints: its border
+   * box from its resolved insets and size against its containing block, as
+   * its own transform places it ({@link pseudoExtent}); null when the
    * computed style does not pin it down.
    */
-  private pseudoBox(layer: Element, ps: CSSStyleDeclaration): VisionRegion | null {
-    if (ps.transform && ps.transform !== 'none') return null;
+  private pseudoBox(layer: Element, ps: CSSStyleDeclaration): PseudoExtent | null {
     let cb: { left: number; top: number };
     if (ps.position === 'fixed') {
       for (let a: Element | null = layer; a; a = composedParent(a)) {
@@ -2206,16 +2462,28 @@ class TabMeasurement {
     const width = pxValue(ps.width);
     const height = pxValue(ps.height);
     if (![left, top, width, height].every(Number.isFinite)) return null;
-    const extra = (a: string, b: string, c: string, d: string): number =>
-      ps.boxSizing === 'border-box'
-        ? 0
-        : [a, b, c, d].reduce((sum, prop) => sum + (pxValue(ps.getPropertyValue(prop)) || 0), 0);
-    return {
-      x: cb.left + left + (pxValue(ps.marginLeft) || 0),
-      y: cb.top + top + (pxValue(ps.marginTop) || 0),
-      w: width + extra('padding-left', 'padding-right', 'border-left-width', 'border-right-width'),
-      h: height + extra('padding-top', 'padding-bottom', 'border-top-width', 'border-bottom-width'),
-    };
+    return pseudoExtent(
+      {
+        x: cb.left + left + (pxValue(ps.marginLeft) || 0),
+        y: cb.top + top + (pxValue(ps.marginTop) || 0),
+        w: width + this.pseudoExtra(ps, 'left', 'right'),
+        h: height + this.pseudoExtra(ps, 'top', 'bottom'),
+      },
+      ps
+    );
+  }
+
+  /**
+   * What a `::before` / `::after` adds to its computed `width` / `height`
+   * along one axis to make its border box: its padding and borders on the
+   * two sides, or nothing under `box-sizing: border-box`.
+   */
+  private pseudoExtra(ps: CSSStyleDeclaration, a: string, b: string): number {
+    if (ps.boxSizing === 'border-box') return 0;
+    return [`padding-${a}`, `padding-${b}`, `border-${a}-width`, `border-${b}-width`].reduce(
+      (sum, prop) => sum + (pxValue(ps.getPropertyValue(prop)) || 0),
+      0
+    );
   }
 
   /** The `opacity < 1` ancestors-or-self of `el`, outermost first. */

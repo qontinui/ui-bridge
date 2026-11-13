@@ -492,8 +492,8 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     );
     // A ::before / ::after in normal flow has no box the computed style pins
     // down, so its border may lie anywhere in the layer, the text included:
-    // here a 50% red band over black text (~8.6:1) read 21:1 when it was
-    // skipped. A transparent border paints nothing, on generated content or
+    // here a 50% red band over black text (~4.5:1, #800000 on #ff8080) read
+    // 21:1 when it was skipped. A transparent border paints nothing, on generated content or
     // on the layer itself, and leaves the text's own 21:1.
     expect(verdicts(res)).toEqual([
       ['unknown', 'input_missing'],
@@ -523,7 +523,7 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
         .negglyph { position: relative; z-index: 0 }
         .negglyph::before { content: "SALE"; position: absolute; left: 0; top: 0; width: 300px; height: 50px; z-index: -1; color: #ccc; font-size: 40px }
         .chevron { position: relative }
-        .chevron::before { content: "v"; position: absolute; right: 30px; top: 50%; color: #000; transform: translateY(-50%) }
+        .chevron::before { content: "v"; position: absolute; right: 30px; top: 50%; color: #000; transform: translateY(-50%) rotateX(20deg) }
         .chevron::after { content: ""; position: absolute; right: 12px; top: 50%; width: 8px; height: 8px; border-right: 2px solid #000; border-bottom: 2px solid #000; transform: translateY(-50%) rotate(45deg) }
       </style>
       <div class="under" style="background:#fff;border-top:30px solid #000"><p data-id="beneathborder" style="margin:-30px 0 0;color:#fff">Over its container's border</p></div>
@@ -564,7 +564,8 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     // that paints only glyphs, a border or an inset box-shadow is read the
     // same way, the text's own one included (the hit test lists it as the
     // text's owner): red glyphs over the text, and #595959 under a 50% black
-    // shadow (~1.75:1), read 21:1 and 7:1 when such a pseudo was skipped.
+    // shadow (~3.5:1, #2c2c2c on #808080), read 21:1 and 7:1 when such a
+    // pseudo was skipped.
     expect(verdicts(res)).toEqual([
       ['unknown', 'input_missing'],
       ['unknown', 'input_missing'],
@@ -602,7 +603,8 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     expect(res.results[9].detail).toContain(
       'the generated content of <div.negglyph>::before lies beneath'
     );
-    // A transformed pseudo's box is not pinned down, and a transparent one,
+    // The chevron's 2D turn is read where it places it, beside the text. The
+    // arrow's 3D turn leaves its box not pinned down, and a transparent one,
     // glyphs or a frame, is taken to paint nothing there.
     expect(res.results[10].detail).toContain('contrast ratio 21.00:1');
     await page.close();
@@ -647,7 +649,8 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     // order is unknown: a frame that reaches the text, and a ::before /
     // ::after that paints there, make contrast unknown like a background.
     // Each read 21:1 when only a background was looked for, where the page
-    // shows ~3.7:1 (a 60% black scrim) or ~8.6:1 (a 50% red band).
+    // shows ~3.7:1 (a 60% black scrim) or ~4.5:1 (a 50% red band over the
+    // text).
     expect(verdicts(res)).toEqual([
       ['unknown', 'input_missing'],
       ['unknown', 'input_missing'],
@@ -705,6 +708,245 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     expect(res.results[1].detail).toContain('contrast ratio 21.00:1');
     expect(res.results[2].detail).toContain(`<div.tip> paints its own text ${blind}`);
     expect(res.results[3].detail).toContain('contrast ratio 21.00:1');
+    await page.close();
+  }, 60_000);
+
+  it('contrast_meets_wcag: a ::before / ::after where its 2D transform places it', async () => {
+    const row = 'position:relative;height:50px;margin-top:10px;background:#fff';
+    const top = 'margin:0;color:#000;line-height:20px';
+    const low = 'margin:0;padding-top:30px;color:#000;line-height:20px';
+    const page = await openPage(
+      `
+      <style>
+        .bullet, .pctbullet { padding-left: 16px }
+        .bullet::before { content: ""; position: absolute; left: 0; top: 50%; width: 6px; height: 6px; background: #c00; transform: translateY(-50%) }
+        .pctbullet::before { content: ""; position: absolute; left: 0; top: 50%; width: 6px; height: 6px; background: #c00; translate: 0 -50% }
+        .ribbon { overflow: hidden }
+        .ribbon::before { content: "SALE"; position: absolute; right: -30px; top: 8px; width: 120px; text-align: center; color: #fff; background: #c00; transform: rotate(45deg) }
+        .chev2 { padding-right: 40px }
+        .chev2::after { content: ""; position: absolute; right: 12px; top: 40%; width: 8px; height: 8px; border-right: 2px solid #000; border-bottom: 2px solid #000; rotate: 45deg }
+        .movedaway::after { content: ""; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.6); translate: 2000px 0 }
+        .flat::after { content: ""; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.6); transform: scale(0) }
+        .band::after { content: ""; position: absolute; inset: 0; border-top: 25px solid rgba(0, 0, 0, 0.6); transform: rotate(180deg) }
+        .bulletover::before { content: ""; position: absolute; left: 0; top: 50%; width: 300px; height: 24px; background: rgba(0, 0, 0, 0.6); transform: translateY(-50%) }
+        .ownrot::after { content: "XXXXXXXXXXXXXXXXXXXX"; position: absolute; left: 0; top: 0; color: #f00; transform: rotate(0.5deg) }
+        .old { position: relative; display: inline-block; color: #000; font-size: 20px }
+        .slashrot::after { content: ""; position: absolute; left: 0; top: calc(50% - 3px); width: 100%; border-top: 6px solid #fff; transform: rotate(-3deg) }
+        .pathed::after { content: ""; position: absolute; left: 400px; top: 0; width: 300px; height: 50px; background: rgba(0, 0, 0, 0.6); offset-path: path('M -250 25 L -249 25') }
+        .persp::after { content: ""; position: absolute; left: 300px; top: 10px; width: 200px; height: 30px; background: rgba(0, 0, 0, 0.6); transform-origin: 100% 50%; transform: perspective(100px) translateZ(50px) }
+        .boxed::after { content: ""; position: absolute; left: 0; top: 0; width: 150px; height: 50px; padding-left: 150px; background: rgba(0, 0, 0, 0.6); transform-box: content-box; transform-origin: 0 0; transform: scale(-1, 1) }
+        .rotx::after { content: ""; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.6); rotate: x 30deg }
+        .scalez::after { content: ""; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.6); scale: 1 1 2 }
+        .transz::after { content: ""; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.6); translate: 0 0 10px }
+        .negband { z-index: 0 }
+        .negband::before { content: ""; position: absolute; inset: 0; z-index: -1; border-top: 25px solid #000; transform: rotate(180deg) }
+      </style>
+      <div class="bullet" style="${row}"><p data-id="bullet" style="margin:0;color:#000;line-height:50px">Beside a transformed bullet</p></div>
+      <div class="pctbullet" style="${row}"><p data-id="pctbullet" style="margin:0;color:#000;line-height:50px">Beside a bullet a percentage translates</p></div>
+      <div class="ribbon" style="${row};width:700px"><p data-id="ribbon" style="margin:0;color:#000">A card title away from its ribbon</p></div>
+      <div class="chev2" style="${row}"><p data-id="chev2" style="margin:0;color:#000">Beside a chevron turned by rotate</p></div>
+      <div class="movedaway" style="${row}"><p data-id="movedaway" style="margin:0;color:#000">A scrim its translate moves away</p></div>
+      <div class="flat" style="${row}"><p data-id="flat" style="margin:0;color:#000">A scrim a scale(0) flattens</p></div>
+      <div class="band" style="${row}"><p data-id="ringflip" style="${top}">Above a band turned to the bottom</p></div>
+      <div class="band" style="${row}"><p data-id="ringover" style="${low}">Under a band turned to the bottom</p></div>
+      <div class="bulletover" style="${row}"><p data-id="bulletover" style="margin:0;color:#000;line-height:50px">Under a translated scrim</p></div>
+      <div style="${row}"><p data-id="ownrot" class="ownrot" style="margin:0;color:#000">Under its own rotated glyphs</p></div>
+      <div style="${row}"><span data-id="slashrot" class="old slashrot">$1,299.00</span></div>
+      <div class="pathed" style="${row}"><p data-id="pathed" style="margin:0;color:#000">Under a scrim a motion path moves</p></div>
+      <div class="persp" style="${row}"><p data-id="persp" style="margin:0;color:#000">Under a scrim a perspective enlarges</p></div>
+      <div class="boxed" style="${row}"><p data-id="boxed" style="margin:0;color:#000">Under a scrim flipped about its content</p></div>
+      <div class="rotx" style="${row}"><p data-id="rotx" style="margin:0;color:#000">Under a scrim turned about its x axis</p></div>
+      <div class="scalez" style="${row}"><p data-id="scalez" style="margin:0;color:#000">Under a scrim scaled along z</p></div>
+      <div class="transz" style="${row}"><p data-id="transz" style="margin:0;color:#000">Under a scrim moved along z</p></div>
+      <div class="negband" style="${row}"><p data-id="negband" style="${low};color:#fff">Over a band turned beneath it</p></div>
+      <div style="${row}"><p data-id="pebandaway" style="${top}">Above a click-through band turned away</p><div class="band" style="position:absolute;inset:0;pointer-events:none"></div></div>
+      <div style="${row}"><p data-id="pebandover" style="${low}">Under a click-through band turned onto it</p><div class="band" style="position:absolute;inset:0;pointer-events:none"></div></div>
+    `,
+      { width: 800, height: 1300 }
+    );
+    const ids = [
+      'bullet',
+      'pctbullet',
+      'ribbon',
+      'chev2',
+      'movedaway',
+      'flat',
+      'ringflip',
+      'ringover',
+      'bulletover',
+      'ownrot',
+      'slashrot',
+      'pathed',
+      'persp',
+      'boxed',
+      'rotx',
+      'scalez',
+      'transz',
+      'negband',
+      'pebandaway',
+      'pebandover',
+    ];
+    const res = await assertOn(
+      page,
+      ids.map((element) => ({ type: 'contrast_meets_wcag', element }))
+    );
+    // A positioned ::before / ::after is read where its 2D transform places
+    // it, the text's point taken into its own box: a bullet, a ribbon and a
+    // chevron beside the text, a scrim a translate moves away or a scale(0)
+    // flattens, and a band a half turn moves off the text each leave the
+    // text's own 21:1, where each read unknown while any transform left the
+    // box unknown. Moved onto the text, the band, a scrim and the text's own
+    // turned glyphs or strike-through stop the measurement as covering it:
+    // the last two read 21:1 when a transformed pseudo was taken to paint
+    // nothing. The same band sunk beneath white text is a frame beneath it,
+    // where skipping it read 1:1. A box the computed style does not pin
+    // down — a motion path, a perspective, a transform about its content
+    // box, a rotate, scale or translate property in 3D — may cover the text:
+    // each lies over it here.
+    expect(verdicts(res)).toEqual([
+      ['passed', null],
+      ['passed', null],
+      ['passed', null],
+      ['passed', null],
+      ['passed', null],
+      ['passed', null],
+      ['passed', null],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['passed', null],
+      ['unknown', 'input_missing'],
+    ]);
+    for (const i of [0, 1, 2, 3, 4, 5, 6, 18]) {
+      expect(res.results[i].detail).toContain('contrast ratio 21.00:1');
+    }
+    expect(res.results[7].detail).toContain('<div.band> paints over the text at');
+    expect(res.results[7].detail).toContain('with ::after generated content that covers it');
+    expect(res.results[8].detail).toContain('with ::before generated content that covers it');
+    expect(res.results[9].detail).toContain(
+      "'ownrot'::after is a positioned box that covers the text's position"
+    );
+    expect(res.results[10].detail).toContain(
+      "'slashrot'::after is a positioned box that covers the text's position"
+    );
+    for (const i of [11, 12, 13, 14, 15, 16]) {
+      expect(res.results[i].detail).toContain('with ::after generated content that may cover it');
+    }
+    expect(res.results[17].detail).toContain(
+      'the border or scrollbar of <div.negband>::before lies beneath'
+    );
+    expect(res.results[19].detail).toContain(
+      "<div.band> paints its ::after at the text's position but computes pointer-events: none"
+    );
+    await page.close();
+  }, 60_000);
+
+  it('contrast_meets_wcag: a stretched link across its card, a tint at rest, a pseudo in normal flow', async () => {
+    const page = await openPage(
+      `
+      <style>
+        .card { position: relative; background: #fff; border: 1px solid #ddd; padding: 12px; width: 400px; margin-top: 8px }
+        .stretched::after { content: ""; position: absolute; inset: 0; z-index: 1 }
+        .chev::before { content: ""; position: absolute; right: 16px; top: 50%; width: 6px; height: 6px; border-top: 2px solid #06c; border-right: 2px solid #06c; transform: translateY(-50%) rotate(45deg) }
+        .chevin::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-top: 2px solid #06c; border-right: 2px solid #06c; transform: rotate(45deg) }
+        .slide::before { content: ""; display: inline-block; width: 380px; height: 0; border-top: 24px solid rgba(0, 0, 0, 0.6); transform: translateY(-30px) }
+        .btn { display: inline-block; padding: 6px 12px; border: 1px solid #0d6efd; background: #0d6efd; color: #fff; text-decoration: none }
+        .soft { display: inline-block; margin-top: 30px; padding: 6px 12px; background: rgba(13, 110, 253, 0.5); color: #052c65; text-decoration: none }
+        .tint::after { content: ""; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.4); opacity: 0 }
+        .overlay { position: absolute; inset: 0; pointer-events: none }
+        .overlay::after { content: ""; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.4); opacity: 0 }
+        .fadedneg { position: relative; z-index: 0; height: 50px; margin-top: 10px; background: #fff }
+        .fadedneg::before { content: ""; position: absolute; inset: 0; z-index: -1; background: #000; opacity: 0.5 }
+        .softin { background: rgba(13, 110, 253, 0.5); color: #052c65 }
+        .nudge::before { content: ""; display: inline-block; position: relative; top: -30px; width: 380px; height: 0; border-top: 24px solid rgba(0, 0, 0, 0.6) }
+        .slideup::before { content: ""; display: inline-block; width: 300px; height: 0; border-top: 20px solid rgba(0, 0, 0, 0.6); transform: translateY(-28px) }
+      </style>
+      <div class="card"><h3 data-id="chevlink" style="margin:0;color:#000">A card whose link has a chevron</h3><a class="stretched chev" href="#">Read more</a></div>
+      <div class="card"><h3 data-id="chevinline" style="margin:0;color:#000">A card whose link leads with a chevron</h3><a class="stretched chevin" href="#">Read more</a></div>
+      <div class="card"><h3 data-id="slid" style="margin:0;color:#000">A card under a band its link slides up</h3><a class="stretched slide" href="#">Read more</a></div>
+      <div class="card"><h3 data-id="btncard" style="margin:0;color:#000">A card with a stretched button</h3><a class="btn stretched" href="#">Go somewhere</a></div>
+      <div class="card"><p data-id="softdesc" style="margin:0;color:#595959">A card description in grey</p><a class="soft stretched" href="#">Go somewhere</a></div>
+      <div class="card tint"><p data-id="tint" style="margin:0;color:#000">A card with a hover tint at rest</p></div>
+      <div class="card"><p data-id="overlay" style="margin:0;color:#000">A card with a click-through tint at rest</p><div class="overlay"></div></div>
+      <div class="fadedneg"><p data-id="fadedneg" style="margin:0;color:#000">Over a half-faded backdrop beneath it</p></div>
+      <div style="position:relative;height:50px;margin-top:10px;background:#fff"><p data-id="peimg" style="margin:0;color:#000">Under a click-through image</p><img src="${PIXEL_PNG}" style="position:absolute;left:0;top:0;width:300px;height:40px;pointer-events:none;opacity:0.5"></div>
+      <div style="position:relative;height:50px;margin-top:10px;background:#fff"><p data-id="tipoverflow" style="margin:0;color:#000">Under a label that overflows its box</p><div style="position:absolute;left:0;top:0;width:0;white-space:nowrap;pointer-events:none;color:#c00">A label wider than its box</div></div>
+      <div class="card" style="width:200px"><p data-id="wrapped" style="margin:0;color:#000">Before it <a class="softin stretched" href="#">a link that wraps onto a second line</a></p></div>
+      <div class="card"><h3 data-id="nudged" style="margin:0;color:#000">A card under a band its link nudges up</h3><a class="stretched nudge" href="#">Read more</a></div>
+      <div style="position:relative;height:60px;margin-top:10px;background:#fff"><p data-id="peslid" style="margin:0;color:#000">Under a click-through band slid up</p><div class="slideup" style="pointer-events:none;padding-top:10px"></div></div>
+    `,
+      { width: 800, height: 1300 }
+    );
+    const ids = [
+      'chevlink',
+      'chevinline',
+      'slid',
+      'btncard',
+      'softdesc',
+      'tint',
+      'overlay',
+      'fadedneg',
+      'peimg',
+      'tipoverflow',
+      'wrapped',
+      'nudged',
+      'peslid',
+    ];
+    const res = await assertOn(
+      page,
+      ids.map((element) => ({ type: 'contrast_meets_wcag', element }))
+    );
+    // A stretched link is listed across its card for its ::after, so the
+    // hit test lists it over the card's title. Its chevron, turned in place
+    // or laid out in its line, lies on the link, and its own background (a
+    // button's fill, solid or half blue) only inside its box: the title
+    // keeps its 21:1 and the grey description its 7:1, where the fill read
+    // over the title as covering it, or as 2.88:1. An inline link's fill
+    // lies on its line fragments alone: the words before it, inside its
+    // bounding box, keep their 21:1. A pseudo in normal flow that its own
+    // transform or its relative offsets move up over the title may cover
+    // it, and so does a click-through one its transform moves. A tint at
+    // opacity 0 paints nothing, the card's own or a click-through layer's;
+    // a sunk ::before at opacity 0.5 tints the backdrop half-way (#000 at
+    // 50% over white: 5.32:1, where reading it opaque gave 1:1). A
+    // click-through image is replaced content, and a click-through label's
+    // text is looked for where it overflows its box.
+    expect(verdicts(res)).toEqual([
+      ['passed', null],
+      ['passed', null],
+      ['unknown', 'input_missing'],
+      ['passed', null],
+      ['passed', null],
+      ['passed', null],
+      ['passed', null],
+      ['passed', null],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['passed', null],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+    ]);
+    for (const i of [0, 1, 3, 5, 6, 10]) {
+      expect(res.results[i].detail).toContain('contrast ratio 21.00:1');
+    }
+    expect(res.results[2].detail).toContain('<a.stretched.slide> paints over the text at');
+    expect(res.results[2].detail).toContain('with ::before generated content that may cover it');
+    expect(res.results[4].detail).toContain('contrast ratio 7.00:1');
+    expect(res.results[7].detail).toContain('contrast ratio 5.32:1');
+    const blind = "at the text's position but computes pointer-events: none";
+    expect(res.results[8].detail).toContain(`<img> paints replaced content ${blind}`);
+    expect(res.results[9].detail).toContain(`<div> paints its own text ${blind}`);
+    expect(res.results[11].detail).toContain('<a.stretched.nudge> paints over the text at');
+    expect(res.results[11].detail).toContain('with ::before generated content that may cover it');
+    expect(res.results[12].detail).toContain(`<div.slideup> paints its ::before ${blind}`);
     await page.close();
   }, 60_000);
 
@@ -1430,15 +1672,19 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     }
   }, 60_000);
 
-  it(`times 500 assertions on a 2000-node page: ${MAX_VISION_ASSERTIONS} fit the relay's 8 s`, async () => {
-    // About 2000 nodes: 400 small cards, every one on screen, each a card, a
-    // title, a price, a badge and an icon; all but the icon are registered.
+  it(`times 500 assertions on a 3200-node page: ${MAX_VISION_ASSERTIONS} fit the relay's 8 s`, async () => {
+    // About 3200 nodes: 400 small cards, every one on screen, each a card, a
+    // title, a price, a badge, an icon and three click-through tags
+    // (pointer-events: none) — one with text, one framed, one with a ::after
+    // — that every contrast measurement's search for such layers passes
+    // over; the card, the title, the price and the badge are registered.
     const cards = Array.from(
       { length: 400 },
       (_, i) =>
         `<div data-id="card${i}" class="card"><span data-id="title${i}" class="title">Item ${i}</span>` +
         `<span data-id="price${i}" class="price">$${i}.00</span>` +
-        `<b data-id="badge${i}" class="badge">${i % 7 ? 'New' : 'Sale'}</b><i class="icon"></i></div>`
+        `<b data-id="badge${i}" class="badge">${i % 7 ? 'New' : 'Sale'}</b><i class="icon"></i>` +
+        '<span class="tag">Tag</span><span class="tag framed">Tag</span><span class="tag mark"></span></div>'
     );
     const page = await openPage(
       `<style>
@@ -1450,11 +1696,15 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
                  font-size: 8px }
         .icon { position: absolute; left: 1px; bottom: 1px; width: 6px; height: 6px;
                 background: #08c }
+        .tag { position: absolute; right: 1px; top: 1px; pointer-events: none; color: #555;
+               font-size: 7px }
+        .tag.framed { top: 12px; border: 1px solid #999 }
+        .tag.mark::after { content: "*" }
       </style><div class="grid">${cards.join('')}</div>`,
       { width: 1280, height: 800 }
     );
     expect(await page.evaluate(() => document.getElementsByTagName('*').length)).toBeGreaterThan(
-      2000
+      3200
     );
 
     const n = (k: number): number[] => Array.from({ length: k }, (_, i) => i);

@@ -88,7 +88,7 @@ export const VISION_ASSERTION_KINDS: readonly VisionAssertionKind[] = [
  * The most assertions one in-tab request evaluates. A request must answer
  * within the relay's 8 s command timeout, and the Chromium timing smoke
  * (`dom-assertions.smoke.test.ts`) holds this limit to it on every run: on a
- * 2000-node page with 1600 registered elements it times what every request
+ * 3200-node page with 1600 registered elements it times what every request
  * pays once (the registry snapshot that attributes it) and the slower of 500
  * mixed and 500 contrast measurements on distinct elements (the costliest
  * kind), fails unless that fixed cost, this many assertions at the slower
