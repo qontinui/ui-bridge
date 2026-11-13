@@ -19,6 +19,15 @@
  * owning component's whole subtree is clear; a redacted element's component
  * name is dropped (`null`) and recorded in `unknownChecks`, never reported as
  * a different name.
+ *
+ * Component targets: the root is the nearest common DOM ancestor of the
+ * component's elements, whose own React owner is usually the PARENT. Root
+ * identity (`nodes[0].componentName`) and `props` therefore come from the
+ * component's fiber, resolved HEURISTICALLY as the deepest component fiber
+ * owning all of its registered `elementIds`. When those elements are
+ * rendered by children or slotted in by a wrapper, that can name a different
+ * component (e.g. a `Layout`), so every component-target capture carries an
+ * `unknownChecks` note saying so.
  */
 
 import { computeRoleSafe } from '../core/a11y';
@@ -311,6 +320,20 @@ function buildCapture(
 
   const walk: Walk = { nodes: [], pathOf: new Map(), portalOrdinals: new Map(), truncated: false };
 
+  // A component target's root is a common DOM ancestor, whose own owner is
+  // usually the PARENT component. Its identity comes from the component's own
+  // fiber instead (heuristic: the deepest component owning all of its
+  // registered elements) — also when the root itself is not React-managed.
+  // A value-redacted root keeps `null`.
+  let rootName: string | undefined;
+  if (target.kind === 'component') {
+    notes.add(
+      'componentName/props: the component fiber is resolved heuristically as the deepest component owning all its elementIds, and may name a wrapper (e.g. Layout)'
+    );
+    const name = owner ? componentNameOf(owner) : undefined;
+    if (name && !looksMinified(name) && !isValueRedacted(root as HTMLElement)) rootName = name;
+  }
+
   const visit = (el: Element, path: string, portal: ComponentCapturePortal | null): void => {
     if (walk.nodes.length >= MAX_CAPTURE_NODES) {
       walk.truncated = true;
@@ -318,7 +341,9 @@ function buildCapture(
     }
     walk.pathOf.set(el, path);
     walk.nodes.push(
-      buildNode(el, path, portal, rootRect, scrollX, scrollY, registeredIds, componentIds, notes)
+      buildNode(el, path, portal, rootRect, scrollX, scrollY, registeredIds, componentIds, notes, {
+        nameOverride: path === '' && el === root ? rootName : undefined,
+      })
     );
     let index = 0;
     for (const child of Array.from(el.children)) {
@@ -351,7 +376,7 @@ function buildCapture(
   }
   if (portals.exhausted) {
     notes.add(
-      `portals: React subtree walk stopped after ${MAX_PORTAL_WALK_FIBERS} fibers; portals beyond it not captured`
+      `portals: walk stopped at its budget of ${MAX_PORTAL_WALK_FIBERS} fibers / elements; portals beyond it not captured`
     );
   }
   for (const found of portals.found) visitPortal(found.host, found.reactParent);
@@ -369,15 +394,8 @@ function buildCapture(
   // The component target's id names the root, as documented on `registeredId`.
   if (target.kind === 'component' && walk.nodes[0]) walk.nodes[0].registeredId = target.id;
 
-  // A component target's root is a common DOM ancestor, whose own owner is
-  // usually the PARENT component. Its identity and props come from the
-  // component's own fiber instead: the deepest component owning all of its
-  // registered elements. Without one (not React), the props are unknown.
-  if (target.kind === 'component' && owner && walk.nodes[0]?.componentName !== null) {
-    const name = componentNameOf(owner);
-    if (name && !looksMinified(name)) walk.nodes[0].componentName = name;
-  }
-
+  // Props, like the root name, come from the component's own fiber for a
+  // component target; without one (not React), they are unknown.
   let props: Record<string, unknown> | null;
   try {
     if (target.kind === 'component') {
@@ -415,7 +433,8 @@ function buildNode(
   scrollY: number,
   registeredIds: Map<Element, string>,
   componentIds: Map<Element, string>,
-  notes: NoteBag
+  notes: NoteBag,
+  opts: { nameOverride?: string } = {}
 ): ComponentCaptureNode {
   const rect = pageRect(el, scrollX, scrollY);
   return {
@@ -423,7 +442,7 @@ function buildNode(
     tag: el.tagName.toLowerCase(),
     role: computeRoleSafe(el) ?? null,
     registeredId: registeredIds.get(el) ?? null,
-    componentName: readComponentName(el, path, componentIds, notes),
+    componentName: opts.nameOverride ?? readComponentName(el, path, componentIds, notes),
     bbox: {
       x: rect.x - rootRect.x,
       y: rect.y - rootRect.y,
@@ -679,7 +698,16 @@ function findPortalHosts(root: Element): {
   let budget = MAX_PORTAL_WALK_FIBERS;
   let exhausted = false;
 
-  const walk = (fiber: FiberLike | null | undefined, reactParent: Element): void => {
+  // `topLevel` marks the fibers whose React parent is a React root's
+  // CONTAINER (the unmanaged-root branch): only there is the parent checked
+  // to lie inside the capture root. Below that, a React parent outside the
+  // root is a portal host already captured — a portal nested in a portal —
+  // and must be kept.
+  const walk = (
+    fiber: FiberLike | null | undefined,
+    reactParent: Element,
+    topLevel: boolean
+  ): void => {
     for (let f = fiber; f; f = f.sibling) {
       if (budget <= 0) {
         exhausted = true;
@@ -689,40 +717,48 @@ function findPortalHosts(root: Element): {
       const node = f.stateNode;
       if (isElement(node)) {
         if (!node.isConnected) continue;
-        if (
-          node.parentNode !== reactParent &&
-          (reactParent === root || root.contains(reactParent))
-        ) {
+        const parentInRoot = !topLevel || reactParent === root || root.contains(reactParent);
+        if (node.parentNode !== reactParent && parentInRoot) {
           found.push({ host: node, reactParent });
         }
-        walk(f.child, node);
+        walk(f.child, node, false);
       } else {
-        walk(f.child, reactParent);
+        walk(f.child, reactParent, topLevel);
       }
     }
   };
 
   const rootFiber = hostFiberOf(root);
   if (rootFiber) {
-    walk(rootFiber.child, root);
+    walk(rootFiber.child, root, false);
     return { found, exhausted, enumerable: true };
   }
 
-  const starts = reactRootsInside(root);
-  for (const start of starts) walk(start.fiber.child, start.container);
-  return { found, exhausted, enumerable: starts.length > 0 };
+  const roots = reactRootsInside(root);
+  if (roots.exhausted) exhausted = true;
+  for (const start of roots.starts) walk(start.fiber.child, start.container, true);
+  return { found, exhausted, enumerable: roots.starts.length > 0 };
 }
 
 /**
  * The current HostRoot fibers of the React roots rendering into `root` (found
- * from its top-most React-managed descendants), with their containers.
+ * from its top-most React-managed descendants), with their containers. The
+ * DOM scan is a TreeWalker bounded by {@link MAX_PORTAL_WALK_FIBERS} elements;
+ * `exhausted` says it stopped early.
  */
-function reactRootsInside(root: Element): Array<{ fiber: FiberLike; container: Element }> {
-  const out: Array<{ fiber: FiberLike; container: Element }> = [];
+function reactRootsInside(root: Element): {
+  starts: Array<{ fiber: FiberLike; container: Element }>;
+  exhausted: boolean;
+} {
+  const starts: Array<{ fiber: FiberLike; container: Element }> = [];
   const seen = new Set<unknown>();
+  const doc = root.ownerDocument;
+  if (!doc?.createTreeWalker) return { starts, exhausted: false };
+  const walker = doc.createTreeWalker(root, 1 /* NodeFilter.SHOW_ELEMENT */);
   let scanned = 0;
-  for (const el of Array.from(root.querySelectorAll('*'))) {
-    if (++scanned > MAX_PORTAL_WALK_FIBERS) break;
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (++scanned > MAX_PORTAL_WALK_FIBERS) return { starts, exhausted: true };
+    const el = node as Element;
     if (!isReactManaged(el)) continue;
     const parent = el.parentElement;
     if (parent && parent !== root && isReactManaged(parent)) continue;
@@ -734,9 +770,9 @@ function reactRootsInside(root: Element): Array<{ fiber: FiberLike; container: E
     if (!current || !isElement(container) || seen.has(fiberRoot)) continue;
     if (container !== root && !root.contains(container)) continue;
     seen.add(fiberRoot);
-    out.push({ fiber: current, container });
+    starts.push({ fiber: current, container });
   }
-  return out;
+  return { starts, exhausted: false };
 }
 
 // ============================================================================

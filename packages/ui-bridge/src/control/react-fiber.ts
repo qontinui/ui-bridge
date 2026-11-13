@@ -196,8 +196,12 @@ export function deepestCommonFiber(
 }
 
 /**
- * The deepest component fiber owning ALL of these elements (the registered
- * component's own fiber when they are its elements), or `undefined`.
+ * The deepest component fiber owning ALL of these elements, or `undefined`.
+ *
+ * A HEURISTIC for "the registered component's own fiber": it is that fiber
+ * when the component renders all of its registered elements itself, but when
+ * the elements are rendered by children (or slotted in by a wrapper such as a
+ * `Layout`), the deepest common owner can be a different component.
  */
 export function commonOwningComponentFiber(elements: Element[]): FiberLike | undefined {
   const chains = elements.map(fiberChainOf);
@@ -211,6 +215,11 @@ export function commonOwningComponentFiber(elements: Element[]): FiberLike | und
  */
 export function componentNameOf(fiber: FiberLike): string | undefined {
   return nameOfType(fiber.type, 0);
+}
+
+/** The display name of a React element / fiber `type` (function, forwardRef, memo). */
+export function typeName(type: unknown): string | undefined {
+  return nameOfType(type, 0);
 }
 
 function nameOfType(type: unknown, depth: number): string | undefined {

@@ -20,6 +20,12 @@ import {
   type ComponentCaptureRegistry,
 } from './component-capture';
 import { REDACTED_VALUE } from '../core/redaction';
+import {
+  extractComponentFiberProps,
+  extractOwnerComponentProps,
+  OWNER_SUBTREE_DOM_BUDGET,
+} from './action-executor';
+import { deepestCommonFiber, type FiberLike } from './react-fiber';
 import { CommandRelay } from '../server/command-relay';
 import { createRelayHandlers } from '../server/relay-handlers';
 import { createHandlers, type RegistryLike } from '../server/handlers';
@@ -718,5 +724,228 @@ describe('parseComponentCaptureRefusal', () => {
       parseComponentCaptureRefusal('Error: component_capture_refused:not_found: x')
     ).toBeUndefined();
     expect(parseComponentCaptureRefusal('component_capture_refused:bogus')).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Re-review round 3
+// ---------------------------------------------------------------------------
+
+describe('captureComponent — a portal nested inside a portal', () => {
+  function Nested({ outer, inner }: { outer: HTMLElement; inner: HTMLElement }) {
+    return (
+      <div className="nest">
+        {createPortal(
+          <div id="lb" className="lb">
+            {createPortal(<p className="deep" />, inner)}
+          </div>,
+          outer
+        )}
+      </div>
+    );
+  }
+  function layers() {
+    const outer = document.createElement('div');
+    outer.id = 'outer-layer';
+    const inner = document.createElement('div');
+    inner.id = 'inner-layer';
+    document.body.append(outer, inner);
+    return { outer, inner };
+  }
+  function assertNested(result: ReturnType<typeof captureComponent>) {
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const lb = result.capture.nodes.find((n) => n.tag === 'div' && n.portal);
+    const deep = result.capture.nodes.find((n) => n.tag === 'p');
+    expect(lb?.portal?.mountTarget).toBe('body>div#outer-layer');
+    expect(deep?.portal).toEqual({
+      mountTarget: 'body>div#inner-layer',
+      reactParentPath: lb!.path,
+    });
+  }
+
+  it('is captured from a fiber-managed root', () => {
+    render(<Nested {...layers()} />);
+    const nest = q('div.nest');
+    assertNested(captureComponent(fakeRegistry({ nest }), { kind: 'element', id: 'nest' }));
+  });
+
+  it('is captured from an unmanaged root (the createRoot container)', () => {
+    const app = render(<Nested {...layers()} />);
+    assertNested(captureComponent(fakeRegistry({ app }), { kind: 'element', id: 'app' }));
+  });
+});
+
+describe('deepestCommonFiber — a fiber and its alternate are one ancestor', () => {
+  it('meets chains that run through parent and parent.alternate', () => {
+    const rootFiber: FiberLike = { tag: 3 };
+    const parent: FiberLike = { tag: 0, return: rootFiber };
+    const parentAlt: FiberLike = { tag: 0, return: rootFiber, alternate: parent };
+    parent.alternate = parentAlt;
+    const a: FiberLike = { tag: 5, return: parent };
+    const b: FiberLike = { tag: 5, return: parentAlt };
+    const met = deepestCommonFiber([
+      [a, parent, rootFiber],
+      [b, parentAlt, rootFiber],
+    ]);
+    // Without pair keying the only shared node would be the HostRoot.
+    expect(met === parent || met === parentAlt).toBe(true);
+  });
+});
+
+describe('captureComponent — props are read from the current fiber', () => {
+  it.each([1, 2, 3])('reports the latest prop after %i parent re-render(s)', (renders) => {
+    let set: (v: number) => void = () => {};
+    function Child({ v }: { v: number }) {
+      return <div className="child" data-v={v} />;
+    }
+    function Holder() {
+      const [v, setV] = useState(0);
+      set = setV;
+      return <Child v={v} />;
+    }
+    render(<Holder />);
+    for (let i = 1; i <= renders; i++) act(() => set(i * 10));
+    const child = q('div.child');
+    const result = captureComponent(fakeRegistry({ child }), { kind: 'element', id: 'child' });
+    expect(result.ok && result.capture.props).toEqual({ v: renders * 10 });
+  });
+});
+
+describe('captureComponent — owner-subtree redaction, opaque and oversized DOM', () => {
+  function Host({ token }: { token: string }) {
+    return <div className="host" data-token-len={token.length} />;
+  }
+
+  it('redacts when a non-React grandchild hosts a shadow root', () => {
+    render(<Host token="t0k" />);
+    const host = q('div.host');
+    const child = document.createElement('div');
+    const grandchild = document.createElement('span');
+    child.appendChild(grandchild);
+    host.appendChild(child);
+    grandchild.attachShadow({ mode: 'open' });
+    const result = captureComponent(fakeRegistry({ host }), { kind: 'element', id: 'host' });
+    expect(result.ok && result.capture.props).toEqual({ token: REDACTED_VALUE });
+  });
+
+  it('redacts when a custom element holds a CLOSED shadow root', () => {
+    if (!customElements.get('secret-box')) {
+      customElements.define(
+        'secret-box',
+        class extends HTMLElement {
+          constructor() {
+            super();
+            this.attachShadow({ mode: 'closed' });
+          }
+        }
+      );
+    }
+    render(<Host token="t0k" />);
+    const host = q('div.host');
+    const box = document.createElement('secret-box');
+    host.appendChild(box);
+    expect(box.shadowRoot).toBeNull(); // closed: invisible to the open-root arm
+    const result = captureComponent(fakeRegistry({ host }), { kind: 'element', id: 'host' });
+    expect(result.ok && result.capture.props).toEqual({ token: REDACTED_VALUE });
+  });
+
+  it('redacts when the subtree exceeds the DOM scan budget', () => {
+    render(<Host token="t0k" />);
+    const host = q('div.host');
+    const frag = document.createDocumentFragment();
+    for (let i = 0; i <= OWNER_SUBTREE_DOM_BUDGET; i++)
+      frag.appendChild(document.createElement('b'));
+    host.appendChild(frag);
+    // Read the props directly: a full capture would also style-walk 2000 nodes.
+    expect(extractOwnerComponentProps(host)).toEqual({ token: REDACTED_VALUE });
+    // One element fewer than the budget is scanned to the end and stays clear.
+    host.lastElementChild!.remove();
+    host.lastElementChild!.remove();
+    expect(extractOwnerComponentProps(host)).toEqual({ token: 't0k' });
+  });
+
+  it('keeps props when the subtree is clear (control)', () => {
+    render(<Host token="t0k" />);
+    const host = q('div.host');
+    const result = captureComponent(fakeRegistry({ host }), { kind: 'element', id: 'host' });
+    expect(result.ok && result.capture.props).toEqual({ token: 't0k' });
+  });
+});
+
+describe('captureComponent — React elements in props are compact', () => {
+  it('renders an element prop as <Type> and never walks _owner/_store', () => {
+    function Icon() {
+      return <i />;
+    }
+    function Slot({ icon, label }: { icon: React.ReactNode; label: React.ReactNode }) {
+      return (
+        <div className="slot">
+          {icon}
+          {label}
+        </div>
+      );
+    }
+    render(<Slot icon={<Icon />} label={<b>hi</b>} />);
+    const slot = q('div.slot');
+    const result = captureComponent(fakeRegistry({ slot }), { kind: 'element', id: 'slot' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.capture.props).toEqual({ icon: '<Icon>', label: '<b>' });
+    expect(JSON.stringify(result.capture.props)).not.toMatch(/_owner|_store/);
+  });
+});
+
+describe('captureComponent — component-target owner note and unmanaged root', () => {
+  it('notes the heuristic owner and names an unmanaged root from the owner', () => {
+    // The two elements are top-level, so the root is the unmanaged createRoot
+    // container: its name must still come from the component's fiber.
+    function Duo({ tone }: { tone: string }) {
+      return (
+        <>
+          <button type="button" className="d1" data-tone={tone} />
+          <button type="button" className="d2" />
+        </>
+      );
+    }
+    const app = render(<Duo tone="calm" />);
+    const registry = fakeRegistry(
+      { d1: q('.d1'), d2: q('.d2') },
+      { duo: { elementIds: ['d1', 'd2'] } }
+    );
+    const result = captureComponent(registry, { kind: 'component', id: 'duo' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.capture.nodes[0].tag).toBe('div');
+    expect(app.contains(q('.d1'))).toBe(true);
+    expect(result.capture.nodes[0].componentName).toBe('Duo');
+    expect(result.capture.props).toEqual({ tone: 'calm' });
+    expect(
+      result.capture.unknownChecks.some((n) =>
+        n.startsWith('componentName/props: the component fiber is resolved heuristically')
+      )
+    ).toBe(true);
+    expect(result.capture.unknownChecks.some((n) => n.includes('not React-managed'))).toBe(false);
+  });
+});
+
+describe('extractComponentFiberProps — a stale (alternate) owner is resolved to the current one', () => {
+  it('reads memoizedProps from the committed half of the pair', () => {
+    const div = document.createElement('div');
+    document.body.appendChild(div);
+    const host: FiberLike & { memoizedProps?: unknown } = { tag: 5, stateNode: div };
+    const root: FiberLike = { tag: 3 };
+    const rootAlt: FiberLike = { tag: 3, alternate: root };
+    root.alternate = rootAlt;
+    const stale = { tag: 0, return: root, memoizedProps: { v: 'old' } } as FiberLike;
+    const live = { tag: 0, return: root, memoizedProps: { v: 'new' }, child: host } as FiberLike;
+    stale.alternate = live;
+    live.alternate = stale;
+    host.return = live;
+    // Both halves of the HostRoot point at the committed child.
+    root.child = live;
+    rootAlt.child = live;
+    root.stateNode = { current: root };
+    expect(extractComponentFiberProps(stale, div)).toEqual({ v: 'new' });
   });
 });

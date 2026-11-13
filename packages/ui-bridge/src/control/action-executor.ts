@@ -100,6 +100,7 @@ import {
 } from '../core/redaction';
 import {
   currentFiber,
+  typeName,
   hostFiberOf,
   hostElementsUnder,
   owningComponentFiber,
@@ -3988,7 +3989,12 @@ function computeActionErrorDiff(
  */
 const SAFE_SERIALIZE_MAX_DEPTH = 6;
 
-function safeSerialize(value: unknown, seen = new WeakSet<object>(), depth = 0): unknown {
+function safeSerialize(
+  value: unknown,
+  seen = new WeakSet<object>(),
+  depth = 0,
+  compactElements = false
+): unknown {
   if (depth > SAFE_SERIALIZE_MAX_DEPTH) return '[MaxDepth]';
   if (value === null || value === undefined) return value;
   if (typeof value === 'function') return '[Function]';
@@ -3997,6 +4003,15 @@ function safeSerialize(value: unknown, seen = new WeakSet<object>(), depth = 0):
   const obj = value as object;
   if (seen.has(obj)) return '[Circular]';
   seen.add(obj);
+
+  // A React element (`children`, render props) carries the dev-mode `_owner`
+  // fiber graph and `_store`; walking it dumps the app's fiber tree. With
+  // `compactElements` it collapses to `<Type>` and nothing of it is walked.
+  if (compactElements && '$$typeof' in obj) {
+    const type = (obj as { type?: unknown }).type;
+    const name = typeof type === 'string' ? type : typeName(type);
+    return `<${name ?? 'Unknown'}>`;
+  }
 
   // DOM node short-circuit. React stores DOM refs in fiber.stateNode and
   // useRef hooks; walking them would descend into __reactFiber$/__reactProps$
@@ -4015,13 +4030,19 @@ function safeSerialize(value: unknown, seen = new WeakSet<object>(), depth = 0):
   }
 
   if (Array.isArray(obj)) {
-    return obj.map((item) => safeSerialize(item, seen, depth + 1));
+    return obj.map((item) => safeSerialize(item, seen, depth + 1, compactElements));
   }
 
   const result: Record<string, unknown> = {};
   for (const key of Object.keys(obj)) {
     try {
-      result[key] = safeSerialize((obj as Record<string, unknown>)[key], seen, depth + 1);
+      if (compactElements && (key === '_owner' || key === '_store')) continue;
+      result[key] = safeSerialize(
+        (obj as Record<string, unknown>)[key],
+        seen,
+        depth + 1,
+        compactElements
+      );
     } catch {
       result[key] = '[Error reading property]';
     }
@@ -4138,7 +4159,7 @@ export function extractComponentFiberProps(
   const raw = (owner as { memoizedProps?: unknown }).memoizedProps;
   const props = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
   return scrubReactProps(
-    safeSerialize(props) as Record<string, unknown>,
+    safeSerialize(props, new WeakSet<object>(), 0, true) as Record<string, unknown>,
     ownerSubtreeVerdict(owner, anchor)
   );
 }
@@ -4147,29 +4168,36 @@ export function extractComponentFiberProps(
 const OWNER_SUBTREE_FIBER_BUDGET = 5000;
 
 /** Max DOM elements scanned below the owner's hosts (non-React DOM included). */
-const OWNER_SUBTREE_DOM_BUDGET = 20000;
+export const OWNER_SUBTREE_DOM_BUDGET = 20000;
 
 /**
  * The fail-closed VALUE verdict over a component's host subtree: redacted
- * when the enumeration is incomplete, or any host — or any DOM element below
- * one, React-managed or not — is a password input, sits in or holds a
- * `data-bridge-redact` boundary, or hosts a shadow root (whose contents this
- * scan cannot see).
+ * when the enumeration is incomplete (fiber or DOM budget spent), or any host
+ * — or any DOM element below one, React-managed or not — is a password
+ * input, sits in or holds a `data-bridge-redact` boundary, hosts an OPEN
+ * shadow root, or is a custom element (a tag with `-`, which may hold a
+ * CLOSED shadow root — `element.shadowRoot` is `null` for those, so this scan
+ * cannot see inside).
  */
 function ownerSubtreeVerdict(owner: FiberLike, anchor: Element): RedactionVerdict {
   const { elements, exhausted } = hostElementsUnder(owner, OWNER_SUBTREE_FIBER_BUDGET);
   if (exhausted || elements.length === 0) return verdictFailClosed();
+  const opaque = (el: Element): boolean =>
+    isValueRedacted(el as HTMLElement) || el.shadowRoot !== null || el.tagName.includes('-');
   // Hosts come in pre-order, so a nested host was already scanned as a DOM
-  // descendant of its ancestor host: `seen` keeps the scan linear.
+  // descendant of its ancestor host: `seen` keeps the scan linear, and the
+  // TreeWalker stops the moment the budget is spent (no full NodeList).
   const seen = new Set<Element>();
   for (const node of elements) {
-    if (isValueRedacted(node as HTMLElement)) return verdictFailClosed();
-    if (node.shadowRoot) return verdictFailClosed();
+    if (opaque(node)) return verdictFailClosed();
     if (seen.has(node)) continue;
-    for (const below of Array.from(node.querySelectorAll('*'))) {
+    const doc = node.ownerDocument;
+    if (!doc?.createTreeWalker) return verdictFailClosed();
+    const walker = doc.createTreeWalker(node, 1 /* NodeFilter.SHOW_ELEMENT */);
+    for (let below = walker.nextNode(); below; below = walker.nextNode()) {
       if (seen.size >= OWNER_SUBTREE_DOM_BUDGET) return verdictFailClosed();
-      seen.add(below);
-      if (below.shadowRoot || isValueRedacted(below as HTMLElement)) return verdictFailClosed();
+      seen.add(below as Element);
+      if (opaque(below as Element)) return verdictFailClosed();
     }
   }
   return verdictOf(anchor as HTMLElement);
