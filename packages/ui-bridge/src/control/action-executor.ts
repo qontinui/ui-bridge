@@ -94,7 +94,16 @@ import {
   isContentRedacted,
   readScrubbedValue,
   readScrubbedText,
+  isValueRedacted,
+  verdictFailClosed,
+  type RedactionVerdict,
 } from '../core/redaction';
+import {
+  hostFiberOf,
+  hostElementsUnder,
+  owningComponentFiber,
+  type FiberLike,
+} from './react-fiber';
 import { getGlobalCtr } from '../ctr/registry';
 import { buildActionFailureDetails } from '../diagnostics';
 import { EffectVerifier } from './effect-verifier';
@@ -4092,26 +4101,47 @@ export function extractReactState(element: HTMLElement): ReactStateInfo | null {
 }
 
 /**
- * The props of the nearest React function/class component that OWNS this
- * DOM element — the component's own props, not the host element's DOM props
- * that `extractReactState` reports. Scrubbed exactly as `extractReactState`
- * scrubs (`safeSerialize` then `scrubReactProps` under the element's §4.6
- * verdict). `null` when the element is not React-managed or no component
- * fiber owns it. Used by the component capture (`control/component-capture.ts`).
+ * The props of the nearest React component (function / class / forwardRef /
+ * memo) that OWNS this DOM element — the component's own props, not the host
+ * element's DOM props that `extractReactState` reports. `null` when the
+ * element is not React-managed or no component fiber owns it. Used by the
+ * component capture (`control/component-capture.ts`).
+ *
+ * §4.6, fail closed: a component's props can carry the cleartext of ANY input
+ * it renders (`<SecretField secret="…">` wrapping a password input), so the
+ * verdict is taken over the owning component's whole host subtree, not the
+ * element asked about. Every prop VALUE collapses to the sentinel unless the
+ * subtree was enumerated completely and no node in it — nor any DOM below
+ * those nodes — is value-redacted (a password input or a `data-bridge-redact`
+ * boundary).
  */
-export function extractOwnerComponentProps(element: HTMLElement): Record<string, unknown> | null {
-  const el = element as unknown as Record<string, unknown>;
-  const reactFiberKey = Object.keys(el).find((k) => k.startsWith('__reactFiber$'));
-  if (!reactFiberKey) return null;
-  let current = el[reactFiberKey] as Record<string, unknown> | undefined;
-  while (current) {
-    if (typeof current.type === 'function') {
-      const raw = (current.memoizedProps as Record<string, unknown> | null | undefined) ?? {};
-      return scrubReactProps(safeSerialize(raw) as Record<string, unknown>, verdictOf(element));
+export function extractOwnerComponentProps(element: Element): Record<string, unknown> | null {
+  const host = hostFiberOf(element);
+  if (!host) return null;
+  const owner = owningComponentFiber(host);
+  if (!owner) return null;
+  const raw = (owner as { memoizedProps?: unknown }).memoizedProps;
+  const props = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  return scrubReactProps(
+    safeSerialize(props) as Record<string, unknown>,
+    ownerSubtreeVerdict(owner, element)
+  );
+}
+
+/** Max fibers visited when enumerating an owner's host subtree. */
+const OWNER_SUBTREE_FIBER_BUDGET = 5000;
+
+/** The fail-closed VALUE verdict over a component's host subtree. */
+function ownerSubtreeVerdict(owner: FiberLike, element: Element): RedactionVerdict {
+  const { elements, exhausted } = hostElementsUnder(owner, OWNER_SUBTREE_FIBER_BUDGET);
+  if (exhausted || elements.length === 0) return verdictFailClosed();
+  for (const node of elements) {
+    if (isValueRedacted(node as HTMLElement)) return verdictFailClosed();
+    if (node.querySelector?.('input[type="password" i], [data-bridge-redact="true"]')) {
+      return verdictFailClosed();
     }
-    current = current.return as Record<string, unknown> | undefined;
   }
-  return null;
+  return verdictOf(element as HTMLElement);
 }
 
 /**

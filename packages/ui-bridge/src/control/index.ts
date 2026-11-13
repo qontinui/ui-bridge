@@ -99,8 +99,12 @@ export {
   componentCaptureCommandResult,
   componentCaptureRefusalCode,
   componentCaptureRefusalStatus,
+  componentCaptureRefusalEnvelope,
+  componentCaptureRefusalMessage,
+  parseComponentCaptureRefusal,
   CAPTURE_STYLE_KEYS,
   MAX_CAPTURE_NODES,
+  MAX_PORTAL_WALK_FIBERS,
 } from './component-capture';
 export type {
   CaptureRect,
@@ -113,6 +117,7 @@ export type {
   ComponentCaptureRefusalReason,
   ComponentCaptureResult,
   ComponentCaptureRegistry,
+  ComponentCaptureRefusalEnvelope,
 } from './component-capture';
 export { extractOwnerComponentProps } from './action-executor';
 

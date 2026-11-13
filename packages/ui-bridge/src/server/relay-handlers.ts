@@ -16,7 +16,10 @@ import { scopedCallerRefusal } from './scoped-refusal';
 import { buildComponentNotFoundError } from './handlers';
 import { describeInnerFailure } from './inner-failure';
 import { fitMediaOverrideBudget } from '../control/media-override-budget';
-import { componentCaptureRefusalStatus } from '../control/component-capture';
+import {
+  componentCaptureRefusalEnvelope,
+  parseComponentCaptureRefusal,
+} from '../control/component-capture';
 import type {
   UIBridgeServerHandlers,
   APIResponse,
@@ -25,6 +28,7 @@ import type {
   ElementStateQuery,
   HandlerContext,
   StateSummary,
+  ComponentCaptureResponse,
 } from './types';
 import type { RenderLogEntry } from '../render-log';
 import type {
@@ -140,18 +144,6 @@ function readRelayInnerFailure(result: unknown): { message: string; code: string
  * fields loses information. One shape for every relay path that reads a live
  * answer (`relayCommand`, `getElement`'s unpinned read).
  */
-/**
- * A relayed component capture's typed refusal (`component_capture_refused`,
- * see `control/component-capture.ts`) answers 404 / 422 like the direct
- * handler does; every other answer passes through untouched.
- */
-function withCaptureRefusalStatus<T>(response: APIResponse<T>): APIResponse<T> {
-  if (response.success || response.error !== 'component_capture_refused') return response;
-  const reason = (response.data as { reason?: unknown } | undefined)?.reason;
-  if (reason !== 'not_found' && reason !== 'no_mounted_elements') return response;
-  return { ...response, httpStatus: componentCaptureRefusalStatus(reason) };
-}
-
 function relayInnerFailureResponse<T>(
   innerFailure: { message: string; code: string },
   result: unknown
@@ -163,6 +155,27 @@ function relayInnerFailureResponse<T>(
     data: result,
     timestamp: Date.now(),
   } as APIResponse<T>;
+}
+
+/**
+ * A relayed component capture's answer, with its typed refusal restored.
+ *
+ * A refusal crosses the relay as a MESSAGE only: the in-page relay client
+ * posts the dispatcher's `success: false`, `nextjs.ts` settles it through
+ * `rejectCommand(commandId, message)` and the cross-instance bus re-raises
+ * `new Error(message)`, so `reason`, `code` and status are gone by the time
+ * `relayCommand` answers. The dispatcher therefore encodes the reason in the
+ * message (`componentCaptureRefusalMessage`); this recognises it, wherever it
+ * landed (`error`, or `data.error` on the resolved path), and answers the
+ * same envelope as the direct handler. Every other answer passes through.
+ */
+function captureRelayAnswer(response: APIResponse<unknown>): ComponentCaptureResponse {
+  if (response.success) return response as ComponentCaptureResponse;
+  const refusal =
+    parseComponentCaptureRefusal(response.error) ??
+    parseComponentCaptureRefusal((response.data as { error?: unknown } | undefined)?.error);
+  if (!refusal) return response as ComponentCaptureResponse;
+  return componentCaptureRefusalEnvelope(refusal.reason, refusal.message);
 }
 
 /**
@@ -1302,9 +1315,7 @@ export function createRelayHandlers(
     },
 
     async getElementCapture(id, context) {
-      return withCaptureRefusalStatus(
-        await relayCommand('getElementCapture', { id }, ctxOpts(context))
-      );
+      return captureRelayAnswer(await relayCommand('getElementCapture', { id }, ctxOpts(context)));
     },
 
     async executeElementAction(id, request, context) {
@@ -1448,7 +1459,7 @@ export function createRelayHandlers(
     },
 
     async getComponentCapture(id, context) {
-      return withCaptureRefusalStatus(
+      return captureRelayAnswer(
         await relayCommand('getComponentCapture', { id }, ctxOpts(context))
       );
     },

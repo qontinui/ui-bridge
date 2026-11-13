@@ -233,9 +233,10 @@ export interface ElementState {
     borderColor: string;
     borderWidth: string;
     borderRadius: string;
-    // Sizing, flex and box model — optional so pre-existing literals and
-    // fixtures still type-check; `projectComputedStyles` (core/computed-styles.ts)
-    // always fills them. Added for the `matches_isolated_render` capture.
+    // Sizing, flex and box model — optional, and NOT filled by snapshots or
+    // the render log (`projectComputedStyles` keeps the base set). Only
+    // `projectExtendedComputedStyles` (core/computed-styles.ts), read by the
+    // `matches_isolated_render` component capture, fills them.
     width?: string;
     height?: string;
     minWidth?: string;

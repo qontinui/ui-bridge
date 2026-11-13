@@ -27,7 +27,11 @@ import type {
 } from '../control';
 import type { ElementState, FillResult } from '../core/types';
 import type { ElementProjection } from '../core/element-projection';
-import type { ComponentCapture, ComponentCaptureRefusal } from '../control/component-capture';
+import type {
+  ComponentCapture,
+  ComponentCaptureRefusal,
+  ComponentCaptureRefusalReason,
+} from '../control/component-capture';
 import type { PageHealthObservation } from './page-health';
 import type {
   VisionAnalyzeResponse,
@@ -431,6 +435,16 @@ export type ElementStateResponse = Partial<ElementState> & {
 };
 
 /**
+ * The answer of `GET /control/{component,element}/:id/capture`: the capture
+ * under `data`, or a typed refusal carrying `reason` at the top level beside
+ * `error: 'component_capture_refused'` (contract body
+ * `{ error: "component_capture_refused", reason }`).
+ */
+export type ComponentCaptureResponse = APIResponse<ComponentCapture | ComponentCaptureRefusal> & {
+  reason?: ComponentCaptureRefusalReason;
+};
+
+/**
  * Per-user tab scoping context (§4.2) — threaded as the final positional
  * argument of every relay-dispatching handler.
  *
@@ -555,13 +569,14 @@ export interface UIBridgeServerHandlers {
   /**
    * `GET /control/element/:id/capture` — the element's structural
    * {@link ComponentCapture}. Refusal: `success:false`,
-   * `error: 'component_capture_refused'`, `data: ComponentCaptureRefusal`
-   * (404 `not_found`, 422 `no_mounted_elements`).
+   * `error: 'component_capture_refused'` and `reason` at the top level, the
+   * refusal body repeated under `data` (404 `not_found`, 422
+   * `no_mounted_elements`).
    */
   getElementCapture: (
     id: string,
     context?: HandlerContext
-  ) => Promise<APIResponse<ComponentCapture | ComponentCaptureRefusal>>;
+  ) => Promise<ComponentCaptureResponse>;
   executeElementAction: (
     id: string,
     request: ControlActionRequest,
@@ -639,7 +654,7 @@ export interface UIBridgeServerHandlers {
   getComponentCapture: (
     id: string,
     context?: HandlerContext
-  ) => Promise<APIResponse<ComponentCapture | ComponentCaptureRefusal>>;
+  ) => Promise<ComponentCaptureResponse>;
   executeComponentAction: (
     id: string,
     request: ComponentActionRequest,

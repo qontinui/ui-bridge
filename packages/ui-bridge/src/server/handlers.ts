@@ -27,6 +27,7 @@ import type {
   RunnerWindowsList,
   ElementStateQuery,
   HandlerContext,
+  ComponentCaptureResponse,
 } from './types';
 import type {
   ActionExecutor,
@@ -96,10 +97,7 @@ import { WindowLocationAdapter } from '../navigation/navigation-adapter';
 import { extractReactState } from '../control/action-executor';
 import {
   captureComponent,
-  componentCaptureRefusalCode,
-  componentCaptureRefusalStatus,
-  type ComponentCapture,
-  type ComponentCaptureRefusal,
+  componentCaptureRefusalEnvelope,
   type ComponentCaptureResult,
 } from '../control/component-capture';
 import {
@@ -781,26 +779,6 @@ function success<T>(data: T): APIResponse<T> {
  * diagnostics mapper (plan Phase 1). Prose `message` is retained as the
  * dual-audience human field (goal #3).
  */
-/**
- * A component capture as the HTTP envelope: the capture under `data`, or the
- * typed refusal — `error: 'component_capture_refused'`, the refusal body under
- * `data`, 404 / 422.
- */
-function componentCaptureResponse(
-  result: ComponentCaptureResult
-): APIResponse<ComponentCapture | ComponentCaptureRefusal> {
-  if (result.ok) return success(result.capture);
-  return {
-    success: false,
-    error: result.refusal.error,
-    code: componentCaptureRefusalCode(result.refusal.reason),
-    data: result.refusal,
-    suggestions: [result.message],
-    httpStatus: componentCaptureRefusalStatus(result.refusal.reason),
-    timestamp: Date.now(),
-  };
-}
-
 function error<T = unknown>(message: string, code?: string): APIResponse<T> {
   return {
     success: false,
@@ -808,6 +786,22 @@ function error<T = unknown>(message: string, code?: string): APIResponse<T> {
     code: mapInternalErrorCode(code, message),
     timestamp: Date.now(),
   };
+}
+
+/**
+ * A component capture as the HTTP envelope: the capture under `data`, or the
+ * typed refusal (`componentCaptureRefusalEnvelope`: top-level `error` +
+ * `reason`, the refusal body repeated under `data`, 404 / 422). A throw is a
+ * `COMPONENT_CAPTURE_ERROR`, like every sibling read.
+ */
+function componentCaptureResponse(capture: () => ComponentCaptureResult): ComponentCaptureResponse {
+  try {
+    const result = capture();
+    if (result.ok) return success(result.capture);
+    return componentCaptureRefusalEnvelope(result.refusal.reason, result.message);
+  } catch (err) {
+    return error((err as Error).message, 'COMPONENT_CAPTURE_ERROR');
+  }
 }
 
 /**
@@ -1770,7 +1764,7 @@ export function createHandlers(
     },
 
     getElementCapture: async (id: string) =>
-      componentCaptureResponse(captureComponent(registry, { kind: 'element', id })),
+      componentCaptureResponse(() => captureComponent(registry, { kind: 'element', id })),
 
     /**
      * `POST /control/element/:id/action` — the ONE exported action seam every
@@ -2209,7 +2203,7 @@ export function createHandlers(
     },
 
     getComponentCapture: async (id: string) =>
-      componentCaptureResponse(captureComponent(registry, { kind: 'component', id })),
+      componentCaptureResponse(() => captureComponent(registry, { kind: 'component', id })),
 
     executeComponentAction: async (id: string, request: ComponentActionRequest) => {
       try {
