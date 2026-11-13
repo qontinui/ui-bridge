@@ -249,7 +249,9 @@ Each entry accepts either NL form (`{ assertion: "..." }`) or
 structured form (`{ target, type, expected }`). `mode` is `"all"`
 (default — all must pass) or `"any"` (one is enough).
 
-An entry that is not an assertion object or a string (`null`, a number,
+Through the `@qontinui/ui-bridge/server` adapters (relay and in-process —
+the sibling `@qontinui/ui-bridge-server` package does not make this
+refusal yet), an entry that is not an assertion object or a string (`null`, a number,
 an array), or that names nothing to check — no `target` and no
 `assertion` (`{}`, `{ "type": "exists" }`), or a search-criteria
 `target` that selects nothing — refuses the whole batch with
