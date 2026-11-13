@@ -531,6 +531,17 @@ describe('the relay with its tab unreachable', () => {
     expect(reply.error).toContain('`attributes`');
   });
 
+  it('find: a refusal from the cache names why the cache was asked — the live failure', async () => {
+    const { handlers } = deadTabRelay();
+    const projection = await handlers.find({ skipSettle: true, properties: ['hyphens'] });
+    expect(projection.code).toBe('UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD');
+    expect(projection.error).toContain('(no live answer: SDK_DISCONNECTED: no tab');
+    // Every refusal the cache raises carries it, not the projection's alone.
+    const selector = await handlers.find({ skipSettle: true, selector: 'button' });
+    expect(selector.code).toBe('UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD');
+    expect(selector.error).toContain('(no live answer: SDK_DISCONNECTED: no tab');
+  });
+
   it('find without a projection still falls back to the cache', async () => {
     const { handlers } = deadTabRelay();
     const reply = await handlers.find({ skipSettle: true });
@@ -553,6 +564,78 @@ describe('the relay with its tab unreachable', () => {
       { id: 'save', attributes: ['lang'] },
       expect.objectContaining({ targetTabId: 'tab-x' })
     );
+  });
+});
+
+describe('the relay with a tab whose SDK predates the projection', () => {
+  /**
+   * A relay whose tab answers the way a UI Bridge SDK without the projection
+   * does: it runs `getElementState` and `find`, ignores `properties` /
+   * `attributes`, and answers with no `projection` anywhere.
+   */
+  function oldSdkRelay() {
+    const relay = new CommandRelay({
+      globalPrefix: `__uiBridgeProjectionOldSdk_${Math.random().toString(36).slice(2, 10)}`,
+    });
+    relays.push(relay);
+    const queue = vi.spyOn(relay, 'queueCommand').mockImplementation((async (action: string) => {
+      if (action === 'getElementState') {
+        return { id: 'save', visible: true, enabled: true, isVisible: true, text: 'Save' };
+      }
+      if (action === 'find') {
+        return {
+          elements: [{ id: 'save', type: 'button', label: 'save', state: { visible: true } }],
+          total: 1,
+          durationMs: 1,
+          timestamp: 0,
+        };
+      }
+      throw new Error(`Unknown command action: ${action}`);
+    }) as never);
+    return { queue, handlers: createRelayHandlers(relay) };
+  }
+
+  it('element state: a live answer without the projection asked for is refused, typed', async () => {
+    const { queue, handlers } = oldSdkRelay();
+    const reply = await handlers.getElementState('save', {
+      properties: 'hyphens',
+      attributes: 'lang',
+    });
+    // The tab was asked, and answered: this is its answer refused, not the cache's.
+    expect(queue).toHaveBeenCalledWith(
+      'getElementState',
+      { id: 'save', properties: ['hyphens'], attributes: ['lang'] },
+      undefined
+    );
+    expect(reply.success).toBe(false);
+    expect(reply.code).toBe('UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD');
+    expect(reply.error).toContain('`properties` / `attributes`');
+    expect(reply.error).toContain('predates the request-scoped projection');
+  });
+
+  it('element state pinned to a tab: the same answer is refused the same way', async () => {
+    const { handlers } = oldSdkRelay();
+    const reply = await handlers.getElementState('save', { tabId: 'tab-old', attributes: 'lang' });
+    expect(reply.success).toBe(false);
+    expect(reply.code).toBe('UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD');
+    expect(reply.error).toContain('predates the request-scoped projection');
+  });
+
+  it('find: live rows without the projection asked for are refused, typed — pinned or not', async () => {
+    const { handlers } = oldSdkRelay();
+    for (const routing of [{}, { tabId: 'tab-old' }]) {
+      const reply = await handlers.find({ skipSettle: true, properties: ['hyphens'], ...routing });
+      expect(reply.success, JSON.stringify(routing)).toBe(false);
+      expect(reply.code).toBe('UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD');
+      expect(reply.error).toContain('`properties`');
+      expect(reply.error).toContain('predates the request-scoped projection');
+    }
+  });
+
+  it('the same answers are the answer when no projection was asked for', async () => {
+    const { handlers } = oldSdkRelay();
+    expect((await handlers.getElementState('save', {})).success).toBe(true);
+    expect((await handlers.find({ skipSettle: true })).success).toBe(true);
   });
 });
 
