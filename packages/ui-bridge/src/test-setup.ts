@@ -130,139 +130,143 @@ type RelayTransport =
   | { door: 'sse'; relay: CommandRelay; opened: Error; closed: boolean }
   | { door: 'ws'; relay: CommandRelay; clientId: string; opened: Error; closed: boolean };
 
-const relayTransports: RelayTransport[] = [];
+// The records live on the prototype under a registry symbol, and the methods
+// are wrapped only when that slot is empty, so every evaluation of this module
+// against one `CommandRelay` class shares one set of records and one set of
+// wrappers. A second evaluation is not hypothetical: under vitest
+// `--no-isolate` the setup file runs again for every test file while the
+// `command-relay` module stays cached, and a test file that imports this
+// module (for `openRelaySubscriptions`) may get yet another evaluation. Each
+// reuses the records and wraps nothing, so `openRelaySubscriptions` reads the
+// records every evaluation's `afterAll` checks, and no method is wrapped twice.
+const GUARD_RECORDS = Symbol.for('ui-bridge.test-setup.relay-guard');
+const guardSlot = CommandRelay.prototype as unknown as Record<symbol, RelayTransport[] | undefined>;
+const installedRecords = guardSlot[GUARD_RECORDS];
+const relayTransports: RelayTransport[] = installedRecords ?? [];
+if (!installedRecords) {
+  guardSlot[GUARD_RECORDS] = relayTransports;
+  installRelayGuard();
+}
 
-// The guard wraps the prototype exactly once per `CommandRelay` class. If this
-// module were evaluated twice against one class (a setup-file instance and a
-// separately imported instance), each would keep its own `relayTransports`,
-// and `openRelaySubscriptions` below would read records the guard's own
-// `afterAll` never checks. The marker turns that into a setup-time throw.
-const GUARD_INSTALLED = Symbol.for('ui-bridge.test-setup.relay-guard');
-if ((CommandRelay.prototype as unknown as Record<symbol, unknown>)[GUARD_INSTALLED]) {
-  throw new Error(
-    'test-setup: the CommandRelay open-subscription guard is already installed on this ' +
-      'class, so test-setup.ts was evaluated twice and its records would be split.'
+/** Wrap the `CommandRelay` methods that open and close a transport, once per class. */
+function installRelayGuard(): void {
+  const relayPrototype = CommandRelay.prototype as unknown as Record<string, unknown>;
+
+  /** The prototype method `name`, or a setup-time throw that names it. */
+  function relayMethod<F extends (...args: never[]) => unknown>(name: string): F {
+    const method = relayPrototype[name];
+    if (typeof method !== 'function') {
+      throw new Error(
+        `test-setup: CommandRelay.prototype.${name} is not a function, so the ` +
+          'open-subscription guard cannot wrap it. Point the guard at the method that now does its job.'
+      );
+    }
+    return method as F;
+  }
+
+  const addCommandListener =
+    relayMethod<
+      (this: CommandRelay, ...args: unknown[]) => { streamId: string; unsubscribe: () => void }
+    >('addCommandListener');
+  const destroy = relayMethod<(this: CommandRelay) => void>('destroy');
+  const registerWebSocketClient =
+    relayMethod<(this: CommandRelay, client: WebSocketClient) => void>('registerWebSocketClient');
+  const unregisterWebSocketClient = relayMethod<(this: CommandRelay, clientId: string) => void>(
+    'unregisterWebSocketClient'
   );
-}
-(CommandRelay.prototype as unknown as Record<symbol, unknown>)[GUARD_INSTALLED] = true;
 
-const relayPrototype = CommandRelay.prototype as unknown as Record<string, unknown>;
-
-/** The prototype method `name`, or a setup-time throw that names it. */
-function relayMethod<F extends (...args: never[]) => unknown>(name: string): F {
-  const method = relayPrototype[name];
-  if (typeof method !== 'function') {
-    throw new Error(
-      `test-setup: CommandRelay.prototype.${name} is not a function, so the ` +
-        'open-subscription guard cannot wrap it. Point the guard at the method that now does its job.'
-    );
-  }
-  return method as F;
-}
-
-const addCommandListener =
-  relayMethod<
-    (this: CommandRelay, ...args: unknown[]) => { streamId: string; unsubscribe: () => void }
-  >('addCommandListener');
-const destroy = relayMethod<(this: CommandRelay) => void>('destroy');
-const registerWebSocketClient =
-  relayMethod<(this: CommandRelay, client: WebSocketClient) => void>('registerWebSocketClient');
-const unregisterWebSocketClient = relayMethod<(this: CommandRelay, clientId: string) => void>(
-  'unregisterWebSocketClient'
-);
-
-/** Where a transport is being opened. Deep enough to reach the test frames below a helper. */
-function openedHere(): Error {
-  const limit = Error.stackTraceLimit;
-  Error.stackTraceLimit = 50;
-  try {
-    return new Error('opened here');
-  } finally {
-    Error.stackTraceLimit = limit;
-  }
-}
-
-/** Whether `relay` sends a WebSocket client its warm-up snapshot. */
-function sendsProactiveSnapshot(relay: CommandRelay): boolean {
-  const value = (relay as unknown as { proactiveSnapshot?: unknown }).proactiveSnapshot;
-  if (typeof value !== 'boolean') {
-    throw new Error(
-      'test-setup: CommandRelay#proactiveSnapshot is not a boolean, so the open-subscription ' +
-        'guard cannot tell whether a WebSocket client arms a snapshot timer.'
-    );
-  }
-  return value;
-}
-
-relayPrototype.addCommandListener = function (this: CommandRelay, ...args: unknown[]) {
-  const stream = addCommandListener.apply(this, args);
-  const transport: RelayTransport = {
-    door: 'sse',
-    relay: this,
-    opened: openedHere(),
-    closed: false,
-  };
-  relayTransports.push(transport);
-  return {
-    ...stream,
-    unsubscribe: () => {
-      transport.closed = true;
-      stream.unsubscribe();
-    },
-  };
-};
-
-/** The `globalPrefix` whose shared state `relay` reads and `destroy()` tears down. */
-function relayPrefix(relay: CommandRelay): string {
-  const prefix = (relay as unknown as { prefix?: unknown }).prefix;
-  if (typeof prefix !== 'string') {
-    throw new Error(
-      'test-setup: CommandRelay#prefix is not a string, so the open-subscription guard ' +
-        'cannot tell which relays a destroy() tears down.'
-    );
-  }
-  return prefix;
-}
-
-relayPrototype.destroy = function (this: CommandRelay) {
-  // Every subscription open now, through either door, on ANY relay sharing
-  // this one's prefix: the transports live in prefix-shared state, so
-  // `destroy()` tears all of them down. One opened after `destroy()` is live.
-  const prefix = relayPrefix(this);
-  for (const transport of relayTransports) {
-    if (relayPrefix(transport.relay) === prefix) transport.closed = true;
-  }
-  destroy.call(this);
-};
-
-relayPrototype.registerWebSocketClient = function (this: CommandRelay, client: WebSocketClient) {
-  registerWebSocketClient.call(this, client);
-  if (sendsProactiveSnapshot(this)) {
-    relayTransports.push({
-      door: 'ws',
-      relay: this,
-      clientId: client.clientId,
-      opened: openedHere(),
-      closed: false,
-    });
-  }
-};
-
-relayPrototype.unregisterWebSocketClient = function (this: CommandRelay, clientId: string) {
-  for (const transport of relayTransports) {
-    if (transport.door === 'ws' && transport.relay === this && transport.clientId === clientId) {
-      transport.closed = true;
+  /** Where a transport is being opened. Deep enough to reach the test frames below a helper. */
+  function openedHere(): Error {
+    const limit = Error.stackTraceLimit;
+    Error.stackTraceLimit = 50;
+    try {
+      return new Error('opened here');
+    } finally {
+      Error.stackTraceLimit = limit;
     }
   }
-  unregisterWebSocketClient.call(this, clientId);
-};
+
+  /** Whether `relay` sends a WebSocket client its warm-up snapshot. */
+  function sendsProactiveSnapshot(relay: CommandRelay): boolean {
+    const value = (relay as unknown as { proactiveSnapshot?: unknown }).proactiveSnapshot;
+    if (typeof value !== 'boolean') {
+      throw new Error(
+        'test-setup: CommandRelay#proactiveSnapshot is not a boolean, so the open-subscription ' +
+          'guard cannot tell whether a WebSocket client arms a snapshot timer.'
+      );
+    }
+    return value;
+  }
+
+  relayPrototype.addCommandListener = function (this: CommandRelay, ...args: unknown[]) {
+    const stream = addCommandListener.apply(this, args);
+    const transport: RelayTransport = {
+      door: 'sse',
+      relay: this,
+      opened: openedHere(),
+      closed: false,
+    };
+    relayTransports.push(transport);
+    return {
+      ...stream,
+      unsubscribe: () => {
+        transport.closed = true;
+        stream.unsubscribe();
+      },
+    };
+  };
+
+  /** The `globalPrefix` whose shared state `relay` reads and `destroy()` tears down. */
+  function relayPrefix(relay: CommandRelay): string {
+    const prefix = (relay as unknown as { prefix?: unknown }).prefix;
+    if (typeof prefix !== 'string') {
+      throw new Error(
+        'test-setup: CommandRelay#prefix is not a string, so the open-subscription guard ' +
+          'cannot tell which relays a destroy() tears down.'
+      );
+    }
+    return prefix;
+  }
+
+  relayPrototype.destroy = function (this: CommandRelay) {
+    // Every subscription open now, through either door, on ANY relay sharing
+    // this one's prefix: the transports live in prefix-shared state, so
+    // `destroy()` tears all of them down. One opened after `destroy()` is live.
+    const prefix = relayPrefix(this);
+    for (const transport of relayTransports) {
+      if (relayPrefix(transport.relay) === prefix) transport.closed = true;
+    }
+    destroy.call(this);
+  };
+
+  relayPrototype.registerWebSocketClient = function (this: CommandRelay, client: WebSocketClient) {
+    registerWebSocketClient.call(this, client);
+    if (sendsProactiveSnapshot(this)) {
+      relayTransports.push({
+        door: 'ws',
+        relay: this,
+        clientId: client.clientId,
+        opened: openedHere(),
+        closed: false,
+      });
+    }
+  };
+
+  relayPrototype.unregisterWebSocketClient = function (this: CommandRelay, clientId: string) {
+    for (const transport of relayTransports) {
+      if (transport.door === 'ws' && transport.relay === this && transport.clientId === clientId) {
+        transport.closed = true;
+      }
+    }
+    unregisterWebSocketClient.call(this, clientId);
+  };
+}
 
 /**
  * The subscriptions recorded on `relay` that the guard would flag now. Read by
- * the guard's own tests (`server/command-relay.destroy.test.ts`). They import
- * this module; that the import is the same evaluation the setup file ran, and
- * so reads the records the guard's `afterAll` checks, is enforced by the
- * install-once marker above rather than assumed.
+ * the guard's own tests (`server/command-relay.destroy.test.ts`), which import
+ * this module. Whichever evaluation of it they get, they read the records kept
+ * on the prototype, which are the ones the guard's `afterAll` checks.
  */
 export function openRelaySubscriptions(
   relay: CommandRelay
