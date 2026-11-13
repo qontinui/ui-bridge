@@ -532,6 +532,15 @@ export interface UIBridgeServerHandlers {
    * {@link ElementStateResponse}. The query comes AFTER the context, which
    * held the second slot first: an `(id, context)` caller keeps its per-user
    * scoping (`RouteDefinition.queryAfterContext`).
+   *
+   * 0.47.0 shipped this as `(id, query?, context?)`. A JavaScript caller
+   * written against 0.47.0 that passes its query second now has the two read
+   * the other way round, and nothing fails: the projection it asked for is
+   * not read, the query's `tabId` no longer pins the tab, and its
+   * `callerUserId` no longer scopes the call, which a relay then dispatches
+   * as a trusted caller's (§4.2). Swap the two arguments. A TypeScript caller
+   * gets a compile error instead: the two types share no key
+   * (`server/element-state-argument-order.test-d.ts`).
    */
   getElementState: (
     id: string,
