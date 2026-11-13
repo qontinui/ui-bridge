@@ -53,8 +53,13 @@ export type ReversibilityKind = 'idempotent' | 'reversible' | 'one-way';
  * - `causal`        — the change was caused by this action.
  * - `observational` — the change happened concurrently (not caused by us).
  * - `mixed`         — both causal and concurrent changes occurred in the window.
+ * - `unknown`       — attribution could not be established: the action's
+ *                     window expired (it outlived its un-anchored bound)
+ *                     before its settle began, so concurrent observations
+ *                     after the expiry were not attributed. Never reported as
+ *                     a clean `causal`.
  */
-export type EffectCause = 'causal' | 'observational' | 'mixed';
+export type EffectCause = 'causal' | 'observational' | 'mixed' | 'unknown';
 
 // ---------------------------------------------------------------------------
 // Predicted delta — what a signature predicts will change

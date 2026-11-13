@@ -347,7 +347,71 @@ describe('Phase 5 — component-action effect verification', () => {
 
     expect(res.success).toBe(false);
     expect(res.error).toContain('boom');
-    expect(getGlobalActionWindowRegistry().hadConcurrentObservation('req-throw')).toBe(false);
+    expect(getGlobalActionWindowRegistry().hadConcurrentObservationForRequest('req-throw')).toBe(false);
+  });
+
+  /**
+   * A long component action on a pinned clock: the handler takes `actionMs`
+   * and, when `observeLate`, one concurrent observation lands 1 ms before it
+   * returns. The default un-anchored bound is 30 s, so a 60 s action outlives
+   * it unless its own timeout sizes the window.
+   */
+  async function runLongComponentAction(opts: {
+    actionMs: number;
+    timeoutMs?: number;
+    observeLate: boolean;
+  }) {
+    let clock = 100_000;
+    const executor = new DefaultActionExecutor(registry, undefined, {
+      effectTiming: {
+        now: () => clock,
+        settle: async (ms) => {
+          clock += ms;
+        },
+      },
+    });
+    registry.registerComponent('drawer', {
+      name: 'Drawer',
+      actions: [
+        {
+          id: 'open',
+          signature: appearSignature('panel-long'),
+          handler: () => {
+            clock += opts.actionMs;
+            if (opts.observeLate) {
+              getGlobalActionWindowRegistry().recordConcurrentObservation(clock - 1);
+            }
+            return reveal('panel-long')();
+          },
+        },
+      ],
+    });
+    return executor.executeComponentAction('drawer', {
+      action: 'open',
+      requestId: 'req-long',
+      ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+    });
+  }
+
+  it("a 60 s action with timeoutMs 120 s keeps its window past 30 s: a late observation reads 'mixed'", async () => {
+    const res = await runLongComponentAction({
+      actionMs: 60_000,
+      timeoutMs: 120_000,
+      observeLate: true,
+    });
+
+    expect(res.success).toBe(true);
+    expect(res.effectVerification?.cause).toBe('mixed');
+    expect(res.effectVerification?.outcome).toBe('Surprise');
+  });
+
+  it("a window that expired un-anchored does not yield a clean 'causal'", async () => {
+    // No timeout of its own → the default 30 s bound; the action runs 60 s.
+    const res = await runLongComponentAction({ actionMs: 60_000, observeLate: false });
+
+    expect(res.success).toBe(true);
+    expect(res.effectVerification?.cause).toBe('unknown');
+    expect(res.effectVerification?.cause).not.toBe('causal');
   });
 });
 

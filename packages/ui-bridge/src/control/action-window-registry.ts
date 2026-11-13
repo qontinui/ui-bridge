@@ -14,20 +14,25 @@
  * significant change — flagging every currently-open window. The verifier then
  * reads {@link ActionWindowRegistry.hadConcurrentObservation} to decide whether
  * the cause is `'causal'` (clean) or `'mixed'` (concurrent background activity
- * muddied the window).
+ * muddied the window) — or `'unknown'`, when the window expired un-anchored
+ * and later observations could not be attributed at all.
  *
  * Pure bookkeeping: no DOM access, no timers. Fully unit-testable.
  */
 
+declare const actionWindowHandleBrand: unique symbol;
+
 /**
  * Opaque handle for one opened window, returned by {@link
- * ActionWindowRegistry.begin} / {@link ActionWindowRegistry.beginAction} and
- * passed back to {@link ActionWindowRegistry.anchorSettle}, {@link
- * ActionWindowRegistry.end} and {@link
- * ActionWindowRegistry.hadConcurrentObservation}. Unique per registry, so two
- * overlapping actions that share a client requestId keep separate windows.
+ * ActionWindowRegistry.beginAction} and passed back to {@link
+ * ActionWindowRegistry.anchorSettle}, {@link ActionWindowRegistry.end} and
+ * {@link ActionWindowRegistry.hadConcurrentObservation}. Unique per registry,
+ * so two overlapping actions that share a client requestId keep separate
+ * windows. Branded so it cannot be confused with (or forged from) a plain
+ * number or a request id; a request-id lookup is a separate method, {@link
+ * ActionWindowRegistry.hadConcurrentObservationForRequest}.
  */
-export type ActionWindowHandle = number;
+export type ActionWindowHandle = number & { readonly [actionWindowHandleBrand]: true };
 
 /**
  * A single in-flight action settle window.
@@ -42,8 +47,7 @@ export interface ActionWindow {
   /** Window open time, ms (epoch). */
   startMs: number;
   /**
-   * Window close time, ms (epoch). `startMs + settleMs` for a window opened
-   * with {@link ActionWindowRegistry.begin}. A window opened with {@link
+   * Window close time, ms (epoch). A window opened with {@link
    * ActionWindowRegistry.beginAction} has no end yet (`Infinity`) until
    * {@link ActionWindowRegistry.anchorSettle} sets it to
    * `settleStart + settleMs`.
@@ -53,8 +57,7 @@ export interface ActionWindow {
    * Latest time an UN-anchored window may still match, ms (epoch):
    * `startMs + maxOpenMs`. Past it the window is treated as closed and pruned,
    * so an action that never returns cannot hold a window open forever.
-   * `Infinity` once the window has a real end (anchored, or opened by
-   * {@link ActionWindowRegistry.begin}).
+   * `Infinity` once the window is anchored.
    */
   unanchoredDeadlineMs: number;
   /** Set true the first time a concurrent observation lands inside this window. */
@@ -65,14 +68,36 @@ export interface ActionWindow {
 const RECENTLY_ENDED_CAP = 50;
 
 /**
- * Longest an un-anchored window (opened by {@link
+ * Floor (and, for an action with no timeout of its own, the whole bound) on
+ * how long an un-anchored window (opened by {@link
  * ActionWindowRegistry.beginAction}, settle not yet started) may stay open.
- * The element-path action has no timeout of its own, so an action that never
- * resolves would otherwise leave an `endMs = Infinity` window behind for the
- * life of the process, and every later background capture would be labelled
- * `'concurrent'`. Past this bound the window is treated as closed and pruned.
+ * An action that never resolves would otherwise leave an `endMs = Infinity`
+ * window behind for the life of the process, and every later background
+ * capture would be labelled `'concurrent'`. Past the bound the window is
+ * treated as closed and pruned. An action with a known timeout gets a longer
+ * bound — see {@link unanchoredBoundForTimeout}.
  */
 export const MAX_UNANCHORED_WINDOW_MS = 30_000;
+
+/**
+ * Slack added to an action's own timeout when sizing its un-anchored bound:
+ * the action is abandoned at its timeout, and the verifier anchors the settle
+ * only after the abandoned call returns, so the window must outlive the
+ * timeout by the time that takes.
+ */
+export const UNANCHORED_WINDOW_TIMEOUT_MARGIN_MS = 5_000;
+
+/**
+ * The un-anchored bound for an action whose timeout is `timeoutMs` (ms), or
+ * has none (`undefined`): `max(timeoutMs + margin, MAX_UNANCHORED_WINDOW_MS)`.
+ * A legitimately long action (component actions accept timeouts up to 24 h)
+ * must keep its window for as long as it may run, or its later observations
+ * would be dropped and the cause would silently read `'causal'`.
+ */
+export function unanchoredBoundForTimeout(timeoutMs: number | undefined): number {
+  if (timeoutMs === undefined) return MAX_UNANCHORED_WINDOW_MS;
+  return Math.max(timeoutMs + UNANCHORED_WINDOW_TIMEOUT_MARGIN_MS, MAX_UNANCHORED_WINDOW_MS);
+}
 
 interface EndedWindow {
   requestId: string;
@@ -89,15 +114,7 @@ export class ActionWindowRegistry {
    * so eviction is a cheap shift of the first key.
    */
   private readonly recentlyEnded = new Map<ActionWindowHandle, EndedWindow>();
-  private nextHandle: ActionWindowHandle = 1;
-
-  /**
-   * Open a settle window for an action. `endMs = nowMs + settleMs`.
-   * Returns the window's handle; a duplicate requestId opens a second window.
-   */
-  begin(requestId: string, action: string, nowMs: number, settleMs: number): ActionWindowHandle {
-    return this.insert(requestId, action, nowMs, nowMs + settleMs, Number.POSITIVE_INFINITY);
-  }
+  private nextHandle = 1;
 
   /**
    * Open a window for an action that is about to run and whose settle has not
@@ -109,19 +126,30 @@ export class ActionWindowRegistry {
    * dropped (finding 736a7c2c).
    *
    * Un-anchored, the window is bounded by `maxOpenMs` (default {@link
-   * MAX_UNANCHORED_WINDOW_MS}): past `nowMs + maxOpenMs` it no longer matches
-   * and is pruned, so an action that never returns cannot leak it. Returns the
-   * window's handle; a duplicate requestId opens a second window rather than
-   * overwriting the first.
+   * MAX_UNANCHORED_WINDOW_MS}; size it from the action's own timeout with
+   * {@link unanchoredBoundForTimeout}): past `nowMs + maxOpenMs` it no longer
+   * matches and is pruned, so an action that never returns cannot leak it.
+   * Returns the window's handle; a duplicate requestId opens a second window
+   * rather than overwriting the first.
    */
   beginAction(
     requestId: string,
     action: string,
     nowMs: number,
-    maxOpenMs: number = MAX_UNANCHORED_WINDOW_MS,
+    maxOpenMs: number = MAX_UNANCHORED_WINDOW_MS
   ): ActionWindowHandle {
     this.pruneExpired(nowMs);
-    return this.insert(requestId, action, nowMs, Number.POSITIVE_INFINITY, nowMs + maxOpenMs);
+    const handle = this.nextHandle++ as ActionWindowHandle;
+    this.open.set(handle, {
+      handle,
+      requestId,
+      action,
+      startMs: nowMs,
+      endMs: Number.POSITIVE_INFINITY,
+      unanchoredDeadlineMs: nowMs + maxOpenMs,
+      sawConcurrentObservation: false,
+    });
+    return handle;
   }
 
   /**
@@ -129,14 +157,24 @@ export class ActionWindowRegistry {
    * settleMs`. Called when the verifier starts the settle it actually awaits,
    * so the window covers `[action start, settle start + settleMs]`. The start
    * never moves and the settle duration is the one awaited, so this does not
-   * widen the settle. Anchoring lifts the un-anchored bound. No-op for an
-   * unknown (or already pruned) handle.
+   * widen the settle. Anchoring lifts the un-anchored bound.
+   *
+   * Returns `true` when the window was anchored, `false` when it was not: the
+   * window had already passed its un-anchored bound by `settleStartMs` (it is
+   * closed here if it was not pruned yet) or the handle is unknown. `false`
+   * means observations after the bound were NOT attributed to this action, so
+   * the caller must not report the cause as a clean `'causal'`.
    */
-  anchorSettle(handle: ActionWindowHandle, settleStartMs: number, settleMs: number): void {
+  anchorSettle(handle: ActionWindowHandle, settleStartMs: number, settleMs: number): boolean {
     const window = this.open.get(handle);
-    if (!window) return;
+    if (!window) return false;
+    if (settleStartMs > window.unanchoredDeadlineMs) {
+      this.close(window);
+      return false;
+    }
     window.endMs = settleStartMs + settleMs;
     window.unanchoredDeadlineMs = Number.POSITIVE_INFINITY;
+    return true;
   }
 
   /**
@@ -161,8 +199,8 @@ export class ActionWindowRegistry {
   }
 
   /**
-   * Called by the BackgroundObserver when it detects a significant change.
-   * Flags every currently-open window whose interval contains `atMs` as having
+   * Flag every currently-open window whose interval contains `atMs` as having
+   * seen a concurrent observation. Called by the BackgroundObserver on each
    * concurrent background activity.
    */
   recordConcurrentObservation(atMs: number): void {
@@ -175,50 +213,33 @@ export class ActionWindowRegistry {
   }
 
   /**
-   * Did the (possibly already-ended) window see a concurrent observation?
-   *
-   * - A handle reads exactly that window: open, else the bounded
-   *   recently-ended map.
-   * - A requestId string is a convenience lookup: the newest open window with
-   *   that requestId, else the newest recently-ended one.
-   *
-   * Returns `false` for a fully-unknown key.
+   * Did exactly this (possibly already-ended) window see a concurrent
+   * observation? Reads the open window, else the bounded recently-ended map.
+   * Returns `false` for an unknown handle.
    */
-  hadConcurrentObservation(key: ActionWindowHandle | string): boolean {
-    if (typeof key === 'number') {
-      const open = this.open.get(key);
-      if (open) return open.sawConcurrentObservation;
-      return this.recentlyEnded.get(key)?.saw ?? false;
-    }
-    const openMatch = newest([...this.open.values()].filter((w) => w.requestId === key));
+  hadConcurrentObservation(handle: ActionWindowHandle): boolean {
+    const open = this.open.get(handle);
+    if (open) return open.sawConcurrentObservation;
+    return this.recentlyEnded.get(handle)?.saw ?? false;
+  }
+
+  /**
+   * Convenience lookup by request id: the newest open window with that
+   * requestId, else the newest recently-ended one. Returns `false` for an
+   * unknown requestId.
+   */
+  hadConcurrentObservationForRequest(requestId: string): boolean {
+    const openMatch = newest([...this.open.values()].filter((w) => w.requestId === requestId));
     if (openMatch) return openMatch.sawConcurrentObservation;
-    const endedMatch = newest([...this.recentlyEnded.values()].filter((w) => w.requestId === key));
+    const endedMatch = newest(
+      [...this.recentlyEnded.values()].filter((w) => w.requestId === requestId)
+    );
     return endedMatch?.saw ?? false;
   }
 
   /** Number of currently-open windows (test/diagnostic aid). */
   get openCount(): number {
     return this.open.size;
-  }
-
-  private insert(
-    requestId: string,
-    action: string,
-    startMs: number,
-    endMs: number,
-    unanchoredDeadlineMs: number,
-  ): ActionWindowHandle {
-    const handle = this.nextHandle++;
-    this.open.set(handle, {
-      handle,
-      requestId,
-      action,
-      startMs,
-      endMs,
-      unanchoredDeadlineMs,
-      sawConcurrentObservation: false,
-    });
-    return handle;
   }
 
   /** Close every un-anchored window whose bound has passed by `atMs`. */

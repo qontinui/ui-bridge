@@ -1187,6 +1187,8 @@ export class DefaultActionExecutor implements ActionExecutor {
        * and a real `sleep`). A seam so a test can drive a slow action through
        * `executeAction` on a pinned clock; the snapshot capture stays the
        * executor's own.
+       *
+       * @internal Test seam only — not part of the public API.
        */
       effectTiming?: Pick<EffectVerifierDeps, 'now' | 'settle'>;
     }
@@ -2380,7 +2382,9 @@ export class DefaultActionExecutor implements ActionExecutor {
           effectParams,
           signature,
           runHandler,
-          otherArm ? { alsoPredict: otherArm } : undefined
+          // The action's own timeout sizes the window's un-anchored bound, so a
+          // legitimately long action keeps its window for as long as it runs.
+          { alsoPredict: otherArm, timeoutMs }
         );
         outcome = verified.result;
         effectVerification = verified.verification;

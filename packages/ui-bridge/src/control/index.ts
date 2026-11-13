@@ -185,6 +185,8 @@ export {
   setGlobalActionWindowRegistry,
   resetGlobalActionWindowRegistry,
   MAX_UNANCHORED_WINDOW_MS,
+  UNANCHORED_WINDOW_TIMEOUT_MARGIN_MS,
+  unanchoredBoundForTimeout,
 } from './action-window-registry';
 export type { ActionWindow, ActionWindowHandle } from './action-window-registry';
 export {
