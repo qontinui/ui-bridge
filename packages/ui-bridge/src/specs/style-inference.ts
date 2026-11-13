@@ -126,6 +126,7 @@ export interface StyleInventoryOptions {
 // ============================================================================
 
 const LENGTH = /^([-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?)(px|rem|em|%)?$/i;
+const BARE_NUMBER = /^[-+]?(?:\d+\.?\d*|\.\d+)$/;
 
 /** Round to 0.01 and render without trailing zeros: `13.333` → `13.33`. */
 function round(n: number, places = 2): number {
@@ -143,7 +144,7 @@ export function formatPx(n: number): string {
  * (React Native's unit, and CSS's `0`). `em` and `%` are not px — `null`.
  */
 export function lengthToPx(value: string, rootFontSizePx = 16): number | null {
-  const m = LENGTH.exec(value.trim());
+  const m = LENGTH.exec(String(value).trim());
   if (!m) return null;
   const n = parseFloat(m[1]);
   const unit = (m[2] ?? '').toLowerCase();
@@ -156,7 +157,7 @@ export function lengthToPx(value: string, rootFontSizePx = 16): number | null {
 export function canonicalLength(value: string, rootFontSizePx = 16): string | null {
   const px = lengthToPx(value, rootFontSizePx);
   if (px !== null) return formatPx(px);
-  const m = LENGTH.exec(value.trim());
+  const m = LENGTH.exec(String(value).trim());
   if (m && m[2] === '%') return `${round(parseFloat(m[1]))}%`;
   return null;
 }
@@ -210,45 +211,93 @@ export function normalizeFontWeight(value: string): string | null {
 }
 
 /**
+ * A shadow length in px. Unlike `lengthToPx`, a bare number is a length only
+ * when it is `0` (CSS's one unitless length): anything else unitless — an RN
+ * opacity left in a comment, a stray ratio — is not an offset, blur or spread.
+ */
+function shadowLengthPx(token: string, rootFontSizePx: number): number | null {
+  if (BARE_NUMBER.test(token) && parseFloat(token) !== 0) return null;
+  return lengthToPx(token, rootFontSizePx);
+}
+
+/** A shadow layer's parts. */
+interface ShadowLayer {
+  inset: boolean;
+  /** Offsets, blur and spread in px, in source order. */
+  lengths: number[];
+  /** The canonical colour, when one was read. */
+  color: string | null;
+  /** The raw colour token, when one was read. */
+  rawColor: string | null;
+  /** Tokens this could not read, lowercased. */
+  other: string[];
+}
+
+/** Strip CSS comments: `0 2px 4px #000 /* opacity: 0.25 *\/` is a three-length layer. */
+function stripComments(value: string): string {
+  return value.replace(/\/\*[\s\S]*?\*\//g, ' ');
+}
+
+function parseShadowLayer(layer: string, rootFontSizePx: number): ShadowLayer {
+  const out: ShadowLayer = { inset: false, lengths: [], color: null, rawColor: null, other: [] };
+  for (const token of topLevelSplit(layer, ' ')) {
+    const t = token.toLowerCase();
+    const px = t === 'inset' ? null : shadowLengthPx(t, rootFontSizePx);
+    if (t === 'inset') out.inset = true;
+    else if (px !== null) out.lengths.push(px);
+    else if (canonicalColor(t) !== null) {
+      out.color = canonicalColor(t);
+      out.rawColor = token;
+    } else out.other.push(t);
+  }
+  return out;
+}
+
+/**
+ * True when a layer draws nothing: its colour is fully transparent (Tailwind's
+ * `rgba(0,0,0,0) 0 0 0 0` placeholders), or its offsets, blur and spread are all
+ * zero (Tailwind's `0 0 0 0px #fff` ring offset) — inset or not, such a layer
+ * paints no pixel.
+ */
+function isInvisibleLayer(parsed: ShadowLayer): boolean {
+  if (parsed.color !== null && isTransparent(parsed.color)) return true;
+  return (
+    parsed.other.length === 0 && parsed.lengths.length >= 2 && parsed.lengths.every((n) => n === 0)
+  );
+}
+
+/**
  * One shadow layer in a fixed order — `[inset] x y blur spread colour` — with
  * lengths in px, a missing blur/spread as `0px` and the colour canonicalised.
  * Chrome serialises the colour first, authors usually write it last; without a
  * fixed order a declared shadow could never equal a computed one. A token this
  * cannot read is kept, lowercased, at the end.
  */
-function canonicalShadowLayer(layer: string): string {
-  let inset = false;
-  let color: string | null = null;
-  const lengths: string[] = [];
-  const other: string[] = [];
-  for (const token of topLevelSplit(layer, ' ')) {
-    const t = token.toLowerCase();
-    if (t === 'inset') inset = true;
-    else if (lengthToPx(t) !== null) lengths.push(formatPx(lengthToPx(t)!));
-    else if (canonicalColor(t) !== null) color = canonicalColor(t);
-    else other.push(t);
-  }
+function canonicalShadowLayer(parsed: ShadowLayer): string {
+  const lengths = parsed.lengths.map(formatPx);
   while (lengths.length < 4 && lengths.length >= 2) lengths.push('0px');
-  return [inset ? 'inset' : '', ...lengths, color ?? '', ...other].filter(Boolean).join(' ');
+  return [parsed.inset ? 'inset' : '', ...lengths, parsed.color ?? '', ...parsed.other]
+    .filter(Boolean)
+    .join(' ');
 }
 
-/** True when a shadow layer's colour is fully transparent (an invisible placeholder layer). */
-function isTransparentLayer(layer: string): boolean {
-  return topLevelSplit(layer, ' ').some((token) => {
-    const c = canonicalColor(token);
-    return c !== null && isTransparent(c);
-  });
+/** The visible layers of a shadow list, comments stripped. */
+function visibleShadowLayers(value: string, rootFontSizePx: number): ShadowLayer[] {
+  return topLevelSplit(stripComments(String(value)), ',')
+    .map((layer) => parseShadowLayer(layer, rootFontSizePx))
+    .filter((layer) => !isInvisibleLayer(layer));
 }
 
 /**
  * A shadow list with each layer in canonical order (`canonicalShadowLayer`),
- * layers joined by `, `. Fully transparent layers — Tailwind's `rgba(0,0,0,0) 0 0 0 0`
- * placeholders — are dropped; an all-transparent list normalises to `none`.
+ * layers joined by `, `. Comments are stripped and invisible layers
+ * (`isInvisibleLayer`) dropped; a list with no visible layer normalises to
+ * `none`. `rem` lengths resolve against `rootFontSizePx`.
  */
-export function normalizeShadow(value: string): string {
-  const layers = topLevelSplit(value, ',').filter((layer) => !isTransparentLayer(layer));
+export function normalizeShadow(value: string, rootFontSizePx = 16): string {
+  const layers = visibleShadowLayers(value, rootFontSizePx);
   if (layers.length === 0) return 'none';
-  return layers.map((layer) => canonicalShadowLayer(layer)).join(', ');
+  return layers.map(canonicalShadowLayer).join(', ');
 }
 
 /** A unitless number rendered at 3 decimals (`1.5`, `1.333`). */
@@ -270,7 +319,10 @@ const BORDER_STYLES = new Set([
 ]);
 
 /** A border/outline shorthand split into width, style and colour (any order). */
-function parseBorderShorthand(value: string): {
+function parseBorderShorthand(
+  value: string,
+  rootFontSizePx: number
+): {
   width: number | null;
   style: string | null;
   color: string | null;
@@ -283,7 +335,7 @@ function parseBorderShorthand(value: string): {
   for (const token of topLevelSplit(value.trim(), ' ')) {
     const t = token.toLowerCase();
     if (BORDER_STYLES.has(t)) style = t;
-    else if (lengthToPx(t) !== null) width = lengthToPx(t);
+    else if (lengthToPx(t, rootFontSizePx) !== null) width = lengthToPx(t, rootFontSizePx);
     else if (t === 'thin') width = 1;
     else if (t === 'medium') width = 3;
     else if (t === 'thick') width = 5;
@@ -301,15 +353,10 @@ function canonicalBorder(width: number, style: string, color: string): string {
 }
 
 /** The raw colour tokens of a shadow layer list's visible layers. */
-function shadowColors(value: string): string[] {
-  const out: string[] = [];
-  for (const layer of topLevelSplit(value, ',')) {
-    if (isTransparentLayer(layer)) continue;
-    for (const token of topLevelSplit(layer, ' ')) {
-      if (canonicalColor(token)) out.push(token);
-    }
-  }
-  return out;
+function shadowColors(value: string, rootFontSizePx: number): string[] {
+  return visibleShadowLayers(value, rootFontSizePx)
+    .map((layer) => layer.rawColor)
+    .filter((c): c is string => c !== null);
 }
 
 /** The alpha byte of a canonical hex colour (`ff` when it has none). */
@@ -418,8 +465,8 @@ function indexCustomPropertyValues(
       const em = /^([-+]?(?:\d+\.?\d*|\.\d+))em$/i.exec(v);
       if (em) put(`e:${ratioString(parseFloat(em[1]))}em`, name);
       put(`f:${normalizeFontFamily(v)}`, name);
-      put(`s:${normalizeShadow(v)}`, name);
-      const border = parseBorderShorthand(v);
+      put(`s:${normalizeShadow(v, rootFontSizePx)}`, name);
+      const border = parseBorderShorthand(v, rootFontSizePx);
       if (border.width && border.style) {
         put(
           `b:${canonicalBorder(border.width, border.style, border.color ?? border.rawColor ?? '')}`,
@@ -484,6 +531,54 @@ function sides(styles: Partial<Record<string, string>>, prop: 'margin' | 'paddin
   }
 }
 
+/** The category a style property feeds; a property no category reads is absent. */
+const PROPERTY_CATEGORY: Readonly<Record<string, StyleCategory>> = {
+  color: 'colors',
+  backgroundColor: 'colors',
+  outline: 'colors',
+  border: 'borders',
+  boxShadow: 'shadows',
+  fontFamily: 'fontFamilies',
+  fontWeight: 'fontWeights',
+  fontSize: 'fontSizes',
+  lineHeight: 'lineHeights',
+  letterSpacing: 'letterSpacings',
+  margin: 'spacing',
+  marginTop: 'spacing',
+  marginRight: 'spacing',
+  marginBottom: 'spacing',
+  marginLeft: 'spacing',
+  padding: 'spacing',
+  paddingTop: 'spacing',
+  paddingRight: 'spacing',
+  paddingBottom: 'spacing',
+  paddingLeft: 'spacing',
+  gap: 'spacing',
+  borderRadius: 'borderRadius',
+};
+
+/**
+ * A sample's styles with every non-string value removed. The type says
+ * strings, but a host may hand over anything — React Native carries numeric
+ * font weights and `PlatformColor` / `DynamicColorIOS` objects. Such a value is
+ * skipped and counted as unnormalised in its category rather than allowed to
+ * throw and fail the whole request.
+ */
+function stringStyles(
+  styles: Partial<Record<string, unknown>> | null | undefined,
+  unnormalized: Record<StyleCategory, number>
+): Partial<Record<string, string>> {
+  const out: Partial<Record<string, string>> = {};
+  for (const [property, value] of Object.entries(styles ?? {})) {
+    if (typeof value === 'string') out[property] = value;
+    else if (value !== undefined && value !== null) {
+      const category = PROPERTY_CATEGORY[property];
+      if (category) unnormalized[category]++;
+    }
+  }
+  return out;
+}
+
 /**
  * Aggregate samples into the ranked, uncapped inventory.
  */
@@ -510,7 +605,7 @@ export function buildStyleInventory(
 
   for (const sample of samples) {
     addCustom(sample.customProperties);
-    const s = sample.styles;
+    const s = stringStyles(sample.styles, unnormalized);
     const id = sample.elementId;
 
     const add = (
@@ -567,7 +662,7 @@ export function buildStyleInventory(
     // Borders (and their colours). A non-uniform border computes to an empty
     // shorthand; that case is invisible here and is not invented.
     if (s.border !== undefined && s.border.trim() !== '') {
-      const b = parseBorderShorthand(s.border);
+      const b = parseBorderShorthand(s.border, rootFontSizePx);
       if (
         b.width === null ||
         b.width === 0 ||
@@ -594,7 +689,7 @@ export function buildStyleInventory(
 
     // Outline colour only (an outline is rarely a design token of its own).
     if (s.outline !== undefined && s.outline.trim() !== '') {
-      const o = parseBorderShorthand(s.outline);
+      const o = parseBorderShorthand(s.outline, rootFontSizePx);
       if (o.width && o.style && o.style !== 'none' && o.style !== 'hidden' && o.rawColor) {
         addColor(o.rawColor, 'outline');
       }
@@ -602,12 +697,12 @@ export function buildStyleInventory(
 
     // Shadows (and their colours).
     if (s.boxShadow !== undefined && s.boxShadow.trim() !== '') {
-      const shadow = normalizeShadow(s.boxShadow);
+      const shadow = normalizeShadow(s.boxShadow, rootFontSizePx);
       if (shadow === 'none') {
         excludedDefaults.shadows++;
       } else {
         add('shadows', shadow, 'boxShadow');
-        for (const c of shadowColors(s.boxShadow)) addColor(c, 'boxShadow');
+        for (const c of shadowColors(s.boxShadow, rootFontSizePx)) addColor(c, 'boxShadow');
       }
     }
 
@@ -710,7 +805,12 @@ export function buildStyleInventory(
         }
         if (corners.size === 0 && anyZero) excludedDefaults.borderRadius++;
         for (const corner of corners) {
-          add('borderRadius', corner, 'borderRadius', canonicalLength(corner) !== null);
+          add(
+            'borderRadius',
+            corner,
+            'borderRadius',
+            canonicalLength(corner, rootFontSizePx) !== null
+          );
         }
       }
     }
@@ -901,6 +1001,14 @@ interface ResolvedToken {
   categories: StyleCategory[];
   kind: TokenKind;
   key: string;
+  /** Colours only: the declared value lay outside sRGB and was clamped to `key`. */
+  outOfGamut?: boolean;
+  /**
+   * A flat-map length whose name does not say which length category it is for
+   * (`categoriesInferred`): it may match values in any of them, but never makes
+   * a category `compared` and so never decides the verdict.
+   */
+  ambiguous?: boolean;
 }
 
 export interface UnresolvedToken {
@@ -951,6 +1059,32 @@ const RATIO_TOLERANCE = 0.05;
  * one-step 8-bit rounding between a declared `oklch` and a computed `oklab`.
  */
 export const COLOR_MATCH_DELTA_E = 0.5;
+
+/**
+ * The one colour-matching rule — drift (`computeTokenDrift`) and the style
+ * validator (`styleValuesEquivalent`) both use it, so an audit and a drift
+ * report never disagree about whether a colour is a token's.
+ *
+ * Two canonical colours are the same when neither came from outside the sRGB
+ * gamut, and either their hex is equal or their alpha is equal and their
+ * CIEDE2000 distance is below `COLOR_MATCH_DELTA_E` (the 8-bit rounding a
+ * declared `oklch` and a computed `oklab` differ by). An out-of-gamut colour
+ * never matches: clamping merges distinct wide-gamut colours into one hex, and
+ * that must not turn a mismatch into a match.
+ */
+export function canonicalColorsMatch(
+  a: string,
+  aOutOfGamut: boolean,
+  b: string,
+  bOutOfGamut: boolean
+): boolean {
+  if (aOutOfGamut || bOutOfGamut) return false;
+  if (a === b) return true;
+  // ΔE ignores alpha: a 50%-alpha blue is not the opaque blue token.
+  if (alphaOf(a) !== alphaOf(b)) return false;
+  const d = colorDistance(a, b);
+  return d !== null && d < COLOR_MATCH_DELTA_E;
+}
 const EM_TOLERANCE = 0.01;
 const WEIGHT_TOLERANCE = 100;
 
@@ -973,12 +1107,23 @@ export interface UndeclaredValue {
   nearest: NearestToken | null;
   /** True when `nearest` is within tolerance — likely a token typed by hand. */
   nearMiss: boolean;
+  /**
+   * Colours only: present (true) when the value lay outside sRGB and was
+   * clamped. An out-of-gamut colour never matches a token (the one colour rule,
+   * `canonicalColorsMatch`), so it is listed here even when its hex equals one.
+   */
+  outOfGamut?: true;
 }
 
 export interface UnusedToken {
   token: string;
   value: string;
   categories: StyleCategory[];
+  /**
+   * Present (true) for a flat-map length whose name does not say which length
+   * category it is for: `categories` is every length category, as a guess.
+   */
+  categoriesInferred?: true;
 }
 
 export type CategoryDriftStatus =
@@ -995,8 +1140,17 @@ export interface CategoryDrift {
   status: CategoryDriftStatus;
   /** Distinct values in use. */
   inUse: number;
-  /** Comparable declared tokens covering the category. */
+  /**
+   * Comparable declared tokens covering the category. A flat-map length whose
+   * name does not place it (`ambiguousDeclared`) is not counted here.
+   */
   declared: number;
+  /**
+   * Flat-map length tokens whose names do not say which length category they
+   * are for. They may match values here (so a matching value is not listed
+   * undeclared), but never make the category `compared`.
+   */
+  ambiguousDeclared: number;
   /** In-use values matched by a token. */
   matched: number;
   undeclaredInUse: number;
@@ -1016,7 +1170,9 @@ export type DriftVerdict = 'drift' | 'no-drift' | 'unknown';
 export interface TokenDriftReport {
   /**
    * `drift` — some compared value has no token; `no-drift` — every compared
-   * value matched; `unknown` (with `reason`) — nothing could be compared.
+   * value matched and no category the declared set covered went uncompared;
+   * `unknown` (with `reason`) — nothing could be compared, or a clean result
+   * left a covered category uncompared because none of its tokens resolved.
    */
   verdict: DriftVerdict;
   reason?: string;
@@ -1045,6 +1201,27 @@ export interface TokenDriftReport {
 const LENGTH_CATEGORIES: StyleCategory[] = ['fontSizes', 'spacing', 'borderRadius'];
 
 /**
+ * Name segments that say which length category a custom property is for,
+ * matched as whole `-`-delimited segments anywhere in the name, so a library
+ * prefix (`--chakra-space-4`, `--wp--preset--font-size--lg`) does not hide them.
+ */
+const LENGTH_NAME_PATTERNS: ReadonlyArray<[StyleCategory, RegExp]> = [
+  ['spacing', /(?:^|-)(?:space|spacing|spacer|gap|gutter|inset|margin|padding)(?:-|$)/],
+  ['borderRadius', /(?:^|-)(?:radius|radii|rounded|corner)(?:-|$)/],
+  ['fontSizes', /(?:^|-)(?:font-size|text|fs|type-scale|type-size)(?:-|$)/],
+];
+
+/**
+ * The single length category a custom property's name names, or `undefined`
+ * when it names none or more than one (`--text-gap` is ambiguous).
+ */
+export function lengthCategoryOfName(name: string): StyleCategory | undefined {
+  const bare = name.replace(/^--/, '').toLowerCase();
+  const hits = LENGTH_NAME_PATTERNS.filter(([, re]) => re.test(bare)).map(([c]) => c);
+  return hits.length === 1 ? hits[0] : undefined;
+}
+
+/**
  * Evaluate the one-operator `calc()` design-token systems emit
  * (`calc(1px * 22)`, `calc(2rem / 2)`). Anything else is `null`.
  */
@@ -1066,7 +1243,6 @@ function evalSimpleCalc(value: string, rootFontSizePx: number): string | null {
   return null;
 }
 
-const BARE_NUMBER = /^[-+]?(?:\d+\.?\d*|\.\d+)$/;
 const VAR_REFERENCE = /var\(\s*(--[A-Za-z0-9_-]+)\s*(?:,\s*((?:[^()]|\([^()]*\))*))?\)/;
 const MAX_VAR_DEPTH = 8;
 
@@ -1201,7 +1377,8 @@ function resolveTokens(
     for (const [name, raw] of Object.entries(t.colors ?? {})) {
       if (unsubstituted(`colors.${name}`, String(raw))) continue;
       const token = `colors.${name}`;
-      const key = canonicalColor(String(raw));
+      const parsed = parseColor(String(raw));
+      const key = parsed ? toCanonicalHex(parsed) : null;
       if (key === null) unresolve(token, String(raw), 'not a parseable colour');
       else if (isTransparent(key))
         unresolve(
@@ -1209,7 +1386,15 @@ function resolveTokens(
           String(raw),
           'declares a fully transparent colour, which the inventory excludes'
         );
-      else resolved.push({ token, value: String(raw), categories: ['colors'], kind: 'color', key });
+      else
+        resolved.push({
+          token,
+          value: String(raw),
+          categories: ['colors'],
+          kind: 'color',
+          key,
+          ...(parsed?.outOfGamut ? { outOfGamut: true } : {}),
+        });
     }
     const ty = t.typography ?? {};
     for (const [name, raw] of Object.entries(ty.fontFamilies ?? {})) {
@@ -1334,7 +1519,7 @@ function resolveTokens(
           value: String(raw),
           categories: ['shadows'],
           kind: 'shadow',
-          key: normalizeShadow(String(raw)),
+          key: normalizeShadow(String(raw), rootFontSizePx),
         });
     }
     if (t.breakpoints && Object.keys(t.breakpoints).length > 0) notComparable.push('breakpoints');
@@ -1363,9 +1548,16 @@ function resolveTokens(
       unresolve(name, raw, 'declares a default value, which the inventory excludes');
       continue;
     }
-    const color = canonicalColor(v);
-    if (color) {
-      resolved.push({ token: name, value: raw, categories: ['colors'], kind: 'color', key: color });
+    const parsedColor = parseColor(v);
+    if (parsedColor) {
+      resolved.push({
+        token: name,
+        value: raw,
+        categories: ['colors'],
+        kind: 'color',
+        key: toCanonicalHex(parsedColor),
+        ...(parsedColor.outOfGamut ? { outOfGamut: true } : {}),
+      });
       continue;
     }
     if (BARE_NUMBER.test(v)) {
@@ -1399,14 +1591,17 @@ function resolveTokens(
     }
     const length = canonicalLength(v, rootFontSizePx);
     if (length) {
-      // A flat map says nothing about what a length is for: it may match any
-      // length category.
+      // A flat map's value says nothing about what a length is for; its name
+      // may (`--space-4`, `--radius-md`). Unnamed or ambiguous, it may match
+      // any length category but decides none (`ambiguous`).
+      const named = lengthCategoryOfName(name);
       resolved.push({
         token: name,
         value: raw,
-        categories: [...LENGTH_CATEGORIES],
+        categories: named ? [named] : [...LENGTH_CATEGORIES],
         kind: 'length',
         key: length,
+        ...(named ? {} : { ambiguous: true }),
       });
       continue;
     }
@@ -1424,7 +1619,7 @@ function resolveTokens(
     const layers = topLevelSplit(v, ',');
     const looksLikeShadow = layers.every((layer) => {
       const parts = topLevelSplit(layer, ' ');
-      return parts.filter((p) => lengthToPx(p) !== null).length >= 2;
+      return parts.filter((p) => shadowLengthPx(p, rootFontSizePx) !== null).length >= 2;
     });
     if (looksLikeShadow) {
       resolved.push({
@@ -1432,7 +1627,7 @@ function resolveTokens(
         value: raw,
         categories: ['shadows'],
         kind: 'shadow',
-        key: normalizeShadow(v),
+        key: normalizeShadow(v, rootFontSizePx),
       });
       continue;
     }
@@ -1467,13 +1662,16 @@ function tokenMatches(
     case 'lineHeightPx':
     case 'letterSpacingPx':
       return (entry.px ?? []).includes(token.key);
-    case 'color': {
-      if (entry.value === token.key) return true;
-      // ΔE ignores alpha: a 50%-alpha blue is not the opaque blue token.
-      if (!entry.normalized || alphaOf(entry.value) !== alphaOf(token.key)) return false;
-      const d = colorDistance(entry.value, token.key);
-      return d !== null && d < COLOR_MATCH_DELTA_E;
-    }
+    case 'color':
+      return (
+        entry.normalized &&
+        canonicalColorsMatch(
+          entry.value,
+          entry.outOfGamut === true,
+          token.key,
+          token.outOfGamut === true
+        )
+      );
     default:
       return entry.value === token.key;
   }
@@ -1587,6 +1785,9 @@ export function computeTokenDrift(
   const categories = perCategory((c): CategoryDrift => {
     const entries = inventory.entries[c];
     const tokens = c === 'borders' ? [] : tokensFor[c];
+    // Only a token that names this category can make it compared; an
+    // ambiguous flat-map length may still match a value here.
+    const decisive = tokens.filter((t) => !t.ambiguous);
     let matched = 0;
     for (const entry of entries) {
       const hits = tokens.filter((t) => tokenMatches(t, c, entry));
@@ -1595,7 +1796,7 @@ export function computeTokenDrift(
         for (const h of hits) matchedTokens.add(h);
         continue;
       }
-      if (tokens.length === 0) continue;
+      if (decisive.length === 0) continue;
       let nearest: NearestToken | null = null;
       for (const t of tokens) {
         const d = tokenDistance(t, c, entry);
@@ -1611,20 +1812,22 @@ export function computeTokenDrift(
         properties: entry.properties,
         nearest,
         nearMiss: nearest !== null && withinTolerance(nearest, options),
+        ...(entry.outOfGamut ? { outOfGamut: true as const } : {}),
       });
     }
     const status: CategoryDriftStatus =
-      entries.length > 0 && tokens.length > 0
+      entries.length > 0 && decisive.length > 0
         ? 'compared'
         : entries.length > 0
           ? 'no-declared-tokens'
-          : tokens.length > 0
+          : decisive.length > 0
             ? 'no-values-in-use'
             : 'empty';
     return {
       status,
       inUse: entries.length,
-      declared: tokens.length,
+      declared: decisive.length,
+      ambiguousDeclared: tokens.length - decisive.length,
       matched,
       undeclaredInUse: undeclaredAll[c].length,
       unusedDeclared: 0,
@@ -1645,7 +1848,12 @@ export function computeTokenDrift(
     const cats = [
       ...new Set(resolved.filter((r) => r.token === t.token).flatMap((r) => r.categories)),
     ];
-    const unused: UnusedToken = { token: t.token, value: t.value, categories: cats };
+    const unused: UnusedToken = {
+      token: t.token,
+      value: t.value,
+      categories: cats,
+      ...(t.ambiguous ? { categoriesInferred: true as const } : {}),
+    };
     unusedAll[cats[0]].push(unused);
     categories[cats[0]].unusedDeclared++;
   }
@@ -1680,7 +1888,11 @@ export function computeTokenDrift(
         summary.push(
           c === 'borders'
             ? `${d.inUse} distinct ${label} in use — no token slot for borders, not compared`
-            : `${d.inUse} distinct ${label} in use — no tokens declared for this category, not compared`
+            : d.unresolvedDeclared > 0
+              ? `${d.inUse} distinct ${label} in use — ${d.unresolvedDeclared} declared token(s) for this category could not be resolved, not compared`
+              : d.ambiguousDeclared > 0
+                ? `${d.inUse} distinct ${label} in use — only ${d.ambiguousDeclared} custom-property length(s) whose names do not say which category they are for, not compared`
+                : `${d.inUse} distinct ${label} in use — no tokens declared for this category, not compared`
         );
         break;
       case 'no-values-in-use':
@@ -1692,6 +1904,13 @@ export function computeTokenDrift(
   }
 
   const compared = STYLE_CATEGORIES.filter((c) => categories[c].status === 'compared');
+  // A category the declared set meant to cover but none of whose tokens
+  // resolved: its values went uncompared, so a clean result elsewhere is not
+  // "no drift" — UNKNOWN never renders as no-drift.
+  const unresolvedCovered = STYLE_CATEGORIES.filter(
+    (c) => categories[c].status === 'no-declared-tokens' && categories[c].unresolvedDeclared > 0
+  );
+  const ambiguousTokens = resolved.filter((t) => t.ambiguous).length;
   let verdict: DriftVerdict;
   let reason: string | undefined;
   if (inventory.sampleCount === 0) {
@@ -1708,9 +1927,22 @@ export function computeTokenDrift(
         : 'the declared token set is empty';
   } else if (compared.length === 0) {
     verdict = 'unknown';
-    reason = 'no category has both values in use and declared tokens to compare them with';
+    reason =
+      'no category has both values in use and declared tokens to compare them with' +
+      (ambiguousTokens > 0
+        ? ` (${ambiguousTokens} custom-property length(s) were not placed in a category: their names do not say whether they are font sizes, spacing or radii)`
+        : '');
+  } else if (compared.some((c) => categories[c].undeclaredInUse > 0)) {
+    verdict = 'drift';
+  } else if (unresolvedCovered.length > 0) {
+    verdict = 'unknown';
+    reason =
+      `every compared value matched, but ${unresolvedCovered
+        .map((c) => CATEGORY_LABEL[c])
+        .join(', ')} ` +
+      'had values in use and declared tokens none of which could be resolved, so they were not compared';
   } else {
-    verdict = compared.some((c) => categories[c].undeclaredInUse > 0) ? 'drift' : 'no-drift';
+    verdict = 'no-drift';
   }
 
   return {
@@ -1742,29 +1974,39 @@ export function computeTokenDrift(
  * `style-validator.ts` falls back to this after its literal comparison, so a
  * `tokenRef` to `#3b82f6` passes against Chrome's `rgb(59, 130, 246)` — and a
  * draft guide inferred here can be referenced by rules at all.
+ *
+ * Colours follow the one colour rule drift uses (`canonicalColorsMatch`), and
+ * `rem` resolves against `rootFontSizePx` — the page's measured root font size
+ * — so an audit and a drift report over the same page agree.
  */
 export function styleValuesEquivalent(
   actual: string,
   expected: string,
   property: string,
-  styles?: Partial<Record<string, string>>
+  styles?: Partial<Record<string, unknown>>,
+  rootFontSizePx = 16
 ): boolean {
-  const a = actual.trim();
-  const e = expected.trim();
+  const a = String(actual ?? '').trim();
+  const e = String(expected ?? '').trim();
   if (a === '' || e === '') return false;
+  const root = Number.isFinite(rootFontSizePx) && rootFontSizePx > 0 ? rootFontSizePx : 16;
 
   const pa = parseColor(a);
   const pe = parseColor(e);
   if (pa !== null && pe !== null) {
-    // Clamping merges distinct wide-gamut colours into one hex; never let
-    // that turn a failing comparison into a pass.
-    if (pa.outOfGamut || pe.outOfGamut) return false;
-    return toCanonicalHex(pa) === toCanonicalHex(pe);
+    return canonicalColorsMatch(
+      toCanonicalHex(pa),
+      pa.outOfGamut === true,
+      toCanonicalHex(pe),
+      pe.outOfGamut === true
+    );
   }
 
-  const fontSizePx = styles?.fontSize ? lengthToPx(styles.fontSize) : null;
+  const fontSize = styles?.fontSize;
+  const fontSizePx =
+    typeof fontSize === 'string' && fontSize !== '' ? lengthToPx(fontSize, root) : null;
   const relative = (scale: 'ratio' | 'em'): boolean | null => {
-    const apx = lengthToPx(a);
+    const apx = lengthToPx(a, root);
     if (apx === null || !fontSizePx) return null;
     const lower = e.toLowerCase();
     let expectedRatio: number | null = null;
@@ -1789,8 +2031,8 @@ export function styleValuesEquivalent(
     if (r !== null) return r;
   }
 
-  const la = canonicalLength(a);
-  const le = canonicalLength(e);
+  const la = canonicalLength(a, root);
+  const le = canonicalLength(e, root);
   if (la !== null && le !== null) return la === le;
 
   if (property === 'fontFamily') return normalizeFontFamily(a) === normalizeFontFamily(e);
@@ -1798,6 +2040,6 @@ export function styleValuesEquivalent(
     const wa = normalizeFontWeight(a);
     return wa !== null && wa === normalizeFontWeight(e);
   }
-  if (property === 'boxShadow') return normalizeShadow(a) === normalizeShadow(e);
+  if (property === 'boxShadow') return normalizeShadow(a, root) === normalizeShadow(e, root);
   return false;
 }

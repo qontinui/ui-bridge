@@ -111,6 +111,7 @@ export {
   runStyleAudit,
   evaluateConstraint,
 } from './style-validator';
+export type { StyleValidationOptions } from './style-validator';
 
 // Design-inspection requests: the one implementation both in-package transports
 // (server handlers, browser command handlers) answer `/design/element/:id/styles`,
@@ -186,6 +187,8 @@ export {
   inferStyleGuideFromInventory,
   computeTokenDrift,
   styleValuesEquivalent,
+  canonicalColorsMatch,
+  lengthCategoryOfName,
 } from './style-inference';
 export type {
   StyleCategory,
