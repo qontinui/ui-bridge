@@ -40,7 +40,11 @@ let origin: string;
 let browser: Browser;
 let bundle: string;
 
-/** The page: design tokens on `:root`, a card styled through them, and a redaction boundary. */
+/**
+ * The page: design tokens on `:root`, a card styled through them, a redaction
+ * boundary, and an element whose styles name things after a record (`.named`),
+ * once outside the boundary and once inside it.
+ */
 const PAGE = `<!doctype html><html lang="de"><head><meta charset="utf-8"><style>
   :root { --brand: #00aaff; --space: 3px; }
   .card {
@@ -53,10 +57,43 @@ const PAGE = `<!doctype html><html lang="de"><head><meta charset="utf-8"><style>
     --tone: var(--brand);
   }
   .avatar { background-image: url("/a.png?token=s3cret"); width: 10px; height: 10px; }
+  .named {
+    grid-area: order-4711;
+    list-style-type: order-4711;
+    font-palette: --order-4711;
+    font-variant: styleset(order-4711);
+    transition: --order-4711 1s;
+    position-try-fallbacks: --order-4711;
+    page: order-4711;
+    view-transition-group: order-4711;
+    content: counter(order-4711);
+    background-image: paint(order-4711);
+  }
 </style></head><body>
   <div class="card" id="card" dir="rtl" title="Karte">Silbentrennung</div>
   <div data-bridge-redact="true"><div class="card avatar" id="secret">x</div></div>
+  <div class="named" id="named">n</div>
+  <div data-bridge-redact="true"><div class="named" id="named-secret">n</div></div>
 </body></html>`;
+
+/**
+ * What Chromium computes for `.named`: each value holds the name the page
+ * chose, unquoted and outside any `url()`.
+ */
+const NAMED = {
+  'grid-area': 'order-4711',
+  'list-style-type': 'order-4711',
+  'font-palette': '--order-4711',
+  'font-variant-alternates': 'styleset(order-4711)',
+  'font-variant': 'styleset(order-4711)',
+  'transition-property': '--order-4711',
+  transition: '--order-4711 1s',
+  'position-try-fallbacks': '--order-4711',
+  page: 'order-4711',
+  'view-transition-group': 'order-4711',
+  content: 'counter(order-4711)',
+  'background-image': 'paint(order-4711)',
+};
 
 /** What Chromium computes for `#card`. */
 const CARD = {
@@ -275,6 +312,38 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('the projection reads what Chromium compu
         { kind: 'property', name: 'background-image' },
       ],
     });
+    await page.close();
+  }, 60_000);
+
+  it('a name the author chose reads as set outside a boundary, and [REDACTED] inside it, on both arms', async () => {
+    const page = await openPage();
+    const properties = Object.keys(NAMED);
+    const read = await page.evaluate(async (props) => {
+      const project = async (id: string) => ({
+        inProcess: (
+          await window.UB.inProcess().getElementState(id, undefined, { properties: props })
+        ).data.projection,
+        relay: (
+          await window.UB.executeCommand(
+            'getElementState',
+            { id, properties: props },
+            window.UB.bridge()
+          )
+        ).projection,
+      });
+      return { outside: await project('named'), inside: await project('named-secret') };
+    }, properties);
+    // Chromium computes every name as written, so the scrub inside has something to hide.
+    const outside: Projection = { properties: NAMED, unmeasured: [] };
+    expect(read.outside.inProcess).toEqual(outside);
+    expect(read.outside.relay).toEqual(outside);
+    const inside: Projection = {
+      properties: Object.fromEntries(properties.map((name) => [name, '[REDACTED]'])),
+      unmeasured: [],
+      redacted: properties.map((name) => ({ kind: 'property', name })),
+    };
+    expect(read.inside.inProcess).toEqual(inside);
+    expect(read.inside.relay).toEqual(inside);
     await page.close();
   }, 60_000);
 

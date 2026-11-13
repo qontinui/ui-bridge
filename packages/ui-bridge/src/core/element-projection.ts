@@ -63,12 +63,14 @@
  *     `aria-valuenow`, `aria-valuemin` and `aria-valuemax`, numbers or not: a
  *     range bound can be page data (an available balance, a credit limit);
  *   - properties: a custom property (author data of any shape), any value
- *     carrying a `<string>` or a `url()` (`content`, `background-image`, …),
- *     and every property whose value names something the author chose — a
- *     font or its palette or feature values, a counter or counter style, an
- *     animation, a transition, a timeline, an anchor or position-try rule, a
- *     container, a view transition, a named page, a grid area or line — as an
- *     unquoted ident (`AUTHOR_NAMED_PROPERTIES`). The style vocabulary
+ *     carrying a `<string>`, a `url()` or a `paint()` worklet name
+ *     (`background-image`, `mask-image`, `cursor`, …), and every property
+ *     whose value names something the author chose — a font or its palette
+ *     or feature values, a counter or counter style, an animation, a
+ *     transition, a timeline, an anchor or position-try rule, a container, a
+ *     view transition or its group, a named page, a grid area or line — as an
+ *     unquoted ident, and the generated `content` whatever it holds
+ *     (`AUTHOR_NAMED_PROPERTIES`). The style vocabulary
  *     itself — colours, lengths, keywords, numbers — carries no page content
  *     and passes, so a contrast or border check still works inside a boundary.
  * Every name whose value was scrubbed is listed in the projection's `redacted`,
@@ -477,8 +479,14 @@ export function parseProjectionRequest(
   return request.properties || request.attributes ? request : undefined;
 }
 
-/** A value that can carry page content: a `<string>` token or a `url()`. */
-const CONTENT_BEARING_VALUE = /["']|url\(/i;
+/**
+ * A value that can carry page content or a name the author chose, whatever
+ * property holds it: a `<string>` token, a `url()`, or a `paint()` worklet name
+ * (`background-image: paint(order-4711)`, also in `mask-image`,
+ * `border-image-source`, `list-style-image` and their shorthands). A gradient
+ * or a colour is style vocabulary and passes.
+ */
+const CONTENT_BEARING_VALUE = /["']|url\(|paint\(/i;
 
 /**
  * Properties whose computed value names something the author chose, as an
@@ -490,7 +498,8 @@ const CONTENT_BEARING_VALUE = /["']|url\(/i;
  *   - an animation, a transition (`transition-property` and `will-change`
  *     name properties, custom ones included) or a scroll or view timeline;
  *   - an anchor, or a position-try rule (`position-try-fallbacks`);
- *   - a container, a view transition, a named page (`page`);
+ *   - a container, a view transition or the group it nests in
+ *     (`view-transition-group`), a named page (`page`);
  *   - a grid area or a grid line: `grid-template-areas`, the line names in
  *     `grid-template-columns` / `-rows` (`[order-4711] 1fr`), and the
  *     placements that reference either (`grid-area: order-4711`,
@@ -498,17 +507,20 @@ const CONTENT_BEARING_VALUE = /["']|url\(/i;
  * Such a name is the author's data, not the style vocabulary, and a page that
  * derives it from a record (one `view-transition-name` per order row) puts the
  * record in it. Inside a boundary they are scrubbed whatever the value holds,
- * and so are the shorthands that serialize them (`font`, `list-style`,
- * `animation`, `transition`, the timelines, `position-try`, `container`,
- * `grid`, `grid-template`, `grid-area`, `grid-row`, `grid-column`) and
- * `quotes`. A vendor alias (`-webkit-animation-name`) reads the same value and
- * is matched without its prefix.
+ * and so are the shorthands that serialize them (`font`, `font-variant`,
+ * `list-style`, `animation`, `transition`, the timelines, `position-try`,
+ * `container`, `grid`, `grid-template`, `grid-area`, `grid-row`,
+ * `grid-column`) and the generated-content properties `quotes` and `content`
+ * (`content: counter(order-4711)` names a counter unquoted). A vendor alias
+ * (`-webkit-animation-name`) reads the same value and is matched without its
+ * prefix.
  */
 const AUTHOR_NAMED_PROPERTIES: ReadonlySet<string> = new Set([
   'font-family',
   'font',
   'font-palette',
   'font-variant-alternates',
+  'font-variant',
   'counter-reset',
   'counter-set',
   'counter-increment',
@@ -527,6 +539,7 @@ const AUTHOR_NAMED_PROPERTIES: ReadonlySet<string> = new Set([
   'timeline-scope',
   'view-transition-name',
   'view-transition-class',
+  'view-transition-group',
   'anchor-name',
   'position-anchor',
   'anchor-scope',
@@ -548,6 +561,7 @@ const AUTHOR_NAMED_PROPERTIES: ReadonlySet<string> = new Set([
   'grid-column-start',
   'grid-column-end',
   'quotes',
+  'content',
 ]);
 
 /**
