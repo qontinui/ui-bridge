@@ -21,7 +21,19 @@ def run(root):
 def copy_tree():
     d = tempfile.mkdtemp(prefix="ci-routing-")
     shutil.copytree(os.path.join(ROOT, ".github"), os.path.join(d, ".github"))
+    shutil.copytree(os.path.join(ROOT, ".qontinui"), os.path.join(d, ".qontinui"))
     return d
+
+
+DECL = os.path.join(".qontinui", "ci-pool-variables.toml")
+
+
+def mutate_decl(root, old, new):
+    path = os.path.join(root, DECL)
+    text = open(path, encoding="utf-8").read()
+    if old not in text:
+        raise LookupError("fixture text not found in %s: %r" % (DECL, old))
+    open(path, "w", encoding="utf-8").write(text.replace(old, new, 1))
 
 
 def mutate(root, name, old, new, count=1):
@@ -97,6 +109,42 @@ case("runs-on folded over several lines", 1, "spans several lines",
 
 case("router invoked but no job routed", 1, "no job's runs-on reads",
      lambda r: mutate(r, "smoke-test.yml", "needs.route.outputs.labels", "'[\"ubuntu-24.04\"]'"))
+
+
+case("lane-variable declaration missing", 1, "ci-pool-variables.toml: missing",
+     lambda r: os.remove(os.path.join(r, DECL)))
+
+case("declared pool differs from the forced-lane literal", 1, "declared pool",
+     lambda r: mutate_decl(r, '"ram-16g"]', '"ram-8g"]'))
+
+case("declared pool in another order and case is the same pool", 0, "-- consistent",
+     lambda r: mutate_decl(r, 'pool = ["self-hosted", "Linux", "X64", "ram-16g"]',
+                           'pool = ["ram-16g", "x64", "linux", "self-hosted"]'))
+
+case("routed job reads an undeclared lane variable", 1, "is not declared in",
+     lambda r: mutate_decl(r, '"UIBRIDGE_CI_LINUX_LANE"', '"UIBRIDGE_CI_OTHER_LANE"'))
+
+case("declared variable no routed job reads", 1, "no routed runs-on reads it",
+     lambda r: open(os.path.join(r, DECL), "a").write(
+         '\n[[variables]]\nname = "UIBRIDGE_CI_STALE_LANE"\npool = ["self-hosted", "Linux"]\n'))
+
+case("declaration that does not parse", 1, "does not parse",
+     lambda r: open(os.path.join(r, DECL), "a").write("\n[[variables]\n"))
+
+
+case("declaration entry with an unknown key", 1, "unknown key(s)",
+     lambda r: mutate_decl(r, 'name = "UIBRIDGE_CI_LINUX_LANE"',
+                           'name = "UIBRIDGE_CI_LINUX_LANE"\nnote = "x"'))
+
+case("declaration with an unknown top-level key", 1, "unknown top-level key(s)",
+     lambda r: mutate_decl(r, "[[variables]]", 'comment = "x"\n\n[[variables]]'))
+
+case("variable declared twice", 1, "declared more than once",
+     lambda r: open(os.path.join(r, DECL), "a").write(
+         '\n[[variables]]\nname = "uibridge_ci_linux_lane"\npool = ["self-hosted", "Linux", "X64", "ram-16g"]\n'))
+
+case("variables written as a single table", 1, "array of tables",
+     lambda r: mutate_decl(r, "[[variables]]", "[variables]"))
 
 
 def no_routing(r):

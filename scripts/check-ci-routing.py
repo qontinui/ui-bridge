@@ -18,6 +18,11 @@ of drift fails differently:
   * a `want=` pin that is not the router's blob (as `git hash-object` computes
     it over the checked-out file) sends that workflow to the hosted floor on
     every run (safe, but silently);
+  * a lane variable a routed `runs-on` reads that `.qontinui/ci-pool-variables.toml`
+    does not declare with that same pool (or a declared variable no routed job
+    reads) makes coord's pool-variable controller decide the wrong pool's
+    health for it, or read it `declaration_mismatch` and decide nothing (plan
+    2026-11-11-coord-owns-ci-lane-variables, Phase 2c);
   * a job that names the pool in `runs-on` outside the routed form (no route
     reference, or a `runs-on` folded over several lines) escapes every check
     above, so that is refused too, as is a workflow that invokes the router
@@ -36,6 +41,7 @@ import re
 import sys
 
 ROUTER = os.path.join(".github", "scripts", "route-ci-lane.py")
+DECLARATION = os.path.join(".qontinui", "ci-pool-variables.toml")
 HOSTED = ["ubuntu-24.04"]
 
 RE_FLAG = re.compile(r"--self-hosted-labels\s+(\S+)")
@@ -44,6 +50,7 @@ RE_POOLS = re.compile(r"^\s*#\s*coord-pools:\s*\[([^\]]*)\]\s*\|\s*\[([^\]]*)\]\
 RE_RUNS_ON = re.compile(r"^\s*runs-on:\s*(.*)$")
 RE_FORCED = re.compile(r"'(\[\"self-hosted\"[^']*\])'")
 RE_FLOOR = re.compile(r"\|\|\s*'(\[[^']*\])'\s*\)\s*\}\}\s*$")
+RE_LANE = re.compile(r"vars\.([A-Za-z0-9_]+)\s*==\s*'self-hosted'")
 
 
 def blob_sha(path):
@@ -55,8 +62,54 @@ def split_list(text):
     return [t.strip().strip('"') for t in text.split(",") if t.strip()]
 
 
+def pool_key(labels):
+    """coord's pool key: case-insensitive, order-insensitive, de-duplicated."""
+    return sorted({l.lower() for l in labels})
+
+
+def read_declaration(path):
+    """{VARIABLE: [labels]} from the declaration, or (None, why).
+
+    Mirrors the shape rules coord's parser enforces (qontinui-coord
+    ci_pool_alerts/variables.rs `parse_declaration`): only a top-level
+    `variables` array of tables, each with exactly `name` and `pool`, and no
+    name declared twice (compared case-insensitively). coord refuses the WHOLE
+    file on any of these, which leaves every lane in it undecided.
+    """
+    try:
+        import tomllib
+    except ImportError:
+        return None, "cannot be checked: this needs Python 3.11+ (tomllib)"
+    try:
+        data = tomllib.loads(open(path, encoding="utf-8").read())
+    except tomllib.TOMLDecodeError as e:
+        return None, "does not parse: %s" % e
+    extra = sorted(set(data) - {"variables"})
+    if extra:
+        return None, "unknown top-level key(s) %s; coord refuses the file" % extra
+    entries = data.get("variables", [])
+    if not isinstance(entries, list):
+        return None, "`variables` must be an array of tables ([[variables]])"
+    declared = {}
+    for i, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            return None, "variables[%d] is not a table" % i
+        extra = sorted(set(entry) - {"name", "pool"})
+        if extra:
+            return None, "variables[%d] has unknown key(s) %s; coord refuses the file" % (i, extra)
+        name, pool = entry.get("name"), entry.get("pool")
+        if not isinstance(name, str) or not isinstance(pool, list):
+            return None, "variables[%d] needs a string `name` and a list `pool`" % i
+        name = name.strip().upper()
+        if name in declared:
+            return None, "variables[%d]: %s is declared more than once; coord refuses the file" % (i, name)
+        declared[name] = [str(l).strip() for l in pool]
+    return declared, None
+
+
 def check(root):
     findings = []
+    lanes = []
     wf_dir = os.path.join(root, ".github", "workflows")
     router = os.path.join(root, ROUTER)
     router_blob = blob_sha(router) if os.path.exists(router) else None
@@ -112,6 +165,12 @@ def check(root):
             if floor_set != HOSTED:
                 findings.append("%s: coord-pools floor %s != %s" % (where, floor_set, HOSTED))
             flags.append((where + " (coord-pools)", pool_set))
+            lane = RE_LANE.search(expr)
+            if not lane:
+                findings.append("%s: routed runs-on forces the pool under no "
+                                "`vars.<LANE> == 'self-hosted'`" % where)
+            elif forced:
+                lanes.append((where, lane.group(1).upper(), split_list(forced.group(1)[1:-1])))
         file_pins = [p for p in pins if p[0].startswith(os.path.join(".github", "workflows", name) + ":")]
         if invocations and not file_routed:
             findings.append("%s: invokes the router but no job's runs-on reads its output"
@@ -133,6 +192,27 @@ def check(root):
     for where, want in pins:
         if router_blob and want != router_blob:
             findings.append("%s: pin %s != %s blob %s" % (where, want, ROUTER, router_blob))
+    decl_path = os.path.join(root, DECLARATION)
+    if routed and not os.path.exists(decl_path):
+        findings.append("%s: missing, but %d job(s) are routed by a lane variable; coord's "
+                        "pool-variable controller reads nothing for this repo" % (DECLARATION, routed))
+    elif os.path.exists(decl_path):
+        declared, why = read_declaration(decl_path)
+        if declared is None:
+            findings.append("%s: %s" % (DECLARATION, why))
+        else:
+            read = set()
+            for where, var, pool in lanes:
+                read.add(var)
+                if var not in declared:
+                    findings.append("%s: lane variable %s is not declared in %s"
+                                    % (where, var, DECLARATION))
+                elif pool_key(declared[var]) != pool_key(pool):
+                    findings.append("%s: forced-lane pool %s != %s's declared pool %s for %s"
+                                    % (where, pool, DECLARATION, declared[var], var))
+            for var in sorted(set(declared) - read):
+                findings.append("%s: declares %s but no routed runs-on reads it"
+                                % (DECLARATION, var))
     summary = "%d routed job(s), %d label-set site(s), %d pin(s)" % (routed, len(flags), len(pins))
     return summary, findings
 

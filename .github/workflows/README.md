@@ -70,8 +70,11 @@ explanation.
 
 The pool label set and the router's blob pin are spelled by hand at every site:
 `--self-hosted-labels` in each `route` step, the forced-lane literal in each
-routed `runs-on`, the `# coord-pools:` line directly above it, and the `want=`
-pin. `scripts/check-ci-routing.py` (run by `ci-integrity-selftest.yml`'s
+routed `runs-on`, the `# coord-pools:` line directly above it, the `want=`
+pin, and the variable's `pool` in `.qontinui/ci-pool-variables.toml` (the
+declaration coord's pool-variable controller reads to decide the lane, in
+shadow only for now; plan `2026-11-11-coord-owns-ci-lane-variables`).
+`scripts/check-ci-routing.py` (run by `ci-integrity-selftest.yml`'s
 `guard-tests` job) fails on any disagreement among them or between a pin and the
 committed router, so after a re-sync or a label change run
 `python3 scripts/check-ci-routing.py` before pushing.
