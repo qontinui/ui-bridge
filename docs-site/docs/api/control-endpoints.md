@@ -90,9 +90,36 @@ Get details for a specific element.
 
 ```http
 GET /control/element/:id/state
+GET /control/element/:id/state?properties=border-top-color,--color-accent&attributes=lang,aria-label
 ```
 
 Get current state of an element.
+
+`properties` and `attributes` ask for a request-scoped projection: the computed
+values of the named CSS properties (`var()` resolved) and the allow-listed
+attributes (`lang`, `dir`, `id`, `role`, `title`, `alt`, `href`, `aria-*`),
+answered in `projection` beside the state. Each is a comma-separated list, a
+repeated key (`?properties=hyphens&properties=outline-offset`), or both. The
+names, bounds, redaction and the `unmeasured` and `redacted` lists are those of
+[`POST /control/find`](./discovery-endpoints.md#style-and-attribute-projection);
+a malformed list is refused with `UB-VALIDATION-ERROR`. Through the relay, a
+tab whose UI Bridge SDK predates the projection answers without one, and that
+answer is refused with `UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD` rather than
+passed on as a state that lacks the values asked for.
+
+The projection is served by the `@qontinui/ui-bridge/server` adapters
+(`createHandlers`, `createRelayHandlers`). **`@qontinui/ui-bridge-server` does
+not serve it on this route**: that package routes
+`GET /control/element/:id/state` with no query, so it ignores `properties` and
+`attributes` and answers the state alone — no `projection`, and no refusal
+either. Read a projection there through `POST /control/find`, which that
+package forwards to the `@qontinui/ui-bridge` action executor it is given: its
+rows carry `projection` when that executor's build serves one.
+
+The id `document` names `<html>` itself, which has no registration: its state
+read answers `{ id, sentinel: "document", tagName: "html" }` plus the
+projection asked for (`?attributes=lang,dir&properties=--color-accent`). A
+registered element with that id wins over the sentinel.
 
 **Response:**
 

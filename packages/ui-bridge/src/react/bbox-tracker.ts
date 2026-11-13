@@ -367,6 +367,12 @@ export function pollForTaggedElement(
     let remaining = attempts;
 
     const tick = () => {
+      // A retry can fire after the document is gone (a test environment torn
+      // down between attempts); the first-call guard above does not cover it.
+      if (typeof document === 'undefined') {
+        resolve(null);
+        return;
+      }
       const el = document.querySelector(selector);
       if (el instanceof HTMLElement) {
         resolve(el);

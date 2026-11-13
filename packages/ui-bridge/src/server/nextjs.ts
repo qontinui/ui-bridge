@@ -49,6 +49,7 @@ import { CDPTabDiscovery } from './cdp-tabs';
 import { withoutReservedCaller } from './reserved-caller';
 import { scopedCallerRefusal } from './scoped-refusal';
 import { readJsonBody } from './request-body';
+import { routeQueryOf } from './request-query';
 
 /**
  * Next.js specific configuration
@@ -278,11 +279,11 @@ export function createNextRouteHandlers(
       // caller identity. Per-user tab scoping (§4.2): `__callerUserId` is
       // delivered via the trailing `context` arg (below), never spliced
       // into the searchParams bag. The `tabId` splice stays (it's a payload
-      // field many handlers read via `extractTabRouting`).
+      // field many handlers read via `extractTabRouting`). A repeated
+      // list-valued key (`?properties=a&properties=b`) arrives as the whole
+      // list, not its last value (`request-query.ts`).
       if (route.queryRequired) {
-        const searchParams = withoutReservedCaller(
-          Object.fromEntries(request.nextUrl.searchParams)
-        );
+        const searchParams = withoutReservedCaller(routeQueryOf(request.nextUrl.searchParams));
         if (
           externalTabId &&
           searchParams.tabId === undefined &&

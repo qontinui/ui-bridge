@@ -673,6 +673,32 @@ describe('AssertionExecutor', () => {
       expect(result.target).toBeDefined();
     });
 
+    it('inside a redaction boundary, placeholder and title are UNMEASURED by policy, not failed', async () => {
+      // An element that crossed a wire: no live node, its state stamped with the
+      // §4.6 verdict. The search projection drops its placeholder and title, so
+      // a comparison would read the page as failing with nothing to show.
+      const redacted = createMockAIElement('card-input', { type: 'input' });
+      redacted.state = { ...redacted.state, redaction: { content: true, value: true } };
+      executor.updateElements([redacted]);
+
+      for (const attributeName of ['placeholder', 'title']) {
+        const result = await executor.assert({
+          target: 'card-input',
+          type: 'attribute',
+          attributeName,
+          expected: 'Card number',
+        });
+        expect(result, attributeName).toMatchObject({
+          outcome: 'unmeasured',
+          passed: false,
+          failureCode: 'UB-OBS-NOT-ATTEMPTED-BY-POLICY',
+          unmeasured: { code: 'not_attempted_by_policy' },
+        });
+        // No value at all (the wire then carries no `actual` key).
+        expect(result.actual, attributeName).toBeUndefined();
+      }
+    });
+
     it('should fail for unsupported attributes', async () => {
       const elements = [
         createMockAIElement('btn-1', { textContent: 'Submit', aliases: ['btn-1', 'submit'] }),

@@ -14,7 +14,7 @@ import type {
 import type { DiscoveredElement } from '../control/types';
 import type { RecoverySuggestion, UiBridgeErrorCode } from '../diagnostics';
 import type { Scrubbed } from '../core/redaction';
-import type { Observation } from '../observation/observation';
+import type { Observation, UnknownCode } from '../observation/observation';
 import type { DetectedAnimation } from '../idle/detected-animation';
 
 // Canonical recovery suggestion (D6). Re-exported here so existing
@@ -482,11 +482,32 @@ export interface AssertionRequest {
 }
 
 /**
+ * The three-valued verdict of one assertion. `unmeasured` = the check could
+ * not read the value it judges, so it neither passed nor failed.
+ */
+export type AssertionOutcome = 'passed' | 'failed' | 'unmeasured';
+
+/**
  * Assertion result
  */
 export interface AssertionResult {
-  /** Whether the assertion passed */
+  /** Whether the assertion passed. `true` iff `outcome === 'passed'`. */
   passed: boolean;
+  /**
+   * The verdict, three-valued. `unmeasured` means the check could not read the
+   * value it judges: an element with no live DOM node, an engine that computes
+   * no value for the property, a custom property the element does not set, a
+   * name the projection refuses (see `core/element-projection.ts`), or a value
+   * a `data-bridge-redact` boundary withholds (`not_attempted_by_policy`: the
+   * §4.6 sentinel is never compared as the page's value). An
+   * unmeasured check is NOT a failure of the page, and it is not a pass either:
+   * `passed` is `false`, so it never passes a gate, `actual` is absent (never
+   * `''`), and `unmeasured` / `failureCode` say why. Absent only on results
+   * from an SDK build that predates it.
+   */
+  outcome?: AssertionOutcome;
+  /** Present iff `outcome === 'unmeasured'`: why the value could not be read. */
+  unmeasured?: { code: UnknownCode; detail: string };
   /** Element target that was checked */
   target: string;
   /** Human-readable description of the target */
@@ -500,8 +521,11 @@ export interface AssertionResult {
   /**
    * Stable machine-readable diagnostic code. Populated on every failure path
    * (`passed: false`) — optional at the type level only because passing
-   * results omit it. One of the `UB-ASSERT-*` codes. Enforced present on
-   * failure by the Phase 1 unit tests.
+   * results omit it. One of the `UB-ASSERT-*` codes for a failed check
+   * (enforced present on failure by the Phase 1 unit tests); for an
+   * `unmeasured` one, the `UB-OBS-*` code of its `unmeasured.code`, or
+   * `UB-VALIDATION-ERROR` when the assertion names something the projection
+   * refuses.
    */
   failureCode?: UiBridgeErrorCode;
   /** Suggestion for fixing the failure */
@@ -542,8 +566,13 @@ export interface BatchAssertionResult {
   results: AssertionResult[];
   /** Number of passed assertions */
   passedCount: number;
-  /** Number of failed assertions */
+  /** Number of failed assertions (`outcome: 'failed'`; unmeasured ones are counted apart) */
   failedCount: number;
+  /**
+   * Number of assertions that could not read the value they judge
+   * (`outcome: 'unmeasured'`). Any of them keeps an `'all'` batch from passing.
+   */
+  unmeasuredCount: number;
   /** Total duration */
   durationMs: number;
   /** Timestamp */

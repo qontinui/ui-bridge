@@ -416,6 +416,14 @@ export function createHandlers(
   const nlExecutor = new NLActionExecutor();
   const assertionExecutor = new AssertionExecutor();
   const snapshotManager = new SemanticSnapshotManager();
+  // Semantic search scans every registered element. The shared manager caps a
+  // snapshot at 500 elements (`DEFAULT_SNAPSHOT_CONFIG.maxElements`), the right
+  // budget for a snapshot a caller reads, but a search over it silently missed
+  // every match past the cap. Its own manager also keeps search out of the
+  // shared manager's snapshot history.
+  const searchSnapshotManager = new SemanticSnapshotManager({
+    maxElements: Number.POSITIVE_INFINITY,
+  });
   const diffManager = new SemanticDiffManager();
 
   // Helper to get fresh elements and update AI modules
@@ -1051,7 +1059,7 @@ export function createHandlers(
         // reads — is what keeps `element` (re-emitted to the client in
         // SemanticSearchResult) honestly branded instead of laundering a
         // plain-string `description`.
-        const semanticSnapshot = snapshotManager.createSnapshot(registry.createSnapshot());
+        const semanticSnapshot = searchSnapshotManager.createSnapshot(registry.createSnapshot());
 
         // Build searchable text per branded element for the fuzzy fallback.
         // All fields read here are already §4.6-scrubbed at their source.

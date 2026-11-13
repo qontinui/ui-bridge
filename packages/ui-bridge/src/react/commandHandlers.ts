@@ -25,6 +25,13 @@ import {
   type CanonicalFindContext,
   type CanonicalFindCriteria,
 } from '../core/find-filter';
+import {
+  isProjectionRequestError,
+  parseProjectionRequest,
+  projectElement,
+  type ElementProjectionRequest,
+} from '../core/element-projection';
+import { pageSentinelState, resolvePageSentinel } from '../core/page-sentinel';
 import { truncateCodePoints } from '../core/text';
 import {
   buildKeyboardEventInit,
@@ -37,7 +44,11 @@ import {
   supersededSnapshotMessage,
   type SnapshotFreshness,
 } from '../core/snapshot-signature';
-import { parseNLAssertion } from '../ai/nl-assertion-parser';
+import {
+  isAssertionRequestError,
+  normalizeAssertion,
+  normalizeAssertionBatch,
+} from '../ai/nl-assertion-parser';
 import { getGlobalStubRegistry, validateStubRequest, type StubRequestSpec } from '../network/stubs';
 import { NetworkRequestTracker } from '../network/tracker';
 import { isRelayOwnTraffic, __clearRelayTrafficForTest } from '../relay/relay-traffic';
@@ -1757,8 +1768,24 @@ export async function executeCommand(
     }
 
     case 'getElementState': {
+      // The request-scoped projection (`properties` / `attributes`) is
+      // validated before anything is read: a malformed list is refused whole,
+      // typed, never half-answered. See `core/element-projection.ts`.
+      let projection: ElementProjectionRequest | undefined;
+      try {
+        projection = parseProjectionRequest(payload, 'query');
+      } catch (err) {
+        if (!isProjectionRequestError(err)) throw err;
+        return { success: false, error: `element state ${err.message}`, code: err.code };
+      }
       const el = getElement(payload.id as string);
-      if (!el) throw new Error(`Element ${payload.id} not found`);
+      if (!el) {
+        // The `document` sentinel names `<html>`, which has no registration:
+        // its read answers the projection off it (core/page-sentinel.ts).
+        const page = resolvePageSentinel(payload.id, 'read');
+        if (page) return pageSentinelState(payload.id as string, page, projection);
+        throw new Error(`Element ${payload.id} not found`);
+      }
       const state = el.getState();
       // Spread the full canonical `ElementState` so callers see every field
       // the SDK populates (role, accessibleName, normalizedRect,
@@ -1774,6 +1801,7 @@ export async function executeCommand(
         isVisible: state.visible,
         isEnabled: state.enabled,
         text: state.textContent,
+        ...(projection ? { projection: projectElement(el.element, projection) } : {}),
       };
     }
 
@@ -1883,18 +1911,20 @@ export async function executeCommand(
         }
       }
 
-      // Page-level sentinel IDs ("document", "body", "window") resolve to
-      // document.documentElement for scroll actions, bypassing the element registry.
-      const isPageScrollSentinel =
-        request.action === 'scroll' && (id === 'document' || id === 'body' || id === 'window');
+      // A page sentinel ("document", "body", "window") scrolls the page: the
+      // shared resolver names `<html>` for it, bypassing the element registry
+      // — for an id the registry does not hold, the precedence every sentinel
+      // site applies (core/page-sentinel.ts).
+      const pageScrollTarget =
+        request.action === 'scroll' && !getElement(id) ? resolvePageSentinel(id, 'scroll') : null;
 
       let dom: HTMLElement;
       // The element's own registration, kept so the custom-action lookup below
       // can consult it. A page sentinel has no registration and therefore no
       // custom actions.
       let registered: RegisteredElement | undefined;
-      if (isPageScrollSentinel) {
-        dom = document.documentElement;
+      if (pageScrollTarget) {
+        dom = pageScrollTarget;
       } else {
         const el = getElement(id);
         if (!el)
@@ -2723,7 +2753,14 @@ export async function executeCommand(
       } catch {
         // Fall back to the conservative default above.
       }
-      const findElements = filtered.map(elementToFindResult);
+      // The request-scoped projection (`properties` / `attributes`), read off
+      // each RETURNED row's live node. See `core/element-projection.ts`.
+      const projection = filterCtx.projection;
+      const findElements = filtered.map((e) =>
+        projection
+          ? { ...elementToFindResult(e), projection: projectElement(e.element, projection) }
+          : elementToFindResult(e)
+      );
       return {
         elements: findElements,
         total: filtered.length,
@@ -3282,46 +3319,42 @@ export async function executeCommand(
     }
 
     case 'aiAssert': {
+      // Support NL assertions: {assertion: "a button exists"} → {target, type}.
+      // The parsed request is passed WHOLE: `attributeName`, `propertyName`,
+      // `allowedValues`, `range`, `tokenPath`, `relatedTarget`, `minGap`, … are
+      // what the attribute, style and spatial checks read, and the in-process
+      // handlers have always forwarded them. A request that names nothing to
+      // check is refused, typed — the relay refuses it before it is queued, so
+      // this answer is for a caller that reaches the dispatcher directly.
+      let parsed: import('../ai').AssertionRequest;
+      try {
+        parsed = normalizeAssertion(payload);
+      } catch (err) {
+        if (!isAssertionRequestError(err)) throw err;
+        return { success: false, error: err.message, code: err.code };
+      }
       const { createAssertionExecutor } = await import('../ai');
-      type AT = import('../ai').AssertionType;
       const exec = createAssertionExecutor({});
       exec.updateElements(elements as unknown as Parameters<typeof exec.updateElements>[0]);
-      const r = payload as {
-        target?: string;
-        type?: string;
-        expected?: unknown;
-        assertion?: string;
-      };
-      // Support NL assertions: {assertion: "a button exists"} → {target, type}
-      const parsed = parseNLAssertion(r);
-      return exec.assert({
-        target: parsed.target,
-        type: parsed.type as AT,
-        expected: parsed.expected,
-      });
+      return exec.assert(parsed);
     }
 
     case 'aiAssertBatch': {
+      // The batch normalisation the in-process handlers use, so a batch means
+      // the same thing on both transports: bare strings are NL assertions,
+      // every entry passes through whole, `stopOnFailure` is honoured, and a
+      // malformed batch is refused, typed (see `aiAssert`).
+      let batch: import('../ai').BatchAssertionRequest;
+      try {
+        batch = normalizeAssertionBatch(payload as Parameters<typeof normalizeAssertionBatch>[0]);
+      } catch (err) {
+        if (!isAssertionRequestError(err)) throw err;
+        return { success: false, error: err.message, code: err.code };
+      }
       const { createAssertionExecutor } = await import('../ai');
-      type AT = import('../ai').AssertionType;
       const exec = createAssertionExecutor({});
       exec.updateElements(elements as unknown as Parameters<typeof exec.updateElements>[0]);
-      const r = payload as {
-        assertions: Array<{
-          target?: string;
-          type?: string;
-          expected?: unknown;
-          assertion?: string;
-        }>;
-        mode?: 'all' | 'any';
-      };
-      return exec.assertBatch({
-        assertions: r.assertions.map((a) => {
-          const parsed = parseNLAssertion(a);
-          return { target: parsed.target, type: parsed.type as AT, expected: parsed.expected };
-        }),
-        mode: r.mode || 'all',
-      });
+      return exec.assertBatch(batch);
     }
 
     case 'getSemanticSnapshot': {

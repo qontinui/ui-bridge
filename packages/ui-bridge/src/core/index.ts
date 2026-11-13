@@ -153,6 +153,40 @@ export type {
   FindUnevaluated,
 } from './find-filter';
 
+// Request-scoped style / attribute projection — the ONE read behind
+// `properties` / `attributes` on find, discover and element state, and behind
+// the `ai/assert` style and attribute checks.
+export {
+  MAX_PROJECTED_NAMES,
+  MAX_PROJECTION_NAME_LENGTH,
+  PROJECTABLE_ATTRIBUTES,
+  PROJECTION_OPTIONS,
+  ProjectionRequestError,
+  cssPropertyName,
+  isProjectableAttribute,
+  isProjectablePropertyName,
+  isProjectionRequestError,
+  parseProjectionRequest,
+  projectElement,
+} from './element-projection';
+export type {
+  ElementProjection,
+  ElementProjectionRequest,
+  ProjectionRedacted,
+  ProjectionUnmeasured,
+} from './element-projection';
+
+// Page-level sentinel ids (`document`, `body`, `window`) — the ONE resolver
+// every sentinel site asks: a scroll of the page, and a read of `<html>`
+// (`document` only), which has no registry entry.
+export {
+  PAGE_SENTINEL_IDS,
+  isPageSentinelId,
+  pageSentinelState,
+  resolvePageSentinel,
+} from './page-sentinel';
+export type { PageSentinelId, PageSentinelState, PageSentinelUse } from './page-sentinel';
+
 // Readers for a media row's observation envelope (`mediaMetadata`).
 export { isMediaObservation, mediaFactsOf, unmeasuredMediaDimension } from './media-observation';
 
