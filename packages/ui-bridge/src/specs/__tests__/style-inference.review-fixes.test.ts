@@ -305,3 +305,27 @@ describe('a native object colour inside a shadow', () => {
     );
   });
 });
+
+// Third review round.
+describe('flat-map placement edge cases', () => {
+  it('an unresolved colour function is never filed as a length', () => {
+    const inv = buildStyleInventory([el('a', { color: 'rgb(59, 130, 246)', fontSize: '14px' })]);
+    const report = computeTokenDrift(inv, {
+      customProperties: {
+        '--brand': '#3b82f6',
+        '--text-muted': 'color-mix(in srgb, red 50%, blue)',
+      },
+    });
+    expect(report.categories.fontSizes.unresolvedDeclared).toBe(0);
+    expect(report.verdict).toBe('no-drift');
+  });
+
+  it('ambiguous tokens that matched every value leave the verdict decided', () => {
+    const inv = buildStyleInventory([el('a', { color: 'rgb(59, 130, 246)', paddingTop: '16px' })]);
+    const report = computeTokenDrift(inv, {
+      customProperties: { '--brand': '#3b82f6', '--size-4': '16px' },
+    });
+    expect(report.categories.spacing).toMatchObject({ matched: 1, undeclaredInUse: 0 });
+    expect(report.verdict).toBe('no-drift');
+  });
+});
