@@ -25,7 +25,7 @@ import { createNextRouteHandlers } from './nextjs';
 import { createExpressApp } from './express';
 import { StandaloneServer } from './standalone';
 import { createRelayHandlers } from './relay-handlers';
-import { createHandlers, type RegistryLike } from './handlers';
+import { createAIHandlers, createHandlers, type RegistryLike } from './handlers';
 import { useCommandRelay } from '../react/useCommandRelay';
 import { listener } from '../react/__tests__/relay-into-listener';
 import { getGlobalRegistry, resetGlobalRegistry } from '../core/registry';
@@ -657,6 +657,23 @@ describe('a repeated query key on the adapters that serve no Next.js route', () 
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+});
+
+describe('createAIHandlers, the AI-only in-process factory', () => {
+  // Its own catch arms map the typed refusal; the HTTP suites above enter
+  // through `createHandlers`, so these arms are pinned here.
+  it('answers an assertion that names nothing with UB-VALIDATION-ERROR, single and batch', async () => {
+    mountPage();
+    const ai = createAIHandlers(registryLike(), createActionExecutor(getGlobalRegistry()));
+    const single = await ai.aiAssert({} as Parameters<typeof ai.aiAssert>[0]);
+    expect(single).toMatchObject({ success: false, code: 'UB-VALIDATION-ERROR' });
+    expect(single.error).toContain('the assertion names nothing to check');
+    const batch = await ai.aiAssertBatch({
+      assertions: [{}],
+    } as unknown as Parameters<typeof ai.aiAssertBatch>[0]);
+    expect(batch).toMatchObject({ success: false, code: 'UB-VALIDATION-ERROR' });
+    expect(batch.error).toContain('assertions[0] names nothing to check');
   });
 });
 
