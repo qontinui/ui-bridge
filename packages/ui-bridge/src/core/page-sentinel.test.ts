@@ -43,14 +43,13 @@ describe('resolvePageSentinel', () => {
 describe('the three sentinel sites share it', () => {
   // Each site used to spell the ids out itself, and two of the three matched
   // them case-sensitively while the third lowercased first.
-  it.each([
-    'react/commandHandlers.ts',
-    'server/handlers.ts',
-    'control/action-executor.ts',
-  ])('%s asks the shared resolver and spells no sentinel id itself', (file) => {
-    const source = readFileSync(resolve(SRC, file), 'utf8');
-    expect(source).toMatch(/from '\.\.\/core\/page-sentinel'/);
-    expect(source).not.toMatch(/===\s*'window'/);
-    expect(source).not.toMatch(/sentinel\s*===\s*'body'/);
-  });
+  it.each(['react/commandHandlers.ts', 'server/handlers.ts', 'control/action-executor.ts'])(
+    '%s asks the shared resolver and spells no sentinel id itself',
+    (file) => {
+      const source = readFileSync(resolve(SRC, file), 'utf8');
+      expect(source).toMatch(/from '\.\.\/core\/page-sentinel'/);
+      expect(source).not.toMatch(/===\s*'window'/);
+      expect(source).not.toMatch(/sentinel\s*===\s*'body'/);
+    }
+  );
 });

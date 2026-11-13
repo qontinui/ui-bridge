@@ -1761,8 +1761,7 @@ export function createHandlers(
         // A page sentinel ("document", "body", "window") on a scroll bypasses it:
         // the action executor resolves the sentinel through the same shared
         // resolver (core/page-sentinel.ts).
-        const isPageScrollSentinel =
-          request.action === 'scroll' && isPageSentinelId(id, 'scroll');
+        const isPageScrollSentinel = request.action === 'scroll' && isPageSentinelId(id, 'scroll');
         let element = isPageScrollSentinel ? true : registry.getElement(id);
 
         // Auto-rediscover: if the element isn't in the registry, refresh the
