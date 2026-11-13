@@ -44,12 +44,13 @@ function structuredTarget(target: unknown): string | SearchCriteria {
  * expected }`, again over the whole request. Either way every field the parser
  * does not resolve — `attributeName`, `propertyName`, `allowedValues`, `range`,
  * `tokenPath`, `timeout`, `message`, `fuzzy`, `relatedTarget`, `minGap` — rides
- * along. Until 2026-11-10 the structured branch returned only the three
- * resolved fields, and both transports that call this (the relay's
- * `aiAssert` / `aiAssertBatch` command handlers) forwarded only those, so an
- * `attribute` or `cssProperty*` assertion sent through the relay reached the
- * executor without the name it checks; a `SearchCriteria` target was turned
- * into the string `"[object Object]"`.
+ * along. Before this change the structured branch returned only the three
+ * resolved fields, and the relay's two command handlers that call it
+ * (`aiAssert` / `aiAssertBatch` in `react/commandHandlers.ts`) forwarded only
+ * those, so an `attribute` or `cssProperty*` assertion sent through the relay
+ * reached the executor without the name it checks, and a `SearchCriteria`
+ * target became the string `"[object Object]"`. (The in-process handlers
+ * wrapped this parser and already passed the request through whole.)
  */
 export function parseNLAssertion<T extends NLAssertionInput>(input: T): T & NLAssertionOutput {
   // If already structured with target and type, pass through
@@ -192,8 +193,14 @@ export function parseNLAssertion<T extends NLAssertionInput>(input: T): T & NLAs
  * transports use (the in-process `aiAssertBatch` handlers and the relay's
  * `aiAssertBatch` command): each entry parsed by {@link parseNLAssertion} (a
  * bare string is an NL assertion), `mode` defaulted to `'all'`, and every other
- * field — `stopOnFailure` included — passed through. A non-array `assertions`
- * is refused rather than read as an empty batch.
+ * field — `stopOnFailure` included — passed through.
+ *
+ * Refused (a `TypeError`, which each transport answers as an error envelope)
+ * rather than guessed at: a non-array `assertions`, which would otherwise read
+ * as an empty batch, and an entry that is neither an assertion object nor a
+ * string — `null`, a number, a boolean, an array — which would otherwise run
+ * as `{ target: '', type: 'exists' }` and report a failure the caller never
+ * asked about.
  */
 export function normalizeAssertionBatch(request: {
   assertions?: unknown;
@@ -207,11 +214,17 @@ export function normalizeAssertionBatch(request: {
   return {
     ...request,
     mode: request.mode || 'all',
-    assertions: raw.map(
-      (a: unknown) =>
-        parseNLAssertion(
-          typeof a === 'string' ? { assertion: a } : ((a ?? {}) as NLAssertionInput)
-        ) as unknown as AssertionRequest
-    ),
+    assertions: raw.map((a: unknown, index) => {
+      if (typeof a === 'string') {
+        return parseNLAssertion({ assertion: a }) as unknown as AssertionRequest;
+      }
+      if (typeof a !== 'object' || a === null || Array.isArray(a)) {
+        const got = a === null ? 'null' : Array.isArray(a) ? 'an array' : typeof a;
+        throw new TypeError(
+          `assertions[${index}] must be an assertion object or a natural-language string, got ${got}`
+        );
+      }
+      return parseNLAssertion(a as NLAssertionInput) as unknown as AssertionRequest;
+    }),
   };
 }
