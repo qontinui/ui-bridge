@@ -56,8 +56,9 @@ function registerTab(
 }
 
 afterEach(() => {
-  // Before the real timers return, so any fake timer a relay armed is cleared
-  // rather than abandoned.
+  // Real timers here: destroy() clears each relay's cleanup interval. Each
+  // subscription's proactive timeout stays armed and later fires inert (the
+  // warm-up is off, and destroy() leaves no listener to send to).
   for (const relay of relays.splice(0)) relay.destroy();
   vi.useRealTimers();
 });
