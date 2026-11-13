@@ -17,7 +17,12 @@ import { queryAndContextArgs, withoutReservedCaller } from './reserved-caller';
 import { scopedCallerRefusal } from './scoped-refusal';
 import { mapInternalErrorCode } from '../diagnostics';
 import type { SSEManager } from './sse-handler';
-import { MAX_BODY_BYTES, interpretJsonBody } from './request-body';
+import {
+  MAX_BODY_BYTES,
+  discardRest,
+  dropIfConnectionEnded,
+  interpretJsonBody,
+} from './request-body';
 
 /**
  * Express-specific configuration
@@ -103,8 +108,11 @@ function wrapError(error: Error | string, code?: string): APIResponse<never> {
  * Read a JSON request body by the standalone server's rules (`parseBody` in
  * standalone.ts), so a body means the same thing through every adapter:
  *
- * - over `MAX_BODY_BYTES` (declared or read) is a 413, and the connection is
- *   closed rather than draining the rest;
+ * - over `MAX_BODY_BYTES` (declared or read) is a 413, and the rest of the
+ *   upload is discarded unread (`discardRest` in request-body.ts) rather than
+ *   the connection being closed under it: a close with request bytes still
+ *   unread is a TCP reset, which on Windows destroys the 413 before the
+ *   client reads it;
  * - an empty or whitespace-only body is no body (the route supplies `{}`);
  * - any JSON value parses, top-level primitives included;
  * - a body that does not parse is a 400 when it is declared JSON (`/json`,
@@ -125,12 +133,15 @@ function jsonBody() {
       next();
       return;
     }
-    const tooLarge = () => {
-      res.setHeader('Connection', 'close');
+    // `alreadyRead`: the body bytes read before the refusal, so discardRest
+    // measures what is still to come of a declared length. discardRest goes
+    // first: it may set the 413's keep-alive before the head is written.
+    const tooLarge = (alreadyRead: number) => {
+      discardRest(req, res, { alreadyRead });
       res.status(413).json(wrapError('Request body too large', 'INVALID_REQUEST'));
     };
     if (Number(length) > MAX_BODY_BYTES) {
-      tooLarge();
+      tooLarge(0);
       return;
     }
     const chunks: Buffer[] = [];
@@ -142,8 +153,9 @@ function jsonBody() {
       bytes += buf.length;
       if (bytes > MAX_BODY_BYTES) {
         settled = true;
-        req.pause();
-        tooLarge();
+        // Free what was read; the rest of the upload is discarded unread.
+        chunks.length = 0;
+        tooLarge(bytes);
         return;
       }
       chunks.push(buf);
@@ -174,6 +186,17 @@ function jsonBody() {
 }
 
 /**
+ * Run nothing for a request on a connection the server has already ended: a
+ * request pipelined behind a refused upload (see `dropIfConnectionEnded`).
+ */
+function dropOnEndedConnection() {
+  return (req: Request, _res: Response, next: NextFunction) => {
+    if (dropIfConnectionEnded(req)) return;
+    next();
+  };
+}
+
+/**
  * Create Express router with UI Bridge routes
  */
 export function createExpressRouter(
@@ -185,6 +208,8 @@ export function createExpressRouter(
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const express = require('express');
   const router: Router = express.Router();
+
+  router.use(dropOnEndedConnection());
 
   // Add CORS middleware if configured
   if (config.cors) {
@@ -429,6 +454,7 @@ export function createExpressApp(
   const express = require('express');
   const app = express();
 
+  app.use(dropOnEndedConnection());
   app.use(jsonBody());
 
   const basePath = config.basePath || '/ui-bridge';

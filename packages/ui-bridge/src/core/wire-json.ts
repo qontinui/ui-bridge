@@ -18,7 +18,7 @@
  * observation replaced by that string. Here the guard is the chain of objects
  * the value currently sits INSIDE, which is exactly what a cycle is.
  */
-export function safeJsonStringify(value: unknown): string {
+export function safeJsonStringify(value: unknown): string | undefined {
   // The objects the value being written sits inside, outermost first.
   // JSON.stringify walks depth-first and calls the replacer with `this` bound
   // to the object HOLDING the value, so unwinding to `this` keeps the chain

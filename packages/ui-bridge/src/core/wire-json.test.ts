@@ -13,7 +13,7 @@ describe('safeJsonStringify', () => {
     const observation = { status: 'measured', value: { src: '/a.png' } };
     const row = { state: { mediaMetadata: observation }, mediaMetadata: observation };
 
-    expect(JSON.parse(safeJsonStringify({ elements: [row, row] }))).toEqual({
+    expect(JSON.parse(safeJsonStringify({ elements: [row, row] })!)).toEqual({
       elements: [
         { state: { mediaMetadata: observation }, mediaMetadata: observation },
         { state: { mediaMetadata: observation }, mediaMetadata: observation },
@@ -26,7 +26,7 @@ describe('safeJsonStringify', () => {
     node.self = node;
     node.children.push({ parent: node });
 
-    expect(JSON.parse(safeJsonStringify(node))).toEqual({
+    expect(JSON.parse(safeJsonStringify(node)!)).toEqual({
       name: 'a',
       children: [{ parent: '[Circular]' }],
       self: '[Circular]',
@@ -35,7 +35,7 @@ describe('safeJsonStringify', () => {
 
   it('writes a DOM node as its class name and drops functions', () => {
     const div = document.createElement('div');
-    expect(JSON.parse(safeJsonStringify({ el: div, fn: () => 1, n: 1 }))).toEqual({
+    expect(JSON.parse(safeJsonStringify({ el: div, fn: () => 1, n: 1 })!)).toEqual({
       el: '[HTMLDivElement]',
       n: 1,
     });
@@ -43,7 +43,10 @@ describe('safeJsonStringify', () => {
 
   it('handles a root that is a primitive or an array', () => {
     expect(safeJsonStringify(3)).toBe('3');
+    // What JSON.stringify returns for these, hence the `string | undefined` type.
+    expect(safeJsonStringify(undefined)).toBeUndefined();
+    expect(safeJsonStringify(() => 1)).toBeUndefined();
     const shared = { k: 1 };
-    expect(JSON.parse(safeJsonStringify([shared, shared]))).toEqual([{ k: 1 }, { k: 1 }]);
+    expect(JSON.parse(safeJsonStringify([shared, shared])!)).toEqual([{ k: 1 }, { k: 1 }]);
   });
 });
