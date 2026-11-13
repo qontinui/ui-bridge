@@ -465,6 +465,35 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     expect(cleanRes.results[1].detail).toContain('contain: paint');
     await clean.close();
 
+    // A scroll container is not a clip: rows scrolled out of the list are
+    // reachable, so neither the list nor the hidden sheet around it clips
+    // them; the sheet is compared with the list's own box, which fits.
+    const scrolled = await openPage(`
+      <div data-id="sheet" style="width:240px;height:120px;overflow:hidden">
+        <div data-id="list" style="height:100px;overflow-y:auto">
+          <div data-id="row1" style="height:40px">Row 1</div>
+          <div data-id="row2" style="height:40px">Row 2</div>
+          <div data-id="row3" style="height:40px">Row 3</div>
+          <div data-id="row4" style="height:40px">Row 4</div>
+        </div>
+      </div>
+      <div data-id="short" style="width:240px;height:80px;overflow:hidden;margin-top:100px">
+        <div data-id="tall" style="height:100px;overflow-y:auto"><div style="height:300px"></div></div>
+      </div>
+    `);
+    const scrolledRes = await assertOn(scrolled, [
+      { type: 'no_clipping', region: { x: 0, y: 0, w: 800, h: 130 } },
+      { type: 'no_clipping' },
+    ]);
+    expect(verdicts(scrolledRes)).toEqual([
+      ['passed', null],
+      ['failed', null], // the outer clip still cuts the scroll container's own box
+    ]);
+    expect(scrolledRes.results[1].detail).toContain(
+      "element 'tall' extends past the vertical clip of 'short'"
+    );
+    await scrolled.close();
+
     const unmeasured = await openPage(`<div data-id="gone" style="display:none"></div>`);
     expect(verdicts(await assertOn(unmeasured, [{ type: 'no_clipping' }]))).toEqual([
       ['unknown', 'input_missing'],

@@ -205,7 +205,7 @@ only what the page itself can measure, and they get a verdict:
 | `text_fits_container` | The nearest block box's `scrollWidth`/`scrollHeight` (borders and scrollbars included) against its border box, rounded up; an element with no text is `unknown` |
 | `no_overlap` | Border boxes, after the `tolerance_px` inset |
 | `element_above` | Paint order from `document.elementsFromPoint` inside the pair's visible intersection (never scrolls) |
-| `no_clipping` | Each registered element against the padding box of its nearest clipping ancestor; no element inside a clipping ancestor is `unknown` |
+| `no_clipping` | Each registered element against the padding box of its nearest ancestor with `overflow` `hidden` or `clip`, or `contain: paint`. A scroll container (`overflow` `auto` or `scroll`) is not a clip: what is scrolled out of it is reachable, so only its own box is compared further out. No element inside a clipping ancestor is `unknown` |
 
 The evaluator is a port of the runner's (vision-core) and is held to it by
 vision-core's own conformance fixture (`rust-vision-core/tests/fixtures/
