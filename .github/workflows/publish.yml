@@ -90,6 +90,17 @@ jobs:
           echo "name=$name" >> "$GITHUB_OUTPUT"
           echo "Derived package: $name"
 
+      - name: Tag version must equal package.json version
+        run: |
+          tag="${{ github.ref_name }}"
+          want="${tag##*-v}"
+          have="$(node -p "require('./packages/${{ steps.pkg.outputs.name }}/package.json').version")"
+          if [ "$want" != "$have" ]; then
+            echo "::error::Tag '$tag' names version $want but packages/${{ steps.pkg.outputs.name }}/package.json at this commit is $have; cut the tag on the commit that carries the bump"
+            exit 1
+          fi
+          echo "Version check: $have"
+
       - name: Install dependencies
         run: npm ci
 

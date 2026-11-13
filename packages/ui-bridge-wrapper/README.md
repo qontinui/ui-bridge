@@ -178,8 +178,8 @@ ui-bridge-inject --url http://127.0.0.1:3000/ \
   payload with an unknown verb is refused with `UNSUPPORTED_ACTION`, naming the
   accepted verbs.
 
-These need `@qontinui/ui-bridge` 0.46.0 or later, the first injected runtime
-that serves `getElement` and the payload grammar. Against an older one,
+These need `@qontinui/ui-bridge` 0.48.0 or later, the first published injected
+runtime that serves `getElement` and the payload grammar (0.46.0 and earlier do not). Against an older one,
 `getElement` fails with `Unknown command action: getElement`, a flat
 `executeElementAction` throws a `TypeError`, and an `elementId` one answers
 `Element undefined not found`.
