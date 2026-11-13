@@ -380,6 +380,23 @@ describe('the rounding contract — unrounded boxes, each kind rounding its own 
       expect(() => evalInputFromVisionCoreSnapshot(snapshot(bad))).toThrow(VisionCoreSnapshotError);
     }
   });
+
+  it("a vision-core snapshot's non-finite coordinate is refused", () => {
+    const snapshot = (bbox: Record<string, number>) => ({
+      elements: [{ id: 'label', bbox, scroll_width_px: 120, scroll_height_px: 20, text: 'Name' }],
+    });
+    // JSON.parse reads 1e400 as Infinity. A box that is not finite is not a
+    // measurement: accepted, w: Infinity would hold any content and pass
+    // text_fits_container.
+    for (const json of ['{"x":0,"y":0,"w":1e400,"h":20}', '{"x":-1e400,"y":0,"w":10,"h":20}']) {
+      expect(() => evalInputFromVisionCoreSnapshot(snapshot(JSON.parse(json)))).toThrow(
+        VisionCoreSnapshotError
+      );
+    }
+    expect(() =>
+      evalInputFromVisionCoreSnapshot(snapshot({ x: 0, y: Number.NaN, w: 10, h: 20 }))
+    ).toThrow(VisionCoreSnapshotError);
+  });
 });
 
 describe('contrast_meets_wcag — the measured reasons', () => {

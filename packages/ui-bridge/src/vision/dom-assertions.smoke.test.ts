@@ -364,6 +364,50 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     await sunk.close();
   }, 60_000);
 
+  it('contrast_meets_wcag: a layer above the text that paints its own text or generated content', async () => {
+    const page = await openPage(`
+      <style>
+        .tint::before { content: ""; position: absolute; left: 0; top: 0; width: 300px; height: 50px; background: rgba(255, 0, 0, 0.5) }
+        .aside::before { content: ""; position: absolute; left: 400px; top: 0; width: 50px; height: 50px; background: rgba(255, 0, 0, 0.5) }
+        .glyph::before { content: "*" }
+      </style>
+      <div style="position:relative;height:50px;background:#fff"><p data-id="lettered" style="margin:0;color:#000">Under a lettered overlay</p><div class="letters" style="position:absolute;inset:0;color:#c00">Under a lettered overlay</div></div>
+      <div style="position:relative;height:50px;background:#fff"><p data-id="letteredaside" style="margin:0;color:#000">Under an overlay lettered lower down</p><div style="position:absolute;inset:0;padding-top:30px;color:#c00">Lower down</div></div>
+      <div style="position:relative;height:50px;background:#fff"><p data-id="genned" style="margin:0;color:#000">Under generated content</p><div class="tint" style="position:absolute;inset:0"></div></div>
+      <div style="position:relative;height:50px;background:#fff"><p data-id="gennedaside" style="margin:0;color:#000">Beside generated content</p><div class="aside" style="position:absolute;inset:0"></div></div>
+      <div style="position:relative;height:50px;background:#fff"><p data-id="gennedmaybe" style="margin:0;color:#000">Under a generated glyph</p><div class="glyph" style="position:absolute;inset:0"></div></div>
+    `);
+    const res = await assertOn(
+      page,
+      ['lettered', 'letteredaside', 'genned', 'gennedaside', 'gennedmaybe'].map((element) => ({
+        type: 'contrast_meets_wcag',
+        element,
+      }))
+    );
+    // Each overlay is transparent, so its background paints nothing over the
+    // text. What else it paints there decides: its own text or generated
+    // content over the text is paint the DOM cannot read, while the same
+    // overlay with its text lower down, or its generated box pinned beside
+    // the text, leaves the text's own 21:1.
+    expect(verdicts(res)).toEqual([
+      ['unknown', 'input_missing'],
+      ['passed', null],
+      ['unknown', 'input_missing'],
+      ['passed', null],
+      ['unknown', 'input_missing'],
+    ]);
+    expect(res.results[0].detail).toContain('<div.letters> paints over the text at');
+    expect(res.results[0].detail).toContain('with its own text at the same position');
+    expect(res.results[1].detail).toContain('contrast ratio 21.00:1');
+    expect(res.results[2].detail).toContain('<div.tint> paints over the text at');
+    expect(res.results[2].detail).toContain('with ::before generated content that covers it');
+    expect(res.results[3].detail).toContain('contrast ratio 21.00:1');
+    // A glyph in normal flow has no box the computed style pins down.
+    expect(res.results[4].detail).toContain('<div.glyph> paints over the text at');
+    expect(res.results[4].detail).toContain('with ::before generated content that may cover it');
+    await page.close();
+  }, 60_000);
+
   it('text_fits_container: layout sizes under a transform, and redacted text is never echoed', async () => {
     const page = await openPage(`
       <div style="transform:scale(2);transform-origin:0 0;width:100px">
@@ -740,6 +784,33 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     ]);
     expect(edgeRes.results[0].detail).toContain("element 'onepx' extends past");
     await edge.close();
+
+    // Under a transform the clip is the FRACTIONAL padding box, scaled. A
+    // 100.4px by 20.4px box at scale(2) is 200.8px by 40.8px, and a child
+    // exactly its size fits it. Its integer client size (100px by 20px, so
+    // 200px by 40px) would read as clipping that child by a pixel each way.
+    const scaled = await openPage(`
+      <div style="transform:scale(2);transform-origin:0 0;width:300px">
+        <div data-id="scaledclip" style="width:100.4px;height:20.4px;overflow:hidden">
+          <div data-id="scaledfill" style="width:100.4px;height:20.4px"></div>
+        </div>
+        <div data-id="scaledclip2" style="width:100.4px;height:20.4px;overflow:hidden;margin-top:10px">
+          <div data-id="scaledover" style="width:101px;height:10px"></div>
+        </div>
+      </div>
+    `);
+    const scaledRes = await assertOn(scaled, [
+      { type: 'no_clipping', region: { x: 0, y: 0, w: 800, h: 50 } },
+      { type: 'no_clipping', region: { x: 0, y: 60, w: 800, h: 60 } },
+    ]);
+    expect(verdicts(scaledRes)).toEqual([
+      ['passed', null],
+      ['failed', null], // 101px at scale(2) is 202px, past the 200.8px clip
+    ]);
+    expect(scaledRes.results[1].detail).toContain(
+      "element 'scaledover' extends past the horizontal clip of 'scaledclip2'"
+    );
+    await scaled.close();
 
     const unmeasured = await openPage(`<div data-id="gone" style="display:none"></div>`);
     expect(verdicts(await assertOn(unmeasured, [{ type: 'no_clipping' }]))).toEqual([
