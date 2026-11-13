@@ -264,7 +264,9 @@ import {
 import type { RegisteredElement } from '../core/types';
 import { serializeElementCustomActions } from '../core/element-actions';
 import type { CustomAction } from '../core/types';
-import type { VisionCaptureRequest, VisionRawRequest } from '../vision/wire';
+import type { VisionAssertResponse, VisionCaptureRequest, VisionRawRequest } from '../vision/wire';
+import { evaluateVisionAssertions } from '../vision/dom-assertions';
+import { VisionAssertRequestError } from '../vision/assertion-request';
 import { pageViewportContext } from '../control/page-scroll-container';
 import { sdkDispatch } from '../core/sdk-dispatch';
 
@@ -2260,8 +2262,22 @@ export function createHandlers(
       return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
-    visionAssert: async (_request?: Record<string, unknown>) => {
-      return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
+    // Evaluated in the page by vision/dom-assertions.ts — the same function the
+    // browser relay calls (react/commandHandlers.ts, `visionAssert`), so one
+    // model answers whichever transport reaches the page. A malformed body is
+    // UB-VALIDATION-ERROR; anything the page cannot measure is an `unknown`
+    // result, not an error.
+    visionAssert: async (
+      request?: Record<string, unknown>
+    ): Promise<APIResponse<VisionAssertResponse>> => {
+      try {
+        return success(evaluateVisionAssertions(registry, request));
+      } catch (err) {
+        return error(
+          (err as Error).message,
+          err instanceof VisionAssertRequestError ? err.code : 'VISION_ASSERT_ERROR'
+        );
+      }
     },
 
     visionBaseline: async (_request?: Record<string, unknown>) => {

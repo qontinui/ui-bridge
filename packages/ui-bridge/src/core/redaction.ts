@@ -215,6 +215,17 @@ export function scrubValueByVerdict(
   return (v.value ? REDACTED_VALUE : raw) as Scrubbed<string>;
 }
 
+/**
+ * Does `el`'s SUBTREE (below `el` itself) hold a `data-bridge-redact`
+ * boundary? A projection that reads a container's whole text (innerText) must
+ * redact it when it does: the boundary marks "an element and its subtree", and
+ * the container's own verdict cannot see a boundary below it.
+ */
+export function containsRedactionBoundary(el: Element | null | undefined): boolean {
+  if (!el || typeof el.querySelector !== 'function') return false;
+  return el.querySelector(`[${BRIDGE_REDACT_ATTR}="true"]`) !== null;
+}
+
 export function scrubContentByVerdict(
   raw: string | undefined,
   v: RedactionVerdict
@@ -330,9 +341,7 @@ export function scrubAliases(aliases: string[], v: RedactionVerdict): Scrubbed<s
  */
 export function trustDeveloperContent(raw: string): Scrubbed<string>;
 export function trustDeveloperContent(raw: string | undefined): Scrubbed<string> | undefined;
-export function trustDeveloperContent(
-  raw: string | undefined
-): Scrubbed<string> | undefined {
+export function trustDeveloperContent(raw: string | undefined): Scrubbed<string> | undefined {
   return raw as Scrubbed<string> | undefined;
 }
 
