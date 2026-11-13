@@ -395,6 +395,8 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       </div>
       <div data-id="sub1" style="position:absolute;left:0;top:300px;width:50.25px;height:10px"></div>
       <div data-id="sub2" style="position:absolute;left:50px;top:300px;width:50px;height:10px"></div>
+      <div data-id="edge1" style="position:absolute;left:0.625px;top:320px;width:10.625px;height:10px"></div>
+      <div data-id="edge2" style="position:absolute;left:11.25px;top:320px;width:5px;height:10px"></div>
     `);
     const res = await assertOn(page, [
       { type: 'no_overlap', elements: ['a', 'b'] },
@@ -408,6 +410,10 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       { type: 'no_overlap', elements: ['a', 'absent'] },
       // A quarter pixel of overlap rounds away: [0, 50) and [50, 100).
       { type: 'no_overlap', elements: ['sub1', 'sub2'] },
+      // A shared fractional edge, 11.25, stays shared: each edge is rounded,
+      // [1, 11) and [11, 16). Rounding the width on its own would end edge1
+      // at 1 + 11 = 12, a pixel into edge2.
+      { type: 'no_overlap', elements: ['edge1', 'edge2'] },
     ]);
     expect(verdicts(res)).toEqual([
       ['failed', null],
@@ -417,6 +423,7 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       ['passed', null],
       ['unknown', 'input_missing'],
       ['unknown', 'input_missing'],
+      ['passed', null],
       ['passed', null],
     ]);
     expect(res.results[0].detail).toBe('a and b overlap by 400 px² (tolerance 0 px)');

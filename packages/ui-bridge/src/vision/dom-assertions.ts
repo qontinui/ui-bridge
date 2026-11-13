@@ -44,7 +44,7 @@
  * ROUNDING (plan 2026-11-09 Phase 0's contract): every box below is handed to
  * the evaluator UNROUNDED, and the evaluator rounds it as its kind does —
  * `text_fits_container`'s comparison box UP, the geometry kinds' boxes and
- * clips to the NEAREST pixel. Nothing here rounds a box.
+ * clips edge by edge to the NEAREST pixel. Nothing here rounds a box.
  *
  * - `text_fits_container` — a block-level element's `scrollWidth` /
  *   `scrollHeight`, with its borders and scrollbars added back, against its
@@ -56,9 +56,9 @@
  *   exposes no fragment, the block's extents stand in only if it is all the
  *   block holds, else `unknown{input_missing}`. No text is
  *   `unknown{input_missing}`.
- * - `no_overlap` — border boxes (`getBoundingClientRect`), rounded to the
- *   nearest pixel and never up, or adjacent fractional boxes would read as
- *   overlapping.
+ * - `no_overlap` — border boxes (`getBoundingClientRect`), each edge rounded
+ *   to the nearest pixel and never up, or adjacent fractional boxes would read
+ *   as overlapping.
  * - `element_above` — paint order from `document.elementsFromPoint` at sample
  *   points inside both the pair's intersection and the viewport. The
  *   evaluator never scrolls; no sample showing both is
@@ -940,8 +940,8 @@ class TabMeasurement {
    * The padding box an ancestor clips its content to, in viewport pixels:
    * the border box minus borders and scrollbars, scaled when the element is
    * transformed. Unrounded, like every box handed to the evaluator: it rounds
-   * the clip and the box it bounds to the nearest pixel, which is what
-   * absorbs the layout's sub-pixel noise.
+   * each edge of the clip and of the box it bounds to the nearest pixel, which
+   * is what absorbs the layout's sub-pixel noise.
    */
   private clipBox(el: Element, st: CSSStyleDeclaration): ClipBounds {
     const r = el.getBoundingClientRect();

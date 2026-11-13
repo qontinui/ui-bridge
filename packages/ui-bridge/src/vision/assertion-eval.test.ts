@@ -8,11 +8,13 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  evalInputFromVisionCoreSnapshot,
   evaluateVisionAssertion,
   foldVisionOutcomes,
   isLargeText,
   paintOrderKey,
   snapshotCoverageOf,
+  VisionCoreSnapshotError,
   wcagMinimumRatio,
   type MeasuredElement,
   type PaintOrderEvidence,
@@ -273,10 +275,30 @@ describe('the rounding contract — unrounded boxes, each kind rounding its own 
     ).toBe('failed');
   });
 
-  it('a half rounds away from zero, as Rust rounds it', () => {
-    // -0.5 rounds to -1 (Math.round would give 0), so [-1, 0) only touches [0, 1).
-    const a: MeasuredElement = { id: 'a', bbox: box(-0.5, 0, 1, 1) };
-    const b: MeasuredElement = { id: 'b', bbox: box(0, 0, 1, 1) };
+  it('each EDGE is rounded, never the size on its own, so a shared edge stays shared', () => {
+    // a ends where b starts, at 11.2. Edge by edge: a is [1, 11) and b is
+    // [11, 16), touching. Field by field, a would be x 1 + w 11 = [1, 12) and
+    // overlap b by a phantom pixel.
+    const a: MeasuredElement = { id: 'a', bbox: box(0.6, 0, 10.6, 10) };
+    const b: MeasuredElement = { id: 'b', bbox: box(11.2, 0, 5, 10) };
+    expect(
+      evaluate({ type: 'no_overlap', elements: ['a', 'b'] }, { elements: [a, b] }).outcome
+    ).toBe('passed');
+    // The same rule for a clip: the box's right edge 109.9 and the clip's
+    // 109.6 both land on 110.
+    const row: MeasuredElement = {
+      id: 'row',
+      bbox: box(10.4, 0, 99.5, 50),
+      clip: { left: 10.2, top: 0, right: 109.6, bottom: 50, byX: 'p', byY: 'p' },
+    };
+    expect(evaluate({ type: 'no_clipping' }, { elements: [row] }).outcome).toBe('passed');
+  });
+
+  it('a half rounds toward +∞, as Math.round and vision-core round it', () => {
+    // a's left edge, -10.5, snaps to -10 and only touches b's [-20, -10).
+    // Away from zero (Rust's f64::round) it would be -11, a pixel into b.
+    const a: MeasuredElement = { id: 'a', bbox: box(-10.5, 0, 5, 10) };
+    const b: MeasuredElement = { id: 'b', bbox: box(-20, 0, 9.6, 10) };
     expect(
       evaluate({ type: 'no_overlap', elements: ['a', 'b'] }, { elements: [a, b] }).outcome
     ).toBe('passed');
@@ -309,6 +331,25 @@ describe('the rounding contract — unrounded boxes, each kind rounding its own 
     expect(evaluate({ type: 'no_clipping' }, { elements: [el] }).outcome).toBe('passed');
     const over: MeasuredElement = { ...el, bbox: box(9.7, 0, 101.2, 50) };
     expect(evaluate({ type: 'no_clipping' }, { elements: [over] }).outcome).toBe('failed');
+  });
+
+  it("a vision-core snapshot's bbox reaches the evaluator unrounded, and a negative size is refused", () => {
+    const snapshot = (bbox: Record<string, number>) => ({
+      elements: [{ id: 'label', bbox, scroll_width_px: 120, scroll_height_px: 20, text: 'Name' }],
+    });
+    // 119.4 wide holds 120px of content only if nothing rounded the box to
+    // the nearest pixel before text_fits_container rounded it up.
+    const input = evalInputFromVisionCoreSnapshot(snapshot({ x: 0.5, y: 0, w: 119.4, h: 20 }));
+    expect(input?.elements[0].bbox).toEqual({ x: 0.5, y: 0, w: 119.4, h: 20 });
+    expect(evaluate({ type: 'text_fits_container', element: 'label' }, input).outcome).toBe(
+      'passed'
+    );
+    for (const bad of [
+      { x: 0, y: 0, w: -5, h: 10 },
+      { x: 0, y: 0, w: 5, h: -0.5 },
+    ]) {
+      expect(() => evalInputFromVisionCoreSnapshot(snapshot(bad))).toThrow(VisionCoreSnapshotError);
+    }
   });
 });
 
