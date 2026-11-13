@@ -10,6 +10,7 @@
  */
 
 import { pageScrollContainer } from './page-scroll-container';
+import { projectComputedStyles } from '../core/computed-styles';
 import type { UIBridgeRegistry } from '../core/registry';
 import { serializeRegisteredElement, serializeRegisteredComponent } from '../core/registry';
 import { serializeElementCustomActions } from '../core/element-actions';
@@ -328,29 +329,7 @@ function getElementState(element: HTMLElement): ElementState {
       bottom: rect.bottom,
       left: rect.left,
     },
-    computedStyles: {
-      display: style.display,
-      visibility: style.visibility,
-      opacity: style.opacity,
-      pointerEvents: style.pointerEvents,
-      cursor: style.cursor,
-      color: style.color,
-      backgroundColor: style.backgroundColor,
-      colorScheme: style.colorScheme,
-      fontSize: style.fontSize,
-      fontWeight: style.fontWeight,
-      lineHeight: style.lineHeight,
-      overflow: style.overflow,
-      textOverflow: style.textOverflow,
-      whiteSpace: style.whiteSpace,
-      position: style.position,
-      zIndex: style.zIndex,
-      padding: style.padding,
-      margin: style.margin,
-      borderColor: style.borderColor,
-      borderWidth: style.borderWidth,
-      borderRadius: style.borderRadius,
-    },
+    computedStyles: projectComputedStyles(style),
   };
 
   // Normalized 0–1 viewport coordinates for resolution-independent targeting
@@ -4110,6 +4089,29 @@ export function extractReactState(element: HTMLElement): ReactStateInfo | null {
     fiberState: reactVerdict.value ? [] : fiberState,
     componentName: reactVerdict.value ? undefined : componentName,
   };
+}
+
+/**
+ * The props of the nearest React function/class component that OWNS this
+ * DOM element — the component's own props, not the host element's DOM props
+ * that `extractReactState` reports. Scrubbed exactly as `extractReactState`
+ * scrubs (`safeSerialize` then `scrubReactProps` under the element's §4.6
+ * verdict). `null` when the element is not React-managed or no component
+ * fiber owns it. Used by the component capture (`control/component-capture.ts`).
+ */
+export function extractOwnerComponentProps(element: HTMLElement): Record<string, unknown> | null {
+  const el = element as unknown as Record<string, unknown>;
+  const reactFiberKey = Object.keys(el).find((k) => k.startsWith('__reactFiber$'));
+  if (!reactFiberKey) return null;
+  let current = el[reactFiberKey] as Record<string, unknown> | undefined;
+  while (current) {
+    if (typeof current.type === 'function') {
+      const raw = (current.memoizedProps as Record<string, unknown> | null | undefined) ?? {};
+      return scrubReactProps(safeSerialize(raw) as Record<string, unknown>, verdictOf(element));
+    }
+    current = current.return as Record<string, unknown> | undefined;
+  }
+  return null;
 }
 
 /**

@@ -24,6 +24,7 @@ import {
 } from '../core/a11y';
 import { createElementIdentifier, getBestIdentifier } from '../core/element-identifier';
 import { truncateCodePoints } from '../core/text';
+import { projectComputedStyles } from '../core/computed-styles';
 import { pageViewportContext } from '../control/page-scroll-container';
 
 /**
@@ -250,29 +251,7 @@ function getElementState(element: HTMLElement): ElementState {
       bottom: rect.bottom,
       left: rect.left,
     },
-    computedStyles: {
-      display: style.display,
-      visibility: style.visibility,
-      opacity: style.opacity,
-      pointerEvents: style.pointerEvents,
-      cursor: style.cursor,
-      color: style.color,
-      backgroundColor: style.backgroundColor,
-      colorScheme: style.colorScheme,
-      fontSize: style.fontSize,
-      fontWeight: style.fontWeight,
-      lineHeight: style.lineHeight,
-      overflow: style.overflow,
-      textOverflow: style.textOverflow,
-      whiteSpace: style.whiteSpace,
-      position: style.position,
-      zIndex: style.zIndex,
-      padding: style.padding,
-      margin: style.margin,
-      borderColor: style.borderColor,
-      borderWidth: style.borderWidth,
-      borderRadius: style.borderRadius,
-    },
+    computedStyles: projectComputedStyles(style),
   };
 
   // Normalized 0–1 viewport coordinates for resolution-independent targeting

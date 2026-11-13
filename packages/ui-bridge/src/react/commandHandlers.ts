@@ -158,6 +158,7 @@ import {
   restoreMediaOverrides,
 } from '../control/media-override';
 import { setTextVisibility } from '../control/text-visibility';
+import { captureComponent, componentCaptureCommandResult } from '../control/component-capture';
 import { listContexts } from '../specs/quality-contexts';
 import {
   captureQualityBaseline,
@@ -2925,6 +2926,16 @@ export async function executeCommand(
         timestamp: Date.now(),
       };
     }
+
+    // `GET /control/{component,element}/:id/capture` (matches_isolated_render).
+    case 'getComponentCapture':
+    case 'getElementCapture':
+      return componentCaptureCommandResult(
+        captureComponent(registry, {
+          kind: action === 'getComponentCapture' ? 'component' : 'element',
+          id: payload.id as string,
+        })
+      );
 
     case 'executeComponentAction': {
       // The relay forwards the whole `ComponentActionRequest`, and this arm

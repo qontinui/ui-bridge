@@ -233,6 +233,23 @@ export interface ElementState {
     borderColor: string;
     borderWidth: string;
     borderRadius: string;
+    // Sizing, flex and box model — optional so pre-existing literals and
+    // fixtures still type-check; `projectComputedStyles` (core/computed-styles.ts)
+    // always fills them. Added for the `matches_isolated_render` capture.
+    width?: string;
+    height?: string;
+    minWidth?: string;
+    maxWidth?: string;
+    minHeight?: string;
+    maxHeight?: string;
+    flexGrow?: string;
+    flexShrink?: string;
+    flexBasis?: string;
+    flexDirection?: string;
+    boxSizing?: string;
+    overflowX?: string;
+    overflowY?: string;
+    fontFamily?: string;
   };
   /** Whether the element is required (form controls only) */
   required?: boolean;

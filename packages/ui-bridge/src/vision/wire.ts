@@ -473,7 +473,25 @@ export type VisionAssertion =
   | { type: 'no_layout_shift_since'; baseline: string; tolerance_px?: number | null }
   | { type: 'no_clipping'; region?: VisionRegion | null }
   | { type: 'animation_settled'; region?: VisionRegion | null; settle_frames?: number | null }
-  | { type: 'contrast_meets_wcag'; element: string; level?: WcagLevel };
+  | { type: 'contrast_meets_wcag'; element: string; level?: WcagLevel }
+  /**
+   * Compare a component's in-situ structural capture (`GET
+   * /control/component/:id/capture`) with a named isolated-render baseline
+   * (a `ComponentBaseline` stored on the runner). Runner-evaluated: the tab
+   * holds no baseline. Defaults (applied by vision-core): `size_tolerance_pct`
+   * 5, `style_props` `["display","fontSize","color","overflow"]`,
+   * `compare_props` false.
+   */
+  | {
+      type: 'matches_isolated_render';
+      /** The in-situ registered component id. */
+      component: string;
+      /** The baseline name, e.g. `storybook/DateRangePicker--default@<sha>`. */
+      baseline: string;
+      size_tolerance_pct?: number | null;
+      style_props?: string[] | null;
+      compare_props?: boolean | null;
+    };
 
 /** One evaluated assertion. */
 export interface VisionAssertionResult {

@@ -39,6 +39,7 @@ import type {
 } from './types';
 import type { EffectSignature } from '../control/effect-types';
 import type { SnapshotModalContext } from '../modal/types';
+import { projectComputedStyles } from './computed-styles';
 import type { ElementEventLog } from '../debug/element-event-log';
 import { createElementIdentifier } from './element-identifier';
 import { computeElementFingerprint } from './element-fingerprint';
@@ -531,29 +532,7 @@ function getElementState(element: HTMLElement): ElementState {
       left: rect.left,
     },
     textContent: scrubContentByVerdict(element.textContent?.trim() || undefined, verdict),
-    computedStyles: {
-      display: computedStyle.display,
-      visibility: computedStyle.visibility,
-      opacity: computedStyle.opacity,
-      pointerEvents: computedStyle.pointerEvents,
-      cursor: computedStyle.cursor,
-      color: computedStyle.color,
-      backgroundColor: computedStyle.backgroundColor,
-      colorScheme: computedStyle.colorScheme,
-      fontSize: computedStyle.fontSize,
-      fontWeight: computedStyle.fontWeight,
-      lineHeight: computedStyle.lineHeight,
-      overflow: computedStyle.overflow,
-      textOverflow: computedStyle.textOverflow,
-      whiteSpace: computedStyle.whiteSpace,
-      position: computedStyle.position,
-      zIndex: computedStyle.zIndex,
-      padding: computedStyle.padding,
-      margin: computedStyle.margin,
-      borderColor: computedStyle.borderColor,
-      borderWidth: computedStyle.borderWidth,
-      borderRadius: computedStyle.borderRadius,
-    },
+    computedStyles: projectComputedStyles(computedStyle),
     inViewport,
   };
 

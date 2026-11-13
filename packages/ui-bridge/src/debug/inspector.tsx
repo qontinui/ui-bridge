@@ -10,6 +10,7 @@ import { createElementIdentifier, getBestIdentifier } from '../core/element-iden
 import { isInteractionBlocked, readInteractionBlockers } from '../core/a11y';
 import { getGlobalAnnotationStore } from '../annotations';
 import { verdictOf, scrubValueByVerdict } from '../core/redaction';
+import { projectComputedStyles } from '../core/computed-styles';
 
 /**
  * Inspector state
@@ -133,29 +134,7 @@ function getElementState(element: HTMLElement): ElementState {
       bottom: rect.bottom,
       left: rect.left,
     },
-    computedStyles: {
-      display: style.display,
-      visibility: style.visibility,
-      opacity: style.opacity,
-      pointerEvents: style.pointerEvents,
-      cursor: style.cursor,
-      color: style.color,
-      backgroundColor: style.backgroundColor,
-      colorScheme: style.colorScheme,
-      fontSize: style.fontSize,
-      fontWeight: style.fontWeight,
-      lineHeight: style.lineHeight,
-      overflow: style.overflow,
-      textOverflow: style.textOverflow,
-      whiteSpace: style.whiteSpace,
-      position: style.position,
-      zIndex: style.zIndex,
-      padding: style.padding,
-      margin: style.margin,
-      borderColor: style.borderColor,
-      borderWidth: style.borderWidth,
-      borderRadius: style.borderRadius,
-    },
+    computedStyles: projectComputedStyles(style),
   };
 
   // Normalized 0–1 viewport coordinates for resolution-independent targeting

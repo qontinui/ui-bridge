@@ -90,6 +90,32 @@ export {
 export { readValuePrimitive } from '../server/page-primitives';
 export type { PrimitiveResult, ReadValueResult, ReadValueHit } from '../server/page-primitives';
 
+// Component capture — the structural wire shape the vision-core
+// `matches_isolated_render` assertion compares (plan
+// 2026-11-13-ui-bridge-matches-isolated-render-assertion). Served by
+// `GET /control/{component,element}/:id/capture`.
+export {
+  captureComponent,
+  componentCaptureCommandResult,
+  componentCaptureRefusalCode,
+  componentCaptureRefusalStatus,
+  CAPTURE_STYLE_KEYS,
+  MAX_CAPTURE_NODES,
+} from './component-capture';
+export type {
+  CaptureRect,
+  ComponentCapture,
+  ComponentCaptureTarget,
+  ComponentCaptureNode,
+  ComponentCapturePortal,
+  ComponentCaptureClipAncestor,
+  ComponentCaptureRefusal,
+  ComponentCaptureRefusalReason,
+  ComponentCaptureResult,
+  ComponentCaptureRegistry,
+} from './component-capture';
+export { extractOwnerComponentProps } from './action-executor';
+
 // Form fill utility
 export { fillFormFields } from './fill-form';
 

@@ -95,6 +95,14 @@ import type { NavigationAdapter } from '../navigation/navigation-adapter';
 import { WindowLocationAdapter } from '../navigation/navigation-adapter';
 import { extractReactState } from '../control/action-executor';
 import {
+  captureComponent,
+  componentCaptureRefusalCode,
+  componentCaptureRefusalStatus,
+  type ComponentCapture,
+  type ComponentCaptureRefusal,
+  type ComponentCaptureResult,
+} from '../control/component-capture';
+import {
   computeAriaLabel,
   computeAccessibleNameSafe,
   computeRoleSafe,
@@ -773,6 +781,26 @@ function success<T>(data: T): APIResponse<T> {
  * diagnostics mapper (plan Phase 1). Prose `message` is retained as the
  * dual-audience human field (goal #3).
  */
+/**
+ * A component capture as the HTTP envelope: the capture under `data`, or the
+ * typed refusal — `error: 'component_capture_refused'`, the refusal body under
+ * `data`, 404 / 422.
+ */
+function componentCaptureResponse(
+  result: ComponentCaptureResult
+): APIResponse<ComponentCapture | ComponentCaptureRefusal> {
+  if (result.ok) return success(result.capture);
+  return {
+    success: false,
+    error: result.refusal.error,
+    code: componentCaptureRefusalCode(result.refusal.reason),
+    data: result.refusal,
+    suggestions: [result.message],
+    httpStatus: componentCaptureRefusalStatus(result.refusal.reason),
+    timestamp: Date.now(),
+  };
+}
+
 function error<T = unknown>(message: string, code?: string): APIResponse<T> {
   return {
     success: false,
@@ -1741,6 +1769,9 @@ export function createHandlers(
       }
     },
 
+    getElementCapture: async (id: string) =>
+      componentCaptureResponse(captureComponent(registry, { kind: 'element', id })),
+
     /**
      * `POST /control/element/:id/action` — the ONE exported action seam every
      * transport lands on (HTTP adapters, the WebSocket handler, the window
@@ -2176,6 +2207,9 @@ export function createHandlers(
         return error((err as Error).message, 'COMPONENT_STATE_ERROR');
       }
     },
+
+    getComponentCapture: async (id: string) =>
+      componentCaptureResponse(captureComponent(registry, { kind: 'component', id })),
 
     executeComponentAction: async (id: string, request: ComponentActionRequest) => {
       try {
@@ -5661,6 +5695,11 @@ export function createHandlers(
                   description: 'Get React props and fiber state for element',
                 },
                 {
+                  method: 'GET',
+                  path: '/control/element/:id/capture',
+                  description: 'Structural capture (matches_isolated_render) rooted at the element',
+                },
+                {
                   method: 'POST',
                   path: '/control/element/:id/action',
                   description: 'Execute action on element',
@@ -5689,6 +5728,11 @@ export function createHandlers(
                   method: 'GET',
                   path: '/control/component/:id/state',
                   description: 'Get component state',
+                },
+                {
+                  method: 'GET',
+                  path: '/control/component/:id/capture',
+                  description: 'Structural capture (matches_isolated_render) of the component',
                 },
                 {
                   method: 'POST',

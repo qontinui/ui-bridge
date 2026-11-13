@@ -27,6 +27,7 @@ import type {
 } from '../control';
 import type { ElementState, FillResult } from '../core/types';
 import type { ElementProjection } from '../core/element-projection';
+import type { ComponentCapture, ComponentCaptureRefusal } from '../control/component-capture';
 import type { PageHealthObservation } from './page-health';
 import type {
   VisionAnalyzeResponse,
@@ -551,6 +552,16 @@ export interface UIBridgeServerHandlers {
     id: string,
     context?: HandlerContext
   ) => Promise<APIResponse<unknown>>;
+  /**
+   * `GET /control/element/:id/capture` — the element's structural
+   * {@link ComponentCapture}. Refusal: `success:false`,
+   * `error: 'component_capture_refused'`, `data: ComponentCaptureRefusal`
+   * (404 `not_found`, 422 `no_mounted_elements`).
+   */
+  getElementCapture: (
+    id: string,
+    context?: HandlerContext
+  ) => Promise<APIResponse<ComponentCapture | ComponentCaptureRefusal>>;
   executeElementAction: (
     id: string,
     request: ControlActionRequest,
@@ -620,6 +631,15 @@ export interface UIBridgeServerHandlers {
       timestamp: number;
     }>
   >;
+  /**
+   * `GET /control/component/:id/capture` — the component's structural
+   * {@link ComponentCapture}, rooted at the nearest common DOM ancestor of its
+   * mounted `elementIds`. Refusals as {@link UIBridgeServerHandlers.getElementCapture}.
+   */
+  getComponentCapture: (
+    id: string,
+    context?: HandlerContext
+  ) => Promise<APIResponse<ComponentCapture | ComponentCaptureRefusal>>;
   executeComponentAction: (
     id: string,
     request: ComponentActionRequest,
@@ -1905,6 +1925,15 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     handler: 'getElementReactState',
     params: ['id'],
   },
+  // Structural capture for the `matches_isolated_render` vision assertion
+  // (plan 2026-11-13-ui-bridge-matches-isolated-render-assertion, Phase 2).
+  // Answers a `ComponentCapture` (control/component-capture.ts).
+  {
+    method: 'GET',
+    path: '/control/element/:id/capture',
+    handler: 'getElementCapture',
+    params: ['id'],
+  },
   {
     method: 'POST',
     path: '/control/element/:id/action',
@@ -1957,6 +1986,15 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     method: 'GET',
     path: '/control/component/:id/state',
     handler: 'getComponentState',
+    params: ['id'],
+  },
+  // Structural capture for `matches_isolated_render`: rooted at the nearest
+  // common DOM ancestor of the component's mounted `elementIds`. A component
+  // with none mounted is a typed `component_capture_refused` refusal.
+  {
+    method: 'GET',
+    path: '/control/component/:id/capture',
+    handler: 'getComponentCapture',
     params: ['id'],
   },
   {

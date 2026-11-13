@@ -74,6 +74,11 @@ export {
 export { REDACTED_VALUE, verdictOf, isValueRedacted, isContentRedacted } from './redaction';
 export type { RedactionVerdict } from './redaction';
 
+// The one computed-style projection (ElementState.computedStyles and the
+// component capture's styles map).
+export { projectComputedStyles } from './computed-styles';
+export type { ProjectedComputedStyles } from './computed-styles';
+
 // Element fingerprinting for state discovery
 export {
   computeElementFingerprint,

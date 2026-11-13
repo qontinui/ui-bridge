@@ -16,6 +16,7 @@ import { scopedCallerRefusal } from './scoped-refusal';
 import { buildComponentNotFoundError } from './handlers';
 import { describeInnerFailure } from './inner-failure';
 import { fitMediaOverrideBudget } from '../control/media-override-budget';
+import { componentCaptureRefusalStatus } from '../control/component-capture';
 import type {
   UIBridgeServerHandlers,
   APIResponse,
@@ -139,6 +140,18 @@ function readRelayInnerFailure(result: unknown): { message: string; code: string
  * fields loses information. One shape for every relay path that reads a live
  * answer (`relayCommand`, `getElement`'s unpinned read).
  */
+/**
+ * A relayed component capture's typed refusal (`component_capture_refused`,
+ * see `control/component-capture.ts`) answers 404 / 422 like the direct
+ * handler does; every other answer passes through untouched.
+ */
+function withCaptureRefusalStatus<T>(response: APIResponse<T>): APIResponse<T> {
+  if (response.success || response.error !== 'component_capture_refused') return response;
+  const reason = (response.data as { reason?: unknown } | undefined)?.reason;
+  if (reason !== 'not_found' && reason !== 'no_mounted_elements') return response;
+  return { ...response, httpStatus: componentCaptureRefusalStatus(reason) };
+}
+
 function relayInnerFailureResponse<T>(
   innerFailure: { message: string; code: string },
   result: unknown
@@ -1288,6 +1301,12 @@ export function createRelayHandlers(
       return relayCommand('getElementReactState', { id }, ctxOpts(context));
     },
 
+    async getElementCapture(id, context) {
+      return withCaptureRefusalStatus(
+        await relayCommand('getElementCapture', { id }, ctxOpts(context))
+      );
+    },
+
     async executeElementAction(id, request, context) {
       // Item A (iter-3 manual-test remediation): contract enforcement for the
       // `type` action. The docs (`docs-site/docs/api/runner-features.md` §
@@ -1426,6 +1445,12 @@ export function createRelayHandlers(
 
     async getComponentState(id, context) {
       return relayCommand('getComponentState', { id }, ctxOpts(context));
+    },
+
+    async getComponentCapture(id, context) {
+      return withCaptureRefusalStatus(
+        await relayCommand('getComponentCapture', { id }, ctxOpts(context))
+      );
     },
 
     async executeComponentAction(id, request, context) {
