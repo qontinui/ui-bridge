@@ -167,10 +167,47 @@ describe('CommandRelay.destroy()', () => {
     expect(secondSweep).not.toBe(firstSweep);
     expect(vi.getTimerCount()).toBe(1);
 
-    // A relay that still holds the first sweep's handle must not forget the
-    // later relay's sweep when it is destroyed.
+    // destroy() is prefix-wide, so a relay still holding the first sweep's
+    // handle clears the later relay's sweep too: nothing is left running.
     sibling.destroy();
-    expect(g[key]).toBe(secondSweep);
+    expect(g[key]).toBeUndefined();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("clears a sweep a relay's own registration re-armed when a sibling holding a stale handle is destroyed", () => {
+    const prefix = uniquePrefix();
+    const key = `${prefix}CleanupInterval`;
+    const g = globalThis as unknown as Record<string, unknown>;
+    const a = relay({ globalPrefix: prefix, proactiveSnapshot: false });
+    const b = relay({ globalPrefix: prefix, proactiveSnapshot: false });
+    a.destroy();
+    // a is reused: its registration re-arms the prefix sweep, which b never saw.
+    a.registerWebSocketClient(wsClient('ws-1'));
+    expect(g[key]).toBeDefined();
+
+    b.destroy();
+
+    expect(b.getTransportDiagnostics().wsClientCount).toBe(0);
+    expect(g[key]).toBeUndefined();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('clears a sweep a sibling re-armed when an already-destroyed relay is destroyed again', () => {
+    const prefix = uniquePrefix();
+    const key = `${prefix}CleanupInterval`;
+    const g = globalThis as unknown as Record<string, unknown>;
+    const a = relay({ globalPrefix: prefix, proactiveSnapshot: false });
+    const b = relay({ globalPrefix: prefix, proactiveSnapshot: false });
+    a.destroy();
+    // b's registration re-arms the sweep; a holds no handle at all now.
+    b.registerWebSocketClient(wsClient('ws-1'));
+    expect(g[key]).toBeDefined();
+
+    a.destroy();
+
+    expect(b.getTransportDiagnostics().wsClientCount).toBe(0);
+    expect(g[key]).toBeUndefined();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('closes the guard records of the transports open at destroy() time, and only those', () => {
@@ -393,19 +430,27 @@ describe('CommandRelay.destroy()', () => {
     // delivers nothing: the dispatch fails with SDK_DISCONNECTED.
     r.registerWebSocketClient({ ...wsClient('ws-gone'), isConnected: () => false });
     const later = wsClient('ws-new');
-    // Land destroy() and a fresh transport between the failure and the retry.
-    const log = vi.spyOn(console, 'log').mockImplementation((message: unknown) => {
-      if (typeof message === 'string' && message.includes('waiting for reconnection')) {
-        r.destroy();
-        r.registerWebSocketClient(later);
-      }
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const seams = r as unknown as {
+      waitForConnection: (ms: number, makeError: () => Error) => Promise<void>;
+      queueCommandInner: (...args: unknown[]) => Promise<unknown>;
+    };
+    // The only waitForConnection call is the reconnection wait (the stale
+    // client skips the initial one). Land destroy() and a fresh transport
+    // inside it; the wait then ends the way a reconnection ends it.
+    const wait = vi.spyOn(seams, 'waitForConnection').mockImplementationOnce(async () => {
+      r.destroy();
+      r.registerWebSocketClient(later);
     });
+    const inner = vi.spyOn(seams, 'queueCommandInner');
     const outcome = track(r.queueCommand('getControlSnapshot', {}));
     await flushMicrotasks();
 
+    expect(wait).toHaveBeenCalledTimes(1);
     expect(outcome.settled).toBe(true);
     expect(outcome.error).toBeInstanceOf(RelayDestroyedError);
     expect(later.send).not.toHaveBeenCalled();
-    expect(log).not.toHaveBeenCalledWith(expect.stringContaining('Reconnected, retrying'));
+    // Only the first attempt ran: the retry was refused before it began.
+    expect(inner).toHaveBeenCalledTimes(1);
   });
 });
