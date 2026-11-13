@@ -138,6 +138,26 @@ Run it locally before pushing a route change: see
 [CONTRIBUTING.md](../../CONTRIBUTING.md) → "Adding or removing a route in
 `UI_BRIDGE_ROUTES`".
 
+### `vision-conformance.yml` — the vision fixture against qontinui-schemas
+
+`packages/ui-bridge/src/vision/conformance/vision-assertions.json` is a byte
+copy of qontinui-schemas' vision-core conformance fixture, at the commit its
+sidecar `vision-assertions.source.json` records. ci.yml's test run holds the
+in-tab evaluator to every case of the copy, but cannot see qontinui-schemas.
+This workflow does, with no dependencies installed:
+
+| Event | qontinui-schemas tree | A mismatch |
+|---|---|---|
+| `pull_request` | the commit the sidecar records | **gating** |
+| `push` to `main` | same commit | advisory |
+| `schedule` (nightly) / `workflow_dispatch` | the default branch | advisory: a warning to re-vendor |
+
+As in `runner-contract.yml`, "advisory" covers only what the peer can cause.
+The copy matching its own sidecar (`sync-vision-conformance.mjs --check`, no
+source) is checked first and is hard on every event. qontinui-schemas is
+public, so no secret is needed. To re-vendor after a warning, run the command
+the warning prints, then run the port's conformance test over the new cases.
+
 ### `ci-integrity.yml` — guard gating workflows from self-edits
 
 Runs on `pull_request_target` (so `main`'s copy judges every PR) whenever a PR
