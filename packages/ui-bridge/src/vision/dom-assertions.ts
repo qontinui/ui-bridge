@@ -49,12 +49,16 @@
  *   `unknown{hit_test_unmeasurable}`.
  * - `no_clipping` — each registered element's border box against the padding
  *   box of its nearest ancestor that clips that axis (`overflow-x` /
- *   `overflow-y` of `hidden`, `clip`, `scroll` or `auto`, or `contain: paint`),
- *   following the containing-block chain, so an absolutely or fixed
- *   positioned element is not checked against an ancestor that does not clip
- *   it. The element set is the registry's — the same set every UI Bridge read
- *   and the runner path see. An element nothing clips is not a compared
- *   pair; zero compared pairs is `unknown{input_missing}`.
+ *   `overflow-y` of `hidden` or `clip`, or `contain: paint`), following the
+ *   containing-block chain, so an absolutely or fixed positioned element is
+ *   not checked against an ancestor that does not clip it. A scroll container
+ *   (`overflow` `auto` or `scroll`) is not a clip: content scrolled out of it
+ *   is reachable, so the nearest scroll container settles that axis as
+ *   unclipped, and an ancestor further out is compared with the scroll
+ *   container's own box instead. The element set is the registry's — the
+ *   same set every UI Bridge read and the runner path see. An element nothing
+ *   clips is not a compared pair; zero compared pairs is
+ *   `unknown{input_missing}`.
  *
  * SECURITY SURFACE: this executes no caller-supplied code. It is a fixed
  * evaluator over a typed, validated assertion list; the only caller input
@@ -386,6 +390,9 @@ interface PaintItem {
   /** Names the layer in an unknown's detail. */
   label: string;
 }
+
+/** What an element does to its content's overflow on one axis. */
+type Overflow = 'clip' | 'scroll' | null;
 
 /** Why a colour measurement stopped: returned instead of a colour. */
 class ColorUnmeasured {
@@ -836,27 +843,37 @@ class TabMeasurement {
     );
   }
 
-  /** The axes on which `el` clips its content. The root never does: its overflow is the viewport's. */
-  private clipsAxes(el: Element, st: CSSStyleDeclaration): { x: boolean; y: boolean } {
+  /**
+   * What `el` does, per axis, to the content that overflows it: cuts it off
+   * (`clip`), keeps it reachable by scrolling (`scroll`), or neither (null).
+   * The root does neither: its overflow is the viewport's, which scrolls.
+   */
+  private overflowAxes(el: Element, st: CSSStyleDeclaration): { x: Overflow; y: Overflow } {
+    const none = { x: null, y: null };
     const root = document.documentElement;
-    if (el === root) return { x: false, y: false };
+    if (el === root) return none;
     if (el === document.body) {
       // The body's overflow propagates to the viewport when the root's is
       // visible on both axes, and then the body itself clips nothing.
       const rootSt = this.style(root);
-      if (rootSt.overflowX === 'visible' && rootSt.overflowY === 'visible') {
-        return { x: false, y: false };
-      }
+      if (rootSt.overflowX === 'visible' && rootSt.overflowY === 'visible') return none;
     }
     // Overflow applies to block containers, not to an inline box or to an
     // element that generates none.
     if (st.display === 'inline' || st.display === 'contents' || st.display === 'none') {
-      return { x: false, y: false };
+      return none;
     }
-    const clipping = (v: string): boolean =>
-      v === 'hidden' || v === 'clip' || v === 'scroll' || v === 'auto';
+    // Only `hidden` and `clip` (or `contain: paint`) cut content off. `scroll`
+    // and `auto` make a scroll container, whose overflow is reachable by
+    // scrolling: a row scrolled out of a list is not clipped.
     const paint = /\b(paint|strict|content)\b/.test(st.contain ?? '');
-    return { x: paint || clipping(st.overflowX), y: paint || clipping(st.overflowY) };
+    const axis = (v: string): Overflow =>
+      v === 'auto' || v === 'scroll'
+        ? 'scroll'
+        : v === 'hidden' || v === 'clip' || paint
+          ? 'clip'
+          : null;
+    return { x: axis(st.overflowX), y: axis(st.overflowY) };
   }
 
   /**
@@ -892,12 +909,16 @@ class TabMeasurement {
    * clips that axis, walking only the ancestors that can clip it — an
    * absolutely positioned element skips the ancestors below its containing
    * block, a fixed one every ancestor below one that contains fixed
-   * descendants. `null` when nothing clips it.
+   * descendants. A scroll container met first settles that axis as unclipped:
+   * what overflows it is reachable by scrolling, and its own box — not the
+   * content scrolled inside it — is what an ancestor further out can cut off.
+   * `null` when nothing clips it.
    */
   private clipOf(el: Element): ClipBounds | null {
     let need: 'all' | 'absolute' | 'fixed' = this.positionMode(this.style(el));
-    let x: { box: ClipBounds; by: Element } | null = null;
-    let y: { box: ClipBounds; by: Element } | null = null;
+    type Side = { box: ClipBounds; by: Element } | 'scrolls' | null;
+    let x: Side = null;
+    let y: Side = null;
     for (let a = composedParent(el); a && !(x && y); a = composedParent(a)) {
       const st = this.style(a);
       const eligible =
@@ -905,14 +926,14 @@ class TabMeasurement {
         (need === 'absolute' && this.absoluteContainer(st)) ||
         (need === 'fixed' && this.fixedContainer(st));
       if (!eligible) continue;
-      const axes = this.clipsAxes(a, st);
-      if ((axes.x && !x) || (axes.y && !y)) {
-        const box = this.clipBox(a, st);
-        if (axes.x && !x) x = { box, by: a };
-        if (axes.y && !y) y = { box, by: a };
-      }
+      const axes = this.overflowAxes(a, st);
+      const box = axes.x === 'clip' || axes.y === 'clip' ? this.clipBox(a, st) : null;
+      if (!x && axes.x) x = box && axes.x === 'clip' ? { box, by: a } : 'scrolls';
+      if (!y && axes.y) y = box && axes.y === 'clip' ? { box, by: a } : 'scrolls';
       need = this.positionMode(st);
     }
+    if (x === 'scrolls') x = null;
+    if (y === 'scrolls') y = null;
     if (!x && !y) return null;
     const label = (side: { by: Element } | null, axis: string, prop: string): string =>
       side
