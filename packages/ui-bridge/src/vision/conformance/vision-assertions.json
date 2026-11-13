@@ -12,14 +12,14 @@
     {
       "id": "contrast-aa-normal-text-fails-at-4-48",
       "kind": "contrast_meets_wcag",
-      "snapshot": {"elements": [{"id": "t", "fg_color": {"r": 119, "g": 119, "b": 119}, "bg_color": {"r": 255, "g": 255, "b": 255}}]},
+      "snapshot": {"elements": [{"id": "t", "fg_color": {"r": 119, "g": 119, "b": 119}, "bg_color": {"r": 255, "g": 255, "b": 255}, "font_size_px": 16}]},
       "assertion": {"type": "contrast_meets_wcag", "element": "t"},
       "expected": {"outcome": "failed", "code": null}
     },
     {
       "id": "contrast-aa-explicit-level-normal-text-fails-at-4-48",
       "kind": "contrast_meets_wcag",
-      "snapshot": {"elements": [{"id": "t", "fg_color": {"r": 119, "g": 119, "b": 119}, "bg_color": {"r": 255, "g": 255, "b": 255}}]},
+      "snapshot": {"elements": [{"id": "t", "fg_color": {"r": 119, "g": 119, "b": 119}, "bg_color": {"r": 255, "g": 255, "b": 255}, "font_size_px": 16}]},
       "assertion": {"type": "contrast_meets_wcag", "element": "t", "level": "aa"},
       "expected": {"outcome": "failed", "code": null}
     },
@@ -75,7 +75,7 @@
     {
       "id": "contrast-aa-23-99px-text-is-normal-and-fails-at-3-54",
       "kind": "contrast_meets_wcag",
-      "snapshot": {"elements": [{"id": "t", "fg_color": {"r": 136, "g": 136, "b": 136}, "bg_color": {"r": 255, "g": 255, "b": 255}, "font_size_px": 23.99}]},
+      "snapshot": {"elements": [{"id": "t", "fg_color": {"r": 136, "g": 136, "b": 136}, "bg_color": {"r": 255, "g": 255, "b": 255}, "font_size_px": 23.99, "font_weight": 400}]},
       "assertion": {"type": "contrast_meets_wcag", "element": "t"},
       "expected": {"outcome": "failed", "code": null}
     },
@@ -108,18 +108,18 @@
       "expected": {"outcome": "passed", "code": null}
     },
     {
-      "id": "contrast-aa-unmeasured-weight-18-66px-text-is-normal-and-fails-at-3-54",
+      "id": "contrast-aa-unmeasured-weight-18-66px-text-between-thresholds-is-unknown",
       "kind": "contrast_meets_wcag",
       "snapshot": {"elements": [{"id": "t", "fg_color": {"r": 136, "g": 136, "b": 136}, "bg_color": {"r": 255, "g": 255, "b": 255}, "font_size_px": 18.66}]},
       "assertion": {"type": "contrast_meets_wcag", "element": "t"},
-      "expected": {"outcome": "failed", "code": null}
+      "expected": {"outcome": "unknown", "code": "input_missing"}
     },
     {
-      "id": "contrast-aa-unmeasured-size-keeps-normal-thresholds-even-when-bold",
+      "id": "contrast-aa-unmeasured-size-between-thresholds-is-unknown-even-when-bold",
       "kind": "contrast_meets_wcag",
       "snapshot": {"elements": [{"id": "t", "fg_color": {"r": 136, "g": 136, "b": 136}, "bg_color": {"r": 255, "g": 255, "b": 255}, "font_weight": 700}]},
       "assertion": {"type": "contrast_meets_wcag", "element": "t"},
-      "expected": {"outcome": "failed", "code": null}
+      "expected": {"outcome": "unknown", "code": "input_missing"}
     },
     {
       "id": "contrast-aa-large-text-fails-at-2-85",
@@ -152,16 +152,37 @@
     {
       "id": "text-fits-both-arms-measured-passes",
       "kind": "text_fits_container",
+      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 200, "h": 24}, "text": "Save changes", "scroll_width_px": 120, "scroll_height_px": 18}]},
+      "assertion": {"type": "text_fits_container", "element": "label"},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "text-fits-content-exactly-filling-the-ceiled-box-passes",
+      "kind": "text_fits_container",
+      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 120, "h": 20}, "text": "Save changes", "scroll_width_px": 120, "scroll_height_px": 20}]},
+      "assertion": {"type": "text_fits_container", "element": "label"},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "text-fits-content-as-tall-as-the-ceiled-box-passes",
+      "kind": "text_fits_container",
       "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 200, "h": 20}, "text": "Save changes", "scroll_width_px": 120, "scroll_height_px": 20}]},
       "assertion": {"type": "text_fits_container", "element": "label"},
       "expected": {"outcome": "passed", "code": null}
     },
     {
-      "id": "text-fits-content-exactly-filling-the-box-passes",
+      "id": "text-fits-content-one-px-taller-than-the-ceiled-box-fails",
       "kind": "text_fits_container",
-      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 120, "h": 20}, "text": "Save changes", "scroll_width_px": 120, "scroll_height_px": 20}]},
+      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 200, "h": 20}, "text": "Save changes", "scroll_width_px": 120, "scroll_height_px": 21}]},
       "assertion": {"type": "text_fits_container", "element": "label"},
-      "expected": {"outcome": "passed", "code": null}
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "text-fits-content-one-px-wider-than-the-ceiled-box-fails",
+      "kind": "text_fits_container",
+      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 120, "h": 20}, "text": "Save changes", "scroll_width_px": 121, "scroll_height_px": 20}]},
+      "assertion": {"type": "text_fits_container", "element": "label"},
+      "expected": {"outcome": "failed", "code": null}
     },
     {
       "id": "text-fits-horizontal-overflow-fails",
@@ -269,11 +290,11 @@
       "expected": {"outcome": "unknown", "code": "input_missing"}
     },
     {
-      "id": "text-fits-element-without-text-passes",
+      "id": "text-fits-element-without-text-is-unknown",
       "kind": "text_fits_container",
-      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 200, "h": 20}}]},
+      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 200, "h": 20}, "scroll_width_px": 120, "scroll_height_px": 20}]},
       "assertion": {"type": "text_fits_container", "element": "label"},
-      "expected": {"outcome": "passed", "code": null}
+      "expected": {"outcome": "unknown", "code": "input_missing"}
     },
     {
       "id": "no-overlap-disjoint-passes",
@@ -301,6 +322,16 @@
       "snapshot": {"elements": [
         {"id": "a", "bbox": {"x": 0, "y": 0, "w": 100, "h": 50}},
         {"id": "b", "bbox": {"x": 100, "y": 0, "w": 100, "h": 50}}
+      ]},
+      "assertion": {"type": "no_overlap", "elements": ["a", "b"]},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "no-overlap-adjacent-flex-thirds-rounded-to-the-nearest-pixel-pass",
+      "kind": "no_overlap",
+      "snapshot": {"elements": [
+        {"id": "a", "bbox": {"x": 33, "y": 0, "w": 34, "h": 20}},
+        {"id": "b", "bbox": {"x": 67, "y": 0, "w": 33, "h": 20}}
       ]},
       "assertion": {"type": "no_overlap", "elements": ["a", "b"]},
       "expected": {"outcome": "passed", "code": null}
@@ -450,7 +481,7 @@
         {"id": "panel", "bbox": {"x": 100, "y": 50, "w": 400, "h": 400}}
       ]},
       "assertion": {"type": "element_above", "elements": ["menu", "panel"]},
-      "expected": {"outcome": "unknown", "code": "input_missing"}
+      "expected": {"outcome": "unknown", "code": "hit_test_unmeasurable"}
     },
     {
       "id": "element-above-one-paint-rank-missing-is-unknown",
@@ -460,7 +491,27 @@
         {"id": "panel", "bbox": {"x": 100, "y": 50, "w": 400, "h": 400}}
       ]},
       "assertion": {"type": "element_above", "elements": ["menu", "panel"]},
-      "expected": {"outcome": "unknown", "code": "input_missing"}
+      "expected": {"outcome": "unknown", "code": "hit_test_unmeasurable"}
+    },
+    {
+      "id": "element-above-attribution-to-a-third-element-without-paint-ranks-is-unknown",
+      "kind": "element_above",
+      "snapshot": {"elements": [
+        {"id": "menu", "bbox": {"x": 0, "y": 0, "w": 200, "h": 300}},
+        {"id": "panel", "bbox": {"x": 100, "y": 50, "w": 400, "h": 400}, "occluded_by": "toast"}
+      ]},
+      "assertion": {"type": "element_above", "elements": ["menu", "panel"]},
+      "expected": {"outcome": "unknown", "code": "hit_test_unmeasurable"}
+    },
+    {
+      "id": "element-above-without-geometry-or-paint-order-is-unknown-when-overlap-is-not-required",
+      "kind": "element_above",
+      "snapshot": {"elements": [
+        {"id": "menu"},
+        {"id": "panel"}
+      ]},
+      "assertion": {"type": "element_above", "elements": ["menu", "panel"], "require_overlap": false},
+      "expected": {"outcome": "unknown", "code": "hit_test_unmeasurable"}
     },
     {
       "id": "element-above-disjoint-boxes-fail-when-overlap-is-required",
@@ -620,6 +671,66 @@
       ]},
       "assertion": {"type": "no_clipping"},
       "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "contrast-aa-unmeasured-size-between-thresholds-is-unknown-at-4-48",
+      "kind": "contrast_meets_wcag",
+      "snapshot": {"elements": [{"id": "t", "fg_color": {"r": 119, "g": 119, "b": 119}, "bg_color": {"r": 255, "g": 255, "b": 255}}]},
+      "assertion": {"type": "contrast_meets_wcag", "element": "t"},
+      "expected": {"outcome": "unknown", "code": "input_missing"}
+    },
+    {
+      "id": "no-clipping-parent-id-naming-no-registered-element-is-unknown",
+      "kind": "no_clipping",
+      "snapshot": {"elements": [
+        {"id": "badge", "bbox": {"x": 380, "y": 90, "w": 60, "h": 24}, "parent_id": "card"}
+      ]},
+      "assertion": {"type": "no_clipping"},
+      "expected": {"outcome": "unknown", "code": "input_missing"}
+    },
+    {
+      "id": "contrast-aaa-unmeasured-size-between-thresholds-is-unknown-at-4-54",
+      "kind": "contrast_meets_wcag",
+      "snapshot": {"elements": [{"id": "t", "fg_color": {"r": 118, "g": 118, "b": 118}, "bg_color": {"r": 255, "g": 255, "b": 255}}]},
+      "assertion": {"type": "contrast_meets_wcag", "element": "t", "level": "aaa"},
+      "expected": {"outcome": "unknown", "code": "input_missing"}
+    },
+    {
+      "id": "contrast-aaa-unmeasured-size-below-the-large-minimum-fails-at-4-48",
+      "kind": "contrast_meets_wcag",
+      "snapshot": {"elements": [{"id": "t", "fg_color": {"r": 119, "g": 119, "b": 119}, "bg_color": {"r": 255, "g": 255, "b": 255}}]},
+      "assertion": {"type": "contrast_meets_wcag", "element": "t", "level": "aaa"},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "no-clipping-only-parented-child-without-a-bbox-is-unknown",
+      "kind": "no_clipping",
+      "snapshot": {"elements": [
+        {"id": "card", "bbox": {"x": 100, "y": 100, "w": 300, "h": 200}},
+        {"id": "title", "parent_id": "card"}
+      ]},
+      "assertion": {"type": "no_clipping"},
+      "expected": {"outcome": "unknown", "code": "input_missing"}
+    },
+    {
+      "id": "no-clipping-region-holding-no-parented-child-is-unknown",
+      "kind": "no_clipping",
+      "snapshot": {"elements": [
+        {"id": "card", "bbox": {"x": 100, "y": 100, "w": 300, "h": 200}},
+        {"id": "title", "bbox": {"x": 120, "y": 120, "w": 200, "h": 40}, "parent_id": "card"}
+      ]},
+      "assertion": {"type": "no_clipping", "region": {"x": 600, "y": 600, "w": 10, "h": 10}},
+      "expected": {"outcome": "unknown", "code": "input_missing"}
+    },
+    {
+      "id": "no-clipping-parent-id-naming-a-bbox-less-parent-is-unknown",
+      "kind": "no_clipping",
+      "snapshot": {"elements": [
+        {"id": "card"},
+        {"id": "badge", "bbox": {"x": 380, "y": 90, "w": 60, "h": 24}, "parent_id": "card"}
+      ]},
+      "assertion": {"type": "no_clipping"},
+      "expected": {"outcome": "unknown", "code": "input_missing"}
     }
   ]
 }

@@ -425,14 +425,16 @@ function evalElementAbove(
         : az === undefined
           ? `'${aboveId}'`
           : `'${belowId}'`;
+    // No paint-order evidence at all: the fact the hit test reports when no
+    // sample shows both elements, so the same code, as vision-core answers it.
     return unknown(
       a,
-      'input_missing',
-      `${tag}: CANNOT ANSWER — no ordering verdict was reached. Neither element carries an ` +
-        `\`occluded_by\` attribution, and \`z_index\` is missing on ${which}. Reported as ` +
-        '`unknown`, not as a failure: nothing was measured, so nothing is known — and not as a ' +
-        'pass either, because a vacuous pass would silently hide the very stacking bug this ' +
-        "assertion exists to catch. Note `z_index` is the producer's RESOLVED, GLOBAL paint " +
+      'hit_test_unmeasurable',
+      `${tag}: CANNOT ANSWER — no ordering verdict was reached. No \`occluded_by\` attribution ` +
+        `names either element as painting over the other, and \`z_index\` is missing on ${which}. ` +
+        'Reported as `unknown`, not as a failure: nothing was measured, so nothing is known — and ' +
+        'not as a pass either, because a vacuous pass would silently hide the very stacking bug ' +
+        "this assertion exists to catch. Note `z_index` is the producer's RESOLVED, GLOBAL paint " +
         'rank: a raw CSS `z-index` value is NOT a substitute and must not be projected in its place.'
     );
   }
@@ -620,6 +622,25 @@ export function isLargeText(
   return size >= Math.fround(24) || (bold && size >= Math.fround(18.66));
 }
 
+/**
+ * The missing input that leaves the text's scale undecided (vision-core
+ * `TextScale::undetermined_by`): no font size at all, or a size in the
+ * bold-large band (18.66 px up to, not including, 24 px) with no weight.
+ * `null` when what was measured decides the scale. Compared on `f32`, as
+ * {@link isLargeText} is.
+ */
+export function textScaleUndeterminedBy(
+  fontSizePx: number | undefined,
+  fontWeight: number | undefined
+): '`font_size_px`' | '`font_weight`' | null {
+  if (fontSizePx === undefined) return '`font_size_px`';
+  const size = Math.fround(fontSizePx);
+  if (fontWeight === undefined && size >= Math.fround(18.66) && size < Math.fround(24)) {
+    return '`font_weight`';
+  }
+  return null;
+}
+
 /** The WCAG minimum contrast ratio for a level and text size. */
 export function wcagMinimumRatio(level: WcagLevel, largeText: boolean): number {
   if (level === 'aaa') return largeText ? 4.5 : 7;
@@ -650,6 +671,21 @@ function evalContrast(a: Of<'contrast_meets_wcag'>, byId: Map<string, MeasuredEl
   const levelName = level === 'aaa' ? 'Aaa' : 'Aa';
   const scale = large ? 'large' : 'normal';
   if (ratio < needed) {
+    // Below the normal-text minimum but at or above the large-text one, the
+    // verdict hangs on the scale: an unmeasured size or weight leaves it
+    // unknown rather than failing text nobody showed was normal.
+    const largeNeeded = wcagMinimumRatio(level, true);
+    const missing =
+      ratio >= largeNeeded ? textScaleUndeterminedBy(el.fontSizePx, el.fontWeight) : null;
+    if (missing) {
+      return unknown(
+        a,
+        'input_missing',
+        `contrast ratio ${ratio.toFixed(2)}:1 meets the WCAG ${levelName} large-text minimum ` +
+          `${largeNeeded.toFixed(1)}:1 but not the normal-text minimum ${needed.toFixed(1)}:1, ` +
+          `and the snapshot carries no ${missing}, so whether the text is large was never measured`
+      );
+    }
     return fail(
       a,
       `contrast ratio ${ratio.toFixed(2)}:1 below WCAG ${levelName} minimum ` +
