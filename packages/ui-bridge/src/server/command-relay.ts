@@ -555,6 +555,19 @@ export class CommandRelay {
    * clears the sweep, and a relay used again after it (or a sibling relay on
    * the prefix) must not run its transports with no prune and no presence
    * refresh until some other relay happens to be constructed.
+   *
+   * Limitation: the sweep is prefix-wide but runs as the relay that armed it.
+   * Its cadence is that relay's `pruneSweepIntervalMs`, its prune thresholds
+   * are that relay's, and the bus presence refresh goes to that relay's bus
+   * only (none, when it has none). Sibling relays on one prefix are expected
+   * to share their options and their bus; one that does not still has its
+   * tabs pruned (the registries are prefix state) but its bus presence is
+   * not refreshed. Under Next.js HMR, which re-builds the relay on every
+   * reload without destroying the old one, the arming relay can be a
+   * superseded one. A prefix-global set of live relays would lift the
+   * sibling case but not that one: nothing removes a relay from the set short
+   * of `destroy()`, so the set would grow by one relay per reload and the
+   * sweep would call every superseded relay's bus.
    */
   private ensureCleanupSweep(): void {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -2598,10 +2611,10 @@ export class CommandRelay {
    * `globalPrefix`, so this acts prefix-wide, as it always has for the tab
    * maps. After it returns:
    *
-   * - This relay's cleanup sweep is cleared. Its `globalThis` handle is
-   *   deleted when it is still the prefix's, so the next transport registered
-   *   on any relay of the prefix (this one included) re-arms it; a newer
-   *   sweep a later relay armed is left running.
+   * - The prefix's cleanup sweep is cleared and its `globalThis` handle
+   *   deleted, whichever relay armed it, so no interval is left running. The
+   *   next relay built on the prefix, or the next transport registered on any
+   *   relay of it (this one included), re-arms it.
    * - Every WebSocket client's warm-up timer is cleared and the clients are
    *   forgotten. The sockets are NOT closed: the transport owner (the
    *   standalone server's connection set, a host's WS handler) owns them.
@@ -2629,14 +2642,14 @@ export class CommandRelay {
     const g = globalThis as any;
     // First, so a dispatch resuming from any `await` below sees it.
     g[`${this.prefix}DestroyEpoch`] = this.destroyEpoch + 1;
+    // Whatever sweep the prefix holds now, not the handle this relay last
+    // saw: the teardown below is prefix-wide, and a sweep re-armed by a later
+    // registration (on this relay or a sibling) would otherwise outlive it.
     const intervalKey = `${this.prefix}CleanupInterval`;
-    if (this.cleanupInterval) {
-      clearInterval(this.cleanupInterval);
-      // Only the sweep this relay holds: a relay built on the prefix after an
-      // earlier destroy() armed its own, which is not this one's to forget.
-      if (g[intervalKey] === this.cleanupInterval) delete g[intervalKey];
-      this.cleanupInterval = null;
-    }
+    const sweep = g[intervalKey] as ReturnType<typeof setInterval> | undefined;
+    if (sweep) clearInterval(sweep);
+    delete g[intervalKey];
+    this.cleanupInterval = null;
 
     for (const entry of this.wsClients.values()) {
       if (entry.snapshotTimer) clearTimeout(entry.snapshotTimer);
