@@ -576,8 +576,12 @@ export interface BatchAssertionResult {
    * How many of the `failedCount` assertions could not read the value they
    * judge (`outcome: 'unmeasured'`). A SUBSET of `failedCount`, never added
    * to it: `failedCount - unmeasuredCount` checks read a value that failed.
+   * Every batch this SDK builds sets it. Optional at the type level so code
+   * that builds a `BatchAssertionResult` of its own (a fixture, a proxy)
+   * keeps compiling; absent, it says only that whoever built the result did
+   * not count — never that nothing was unmeasured.
    */
-  unmeasuredCount: number;
+  unmeasuredCount?: number;
   /** Total duration */
   durationMs: number;
   /** Timestamp */
