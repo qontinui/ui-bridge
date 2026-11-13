@@ -41,6 +41,35 @@ afterAll(() => {
 
 const tick = () => new Promise<void>((r) => setTimeout(r, 50));
 
+// A PRECONDITION wait: `act` is off, so passive effects (registration) and the
+// non-discrete re-render flush on React's own schedule, which a fixed sleep
+// cannot bound on a loaded box. Poll until the precondition holds; time out
+// loudly if it never does. Never used for the property under test.
+const until = (pred: () => boolean, what: string) =>
+  vi.waitFor(
+    () => {
+      if (!pred()) throw new Error(`timed out waiting for: ${what}`);
+    },
+    // Under vitest's 5 s test timeout, so a precondition that never holds
+    // fails with its own name rather than a generic test timeout.
+    { timeout: 2000, interval: 10 }
+  );
+
+// Proves a commit's PASSIVE effects have flushed: React runs every passive
+// cleanup and effect of one commit in a single flush, so once this effect
+// (no deps: it runs on every commit that renders it) has run, so have the
+// Panel's. A fixed sleep cannot prove that on a loaded box, and a test whose
+// property is "still registered AFTER the flush" passes vacuously if it reads
+// before the flush.
+let flushes = 0;
+function FlushProbe() {
+  React.useEffect(() => {
+    flushes += 1;
+  });
+  return null;
+}
+const flushed = (since: number) => until(() => flushes > since, 'the passive-effect flush');
+
 function Panel({ id }: { id: string }) {
   useUIComponent({ id, name: 'Panel', state: () => ({ v: 'live' }) });
   return <div data-panel={id} />;
@@ -78,7 +107,7 @@ describe('useUIComponent unregister-at-commit', () => {
     const samples: GapSample[] = [];
 
     root.render(<Parent show id="gap-panel" />);
-    await tick();
+    await until(() => sampleNow('gap-panel').listed, 'gap-panel registered');
     expect(sampleNow('gap-panel').listed).toBe(true);
 
     const observer = new MutationObserver(() => samples.push(sampleNow('gap-panel')));
@@ -87,10 +116,9 @@ describe('useUIComponent unregister-at-commit', () => {
     // A resolved-promise update is a default-lane (non-discrete) render.
     await Promise.resolve();
     root.render(<Parent show={false} id="gap-panel" />);
-    await tick();
+    await until(() => samples.length > 0, 'the DOM removal to be observed');
     observer.disconnect();
 
-    expect(samples.length > 0).toBe(true);
     expect(samples[0]).toEqual({ listed: false, component: false, state: null });
     root.unmount();
     container.remove();
@@ -106,7 +134,10 @@ describe('useUIComponent unregister-at-commit', () => {
         <Panel id="strict-panel" />
       </StrictMode>
     );
-    await tick();
+    await until(
+      () => registry.getComponent('strict-panel') !== undefined,
+      'strict-panel registered'
+    );
 
     expect(registry.getComponent('strict-panel')?.id).toBe('strict-panel');
     expect(registry.getComponentState('strict-panel')?.state).toEqual({ v: 'live' });
@@ -123,8 +154,14 @@ describe('useUIComponent unregister-at-commit', () => {
 
     for (let i = 0; i < 3; i++) {
       bridge = { registry }; // a NEW bridge object each render
-      root.render(<Parent show id="churn-panel" />);
-      await tick();
+      const before = flushes;
+      root.render(
+        <>
+          <Parent show id="churn-panel" />
+          <FlushProbe />
+        </>
+      );
+      await flushed(before);
       expect(registry.getComponent('churn-panel')?.id).toBe('churn-panel');
     }
     expect(registry.getAllComponents().filter((c) => c.id === 'churn-panel').length).toBe(1);
@@ -139,10 +176,22 @@ describe('useUIComponent unregister-at-commit', () => {
     bridge = { registry };
     const { container, root } = mountPoint();
 
-    root.render(<Panel key="a" id="remount-panel" />);
-    await tick();
-    root.render(<Panel key="b" id="remount-panel" />);
-    await tick();
+    let before = flushes;
+    root.render(
+      <>
+        <Panel key="a" id="remount-panel" />
+        <FlushProbe />
+      </>
+    );
+    await flushed(before);
+    before = flushes;
+    root.render(
+      <>
+        <Panel key="b" id="remount-panel" />
+        <FlushProbe />
+      </>
+    );
+    await flushed(before);
 
     expect(registry.getComponent('remount-panel')?.id).toBe('remount-panel');
     root.unmount();
@@ -164,13 +213,15 @@ describe('useUIComponent unregister-at-commit', () => {
       return null;
     }
 
+    let before = flushes;
     root.render(
       <Suspense fallback={<i />}>
         <Panel id="suspense-panel" />
         <Gate />
+        <FlushProbe />
       </Suspense>
     );
-    await tick();
+    await flushed(before);
     expect(registry.getComponent('suspense-panel')?.id).toBe('suspense-panel');
 
     suspended = true;
@@ -178,12 +229,17 @@ describe('useUIComponent unregister-at-commit', () => {
       <Suspense fallback={<i />}>
         <Panel id="suspense-panel" />
         <Gate />
+        <FlushProbe />
       </Suspense>
     );
-    await tick();
+    // The re-suspension must actually commit (the fallback is shown), or the
+    // reveal below exercises nothing.
+    await until(() => container.querySelector('i') !== null, 'the fallback to be shown');
     suspended = false;
+    before = flushes;
     release();
-    for (let i = 0; i < 6; i++) await tick();
+    await until(() => container.querySelector('i') === null, 'the boundary to reveal');
+    await flushed(before);
 
     expect(registry.getComponent('suspense-panel')?.id).toBe('suspense-panel');
     root.unmount();

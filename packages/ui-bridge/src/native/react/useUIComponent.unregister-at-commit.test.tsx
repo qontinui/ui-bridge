@@ -35,6 +35,20 @@ afterAll(() => {
 
 const tick = () => new Promise<void>((r) => setTimeout(r, 50));
 
+// A PRECONDITION wait: `act` is off, so passive effects (registration) and the
+// non-discrete re-render flush on React's own schedule, which a fixed sleep
+// cannot bound on a loaded box. Poll until the precondition holds; time out
+// loudly if it never does. Never used for the property under test.
+const until = (pred: () => boolean, what: string) =>
+  vi.waitFor(
+    () => {
+      if (!pred()) throw new Error(`timed out waiting for: ${what}`);
+    },
+    // Under vitest's 5 s test timeout, so a precondition that never holds
+    // fails with its own name rather than a generic test timeout.
+    { timeout: 2000, interval: 10 }
+  );
+
 function Panel({ id, onPress }: { id: string; onPress: () => string }) {
   useUIComponent({
     id,
@@ -62,7 +76,7 @@ describe('native useUIComponent unregister-at-commit', () => {
     const root = createRoot(container);
 
     root.render(React.createElement(Parent, { show: true, id: 'gap-native', onPress: handler }));
-    await tick();
+    await until(() => registry.getComponent('gap-native') !== undefined, 'gap-native registered');
     expect(registry.getComponent('gap-native')?.id).toBe('gap-native');
 
     const results: Array<{ success: boolean; error?: string }> = [];
@@ -78,7 +92,7 @@ describe('native useUIComponent unregister-at-commit', () => {
 
     await Promise.resolve();
     root.render(React.createElement(Parent, { show: false, id: 'gap-native', onPress: handler }));
-    await tick();
+    await until(() => pending.length > 0, 'the DOM removal to be observed');
     await Promise.all(pending);
     observer.disconnect();
 
@@ -101,7 +115,10 @@ describe('native useUIComponent unregister-at-commit', () => {
         React.createElement(Panel, { id: 'strict-native', onPress: () => 'ok' })
       )
     );
-    await tick();
+    await until(
+      () => registry.getComponent('strict-native') !== undefined,
+      'strict-native registered'
+    );
 
     expect(registry.getComponent('strict-native')?.id).toBe('strict-native');
     root.unmount();
