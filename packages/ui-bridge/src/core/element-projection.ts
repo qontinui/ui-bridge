@@ -59,11 +59,13 @@
  *     not known to be a token are scrubbed. So are the range values
  *     `aria-valuenow`, `aria-valuemin` and `aria-valuemax`, numbers or not: a
  *     range bound can be page data (an available balance, a credit limit);
- *   - properties: a custom property (author data of any shape) and any value
- *     carrying a `<string>` or a `url()` (`content`, `background-image`,
- *     `quotes`, …). The style vocabulary itself — colours, lengths, keywords,
- *     numbers — carries no page content and passes, so a contrast or border
- *     check still works inside a boundary.
+ *   - properties: a custom property (author data of any shape), any value
+ *     carrying a `<string>` or a `url()` (`content`, `background-image`, …),
+ *     and every property whose value names something the author chose — a
+ *     font, a counter, an animation, an anchor, a container, a view transition
+ *     — as an unquoted ident (`AUTHOR_NAMED_PROPERTIES`). The style vocabulary
+ *     itself — colours, lengths, keywords, numbers — carries no page content
+ *     and passes, so a contrast or border check still works inside a boundary.
  * Every name whose value was scrubbed is listed in the projection's `redacted`,
  * so no reader has to tell the sentinel from a page that literally says
  * `[REDACTED]`.
@@ -442,6 +444,51 @@ export function parseProjectionRequest(
 /** A value that can carry page content: a `<string>` token or a `url()`. */
 const CONTENT_BEARING_VALUE = /["']|url\(/i;
 
+/**
+ * Properties whose computed value names something the author chose, as an
+ * unquoted ident: a font (`font-family: Order4711`), a counter, an animation
+ * or a timeline, an anchor, a container, a view transition, a grid area. Such
+ * a name is the author's data, not the style vocabulary, and a page that
+ * derives it from a record (one `view-transition-name` per order row) puts the
+ * record in it. Inside a boundary they are scrubbed whatever the value holds,
+ * and so are the shorthands that serialize them (`font`, `animation`,
+ * `container`, the timelines) and `quotes`. A vendor alias
+ * (`-webkit-animation-name`) reads the same value and is matched without its
+ * prefix.
+ */
+const AUTHOR_NAMED_PROPERTIES: ReadonlySet<string> = new Set([
+  'font-family',
+  'font',
+  'counter-reset',
+  'counter-set',
+  'counter-increment',
+  'animation-name',
+  'animation',
+  'animation-timeline',
+  'scroll-timeline-name',
+  'scroll-timeline',
+  'view-timeline-name',
+  'view-timeline',
+  'timeline-scope',
+  'view-transition-name',
+  'view-transition-class',
+  'anchor-name',
+  'position-anchor',
+  'anchor-scope',
+  'container-name',
+  'container',
+  'grid-template-areas',
+  'quotes',
+]);
+
+/**
+ * Does `cssName` — a standard property as `cssPropertyName` spells it, so
+ * lower-case — name author data, with or without a vendor prefix?
+ */
+function isAuthorNamedProperty(cssName: string): boolean {
+  return AUTHOR_NAMED_PROPERTIES.has(cssName.replace(/^-(?:webkit|moz|ms|o)-/, ''));
+}
+
 function unmeasuredAll(
   out: ProjectionUnmeasured[],
   kind: ProjectionUnmeasured['kind'],
@@ -530,7 +577,7 @@ function readProperties(
       );
       continue;
     }
-    if (custom || CONTENT_BEARING_VALUE.test(raw)) {
+    if (custom || isAuthorNamedProperty(cssName) || CONTENT_BEARING_VALUE.test(raw)) {
       values[name] = scrubContentByVerdict(raw, verdict)!;
       // `raw` is non-empty, so a content verdict is exactly what replaced it.
       if (verdict.content) redacted.push({ kind: 'property', name });
