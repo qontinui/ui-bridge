@@ -95,7 +95,7 @@ export const VISION_ASSERTION_KINDS: readonly VisionAssertionKind[] = [
  * rate and the tab's 500 ms settle wait come to under 8 s, and prints what it
  * measured. 1000 is about twice the largest batch the plan names: a tenant's
  * acceptance run of 504 results (plan
- * 2026-11-09-ui-bridge-relay-evaluates-vision-assertions-in-the-tab, Why).
+ * 2026-11-09-ui-bridge-relay-evaluates-vision-assertions-in-the-tab, Phase 1).
  * The snapshot grows with the registry, not with the batch, so no limit here
  * bounds it. A larger batch is refused, loudly, rather than left to time out
  * half-measured: split it.

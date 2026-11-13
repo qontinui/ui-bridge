@@ -24,9 +24,11 @@
  *   stack at that point: the DOM ancestors, every element
  *   `document.elementsFromPoint` shows beneath the text, and each layer's
  *   `::before` / `::after` background. That hit test retargets shadow
- *   content to its host, so beneath text slotted into an open shadow tree
- *   only the slot's ancestors are read: a layer of that tree beside the
- *   slot, painting beneath the text, is not seen. A background image
+ *   content to its host, so beneath the text a shadow tree's own elements
+ *   are read only where they hold the text's slot: an open shadow host
+ *   beneath light-DOM text laid over it is read by its own box alone, and a
+ *   layer of the tree beside the slot is not seen, whatever either paints
+ *   beneath the text. A background image
  *   (gradients included), `filter`, `backdrop-filter`, `mix-blend-mode`,
  *   replaced content (`<img>`, `<video>`, `<canvas>`, …), a layer's border,
  *   scrollbar or inset box-shadow where it reaches the text, the glyphs of a
@@ -100,16 +102,17 @@
  *   not checked against an ancestor that does not clip it. A scroll container
  *   (`overflow` `auto` or `scroll`) clips on one side only: content scrolled
  *   out past its far side is reachable, while content past the edge it
- *   scrolls from (the left or top one, or the right or bottom one under
- *   `direction: rtl`, a vertical `writing-mode` or a reversed flex
- *   container) is out of reach at every scroll position, as a badge pulled
- *   above a scroll container's top edge is. So the nearest scroll container
- *   settles that axis with that one edge, and an ancestor further out is
- *   compared with the scroll container's own box instead. The element set is
- *   the registry's — the
- *   same set every UI Bridge read and the runner path see. An element nothing
- *   clips is not a compared pair; zero compared pairs is
- *   `unknown{input_missing}`.
+ *   scrolls from (its block-start and inline-start edges as `writing-mode`
+ *   and `direction` place them: the left and top ones by default, the right
+ *   one under `direction: rtl`, `vertical-rl` or `sideways-rl`, the bottom
+ *   one under `sideways-lr`; a reversed flex container swaps them along its
+ *   reversed axes) is out of reach at every scroll position, as a badge
+ *   pulled above a scroll container's top edge is. So the nearest scroll
+ *   container settles that axis with that one edge, and an ancestor further
+ *   out is compared with the scroll container's own box instead. The
+ *   element set is the registry's — the same set every UI Bridge read and
+ *   the runner path see. An element nothing clips is not a compared pair;
+ *   zero compared pairs is `unknown{input_missing}`.
  *
  * SECURITY SURFACE: this executes no caller-supplied code. It is a fixed
  * evaluator over a typed, validated assertion list; the only caller input

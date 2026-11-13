@@ -205,7 +205,7 @@ only what the page itself can measure, and they get a verdict:
 | `text_fits_container` | A block-level element's `scrollWidth`/`scrollHeight` (borders and scrollbars included) against its border box, rounded up. An inline element is measured by its own line fragments against the content box of the block it lays out in, so a sibling's overflow is not its own. Both sides are layout pixels, so a CSS transform neither causes an overflow nor hides one. An element with no text is `unknown` |
 | `no_overlap` | Border boxes, after the `tolerance_px` inset |
 | `element_above` | Paint order from `document.elementsFromPoint` inside the pair's visible intersection (never scrolls) |
-| `no_clipping` | Each registered element against the padding box of its nearest ancestor with `overflow` `hidden` or `clip`, or `contain: paint`. A scroll container (`overflow` `auto` or `scroll`) clips only past the edge it scrolls from (left or top; right or bottom under `direction: rtl`, a vertical `writing-mode` or a reversed flex container), where no scroll position reaches: what is scrolled out past its far side is reachable, and only its own box is compared further out. The page's own scroll (the viewport) is not a clip. No element inside a clipping ancestor is `unknown` |
+| `no_clipping` | Each registered element against the padding box of its nearest ancestor with `overflow` `hidden` or `clip`, or `contain: paint`. A scroll container (`overflow` `auto` or `scroll`) clips only past the edge it scrolls from (its block-start and inline-start edges: left and top by default, the right one under `direction: rtl`, `vertical-rl` or `sideways-rl`, the bottom one under `sideways-lr`, swapped along a reversed flex container's reversed axes), where no scroll position reaches: what is scrolled out past its far side is reachable, and only its own box is compared further out. The page's own scroll (the viewport) is not a clip. No element inside a clipping ancestor is `unknown` |
 
 The tab hands every box over unrounded, and each kind rounds it as vision-core
 does: `text_fits_container` rounds its box's width and height up, and the
@@ -220,10 +220,13 @@ fixture's rules. Shadow DOM: covers inside open shadow roots are hit-tested at
 any depth; a *defined* custom element with no open shadow root lying over the
 text, and text held directly by an OPEN shadow host (so its shadow tree paints
 it), make contrast `unknown`; an element slotted into an open root is measured
-through its slot, whose ancestors in the shadow tree are read beneath it. A
-layer of that shadow tree beside the slot, painting beneath the slotted text (a
-background `div` positioned behind the slot), is not seen, so contrast is
-measured against what lies under that layer and can pass or fail wrongly. A
+through its slot, whose ancestors in the shadow tree are read beneath it.
+Beneath the text nothing else of a shadow tree is read: a layer of that tree
+beside the slot, painting beneath the slotted text (a background `div`
+positioned behind the slot), and the shadow tree of a host that light-DOM text
+is laid over (a banner component whose shadow `div` paints its backdrop) are
+not seen, and such a host is read by its own box alone, so contrast is measured
+against what lies under them and can pass or fail wrongly. A
 closed shadow root cannot be read: a scrim inside one
 attached to an undefined tag or a built-in element (such as `div`) is not seen,
 unless it lies over text slotted into that same element, which the hit test
