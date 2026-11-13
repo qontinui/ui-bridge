@@ -171,6 +171,7 @@ export {
 export type {
   ElementProjection,
   ElementProjectionRequest,
+  ProjectionRedacted,
   ProjectionUnmeasured,
 } from './element-projection';
 

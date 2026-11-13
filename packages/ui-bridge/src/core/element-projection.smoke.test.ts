@@ -172,6 +172,7 @@ type Projection = {
   properties?: Record<string, string>;
   attributes?: Record<string, string | null>;
   unmeasured: Array<{ name: string; code: string }>;
+  redacted?: Array<{ kind: string; name: string }>;
 };
 
 describe.skipIf(!PLAYWRIGHT_AVAILABLE)('the projection reads what Chromium computes', () => {
@@ -262,6 +263,11 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('the projection reads what Chromium compu
         'background-image': '[REDACTED]',
       },
       unmeasured: [],
+      // The scrubbed names, so a reader never takes the sentinel for the page's value.
+      redacted: [
+        { kind: 'property', name: '--tone' },
+        { kind: 'property', name: 'background-image' },
+      ],
     });
     await page.close();
   }, 60_000);
