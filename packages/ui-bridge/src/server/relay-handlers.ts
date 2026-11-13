@@ -1056,7 +1056,7 @@ export function createRelayHandlers(
       return success(element);
     },
 
-    async getElementState(id, query?: ElementStateQuery, context?: HandlerContext) {
+    async getElementState(id, context?: HandlerContext, query?: ElementStateQuery) {
       // The request-scoped projection (`properties` / `attributes`) is
       // validated HERE, before anything is queued: a malformed list never
       // reaches a tab. What travels is the normalised request (arrays).
@@ -1072,8 +1072,10 @@ export function createRelayHandlers(
       // authenticated caller's userId via the `context` final argument so
       // the dispatch is gated on the caller's tabs, NEVER on whichever
       // tab happens to be `primaryTabId` (which could belong to a
-      // different user). Now that the route takes its query, `?tabId=` pins
-      // the read too, as it does for `getElement`.
+      // different user). The query follows the context
+      // (`RouteDefinition.queryAfterContext`), so an `(id, context)` caller
+      // keeps its scoping; `?tabId=` pins the read too, as it does for
+      // `getElement`.
       const { targetTabId, callerUserId } = extractTabRouting(query ?? {});
       const effectiveUserId = scopedCaller(callerUserId, context);
       const ownerCheck = effectiveUserId ? { ownerCheck: { userId: effectiveUserId } } : undefined;

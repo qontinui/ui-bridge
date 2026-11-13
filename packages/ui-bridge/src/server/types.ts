@@ -529,12 +529,14 @@ export interface UIBridgeServerHandlers {
   /**
    * `GET /control/element/:id/state`. `query` carries the request-scoped
    * projection ({@link ElementStateQuery}); the answer is an
-   * {@link ElementStateResponse}.
+   * {@link ElementStateResponse}. The query comes AFTER the context, which
+   * held the second slot first: an `(id, context)` caller keeps its per-user
+   * scoping (`RouteDefinition.queryAfterContext`).
    */
   getElementState: (
     id: string,
-    query?: ElementStateQuery,
-    context?: HandlerContext
+    context?: HandlerContext,
+    query?: ElementStateQuery
   ) => Promise<APIResponse<unknown>>;
   getElementReactState: (
     id: string,
@@ -1838,6 +1840,13 @@ export interface RouteDefinition {
    * all, so a query string can never reach the context slot.
    */
   queryRequired?: boolean;
+  /**
+   * With `queryRequired`: the handler takes the context BEFORE the query,
+   * `(...urlParams, context, query)`. For a handler whose context slot
+   * predates its query, so that an existing `(id, context)` caller keeps its
+   * meaning: `getElementState(id, context?, query?)`.
+   */
+  queryAfterContext?: boolean;
 }
 
 /**
@@ -1876,6 +1885,7 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     handler: 'getElementState',
     params: ['id'],
     queryRequired: true,
+    queryAfterContext: true,
   },
   {
     method: 'GET',

@@ -26,6 +26,7 @@ import type {
   SpawnHeadlessResponse,
   RunnerWindowsList,
   ElementStateQuery,
+  HandlerContext,
 } from './types';
 import type {
   ActionExecutor,
@@ -1677,9 +1678,13 @@ export function createHandlers(
      * A registry entry exposes its state through `getState()`; a DOM-fallback
      * entry carries a built `state`. This handler used to read `.state` only,
      * so on a registry element it answered `success` with no data at all.
+     *
+     * The query follows the context (`RouteDefinition.queryAfterContext`),
+     * which has nothing to scope in process.
      */
     getElementState: async (
       id: string,
+      _context?: HandlerContext,
       query?: ElementStateQuery
     ): Promise<APIResponse<unknown>> => {
       try {

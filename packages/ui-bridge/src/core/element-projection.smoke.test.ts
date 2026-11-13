@@ -202,7 +202,7 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('the projection reads what Chromium compu
   it('element state: both arms answer the projection off the live element', async () => {
     const page = await openPage();
     const { inProcess, relay } = await page.evaluate(async () => {
-      const viaHandlers = await window.UB.inProcess().getElementState('card', {
+      const viaHandlers = await window.UB.inProcess().getElementState('card', undefined, {
         properties: 'outline-offset,--tone,border-inline-start-color',
       });
       const viaRelay = await window.UB.executeCommand(
@@ -306,7 +306,7 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('the projection reads what Chromium compu
   it('the document sentinel reads <html> — its :root tokens and lang — on both arms', async () => {
     const page = await openPage();
     const { inProcess, relay, asserted, registered } = await page.evaluate(async () => {
-      const viaHandlers = await window.UB.inProcess().getElementState('document', {
+      const viaHandlers = await window.UB.inProcess().getElementState('document', undefined, {
         properties: '--brand,--space',
         attributes: 'lang',
       });

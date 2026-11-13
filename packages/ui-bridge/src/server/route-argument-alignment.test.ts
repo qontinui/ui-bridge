@@ -5,7 +5,8 @@
  * positionally: `handler(...urlParams, payload?, context)`. Here `payload` is the
  * body when the route declares `bodyRequired`, or the query object when it
  * declares `queryRequired`. `context` is the `HandlerContext` carrying the
- * caller identity the auth gate verified.
+ * caller identity the auth gate verified. A route that also declares
+ * `queryAfterContext` is called `handler(...urlParams, context, query)`.
  *
  * A route whose flags disagree with its handler's parameter list breaks
  * per-user tab scoping:
@@ -148,33 +149,51 @@ function misalignments(route: RouteDefinition, params: Param[] | null | undefine
     }
   });
   const after = params.slice(urlParams.length);
-  const takesPayload = after.length > 0 && !after[0].context;
-  const trailing = takesPayload ? after.slice(1) : after;
-  if (trailing.length > 1 || (trailing.length === 1 && !trailing[0].context)) {
-    problems.push(
-      `${where}: after the URL params the handler takes (${after.map((p) => `${p.name}: ${p.text}`).join(', ')}); ` +
-        'only [payload?, context?] lines up with the adapters'
-    );
+  const shape = after.map((p) => `${p.name}: ${p.text}`).join(', ');
+  if (route.queryAfterContext) {
+    // `(...urlParams, context, query)`: the handler's context slot predates its query.
+    if (after.length !== 2 || !after[0].context || after[1].context) {
+      problems.push(
+        `${where}: the route declares queryAfterContext, but after the URL params the handler takes (${shape}); ` +
+          'only [context, query] lines up with the adapters'
+      );
+    } else if (after[1].primitive) {
+      problems.push(
+        `${where}: the query parameter \`${after[1].name}\` is typed \`${after[1].text}\`, but ${PRIMITIVE_PAYLOAD}`
+      );
+    }
+    if (route.method !== 'GET' || route.queryRequired !== true) {
+      problems.push(`${where}: queryAfterContext without queryRequired on a GET`);
+    }
+  } else {
+    const takesPayload = after.length > 0 && !after[0].context;
+    const trailing = takesPayload ? after.slice(1) : after;
+    if (trailing.length > 1 || (trailing.length === 1 && !trailing[0].context)) {
+      problems.push(
+        `${where}: after the URL params the handler takes (${shape}); ` +
+          'only [payload?, context?] lines up with the adapters'
+      );
+    }
+    const declared =
+      route.method === 'GET' ? route.queryRequired === true : route.bodyRequired === true;
+    if (takesPayload !== declared) {
+      const flag = route.method === 'GET' ? 'queryRequired' : 'bodyRequired';
+      problems.push(
+        takesPayload
+          ? `${where}: the handler takes \`${after[0].name}\` but the route does not declare ${flag}, so the context lands in that slot`
+          : `${where}: the route declares ${flag} but the handler takes no payload, so the payload lands in the context slot`
+      );
+    }
+    if (takesPayload && after[0].primitive) {
+      problems.push(
+        `${where}: the payload parameter \`${after[0].name}\` is typed \`${after[0].text}\`, but ${PRIMITIVE_PAYLOAD}`
+      );
+    }
   }
   for (const p of params) {
     if (p.name === 'context' && !p.context) {
       problems.push(`${where}: \`context\` is typed \`${p.text}\`, not HandlerContext`);
     }
-  }
-  const declared =
-    route.method === 'GET' ? route.queryRequired === true : route.bodyRequired === true;
-  if (takesPayload !== declared) {
-    const flag = route.method === 'GET' ? 'queryRequired' : 'bodyRequired';
-    problems.push(
-      takesPayload
-        ? `${where}: the handler takes \`${after[0].name}\` but the route does not declare ${flag}, so the context lands in that slot`
-        : `${where}: the route declares ${flag} but the handler takes no payload, so the payload lands in the context slot`
-    );
-  }
-  if (takesPayload && after[0].primitive) {
-    problems.push(
-      `${where}: the payload parameter \`${after[0].name}\` is typed \`${after[0].text}\`, but ${PRIMITIVE_PAYLOAD}`
-    );
   }
   if (route.method === 'GET' && route.bodyRequired)
     problems.push(`${where}: GET declares bodyRequired`);
@@ -310,6 +329,8 @@ describe('the ratchet fails on each misalignment it exists to catch', () => {
       takesId: (id: string, request: { text?: string }, context?: HandlerContext) => Promise<unknown>;
       numberPayload: (limit?: number, context?: HandlerContext) => Promise<unknown>;
       misnamedContext: (request: { a?: string }, context?: { other: number }) => Promise<unknown>;
+      takesIdCtxQuery: (id: string, context?: HandlerContext, query?: { a?: string }) => Promise<unknown>;
+      takesIdCtxNumber: (id: string, context?: HandlerContext, limit?: number) => Promise<unknown>;
     }`;
   const fileName = resolve(HERE, '__synthetic_shapes__.ts');
   const host = ts.createCompilerHost({ strict: true, noEmit: true });
@@ -367,5 +388,23 @@ describe('the ratchet fails on each misalignment it exists to catch', () => {
   it('rejects a primitive payload and a context parameter that is not a context', () => {
     expect(check({ handler: 'numberPayload', method: 'GET', queryRequired: true })).toHaveLength(1);
     expect(check({ handler: 'misnamedContext', bodyRequired: true }).length).toBeGreaterThan(0);
+  });
+
+  it('reads a queryAfterContext route as [context, query] after the URL params', () => {
+    const route = {
+      handler: 'takesIdCtxQuery',
+      method: 'GET',
+      params: ['id'],
+      queryRequired: true,
+      queryAfterContext: true,
+    } as const;
+    expect(check(route)).toEqual([]);
+    // Without the flag the adapters pass the query into the context slot.
+    expect(check({ ...route, queryAfterContext: undefined }).length).toBeGreaterThan(0);
+    // With it, a handler that takes its query first gets the swap the other way.
+    expect(check({ ...route, handler: 'takesId' }).length).toBeGreaterThan(0);
+    // The flag orders a query, so the route must pass one, and an object.
+    expect(check({ ...route, queryRequired: undefined })).toHaveLength(1);
+    expect(check({ ...route, handler: 'takesIdCtxNumber' })).toHaveLength(1);
   });
 });

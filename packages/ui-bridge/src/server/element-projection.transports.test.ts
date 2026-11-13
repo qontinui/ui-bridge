@@ -540,14 +540,17 @@ describe('the relay with its tab unreachable', () => {
 
   it('element state: the cached snapshot cannot answer a projection, so it is refused, typed', async () => {
     const { handlers } = deadTabRelay();
-    const reply = await handlers.getElementState('save', { properties: 'hyphens' });
+    const reply = await handlers.getElementState('save', undefined, { properties: 'hyphens' });
     expect(reply.success).toBe(false);
     expect(reply.code).toBe('UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD');
   });
 
   it('element state pinned to a tab never falls back to the cache, and names the tab it asked', async () => {
     const { queue, handlers } = deadTabRelay();
-    const reply = await handlers.getElementState('save', { tabId: 'tab-x', attributes: 'lang' });
+    const reply = await handlers.getElementState('save', undefined, {
+      tabId: 'tab-x',
+      attributes: 'lang',
+    });
     expect(reply.success).toBe(false);
     expect(queue).toHaveBeenCalledWith(
       'getElementState',
