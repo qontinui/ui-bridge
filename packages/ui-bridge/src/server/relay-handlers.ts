@@ -48,11 +48,38 @@ import {
   type FindFilterableElement,
   type FindUnevaluated,
 } from '../core/find-filter';
-import { parseVisionAssertRequest, VisionAssertRequestError } from '../vision/assertion-request';
+import {
+  parseVisionAssertRequest,
+  VisionAssertRequestError,
+  type ParsedVisionAssertRequest,
+} from '../vision/assertion-request';
+import { RESERVED_CALLER_KEY } from './reserved-caller';
 
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/**
+ * The keys `extractTabRouting` reads off the top of a relay payload: the tab
+ * to dispatch to (both spellings) and the caller whose tabs it may reach.
+ */
+const RELAY_ROUTING_KEYS = ['tabId', 'targetTabId', RESERVED_CALLER_KEY] as const;
+
+/**
+ * The string-valued routing keys of a caller's request, and nothing else of
+ * it. A route that relays a PARSED body instead of the caller's raw one spreads
+ * these into it, so tab routing and per-user scoping still apply while no key
+ * the route did not validate reaches the tab.
+ */
+function relayRoutingKeys(request: unknown): Partial<Record<string, string>> {
+  const keys: Partial<Record<string, string>> = {};
+  if (request === null || typeof request !== 'object' || Array.isArray(request)) return keys;
+  for (const key of RELAY_ROUTING_KEYS) {
+    const value = (request as Record<string, unknown>)[key];
+    if (typeof value === 'string') keys[key] = value;
+  }
+  return keys;
+}
 
 function success<T>(
   data: T,
@@ -1504,18 +1531,28 @@ export function createRelayHandlers(
     // port of vision-core): the five snapshot-reading kinds answer from the
     // live page, every other kind answers `unknown{capability_unavailable_in_
     // build}` per result. The body is validated HERE, before anything is
-    // queued, so a malformed one is refused with UB-VALIDATION-ERROR and never
-    // reaches a tab (the tab validates again, for a WS client that dispatches
-    // the command directly). The runner serves this route natively and is
-    // unaffected.
+    // queued, so a malformed or oversized one is refused with
+    // UB-VALIDATION-ERROR and never reaches a tab (the tab validates again,
+    // for a WS client that dispatches the command directly). What crosses the
+    // relay is the PARSED `{ assertions }` plus the routing keys, never the
+    // caller's raw body: a key the parser did not read is not carried into a
+    // user's tab, and neither is a settle knob (`settleTimeout`, `skipSettle`)
+    // — the tab settles for its own default 500 ms at most, which the
+    // `MAX_VISION_ASSERTIONS` budget counts. The runner serves this route
+    // natively and is unaffected.
     async visionAssert(request, context) {
+      let parsed: ParsedVisionAssertRequest;
       try {
-        parseVisionAssertRequest(request);
+        parsed = parseVisionAssertRequest(request);
       } catch (err) {
         if (err instanceof VisionAssertRequestError) return error(err.message, err.code);
         throw err;
       }
-      return relayCommand('visionAssert', request, ctxOpts(context));
+      return relayCommand(
+        'visionAssert',
+        { assertions: parsed.assertions, ...relayRoutingKeys(request) },
+        ctxOpts(context)
+      );
     },
 
     async visionBaseline(_request, _context) {
