@@ -13,8 +13,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   MAX_PROJECTED_NAMES,
   MAX_PROJECTION_NAME_LENGTH,
+  PROJECTABLE_ATTRIBUTES,
   ProjectionRequestError,
   cssPropertyName,
+  isProjectableAttribute,
   isProjectionRequestError,
   parseProjectionRequest,
   projectElement,
@@ -140,6 +142,23 @@ describe('parseProjectionRequest · attribute names', () => {
     expect(err.option).toBe('attributes');
     expect(err.message).toContain('lang, dir, id, role, title, alt, href and aria-*');
   });
+
+  it('the exported allow-list is frozen: a consumer cannot widen what every transport reads', () => {
+    expect(Object.isFrozen(PROJECTABLE_ATTRIBUTES)).toBe(true);
+    const list = PROJECTABLE_ATTRIBUTES as string[];
+    let widened = false;
+    try {
+      list.push('onclick');
+      widened = true;
+    } catch {
+      // A frozen array refuses the push.
+    } finally {
+      // Never leave a widened list behind for the rest of the run.
+      if (widened) list.pop();
+    }
+    expect(widened).toBe(false);
+    expect(isProjectableAttribute('onclick')).toBe(false);
+  });
 });
 
 describe('cssPropertyName', () => {
@@ -149,6 +168,23 @@ describe('cssPropertyName', () => {
     expect(cssPropertyName('cssFloat')).toBe('float');
     expect(cssPropertyName('border-top-color')).toBe('border-top-color');
     expect(cssPropertyName('--Brand-Color')).toBe('--Brand-Color');
+  });
+
+  it('reads a hyphenated name in any case as the CSS name — never camel-converts it', () => {
+    // CSS property names are ASCII case-insensitive. Camel-converting a
+    // hyphenated name read `Border-Top-Color` as `-border--top--color`.
+    expect(cssPropertyName('Border-Top-Color')).toBe('border-top-color');
+    expect(cssPropertyName('OUTLINE-OFFSET')).toBe('outline-offset');
+    expect(cssPropertyName('-Webkit-Line-Clamp')).toBe('-webkit-line-clamp');
+  });
+
+  it('a hyphenated name in upper case reads the value, keyed as requested', () => {
+    document.body.innerHTML = '<button style="border-top-color: rgb(1, 2, 3)">x</button>';
+    const node = document.body.firstElementChild!;
+    expect(projectElement(node, { properties: ['Border-Top-Color'] })).toEqual({
+      properties: { 'Border-Top-Color': 'rgb(1, 2, 3)' },
+      unmeasured: [],
+    });
   });
 });
 
@@ -230,6 +266,95 @@ describe('projectElement · attributes', () => {
       'aria-label': 'Pay',
     });
   });
+
+  /** The structural attributes, each with a value of its own shape and one that is page text. */
+  const SHAPES: Array<[attribute: string, structural: string, text: string]> = [
+    ['aria-invalid', 'spelling', 'Card 4111 declined'],
+    ['aria-expanded', 'TRUE', 'expanded for 4111'],
+    ['aria-current', 'page', 'Order 77812'],
+    ['aria-haspopup', 'listbox', 'Card 4111'],
+    ['aria-relevant', 'additions text', 'additions 4111'],
+    ['aria-level', '2', 'Card 4111'],
+    ['aria-valuemin', '-0.5', '4111 4111'],
+    ['dir', 'rtl', 'Card 4111'],
+    ['lang', 'de-CH', 'Card 4111'],
+  ];
+
+  it('inside a boundary, a structural attribute passes only with a value of its own shape', () => {
+    const boundary = el(
+      '<div data-bridge-redact="true">' +
+        `<a id="structural" ${SHAPES.map(([a, v]) => `${a}="${v}"`).join(' ')}>x</a>` +
+        `<a id="text" ${SHAPES.map(([a, , t]) => `${a}="${t}"`).join(' ')}>x</a>` +
+        '</div>'
+    );
+    const structural = boundary.querySelector('#structural')!;
+    const text = boundary.querySelector('#text')!;
+    const attributes = SHAPES.map(([a]) => a);
+
+    // Its own tokens (any case), a number for a numeric one, a language tag,
+    // a direction: structure, readable inside the boundary.
+    const asStructure = projectElement(structural, { attributes });
+    expect(asStructure.attributes).toEqual(Object.fromEntries(SHAPES.map(([a, v]) => [a, v])));
+    expect(asStructure).not.toHaveProperty('redacted');
+
+    // The same names holding page text: the name alone says nothing about the
+    // value, so each is scrubbed like free text — and reported as scrubbed.
+    const asText = projectElement(text, { attributes });
+    expect(asText.attributes).toEqual(
+      Object.fromEntries(attributes.map((a) => [a, REDACTED_VALUE]))
+    );
+    expect(asText.redacted).toEqual(attributes.map((name) => ({ kind: 'attribute', name })));
+  });
+
+  it('outside a boundary, a structural attribute holding text is the page’s own value', () => {
+    const node = el(`<a ${SHAPES.map(([a, , t]) => `${a}="${t}"`).join(' ')}>x</a>`);
+    const projection = projectElement(node, { attributes: SHAPES.map(([a]) => a) });
+    expect(projection.attributes).toEqual(Object.fromEntries(SHAPES.map(([a, , t]) => [a, t])));
+    expect(projection).not.toHaveProperty('redacted');
+  });
+
+  it('names every scrubbed value in `redacted`, and only those — an absent or structural one is not', () => {
+    const node = el(
+      '<div data-bridge-redact="true"><a role="link" title="Card 4111" aria-label="Card 4111" aria-expanded="true">x</a></div>'
+    ).firstElementChild!;
+    const projection = projectElement(node, {
+      attributes: ['role', 'title', 'aria-expanded', 'alt', 'aria-label'],
+    });
+    expect(projection.attributes).toEqual({
+      role: 'link',
+      title: REDACTED_VALUE,
+      'aria-expanded': 'true',
+      alt: null,
+      'aria-label': REDACTED_VALUE,
+    });
+    expect(projection.redacted).toEqual([
+      { kind: 'attribute', name: 'title' },
+      { kind: 'attribute', name: 'aria-label' },
+    ]);
+  });
+
+  it('a page whose own value IS the sentinel string is not reported as scrubbed', () => {
+    const node = el(`<a title="${REDACTED_VALUE}">x</a>`);
+    const projection = projectElement(node, { attributes: ['title'] });
+    expect(projection.attributes).toEqual({ title: REDACTED_VALUE });
+    expect(projection).not.toHaveProperty('redacted');
+  });
+
+  it('an element no longer in the document is not read: its boundary cannot be seen from it', () => {
+    const node = el(
+      '<div data-bridge-redact="true"><a title="Card 4111" lang="en">x</a></div>'
+    ).firstElementChild!;
+    // Detached, the node has no ancestors: the boundary it sat in is gone from
+    // its parent chain, so a read would ship its title unscrubbed.
+    node.remove();
+    expect(projectElement(node, { attributes: ['title', 'lang'] })).toEqual({
+      attributes: {},
+      unmeasured: [
+        expect.objectContaining({ kind: 'attribute', name: 'title', code: 'input_missing' }),
+        expect.objectContaining({ kind: 'attribute', name: 'lang', code: 'input_missing' }),
+      ],
+    });
+  });
 });
 
 describe('projectElement · properties', () => {
@@ -282,12 +407,29 @@ describe('projectElement · properties', () => {
       '<div data-bridge-redact="true"><button style="--user: 4111; color: rgb(1, 2, 3); ' +
       'background-image: url(&quot;/avatar?token=s3cret&quot;)">x</button></div>';
     const node = document.querySelector('button')!;
-    expect(
-      projectElement(node, { properties: ['--user', 'color', 'background-image'] }).properties
-    ).toEqual({
+    const projection = projectElement(node, {
+      properties: ['--user', 'color', 'background-image'],
+    });
+    expect(projection.properties).toEqual({
       '--user': REDACTED_VALUE,
       color: 'rgb(1, 2, 3)',
       'background-image': REDACTED_VALUE,
+    });
+    // Each scrubbed value is named, so no reader mistakes the sentinel for the page's value.
+    expect(projection.redacted).toEqual([
+      { kind: 'property', name: '--user' },
+      { kind: 'property', name: 'background-image' },
+    ]);
+  });
+
+  it('outside a boundary, nothing is scrubbed and no `redacted` list is carried', () => {
+    document.body.innerHTML = '<button style="--user: 4111; color: rgb(1, 2, 3)">x</button>';
+    const projection = projectElement(document.querySelector('button')!, {
+      properties: ['--user', 'color'],
+    });
+    expect(projection).toEqual({
+      properties: { '--user': '4111', color: 'rgb(1, 2, 3)' },
+      unmeasured: [],
     });
   });
 });

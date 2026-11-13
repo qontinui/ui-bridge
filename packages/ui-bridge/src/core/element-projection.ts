@@ -36,7 +36,9 @@
  *   - a name the read could not answer goes to `unmeasured` with a typed
  *     {@link UnknownCode} and is left out of the value map: no DOM node behind
  *     the row (`capability_unavailable_in_build`), an element not in the
- *     document, or a custom property the element does not set
+ *     document (`input_missing`, for properties and attributes alike: it has
+ *     no computed style, and the redaction boundary it sat in can no longer be
+ *     seen from it), a custom property the element does not set
  *     (`input_missing`), an engine that computes no value for the name
  *     (`capability_unavailable_in_build`: an unsupported or misspelled
  *     property, or a shorthand it does not serialize). An empty string is never
@@ -46,16 +48,23 @@
  * §4.6 redaction. Inside a `data-bridge-redact` boundary the CONTENT axis of
  * the element's verdict scrubs every value that can carry page content, through
  * the package's one scrub shape (`scrubContentByVerdict`):
- *   - attributes: everything except the structural ones — `lang`, `dir`,
- *     `role`, `id` and the token-, boolean- and number-valued ARIA states. Free
- *     text (`title`, `alt`, `aria-label`, `aria-valuetext`, …), URLs (`href`),
- *     ID references (`aria-labelledby`, …) and any ARIA name not known to be a
- *     token are scrubbed;
+ *   - attributes: everything except a structural value — `id`, `role`, a
+ *     language tag in `lang`, `ltr` / `rtl` / `auto` in `dir`, and an ARIA
+ *     state or property holding one of its own tokens (`aria-invalid` →
+ *     `true`, `false`, `grammar` or `spelling`) or, for a numeric one
+ *     (`aria-level`, `aria-valuemin`, …), a number. The shape is checked, not
+ *     just the name: `aria-invalid="Card 4111 declined"` is scrubbed like free
+ *     text. Free text (`title`, `alt`, `aria-label`, `aria-valuetext`, …),
+ *     URLs (`href`), ID references (`aria-labelledby`, …) and any ARIA name
+ *     not known to be a token are scrubbed;
  *   - properties: a custom property (author data of any shape) and any value
  *     carrying a `<string>` or a `url()` (`content`, `background-image`,
  *     `quotes`, …). The style vocabulary itself — colours, lengths, keywords,
  *     numbers — carries no page content and passes, so a contrast or border
  *     check still works inside a boundary.
+ * Every name whose value was scrubbed is listed in the projection's `redacted`,
+ * so no reader has to tell the sentinel from a page that literally says
+ * `[REDACTED]`.
  *
  * This module is enrolled in the redaction-surface projection list
  * (`eslint.config.js`, `redaction-surface.manifest.json`).
@@ -67,15 +76,14 @@ import { scrubContentByVerdict, verdictOf } from './redaction';
 /**
  * At most this many names per list (`properties`, `attributes`).
  *
- * Why 32: every check the vision DSL and the `ai/assert` style checks make
- * reads well under a dozen values per element — colour and background, the
- * four `border-*-color` sides, `outline-color` / `-style` / `-width` /
- * `-offset`, `hyphens`, font size and weight — so 32 leaves room for a whole
- * border-and-outline set (16 longhands) plus the design tokens a page checks.
- * The bound is the response, not the read: a find answers one projection per
- * returned row, so 32 names over a few hundred rows stays at a few hundred KB,
- * well inside the relay's command budget and its 10 MB body ceiling. A caller
- * that needs more asks again with the next names.
+ * Why 32: the widest per-element read any check makes is the in-tab vision
+ * evaluator's, 24 computed values per element; an `ai/assert` style or
+ * attribute check reads one. 32 holds that whole set with room left for the
+ * design tokens a page checks. The bound is the response, not the read: a
+ * find answers one projection per returned row, so 32 names over a few
+ * hundred rows stays at a few hundred KB, well inside the relay's command
+ * budget and its 10 MB body ceiling. A caller that needs more asks again with
+ * the next names.
  */
 export const MAX_PROJECTED_NAMES = 32;
 
@@ -86,8 +94,12 @@ export const MAX_PROJECTED_NAMES = 32;
  */
 export const MAX_PROJECTION_NAME_LENGTH = 128;
 
-/** The attributes a projection may read, besides the `aria-*` family. */
-export const PROJECTABLE_ATTRIBUTES: readonly string[] = [
+/**
+ * The attributes a projection may read, besides the `aria-*` family. Frozen:
+ * this list IS the allow-list {@link isProjectableAttribute} checks, so a
+ * consumer that pushed onto it would widen what every transport reads.
+ */
+export const PROJECTABLE_ATTRIBUTES: readonly string[] = Object.freeze([
   'lang',
   'dir',
   'id',
@@ -95,7 +107,7 @@ export const PROJECTABLE_ATTRIBUTES: readonly string[] = [
   'title',
   'alt',
   'href',
-];
+]);
 
 /** A validated projection request. Both lists hold no duplicates. */
 export interface ElementProjectionRequest {
@@ -117,6 +129,14 @@ export interface ProjectionUnmeasured {
   detail: string;
 }
 
+/** A requested name whose value the §4.6 scrub replaced with the redaction sentinel. */
+export interface ProjectionRedacted {
+  /** Which list the name came from. */
+  kind: 'property' | 'attribute';
+  /** The name as requested. */
+  name: string;
+}
+
 /**
  * The answer for one element. A requested name appears in exactly one place:
  * its value map, or `unmeasured`.
@@ -132,6 +152,16 @@ export interface ElementProjection {
   attributes?: Record<string, string | null>;
   /** Requested names the read could not answer. `[]` says every name was read. */
   unmeasured: ProjectionUnmeasured[];
+  /**
+   * Requested names whose value in the maps above is the §4.6 sentinel
+   * (`REDACTED_VALUE`, `"[REDACTED]"`) and not the page's own: the element sits
+   * in a `data-bridge-redact` boundary and the value can carry page content.
+   * The value was read and withheld, so a reader that judges it (the
+   * `ai/assert` checks) treats it as unmeasured, never as what the page holds.
+   * Present iff at least one value was scrubbed — the omission rule of
+   * `ElementState.redaction` (absent = nothing redacted).
+   */
+  redacted?: ProjectionRedacted[];
 }
 
 /**
@@ -166,53 +196,90 @@ const CUSTOM_PROPERTY = /^--[A-Za-z0-9_\-\u0080-￿]+$/;
 /** An ARIA attribute name. */
 const ARIA_ATTRIBUTE = /^aria-[a-z]+$/;
 
+/** Is a value one of `tokens` (ASCII case-insensitive, surrounding whitespace ignored)? */
+function oneOf(...tokens: string[]): (value: string) => boolean {
+  const set = new Set(tokens);
+  return (value) => set.has(value.trim().toLowerCase());
+}
+
+/** Is a value a space-separated list of `tokens` — at least one, and nothing else? */
+function listOf(...tokens: string[]): (value: string) => boolean {
+  const set = new Set(tokens);
+  return (value) => {
+    const items = value.trim().toLowerCase().split(/\s+/);
+    return items[0] !== '' && items.every((item) => set.has(item));
+  };
+}
+
+/** A number, as ARIA's numeric states and properties take one (`2`, `-1`, `0.5`, `1e3`). */
+const NUMBER = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
+const isNumber = (value: string): boolean => NUMBER.test(value.trim());
+
+/** A BCP 47 language tag's shape: an alphabetic primary subtag, then hyphenated subtags. */
+const LANGUAGE_TAG = /^[A-Za-z]{1,8}(?:-[A-Za-z0-9]{1,8})*$/;
+const isLanguageTag = (value: string): boolean => LANGUAGE_TAG.test(value.trim());
+
+const BOOLEAN = oneOf('true', 'false');
+const BOOLEAN_OR_UNDEFINED = oneOf('true', 'false', 'undefined');
+const TRISTATE = oneOf('true', 'false', 'mixed', 'undefined');
+
 /**
  * Attributes whose values are structure, not page content, so §4.6 leaves them
- * readable inside a boundary: the ones a redacted element already ships (`id`,
- * `role`), the language and direction, and the ARIA states and properties whose
- * values are tokens, booleans or numbers. Every other projectable attribute is
- * scrubbed.
+ * readable inside a boundary — each with the SHAPE its value must have to count
+ * as structure: the ones a redacted element already ships (`id`, `role`, any
+ * value), the language (a language tag) and direction (`ltr`, `rtl`, `auto`),
+ * and the ARIA states and properties whose values are tokens, booleans or
+ * numbers (ARIA 1.2's value sets). A value of any other shape is scrubbed like
+ * free text: the name alone says nothing about what a page put in it
+ * (`aria-invalid="Card 4111 declined"`). Every other projectable attribute is
+ * scrubbed whatever its value.
  */
-const STRUCTURAL_ATTRIBUTES: ReadonlySet<string> = new Set([
-  'lang',
-  'dir',
-  'id',
-  'role',
-  'aria-atomic',
-  'aria-autocomplete',
-  'aria-busy',
-  'aria-checked',
-  'aria-colcount',
-  'aria-colindex',
-  'aria-colspan',
-  'aria-current',
-  'aria-disabled',
-  'aria-dropeffect',
-  'aria-expanded',
-  'aria-grabbed',
-  'aria-haspopup',
-  'aria-hidden',
-  'aria-invalid',
-  'aria-level',
-  'aria-live',
-  'aria-modal',
-  'aria-multiline',
-  'aria-multiselectable',
-  'aria-orientation',
-  'aria-posinset',
-  'aria-pressed',
-  'aria-readonly',
-  'aria-relevant',
-  'aria-required',
-  'aria-rowcount',
-  'aria-rowindex',
-  'aria-rowspan',
-  'aria-selected',
-  'aria-setsize',
-  'aria-sort',
-  'aria-valuemax',
-  'aria-valuemin',
+const STRUCTURAL_ATTRIBUTES: ReadonlyMap<string, (value: string) => boolean> = new Map([
+  ['id', () => true],
+  ['role', () => true],
+  ['lang', isLanguageTag],
+  ['dir', oneOf('ltr', 'rtl', 'auto')],
+  ['aria-atomic', BOOLEAN],
+  ['aria-autocomplete', oneOf('inline', 'list', 'both', 'none')],
+  ['aria-busy', BOOLEAN],
+  ['aria-checked', TRISTATE],
+  ['aria-colcount', isNumber],
+  ['aria-colindex', isNumber],
+  ['aria-colspan', isNumber],
+  ['aria-current', oneOf('page', 'step', 'location', 'date', 'time', 'true', 'false')],
+  ['aria-disabled', BOOLEAN],
+  ['aria-dropeffect', listOf('copy', 'execute', 'link', 'move', 'none', 'popup')],
+  ['aria-expanded', BOOLEAN_OR_UNDEFINED],
+  ['aria-grabbed', BOOLEAN_OR_UNDEFINED],
+  ['aria-haspopup', oneOf('false', 'true', 'menu', 'listbox', 'tree', 'grid', 'dialog')],
+  ['aria-hidden', BOOLEAN_OR_UNDEFINED],
+  ['aria-invalid', oneOf('grammar', 'false', 'spelling', 'true')],
+  ['aria-level', isNumber],
+  ['aria-live', oneOf('assertive', 'off', 'polite')],
+  ['aria-modal', BOOLEAN],
+  ['aria-multiline', BOOLEAN],
+  ['aria-multiselectable', BOOLEAN],
+  ['aria-orientation', oneOf('horizontal', 'vertical', 'undefined')],
+  ['aria-posinset', isNumber],
+  ['aria-pressed', TRISTATE],
+  ['aria-readonly', BOOLEAN],
+  ['aria-relevant', listOf('additions', 'all', 'removals', 'text')],
+  ['aria-required', BOOLEAN],
+  ['aria-rowcount', isNumber],
+  ['aria-rowindex', isNumber],
+  ['aria-rowspan', isNumber],
+  ['aria-selected', BOOLEAN_OR_UNDEFINED],
+  ['aria-setsize', isNumber],
+  ['aria-sort', oneOf('ascending', 'descending', 'none', 'other')],
+  ['aria-valuemax', isNumber],
+  ['aria-valuemin', isNumber],
 ]);
+
+/** Is `raw` a structural value of attribute `attr` (lower-case) — see {@link STRUCTURAL_ATTRIBUTES}? */
+function isStructuralValue(attr: string, raw: string): boolean {
+  const shape = STRUCTURAL_ATTRIBUTES.get(attr);
+  return shape !== undefined && shape(raw);
+}
 
 /** Is `name` (any case) an attribute a projection may read? */
 export function isProjectableAttribute(name: string): boolean {
@@ -229,14 +296,21 @@ export function isProjectablePropertyName(name: string): boolean {
 }
 
 /**
- * The CSS name to read for a requested property name. A custom property and a
- * hyphenated name are read as written. A name with an upper-case letter is read
- * as a CSSOM camel-cased attribute, the spelling `ElementState.computedStyles`
- * uses: `borderTopColor` → `border-top-color`, `webkitLineClamp` →
- * `-webkit-line-clamp`, `cssFloat` → `float`.
+ * The CSS name to read for a requested property name.
+ *   - A custom property is read as written: its name is case-sensitive.
+ *   - A hyphenated name is a CSS name, and CSS property names are ASCII
+ *     case-insensitive, so it is read lower-cased: `Border-Top-Color` →
+ *     `border-top-color`. Camel-converting it would read `-border--top--color`,
+ *     a property no engine computes.
+ *   - Only a name with no hyphen can be a CSSOM camel-cased attribute, the
+ *     spelling `ElementState.computedStyles` uses, and one with an upper-case
+ *     letter is read as one: `borderTopColor` → `border-top-color`,
+ *     `webkitLineClamp` → `-webkit-line-clamp`, `cssFloat` → `float`.
  */
 export function cssPropertyName(name: string): string {
-  if (name.startsWith('--') || !/[A-Z]/.test(name)) return name;
+  if (name.startsWith('--')) return name;
+  if (name.includes('-')) return name.toLowerCase();
+  if (!/[A-Z]/.test(name)) return name;
   if (name === 'cssFloat') return 'float';
   const kebab = name.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
   return kebab.startsWith('webkit-') ? `-${kebab}` : kebab;
@@ -358,7 +432,8 @@ function readProperties(
   node: Element | null | undefined,
   names: readonly string[],
   values: Record<string, string>,
-  unmeasured: ProjectionUnmeasured[]
+  unmeasured: ProjectionUnmeasured[],
+  redacted: ProjectionRedacted[]
 ): void {
   if (!node) {
     unmeasuredAll(
@@ -431,8 +506,13 @@ function readProperties(
       );
       continue;
     }
-    values[name] =
-      custom || CONTENT_BEARING_VALUE.test(raw) ? scrubContentByVerdict(raw, verdict)! : raw;
+    if (custom || CONTENT_BEARING_VALUE.test(raw)) {
+      values[name] = scrubContentByVerdict(raw, verdict)!;
+      // `raw` is non-empty, so a content verdict is exactly what replaced it.
+      if (verdict.content) redacted.push({ kind: 'property', name });
+    } else {
+      values[name] = raw;
+    }
   }
 }
 
@@ -440,7 +520,8 @@ function readAttributes(
   node: Element | null | undefined,
   names: readonly string[],
   values: Record<string, string | null>,
-  unmeasured: ProjectionUnmeasured[]
+  unmeasured: ProjectionUnmeasured[],
+  redacted: ProjectionRedacted[]
 ): void {
   if (!node) {
     unmeasuredAll(
@@ -452,18 +533,34 @@ function readAttributes(
     );
     return;
   }
+  // A node out of the document has lost its ancestors: `verdictOf` walks
+  // `parentElement`, so it can no longer see a `data-bridge-redact` boundary
+  // the node sat in, and every value would read as unredacted. Not read, as
+  // the property arm reads no computed style off such a node.
+  if (!node.isConnected) {
+    unmeasuredAll(
+      unmeasured,
+      'attribute',
+      names,
+      'input_missing',
+      'the element is not in the document, so the redaction boundary it sat in cannot be seen from it'
+    );
+    return;
+  }
   const verdict = verdictOf(node as HTMLElement);
   for (const name of names) {
     const attr = name.toLowerCase();
     const raw = node.getAttribute(attr);
     if (raw === null) {
       values[name] = null;
-    } else if (raw === '' || STRUCTURAL_ATTRIBUTES.has(attr)) {
+    } else if (raw === '' || isStructuralValue(attr, raw)) {
       // An empty value carries no content (`alt=""` is the decorative-image
       // signal, kept distinct from an absent alt).
       values[name] = raw;
     } else {
       values[name] = scrubContentByVerdict(raw, verdict)!;
+      // `raw` is non-empty, so a content verdict is exactly what replaced it.
+      if (verdict.content) redacted.push({ kind: 'attribute', name });
     }
   }
 }
@@ -471,24 +568,28 @@ function readAttributes(
 /**
  * Read `request` off `node` — see the module doc for what each name answers.
  * `node` is the row's live element; `null` / `undefined` (a DOM-less row) puts
- * every requested name in `unmeasured`.
+ * every requested name in `unmeasured`. A value the §4.6 scrub replaced is
+ * named in `redacted`, from the verdict that replaced it — never by comparing
+ * the value with the sentinel.
  */
 export function projectElement(
   node: Element | null | undefined,
   request: ElementProjectionRequest
 ): ElementProjection {
   const unmeasured: ProjectionUnmeasured[] = [];
+  const redacted: ProjectionRedacted[] = [];
   const projection: ElementProjection = { unmeasured };
   if (request.properties && request.properties.length > 0) {
     const values: Record<string, string> = {};
-    readProperties(node, request.properties, values, unmeasured);
+    readProperties(node, request.properties, values, unmeasured, redacted);
     projection.properties = values;
   }
   if (request.attributes && request.attributes.length > 0) {
     const values: Record<string, string | null> = {};
-    readAttributes(node, request.attributes, values, unmeasured);
+    readAttributes(node, request.attributes, values, unmeasured, redacted);
     projection.attributes = values;
   }
+  if (redacted.length > 0) projection.redacted = redacted;
   return projection;
 }
 
