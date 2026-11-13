@@ -16,6 +16,7 @@ import type {
   StyleValidationResult,
   StyleAuditReport,
 } from './style-types';
+import { styleValuesEquivalent } from './style-inference';
 
 // ============================================================================
 // Token Resolution
@@ -68,7 +69,7 @@ export function evaluateConstraint(
 
   switch (constraint.type) {
     case 'exact': {
-      const passed = normalizeStyleValue(actualValue) === normalizeStyleValue(constraint.value);
+      const passed = sameStyleValue(actualValue, constraint.value, constraint.property, styles);
       return {
         passed,
         constraint,
@@ -81,8 +82,9 @@ export function evaluateConstraint(
     }
 
     case 'oneOf': {
-      const normalizedActual = normalizeStyleValue(actualValue);
-      const passed = constraint.values.some((v) => normalizeStyleValue(v) === normalizedActual);
+      const passed = constraint.values.some((v) =>
+        sameStyleValue(actualValue, v, constraint.property, styles)
+      );
       return {
         passed,
         constraint,
@@ -105,7 +107,7 @@ export function evaluateConstraint(
           message: `Token "${constraint.tokenPath}" not found in design tokens`,
         };
       }
-      const passed = normalizeStyleValue(actualValue) === normalizeStyleValue(tokenValue);
+      const passed = sameStyleValue(actualValue, tokenValue, constraint.property, styles);
       return {
         passed,
         constraint,
@@ -280,6 +282,30 @@ export function runStyleAudit(
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/**
+ * Whether a computed value satisfies an expected one: equal after trimming and
+ * lowercasing, or equivalent once both are canonicalised (colours as hex,
+ * lengths as px, font-relative line heights and letter spacings as ratios —
+ * `styleValuesEquivalent`). Chrome computes colours as `rgb()`, so before the
+ * fallback a `tokenRef` to a hex token could never pass.
+ */
+function sameStyleValue(
+  actual: string,
+  expected: string,
+  property: string,
+  styles: ExtendedComputedStyles
+): boolean {
+  if (normalizeStyleValue(actual) === normalizeStyleValue(expected)) return true;
+  // Custom properties are compared literally: their values carry no type.
+  if (property.startsWith('--')) return false;
+  return styleValuesEquivalent(
+    actual,
+    expected,
+    property,
+    styles as unknown as Record<string, string>
+  );
+}
 
 /**
  * Normalize a CSS value for comparison (trim whitespace, lowercase).

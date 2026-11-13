@@ -200,6 +200,8 @@ Some actions exist on the wrapper-SDK side but the runner doesn't proxy them. Th
 | `query`            | Runner uses IPC — see `handle_query_selector`                                                                |
 | `getStateSnapshot` | Runner synthesizes from `getControlSnapshot` — see `handle_state_snapshot`                                   |
 | `getSpecs`         | Runner calls it via `sdk_request` directly from `handle_discover_and_cache`, not through the dispatch helper |
+| `inferStyleGuide`  | `POST /design/style-guide/infer` (first release after 0.47.0); no runner caller yet                          |
+| `diffDesignTokens` | `POST /design/tokens/drift` (first release after 0.47.0); no runner caller yet                               |
 
 If you add a new action to `relay-handlers.ts` and want it reachable via HTTP, add a matching `dispatch_app_request` site in `sdk_client.rs` — see [Adding a new action](#adding-a-new-action) below.
 
