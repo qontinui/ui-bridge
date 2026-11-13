@@ -204,11 +204,21 @@ export class HeadlessTransport extends BaseTransport {
     // Typed via the local `LaunchHeadlessTabFn` (see above) rather than a
     // `typeof import(...)` reference, so this build never needs the optional
     // peer's declaration files. The specifier is split out of the literal so
-    // bundlers/`tsc` cannot eagerly resolve the optional peer at build time.
+    // bundlers/`tsc` cannot eagerly resolve the optional peer at build time,
+    // and the comments inside the import() — copied from the SDK's Tauri loader
+    // (`loadTauriEventModule` in ui-bridge's src/ai/change-tracker.ts) — tell
+    // Vite, Turbopack and webpack to leave it to the runtime. Without them a
+    // consumer that BUNDLES this module turns the computed import into an
+    // expression context that throws "Cannot find module" even where the peer
+    // is installed (the defect that kept the SDK's Redis relay bus from ever
+    // starting). scripts/check-dynamic-import-hints.cjs refuses a dist without
+    // them.
     let launchHeadlessTab: LaunchHeadlessTabFn;
     const headlessSpecifier = '@qontinui/ui-bridge-headless';
     try {
-      const mod = (await import(headlessSpecifier)) as {
+      const mod = (await import(
+        /* @vite-ignore */ /* turbopackIgnore: true */ /* webpackIgnore: true */ headlessSpecifier
+      )) as {
         launchHeadlessTab: LaunchHeadlessTabFn;
       };
       ({ launchHeadlessTab } = mod);

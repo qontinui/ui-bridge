@@ -71,13 +71,19 @@ export {
   type CommandRelayOptions,
 } from './command-relay';
 
-// Cross-instance relay bus (P0a) — optional shared-state for serverless scale-out
+// Cross-instance relay bus (P0a) — optional shared-state for serverless scale-out.
+// The consumer injects its own Redis client class (RedisRelayBusOptions.Redis).
 export {
   RedisRelayBus,
+  RelayBusInitError,
   createRedisRelayBus,
   type RelayBus,
+  type RelayBusReadiness,
   type RelayCommandEnvelope,
   type RelayResponseEnvelope,
+  type RedisConstructorLike,
+  type RedisLike,
+  type RedisRelayBusOptions,
 } from './relay-bus';
 
 // Relay handlers

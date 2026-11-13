@@ -167,7 +167,7 @@
     "test": "vitest run",
     "test:smoke": "vitest run smoke --reporter=default --reporter=json --outputFile.json=.smoke-report.json && node ../../test-support/assert-no-skipped-tests.mjs .smoke-report.json",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.native.json --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.type-tests.json --noEmit && tsc -p tsconfig.native.json --noEmit",
     "lint": "eslint src --ext .ts,.tsx",
     "format": "prettier --write \"src/**/*.{ts,tsx}\"",
     "prepublishOnly": "node ../../scripts/check-clean-tree.cjs && npm run build"
@@ -205,8 +205,7 @@
     "dom-accessibility-api": "^0.5.16"
   },
   "optionalDependencies": {
-    "@tauri-apps/api": "^2.10.1",
-    "ioredis": "^5.4.1"
+    "@tauri-apps/api": "^2.10.1"
   },
   "devDependencies": {
     "@testing-library/dom": "^10.0.0",
