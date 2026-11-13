@@ -146,6 +146,9 @@ case("variable declared twice", 1, "declared more than once",
 case("variables written as a single table", 1, "array of tables",
      lambda r: mutate_decl(r, "[[variables]]", "[variables]"))
 
+case("declaration entry that is not a table", 1, "is not a table",
+     lambda r: open(os.path.join(r, DECL), "w").write('variables = ["x"]\n'))
+
 
 def no_routing(r):
     d = os.path.join(r, ".github", "workflows")
