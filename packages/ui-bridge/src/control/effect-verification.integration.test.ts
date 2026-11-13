@@ -232,16 +232,24 @@ describe('DefaultActionExecutor — D3 effect verification wiring', () => {
     expect(res.effectVerification?.containment.observedSubsetPredicted).toBe(true);
   });
 
-  it("cause: 'mixed' when a slow click (outlasting settleMs) is observed late in the action and during the settle, via executeAction on a pinned clock", async () => {
+  /**
+   * Drive a slow click (500 ms of pinned time, past the 150 ms click band)
+   * through `executeAction`, with ONE concurrent observation: either late in
+   * the action body (before the settle starts) or 50 ms into the real settle.
+   * Each case alone must yield 'mixed', so each half of the window — the
+   * action body and the settle — is pinned separately.
+   */
+  async function runSlowClickObservedOnce(observeDuring: 'action' | 'settle') {
     const SETTLE_MS = 150; // the click band
     const ACTION_MS = 500; // the click outlasts the band
     let clock = 50_000;
+    let openedAt = Number.NaN;
+    let settleStartedAt = Number.NaN;
     const observations: number[] = [];
     const observe = (atMs: number) => {
       observations.push(atMs);
       getGlobalActionWindowRegistry().recordConcurrentObservation(atMs);
     };
-    let openedAt = Number.NaN;
 
     const executor = new DefaultActionExecutor(registry, undefined, {
       enableEffectVerification: true,
@@ -254,7 +262,8 @@ describe('DefaultActionExecutor — D3 effect verification wiring', () => {
         },
         settle: async (ms) => {
           expect(ms).toBe(SETTLE_MS);
-          observe(clock + 50); // concurrent with the real settle
+          settleStartedAt = clock;
+          if (observeDuring === 'settle') observe(clock + 50); // inside the real settle
           clock += ms;
         },
       },
@@ -271,22 +280,36 @@ describe('DefaultActionExecutor — D3 effect verification wiring', () => {
       menu.setAttribute('data-testid', 'user-menu');
       container.appendChild(menu);
       registry.registerElement('user-menu', menu, { type: 'menu', label: 'User Menu' });
-      observe(clock); // late in the action, past open + settleMs
+      if (observeDuring === 'action') observe(clock - 1); // late in the action body
     });
 
     const res = await executor.executeAction('menu-btn', {
       action: 'click',
-      requestId: 'req-mixed-slow',
+      requestId: `req-mixed-slow-${observeDuring}`,
     });
 
-    // Both observations fall outside a window anchored at open time.
-    expect(observations.length).toBe(2);
-    for (const at of observations) expect(at).toBeGreaterThan(openedAt + SETTLE_MS);
+    // Exactly one observation, outside a window anchored at open time.
+    expect(observations.length).toBe(1);
+    expect(observations[0]).toBeGreaterThan(openedAt + SETTLE_MS);
+    if (observeDuring === 'action') {
+      expect(observations[0]).toBeLessThan(settleStartedAt);
+    } else {
+      expect(observations[0]).toBeGreaterThan(settleStartedAt);
+      expect(observations[0]).toBeLessThan(settleStartedAt + SETTLE_MS);
+    }
     expect(res.effectVerification?.cause).toBe('mixed');
     expect(res.effectVerification?.outcome).toBe('Surprise');
     expect(res.effectVerification?.containment.predictedSubsetObserved).toBe(true);
     expect(res.effectVerification?.containment.observedSubsetPredicted).toBe(true);
     expect(res.effectVerification?.durationMs).toBe(ACTION_MS + SETTLE_MS);
+  }
+
+  it("cause: 'mixed' when a slow click (outlasting settleMs) is observed only late in the action body, via executeAction on a pinned clock", async () => {
+    await runSlowClickObservedOnce('action');
+  });
+
+  it("cause: 'mixed' when a slow click (outlasting settleMs) is observed only during the real settle, via executeAction on a pinned clock", async () => {
+    await runSlowClickObservedOnce('settle');
   });
 
   it('records each verified cycle into the global effect store (newest-first)', async () => {

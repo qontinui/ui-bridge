@@ -184,8 +184,9 @@ export {
   getGlobalActionWindowRegistry,
   setGlobalActionWindowRegistry,
   resetGlobalActionWindowRegistry,
+  MAX_UNANCHORED_WINDOW_MS,
 } from './action-window-registry';
-export type { ActionWindow } from './action-window-registry';
+export type { ActionWindow, ActionWindowHandle } from './action-window-registry';
 export {
   EffectStore,
   getGlobalEffectStore,

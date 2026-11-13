@@ -131,8 +131,8 @@ export class EffectVerifier {
     //    It opens with NO end: the settle does not start until the action
     //    returns, so its end is only knowable at step 5.
     const registry = getGlobalActionWindowRegistry();
-    const windowId = params.requestId ?? `effect-${this.now()}-${synthSeq++}`;
-    registry.beginAction(windowId, params.action, this.now());
+    const requestId = params.requestId ?? `effect-${this.now()}-${synthSeq++}`;
+    const windowHandle = registry.beginAction(requestId, params.action, this.now());
 
     try {
       // 4. Execute the real action (errors propagate by design — but we still
@@ -146,7 +146,7 @@ export class EffectVerifier {
       //    slower than `settleMs`, dropping every observation from then on —
       //    the rest of the action and the whole settle (finding 736a7c2c). The
       //    settle duration itself is unchanged.
-      registry.anchorSettle(windowId, this.now(), settleMs);
+      registry.anchorSettle(windowHandle, this.now(), settleMs);
       await this.deps.settle(settleMs);
 
       // 6. Post-snapshot.
@@ -156,7 +156,7 @@ export class EffectVerifier {
       //    window, the cause is 'mixed' (concurrent observational change
       //    alongside the causal one); otherwise it is 'causal'. Read the flag
       //    BEFORE ending the window.
-      const cause: EffectCause = registry.hadConcurrentObservation(windowId)
+      const cause: EffectCause = registry.hadConcurrentObservation(windowHandle)
         ? 'mixed'
         : 'causal';
 
@@ -184,7 +184,7 @@ export class EffectVerifier {
 
       return { result, verification, alsoPredicted };
     } finally {
-      registry.end(windowId);
+      registry.end(windowHandle);
     }
   }
 }
