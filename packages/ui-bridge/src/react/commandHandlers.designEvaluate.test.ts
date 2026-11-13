@@ -55,8 +55,10 @@ function serverHandlers(): ReturnType<typeof createHandlers> {
 /**
  * Every relay `relayHandlers()` opened, with its tab subscription's
  * unsubscribe. Both arm timers (the relay its cleanup interval, the
- * subscription its proactive-snapshot timeout) that would otherwise fire after
- * the file's last test and log into a closing worker.
+ * subscription its proactive-snapshot timeout) that would otherwise outlive
+ * the file's last test. With the warm-up snapshot on (the default) that
+ * timeout sends and logs into a closing worker; these relays turn it off, so
+ * it is inert, but the cleanup interval still runs until `destroy()`.
  */
 const openRelays: Array<{ relay: CommandRelay; unsubscribe: () => void }> = [];
 
@@ -135,6 +137,8 @@ describe('/design/evaluate family · relay and server answer with one model', ()
     try {
       relayHandlers();
       // The relay's cleanup interval plus its subscription's proactive timeout.
+      // A literal, not "> 0": each half of closeRelays() is load-bearing only
+      // while each arms a timer, so if either stops, this reddens first.
       expect(vi.getTimerCount()).toBe(2);
       closeRelays();
       expect(vi.getTimerCount()).toBe(0);

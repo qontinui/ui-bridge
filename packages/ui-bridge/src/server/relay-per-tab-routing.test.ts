@@ -376,8 +376,10 @@ describe('relay · Item #15 — stale-tab pruning', () => {
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
   });
   afterEach(() => {
-    // Before the real timers return, so the relays' fake timers are cleared
-    // rather than abandoned.
+    // Destroy under the fake clock, so each relay's cleanup interval is
+    // cleared there. The subscriptions' proactive timeouts stay on the fake
+    // clock and are dropped with it, which is harmless: destroy() leaves them
+    // no listener to send to.
     destroyRelays();
     vi.useRealTimers();
   });

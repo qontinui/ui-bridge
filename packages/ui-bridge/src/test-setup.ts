@@ -106,15 +106,23 @@ if (typeof CSS.escape !== 'function') {
 // Two doors open one:
 // - SSE: `subscribeToCommands` and `openCommandStream` both reach the private
 //   `addCommandListener`. Closed by the unsubscribe it returns, or by a later
-//   `destroy()`, which removes every listener the timers look for.
+//   `destroy()`, which removes every listener the timers look for. Recorded
+//   whatever `proactiveSnapshot` says, on purpose: an open SSE subscription
+//   means its relay was not destroyed since it opened, so the relay's cleanup
+//   interval may still run, and the same leak logs again the moment the
+//   warm-up snapshot is turned back on. With it off, the warm-up timer itself
+//   is inert.
 // - WebSocket: `registerWebSocketClient` on a relay with proactive snapshots
 //   on. Closed only by `unregisterWebSocketClient`: `destroy()` leaves the
-//   client registered, so its timer still sends.
+//   client registered, so its timer still sends. With proactive snapshots off
+//   the registration arms only an inert timer, so it is not recorded.
 //
 // The private method is reached through an `unknown` cast, and every wrapped
 // method is checked at setup: a renamed one throws here rather than leaving
-// the guard silently disarmed. This file's `afterAll` is registered before
-// the test file's own hooks, so it runs after them.
+// the guard silently disarmed. One boundary remains: a test that calls
+// `vi.resetModules()` and then imports `command-relay` dynamically gets a
+// fresh, unwrapped class. No test does that today. This file's `afterAll` is
+// registered before the test file's own hooks, so it runs after them.
 
 type RelayTransport =
   | { door: 'sse'; relay: CommandRelay; opened: Error; closed: boolean }
@@ -238,7 +246,7 @@ afterAll(() => {
     const [what, remedy] =
       transport.door === 'sse'
         ? [
-            'SSE subscription',
+            'SSE subscription (its relay was not destroyed since it opened, so its cleanup interval may still run)',
             'call the unsubscribe, or relay.destroy(), in afterEach (afterAll for a relay built in beforeAll)',
           ]
         : [
@@ -253,8 +261,8 @@ afterAll(() => {
   });
   throw new Error(
     `${open.length} CommandRelay subscription(s) left open after the file's last test. ` +
-      'Their proactive-snapshot timers fire, and log, while the worker tears down, which fails ' +
-      'the run with every test green.\n' +
+      'With the warm-up snapshot on (the default), their timers send and log while the ' +
+      'worker tears down, which fails the run with every test green.\n' +
       entries.join('\n')
   );
 });
