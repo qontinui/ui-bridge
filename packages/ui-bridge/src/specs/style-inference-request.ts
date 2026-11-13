@@ -138,9 +138,24 @@ function correctBoxSidesWithTypedOm(el: HTMLElement, styles: Record<string, stri
   }
 }
 
-function rootFontSize(): number {
-  const n = parseFloat(window.getComputedStyle(document.documentElement).fontSize);
-  return Number.isFinite(n) && n > 0 ? n : 16;
+/** True when this host has a DOM to read (a browser or jsdom, not a bare Node server). */
+function hasDom(): boolean {
+  return typeof document !== 'undefined' && typeof window !== 'undefined';
+}
+
+/**
+ * The page's root font size — what `rem` resolves against — or 16 where there
+ * is no DOM or it does not read as a positive number. The design audit
+ * measures it the same way, so audit and drift agree on `rem`.
+ */
+export function measureRootFontSizePx(): number {
+  if (!hasDom() || !document.documentElement) return 16;
+  try {
+    const n = parseFloat(window.getComputedStyle(document.documentElement).fontSize);
+    return Number.isFinite(n) && n > 0 ? n : 16;
+  } catch {
+    return 16;
+  }
 }
 
 /** Whether a media query matches now; an unparseable one or a missing `matchMedia` does not. */
@@ -230,21 +245,26 @@ function collectSamples(
   let candidates: Array<{ id: string; element: HTMLElement }> = [];
   let skipped = 0;
 
+  const dom = hasDom();
+  const isElement = (value: unknown): value is HTMLElement =>
+    typeof HTMLElement !== 'undefined' && value instanceof HTMLElement;
+  if (!dom) notes.push('no DOM is available in this host: nothing could be sampled');
+
   if (options.scope === 'registered') {
     const wanted = options.elementIds ? new Set(options.elementIds) : null;
     for (const el of elements) {
       if (wanted !== null && !wanted.has(el.id)) continue;
-      if (el.element instanceof HTMLElement) candidates.push({ id: el.id, element: el.element });
+      if (dom && isElement(el.element)) candidates.push({ id: el.id, element: el.element });
       else skipped++;
     }
     if (wanted !== null && candidates.length + skipped === 0) {
       notes.push('elementIds matched no registered element');
     }
-  } else {
+  } else if (dom) {
     const all = document.body ? Array.from(document.body.querySelectorAll('*')) : [];
     let i = 0;
     for (const el of all) {
-      if (!(el instanceof HTMLElement) || NON_RENDERED_TAGS.has(el.tagName)) continue;
+      if (!isElement(el) || NON_RENDERED_TAGS.has(el.tagName)) continue;
       candidates.push({ id: `document:${i++}`, element: el });
     }
     if (!document.body) notes.push('the document has no body');
@@ -275,7 +295,9 @@ function collectSamples(
   }
   notes.push('a border that differs per side computes to an empty shorthand and is not counted');
 
-  const rootCustomProperties = readRootCustomProperties();
+  // Nothing sampled: there is nothing for root custom properties to match, and
+  // a DOM-less host has no root to read.
+  const rootCustomProperties = samples.length > 0 && dom ? readRootCustomProperties() : {};
   const names = new Set(Object.keys(rootCustomProperties));
   for (const s of samples) for (const n of Object.keys(s.customProperties ?? {})) names.add(n);
 
@@ -289,7 +311,7 @@ function collectSamples(
       elementsSkipped: skipped,
       elementCapReached: capReached,
       customPropertiesSeen: names.size,
-      rootFontSizePx: options.rootFontSizePx ?? rootFontSize(),
+      rootFontSizePx: options.rootFontSizePx ?? measureRootFontSizePx(),
       notes,
     },
   };
@@ -331,7 +353,8 @@ function declaredOf(
       return { declared: { customProperties: spec.customProperties }, source: 'customProperties' };
     case 'pageCustomProperties': {
       const picked: Record<string, string> = {};
-      for (const [k, v] of Object.entries(readRootCustomProperties())) {
+      const page = hasDom() ? readRootCustomProperties() : {};
+      for (const [k, v] of Object.entries(page)) {
         if (k.startsWith(spec.prefix)) picked[k] = v;
       }
       return { declared: { customProperties: picked }, source: 'pageCustomProperties' };

@@ -3,7 +3,11 @@ import * as specs from '@qontinui/ui-bridge/specs';
 import { NativeUIBridgeRegistry } from '../../core/registry';
 import { DefaultNativeActionExecutor } from '../../control/action-executor';
 import { NativeUIBridgeServer } from '../http-server';
-import { createDesignHandlers, type StyleInferenceModule } from '../design-handlers';
+import {
+  createDesignHandlers,
+  type StyleInferenceModule,
+  type StyleValidatorModule,
+} from '../design-handlers';
 import type { HandlerContext } from '../types';
 import type { NativeElementRef } from '../../core/types';
 
@@ -218,5 +222,75 @@ describe('native style inference', () => {
       expect(res.status, path).toBe(200);
       expect((JSON.parse(res.body) as { success: boolean }).success, path).toBe(true);
     }
+  });
+});
+
+describe('native review regressions (each threw or answered wrong before its fix)', () => {
+  it('a numeric fontWeight and a PlatformColor object do not fail the request', async () => {
+    const { module, calls } = recordingModule();
+    const registry = new NativeUIBridgeRegistry();
+    registry.registerElement('label', makeRef(), { type: 'text' });
+    registry.updateElementStyle('label', {
+      fontWeight: 700,
+      color: { semantic: ['labelColor'] },
+      backgroundColor: '#ffffff',
+    } as never);
+    const handlers = createDesignHandlers(registry, undefined, { styleInference: module });
+    const res = await handlers.inferStyleGuide(ctx({}));
+    expect(res.success).toBe(true);
+    const styles = calls.samples[0][0].styles;
+    expect(styles.fontWeight).toBe('700');
+    expect(typeof styles.color).toBe('string');
+    const data = res.data as InferData & { unnormalized: Record<string, number> };
+    expect(data.inventory.fontWeights.map((e) => e.value)).toEqual(['700']);
+    expect(data.unnormalized.colors).toBe(1);
+  });
+
+  it('RN shadow props fold the opacity into the colour instead of a fourth length', async () => {
+    const { module } = recordingModule();
+    const registry = new NativeUIBridgeRegistry();
+    registry.registerElement('card', makeRef(), { type: 'view' });
+    registry.updateElementStyle('card', {
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.25,
+      shadowRadius: 4,
+    });
+    const handlers = createDesignHandlers(registry, undefined, { styleInference: module });
+    const res = await handlers.inferStyleGuide(ctx({}));
+    const data = res.data as InferData;
+    expect(data.inventory.shadows.map((e) => e.value)).toEqual(['0px 2px 4px 0px #00000040']);
+    expect(data.inventory.colors.map((e) => e.value)).toEqual(['#00000040']);
+  });
+
+  it('the audit passes the caller root font size to the validator', async () => {
+    const audits: unknown[] = [];
+    const real = specs as unknown as StyleValidatorModule;
+    const validator: StyleValidatorModule = {
+      runStyleAudit: (elements, guide, options) => {
+        audits.push(options);
+        return real.runStyleAudit(elements, guide, options);
+      },
+    };
+    const registry = new NativeUIBridgeRegistry();
+    registry.registerElement('box', makeRef(), { type: 'view' });
+    registry.updateElementStyle('box', { paddingTop: 20 });
+    const handlers = createDesignHandlers(registry, undefined, { styleValidator: validator });
+    const guide = {
+      version: '1.0',
+      name: 'rem',
+      tokens: { spacing: { md: '1rem' } },
+      rules: [
+        {
+          id: 'pad',
+          constraints: [{ type: 'tokenRef', property: 'paddingTop', tokenPath: 'spacing.md' }],
+        },
+      ],
+    };
+    const at20 = await handlers.runDesignAudit(ctx({ guide, rootFontSizePx: 20 }));
+    expect((at20.data as { failedCount: number }).failedCount).toBe(0);
+    const atDefault = await handlers.runDesignAudit(ctx({ guide }));
+    expect((atDefault.data as { failedCount: number }).failedCount).toBe(1);
+    expect(audits).toEqual([{ rootFontSizePx: 20 }, undefined]);
   });
 });

@@ -111,6 +111,7 @@ export {
   runStyleAudit,
   evaluateConstraint,
 } from './style-validator';
+export type { StyleValidationOptions } from './style-validator';
 
 // Style inference (draft style guide + token drift from computed styles).
 // Pure — no DOM access — so the native package reaches it through this entry.
@@ -126,6 +127,8 @@ export {
   inferStyleGuideFromInventory,
   computeTokenDrift,
   styleValuesEquivalent,
+  canonicalColorsMatch,
+  lengthCategoryOfName,
 } from './style-inference';
 export type {
   StyleCategory,

@@ -237,6 +237,7 @@ import {
 import {
   diffRegisteredDesignTokens,
   inferRegisteredStyleGuide,
+  measureRootFontSizePx,
   styleInferenceFailureCode,
 } from '../specs/style-inference-request';
 import { getGlobalSpecStore } from '../specs/store';
@@ -5089,6 +5090,7 @@ export function createHandlers(
     runDesignAudit: async (request?: {
       guide?: StyleGuideConfig;
       elementIds?: string[];
+      rootFontSizePx?: number;
     }): Promise<APIResponse<StyleAuditReport>> => {
       try {
         const guide = request?.guide || loadedStyleGuide;
@@ -5114,7 +5116,14 @@ export function createHandlers(
           }
         }
 
-        const report = runStyleAudit(designData, guide);
+        // `rem` resolves against the page's measured root font size (or the
+        // caller's), the same figure inference and drift use.
+        const requested = request?.rootFontSizePx;
+        const rootFontSizePx =
+          typeof requested === 'number' && Number.isFinite(requested) && requested > 0
+            ? requested
+            : measureRootFontSizePx();
+        const report = runStyleAudit(designData, guide, { rootFontSizePx });
         return success(report);
       } catch (err) {
         return error((err as Error).message, 'DESIGN_AUDIT_ERROR');

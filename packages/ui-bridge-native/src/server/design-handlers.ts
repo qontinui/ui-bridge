@@ -19,13 +19,17 @@ import {
 let loadedStyleGuide: unknown = null;
 let savedBaseline: unknown = null;
 
-// Try to load the style validator from the web SDK (optional peer dep)
-let styleValidator: {
+/** The web SDK's style validator (`@qontinui/ui-bridge/specs`). */
+export interface StyleValidatorModule {
   runStyleAudit: (
     elements: Array<{ elementId: string; styles: Record<string, string> }>,
-    guide: unknown
+    guide: unknown,
+    options?: { rootFontSizePx?: number }
   ) => unknown;
-} | null = null;
+}
+
+// Try to load the style validator from the web SDK (optional peer dep)
+let styleValidator: StyleValidatorModule | null = null;
 
 // Try to load quality evaluator from the web SDK (optional peer dep)
 let qualityEvaluator: {
@@ -157,6 +161,11 @@ export interface DesignHandlerOptions {
    * because `vi.mock` does not intercept this file's CJS `require`.
    */
   styleInference?: StyleInferenceModule | null;
+  /**
+   * The style validator `/design/audit` runs. Absent: the optional peer's.
+   * `null`: none (`VALIDATOR_NOT_AVAILABLE`). Injectable for the same reason.
+   */
+  styleValidator?: StyleValidatorModule | null;
 }
 
 /** A request-validation error from the shared parser (its `code` is `INVALID_REQUEST`). */
@@ -190,6 +199,7 @@ export function createDesignHandlers(
   options: DesignHandlerOptions = {}
 ): NativeDesignHandlers {
   const inference = 'styleInference' in options ? (options.styleInference ?? null) : styleInference;
+  const validator = 'styleValidator' in options ? (options.styleValidator ?? null) : styleValidator;
 
   /**
    * Style samples for the inference routes: the flattened StyleSheet of each
@@ -346,6 +356,7 @@ export function createDesignHandlers(
         | {
             guide?: unknown;
             elementIds?: string[];
+            rootFontSizePx?: unknown;
           }
         | undefined;
 
@@ -355,7 +366,7 @@ export function createDesignHandlers(
         return error('No style guide loaded or provided', 'NO_STYLE_GUIDE');
       }
 
-      if (!styleValidator) {
+      if (!validator) {
         return error(
           'Install @qontinui/ui-bridge for style audit support. ' +
             'Add it as a dependency: npm install @qontinui/ui-bridge',
@@ -376,7 +387,16 @@ export function createDesignHandlers(
       }));
 
       try {
-        const report = styleValidator.runStyleAudit(auditElements, guide);
+        // React Native has no root font size; a caller auditing rem-valued
+        // tokens says which one, else `rem` resolves at 16px (as inference does).
+        const root = body?.rootFontSizePx;
+        const rootFontSizePx =
+          typeof root === 'number' && Number.isFinite(root) && root > 0 ? root : undefined;
+        const report = validator.runStyleAudit(
+          auditElements,
+          guide,
+          rootFontSizePx !== undefined ? { rootFontSizePx } : undefined
+        );
         return success(report);
       } catch (err) {
         return error(
