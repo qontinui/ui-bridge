@@ -72,10 +72,15 @@
  *   `overflow-y` of `hidden` or `clip`, or `contain: paint`), following the
  *   containing-block chain, so an absolutely or fixed positioned element is
  *   not checked against an ancestor that does not clip it. A scroll container
- *   (`overflow` `auto` or `scroll`) is not a clip: content scrolled out of it
- *   is reachable, so the nearest scroll container settles that axis as
- *   unclipped, and an ancestor further out is compared with the scroll
- *   container's own box instead. The element set is the registry's — the
+ *   (`overflow` `auto` or `scroll`) clips on one side only: content scrolled
+ *   out past its far side is reachable, while content past the edge it
+ *   scrolls from (the left or top one, or the right or bottom one under
+ *   `direction: rtl`, a vertical `writing-mode` or a reversed flex
+ *   container) is out of reach at every scroll position, as a badge pulled
+ *   above a scroll container's top edge is. So the nearest scroll container
+ *   settles that axis with that one edge, and an ancestor further out is
+ *   compared with the scroll container's own box instead. The element set is
+ *   the registry's — the
  *   same set every UI Bridge read and the runner path see. An element nothing
  *   clips is not a compared pair; zero compared pairs is
  *   `unknown{input_missing}`.
@@ -452,6 +457,19 @@ interface PaintItem {
 
 /** What an element does to its content's overflow on one axis. */
 type Overflow = 'clip' | 'scroll' | null;
+
+/** The edge a scroll container scrolls from, per axis: `start` is left or top. */
+type ScrollEdge = 'start' | 'end';
+
+/** A padding box in viewport pixels, with the scale its element is drawn at. */
+type PaddingBox = {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  sx: number;
+  sy: number;
+};
 
 /** Why a colour measurement stopped: returned instead of a colour. */
 class ColorUnmeasured {
@@ -983,9 +1001,10 @@ class TabMeasurement {
     if (st.display === 'inline' || st.display === 'contents' || st.display === 'none') {
       return none;
     }
-    // Only `hidden` and `clip` (or `contain: paint`) cut content off. `scroll`
-    // and `auto` make a scroll container, whose overflow is reachable by
-    // scrolling: a row scrolled out of a list is not clipped.
+    // Only `hidden` and `clip` (or `contain: paint`) cut content off on every
+    // side. `scroll` and `auto` make a scroll container, whose overflow past
+    // its far side is reachable by scrolling: a row scrolled out of a list is
+    // not clipped ({@link clipOf} keeps the edge it scrolls from).
     const paint = /\b(paint|strict|content)\b/.test(st.contain ?? '');
     const axis = (v: string): Overflow =>
       v === 'auto' || v === 'scroll'
@@ -999,13 +1018,14 @@ class TabMeasurement {
   /**
    * The padding box an ancestor clips its content to, in viewport pixels:
    * the border box minus borders and scrollbars, scaled when the element is
-   * transformed. Unrounded, from the fractional layout sizes
-   * ({@link layoutSizes}) rather than the integer `offset*` / `client*`,
-   * whose rounding would read as a scale. The evaluator rounds each edge of
-   * the clip and of the box it bounds to the nearest pixel, which is what
-   * absorbs the layout's sub-pixel noise: no slack is added here.
+   * transformed, with that scale (`sx`, `sy`). Unrounded, from the fractional
+   * layout sizes ({@link layoutSizes}) rather than the integer `offset*` /
+   * `client*`, whose rounding would read as a scale. The evaluator rounds
+   * each edge of the clip and of the box it bounds to the nearest pixel,
+   * which is what absorbs the layout's sub-pixel noise: no slack is added
+   * here.
    */
-  private clipBox(el: Element, st: CSSStyleDeclaration): ClipBounds {
+  private clipBox(el: Element, st: CSSStyleDeclaration): PaddingBox {
     const r = el.getBoundingClientRect();
     const html = el as HTMLElement;
     const sizes = this.layoutSizes(el);
@@ -1019,7 +1039,43 @@ class TabMeasurement {
     const bt = pxValue(st.borderTopWidth) || 0;
     const left = r.left + bl * sx;
     const top = r.top + bt * sy;
-    return { left, top, right: left + pw * sx, bottom: top + ph * sy, byX: '', byY: '' };
+    return { left, top, right: left + pw * sx, bottom: top + ph * sy, sx, sy };
+  }
+
+  /**
+   * The edge each axis of a scroll container scrolls from: `start` (left,
+   * top) or `end` (right, bottom). What overflows the far edge is scrolled
+   * into view; what overflows this one is out of reach at every scroll
+   * position. A scroll offset away from zero shows the side directly — the
+   * offset runs from 0 at this edge, negative when it is the right or bottom
+   * one. At zero the layout decides: the inline-start and block-start edges
+   * (`direction`, `writing-mode`), which a flex container swaps for its
+   * main-start (`*-reverse`) and cross-start (`wrap-reverse`) edges. Each
+   * case was measured in Chromium.
+   */
+  private scrollOrigin(el: Element, st: CSSStyleDeclaration): { x: ScrollEdge; y: ScrollEdge } {
+    const flip = (edge: ScrollEdge): ScrollEdge => (edge === 'start' ? 'end' : 'start');
+    const mode = st.writingMode || 'horizontal-tb';
+    const inline: 'x' | 'y' = mode === 'horizontal-tb' ? 'x' : 'y';
+    const block: 'x' | 'y' = inline === 'x' ? 'y' : 'x';
+    let inlineStart: ScrollEdge = st.direction === 'rtl' ? 'end' : 'start';
+    // sideways-lr runs its lines bottom to top.
+    if (mode === 'sideways-lr') inlineStart = flip(inlineStart);
+    const blockStart: ScrollEdge =
+      mode === 'vertical-rl' || mode === 'sideways-rl' ? 'end' : 'start';
+    const origin = { x: 'start' as ScrollEdge, y: 'start' as ScrollEdge };
+    origin[inline] = inlineStart;
+    origin[block] = blockStart;
+    if (/\bflex\b/.test(st.display)) {
+      const column = (st.flexDirection ?? '').startsWith('column');
+      const main = column ? block : inline;
+      const cross = column ? inline : block;
+      if ((st.flexDirection ?? '').endsWith('-reverse')) origin[main] = flip(origin[main]);
+      if (st.flexWrap === 'wrap-reverse') origin[cross] = flip(origin[cross]);
+    }
+    const bySign = (offset: number, fallback: ScrollEdge): ScrollEdge =>
+      offset > 0 ? 'start' : offset < 0 ? 'end' : fallback;
+    return { x: bySign(el.scrollLeft, origin.x), y: bySign(el.scrollTop, origin.y) };
   }
 
   /**
@@ -1027,16 +1083,19 @@ class TabMeasurement {
    * clips that axis, walking only the ancestors that can clip it — an
    * absolutely positioned element skips the ancestors below its containing
    * block, a fixed one every ancestor below one that contains fixed
-   * descendants. A scroll container met first settles that axis as unclipped:
-   * what overflows it is reachable by scrolling, and its own box — not the
-   * content scrolled inside it — is what an ancestor further out can cut off.
-   * `null` when nothing clips it.
+   * descendants. A scroll container met first settles that axis too, on one
+   * side only: what overflows it past the edge it scrolls from
+   * ({@link scrollOrigin}) is cut off at every scroll position, where that
+   * edge lay at scroll position 0, while what overflows the far side is
+   * reachable by scrolling, so that side is open. Its own box — not the
+   * content scrolled inside it — is what an ancestor further out can cut
+   * off. `null` when nothing clips it.
    */
   private clipOf(el: Element): ClipBounds | null {
     let need: 'all' | 'absolute' | 'fixed' = this.positionMode(this.style(el));
-    type Side = { box: ClipBounds; by: Element } | 'scrolls' | null;
-    let x: Side = null;
-    let y: Side = null;
+    type Side = { lo: number; hi: number; by: string };
+    let x: Side | null = null;
+    let y: Side | null = null;
     for (let a = composedParent(el); a && !(x && y); a = composedParent(a)) {
       const st = this.style(a);
       const eligible =
@@ -1045,26 +1104,48 @@ class TabMeasurement {
         (need === 'fixed' && this.fixedContainer(st));
       if (!eligible) continue;
       const axes = this.overflowAxes(a, st);
-      const box = axes.x === 'clip' || axes.y === 'clip' ? this.clipBox(a, st) : null;
-      if (!x && axes.x) x = box && axes.x === 'clip' ? { box, by: a } : 'scrolls';
-      if (!y && axes.y) y = box && axes.y === 'clip' ? { box, by: a } : 'scrolls';
+      if ((!x && axes.x) || (!y && axes.y)) {
+        const box = this.clipBox(a, st);
+        const origin = axes.x === 'scroll' || axes.y === 'scroll' ? this.scrollOrigin(a, st) : null;
+        const clipped = (axis: string, prop: string): string =>
+          `the ${axis} clip of ${this.describe(a)}, its nearest ancestor clipping ${prop} ` +
+          `(${this.clipReason(a, prop)})`;
+        const unreachable = (edge: string, prop: string): string =>
+          `the ${edge} edge of the scrollable area of ${this.describe(a)} ` +
+          `(${this.clipReason(a, prop)}), which no scroll position reaches past`;
+        if (!x && axes.x) {
+          const shift = a.scrollLeft * box.sx;
+          x =
+            axes.x === 'clip' || !origin
+              ? { lo: box.left, hi: box.right, by: clipped('horizontal', 'overflow-x') }
+              : origin.x === 'start'
+                ? { lo: box.left - shift, hi: Infinity, by: unreachable('left', 'overflow-x') }
+                : { lo: -Infinity, hi: box.right - shift, by: unreachable('right', 'overflow-x') };
+        }
+        if (!y && axes.y) {
+          const shift = a.scrollTop * box.sy;
+          y =
+            axes.y === 'clip' || !origin
+              ? { lo: box.top, hi: box.bottom, by: clipped('vertical', 'overflow-y') }
+              : origin.y === 'start'
+                ? { lo: box.top - shift, hi: Infinity, by: unreachable('top', 'overflow-y') }
+                : {
+                    lo: -Infinity,
+                    hi: box.bottom - shift,
+                    by: unreachable('bottom', 'overflow-y'),
+                  };
+        }
+      }
       need = this.positionMode(st);
     }
-    if (x === 'scrolls') x = null;
-    if (y === 'scrolls') y = null;
     if (!x && !y) return null;
-    const label = (side: { by: Element } | null, axis: string, prop: string): string =>
-      side
-        ? `the ${axis} clip of ${this.describe(side.by)}, its nearest ancestor clipping ${prop} ` +
-          `(${this.clipReason(side.by, prop)})`
-        : '';
     return {
-      left: x ? x.box.left : -Infinity,
-      right: x ? x.box.right : Infinity,
-      top: y ? y.box.top : -Infinity,
-      bottom: y ? y.box.bottom : Infinity,
-      byX: label(x, 'horizontal', 'overflow-x'),
-      byY: label(y, 'vertical', 'overflow-y'),
+      left: x ? x.lo : -Infinity,
+      right: x ? x.hi : Infinity,
+      top: y ? y.lo : -Infinity,
+      bottom: y ? y.hi : Infinity,
+      byX: x ? x.by : '',
+      byY: y ? y.by : '',
     };
   }
 

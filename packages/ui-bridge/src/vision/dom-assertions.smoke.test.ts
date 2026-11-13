@@ -735,9 +735,11 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     expect(cleanRes.results[1].detail).toContain('contain: paint');
     await clean.close();
 
-    // A scroll container is not a clip: rows scrolled out of the list are
-    // reachable, so neither the list nor the hidden sheet around it clips
-    // them; the sheet is compared with the list's own box, which fits.
+    // A scroll container does not clip what is scrolled out past its far
+    // side: rows scrolled out of the list, below it and (scrolled by 40px)
+    // above it, are reachable, so neither the list nor the hidden sheet
+    // around it clips them; the sheet is compared with the list's own box,
+    // which fits.
     const scrolled = await openPage(`
       <div data-id="sheet" style="width:240px;height:120px;overflow:hidden">
         <div data-id="list" style="height:100px;overflow-y:auto">
@@ -751,6 +753,9 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
         <div data-id="tall" style="height:100px;overflow-y:auto"><div style="height:300px"></div></div>
       </div>
     `);
+    await scrolled.evaluate(() => {
+      document.querySelector('[data-id="list"]')!.scrollTop = 40;
+    });
     const scrolledRes = await assertOn(scrolled, [
       { type: 'no_clipping', region: { x: 0, y: 0, w: 800, h: 130 } },
       { type: 'no_clipping' },
@@ -763,6 +768,52 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       "element 'tall' extends past the vertical clip of 'short'"
     );
     await scrolled.close();
+
+    // What overflows the edge a scroll container scrolls from is out of reach
+    // at every scroll position, so it is clipped: a badge pulled above the top
+    // of a wrapper that scrolls for its width (overflow-y computes to auto),
+    // and, right to left, one pulled past the right edge. The far side stays
+    // reachable: a right-to-left row overflows to the left, and a reversed
+    // column (a chat log) to the top.
+    const origins = await openPage(`
+      <div data-id="wrap" style="overflow-x:auto;width:300px;margin-top:40px">
+        <div style="position:relative;height:30px">Card<span data-id="badge" style="position:absolute;top:-10px;left:40px;width:20px;height:16px"></span></div>
+      </div>
+      <div data-id="rtl" style="overflow-x:auto;direction:rtl;width:300px;height:40px;margin-top:60px">
+        <div data-id="rtlrow" style="width:600px;height:20px"></div>
+      </div>
+      <div data-id="rtlbox" style="overflow-x:auto;direction:rtl;width:300px;height:40px;margin-top:60px">
+        <div style="position:relative;height:20px"><span data-id="rtlbadge" style="position:absolute;right:-10px;width:20px;height:10px"></span></div>
+      </div>
+      <div data-id="chat" style="display:flex;flex-direction:column-reverse;overflow-y:auto;width:300px;height:100px;margin-top:120px">
+        <div data-id="msg1" style="flex:none;height:40px">1</div>
+        <div data-id="msg2" style="flex:none;height:40px">2</div>
+        <div data-id="msg3" style="flex:none;height:40px">3</div>
+      </div>
+    `);
+    // The first margin collapses with the body's: wrap 40-70 (badge 30-46),
+    // rtl 130-170, rtlbox 230-270, chat 390-490 with msg3 overflowing above
+    // it at 370-410. Each region holds one container.
+    const originsRes = await assertOn(origins, [
+      { type: 'no_clipping', region: { x: 0, y: 30, w: 800, h: 50 } },
+      { type: 'no_clipping', region: { x: 0, y: 130, w: 800, h: 50 } },
+      { type: 'no_clipping', region: { x: 0, y: 230, w: 800, h: 50 } },
+      { type: 'no_clipping', region: { x: 0, y: 370, w: 800, h: 130 } },
+    ]);
+    expect(verdicts(originsRes)).toEqual([
+      ['failed', null],
+      ['passed', null],
+      ['failed', null],
+      ['passed', null],
+    ]);
+    expect(originsRes.results[0].detail).toContain(
+      "element 'badge' extends past the top edge of the scrollable area of 'wrap' " +
+        '(overflow-y: auto), which no scroll position reaches past'
+    );
+    expect(originsRes.results[2].detail).toContain(
+      "element 'rtlbadge' extends past the right edge of the scrollable area of 'rtlbox'"
+    );
+    await origins.close();
 
     // One pixel past the clip is clipped: the clip is the padding box itself,
     // with no slack, and the evaluator rounds both boxes to the nearest pixel.

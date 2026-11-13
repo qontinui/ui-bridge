@@ -205,7 +205,7 @@ only what the page itself can measure, and they get a verdict:
 | `text_fits_container` | A block-level element's `scrollWidth`/`scrollHeight` (borders and scrollbars included) against its border box, rounded up. An inline element is measured by its own line fragments against the content box of the block it lays out in, so a sibling's overflow is not its own. Both sides are layout pixels, so a CSS transform neither causes an overflow nor hides one. An element with no text is `unknown` |
 | `no_overlap` | Border boxes, after the `tolerance_px` inset |
 | `element_above` | Paint order from `document.elementsFromPoint` inside the pair's visible intersection (never scrolls) |
-| `no_clipping` | Each registered element against the padding box of its nearest ancestor with `overflow` `hidden` or `clip`, or `contain: paint`. A scroll container (`overflow` `auto` or `scroll`) is not a clip: what is scrolled out of it is reachable, so only its own box is compared further out. No element inside a clipping ancestor is `unknown` |
+| `no_clipping` | Each registered element against the padding box of its nearest ancestor with `overflow` `hidden` or `clip`, or `contain: paint`. A scroll container (`overflow` `auto` or `scroll`) clips only past the edge it scrolls from (left or top; right or bottom under `direction: rtl`, a vertical `writing-mode` or a reversed flex container), where no scroll position reaches: what is scrolled out past its far side is reachable, and only its own box is compared further out. No element inside a clipping ancestor is `unknown` |
 
 The tab hands every box over unrounded, and each kind rounds it as vision-core
 does: `text_fits_container` rounds its box's width and height up, and the
