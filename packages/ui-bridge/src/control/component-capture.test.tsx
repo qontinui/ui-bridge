@@ -17,6 +17,7 @@ import {
   componentCaptureCommandResult,
   parseComponentCaptureRefusal,
   MAX_CAPTURE_NODES,
+  MAX_PORTAL_WALK_FIBERS,
   type ComponentCaptureRegistry,
 } from './component-capture';
 import { REDACTED_VALUE } from '../core/redaction';
@@ -299,7 +300,7 @@ describe('captureComponent — component root and refusals', () => {
       { b1: q('.b1'), b2: q('.b2') },
       { pair: { elementIds: ['b1', 'b2'], getState: () => ({ open: true }) } }
     );
-    const result = captureComponent(registry, { kind: 'component', id: 'pair' });
+    const result = captureComponent(registry, { kind: 'component', id: 'pair' }, { props: true });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.capture.nodes[0]).toMatchObject({ tag: 'div', registeredId: 'pair' });
@@ -370,7 +371,11 @@ describe('captureComponent — owner props are redacted over the whole subtree (
     }
     render(<SecretField secret="hunter2" />);
     const root = q('div.secret-field');
-    const result = captureComponent(fakeRegistry({ root }), { kind: 'element', id: 'root' });
+    const result = captureComponent(
+      fakeRegistry({ root }),
+      { kind: 'element', id: 'root' },
+      { props: true }
+    );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.capture.props).toEqual({ secret: REDACTED_VALUE });
@@ -383,7 +388,11 @@ describe('captureComponent — owner props are redacted over the whole subtree (
     }
     render(<Badge tone="warn" />);
     const badge = q('span.badge');
-    const result = captureComponent(fakeRegistry({ badge }), { kind: 'element', id: 'badge' });
+    const result = captureComponent(
+      fakeRegistry({ badge }),
+      { kind: 'element', id: 'badge' },
+      { props: true }
+    );
     expect(result.ok && result.capture.props).toEqual({ tone: 'warn' });
   });
 });
@@ -614,7 +623,7 @@ describe('captureComponent — a component target speaks for its own fiber', () 
       { p1: q('.p1'), p2: q('.p2') },
       { pair2: { elementIds: ['p1', 'p2'] } }
     );
-    const result = captureComponent(registry, { kind: 'component', id: 'pair2' });
+    const result = captureComponent(registry, { kind: 'component', id: 'pair2' }, { props: true });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     // The root is the parent's <section> (nearest common DOM ancestor) …
@@ -636,7 +645,11 @@ describe('captureComponent — owner-subtree redaction reaches non-React DOM', (
     const pw = document.createElement('input');
     pw.type = 'password';
     host.appendChild(pw);
-    const result = captureComponent(fakeRegistry({ host }), { kind: 'element', id: 'host' });
+    const result = captureComponent(
+      fakeRegistry({ host }),
+      { kind: 'element', id: 'host' },
+      { props: true }
+    );
     expect(result.ok && result.capture.props).toEqual({ token: REDACTED_VALUE });
   });
 
@@ -644,7 +657,11 @@ describe('captureComponent — owner-subtree redaction reaches non-React DOM', (
     render(<Host token="abc123" />);
     const host = q('div.host');
     host.attachShadow({ mode: 'open' });
-    const result = captureComponent(fakeRegistry({ host }), { kind: 'element', id: 'host' });
+    const result = captureComponent(
+      fakeRegistry({ host }),
+      { kind: 'element', id: 'host' },
+      { props: true }
+    );
     expect(result.ok && result.capture.props).toEqual({ token: REDACTED_VALUE });
   });
 });
@@ -807,7 +824,11 @@ describe('captureComponent — props are read from the current fiber', () => {
     render(<Holder />);
     for (let i = 1; i <= renders; i++) act(() => set(i * 10));
     const child = q('div.child');
-    const result = captureComponent(fakeRegistry({ child }), { kind: 'element', id: 'child' });
+    const result = captureComponent(
+      fakeRegistry({ child }),
+      { kind: 'element', id: 'child' },
+      { props: true }
+    );
     expect(result.ok && result.capture.props).toEqual({ v: renders * 10 });
   });
 });
@@ -825,7 +846,11 @@ describe('captureComponent — owner-subtree redaction, opaque and oversized DOM
     child.appendChild(grandchild);
     host.appendChild(child);
     grandchild.attachShadow({ mode: 'open' });
-    const result = captureComponent(fakeRegistry({ host }), { kind: 'element', id: 'host' });
+    const result = captureComponent(
+      fakeRegistry({ host }),
+      { kind: 'element', id: 'host' },
+      { props: true }
+    );
     expect(result.ok && result.capture.props).toEqual({ token: REDACTED_VALUE });
   });
 
@@ -846,7 +871,11 @@ describe('captureComponent — owner-subtree redaction, opaque and oversized DOM
     const box = document.createElement('secret-box');
     host.appendChild(box);
     expect(box.shadowRoot).toBeNull(); // closed: invisible to the open-root arm
-    const result = captureComponent(fakeRegistry({ host }), { kind: 'element', id: 'host' });
+    const result = captureComponent(
+      fakeRegistry({ host }),
+      { kind: 'element', id: 'host' },
+      { props: true }
+    );
     expect(result.ok && result.capture.props).toEqual({ token: REDACTED_VALUE });
   });
 
@@ -859,16 +888,20 @@ describe('captureComponent — owner-subtree redaction, opaque and oversized DOM
     host.appendChild(frag);
     // Read the props directly: a full capture would also style-walk 2000 nodes.
     expect(extractOwnerComponentProps(host)).toEqual({ token: REDACTED_VALUE });
-    // One element fewer than the budget is scanned to the end and stays clear.
+    // Exactly BUDGET elements below the host are scanned to the end and stay clear.
     host.lastElementChild!.remove();
-    host.lastElementChild!.remove();
+    expect(host.querySelectorAll('*')).toHaveLength(OWNER_SUBTREE_DOM_BUDGET);
     expect(extractOwnerComponentProps(host)).toEqual({ token: 't0k' });
   });
 
   it('keeps props when the subtree is clear (control)', () => {
     render(<Host token="t0k" />);
     const host = q('div.host');
-    const result = captureComponent(fakeRegistry({ host }), { kind: 'element', id: 'host' });
+    const result = captureComponent(
+      fakeRegistry({ host }),
+      { kind: 'element', id: 'host' },
+      { props: true }
+    );
     expect(result.ok && result.capture.props).toEqual({ token: 't0k' });
   });
 });
@@ -888,7 +921,11 @@ describe('captureComponent — React elements in props are compact', () => {
     }
     render(<Slot icon={<Icon />} label={<b>hi</b>} />);
     const slot = q('div.slot');
-    const result = captureComponent(fakeRegistry({ slot }), { kind: 'element', id: 'slot' });
+    const result = captureComponent(
+      fakeRegistry({ slot }),
+      { kind: 'element', id: 'slot' },
+      { props: true }
+    );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.capture.props).toEqual({ icon: '<Icon>', label: '<b>' });
@@ -913,7 +950,7 @@ describe('captureComponent — component-target owner note and unmanaged root', 
       { d1: q('.d1'), d2: q('.d2') },
       { duo: { elementIds: ['d1', 'd2'] } }
     );
-    const result = captureComponent(registry, { kind: 'component', id: 'duo' });
+    const result = captureComponent(registry, { kind: 'component', id: 'duo' }, { props: true });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.capture.nodes[0].tag).toBe('div');
@@ -947,5 +984,194 @@ describe('extractComponentFiberProps — a stale (alternate) owner is resolved t
     rootAlt.child = live;
     root.stateNode = { current: root };
     expect(extractComponentFiberProps(stale, div)).toEqual({ v: 'new' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Re-review round 4
+// ---------------------------------------------------------------------------
+
+/** A DOM node whose (fake) owner fiber counts every read of its props. */
+function countingPropsElement(): { el: HTMLDivElement; reads: () => number } {
+  let reads = 0;
+  const el = document.createElement('div');
+  document.body.appendChild(el);
+  const owner = {
+    tag: 0,
+    type: function Counted() {
+      return null;
+    },
+    get memoizedProps() {
+      reads++;
+      return { token: 'x' };
+    },
+  };
+  const hostFiber = { tag: 5, stateNode: el, return: owner };
+  (owner as { child?: unknown }).child = hostFiber;
+  Object.defineProperty(el, '__reactFiber$count', { value: hostFiber, enumerable: true });
+  return { el, reads: () => reads };
+}
+
+describe('captureComponent — props are opt-in', () => {
+  it('answers props null and never reads props by default', () => {
+    const { el, reads } = countingPropsElement();
+    const result = captureComponent(fakeRegistry({ el }), { kind: 'element', id: 'el' });
+    expect(result.ok && result.capture.props).toBeNull();
+    expect(reads()).toBe(0);
+    expect(result.ok && result.capture.unknownChecks.some((n) => n.startsWith('props:'))).toBe(
+      false
+    );
+  });
+
+  it('reads props on request and notes the closed-shadow-root gap', () => {
+    const { el, reads } = countingPropsElement();
+    const result = captureComponent(
+      fakeRegistry({ el }),
+      { kind: 'element', id: 'el' },
+      { props: true }
+    );
+    expect(result.ok && result.capture.props).toEqual({ token: 'x' });
+    expect(reads()).toBeGreaterThan(0);
+    expect(result.ok && result.capture.unknownChecks).toContain(
+      'props: a closed shadow root on a standard element cannot be detected, so the fail-closed redaction may miss content inside one'
+    );
+  });
+
+  it('the direct route reads props only for ?props=true', async () => {
+    const { el, reads } = countingPropsElement();
+    const handlers = createHandlers(fakeRegistry({ el }), {} as never);
+    const off = await handlers.getElementCapture('el', {});
+    expect((off.data as { props: unknown }).props).toBeNull();
+    const junk = await handlers.getElementCapture('el', { props: 'yes' });
+    expect((junk.data as { props: unknown }).props).toBeNull();
+    expect(reads()).toBe(0);
+    const on = await handlers.getElementCapture('el', { props: 'true' });
+    expect((on.data as { props: unknown }).props).toEqual({ token: 'x' });
+  });
+
+  it('the relay route forwards the normalised opt-in and the tab routing', async () => {
+    const relay = new CommandRelay({
+      globalPrefix: `__uiBridgeTest_${Math.random().toString(36).slice(2, 10)}`,
+    });
+    try {
+      const payloads: unknown[] = [];
+      relay.subscribeToCommands((cmd) => {
+        payloads.push(cmd.payload);
+        setTimeout(() => relay.resolveCommand(cmd.commandId, { nodes: [] }, 'tab-a'), 0);
+      }, 'tab-a');
+      const handlers = createRelayHandlers(relay);
+      await handlers.getComponentCapture!('c', { props: 'true', tabId: 'tab-a' });
+      await handlers.getElementCapture!('e');
+      expect(payloads).toEqual([
+        { id: 'c', props: true },
+        { id: 'e', props: false },
+      ]);
+    } finally {
+      relay.destroy();
+    }
+  });
+});
+
+describe('captureComponent — compact React objects in props', () => {
+  it('prints a reused element as <Type> each time and labels a memo type passed as a prop', () => {
+    function Icon() {
+      return <i />;
+    }
+    const MemoRow = memo(function MemoRow() {
+      return null;
+    });
+    const shared = <Icon />;
+    function Panel(_props: {
+      a: React.ReactNode;
+      b: React.ReactNode;
+      as: unknown;
+      frag: React.ReactNode;
+    }) {
+      return <div className="panel" />;
+    }
+    render(<Panel a={shared} b={shared} as={MemoRow} frag={<>x</>} />);
+    const panel = q('div.panel');
+    const result = captureComponent(
+      fakeRegistry({ panel }),
+      { kind: 'element', id: 'panel' },
+      { props: true }
+    );
+    expect(result.ok && result.capture.props).toEqual({
+      a: '<Icon>',
+      b: '<Icon>',
+      as: '[memo MemoRow]',
+      frag: '<Fragment>',
+    });
+  });
+});
+
+describe('captureComponent — React-root discovery skips managed subtrees', () => {
+  it('does not exhaust on a managed subtree with more DOM than the discovery budget', () => {
+    const wrapper = document.createElement('div');
+    document.body.appendChild(wrapper);
+    // A React div holding raw (non-React) DOM — a chart library, say: many DOM
+    // nodes, few fibers. Only a full-DOM discovery scan would exhaust here.
+    function Chart() {
+      return <div className="chart" />;
+    }
+    render(<Chart />, wrapper);
+    const frag = document.createDocumentFragment();
+    for (let i = 0; i < MAX_PORTAL_WALK_FIBERS + 50; i++) {
+      frag.appendChild(document.createElement('b'));
+    }
+    q('div.chart').appendChild(frag);
+    const result = captureComponent(fakeRegistry({ wrapper }), { kind: 'element', id: 'wrapper' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.capture.unknownChecks.some((n) => n.startsWith('portals:'))).toBe(false);
+  }, 30_000);
+
+  it('skips a managed subtree and still finds a React root behind a later non-React island', () => {
+    const wrapper = document.createElement('div');
+    document.body.appendChild(wrapper);
+    function Header() {
+      return (
+        <header className="hdr">
+          <nav />
+        </header>
+      );
+    }
+    render(<Header />, wrapper);
+    const island = document.createElement('section');
+    wrapper.appendChild(island);
+    const layer = document.createElement('div');
+    layer.id = 'island-layer';
+    document.body.appendChild(layer);
+    function Pop() {
+      return createPortal(<p className="island-pop" />, layer);
+    }
+    render(<Pop />, island);
+
+    const result = captureComponent(fakeRegistry({ wrapper }), { kind: 'element', id: 'wrapper' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.capture.nodes.find((n) => n.tag === 'p')?.portal?.mountTarget).toBe(
+      'body>div#island-layer'
+    );
+  });
+});
+
+describe('captureComponent — component owner notes', () => {
+  it('uses a distinct note when no owning component fiber resolves', () => {
+    const a = document.createElement('button');
+    const b = document.createElement('button');
+    const box = document.createElement('div');
+    box.append(a, b);
+    document.body.appendChild(box);
+    const registry = fakeRegistry({ a, b }, { plain: { elementIds: ['a', 'b'] } });
+    const result = captureComponent(registry, { kind: 'component', id: 'plain' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.capture.unknownChecks).toContain(
+      'componentName/props: no owning component fiber resolved for the elementIds; root name and props unknown'
+    );
+    expect(result.capture.unknownChecks.some((n) => n.includes('resolved heuristically'))).toBe(
+      false
+    );
   });
 });

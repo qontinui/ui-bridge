@@ -2931,10 +2931,14 @@ export async function executeCommand(
     case 'getComponentCapture':
     case 'getElementCapture':
       return componentCaptureCommandResult(
-        captureComponent(registry, {
-          kind: action === 'getComponentCapture' ? 'component' : 'element',
-          id: payload.id as string,
-        })
+        captureComponent(
+          registry,
+          {
+            kind: action === 'getComponentCapture' ? 'component' : 'element',
+            id: payload.id as string,
+          },
+          { props: payload.props === true }
+        )
       );
 
     case 'executeComponentAction': {

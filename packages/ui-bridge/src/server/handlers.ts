@@ -28,6 +28,7 @@ import type {
   ElementStateQuery,
   HandlerContext,
   ComponentCaptureResponse,
+  ComponentCaptureQuery,
 } from './types';
 import type {
   ActionExecutor,
@@ -98,6 +99,7 @@ import { extractReactState } from '../control/action-executor';
 import {
   captureComponent,
   componentCaptureRefusalEnvelope,
+  wantsCaptureProps,
   type ComponentCaptureResult,
 } from '../control/component-capture';
 import {
@@ -1763,8 +1765,14 @@ export function createHandlers(
       }
     },
 
-    getElementCapture: async (id: string) =>
-      componentCaptureResponse(() => captureComponent(registry, { kind: 'element', id })),
+    getElementCapture: async (id: string, query?: ComponentCaptureQuery) =>
+      componentCaptureResponse(() =>
+        captureComponent(
+          registry,
+          { kind: 'element', id },
+          { props: wantsCaptureProps(query?.props) }
+        )
+      ),
 
     /**
      * `POST /control/element/:id/action` — the ONE exported action seam every
@@ -2202,8 +2210,14 @@ export function createHandlers(
       }
     },
 
-    getComponentCapture: async (id: string) =>
-      componentCaptureResponse(() => captureComponent(registry, { kind: 'component', id })),
+    getComponentCapture: async (id: string, query?: ComponentCaptureQuery) =>
+      componentCaptureResponse(() =>
+        captureComponent(
+          registry,
+          { kind: 'component', id },
+          { props: wantsCaptureProps(query?.props) }
+        )
+      ),
 
     executeComponentAction: async (id: string, request: ComponentActionRequest) => {
       try {

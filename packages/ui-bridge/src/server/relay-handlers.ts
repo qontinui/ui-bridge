@@ -19,6 +19,7 @@ import { fitMediaOverrideBudget } from '../control/media-override-budget';
 import {
   componentCaptureRefusalEnvelope,
   parseComponentCaptureRefusal,
+  wantsCaptureProps,
 } from '../control/component-capture';
 import type {
   UIBridgeServerHandlers,
@@ -29,6 +30,7 @@ import type {
   HandlerContext,
   StateSummary,
   ComponentCaptureResponse,
+  ComponentCaptureQuery,
 } from './types';
 import type { RenderLogEntry } from '../render-log';
 import type {
@@ -169,6 +171,20 @@ function relayInnerFailureResponse<T>(
  * landed (`error`, or `data.error` on the resolved path), and answers the
  * same envelope as the direct handler. Every other answer passes through.
  */
+/**
+ * The relayed capture command's payload: the id, the normalised `props`
+ * opt-in, and the query's tab routing (which `relayCommand` lifts out).
+ */
+function capturePayload(id: string, query: ComponentCaptureQuery | undefined) {
+  const routing = query as { tabId?: unknown; targetTabId?: unknown } | undefined;
+  return {
+    id,
+    props: wantsCaptureProps(query?.props),
+    ...(routing?.tabId !== undefined ? { tabId: routing.tabId } : {}),
+    ...(routing?.targetTabId !== undefined ? { targetTabId: routing.targetTabId } : {}),
+  };
+}
+
 function captureRelayAnswer(response: APIResponse<unknown>): ComponentCaptureResponse {
   if (response.success) return response as ComponentCaptureResponse;
   const refusal =
@@ -1314,8 +1330,10 @@ export function createRelayHandlers(
       return relayCommand('getElementReactState', { id }, ctxOpts(context));
     },
 
-    async getElementCapture(id, context) {
-      return captureRelayAnswer(await relayCommand('getElementCapture', { id }, ctxOpts(context)));
+    async getElementCapture(id, query?: ComponentCaptureQuery, context?: HandlerContext) {
+      return captureRelayAnswer(
+        await relayCommand('getElementCapture', capturePayload(id, query), ctxOpts(context))
+      );
     },
 
     async executeElementAction(id, request, context) {
@@ -1458,9 +1476,9 @@ export function createRelayHandlers(
       return relayCommand('getComponentState', { id }, ctxOpts(context));
     },
 
-    async getComponentCapture(id, context) {
+    async getComponentCapture(id, query?: ComponentCaptureQuery, context?: HandlerContext) {
       return captureRelayAnswer(
-        await relayCommand('getComponentCapture', { id }, ctxOpts(context))
+        await relayCommand('getComponentCapture', capturePayload(id, query), ctxOpts(context))
       );
     },
 

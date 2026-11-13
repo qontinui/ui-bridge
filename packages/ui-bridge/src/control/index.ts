@@ -102,6 +102,7 @@ export {
   componentCaptureRefusalEnvelope,
   componentCaptureRefusalMessage,
   parseComponentCaptureRefusal,
+  wantsCaptureProps,
   CAPTURE_STYLE_KEYS,
   MAX_CAPTURE_NODES,
   MAX_PORTAL_WALK_FIBERS,
@@ -118,6 +119,7 @@ export type {
   ComponentCaptureResult,
   ComponentCaptureRegistry,
   ComponentCaptureRefusalEnvelope,
+  ComponentCaptureOptions,
 } from './component-capture';
 export { extractOwnerComponentProps } from './action-executor';
 

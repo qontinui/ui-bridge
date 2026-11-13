@@ -4001,17 +4001,20 @@ function safeSerialize(
   if (typeof value !== 'object') return value;
 
   const obj = value as object;
+
+  // With `compactElements`, React-owned objects never get walked: a React
+  // element (`children`, render props) carries the dev-mode `_owner` fiber
+  // graph and `_store`, so it collapses to `<Type>`; a memo / forwardRef
+  // component TYPE passed as a prop collapses to `[memo Foo]`-style labels,
+  // distinct from elements. Checked before the seen-set, so the same element
+  // reused in two props prints `<Type>` both times, not `[Circular]`.
+  if (compactElements) {
+    const compact = compactReactObject(obj);
+    if (compact !== undefined) return compact;
+  }
+
   if (seen.has(obj)) return '[Circular]';
   seen.add(obj);
-
-  // A React element (`children`, render props) carries the dev-mode `_owner`
-  // fiber graph and `_store`; walking it dumps the app's fiber tree. With
-  // `compactElements` it collapses to `<Type>` and nothing of it is walked.
-  if (compactElements && '$$typeof' in obj) {
-    const type = (obj as { type?: unknown }).type;
-    const name = typeof type === 'string' ? type : typeName(type);
-    return `<${name ?? 'Unknown'}>`;
-  }
 
   // DOM node short-circuit. React stores DOM refs in fiber.stateNode and
   // useRef hooks; walking them would descend into __reactFiber$/__reactProps$
@@ -4036,7 +4039,6 @@ function safeSerialize(
   const result: Record<string, unknown> = {};
   for (const key of Object.keys(obj)) {
     try {
-      if (compactElements && (key === '_owner' || key === '_store')) continue;
       result[key] = safeSerialize(
         (obj as Record<string, unknown>)[key],
         seen,
@@ -4048,6 +4050,34 @@ function safeSerialize(
     }
   }
   return result;
+}
+
+const REACT_ELEMENT_TYPES: ReadonlySet<symbol> = new Set([
+  Symbol.for('react.element'),
+  Symbol.for('react.transitional.element'),
+]);
+const REACT_FRAGMENT_TYPE = Symbol.for('react.fragment');
+const REACT_TYPE_LABELS: ReadonlyMap<symbol, string> = new Map([
+  [Symbol.for('react.memo'), 'memo'],
+  [Symbol.for('react.forward_ref'), 'forwardRef'],
+]);
+
+/**
+ * `<Type>` for a real React element, `[memo Foo]` / `[forwardRef Foo]` for a
+ * memo / forwardRef component type, else `undefined` (serialize normally).
+ */
+function compactReactObject(obj: object): string | undefined {
+  const tag = (obj as { $$typeof?: unknown }).$$typeof;
+  if (typeof tag !== 'symbol') return undefined;
+  if (REACT_ELEMENT_TYPES.has(tag)) {
+    const type = (obj as { type?: unknown }).type;
+    if (type === REACT_FRAGMENT_TYPE) return '<Fragment>';
+    if (typeof type === 'string') return `<${type}>`;
+    if (typeof type === 'symbol') return `<${type.description ?? 'Unknown'}>`;
+    return `<${typeName(type) ?? 'Unknown'}>`;
+  }
+  const label = REACT_TYPE_LABELS.get(tag);
+  return label ? `[${label} ${typeName(obj) ?? 'Anonymous'}]` : undefined;
 }
 
 /**

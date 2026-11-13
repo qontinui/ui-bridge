@@ -440,6 +440,17 @@ export type ElementStateResponse = Partial<ElementState> & {
  * `error: 'component_capture_refused'` (contract body
  * `{ error: "component_capture_refused", reason }`).
  */
+/**
+ * Query of `GET /control/{component,element}/:id/capture`. `props=true`
+ * opts in to reading the owning component's (fail-closed scrubbed) props;
+ * absent or anything else answers `props: null` without reading them.
+ */
+export interface ComponentCaptureQuery {
+  props?: string | boolean;
+  /** Per-tab routing, as on every queried route. */
+  tabId?: string;
+}
+
 export type ComponentCaptureResponse = APIResponse<ComponentCapture | ComponentCaptureRefusal> & {
   reason?: ComponentCaptureRefusalReason;
 };
@@ -575,6 +586,7 @@ export interface UIBridgeServerHandlers {
    */
   getElementCapture: (
     id: string,
+    query?: ComponentCaptureQuery,
     context?: HandlerContext
   ) => Promise<ComponentCaptureResponse>;
   executeElementAction: (
@@ -653,6 +665,7 @@ export interface UIBridgeServerHandlers {
    */
   getComponentCapture: (
     id: string,
+    query?: ComponentCaptureQuery,
     context?: HandlerContext
   ) => Promise<ComponentCaptureResponse>;
   executeComponentAction: (
@@ -1948,6 +1961,7 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     path: '/control/element/:id/capture',
     handler: 'getElementCapture',
     params: ['id'],
+    queryRequired: true,
   },
   {
     method: 'POST',
@@ -2011,6 +2025,7 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     path: '/control/component/:id/capture',
     handler: 'getComponentCapture',
     params: ['id'],
+    queryRequired: true,
   },
   {
     method: 'POST',
