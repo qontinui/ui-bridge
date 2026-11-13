@@ -101,9 +101,12 @@ every returned row, answered in the row's `projection`:
 - **`attributes`**: `lang`, `dir`, `id`, `role`, `title`, `alt`, `href`, or any
   `aria-*` name. An attribute the element does not carry answers `null`. Any
   other name is refused.
-- At most 32 names per list, each at most 128 characters. A malformed list is
-  refused with `UB-VALIDATION-ERROR` before anything is read, on every
-  transport; the relay refuses it before it reaches a tab.
+- At most 32 names per list, each at most 128 characters. The bound is
+  checked on the list as sent: an array of more than 32 entries, duplicates
+  included, or a query list (`?properties=a,b`, a repeated key's values
+  together) longer than 4160 characters is refused before it is split. A
+  malformed list is refused with `UB-VALIDATION-ERROR` before anything is
+  read, on every transport; the relay refuses it before it reaches a tab.
 - A name that could not be read is never answered with `""`. It is left out of
   the value map and listed in `unmeasured` as `{ kind, name, code, detail }`:
   `input_missing` for a custom property the element does not set, or for any
