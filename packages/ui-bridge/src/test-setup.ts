@@ -2,8 +2,12 @@
  * Vitest Test Setup
  *
  * This file is run before each test file.
- * It sets up global polyfills and mocks needed for jsdom testing.
+ * It sets up global polyfills and mocks needed for jsdom testing, and guards
+ * every file against leaving a CommandRelay subscription open (see the end).
  */
+
+import { afterAll } from 'vitest';
+import { CommandRelay, type WebSocketClient } from './server/command-relay';
 
 // Polyfill CSS.escape for jsdom
 // https://github.com/mathiasbynens/CSS.escape
@@ -86,3 +90,171 @@ if (typeof CSS.escape !== 'function') {
     return result;
   };
 }
+
+// ============================================================================
+// Guard: no test file may leave a CommandRelay subscription open
+// ============================================================================
+//
+// A relay subscription arms proactive-snapshot timers (500 ms, then 1500 ms)
+// that send a command, and sending logs. Left open, they fire after the
+// file's last test, and a console call still being forwarded when the worker
+// closes its RPC channel fails the whole run with every test green
+// (EnvironmentTeardownError, "Closing rpc while onUserConsoleLog was
+// pending"). So every subscription a file opens is recorded here, and the
+// file fails after its last test while one is still open.
+//
+// Two doors open one:
+// - SSE: `subscribeToCommands` and `openCommandStream` both reach the private
+//   `addCommandListener`. Closed by the unsubscribe it returns, or by a later
+//   `destroy()`, which removes every listener the timers look for.
+// - WebSocket: `registerWebSocketClient` on a relay with proactive snapshots
+//   on. Closed only by `unregisterWebSocketClient`: `destroy()` leaves the
+//   client registered, so its timer still sends.
+//
+// The private method is reached through an `unknown` cast, and every wrapped
+// method is checked at setup: a renamed one throws here rather than leaving
+// the guard silently disarmed. This file's `afterAll` is registered before
+// the test file's own hooks, so it runs after them.
+
+type RelayTransport =
+  | { door: 'sse'; relay: CommandRelay; opened: Error; closed: boolean }
+  | { door: 'ws'; relay: CommandRelay; clientId: string; opened: Error; closed: boolean };
+
+const relayTransports: RelayTransport[] = [];
+
+const relayPrototype = CommandRelay.prototype as unknown as Record<string, unknown>;
+
+/** The prototype method `name`, or a setup-time throw that names it. */
+function relayMethod<F extends (...args: never[]) => unknown>(name: string): F {
+  const method = relayPrototype[name];
+  if (typeof method !== 'function') {
+    throw new Error(
+      `test-setup: CommandRelay.prototype.${name} is not a function, so the ` +
+        'open-subscription guard cannot wrap it. Point the guard at the method that now does its job.'
+    );
+  }
+  return method as F;
+}
+
+const addCommandListener =
+  relayMethod<
+    (this: CommandRelay, ...args: unknown[]) => { streamId: string; unsubscribe: () => void }
+  >('addCommandListener');
+const destroy = relayMethod<(this: CommandRelay) => void>('destroy');
+const registerWebSocketClient =
+  relayMethod<(this: CommandRelay, client: WebSocketClient) => void>('registerWebSocketClient');
+const unregisterWebSocketClient = relayMethod<(this: CommandRelay, clientId: string) => void>(
+  'unregisterWebSocketClient'
+);
+
+/** Where a transport is being opened. Deep enough to reach the test frames below a helper. */
+function openedHere(): Error {
+  const limit = Error.stackTraceLimit;
+  Error.stackTraceLimit = 50;
+  try {
+    return new Error('opened here');
+  } finally {
+    Error.stackTraceLimit = limit;
+  }
+}
+
+/** Whether `relay` sends a WebSocket client its warm-up snapshot. */
+function sendsProactiveSnapshot(relay: CommandRelay): boolean {
+  const value = (relay as unknown as { proactiveSnapshot?: unknown }).proactiveSnapshot;
+  if (typeof value !== 'boolean') {
+    throw new Error(
+      'test-setup: CommandRelay#proactiveSnapshot is not a boolean, so the open-subscription ' +
+        'guard cannot tell whether a WebSocket client arms a snapshot timer.'
+    );
+  }
+  return value;
+}
+
+relayPrototype.addCommandListener = function (this: CommandRelay, ...args: unknown[]) {
+  const stream = addCommandListener.apply(this, args);
+  const transport: RelayTransport = {
+    door: 'sse',
+    relay: this,
+    opened: openedHere(),
+    closed: false,
+  };
+  relayTransports.push(transport);
+  return {
+    ...stream,
+    unsubscribe: () => {
+      transport.closed = true;
+      stream.unsubscribe();
+    },
+  };
+};
+
+relayPrototype.destroy = function (this: CommandRelay) {
+  // Only the SSE subscriptions open now: one opened after `destroy()` is live.
+  for (const transport of relayTransports) {
+    if (transport.door === 'sse' && transport.relay === this) transport.closed = true;
+  }
+  destroy.call(this);
+};
+
+relayPrototype.registerWebSocketClient = function (this: CommandRelay, client: WebSocketClient) {
+  registerWebSocketClient.call(this, client);
+  if (sendsProactiveSnapshot(this)) {
+    relayTransports.push({
+      door: 'ws',
+      relay: this,
+      clientId: client.clientId,
+      opened: openedHere(),
+      closed: false,
+    });
+  }
+};
+
+relayPrototype.unregisterWebSocketClient = function (this: CommandRelay, clientId: string) {
+  for (const transport of relayTransports) {
+    if (transport.door === 'ws' && transport.relay === this && transport.clientId === clientId) {
+      transport.closed = true;
+    }
+  }
+  unregisterWebSocketClient.call(this, clientId);
+};
+
+/** The first two test-file frames of where `transport` was opened. */
+function testFileFrames(transport: RelayTransport): string[] {
+  const callers = (transport.opened.stack ?? '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('at ') && !line.includes('test-setup.ts'));
+  const inTestFiles = callers.filter((frame) => /\.test\.tsx?:\d+/.test(frame)).slice(0, 2);
+  return inTestFiles.length > 0
+    ? inTestFiles
+    : ['(no test-file frame on the stack)', ...callers.slice(0, 2)];
+}
+
+afterAll(() => {
+  const open = relayTransports.filter((transport) => !transport.closed);
+  relayTransports.length = 0;
+  if (open.length === 0) return;
+  const entries = open.map((transport, index) => {
+    const [what, remedy] =
+      transport.door === 'sse'
+        ? [
+            'SSE subscription',
+            'call the unsubscribe, or relay.destroy(), in afterEach (afterAll for a relay built in beforeAll)',
+          ]
+        : [
+            `WebSocket client "${transport.clientId}"`,
+            'unregister the WebSocket client (relay.unregisterWebSocketClient) in afterEach; relay.destroy() does not close it',
+          ];
+    return [
+      `  ${index + 1}. ${what}, opened at:`,
+      ...testFileFrames(transport).map((frame) => `       ${frame}`),
+      `     Remedy: ${remedy}.`,
+    ].join('\n');
+  });
+  throw new Error(
+    `${open.length} CommandRelay subscription(s) left open after the file's last test. ` +
+      'Their proactive-snapshot timers fire, and log, while the worker tears down, which fails ' +
+      'the run with every test green.\n' +
+      entries.join('\n')
+  );
+});
