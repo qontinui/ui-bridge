@@ -190,8 +190,8 @@ export class EffectVerifier {
         errorsAppeared: diff.changes.appeared.filter(isErrorChange).length,
       };
 
-      // 9. Classify. `cause === 'mixed'` downgrades a clean Confirmed → Surprise
-      //    inside computeVerification.
+      // 9. Classify. A `'mixed'` or `'unknown'` cause downgrades a clean
+      //    Confirmed → Surprise inside computeVerification.
       const durationMs = this.now() - startTime;
       const verification = computeVerification(
         predicted,

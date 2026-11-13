@@ -57,7 +57,8 @@ export type ReversibilityKind = 'idempotent' | 'reversible' | 'one-way';
  *                     window expired (it outlived its un-anchored bound)
  *                     before its settle began, so concurrent observations
  *                     after the expiry were not attributed. Never reported as
- *                     a clean `causal`.
+ *                     a clean `causal`, and like `mixed` it downgrades a
+ *                     `Confirmed` outcome to `Surprise`.
  */
 export type EffectCause = 'causal' | 'observational' | 'mixed' | 'unknown';
 

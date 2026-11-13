@@ -146,14 +146,25 @@ describe('ActionWindowRegistry', () => {
     expect(reg.hadConcurrentObservation(h)).toBe(false);
   });
 
-  it('anchorSettle ignores a handle from another registry', () => {
-    reg.beginAction('r1', 'click', 1000);
+  it('anchorSettle returns false for a handle this registry has not issued', () => {
+    reg.beginAction('r1', 'click', 1000); // handle 1
     const other = new ActionWindowRegistry();
-    other.beginAction('x', 'click', 0);
-    const foreign = other.beginAction('y', 'click', 0); // a handle `reg` never issued
-    expect(reg.anchorSettle(foreign, 5000, 150)).toBe(false);
+    other.beginAction('x', 'click', 0); // 1
+    const unissued = other.beginAction('y', 'click', 0); // 2: `reg` has issued only 1
+    expect(reg.anchorSettle(unissued, 5000, 150)).toBe(false);
     expect(reg.openCount).toBe(1);
-    expect(reg.isWithinAnyWindow(9000)).toBe(true);
+    expect(reg.isWithinAnyWindow(9000)).toBe(true); // r1 still un-anchored and open
+  });
+
+  it('handles are per-registry numbers: a colliding foreign handle addresses this registry', () => {
+    // Documented behaviour, not a guarantee of origin: both registries number
+    // from 1, so another registry's first handle IS `reg`'s first handle.
+    const own = reg.beginAction('r1', 'click', 1000);
+    const foreign = new ActionWindowRegistry().beginAction('x', 'click', 0);
+    expect(foreign).toBe(own);
+    expect(reg.anchorSettle(foreign, 1600, 150)).toBe(true);
+    expect(reg.isWithinAnyWindow(1751)).toBe(false); // r1 was anchored to [1000, 1750]
+    expect(reg.isWithinAnyWindow(1750)).toBe(true);
   });
 
   it('end closes the window', () => {

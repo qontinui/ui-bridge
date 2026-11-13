@@ -353,13 +353,15 @@ describe('Phase 5 — component-action effect verification', () => {
   /**
    * A long component action on a pinned clock: the handler takes `actionMs`
    * and, when `observeLate`, one concurrent observation lands 1 ms before it
-   * returns. The default un-anchored bound is 30 s, so a 60 s action outlives
+   * returns; `observeAtMs` instead lands one that many ms after the action
+   * starts. The default un-anchored bound is 30 s, so a 60 s action outlives
    * it unless its own timeout sizes the window.
    */
   async function runLongComponentAction(opts: {
     actionMs: number;
     timeoutMs?: number;
     observeLate: boolean;
+    observeAtMs?: number;
   }) {
     let clock = 100_000;
     const executor = new DefaultActionExecutor(registry, undefined, {
@@ -377,6 +379,9 @@ describe('Phase 5 — component-action effect verification', () => {
           id: 'open',
           signature: appearSignature('panel-long'),
           handler: () => {
+            if (opts.observeAtMs !== undefined) {
+              getGlobalActionWindowRegistry().recordConcurrentObservation(clock + opts.observeAtMs);
+            }
             clock += opts.actionMs;
             if (opts.observeLate) {
               getGlobalActionWindowRegistry().recordConcurrentObservation(clock - 1);
@@ -411,7 +416,23 @@ describe('Phase 5 — component-action effect verification', () => {
 
     expect(res.success).toBe(true);
     expect(res.effectVerification?.cause).toBe('unknown');
-    expect(res.effectVerification?.cause).not.toBe('causal');
+    // The panel did appear as predicted, but attribution is not established,
+    // so the outcome must not read as a clean Confirmed.
+    expect(res.effectVerification?.outcome).toBe('Surprise');
+  });
+
+  it("a window that saw an observation before expiring un-anchored reads 'mixed'", async () => {
+    // No timeout → 30 s bound. The observation lands at +10 s (inside it); the
+    // action runs 60 s, so the window has expired by the settle.
+    const res = await runLongComponentAction({
+      actionMs: 60_000,
+      observeLate: false,
+      observeAtMs: 10_000,
+    });
+
+    expect(res.success).toBe(true);
+    expect(res.effectVerification?.cause).toBe('mixed');
+    expect(res.effectVerification?.outcome).toBe('Surprise');
   });
 });
 

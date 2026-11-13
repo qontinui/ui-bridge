@@ -28,8 +28,11 @@ declare const actionWindowHandleBrand: unique symbol;
  * ActionWindowRegistry.anchorSettle}, {@link ActionWindowRegistry.end} and
  * {@link ActionWindowRegistry.hadConcurrentObservation}. Unique per registry,
  * so two overlapping actions that share a client requestId keep separate
- * windows. Branded so it cannot be confused with (or forged from) a plain
- * number or a request id; a request-id lookup is a separate method, {@link
+ * windows. NOT meaningful across registries: every registry numbers its
+ * handles from 1, so a handle issued by another registry may address one of
+ * this registry's windows. The brand stops a plain number or a request id
+ * being passed by accident at compile time; it is not a runtime proof of
+ * origin. A request-id lookup is a separate method, {@link
  * ActionWindowRegistry.hadConcurrentObservationForRequest}.
  */
 export type ActionWindowHandle = number & { readonly [actionWindowHandleBrand]: true };
@@ -114,6 +117,7 @@ export class ActionWindowRegistry {
    * so eviction is a cheap shift of the first key.
    */
   private readonly recentlyEnded = new Map<ActionWindowHandle, EndedWindow>();
+  /** Next handle to issue. Starts at 1 in every registry (see {@link ActionWindowHandle}). */
   private nextHandle = 1;
 
   /**
