@@ -11,6 +11,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from .observation import UnknownCode
 from .types import ElementState
 
 # ============================================================================
@@ -284,14 +285,42 @@ class AssertionRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+AssertionOutcome = Literal["passed", "failed", "unmeasured"]
+"""The three-valued verdict of one assertion (TS ``AssertionOutcome``).
+
+``unmeasured`` = the check could not read the value it judges, so it neither
+passed nor failed.
+"""
+
+
+class AssertionUnmeasured(BaseModel):
+    """Why an ``unmeasured`` assertion could not read the value it judges."""
+
+    code: UnknownCode
+    detail: str
+
+
 class AssertionResult(BaseModel):
     """Assertion result."""
 
     passed: bool
+    outcome: AssertionOutcome | None = None
+    """The verdict, three-valued; ``passed`` is ``True`` iff it is ``passed``.
+
+    An ``unmeasured`` check could not read the value it judges (no live DOM
+    node, a property the engine does not compute, a value a redaction boundary
+    withholds, ...): it is not a failure of the page and never a pass, it
+    carries no ``actual``, and ``unmeasured`` says why. ``None`` only on a
+    result from an SDK build that predates the field.
+    """
+    unmeasured: AssertionUnmeasured | None = None
+    """Present iff ``outcome == "unmeasured"``: why the value could not be read."""
     target: str
     target_description: str = Field(alias="targetDescription")
-    expected: Any
-    actual: Any
+    expected: Any = None
+    """What the check expected. Absent on the wire when the request named none."""
+    actual: Any = None
+    """What was measured. Absent on the wire for an ``unmeasured`` check, which has no value."""
     failure_reason: str | None = Field(None, alias="failureReason")
     suggestion: str | None = None
     element_state: ElementState | None = Field(None, alias="elementState")
@@ -318,6 +347,13 @@ class BatchAssertionResult(BaseModel):
     results: list[AssertionResult]
     passed_count: int = Field(alias="passedCount")
     failed_count: int = Field(alias="failedCount")
+    """Assertions that FAILED (``outcome == "failed"``); unmeasured ones are counted apart."""
+    unmeasured_count: int | None = Field(None, alias="unmeasuredCount")
+    """Assertions that could not read the value they judge (``outcome == "unmeasured"``).
+
+    Any of them keeps an ``all`` batch from passing. ``None`` only on a result
+    from an SDK build that predates the field: unknown, not zero.
+    """
     duration_ms: float = Field(alias="durationMs")
     timestamp: int
 

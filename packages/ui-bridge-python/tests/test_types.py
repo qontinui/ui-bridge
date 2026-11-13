@@ -3,6 +3,8 @@
 import pytest
 from pydantic import ValidationError
 
+from ui_bridge.ai_types import AssertionResult, BatchAssertionResult
+from ui_bridge.observation import UnknownCode
 from ui_bridge.types import (
     ActionRequest,
     ActionResponse,
@@ -667,3 +669,102 @@ class TestStateSnapshot:
         assert len(snapshot.states) == 1
         assert len(snapshot.groups) == 1
         assert len(snapshot.transitions) == 1
+
+
+# What `POST /ai/assert` answers for a check that could not read its value: no
+# `actual` key at all (never `""`), the reason in `unmeasured`.
+UNMEASURED_WIRE = {
+    "passed": False,
+    "outcome": "unmeasured",
+    "unmeasured": {
+        "code": "not_attempted_by_policy",
+        "detail": "the element sits in a `data-bridge-redact` boundary",
+    },
+    "target": "pay",
+    "targetDescription": "button pay",
+    "expected": "#123456",
+    "failureReason": 'Cannot check CSS property "--tone"',
+    "failureCode": "UB-OBS-NOT-ATTEMPTED-BY-POLICY",
+    "durationMs": 1.5,
+    "timestamp": 1234567890,
+}
+
+FAILED_WIRE = {
+    "passed": False,
+    "outcome": "failed",
+    "target": "document",
+    "targetDescription": "the page (<html>)",
+    "expected": "rtl",
+    "actual": "ltr",
+    "failureReason": 'Attribute "dir" is "ltr" but expected "rtl"',
+    "failureCode": "UB-ASSERT-TEXT-MISMATCH",
+    "durationMs": 0.5,
+    "timestamp": 1234567890,
+}
+
+
+class TestAssertionResult:
+    """Tests for AssertionResult / BatchAssertionResult, as `/ai/assert` answers them."""
+
+    def test_unmeasured_result_parses_with_no_actual(self):
+        result = AssertionResult.model_validate(UNMEASURED_WIRE)
+        assert result.passed is False
+        assert result.outcome == "unmeasured"
+        assert result.actual is None
+        assert result.unmeasured is not None
+        assert result.unmeasured.code is UnknownCode.NOT_ATTEMPTED_BY_POLICY
+
+    def test_result_whose_request_named_no_expectation_parses(self):
+        wire = {k: v for k, v in UNMEASURED_WIRE.items() if k != "expected"}
+        assert AssertionResult.model_validate(wire).expected is None
+
+    def test_measured_failure_keeps_its_value(self):
+        result = AssertionResult.model_validate(FAILED_WIRE)
+        assert result.outcome == "failed"
+        assert result.actual == "ltr"
+        assert result.unmeasured is None
+
+    def test_result_from_an_sdk_predating_outcome_parses(self):
+        wire = {
+            k: v for k, v in FAILED_WIRE.items() if k not in ("outcome", "failureCode")
+        }
+        assert AssertionResult.model_validate(wire).outcome is None
+
+    def test_outcome_is_the_closed_three_valued_set(self):
+        with pytest.raises(ValidationError):
+            AssertionResult.model_validate({**FAILED_WIRE, "outcome": "skipped"})
+
+    def test_unmeasured_code_is_an_unknown_code(self):
+        with pytest.raises(ValidationError):
+            AssertionResult.model_validate(
+                {**UNMEASURED_WIRE, "unmeasured": {"code": "redacted", "detail": "x"}}
+            )
+
+    def test_batch_counts_unmeasured_apart_from_failed(self):
+        batch = BatchAssertionResult.model_validate(
+            {
+                "passed": False,
+                "results": [UNMEASURED_WIRE, FAILED_WIRE],
+                "passedCount": 0,
+                "failedCount": 1,
+                "unmeasuredCount": 1,
+                "durationMs": 2.0,
+                "timestamp": 1234567890,
+            }
+        )
+        assert batch.failed_count == 1
+        assert batch.unmeasured_count == 1
+        assert [r.outcome for r in batch.results] == ["unmeasured", "failed"]
+
+    def test_batch_from_an_sdk_predating_unmeasured_count_is_unknown_not_zero(self):
+        batch = BatchAssertionResult.model_validate(
+            {
+                "passed": False,
+                "results": [FAILED_WIRE],
+                "passedCount": 0,
+                "failedCount": 1,
+                "durationMs": 1.0,
+                "timestamp": 1234567890,
+            }
+        )
+        assert batch.unmeasured_count is None
