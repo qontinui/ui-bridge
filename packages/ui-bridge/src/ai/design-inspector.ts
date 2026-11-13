@@ -17,6 +17,7 @@ import type {
   ResponsiveSnapshot,
 } from '../core/types';
 import { classString } from '../core/class-name';
+import { scrubContent } from '../core/redaction';
 import {
   forcePseudoState,
   reapplyIfIdle,
@@ -175,7 +176,11 @@ export function getElementDesignData(
 
   return {
     elementId: opts?.elementId || el.id || el.getAttribute('data-testid') || '',
-    label: opts?.label,
+    // §4.6 CONTENT axis: callers pass the registry's raw `label` (the registry
+    // scrubs it only when it serializes), so a `data-bridge-redact` element's
+    // label must collapse here — every design and quality route builds its
+    // per-element payload through this one constructor.
+    label: scrubContent(opts?.label, el),
     type: opts?.type || el.tagName.toLowerCase(),
     styles,
     pseudoElements: pseudoElements.length > 0 ? pseudoElements : undefined,

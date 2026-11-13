@@ -573,7 +573,16 @@ function resolveElementWithFallback(id: string): RegisteredElement | undefined {
 
 function elementToSnapshot(e: RegisteredElement) {
   const state = e.getState();
-  return { id: e.id, type: e.type, label: e.label, actions: e.actions, state };
+  // §4.6 CONTENT axis: `RegisteredElement.label` is stored raw (the registry
+  // scrubs it only when it serializes), and this projection is stored by
+  // `saveBookmark` and handed back verbatim by `getBookmark`.
+  return {
+    id: e.id,
+    type: e.type,
+    label: scrubContent(e.label, e.element),
+    actions: e.actions,
+    state,
+  };
 }
 
 /**
@@ -5290,7 +5299,8 @@ export async function executeCommand(
         : elements.slice(0, 50);
       const designs = targetEls.map((e) => ({
         id: e.id,
-        label: e.label,
+        // §4.6 CONTENT axis: the registry row's label is raw.
+        label: scrubContent(e.label, e.element as HTMLElement),
         type: e.type,
         styles: getComputedStylesSafe(e.element as HTMLElement),
         rect: (e.element as HTMLElement).getBoundingClientRect(),

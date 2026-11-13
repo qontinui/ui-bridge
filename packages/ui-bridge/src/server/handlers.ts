@@ -3913,10 +3913,20 @@ export function createHandlers(
             // Prioritize description and accessible name for semantic matching
             const state = 'getState' in el && el.getState ? el.getState() : el.state;
             const textContent = state?.textContent || '';
-            const label = el.label || '';
-            const accessibleName = el.accessibleName || '';
-            const placeholder = el.placeholder || '';
-            const title = el.title || '';
+            // §4.6 CONTENT axis: `getAllElements()` hands back the registry's
+            // RAW row — the registry scrubs `label` only when it serializes —
+            // so a `data-bridge-redact` element's label (and any other
+            // descriptive field a row carries) is scrubbed here, before it can
+            // reach `element.label` / `description` / `embeddedText` or score a
+            // match. `getState()` is already scrubbed at its source.
+            // `Element`, not `HTMLElement`: a registered `<svg>` is an
+            // SVGElement, and a null element finds no boundary (as in
+            // `materializeElements`).
+            const domEl = el.element instanceof Element ? (el.element as HTMLElement) : null;
+            const label = scrubContent(el.label, domEl) || '';
+            const accessibleName = scrubContent(el.accessibleName, domEl) || '';
+            const placeholder = scrubContent(el.placeholder, domEl) || '';
+            const title = scrubContent(el.title, domEl) || '';
 
             if (label) textParts.push(label);
             if (accessibleName && accessibleName !== label) textParts.push(accessibleName);
@@ -3932,10 +3942,11 @@ export function createHandlers(
               element: {
                 id: el.id,
                 type: el.type,
-                label: el.label,
+                // The scrubbed reads above — never the raw row (§4.6).
+                label: label || undefined,
                 tagName: el.tagName || el.type,
                 role: el.role,
-                accessibleName: el.accessibleName,
+                accessibleName: accessibleName || undefined,
                 actions: el.actions || [],
                 state: state || {},
                 registered: true,
@@ -5541,6 +5552,7 @@ export function createHandlers(
         const all = registry.getAllElements() as Array<{
           id: string;
           label?: string;
+          element?: unknown;
           getState: () => {
             occludedBy?: string;
             occludedPct?: number;
@@ -5554,7 +5566,12 @@ export function createHandlers(
               const state = el.getState();
               return {
                 id: el.id,
-                label: el.label,
+                // §4.6: the registry row's label is raw (scrubbed only on
+                // serialization) and the report echoes it in `occlusions[]`.
+                label: scrubContent(
+                  el.label,
+                  el.element instanceof Element ? (el.element as HTMLElement) : null
+                ),
                 occludedBy: state?.occludedBy,
                 occludedPct: state?.occludedPct,
                 textContent: state?.textContent,
