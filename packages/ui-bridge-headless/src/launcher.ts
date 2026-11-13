@@ -698,12 +698,12 @@ export async function launchHeadlessTab(
       tabId = result.tabId;
     }
 
-    let closed = false;
-    const close = async (): Promise<void> => {
-      if (closed) return;
-      // Set before the await, so a second call, even a concurrent one, is a no-op.
-      closed = true;
-      await closeTabReportingFailure(context, browser);
+    // Every call returns the FIRST close's promise, so a concurrent second
+    // caller also waits until the context (and any recordHar archive) is closed.
+    let closing: Promise<void> | undefined;
+    const close = (): Promise<void> => {
+      closing ??= closeTabReportingFailure(context, browser);
+      return closing;
     };
 
     const navigate = async (nextUrl: string): Promise<void> => {

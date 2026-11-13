@@ -53,7 +53,7 @@ afterAll(async () => {
 });
 
 describe.skipIf(!PLAYWRIGHT_AVAILABLE)('launchHeadlessTab context options (real Chromium)', () => {
-  it('recordHar + serviceWorkers block: the HAR exists after close() and lists the document and its CSS', async () => {
+  it('recordHar (with serviceWorkers passed through): the HAR exists after close() and lists the document and its CSS', async () => {
     const harPath = join(dir, 'capture.har');
     const tab = await launchHeadlessTab({
       url,

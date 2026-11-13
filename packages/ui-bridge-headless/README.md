@@ -186,7 +186,11 @@ await tab.close(); // the HAR is complete once this resolves
   context first and the browser second, so the archive exists once `close()`
   resolves. Closing only `tab.browser` yourself leaves no HAR. A context close
   that fails (a HAR that could not be written, say) is reported on stderr, and
-  the browser is still closed.
+  the browser is still closed. Calling `close()` again, even concurrently,
+  returns the same promise, so every caller waits for the archive.
+- **A failed launch writes no HAR.** If the first navigation or the UI Bridge
+  wait fails, only the browser is closed and the error rethrown; do not expect
+  an archive of a launch that threw.
 - **Block service workers when every request must be seen.** A service worker
   answers requests itself, so they reach neither the HAR nor your routes.
 - **`initRouter` runs before the first page exists**, after the context and
@@ -195,7 +199,9 @@ await tab.close(); // the HAR is complete once this resolves
   launch fails like any other post-launch step: the browser is closed and the
   error rethrown.
 
-With none of the three set, the context is created exactly as before.
+With none of the three set, the context is created exactly as before. The
+close sequence did change for every tab: `tab.close()` now closes the context
+before the browser, whether or not `recordHar` is set.
 
 ## Flags
 
