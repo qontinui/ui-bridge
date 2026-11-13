@@ -25,9 +25,12 @@
  * in every snapshot, every find and every hit-test. The sentinel is how a read
  * reaches it instead.
  *
- * Precedence, the same on every site: a REGISTERED element wins. An app that
- * registers an element under one of these ids gets that element; the sentinel
- * answers only an id the registry does not hold.
+ * Precedence: a REGISTERED element wins. An app that registers an element
+ * under one of these ids gets that element; the sentinel answers only an id
+ * the registry does not hold. An `ai/assert` target is a search rather than an
+ * id, so there any element the assertion's search resolves wins, a near match
+ * included, and the sentinel answers only a target that resolves to none
+ * (`ai/assertions.ts`).
  */
 
 import {

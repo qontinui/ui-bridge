@@ -119,7 +119,9 @@ rows carry `projection` when that executor's build serves one.
 The id `document` names `<html>` itself, which has no registration: its state
 read answers `{ id, sentinel: "document", tagName: "html" }` plus the
 projection asked for (`?attributes=lang,dir&properties=--color-accent`). A
-registered element with that id wins over the sentinel.
+registered element with that id wins over the sentinel. As an `ai/assert`
+target, `document` is first resolved like any other target, by id, label or
+text: it names `<html>` only when no element matches.
 
 **Response:**
 
