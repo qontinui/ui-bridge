@@ -221,6 +221,55 @@ describe('projectElement · attributes', () => {
     });
   });
 
+  it('inside a boundary, a structural ARIA value passes only as tokens or a number', () => {
+    const node = el(
+      '<div data-bridge-redact="true"><div role="slider" aria-current="page" ' +
+        'aria-relevant="additions text" aria-valuemax="-0.5" aria-level="3" ' +
+        'aria-sort="Order 4711" aria-pressed="TRUE" aria-valuemin="1e3" aria-busy=" true" ' +
+        'aria-setsize="4111-1111">x</div></div>'
+    ).firstElementChild!;
+    const request = {
+      attributes: [
+        'aria-current',
+        'aria-relevant',
+        'aria-valuemax',
+        'aria-level',
+        'aria-sort',
+        'aria-pressed',
+        'aria-valuemin',
+        'aria-busy',
+        'aria-setsize',
+      ],
+    };
+    const { projection, redacted } = projectElementDetailed(node, request);
+    expect(projection.attributes).toEqual({
+      'aria-current': 'page',
+      'aria-relevant': 'additions text',
+      'aria-valuemax': '-0.5',
+      'aria-level': '3',
+      'aria-sort': REDACTED_VALUE,
+      'aria-pressed': REDACTED_VALUE,
+      'aria-valuemin': REDACTED_VALUE,
+      'aria-busy': REDACTED_VALUE,
+      'aria-setsize': REDACTED_VALUE,
+    });
+    expect([...redacted.attributes]).toEqual([
+      'aria-sort',
+      'aria-pressed',
+      'aria-valuemin',
+      'aria-busy',
+      'aria-setsize',
+    ]);
+    // `lang` and `dir` are not ARIA: their values are not held to the token shape.
+    const lang = el(
+      '<div data-bridge-redact="true"><p lang="de-CH" dir="ltr">x</p></div>'
+    ).firstElementChild!;
+    expect(projectElement(lang, { attributes: ['lang', 'dir'] }).attributes).toEqual({
+      lang: 'de-CH',
+      dir: 'ltr',
+    });
+  });
+
   it('outside a boundary, passes the same values through', () => {
     const node = el('<a href="/pay" title="Card" aria-label="Pay">x</a>');
     expect(

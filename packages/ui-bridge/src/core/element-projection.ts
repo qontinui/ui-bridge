@@ -50,7 +50,9 @@
  *     `role`, `id` and the token-, boolean- and number-valued ARIA states. Free
  *     text (`title`, `alt`, `aria-label`, `aria-valuetext`, …), URLs (`href`),
  *     ID references (`aria-labelledby`, …) and any ARIA name not known to be a
- *     token are scrubbed;
+ *     token are scrubbed. A structural ARIA value passes only while it has a
+ *     token's shape — lower-case words, or a number: anything else an author
+ *     put in that slot (`aria-current="Order 4711"`) is text, and is scrubbed;
  *   - properties: a custom property (author data of any shape) and any value
  *     carrying a `<string>` or a `url()` (`content`, `background-image`,
  *     `quotes`, …). The style vocabulary itself — colours, lengths, keywords,
@@ -170,8 +172,9 @@ const ARIA_ATTRIBUTE = /^aria-[a-z]+$/;
  * Attributes whose values are structure, not page content, so §4.6 leaves them
  * readable inside a boundary: the ones a redacted element already ships (`id`,
  * `role`), the language and direction, and the ARIA states and properties whose
- * values are tokens, booleans or numbers. Every other projectable attribute is
- * scrubbed.
+ * values are tokens, booleans or numbers — the ARIA ones only while the value
+ * has that shape ({@link STRUCTURAL_ARIA_VALUE}). Every other projectable
+ * attribute is scrubbed.
  */
 const STRUCTURAL_ATTRIBUTES: ReadonlySet<string> = new Set([
   'lang',
@@ -213,6 +216,20 @@ const STRUCTURAL_ATTRIBUTES: ReadonlySet<string> = new Set([
   'aria-valuemax',
   'aria-valuemin',
 ]);
+
+/**
+ * The shape a structural ARIA value has: one or more lower-case tokens
+ * (`true`, `page`, `additions text`) or a number (`3`, `-0.5`). The attribute
+ * name says the slot holds a token; the value is what the author put there,
+ * so a value of any other shape is read as the text it is.
+ */
+const STRUCTURAL_ARIA_VALUE = /^(?:[a-z]+(?:\s+[a-z]+)*|-?\d+(?:\.\d+)?)$/;
+
+/** Is `raw`, the value of `attr` (lower-case), structure that passes a boundary? */
+function isStructuralValue(attr: string, raw: string): boolean {
+  if (!STRUCTURAL_ATTRIBUTES.has(attr)) return false;
+  return !attr.startsWith('aria-') || STRUCTURAL_ARIA_VALUE.test(raw);
+}
 
 /** Is `name` (any case) an attribute a projection may read? */
 export function isProjectableAttribute(name: string): boolean {
@@ -464,7 +481,7 @@ function readAttributes(
     const raw = node.getAttribute(attr);
     if (raw === null) {
       values[name] = null;
-    } else if (raw === '' || STRUCTURAL_ATTRIBUTES.has(attr)) {
+    } else if (raw === '' || isStructuralValue(attr, raw)) {
       // An empty value carries no content (`alt=""` is the decorative-image
       // signal, kept distinct from an absent alt).
       values[name] = raw;

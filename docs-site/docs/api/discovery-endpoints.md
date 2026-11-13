@@ -112,7 +112,9 @@ every returned row, answered in the row's `projection`:
   read `[REDACTED]`: free-text and URL attributes (`title`, `alt`, `href`,
   `aria-label`, …), custom properties, and property values holding a string or
   a `url()`. Structure (`id`, `role`, `lang`, `dir`, token-valued ARIA states)
-  and the style vocabulary (colours, lengths, keywords) pass. The
+  and the style vocabulary (colours, lengths, keywords) pass, an ARIA state
+  only while its value is lower-case words or a number (an
+  `aria-current="Order 4711"` is text, and reads `[REDACTED]`). The
   `ai/assert` checks never judge `[REDACTED]`: a check whose value was
   redacted answers `outcome: "unmeasured"`.
 - The projection needs a live DOM. The relay's cached snapshot has none, so

@@ -510,7 +510,9 @@ A value §4.6 redacted is not a reading either. A check on an element inside a
 (`capability_unavailable_in_build`, detail `value redacted by §4.6`); it is
 never compared with the sentinel, so `expected: "[REDACTED]"` does not pass.
 Structure inside the boundary (`aria-expanded`, `lang`, colours) is still
-read and judged.
+read and judged, an ARIA state only while its value is a token (`true`,
+`page`) or a number: `aria-current="Order 4711"` is the author's text, and
+reads `[REDACTED]`.
 
 ## 10. Address the elements a page hides from the registry
 
