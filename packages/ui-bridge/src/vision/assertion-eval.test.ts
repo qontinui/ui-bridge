@@ -350,15 +350,16 @@ describe('the rounding contract — unrounded boxes, each kind rounding its own 
   });
 
   it('no_clipping rounds the box and its clip alike', () => {
-    // Exactly, the box pokes 0.1px left of the clip and 0.3px past its right
-    // edge; to the nearest pixel both are [10, 110).
+    // Exactly, the box pokes 0.1px left of the clip (9.5 against 9.6) and
+    // 0.3px past its right edge (109.9 against 109.6); to the nearest pixel
+    // both are [10, 110).
     const el: MeasuredElement = {
       id: 'row',
-      bbox: box(9.7, 0, 100.2, 50),
+      bbox: box(9.5, 0, 100.4, 50),
       clip: { left: 9.6, top: 0, right: 109.6, bottom: 50, byX: 'p', byY: 'p' },
     };
     expect(evaluate({ type: 'no_clipping' }, { elements: [el] }).outcome).toBe('passed');
-    const over: MeasuredElement = { ...el, bbox: box(9.7, 0, 101.2, 50) };
+    const over: MeasuredElement = { ...el, bbox: box(9.5, 0, 101.4, 50) };
     expect(evaluate({ type: 'no_clipping' }, { elements: [over] }).outcome).toBe('failed');
   });
 
