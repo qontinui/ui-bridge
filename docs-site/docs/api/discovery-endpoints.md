@@ -110,11 +110,16 @@ every returned row, answered in the row's `projection`:
   property, or a shorthand it does not serialize).
 - Inside a `data-bridge-redact` boundary, values that can carry page content
   read `[REDACTED]`: free-text and URL attributes (`title`, `alt`, `href`,
-  `aria-label`, …), custom properties, and property values holding a string or
-  a `url()`. Structure (`id`, `role`, `lang`, `dir`, token-valued ARIA states)
-  and the style vocabulary (colours, lengths, keywords) pass, an ARIA state
-  only while its value is lower-case words or a number (an
-  `aria-current="Order 4711"` is text, and reads `[REDACTED]`). The
+  `aria-label`, …), custom properties, property values holding a string or
+  a `url()`, and the properties whose value names something the author chose
+  (`font-family`, `counter-reset` / `-set` / `-increment`, `animation-name`,
+  `view-transition-name`, `anchor-name`, `container-name`,
+  `grid-template-areas`, `quotes`, their shorthands such as `font` and
+  `animation`, and the timeline and anchor names). Structure (`id`, `role`,
+  `lang`, `dir`, token-valued ARIA states) and the style vocabulary (colours,
+  lengths, keywords) pass, an ARIA state only while its value is lower-case
+  words or a number (an `aria-current="Order 4711"` is text, and reads
+  `[REDACTED]`). The
   `ai/assert` checks never judge `[REDACTED]`: a check whose value was
   redacted answers `outcome: "unmeasured"`.
 - The projection needs a live DOM. The relay's cached snapshot has none, so

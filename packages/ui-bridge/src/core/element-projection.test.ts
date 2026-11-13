@@ -9,7 +9,7 @@
  * `core/element-projection.smoke.test.ts`, because jsdom does not compute them.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   MAX_PROJECTED_NAMES,
   MAX_PROJECTION_NAME_LENGTH,
@@ -338,6 +338,81 @@ describe('projectElement · properties', () => {
       '--user': REDACTED_VALUE,
       color: 'rgb(1, 2, 3)',
       'background-image': REDACTED_VALUE,
+    });
+  });
+
+  describe('a property that names something the author chose', () => {
+    /** Every name, each answering an unquoted author ident — what a page that names things by record sets. */
+    const NAMED: Record<string, string> = {
+      'font-family': 'Order4711, sans-serif',
+      font: '16px Order4711',
+      'counter-reset': 'order-4711 3',
+      'counter-set': 'order-4711 1',
+      'counter-increment': 'order-4711',
+      'animation-name': 'order-4711',
+      animation: '1s ease 0s 1 normal none running order-4711',
+      'animation-timeline': '--order-4711',
+      'scroll-timeline-name': '--order-4711',
+      'scroll-timeline': '--order-4711 block',
+      'view-timeline-name': '--order-4711',
+      'view-timeline': '--order-4711 block',
+      'timeline-scope': '--order-4711',
+      'view-transition-name': 'order-4711',
+      'view-transition-class': 'order-4711',
+      'anchor-name': '--order-4711',
+      'position-anchor': '--order-4711',
+      'anchor-scope': '--order-4711',
+      'container-name': 'order-4711',
+      container: 'order-4711 / inline-size',
+      'grid-template-areas': 'order-4711',
+      quotes: 'auto',
+      '-webkit-animation-name': 'order-4711',
+      '-moz-animation-name': 'order-4711',
+      color: 'rgb(1, 2, 3)',
+      'border-top-width': '2px',
+      display: 'grid',
+    };
+    const STYLE = ['color', 'border-top-width', 'display'];
+    const names = Object.keys(NAMED);
+
+    /** jsdom computes none of these: answer them as a real engine would. */
+    function stubComputedStyle(): void {
+      vi.spyOn(window, 'getComputedStyle').mockReturnValue({
+        getPropertyValue: (name: string) => NAMED[name] ?? '',
+      } as unknown as CSSStyleDeclaration);
+    }
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('inside a boundary, is scrubbed whatever its value — the style vocabulary still passes', () => {
+      document.body.innerHTML = '<div data-bridge-redact="true"><button>x</button></div>';
+      const node = document.querySelector('button')!;
+      stubComputedStyle();
+      const { projection, redacted } = projectElementDetailed(node, {
+        properties: [...names, 'fontFamily', 'webkitAnimationName'],
+      });
+      const expected: Record<string, string> = {};
+      for (const name of names) {
+        expected[name] = STYLE.includes(name) ? NAMED[name] : REDACTED_VALUE;
+      }
+      expected.fontFamily = REDACTED_VALUE;
+      expected.webkitAnimationName = REDACTED_VALUE;
+      expect(projection.properties).toEqual(expected);
+      expect([...redacted.properties].sort()).toEqual(
+        [...names.filter((n) => !STYLE.includes(n)), 'fontFamily', 'webkitAnimationName'].sort()
+      );
+      expect(projection.unmeasured).toEqual([]);
+    });
+
+    it('outside a boundary, reads as written', () => {
+      document.body.innerHTML = '<button>x</button>';
+      const node = document.querySelector('button')!;
+      stubComputedStyle();
+      const { projection, redacted } = projectElementDetailed(node, { properties: names });
+      expect(projection.properties).toEqual(NAMED);
+      expect(redacted.properties.size).toBe(0);
     });
   });
 });

@@ -53,11 +53,13 @@
  *     token are scrubbed. A structural ARIA value passes only while it has a
  *     token's shape — lower-case words, or a number: anything else an author
  *     put in that slot (`aria-current="Order 4711"`) is text, and is scrubbed;
- *   - properties: a custom property (author data of any shape) and any value
- *     carrying a `<string>` or a `url()` (`content`, `background-image`,
- *     `quotes`, …). The style vocabulary itself — colours, lengths, keywords,
- *     numbers — carries no page content and passes, so a contrast or border
- *     check still works inside a boundary.
+ *   - properties: a custom property (author data of any shape), any value
+ *     carrying a `<string>` or a `url()` (`content`, `background-image`, …),
+ *     and every property whose value names something the author chose — a
+ *     font, a counter, an animation, an anchor, a container, a view transition
+ *     — as an unquoted ident (`AUTHOR_NAMED_PROPERTIES`). The style vocabulary
+ *     itself — colours, lengths, keywords, numbers — carries no page content
+ *     and passes, so a contrast or border check still works inside a boundary.
  *
  * This module is enrolled in the redaction-surface projection list
  * (`eslint.config.js`, `redaction-surface.manifest.json`).
@@ -361,6 +363,51 @@ export function parseProjectionRequest(
 /** A value that can carry page content: a `<string>` token or a `url()`. */
 const CONTENT_BEARING_VALUE = /["']|url\(/i;
 
+/**
+ * Properties whose computed value names something the author chose, as an
+ * unquoted ident: a font (`font-family: Order4711`), a counter, an animation
+ * or a timeline, an anchor, a container, a view transition, a grid area. Such
+ * a name is the author's data, not the style vocabulary, and a page that
+ * derives it from a record (one `view-transition-name` per order row) puts the
+ * record in it. Inside a boundary they are scrubbed whatever the value holds,
+ * and so are the shorthands that serialize them (`font`, `animation`,
+ * `container`, the timelines) and `quotes`. A vendor alias
+ * (`-webkit-animation-name`) reads the same value and is matched without its
+ * prefix.
+ */
+const AUTHOR_NAMED_PROPERTIES: ReadonlySet<string> = new Set([
+  'font-family',
+  'font',
+  'counter-reset',
+  'counter-set',
+  'counter-increment',
+  'animation-name',
+  'animation',
+  'animation-timeline',
+  'scroll-timeline-name',
+  'scroll-timeline',
+  'view-timeline-name',
+  'view-timeline',
+  'timeline-scope',
+  'view-transition-name',
+  'view-transition-class',
+  'anchor-name',
+  'position-anchor',
+  'anchor-scope',
+  'container-name',
+  'container',
+  'grid-template-areas',
+  'quotes',
+]);
+
+/**
+ * Does `cssName` — a standard property as `cssPropertyName` spells it, so
+ * lower-case — name author data, with or without a vendor prefix?
+ */
+function isAuthorNamedProperty(cssName: string): boolean {
+  return AUTHOR_NAMED_PROPERTIES.has(cssName.replace(/^-(?:webkit|moz|ms|o)-/, ''));
+}
+
 function unmeasuredAll(
   out: ProjectionUnmeasured[],
   kind: ProjectionUnmeasured['kind'],
@@ -449,7 +496,7 @@ function readProperties(
       );
       continue;
     }
-    if (custom || CONTENT_BEARING_VALUE.test(raw)) {
+    if (custom || isAuthorNamedProperty(cssName) || CONTENT_BEARING_VALUE.test(raw)) {
       values[name] = scrubContentByVerdict(raw, verdict)!;
       if (verdict.content) redacted.add(name);
     } else {
