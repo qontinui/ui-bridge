@@ -557,7 +557,9 @@ describe('styleValuesEquivalent and the style validator', () => {
     expect(styleValuesEquivalent('"Inter", sans-serif', 'Inter, sans-serif', 'fontFamily')).toBe(
       true
     );
-    expect(styleValuesEquivalent('rgb(59, 130, 246)', '#3b82f7', 'color')).toBe(false);
+    // A visibly different colour fails. (A one-step 8-bit difference matches:
+    // the one colour rule, `canonicalColorsMatch`, shared with drift.)
+    expect(styleValuesEquivalent('rgb(59, 130, 246)', '#3b8cf6', 'color')).toBe(false);
     expect(styleValuesEquivalent('24px', '1.25', 'lineHeight', { fontSize: '16px' })).toBe(false);
   });
 
@@ -595,7 +597,7 @@ describe('styleValuesEquivalent and the style validator', () => {
         tokens
       ).passed
     ).toBe(true);
-    const other = { ...styles, color: 'rgb(60, 130, 246)' } as ExtendedComputedStyles;
+    const other = { ...styles, color: 'rgb(59, 140, 246)' } as ExtendedComputedStyles;
     expect(
       evaluateConstraint(
         { type: 'tokenRef', property: 'color', tokenPath: 'colors.primary' },

@@ -40,6 +40,7 @@ import {
 import { indexCustomProperties } from '../ai/design-inspector';
 import { disposeTokenIndex, reportedTokensOf, type ReportedTokens } from '../ai/design-tokens';
 import { runStyleAudit } from './style-validator';
+import { measureRootFontSizePx } from './style-inference-request';
 import type { StyleAuditReport, StyleGuideConfig } from './style-types';
 
 /** The fields of a registered element these requests read (see `QualityElementSource`). */
@@ -169,6 +170,11 @@ export interface DesignAuditRequest {
   includePassed?: boolean;
   /** Most rule results to list (style-guide mode); default `DEFAULT_AUDIT_MAX_RESULTS`. */
   maxResults?: number;
+  /**
+   * Root font size `rem` resolves against (style-guide mode); default: measured
+   * from `documentElement`, the figure style inference and drift use.
+   */
+  rootFontSizePx?: number;
 }
 
 // ============================================================================
@@ -632,6 +638,7 @@ export function designAuditOf(
   const limit = limitOf(body, route) ?? DEFAULT_AUDIT_ELEMENT_LIMIT;
   const includePassed = booleanOf(body, 'includePassed', route) ?? false;
   const maxResults = positiveIntegerOf(body, 'maxResults', route) ?? DEFAULT_AUDIT_MAX_RESULTS;
+  const requestedRoot = body.rootFontSizePx;
   const { kept, report } = bounded(selectElements(elements, elementIds), limit);
   const bounds: DesignAuditBounds = { ...report, checkedElements: kept.length };
   if (guide) {
@@ -639,7 +646,14 @@ export function designAuditOf(
       totalElements: _audited,
       summary,
       ...audit
-    } = runStyleAudit(collectDesignData(kept, undefined, collectOptionsFor(guide)), guide);
+    } = runStyleAudit(collectDesignData(kept, undefined, collectOptionsFor(guide)), guide, {
+      // `rem` resolves against the page's measured root font size (or the
+      // caller's), the same figure inference and drift use.
+      rootFontSizePx:
+        typeof requestedRoot === 'number' && Number.isFinite(requestedRoot) && requestedRoot > 0
+          ? requestedRoot
+          : measureRootFontSizePx(),
+    });
     const listable = includePassed ? audit.results : audit.results.filter((r) => !r.passed);
     return {
       mode: 'style-guide',

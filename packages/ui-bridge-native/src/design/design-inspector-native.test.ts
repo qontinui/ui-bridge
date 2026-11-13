@@ -129,8 +129,32 @@ describe('mapNativeStyleToExtended', () => {
         shadowOpacity: 0.25,
         shadowRadius: 8,
       });
-      expect(result.boxShadow).toContain('2px 4px 8px #000000');
-      expect(result.boxShadow).toContain('opacity: 0.25');
+      // The opacity is folded into the colour's alpha, not left in a comment.
+      expect(result.boxShadow).toBe('2px 4px 8px rgba(0, 0, 0, 0.25)');
+    });
+
+    it('folds opacity into rgb(), named and alpha-bearing colours', () => {
+      const shadow = (shadowColor: unknown, shadowOpacity: number): string =>
+        mapNativeStyleToExtended({
+          shadowColor,
+          shadowOffset: { width: 0, height: 1 },
+          shadowOpacity,
+          shadowRadius: 2,
+        }).boxShadow;
+      expect(shadow('rgb(10, 20, 30)', 0.5)).toBe('0px 1px 2px rgba(10, 20, 30, 0.5)');
+      expect(shadow('black', 0.2)).toBe('0px 1px 2px rgba(0, 0, 0, 0.2)');
+      expect(shadow('#00000080', 0.5)).toBe('0px 1px 2px rgba(0, 0, 0, 0.251)');
+      // A colour it cannot fold keeps the opacity as an explicit token.
+      expect(shadow('navy', 0.5)).toBe('0px 1px 2px navy opacity(0.5)');
+    });
+
+    it('stringifies a numeric fontWeight and an object colour', () => {
+      const result = mapNativeStyleToExtended({
+        fontWeight: 700,
+        color: { semantic: ['labelColor'] },
+      });
+      expect(result.fontWeight).toBe('700');
+      expect(result.color).toBe('{"semantic":["labelColor"]}');
     });
 
     it('converts Android elevation to boxShadow', () => {
