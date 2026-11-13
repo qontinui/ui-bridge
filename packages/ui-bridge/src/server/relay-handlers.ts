@@ -2605,6 +2605,14 @@ export function createRelayHandlers(
       return relayCommand('clearStyleGuide', {}, ctxOpts(context));
     },
 
+    async inferStyleGuide(request, context) {
+      return relayCommand('inferStyleGuide', request ?? {}, ctxOpts(context));
+    },
+
+    async diffDesignTokens(request, context) {
+      return relayCommand('diffDesignTokens', request ?? {}, ctxOpts(context));
+    },
+
     // ========================================================================
     // Quality Evaluation
     // ========================================================================

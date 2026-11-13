@@ -443,6 +443,16 @@ export const UI_BRIDGE_NATIVE_ROUTES: Record<string, RouteDefinition> = {
     path: '/ui-bridge/design/style-guide',
     description: 'Clear loaded style guide',
   },
+  DESIGN_STYLE_GUIDE_INFER: {
+    method: 'POST',
+    path: '/ui-bridge/design/style-guide/infer',
+    description: 'Infer a draft style guide and token inventory from element styles',
+  },
+  DESIGN_TOKENS_DRIFT: {
+    method: 'POST',
+    path: '/ui-bridge/design/tokens/drift',
+    description: 'Report drift between element styles and declared design tokens',
+  },
 
   // Quality Evaluation
   DESIGN_EVALUATE: {
@@ -832,6 +842,8 @@ export interface NativeServerHandlers {
   loadStyleGuide: HandlerFunction<{ loaded: boolean }>;
   getStyleGuide: HandlerFunction<unknown>;
   clearStyleGuide: HandlerFunction<{ cleared: boolean }>;
+  inferStyleGuide: HandlerFunction<unknown>;
+  diffDesignTokens: HandlerFunction<unknown>;
 
   // Quality Evaluation
   evaluateQuality: HandlerFunction<unknown>;
