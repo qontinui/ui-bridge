@@ -214,17 +214,68 @@ export function isAssertionRequestError(err: unknown): err is AssertionRequestEr
 }
 
 /**
- * Does `input` name something to check: a `target` (an element id or
- * description, or a `SearchCriteria` object) or a natural-language
- * `assertion`? A blank string names nothing.
+ * The `SearchCriteria` fields the assertion search selects BY — each a string,
+ * and each read by `ai/search-engine.ts` (`nl-assertion-parser.test.ts` scans
+ * it, so a field it starts or stops reading fails until this list follows). A
+ * criteria target selects something only through a non-blank one of these.
+ * Nothing else in `SearchCriteria` selects on its own: `fuzzy`,
+ * `fuzzyThreshold`, `strict`, `includeContent` and `contentOnly` only modify a
+ * search, and the assertion search reads no `selector`, `xpath`,
+ * `dataAttributes` or `contentRole` at all.
  */
-function namesACheck(input: NLAssertionInput): boolean {
+export const SELECTING_CRITERIA: readonly string[] = Object.freeze([
+  'text',
+  'textContent',
+  'textContains',
+  'accessibleName',
+  'role',
+  'type',
+  'near',
+  'within',
+  'idPattern',
+  'placeholder',
+  'title',
+]);
+
+/**
+ * Does `target` select something: a non-blank element id or description, or
+ * search criteria carrying a non-blank {@link SELECTING_CRITERIA} field? A
+ * criteria object that selects nothing (`{}`, `{ fuzzy: true }`,
+ * `{ idPattern: '' }`, `{ selector: '#x' }`) finds no element, so a `notExists`
+ * check on it would PASS without having looked at anything.
+ */
+function targetSelects(target: unknown): boolean {
+  if (typeof target === 'string') return target.trim() !== '';
+  if (typeof target === 'number') return Number.isFinite(target);
+  if (typeof target !== 'object' || target === null || Array.isArray(target)) return false;
+  return SELECTING_CRITERIA.some((field) => {
+    const value = (target as Record<string, unknown>)[field];
+    return typeof value === 'string' && value.trim() !== '';
+  });
+}
+
+/**
+ * Why `input` names nothing to check, or `undefined` when it names something:
+ * a `target` that selects (see {@link targetSelects}) or a non-blank
+ * natural-language `assertion`.
+ */
+function namesNothing(input: NLAssertionInput): string | undefined {
   const { target, assertion } = input;
-  const namedTarget =
-    (typeof target === 'string' && target.trim() !== '') ||
-    (typeof target === 'number' && Number.isFinite(target)) ||
-    (typeof target === 'object' && target !== null && !Array.isArray(target));
-  return namedTarget || (typeof assertion === 'string' && assertion.trim() !== '');
+  if (targetSelects(target) || (typeof assertion === 'string' && assertion.trim() !== '')) {
+    return undefined;
+  }
+  if (typeof target === 'object' && target !== null && !Array.isArray(target)) {
+    return (
+      `its search-criteria \`target\` selects by none of ${SELECTING_CRITERIA.join(', ')} ` +
+      '(a blank value selects nothing; `fuzzy`, `fuzzyThreshold`, `strict`, `includeContent` ' +
+      'and `contentOnly` only modify a search, and the assertion search does not read ' +
+      '`selector`, `xpath`, `dataAttributes` or `contentRole`)'
+    );
+  }
+  return (
+    'give it a `target` (an element id or description, or search criteria) or a ' +
+    'natural-language `assertion`'
+  );
 }
 
 /**
@@ -237,9 +288,11 @@ function namesACheck(input: NLAssertionInput): boolean {
  * than guessed at: a value that is neither an assertion object nor a string
  * (`null`, a number, a boolean, an array), and one that names nothing to check
  * — no `target` and no `assertion` (`{}`, `{ foo: 1 }`, `{ type: 'exists' }`,
- * `""`). Either would otherwise run as `{ target: '', type: 'exists' }` and
- * report a failure the caller never asked about. `where` names the value in
- * the refusal (`assertions[2]`).
+ * `""`), or a search-criteria `target` that selects nothing
+ * (`{ target: {}, type: 'notExists' }`). The first would run as
+ * `{ target: '', type: 'exists' }` and report a failure the caller never asked
+ * about; the second finds no element, so its `notExists` would PASS without
+ * looking. `where` names the value in the refusal (`assertions[2]`).
  */
 export function normalizeAssertion(raw: unknown, where = 'the assertion'): AssertionRequest {
   if (typeof raw !== 'string' && (typeof raw !== 'object' || raw === null || Array.isArray(raw))) {
@@ -249,11 +302,9 @@ export function normalizeAssertion(raw: unknown, where = 'the assertion'): Asser
     );
   }
   const input = (typeof raw === 'string' ? { assertion: raw } : raw) as NLAssertionInput;
-  if (!namesACheck(input)) {
-    throw new AssertionRequestError(
-      `${where} names nothing to check: give it a \`target\` (an element id or description, ` +
-        'or search criteria) or a natural-language `assertion`'
-    );
+  const why = namesNothing(input);
+  if (why !== undefined) {
+    throw new AssertionRequestError(`${where} names nothing to check: ${why}`);
   }
   return parseNLAssertion(input) as unknown as AssertionRequest;
 }

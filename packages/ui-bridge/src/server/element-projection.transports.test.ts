@@ -548,6 +548,47 @@ describe.each(transports)('the $name transport', ({ mount }) => {
       expect(reply.data).toMatchObject({ outcome: 'passed' });
     });
 
+    it.each([
+      ['empty criteria', {}],
+      ['criteria that only modify a search', { fuzzy: true, fuzzyThreshold: 0.5, strict: true }],
+      ['a blank id pattern', { idPattern: '' }],
+      ['a field the assertion search does not read', { selector: '#pay' }],
+    ])(
+      'refuses a notExists check whose target is %s with UB-VALIDATION-ERROR — it would pass without looking',
+      async (_label, target) => {
+        const { relay } = await mount();
+        if (relay) vi.spyOn(relay, 'queueCommand');
+        const single = await post('/ai/assert', { skipSettle: true, target, type: 'notExists' });
+        expect(single.success).toBe(false);
+        expect(single.code).toBe('UB-VALIDATION-ERROR');
+        expect(single.error).toContain('the assertion names nothing to check');
+        expect(single.error).toContain('selects by none of');
+        const batch = await post('/ai/assert/batch', {
+          skipSettle: true,
+          assertions: [{ target, type: 'notExists' }],
+        });
+        expect(batch.success).toBe(false);
+        expect(batch.code).toBe('UB-VALIDATION-ERROR');
+        expect(batch.error).toContain('assertions[0] names nothing to check');
+        expect(batch.data?.results).toBeUndefined();
+        if (relay) {
+          expect(queuedActions(relay)).not.toContain('aiAssert');
+          expect(queuedActions(relay)).not.toContain('aiAssertBatch');
+        }
+      }
+    );
+
+    it('criteria that select still run: a notExists on an element that exists fails', async () => {
+      await mount();
+      const reply = await post('/ai/assert', {
+        skipSettle: true,
+        target: { idPattern: 'pay' },
+        type: 'notExists',
+      });
+      expect(reply.success, reply.error).toBe(true);
+      expect(reply.data).toMatchObject({ outcome: 'failed', passed: false });
+    });
+
     it('a single assertion reads through the projection and keeps its message', async () => {
       await mount();
       const reply = await post('/ai/assert', {
