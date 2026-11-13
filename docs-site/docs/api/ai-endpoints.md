@@ -251,11 +251,18 @@ structured form (`{ target, type, expected }`). `mode` is `"all"`
 
 An entry that is not an assertion object or a string (`null`, a number,
 an array), or that names nothing to check — no `target` and no
-`assertion` (`{}`, `{ "type": "exists" }`) — refuses the whole batch
-with `UB-VALIDATION-ERROR`, and so does an `assertions` that is not an
-array: nothing runs. A single `/ai/assert` that names nothing is refused
-the same way. Through the relay the refusal is made before anything
-reaches a tab.
+`assertion` (`{}`, `{ "type": "exists" }`), or a search-criteria
+`target` that selects nothing — refuses the whole batch with
+`UB-VALIDATION-ERROR`, and so does an `assertions` that is not an array:
+nothing runs. A criteria `target` selects only through a non-blank
+`text`, `textContent`, `textContains`, `accessibleName`, `role`, `type`,
+`near`, `within`, `idPattern`, `placeholder` or `title`: the rest only
+modify a search (`fuzzy`, `fuzzyThreshold`, `strict`, `includeContent`,
+`contentOnly`) or are not read by it (`selector`, `xpath`,
+`dataAttributes`, `contentRole`), and a check on criteria that select
+nothing would find no element — so `{ "target": {}, "type": "notExists" }`
+would pass without looking. A single `/ai/assert` is refused the same
+way. Through the relay the refusal is made before anything reaches a tab.
 
 > **Note:** the batch endpoint is also exposed at the alias path
 > `/ai/assert/batch`.
