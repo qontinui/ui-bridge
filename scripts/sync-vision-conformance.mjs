@@ -30,6 +30,10 @@
 //   node scripts/sync-vision-conformance.mjs --check --schemas <dir> [--ref <ref>] | --file <path>
 //       also exit 1 when the vendored copy differs from that source: drift.
 //
+// CI: .github/workflows/vision-conformance.yml runs the second form against
+// the commit the sidecar records (gating on a pull request) and, nightly,
+// against qontinui-schemas' default branch (advisory: a warning to re-vendor).
+//
 // A case that disagrees with the port is a finding about the PORT (vision-core
 // is the reference model). Never edit the vendored fixture by hand to make a
 // case pass — re-sync it, or report the case.

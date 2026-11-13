@@ -1,0 +1,140 @@
+name: Vision Conformance
+
+# Peer-fixture gate: is the vendored vision-assertion conformance fixture the
+# one qontinui-schemas recorded, and has qontinui-schemas moved on from it?
+#
+# WHY (plan 2026-11-09-ui-bridge-relay-evaluates-vision-assertions-in-the-tab):
+#
+#   packages/ui-bridge/src/vision/conformance/vision-assertions.json is a byte
+#   copy of qontinui-schemas' rust-vision-core/tests/fixtures/
+#   vision_assertions_conformance.json, at the commit its sidecar
+#   (vision-assertions.source.json) records. ci.yml's test run holds the
+#   TypeScript port to every case of the copy, and the copy to the sha256 its
+#   sidecar records — but nothing there can see qontinui-schemas. So a sidecar
+#   could name a commit whose fixture is not the copy, and vision-core could
+#   change or add cases while the port keeps passing the old ones, both green.
+#
+# TWO MODES, the runner-contract.yml split, for the same reason:
+#
+#   pull_request          -> the sidecar's commit, GATING: the copy must be that
+#                            commit's fixture, byte for byte.
+#   push                  -> the same comparison, ADVISORY: the PR gate already
+#                            ran it on this content, so only a peer's doing (the
+#                            commit no longer fetchable) can fail it here.
+#   schedule / dispatch   -> qontinui-schemas' DEFAULT BRANCH, ADVISORY: a moved
+#                            fixture is a warning to re-vendor, never a red run.
+#                            A land in a peer repo must not red this repo.
+#
+#   "Advisory" is scoped to the peer, NOT to the job: the copy matching its own
+#   sidecar is this repo's doing, and is checked hard on every event first.
+#
+# qontinui-schemas is public, so the default GITHUB_TOKEN reaches it and no
+# secret is needed. The sync script has zero dependencies and no build step:
+# no `npm ci` here, so the job stays cheap enough for every PR.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    # Nightly drift radar against qontinui-schemas' default branch. Advisory.
+    - cron: '41 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vision-conformance-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  conformance:
+    name: Vision conformance fixture vs qontinui-schemas
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Use Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22.x
+
+      - name: Resolve mode
+        id: mode
+        # The sidecar is the one place the pinned commit is written: read it,
+        # never restate it here. `ref` is computed in this step rather than as
+        # an inline `${{ cond && '' || X }}` ternary, because the empty string
+        # is FALSY in a GitHub expression and that spelling yields X on both
+        # branches — the radar would silently keep comparing against the pin.
+        # An empty `ref` checks out the default branch.
+        run: |
+          SIDECAR=packages/ui-bridge/src/vision/conformance/vision-assertions.source.json
+          COMMIT=$(node -e '
+            const s = require(process.argv[1]);
+            if (!/^[0-9a-f]{40}$/.test(s.commit ?? "")) {
+              console.error("the sidecar records no 40-hex commit to compare against");
+              process.exit(1);
+            }
+            process.stdout.write(s.commit);
+          ' "./${SIDECAR}")
+          echo "commit=${COMMIT}" >> "$GITHUB_OUTPUT"
+          case "${{ github.event_name }}" in
+            pull_request)
+              echo "ref=${COMMIT}" >> "$GITHUB_OUTPUT"
+              echo "advisory=false" >> "$GITHUB_OUTPUT" ;;
+            push)
+              echo "ref=${COMMIT}" >> "$GITHUB_OUTPUT"
+              echo "advisory=true" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "ref=" >> "$GITHUB_OUTPUT"
+              echo "advisory=true" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: The copy is the fixture its sidecar records
+        # Hard on every event: a hand edit is this repo's doing.
+        run: node scripts/sync-vision-conformance.mjs --check
+
+      - name: Check out qontinui-schemas
+        id: schemas
+        uses: actions/checkout@v5
+        # A commit qontinui-schemas no longer serves is the peer's doing.
+        continue-on-error: ${{ steps.mode.outputs.advisory == 'true' }}
+        with:
+          repository: qontinui/qontinui-schemas
+          ref: ${{ steps.mode.outputs.ref }}
+          path: qontinui-schemas
+          persist-credentials: false
+
+      - name: The copy against qontinui-schemas
+        env:
+          COMMIT: ${{ steps.mode.outputs.commit }}
+          REF: ${{ steps.mode.outputs.ref }}
+          ADVISORY: ${{ steps.mode.outputs.advisory }}
+          FETCHED: ${{ steps.schemas.outcome }}
+        run: |
+          advise() {
+            echo "::warning title=Vision conformance (advisory)::$1"
+            exit 0
+          }
+          if [ "${FETCHED}" != "success" ]; then
+            [ "${ADVISORY}" = "true" ] || exit 1
+            advise "qontinui-schemas could not be checked out at ${REF:-its default branch}; nothing was compared."
+          fi
+          if [ -n "${REF}" ]; then
+            # The pinned arm reads the fixture from the commit itself
+            # (`git show <commit>:<path>`), whatever the checkout's HEAD is.
+            if node scripts/sync-vision-conformance.mjs --check --schemas qontinui-schemas --ref "${REF}"; then
+              exit 0
+            fi
+            [ "${ADVISORY}" = "true" ] || exit 1
+            advise "the vendored fixture is not qontinui-schemas ${REF}'s, which its sidecar records."
+          fi
+          HEAD_SHA=$(git -C qontinui-schemas rev-parse HEAD)
+          if node scripts/sync-vision-conformance.mjs --check --schemas qontinui-schemas --ref "${HEAD_SHA}"; then
+            echo "qontinui-schemas' default branch (${HEAD_SHA}) still carries the vendored fixture (pinned ${COMMIT})."
+            exit 0
+          fi
+          advise "qontinui-schemas' default branch (${HEAD_SHA}) has moved the conformance fixture away from the vendored copy (pinned ${COMMIT}). Re-vendor with: node scripts/sync-vision-conformance.mjs --schemas <qontinui-schemas checkout> --ref ${HEAD_SHA} — and run the port over the new cases."
