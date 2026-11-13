@@ -65,8 +65,10 @@
  *   - properties: a custom property (author data of any shape), any value
  *     carrying a `<string>` or a `url()` (`content`, `background-image`, …),
  *     and every property whose value names something the author chose — a
- *     font, a counter, an animation, an anchor, a container, a view transition
- *     — as an unquoted ident (`AUTHOR_NAMED_PROPERTIES`). The style vocabulary
+ *     font or its palette or feature values, a counter or counter style, an
+ *     animation, a transition, a timeline, an anchor or position-try rule, a
+ *     container, a view transition, a named page, a grid area or line — as an
+ *     unquoted ident (`AUTHOR_NAMED_PROPERTIES`). The style vocabulary
  *     itself — colours, lengths, keywords, numbers — carries no page content
  *     and passes, so a contrast or border check still works inside a boundary.
  * Every name whose value was scrubbed is listed in the projection's `redacted`,
@@ -480,25 +482,44 @@ const CONTENT_BEARING_VALUE = /["']|url\(/i;
 
 /**
  * Properties whose computed value names something the author chose, as an
- * unquoted ident: a font (`font-family: Order4711`), a counter, an animation
- * or a timeline, an anchor, a container, a view transition, a grid area. Such
- * a name is the author's data, not the style vocabulary, and a page that
+ * unquoted ident:
+ *   - a font (`font-family: Order4711`), a font palette (`font-palette`) or a
+ *     set of font feature values (`font-variant-alternates:
+ *     styleset(order-4711)`);
+ *   - a counter, or a counter style (`list-style-type: order-4711`);
+ *   - an animation, a transition (`transition-property` and `will-change`
+ *     name properties, custom ones included) or a scroll or view timeline;
+ *   - an anchor, or a position-try rule (`position-try-fallbacks`);
+ *   - a container, a view transition, a named page (`page`);
+ *   - a grid area or a grid line: `grid-template-areas`, the line names in
+ *     `grid-template-columns` / `-rows` (`[order-4711] 1fr`), and the
+ *     placements that reference either (`grid-area: order-4711`,
+ *     `grid-row-start`, `grid-column-end`, …).
+ * Such a name is the author's data, not the style vocabulary, and a page that
  * derives it from a record (one `view-transition-name` per order row) puts the
  * record in it. Inside a boundary they are scrubbed whatever the value holds,
- * and so are the shorthands that serialize them (`font`, `animation`,
- * `container`, the timelines) and `quotes`. A vendor alias
- * (`-webkit-animation-name`) reads the same value and is matched without its
- * prefix.
+ * and so are the shorthands that serialize them (`font`, `list-style`,
+ * `animation`, `transition`, the timelines, `position-try`, `container`,
+ * `grid`, `grid-template`, `grid-area`, `grid-row`, `grid-column`) and
+ * `quotes`. A vendor alias (`-webkit-animation-name`) reads the same value and
+ * is matched without its prefix.
  */
 const AUTHOR_NAMED_PROPERTIES: ReadonlySet<string> = new Set([
   'font-family',
   'font',
+  'font-palette',
+  'font-variant-alternates',
   'counter-reset',
   'counter-set',
   'counter-increment',
+  'list-style-type',
+  'list-style',
   'animation-name',
   'animation',
   'animation-timeline',
+  'transition-property',
+  'transition',
+  'will-change',
   'scroll-timeline-name',
   'scroll-timeline',
   'view-timeline-name',
@@ -509,9 +530,23 @@ const AUTHOR_NAMED_PROPERTIES: ReadonlySet<string> = new Set([
   'anchor-name',
   'position-anchor',
   'anchor-scope',
+  'position-try-fallbacks',
+  'position-try',
   'container-name',
   'container',
+  'page',
   'grid-template-areas',
+  'grid-template-columns',
+  'grid-template-rows',
+  'grid-template',
+  'grid',
+  'grid-area',
+  'grid-row',
+  'grid-column',
+  'grid-row-start',
+  'grid-row-end',
+  'grid-column-start',
+  'grid-column-end',
   'quotes',
 ]);
 

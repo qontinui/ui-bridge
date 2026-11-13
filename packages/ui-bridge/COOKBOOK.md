@@ -31,7 +31,8 @@ search aliases, the label-derived id slug, and media `alt`/`src`/`srcset`/
 discovery (`/control/find`, `/control/discover`) and its request-scoped
 `properties` / `attributes` projection (free-text and URL attributes, custom
 properties, `url()`/string values and the properties that name author data such
-as `font-family` or `view-transition-name`; colours and lengths pass), forms (`/control/forms`,
+as `font-family`, `list-style-type`, `grid-area` or `view-transition-name`;
+colours and lengths pass), forms (`/control/forms`,
 `getForms`), the page-analysis family (`/ai/analyze/*`, `/ai/summary`),
 render-log capture, session recording, and the framework-store adapters
 (Formik / React Hook Form) — **and** the arbitrary-selector reads
