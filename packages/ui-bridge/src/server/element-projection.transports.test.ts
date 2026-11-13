@@ -752,14 +752,17 @@ describe('the relay with its tab unreachable', () => {
 
   it('element state: the cached snapshot cannot answer a projection, so it is refused, typed', async () => {
     const { handlers } = deadTabRelay();
-    const reply = await handlers.getElementState('save', { properties: 'hyphens' });
+    const reply = await handlers.getElementState('save', undefined, { properties: 'hyphens' });
     expect(reply.success).toBe(false);
     expect(reply.code).toBe('UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD');
   });
 
   it('element state pinned to a tab never falls back to the cache, and names the tab it asked', async () => {
     const { queue, handlers } = deadTabRelay();
-    const reply = await handlers.getElementState('save', { tabId: 'tab-x', attributes: 'lang' });
+    const reply = await handlers.getElementState('save', undefined, {
+      tabId: 'tab-x',
+      attributes: 'lang',
+    });
     expect(reply.success).toBe(false);
     expect(queue).toHaveBeenCalledWith(
       'getElementState',
@@ -799,7 +802,7 @@ describe('the relay with a tab whose SDK predates the projection', () => {
 
   it('element state: a live answer without the projection asked for is refused, typed', async () => {
     const { queue, handlers } = oldSdkRelay();
-    const reply = await handlers.getElementState('save', {
+    const reply = await handlers.getElementState('save', undefined, {
       properties: 'hyphens',
       attributes: 'lang',
     });
@@ -817,7 +820,10 @@ describe('the relay with a tab whose SDK predates the projection', () => {
 
   it('element state pinned to a tab: the same answer is refused the same way', async () => {
     const { handlers } = oldSdkRelay();
-    const reply = await handlers.getElementState('save', { tabId: 'tab-old', attributes: 'lang' });
+    const reply = await handlers.getElementState('save', undefined, {
+      tabId: 'tab-old',
+      attributes: 'lang',
+    });
     expect(reply.success).toBe(false);
     expect(reply.code).toBe('UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD');
     expect(reply.error).toContain('predates the request-scoped projection');
@@ -836,7 +842,7 @@ describe('the relay with a tab whose SDK predates the projection', () => {
 
   it('the same answers are the answer when no projection was asked for', async () => {
     const { handlers } = oldSdkRelay();
-    expect((await handlers.getElementState('save', {})).success).toBe(true);
+    expect((await handlers.getElementState('save')).success).toBe(true);
     expect((await handlers.find({ skipSettle: true })).success).toBe(true);
   });
 });

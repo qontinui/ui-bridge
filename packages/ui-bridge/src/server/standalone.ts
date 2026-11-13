@@ -17,7 +17,7 @@ import { mapInternalErrorCode } from '../diagnostics';
 import { UIBridgeWSHandler, type WebSocketLike } from './websocket-handler';
 import { createWSStreamBroadcast } from './ws-stream-adapter';
 import { SSEManager } from './sse-handler';
-import { withoutReservedCaller } from './reserved-caller';
+import { queryAndContextArgs, withoutReservedCaller } from './reserved-caller';
 import { scopedCallerRefusal } from './scoped-refusal';
 import { MAX_BODY_BYTES, interpretJsonBody } from './request-body';
 import { routeQueryOf } from './request-query';
@@ -488,14 +488,15 @@ export class StandaloneServer {
       // The query object goes to a handler that takes one, EMPTY included,
       // and to no other (see nextjs.ts). A repeated list-valued key arrives as
       // the whole list, not its last value (`request-query.ts`).
-      if (route.queryRequired) {
-        args.push(withoutReservedCaller(routeQueryOf(url.searchParams)));
-      }
+      const query = route.queryRequired
+        ? withoutReservedCaller(routeQueryOf(url.searchParams))
+        : undefined;
 
-      // Per-user tab scoping (§4.2) — trailing context arg. Adapter
-      // always supplies it so zero-arg / id-only handlers still enforce
-      // ownership.
-      args.push({ callerUserId: headerCallerUserId });
+      // Per-user tab scoping (§4.2) — the context arg. Adapter always
+      // supplies it so zero-arg / id-only handlers still enforce ownership.
+      // It follows the query, except on a `queryAfterContext` route
+      // (`queryAndContextArgs`).
+      args.push(...queryAndContextArgs(route, query, { callerUserId: headerCallerUserId }));
 
       // Call handler
       const result = await (handler as (...args: unknown[]) => Promise<APIResponse<unknown>>)(

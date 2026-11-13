@@ -189,8 +189,8 @@ describe('relay-handlers · context-arg scoping (§4.2 follow-up)', () => {
   });
 
   // -------------------------------------------------------------------------
-  // getElementState(id, query) — its query carries only the projection, so
-  // the caller identity still travels in the trailing context.
+  // getElementState(id) — id then context, must accept context. Its query
+  // (the projection) FOLLOWS the context, so this call keeps its meaning.
   // -------------------------------------------------------------------------
 
   describe('getElementState(id)', () => {
@@ -199,7 +199,7 @@ describe('relay-handlers · context-arg scoping (§4.2 follow-up)', () => {
       const spy = vi.spyOn(relay, 'queueCommand').mockResolvedValue({ visible: true } as never);
       const handlers = createRelayHandlers(relay);
 
-      await handlers.getElementState!('elem-x', undefined, { callerUserId: 'alice' });
+      await handlers.getElementState!('elem-x', { callerUserId: 'alice' });
 
       expect(spy).toHaveBeenCalledTimes(1);
       const [action, payload, opts] = spy.mock.calls[0]!;
@@ -219,10 +219,26 @@ describe('relay-handlers · context-arg scoping (§4.2 follow-up)', () => {
       // The relay must NOT dispatch to bob's tab even though it's
       // primaryTabId; the ownerCheck scopes to alice's owned tabs
       // (none) and SDK_DISCONNECTs.
-      await handlers.getElementState!('elem-x', undefined, { callerUserId: 'alice' });
+      await handlers.getElementState!('elem-x', { callerUserId: 'alice' });
 
       expect(spy).toHaveBeenCalledTimes(1);
       const [, , opts] = spy.mock.calls[0]!;
+      expect((opts as { ownerCheck?: { userId: string } } | undefined)?.ownerCheck).toEqual({
+        userId: 'alice',
+      });
+    });
+
+    it('a query after the context reads the projection, still scoped to the caller', async () => {
+      registerOwnedTab(relay, 'tab-a', 'alice');
+      const spy = vi.spyOn(relay, 'queueCommand').mockResolvedValue({ visible: true } as never);
+      const handlers = createRelayHandlers(relay);
+
+      await handlers.getElementState!('elem-x', { callerUserId: 'alice' }, { attributes: 'lang' });
+
+      expect(spy).toHaveBeenCalledTimes(1);
+      const [action, payload, opts] = spy.mock.calls[0]!;
+      expect(action).toBe('getElementState');
+      expect(payload).toEqual({ id: 'elem-x', attributes: ['lang'] });
       expect((opts as { ownerCheck?: { userId: string } } | undefined)?.ownerCheck).toEqual({
         userId: 'alice',
       });
