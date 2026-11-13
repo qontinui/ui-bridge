@@ -14,7 +14,12 @@ import type {
 import { UI_BRIDGE_ROUTES } from './types';
 import { mapInternalErrorCode } from './error-mapper';
 import { UIBridgeWSHandler, type WebSocketLike } from './websocket-handler';
-import { MAX_BODY_BYTES, interpretJsonBody } from './request-body';
+import {
+  MAX_BODY_BYTES,
+  discardRest,
+  dropIfConnectionEnded,
+  interpretJsonBody,
+} from './request-body';
 import type { BridgeEvent } from '@qontinui/ui-bridge';
 
 /**
@@ -55,7 +60,13 @@ const DEFAULT_CONFIG: Required<
 class RequestRefusal extends Error {
   constructor(
     readonly status: number,
-    message: string
+    message: string,
+    /**
+     * Body bytes read before `discardRest` takes over (a 413's needs them).
+     * Not readonly: parseBody keeps adding the chunks that arrive between its
+     * reject and the catch that calls `discardRest`.
+     */
+    public bodyBytesRead = 0
   ) {
     super(message);
   }
@@ -246,6 +257,9 @@ export class StandaloneServer {
     req: import('http').IncomingMessage,
     res: import('http').ServerResponse
   ): Promise<void> {
+    // A request pipelined behind a refused upload, on a connection already
+    // ended: run nothing, as its response could not be delivered anyway.
+    if (dropIfConnectionEnded(req)) return;
     // Only the path and query are read, so the base is fixed rather than built
     // from the client-supplied Host header (`Host: a b` is not a valid URL). An
     // origin-form target is appended to the base rather than resolved against
@@ -355,9 +369,10 @@ export class StandaloneServer {
       this.sendJSON(res, result);
     } catch (error) {
       if (error instanceof RequestRefusal) {
-        // An oversized body is left unread: close the connection after the
-        // answer instead of letting Node drain the rest of it.
-        if (error.status === 413) res.setHeader('Connection', 'close');
+        // An oversized body: discard the rest of the upload and keep the
+        // connection, so the 413 is not lost to a reset (see discardRest). It
+        // goes first: it may set the 413's keep-alive before the head is written.
+        if (error.status === 413) discardRest(req, res, { alreadyRead: error.bodyBytesRead });
         this.sendJSON(res, wrapError(error, 'INVALID_REQUEST'), error.status);
         return;
       }
@@ -419,22 +434,28 @@ export class StandaloneServer {
     return new Promise((resolve, reject) => {
       const chunks: Buffer[] = [];
       let bytes = 0;
-      let refused = false;
+      let refusal: RequestRefusal | undefined;
       req.on('data', (chunk: string | Buffer) => {
-        if (refused) return;
         const buf = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+        if (refusal) {
+          // Read before discardRest attaches: count it, so the declared
+          // remainder it reads off is not overstated.
+          refusal.bodyBytesRead += buf.length;
+          return;
+        }
         bytes += buf.length;
         if (bytes > maxBytes) {
-          refused = true;
-          // Stop reading but keep the socket, so the 413 can still be written.
-          req.pause();
-          reject(new RequestRefusal(413, 'Request body too large'));
+          // Free what was read. Later chunks are ignored; the caller answers
+          // 413 and discards the rest of the upload (discardRest).
+          chunks.length = 0;
+          refusal = new RequestRefusal(413, 'Request body too large', bytes);
+          reject(refusal);
           return;
         }
         chunks.push(buf);
       });
       req.on('end', () => {
-        if (refused) return;
+        if (refusal) return;
         const read = interpretJsonBody(
           Buffer.concat(chunks).toString('utf8'),
           req.headers['content-type']
@@ -450,8 +471,19 @@ export class StandaloneServer {
    * Send JSON response
    */
   private sendJSON(res: import('http').ServerResponse, data: unknown, status = 200): void {
-    res.writeHead(status, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(data));
+    // `?? ''`: a value that stringifies to undefined (undefined, a function,
+    // a symbol) is answered with an empty body, as it was before the length
+    // was sent.
+    const json = JSON.stringify(data) ?? '';
+    // Content-Length always: a refusal answered over HTTP/1.0 (which cannot be
+    // chunked) keeps its connection only when its length is declared, so
+    // without it Node ignores discardRest's keep-alive and resets the socket
+    // mid-upload, losing the 413.
+    res.writeHead(status, {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(json),
+    });
+    res.end(json);
   }
 
   /**
