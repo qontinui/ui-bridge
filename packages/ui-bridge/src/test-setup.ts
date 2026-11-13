@@ -103,19 +103,21 @@ if (typeof CSS.escape !== 'function') {
 // pending"). So every subscription a file opens is recorded here, and the
 // file fails after its last test while one is still open.
 //
-// Two doors open one:
+// Two doors open one, and a later `destroy()` of the relay closes both: it
+// clears every warm-up timer either door armed and forgets every listener and
+// client. Only the records open at `destroy()` time are closed — a
+// subscription opened on the relay after `destroy()` is live.
 // - SSE: `subscribeToCommands` and `openCommandStream` both reach the private
 //   `addCommandListener`. Closed by the unsubscribe it returns, or by a later
-//   `destroy()`, which removes every listener the timers look for. Recorded
-//   whatever `proactiveSnapshot` says, on purpose: an open SSE subscription
-//   means its relay was not destroyed since it opened, so the relay's cleanup
-//   interval may still run, and the same leak logs again the moment the
-//   warm-up snapshot is turned back on. With it off, the warm-up timer itself
-//   is inert.
+//   `destroy()`. Recorded whatever `proactiveSnapshot` says, on purpose: an
+//   open SSE subscription means its relay was not destroyed since it opened,
+//   so the relay's cleanup interval may still run, and the same leak logs
+//   again the moment the warm-up snapshot is turned back on. With it off, the
+//   warm-up timer itself is inert.
 // - WebSocket: `registerWebSocketClient` on a relay with proactive snapshots
-//   on. Closed only by `unregisterWebSocketClient`: `destroy()` leaves the
-//   client registered, so its timer still sends. With proactive snapshots off
-//   the registration arms only an inert timer, so it is not recorded.
+//   on. Closed by `unregisterWebSocketClient`, or by a later `destroy()`. With
+//   proactive snapshots off the registration arms only an inert timer, so it
+//   is not recorded.
 //
 // The private method is reached through an `unknown` cast, and every wrapped
 // method is checked at setup: a renamed one throws here rather than leaving
@@ -197,9 +199,10 @@ relayPrototype.addCommandListener = function (this: CommandRelay, ...args: unkno
 };
 
 relayPrototype.destroy = function (this: CommandRelay) {
-  // Only the SSE subscriptions open now: one opened after `destroy()` is live.
+  // Every subscription open now, through either door: `destroy()` clears the
+  // timers of both. One opened after `destroy()` is live.
   for (const transport of relayTransports) {
-    if (transport.door === 'sse' && transport.relay === this) transport.closed = true;
+    if (transport.relay === this) transport.closed = true;
   }
   destroy.call(this);
 };
@@ -226,6 +229,23 @@ relayPrototype.unregisterWebSocketClient = function (this: CommandRelay, clientI
   unregisterWebSocketClient.call(this, clientId);
 };
 
+/**
+ * The subscriptions recorded on `relay` that the guard would flag now. Read by
+ * the guard's own tests (`server/command-relay.destroy.test.ts`); this setup
+ * file is the module those tests import, so they see the same records.
+ */
+export function openRelaySubscriptions(
+  relay: CommandRelay
+): ReadonlyArray<{ door: 'sse' | 'ws'; clientId?: string }> {
+  return relayTransports
+    .filter((transport) => transport.relay === relay && !transport.closed)
+    .map((transport) =>
+      transport.door === 'ws'
+        ? { door: transport.door, clientId: transport.clientId }
+        : { door: transport.door }
+    );
+}
+
 /** The first two test-file frames of where `transport` was opened. */
 function testFileFrames(transport: RelayTransport): string[] {
   const callers = (transport.opened.stack ?? '')
@@ -251,7 +271,7 @@ afterAll(() => {
           ]
         : [
             `WebSocket client "${transport.clientId}"`,
-            'unregister the WebSocket client (relay.unregisterWebSocketClient) in afterEach; relay.destroy() does not close it',
+            'unregister the WebSocket client (relay.unregisterWebSocketClient), or call relay.destroy(), in afterEach (afterAll for a relay built in beforeAll)',
           ];
     return [
       `  ${index + 1}. ${what}, opened at:`,

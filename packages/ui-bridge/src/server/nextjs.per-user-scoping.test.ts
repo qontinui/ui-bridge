@@ -446,7 +446,8 @@ describe('Next.js · GET /health is scoped per-user (§4.2 · U2 regression)', (
 
   it('pendingCommandIds are withheld from a scoped view (POST /commands settles by id)', async () => {
     // In-flight command, never resolved — a pending entry exists.
-    void relay.queueCommand('snapshot', {}, { targetTabId: 'tab-bob' });
+    // `afterEach`'s destroy() rejects it with RelayDestroyedError; caught here.
+    void relay.queueCommand('snapshot', {}, { targetTabId: 'tab-bob' }).catch(() => {});
     await new Promise((r) => setTimeout(r, 0));
     expect(relay.getTransportDiagnostics().pendingCommandIds.length).toBeGreaterThan(0);
 
