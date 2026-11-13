@@ -201,7 +201,7 @@ const STANDARD_PROPERTY = /^-?[A-Za-z_][A-Za-z0-9_-]*$/;
  * A custom property: `--` then one or more ident code points (non-ASCII
  * included — an astral one is its two surrogate units), no escapes.
  */
-const CUSTOM_PROPERTY = /^--[A-Za-z0-9_\-\u0080-￿]+$/;
+const CUSTOM_PROPERTY = /^--[A-Za-z0-9_\-\u0080-\uffff]+$/;
 /** An ARIA attribute name. */
 const ARIA_ATTRIBUTE = /^aria-[a-z]+$/;
 

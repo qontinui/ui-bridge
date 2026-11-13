@@ -735,6 +735,71 @@ describe('AssertionExecutor', () => {
       }
     });
 
+    it('placeholder is read off the live node; with no node, or a detached one, it is UNMEASURED', async () => {
+      const named = document.createElement('input');
+      named.setAttribute('placeholder', 'Order name');
+      const bare = document.createElement('input');
+      const detached = document.createElement('input');
+      detached.setAttribute('placeholder', 'Card 4111');
+      const boundary = document.createElement('div');
+      boundary.setAttribute('data-bridge-redact', 'true');
+      const secret = document.createElement('input');
+      secret.setAttribute('placeholder', 'Card 4111');
+      boundary.appendChild(secret);
+      document.body.append(named, bare, boundary);
+      try {
+        executor.updateElements([
+          { ...createMockAIElement('name-input', { type: 'input' }), element: named },
+          { ...createMockAIElement('bare-input', { type: 'input' }), element: bare },
+          { ...createMockAIElement('gone-input', { type: 'input' }), element: detached },
+          { ...createMockAIElement('card-input', { type: 'input' }), element: secret },
+          // Crossed a wire: no node. The placeholder handed in here is not what
+          // the search projection carries for a DOM-less element.
+          createMockAIElement('wire-input', { type: 'input', placeholder: 'Order name' }),
+        ] as AIDiscoveredElement[]);
+        const check = (target: string) =>
+          executor.assert({
+            target,
+            type: 'attribute',
+            attributeName: 'placeholder',
+            expected: 'Order name',
+          });
+
+        expect(await check('name-input')).toMatchObject({
+          outcome: 'passed',
+          actual: 'Order name',
+        });
+        expect(await check('bare-input')).toMatchObject({
+          outcome: 'failed',
+          actual: null,
+          failureReason: 'Attribute "placeholder" is absent but expected "Order name"',
+        });
+        // A detached node can no longer see a boundary it sat in: not read.
+        expect(await check('gone-input')).toMatchObject({
+          outcome: 'unmeasured',
+          failureCode: 'UB-OBS-INPUT-MISSING',
+          unmeasured: { code: 'input_missing' },
+        });
+        expect(await check('card-input')).toMatchObject({
+          outcome: 'unmeasured',
+          failureCode: 'UB-OBS-NOT-ATTEMPTED-BY-POLICY',
+        });
+        const wire = await check('wire-input');
+        expect(wire).toMatchObject({
+          outcome: 'unmeasured',
+          passed: false,
+          failureCode: 'UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD',
+          unmeasured: { code: 'capability_unavailable_in_build' },
+        });
+        // Never a failure against `undefined`: no value at all.
+        expect(wire.actual).toBeUndefined();
+      } finally {
+        named.remove();
+        bare.remove();
+        boundary.remove();
+      }
+    });
+
     it('should fail for unsupported attributes', async () => {
       const elements = [
         createMockAIElement('btn-1', { textContent: 'Submit', aliases: ['btn-1', 'submit'] }),
