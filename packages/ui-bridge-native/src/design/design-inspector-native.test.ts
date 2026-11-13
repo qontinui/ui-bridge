@@ -154,7 +154,17 @@ describe('mapNativeStyleToExtended', () => {
         color: { semantic: ['labelColor'] },
       });
       expect(result.fontWeight).toBe('700');
-      expect(result.color).toBe('{"semantic":["labelColor"]}');
+      expect(result.color).toBe('native({"semantic":["labelColor"]})');
+    });
+
+    it('an object shadow colour with commas stays one shadow layer', () => {
+      const result = mapNativeStyleToExtended({
+        shadowColor: { semantic: ['a', 'b'] },
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 1,
+        shadowRadius: 2,
+      });
+      expect(result.boxShadow).toBe('0px 1px 2px native({"semantic":["a","b"]})');
     });
 
     it('converts Android elevation to boxShadow', () => {
