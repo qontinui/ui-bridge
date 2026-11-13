@@ -18,7 +18,7 @@
 
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { renderHook } from '@testing-library/react';
-import { CommandRelay } from './command-relay';
+import { CommandRelay, RelayTransportError } from './command-relay';
 import { createNextRouteHandlers } from './nextjs';
 import { createRelayHandlers } from './relay-handlers';
 import { createHandlers, type RegistryLike } from './handlers';
@@ -309,6 +309,15 @@ describe.each(transports)('the $name transport', ({ mount }) => {
       expect(Object.keys(computed)).not.toContain('hyphens');
     });
 
+    it('an element the page does not have is not found — never a disconnect', async () => {
+      await mount();
+      const reply = await get('/control/element/nope/state?attributes=lang');
+      expect(reply.success).toBe(false);
+      expect(reply.error).toMatch(/not found/i);
+      expect(reply.error).not.toContain('disconnected');
+      expect(reply.code).not.toBe('UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD');
+    });
+
     it('a state read without a query carries no projection', async () => {
       await mount();
       const reply = await get('/control/element/save/state');
@@ -513,16 +522,31 @@ describe.each(transports)('the $name transport', ({ mount }) => {
 
 describe('the relay with its tab unreachable', () => {
   /** A relay whose tab never answers, so every read falls back to the cached snapshot. */
-  function deadTabRelay() {
+  /** A relay whose `queueCommand` answers each of `answers` in turn, then rejects with `rejection`. */
+  function relayFailingWith(rejection: Error, ...answers: unknown[]) {
     const relay = new CommandRelay({
       globalPrefix: `__uiBridgeProjectionDead_${Math.random().toString(36).slice(2, 10)}`,
+      proactiveSnapshot: false,
     });
     relays.push(relay);
-    const queue = vi
-      .spyOn(relay, 'queueCommand')
-      .mockRejectedValue(new Error('SDK_DISCONNECTED: no tab'));
-    return { queue, handlers: createRelayHandlers(relay) };
+    const queue = vi.spyOn(relay, 'queueCommand');
+    for (const answer of answers) queue.mockResolvedValueOnce(answer as never);
+    queue.mockRejectedValue(rejection);
+    return { relay, queue, handlers: createRelayHandlers(relay) };
   }
+
+  /** No tab can be reached: the relay's own transport failure. */
+  const deadTabRelay = () =>
+    relayFailingWith(new RelayTransportError('SDK_DISCONNECTED: No browser connected'));
+
+  /** A snapshot that caches `save`'s state, served while a tab still answers. */
+  const SNAPSHOT = {
+    timestamp: Date.now(),
+    elements: [{ id: 'save', type: 'button', state: { visible: true, textContent: 'Save' } }],
+    components: [],
+    workflows: [],
+    activeRuns: [],
+  };
 
   it('find: the cached snapshot cannot answer a projection, so it is refused, typed', async () => {
     const { handlers } = deadTabRelay();
@@ -543,6 +567,30 @@ describe('the relay with its tab unreachable', () => {
     const reply = await handlers.getElementState('save', undefined, { properties: 'hyphens' });
     expect(reply.success).toBe(false);
     expect(reply.code).toBe('UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD');
+  });
+
+  it('element state: an unreachable tab is answered from the cached snapshot', async () => {
+    const { relay, handlers } = relayFailingWith(
+      new RelayTransportError('SDK_DISCONNECTED: No browser connected'),
+      SNAPSHOT
+    );
+    relay.subscribeToCommands(() => {}, 'tab-seed');
+    expect((await handlers.getControlSnapshot({})).success).toBe(true);
+    const reply = await handlers.getElementState('save');
+    expect(reply).toMatchObject({ success: true, data: { visible: true, textContent: 'Save' } });
+  });
+
+  it('element state: a failure the tab reported is the answer, never the cache', async () => {
+    const { relay, handlers } = relayFailingWith(new Error('Element save not found'), SNAPSHOT);
+    relay.subscribeToCommands(() => {}, 'tab-seed');
+    expect((await handlers.getControlSnapshot({})).success).toBe(true);
+    for (const query of [undefined, { attributes: 'lang' }]) {
+      const reply = await handlers.getElementState('save', undefined, query);
+      expect(reply.success).toBe(false);
+      expect(reply.error).toContain('Element save not found');
+      expect(reply.error).not.toContain('disconnected');
+      expect(reply.code).not.toBe('UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD');
+    }
   });
 
   it('element state pinned to a tab never falls back to the cache, and names the tab it asked', async () => {

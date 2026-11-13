@@ -9,7 +9,11 @@
  * code. Instead, ~30 lines of setup produces a fully functional handler set.
  */
 
-import type { CommandRelay } from './command-relay';
+import {
+  isRelayTransportError,
+  type CommandRelay,
+  type RelayTransportError,
+} from './command-relay';
 import { mapInternalErrorCode } from '../diagnostics';
 import { componentActionInvocation } from './component-action-invocation';
 import { scopedCallerRefusal } from './scoped-refusal';
@@ -490,6 +494,13 @@ export function createRelayHandlers(
       targetTabId?: string;
       ownerCheck?: { userId: string };
       context?: HandlerContext;
+      /**
+       * The answer when no tab could be reached at all — a
+       * {@link RelayTransportError}: none connected, the command timed out,
+       * was evicted or dropped. A failure a tab REPORTED never comes here: it
+       * is the answer, and a degraded fallback must not replace it.
+       */
+      onTransportFailure?: (err: RelayTransportError) => APIResponse<T> | Promise<APIResponse<T>>;
     }
   ): Promise<APIResponse<T>> {
     const { targetTabId: payloadTabId, callerUserId, cleaned } = extractTabRouting(payload);
@@ -523,6 +534,7 @@ export function createRelayHandlers(
       }
       return success(result);
     } catch (e) {
+      if (opts?.onTransportFailure && isRelayTransportError(e)) return opts.onTransportFailure(e);
       const msg = e instanceof Error ? e.message : String(e);
       // Per-tab routing errors get a dedicated code so callers can branch
       // without parsing prose (Item #4). Bypass `mapInternalErrorCode` and
@@ -1086,39 +1098,31 @@ export function createRelayHandlers(
         return relayCommand('getElementState', payload, { targetTabId, ...ownerCheck });
       }
 
-      try {
-        const result = await relay.queueCommand('getElementState', payload, ownerCheck);
-        // The browser's typed refusal is a failure, never `success` wrapping
-        // `{ success: false }`.
-        const innerFailure = readRelayInnerFailure(result);
-        if (innerFailure) {
-          return {
-            success: false,
-            error: innerFailure.message,
-            code: innerFailure.code as APIResponse['code'],
-            data: result,
-            timestamp: Date.now(),
-          };
-        }
-        if (result) return success(result);
-      } catch {
-        // Relay failed — fall back to state from the caller's cached
-        // snapshot, which holds only tabs the caller owns (§4.2).
-      }
-      // The cached snapshot is serialized JSON: no node behind it to read a
-      // projection from. Refused, typed — never answered with a state that
-      // silently lacks the values asked for.
-      if (projection) {
-        return error(
-          `Element state for ${id}: the relay's cached snapshot carries no DOM node, so it ` +
-            'cannot read the requested `properties` / `attributes` (browser disconnected)',
-          'UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD'
-        );
-      }
-      const scope = scopeOf(effectiveUserId);
-      const element = scope.cache.controlSnapshot.elements.find((e) => e.id === id);
-      if (element && 'state' in element) return success((element as { state: unknown }).state);
-      return error(`Element state for ${id} not available (browser disconnected)`, 'NOT_FOUND');
+      // Unpinned: what the tab answers is the answer, a failure it reports
+      // included (`Element x not found`, a typed refusal). Only when no tab
+      // could be reached at all does the read fall back to the state in the
+      // caller's cached snapshot, which holds only tabs the caller owns (§4.2).
+      return relayCommand<unknown>('getElementState', payload, {
+        ...ownerCheck,
+        onTransportFailure: () => {
+          // The cached snapshot is serialized JSON: no node behind it to read
+          // a projection from. Refused, typed — never answered with a state
+          // that silently lacks the values asked for.
+          if (projection) {
+            return error(
+              `Element state for ${id}: the relay's cached snapshot carries no DOM node, so it ` +
+                'cannot read the requested `properties` / `attributes` (browser disconnected)',
+              'UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD'
+            );
+          }
+          const scope = scopeOf(effectiveUserId);
+          const element = scope.cache.controlSnapshot.elements.find((e) => e.id === id);
+          if (element && 'state' in element) {
+            return success((element as { state: unknown }).state);
+          }
+          return error(`Element state for ${id} not available (browser disconnected)`, 'NOT_FOUND');
+        },
+      });
     },
 
     async getElementReactState(id, context) {

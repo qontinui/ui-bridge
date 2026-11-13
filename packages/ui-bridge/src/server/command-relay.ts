@@ -312,6 +312,37 @@ export class OwnerMismatchError extends Error {
 }
 
 /**
+ * The relay could not get an answer from any tab: no tab is connected to
+ * receive the command (`SDK_DISCONNECTED`, or no listener accepted it), the
+ * command timed out unanswered, or it was evicted or dropped before a tab took
+ * it. Every other rejection is an answer: a tab that reported a failure
+ * (`rejectCommand`, a plain `Error` carrying the browser's message) or a
+ * routing refusal ({@link TabRoutingError}, {@link OwnerMismatchError}).
+ *
+ * A handler that can answer from a cache when the browser is unreachable does
+ * so on THIS failure only, so a browser that answered "not found" never reads
+ * as a disconnect. The messages are the ones these failures always carried:
+ * a caller that matches on `SDK_DISCONNECTED` or `timed out` keeps working.
+ */
+export class RelayTransportError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RelayTransportError';
+  }
+}
+
+/**
+ * Is `err` a {@link RelayTransportError}? By name as well, so an error from a
+ * second copy of this module (a duplicated bundle) still counts.
+ */
+export function isRelayTransportError(err: unknown): err is RelayTransportError {
+  return (
+    err instanceof RelayTransportError ||
+    (err instanceof Error && err.name === 'RelayTransportError')
+  );
+}
+
+/**
  * Stored ownership record for a registered tab. Populated by
  * `recordRegistration` on first heartbeat carrying `registrationMetadata`
  * and refreshed on every subsequent heartbeat. A tab WITHOUT an entry
@@ -840,7 +871,7 @@ export class CommandRelay {
           setTimeout(
             () =>
               reject(
-                new Error(
+                new RelayTransportError(
                   'SDK_DISCONNECTED: No browser connected — no WebSocket clients and no SSE listeners. ' +
                     'Open the web app in a browser tab, or launch a headless one with ' +
                     '`npx @qontinui/ui-bridge-headless --url <your-app-url>`. ' +
@@ -982,7 +1013,7 @@ export class CommandRelay {
     if (ownerCheck) {
       const owned = this.listOwnedTabs(ownerCheck.userId);
       if (owned.length === 0) {
-        throw new Error(
+        throw new RelayTransportError(
           `SDK_DISCONNECTED: No browser connected to receive ${action} command. ` +
             'No WebSocket clients and no SSE listeners registered. ' +
             'Open the web app in a browser tab, or launch a headless one with ' +
@@ -1114,7 +1145,7 @@ export class CommandRelay {
       // Fail fast if no transport available
       if (!sentViaWebSocket && this.tabListeners.size === 0) {
         reject(
-          new Error(
+          new RelayTransportError(
             `SDK_DISCONNECTED: No browser connected to receive ${action} command. ` +
               'No WebSocket clients and no SSE listeners registered. ' +
               'Open the web app in a browser tab, or launch a headless one with ' +
@@ -1163,7 +1194,7 @@ export class CommandRelay {
         // navigation was silently dropped while the relay still returned success.
         if (notified === 0) {
           reject(
-            new Error(
+            new RelayTransportError(
               `No active UI Bridge SDK client received the ${action} command. ` +
                 `${this.tabListeners.size} SSE listener(s) registered but none accepted the command` +
                 `${targetTabId ? ` (target tab "${targetTabId}" has no live listener)` : ''}. ` +
@@ -1216,7 +1247,7 @@ export class CommandRelay {
         const notified = pending?.tabsNotified ?? 0;
         this.pendingCommands.delete(commandId);
         reject(
-          new Error(
+          new RelayTransportError(
             `Command ${action} timed out after ${timeoutMs}ms (${transport}). ` +
               `${notified} client(s) were notified but none responded. ` +
               'The UI Bridge SDK may not be loaded or the page may be unresponsive.'
@@ -1233,7 +1264,7 @@ export class CommandRelay {
             clearTimeout(oldest.timeout);
             if (oldest.graceTimeout) clearTimeout(oldest.graceTimeout);
             if (oldest.busUnsub) oldest.busUnsub();
-            oldest.reject(new Error('Command evicted: too many pending commands'));
+            oldest.reject(new RelayTransportError('Command evicted: too many pending commands'));
           }
           this.pendingCommands.delete(oldestKey);
         }
@@ -1262,7 +1293,7 @@ export class CommandRelay {
             clearTimeout(timeout);
             this.pendingCommands.delete(commandId);
             reject(
-              new Error(
+              new RelayTransportError(
                 `No active UI Bridge SDK client received the ${action} command. ` +
                   `${this.tabListeners.size} SSE listener(s) registered but none accepted the command. ` +
                   'Ensure the web app is open in a browser tab with the UI Bridge SDK loaded.'
@@ -1279,7 +1310,7 @@ export class CommandRelay {
               const p = this.pendingCommands.get(dropped.commandId);
               if (p) {
                 clearTimeout(p.timeout);
-                p.reject(new Error('Command dropped from queue'));
+                p.reject(new RelayTransportError('Command dropped from queue'));
                 this.pendingCommands.delete(dropped.commandId);
               }
             }
@@ -1313,7 +1344,7 @@ export class CommandRelay {
       if (pending?.busUnsub) pending.busUnsub();
       this.pendingCommands.delete(commandId);
       reject(
-        new Error(
+        new RelayTransportError(
           `Command ${action} timed out after ${timeoutMs}ms (bus). ` +
             'No instance reported a response — the target tab may be disconnected.'
         )
