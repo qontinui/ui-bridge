@@ -282,8 +282,8 @@ export interface HeadlessTab {
   /**
    * Close the context, then the browser and all associated resources. The
    * context is closed first so a `recordHar` archive is written before the
-   * browser goes away. Safe to call multiple times; subsequent calls resolve
-   * immediately. Resolves even when closing the context or the browser fails:
+   * browser goes away. Safe to call multiple times: every call returns the
+   * first close's promise, so a later caller also waits for it. Resolves even when closing the context or the browser fails:
    * that failure is reported on stderr, not thrown.
    */
   close(): Promise<void>;
