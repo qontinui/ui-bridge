@@ -44,7 +44,11 @@ import {
   supersededSnapshotMessage,
   type SnapshotFreshness,
 } from '../core/snapshot-signature';
-import { normalizeAssertionBatch, parseNLAssertion } from '../ai/nl-assertion-parser';
+import {
+  isAssertionRequestError,
+  normalizeAssertion,
+  normalizeAssertionBatch,
+} from '../ai/nl-assertion-parser';
 import { getGlobalStubRegistry, validateStubRequest, type StubRequestSpec } from '../network/stubs';
 import { NetworkRequestTracker } from '../network/tracker';
 import { isRelayOwnTraffic, __clearRelayTrafficForTest } from '../relay/relay-traffic';
@@ -3306,28 +3310,42 @@ export async function executeCommand(
     }
 
     case 'aiAssert': {
-      const { createAssertionExecutor } = await import('../ai');
-      const exec = createAssertionExecutor({});
-      exec.updateElements(elements as unknown as Parameters<typeof exec.updateElements>[0]);
       // Support NL assertions: {assertion: "a button exists"} → {target, type}.
       // The parsed request is passed WHOLE: `attributeName`, `propertyName`,
       // `allowedValues`, `range`, `tokenPath`, `relatedTarget`, `minGap`, … are
       // what the attribute, style and spatial checks read, and the in-process
-      // handlers have always forwarded them.
-      const parsed = parseNLAssertion(payload as unknown as import('../ai').AssertionRequest);
+      // handlers have always forwarded them. A request that names nothing to
+      // check is refused, typed — the relay refuses it before it is queued, so
+      // this answer is for a caller that reaches the dispatcher directly.
+      let parsed: import('../ai').AssertionRequest;
+      try {
+        parsed = normalizeAssertion(payload);
+      } catch (err) {
+        if (!isAssertionRequestError(err)) throw err;
+        return { success: false, error: err.message, code: err.code };
+      }
+      const { createAssertionExecutor } = await import('../ai');
+      const exec = createAssertionExecutor({});
+      exec.updateElements(elements as unknown as Parameters<typeof exec.updateElements>[0]);
       return exec.assert(parsed);
     }
 
     case 'aiAssertBatch': {
+      // The batch normalisation the in-process handlers use, so a batch means
+      // the same thing on both transports: bare strings are NL assertions,
+      // every entry passes through whole, `stopOnFailure` is honoured, and a
+      // malformed batch is refused, typed (see `aiAssert`).
+      let batch: import('../ai').BatchAssertionRequest;
+      try {
+        batch = normalizeAssertionBatch(payload as Parameters<typeof normalizeAssertionBatch>[0]);
+      } catch (err) {
+        if (!isAssertionRequestError(err)) throw err;
+        return { success: false, error: err.message, code: err.code };
+      }
       const { createAssertionExecutor } = await import('../ai');
       const exec = createAssertionExecutor({});
       exec.updateElements(elements as unknown as Parameters<typeof exec.updateElements>[0]);
-      // The batch normalisation the in-process handlers use, so a batch means
-      // the same thing on both transports: bare strings are NL assertions,
-      // every entry passes through whole, and `stopOnFailure` is honoured.
-      return exec.assertBatch(
-        normalizeAssertionBatch(payload as Parameters<typeof normalizeAssertionBatch>[0])
-      );
+      return exec.assertBatch(batch);
     }
 
     case 'getSemanticSnapshot': {

@@ -218,7 +218,13 @@ export { discoverForms } from './form-discovery';
 export type { FormDiscoveryElement } from './form-discovery';
 
 // NL Assertion Parser
-export { normalizeAssertionBatch, parseNLAssertion } from './nl-assertion-parser';
+export {
+  AssertionRequestError,
+  isAssertionRequestError,
+  normalizeAssertion,
+  normalizeAssertionBatch,
+  parseNLAssertion,
+} from './nl-assertion-parser';
 export type { NLAssertionInput, NLAssertionOutput } from './nl-assertion-parser';
 
 // NL Action Parser

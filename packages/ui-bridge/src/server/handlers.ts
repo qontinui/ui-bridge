@@ -160,7 +160,11 @@ import type {
   FindResult,
   FindContext,
 } from '../ai';
-import { normalizeAssertionBatch, parseNLAssertion } from '../ai/nl-assertion-parser';
+import {
+  isAssertionRequestError,
+  normalizeAssertion,
+  normalizeAssertionBatch,
+} from '../ai/nl-assertion-parser';
 import { find } from '../ai/find';
 import { stateSourceFromRegistry, type StateRegistryLike } from '../ai/timeline-recorder';
 import { captureFormSnapshot, diffFormSnapshots } from '../ai/form-diff';
@@ -3117,6 +3121,10 @@ export function createHandlers(
       request: AssertionRequest & { assertion?: string }
     ): Promise<APIResponse<AssertionResult>> => {
       try {
+        // Support natural language assertions: {assertion: "a button exists"} →
+        // {target, type}. A request that names nothing to check is refused
+        // (UB-VALIDATION-ERROR) before anything waits or reads.
+        const normalized = normalizeAssertion(request);
         // Same settle-then-read pattern as aiFind/aiExecute so mid-navigation
         // assertions don't observe a stale registry.
         const reqAny = request as unknown as { skipSettle?: boolean; settleTimeout?: number };
@@ -3125,11 +3133,10 @@ export function createHandlers(
         }
         // Refresh elements before assertion
         refreshElements();
-        // Support natural language assertions: {assertion: "a button exists"} → {target, type}
-        const normalized = parseNLAssertion(request);
         const result = await assertionExecutor.assert(normalized);
         return success(result);
       } catch (err) {
+        if (isAssertionRequestError(err)) return error(err.message, err.code);
         return error((err as Error).message, 'AI_ASSERT_ERROR');
       }
     },
@@ -3138,16 +3145,19 @@ export function createHandlers(
       request: BatchAssertionRequest & { assertions?: (AssertionRequest | string)[] }
     ): Promise<APIResponse<BatchAssertionResult>> => {
       try {
+        // A malformed batch is refused (UB-VALIDATION-ERROR) before anything
+        // waits or reads.
+        const normalized = normalizeAssertionBatch(request);
         const reqAny = request as unknown as { skipSettle?: boolean; settleTimeout?: number };
         if (!reqAny.skipSettle) {
           await awaitDOMSettled(reqAny.settleTimeout);
         }
         // Refresh elements before batch assertion
         refreshElements();
-        const normalized = normalizeAssertionBatch(request);
         const result = await assertionExecutor.assertBatch(normalized);
         return success(result);
       } catch (err) {
+        if (isAssertionRequestError(err)) return error(err.message, err.code);
         return error((err as Error).message, 'AI_ASSERT_BATCH_ERROR');
       }
     },
@@ -7310,15 +7320,18 @@ export function createAIHandlers(
       request: AssertionRequest & { assertion?: string }
     ): Promise<APIResponse<AssertionResult>> => {
       try {
+        const normalized = normalizeAssertion(request);
         refreshElements();
-        const normalized = parseNLAssertion(request);
         const result = await assertionExecutor.assert(normalized);
         return { success: true, data: result, timestamp: Date.now() };
       } catch (err) {
         return {
           success: false,
           error: (err as Error).message,
-          code: mapInternalErrorCode('AI_ASSERT_ERROR', (err as Error).message),
+          code: mapInternalErrorCode(
+            isAssertionRequestError(err) ? err.code : 'AI_ASSERT_ERROR',
+            (err as Error).message
+          ),
           timestamp: Date.now(),
         };
       }
@@ -7328,15 +7341,18 @@ export function createAIHandlers(
       request: BatchAssertionRequest & { assertions?: (AssertionRequest | string)[] }
     ): Promise<APIResponse<BatchAssertionResult>> => {
       try {
-        refreshElements();
         const normalized = normalizeAssertionBatch(request);
+        refreshElements();
         const result = await assertionExecutor.assertBatch(normalized);
         return { success: true, data: result, timestamp: Date.now() };
       } catch (err) {
         return {
           success: false,
           error: (err as Error).message,
-          code: mapInternalErrorCode('AI_ASSERT_BATCH_ERROR', (err as Error).message),
+          code: mapInternalErrorCode(
+            isAssertionRequestError(err) ? err.code : 'AI_ASSERT_BATCH_ERROR',
+            (err as Error).message
+          ),
           timestamp: Date.now(),
         };
       }

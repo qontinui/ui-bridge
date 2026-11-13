@@ -67,7 +67,9 @@ export function parseNLAssertion<T extends NLAssertionInput>(input: T): T & NLAs
   if (!text) {
     return {
       ...input,
-      target: String(input.target ?? ''),
+      // A structured target stays an object here too: `{ target: { idPattern } }`
+      // with no `type` must not become the string "[object Object]".
+      target: structuredTarget(input.target ?? ''),
       type: String(input.type ?? 'exists'),
       expected: input.expected,
     };
@@ -189,18 +191,84 @@ export function parseNLAssertion<T extends NLAssertionInput>(input: T): T & NLAs
 }
 
 /**
+ * Thrown for an `ai/assert` request the parser refuses rather than guesses at
+ * (see {@link normalizeAssertion} and {@link normalizeAssertionBatch}). Every
+ * transport answers it with `UB-VALIDATION-ERROR`: the in-process handlers from
+ * its `code`, and the relay before anything is queued to a tab — a tab's
+ * failure crosses the relay as its message alone, so a code it raised would
+ * not survive the trip. Still a `TypeError`, as the refusal was before it was
+ * typed.
+ */
+export class AssertionRequestError extends TypeError {
+  readonly code = 'UB-VALIDATION-ERROR' as const;
+
+  constructor(detail: string) {
+    super(detail);
+    this.name = 'AssertionRequestError';
+  }
+}
+
+/** Is `err` an {@link AssertionRequestError}? Checks the name, so it is bundle-safe. */
+export function isAssertionRequestError(err: unknown): err is AssertionRequestError {
+  return err instanceof Error && err.name === 'AssertionRequestError';
+}
+
+/**
+ * Does `input` name something to check: a `target` (an element id or
+ * description, or a `SearchCriteria` object) or a natural-language
+ * `assertion`? A blank string names nothing.
+ */
+function namesACheck(input: NLAssertionInput): boolean {
+  const { target, assertion } = input;
+  const namedTarget =
+    (typeof target === 'string' && target.trim() !== '') ||
+    (typeof target === 'number' && Number.isFinite(target)) ||
+    (typeof target === 'object' && target !== null && !Array.isArray(target));
+  return namedTarget || (typeof assertion === 'string' && assertion.trim() !== '');
+}
+
+/**
+ * Normalise ONE `ai/assert` request — the body of `POST /ai/assert`, or one
+ * entry of a batch — for both transports: an assertion object, or a bare
+ * string read as a natural-language assertion, parsed by
+ * {@link parseNLAssertion} with every other field passed through.
+ *
+ * Refused with an {@link AssertionRequestError} (`UB-VALIDATION-ERROR`) rather
+ * than guessed at: a value that is neither an assertion object nor a string
+ * (`null`, a number, a boolean, an array), and one that names nothing to check
+ * — no `target` and no `assertion` (`{}`, `{ foo: 1 }`, `{ type: 'exists' }`,
+ * `""`). Either would otherwise run as `{ target: '', type: 'exists' }` and
+ * report a failure the caller never asked about. `where` names the value in
+ * the refusal (`assertions[2]`).
+ */
+export function normalizeAssertion(raw: unknown, where = 'the assertion'): AssertionRequest {
+  if (typeof raw !== 'string' && (typeof raw !== 'object' || raw === null || Array.isArray(raw))) {
+    const got = raw === null ? 'null' : Array.isArray(raw) ? 'an array' : typeof raw;
+    throw new AssertionRequestError(
+      `${where} must be an assertion object or a natural-language string, got ${got}`
+    );
+  }
+  const input = (typeof raw === 'string' ? { assertion: raw } : raw) as NLAssertionInput;
+  if (!namesACheck(input)) {
+    throw new AssertionRequestError(
+      `${where} names nothing to check: give it a \`target\` (an element id or description, ` +
+        'or search criteria) or a natural-language `assertion`'
+    );
+  }
+  return parseNLAssertion(input) as unknown as AssertionRequest;
+}
+
+/**
  * Normalise an `ai/assert/batch` request — THE one implementation both
  * transports use (the in-process `aiAssertBatch` handlers and the relay's
- * `aiAssertBatch` command): each entry parsed by {@link parseNLAssertion} (a
+ * `aiAssertBatch` command): each entry through {@link normalizeAssertion} (a
  * bare string is an NL assertion), `mode` defaulted to `'all'`, and every other
  * field — `stopOnFailure` included — passed through.
  *
- * Refused (a `TypeError`, which each transport answers as an error envelope)
- * rather than guessed at: a non-array `assertions`, which would otherwise read
- * as an empty batch, and an entry that is neither an assertion object nor a
- * string — `null`, a number, a boolean, an array — which would otherwise run
- * as `{ target: '', type: 'exists' }` and report a failure the caller never
- * asked about.
+ * Refused with an {@link AssertionRequestError} (`UB-VALIDATION-ERROR`) rather
+ * than guessed at: a non-array `assertions`, which would otherwise read as an
+ * empty batch, and any entry {@link normalizeAssertion} refuses. One refused
+ * entry refuses the whole batch: none of it runs.
  */
 export function normalizeAssertionBatch(request: {
   assertions?: unknown;
@@ -209,22 +277,13 @@ export function normalizeAssertionBatch(request: {
 }): BatchAssertionRequest {
   const raw = request.assertions ?? [];
   if (!Array.isArray(raw)) {
-    throw new TypeError(`assertions must be an array, got ${typeof raw}`);
+    throw new AssertionRequestError(`assertions must be an array, got ${typeof raw}`);
   }
   return {
     ...request,
     mode: request.mode || 'all',
-    assertions: raw.map((a: unknown, index) => {
-      if (typeof a === 'string') {
-        return parseNLAssertion({ assertion: a }) as unknown as AssertionRequest;
-      }
-      if (typeof a !== 'object' || a === null || Array.isArray(a)) {
-        const got = a === null ? 'null' : Array.isArray(a) ? 'an array' : typeof a;
-        throw new TypeError(
-          `assertions[${index}] must be an assertion object or a natural-language string, got ${got}`
-        );
-      }
-      return parseNLAssertion(a as NLAssertionInput) as unknown as AssertionRequest;
-    }),
+    assertions: raw.map((entry: unknown, index) =>
+      normalizeAssertion(entry, `assertions[${index}]`)
+    ),
   };
 }

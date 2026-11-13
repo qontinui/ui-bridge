@@ -27,6 +27,7 @@ import { StandaloneServer } from './standalone';
 import { createRelayHandlers } from './relay-handlers';
 import { createHandlers, type RegistryLike } from './handlers';
 import { useCommandRelay } from '../react/useCommandRelay';
+import { listener } from '../react/__tests__/relay-into-listener';
 import { getGlobalRegistry, resetGlobalRegistry } from '../core/registry';
 import { createActionExecutor } from '../control/action-executor';
 import { REDACTED_VALUE } from '../core/redaction';
@@ -487,27 +488,65 @@ describe.each(transports)('the $name transport', ({ mount }) => {
       });
     });
 
+    const NOT_AN_ASSERTION = 'must be an assertion object or a natural-language string, got';
+    const NAMES_NOTHING = 'names nothing to check';
+
     it.each([
-      ['null', null, 'null'],
-      ['a number', 42, 'number'],
-      ['an array', ['save'], 'an array'],
+      ['null', null, `${NOT_AN_ASSERTION} null`],
+      ['a number', 42, `${NOT_AN_ASSERTION} number`],
+      ['an array', ['save'], `${NOT_AN_ASSERTION} an array`],
+      ['an empty object', {}, NAMES_NOTHING],
+      ['an object naming no target', { foo: 1 }, NAMES_NOTHING],
+      ['a type with no target', { type: 'exists' }, NAMES_NOTHING],
+      ['a blank string', '  ', NAMES_NOTHING],
     ])(
-      'refuses a batch entry that is %s with an error envelope — never a made-up failure',
-      async (_label, entry, got) => {
-        await mount();
+      'refuses a batch entry that is %s with UB-VALIDATION-ERROR — never a made-up failure',
+      async (_label, entry, why) => {
+        const { relay } = await mount();
+        if (relay) vi.spyOn(relay, 'queueCommand');
         const reply = await post('/ai/assert/batch', {
           skipSettle: true,
           mode: 'all',
           assertions: [{ target: 'save', type: 'exists' }, entry],
         });
         expect(reply.success).toBe(false);
-        expect(reply.error).toContain(
-          `assertions[1] must be an assertion object or a natural-language string, got ${got}`
-        );
+        expect(reply.code).toBe('UB-VALIDATION-ERROR');
+        expect(reply.error).toContain(`assertions[1] ${why}`);
         // Nothing ran: no result for the malformed entry, nor for the good one.
         expect(reply.data?.results).toBeUndefined();
+        // The relay refuses before queueing: the tab never sees it.
+        if (relay) expect(queuedActions(relay)).not.toContain('aiAssertBatch');
       }
     );
+
+    it('refuses a non-array `assertions` with UB-VALIDATION-ERROR', async () => {
+      await mount();
+      const reply = await post('/ai/assert/batch', { skipSettle: true, assertions: 'save exists' });
+      expect(reply.success).toBe(false);
+      expect(reply.code).toBe('UB-VALIDATION-ERROR');
+      expect(reply.error).toContain('assertions must be an array, got string');
+    });
+
+    it.each([
+      ['an empty request', {}],
+      ['a type with no target', { type: 'exists' }],
+      ['a blank target', { target: ' ', type: 'exists' }],
+    ])('refuses a single assertion that is %s with UB-VALIDATION-ERROR', async (_label, body) => {
+      const { relay } = await mount();
+      if (relay) vi.spyOn(relay, 'queueCommand');
+      const reply = await post('/ai/assert', { skipSettle: true, ...body });
+      expect(reply.success).toBe(false);
+      expect(reply.code).toBe('UB-VALIDATION-ERROR');
+      expect(reply.error).toContain(`the assertion ${NAMES_NOTHING}`);
+      if (relay) expect(queuedActions(relay)).not.toContain('aiAssert');
+    });
+
+    it('a structured target with no `type` stays search criteria: an exists check on it', async () => {
+      await mount();
+      const reply = await post('/ai/assert', { skipSettle: true, target: { idPattern: 'sav*' } });
+      expect(reply.success, reply.error).toBe(true);
+      expect(reply.data).toMatchObject({ outcome: 'passed' });
+    });
 
     it('a single assertion reads through the projection and keeps its message', async () => {
       await mount();
@@ -577,6 +616,21 @@ describe('a repeated query key on the adapters that serve no Next.js route', () 
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+});
+
+describe('the tab dispatcher, reached directly', () => {
+  // The relay refuses a malformed ai/assert request before queueing it (its
+  // code would not survive the trip back as a tab failure). A caller that
+  // reaches the dispatcher itself gets the same typed refusal.
+  it.each([
+    ['aiAssert', {}],
+    ['aiAssertBatch', { assertions: [{ target: 'save', type: 'exists' }, {}] }],
+  ])('%s refuses a request that names nothing to check, typed', async (action, payload) => {
+    expect(await listener(action, payload)).toMatchObject({
+      success: false,
+      code: 'UB-VALIDATION-ERROR',
+    });
   });
 });
 
