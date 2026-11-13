@@ -36,6 +36,11 @@ import { matchesElementSelector, type MatchableElement } from './selector-match'
 import { diagnosePageHealth, pageHealthInputFromSnapshot, pageHealthUnknown } from './page-health';
 import { buildVisibilityReport } from './visibility-report';
 import type { SemanticSnapshot } from '../ai';
+import {
+  isAssertionRequestError,
+  normalizeAssertion,
+  normalizeAssertionBatch,
+} from '../ai/nl-assertion-parser';
 import type { Recency as RecencyType } from '../core/recency';
 import { Recency, isSatisfiedBy, parseRecency } from '../core/recency';
 import { findElements } from '../core/find';
@@ -1868,11 +1873,27 @@ export function createRelayHandlers(
       return relayCommand('aiExecute', request, ctxOpts(context));
     },
 
+    // A malformed assertion request is refused HERE, typed
+    // (UB-VALIDATION-ERROR), before anything is queued: the tab would refuse
+    // it too, but its failure crosses the relay as a message alone, so its
+    // code would arrive as a generic command failure.
     async aiAssert(request, context) {
+      try {
+        normalizeAssertion(request);
+      } catch (err) {
+        if (isAssertionRequestError(err)) return error(err.message, err.code);
+        throw err;
+      }
       return relayCommand('aiAssert', request, ctxOpts(context));
     },
 
     async aiAssertBatch(request, context) {
+      try {
+        normalizeAssertionBatch(request);
+      } catch (err) {
+        if (isAssertionRequestError(err)) return error(err.message, err.code);
+        throw err;
+      }
       return relayCommand('aiAssertBatch', request, ctxOpts(context));
     },
 
