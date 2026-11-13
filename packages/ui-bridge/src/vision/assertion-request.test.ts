@@ -7,6 +7,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   MAX_VISION_ASSERTIONS,
+  MAX_VISION_LIST,
+  MAX_VISION_STRING,
   VISION_ASSERTION_KINDS,
   VisionAssertRequestError,
   parseVisionAssertRequest,
@@ -287,4 +289,131 @@ describe('parseVisionAssertRequest', () => {
       MAX_VISION_ASSERTIONS
     );
   });
+});
+
+describe('what the relay forwards into a tab is bounded', () => {
+  const ids = (n: number): string[] => Array.from({ length: n }, (_, i) => `id-${i}`);
+  const colours = (n: number) => Array.from({ length: n }, () => ({ r: 0, g: 0, b: 0 }));
+
+  /** Every list field, built with `n` entries, and the key a refusal names. */
+  const LISTS: Array<[string, (n: number) => Record<string, unknown>, string]> = [
+    [
+      'aligned_horizontally.elements',
+      (n) => ({ type: 'aligned_horizontally', elements: ids(n) }),
+      'elements',
+    ],
+    [
+      'aligned_vertically.elements',
+      (n) => ({ type: 'aligned_vertically', elements: ids(n) }),
+      'elements',
+    ],
+    [
+      'typography_consistent.elements',
+      (n) => ({ type: 'typography_consistent', elements: ids(n) }),
+      'elements',
+    ],
+    [
+      'typography_consistent.dimensions',
+      (n) => ({
+        type: 'typography_consistent',
+        elements: [],
+        dimensions: Array.from({ length: n }, () => 'font_size'),
+      }),
+      'dimensions',
+    ],
+    [
+      'image_palette_within.palette',
+      (n) => ({ type: 'image_palette_within', element: 'a', palette: colours(n) }),
+      'palette',
+    ],
+  ];
+
+  it.each(LISTS)(`%s holds at most ${MAX_VISION_LIST} entries`, (_name, build, key) => {
+    expect(parseVisionAssertion(build(MAX_VISION_LIST))).toMatchObject({
+      [key]: expect.any(Array),
+    });
+    expect(refusal({ assertions: [build(MAX_VISION_LIST + 1)] })).toContain(
+      `assertions[0].${key} must hold at most ${MAX_VISION_LIST} entries ` +
+        `(got ${MAX_VISION_LIST + 1})`
+    );
+  });
+
+  /** Every string field, built holding `s`, and the refusal it draws. */
+  const STRINGS: Array<[string, (s: string) => Record<string, unknown>, string]> = [
+    [
+      'an element id',
+      (s) => ({ type: 'text_fits_container', element: s }),
+      'element must be at most',
+    ],
+    [
+      'an optional element id',
+      (s) => ({ type: 'no_placeholder_images', element: s }),
+      'element must be at most',
+    ],
+    [
+      'a contains_text target',
+      (s) => ({ type: 'contains_text', target: { element: s }, text: 'x' }),
+      'target.element must be at most',
+    ],
+    [
+      'a contains_text text',
+      (s) => ({ type: 'contains_text', target: { element: 'a' }, text: s }),
+      'text must be at most',
+    ],
+    [
+      'a state name',
+      (s) => ({ type: 'state_entered_within', state: s, ms: 0 }),
+      'state must be at most',
+    ],
+    [
+      'a baseline name',
+      (s) => ({ type: 'no_layout_shift_since', baseline: s }),
+      'baseline must be at most',
+    ],
+    ['a CTA id', (s) => ({ type: 'salience_order', cta_id: s }), 'cta_id must be at most'],
+    [
+      'one id of a pair',
+      (s) => ({ type: 'no_overlap', elements: ['a', s] }),
+      'elements must hold strings of at most',
+    ],
+    [
+      'one id of a list',
+      (s) => ({ type: 'aligned_horizontally', elements: ['a', s] }),
+      'elements must hold strings of at most',
+    ],
+  ];
+
+  it.each(STRINGS)(`%s is at most ${MAX_VISION_STRING} characters`, (_name, build, message) => {
+    expect(() => parseVisionAssertion(build('a'.repeat(MAX_VISION_STRING)))).not.toThrow();
+    const refused = refusal({ assertions: [build('q'.repeat(MAX_VISION_STRING + 1))] });
+    expect(refused).toContain(`assertions[0].${message} ${MAX_VISION_STRING} characters`);
+    // The refusal names the bound, not the value it refused.
+    expect(refused).not.toContain('qqqq');
+  });
+
+  it('a refusal echoes at most 64 characters of what the caller sent', () => {
+    const long = refusal({ assertions: [{ type: 'z'.repeat(100_000) }] });
+    expect(long).toContain(`(got "${'z'.repeat(64)}…")`);
+    expect(long).not.toContain('z'.repeat(65));
+    expect(long.length).toBeLessThan(1_000);
+
+    const secret = refusal({ assertions: [{ type: { token: 'hunter2' } }] });
+    expect(secret).toContain('(got an object)');
+    expect(secret).not.toContain('hunter2');
+    expect(refusal({ assertions: [{ type: ['no_overlap'] }] })).toContain('(got an array)');
+    expect(refusal({ assertions: [{ type: 7 }] })).toContain('(got a number)');
+    expect(refusal({ assertions: [{ type: null }] })).toContain('(got null)');
+    expect(refusal({ assertions: [{ elements: ['a', 'b'] }] })).toContain('(got nothing)');
+    expect(refusal({ assertions: [{ type: 'no_overlapping' }] })).toContain(
+      '(got "no_overlapping")'
+    );
+  });
+
+  it.each(MINIMAL)(
+    'the normalized %j parses to itself: the tab re-validates what the relay forwards',
+    (body) => {
+      const once = parseVisionAssertion(body);
+      expect(parseVisionAssertion(once)).toEqual(once);
+    }
+  );
 });

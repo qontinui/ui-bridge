@@ -230,6 +230,115 @@ describe('POST /vision/assert through a relay app, no runner mounted', () => {
   });
 });
 
+describe('what POST /vision/assert carries across the relay into a tab', () => {
+  /**
+   * Two tabs that record what they are sent: tab-a (user-a) is the primary,
+   * tab-b belongs to user-b — so a call that routes reaches tab-b, and one
+   * that does not reaches tab-a.
+   */
+  function twoTabs() {
+    const relay = new CommandRelay({
+      globalPrefix: `__uiBridgeVisionCarry_${Math.random().toString(36).slice(2, 10)}`,
+      proactiveSnapshot: false,
+    });
+    const received: Array<{ tab: string; payload: unknown }> = [];
+    // The tab joined last is the primary, as in the scoping ratchet.
+    for (const [tab, userId] of [
+      ['tab-b', 'user-b'],
+      ['tab-a', 'user-a'],
+    ] as const) {
+      relay.subscribeToCommands((command) => {
+        if (command.action === 'visionAssert') received.push({ tab, payload: command.payload });
+        setTimeout(() => relay.resolveCommand(command.commandId, { results: [] }, tab), 0);
+      }, tab);
+      relay.receiveHeartbeat(tab, {
+        url: `http://app.test/${tab}`,
+        title: tab,
+        visibility: 'visible',
+      });
+      relay.recordRegistration(tab, { userId, sessionId: `session-${tab}` });
+    }
+    return { relay, handlers: createRelayHandlers(relay), received };
+  }
+
+  let rig: ReturnType<typeof twoTabs> | undefined;
+  afterEach(() => rig?.relay.destroy());
+
+  it('relays the parsed assertions, and nothing else the caller sent', async () => {
+    rig = twoTabs();
+    const res = await rig.handlers.visionAssert({
+      assertions: [{ type: 'no_overlap', elements: ['a', 'b'], settle_frames: 3, note: 'x' }],
+      settleTimeout: 60_000,
+      skipSettle: true,
+      extra: { blob: 'y'.repeat(4_096) },
+      snapshot: null,
+      // Not a string, so not a routing key: neither routed by nor carried.
+      tabId: 7,
+    });
+    expect(res.success).toBe(true);
+    expect(rig.received).toEqual([
+      {
+        tab: 'tab-a',
+        payload: { assertions: [{ type: 'no_overlap', elements: ['a', 'b'], tolerance_px: null }] },
+      },
+    ]);
+  });
+
+  it.each([
+    ['a tabId', { tabId: 'tab-b' }, undefined],
+    ['a targetTabId', { targetTabId: 'tab-b' }, undefined],
+    ['a payload caller', { __callerUserId: 'user-b' }, undefined],
+    ['the verified caller', {}, { callerUserId: 'user-b' }],
+  ])('still routes by %s, and carries no routing key into the tab', async (_by, keys, context) => {
+    rig = twoTabs();
+    const res = await rig.handlers.visionAssert(
+      { assertions: [{ type: 'no_clipping' }], ...keys },
+      context
+    );
+    expect(res.success).toBe(true);
+    expect(rig.received).toEqual([
+      { tab: 'tab-b', payload: { assertions: [{ type: 'no_clipping', region: null }] } },
+    ]);
+  });
+
+  it('over HTTP the verified caller routes it, never a caller named in the body', async () => {
+    rig = twoTabs();
+    const routes = createNextRouteHandlers(rig.handlers, { relay: rig.relay });
+    const url = 'http://app.test/api/ui-bridge/vision/assert';
+    const request = Object.assign(
+      new Request(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Caller-User-Id': 'user-b' },
+        body: JSON.stringify({
+          assertions: [{ type: 'no_clipping' }],
+          __callerUserId: 'user-a',
+        }),
+      }),
+      { nextUrl: new URL(url) }
+    );
+    const response = await routes.POST(request, { params: { path: 'vision/assert' } });
+    expect(((await response.json()) as RouteReply).success).toBe(true);
+    expect(rig.received.map((r) => r.tab)).toEqual(['tab-b']);
+    expect(rig.received[0].payload).toEqual({
+      assertions: [{ type: 'no_clipping', region: null }],
+    });
+  });
+
+  it('refuses an oversized body before anything is queued', async () => {
+    rig = twoTabs();
+    for (const oversized of [
+      { assertions: [{ type: 'aligned_horizontally', elements: Array(257).fill('a') }] },
+      { assertions: [{ type: 'text_fits_container', element: 'x'.repeat(257) }] },
+    ]) {
+      expect(await rig.handlers.visionAssert(oversized)).toMatchObject({
+        success: false,
+        code: 'UB-VALIDATION-ERROR',
+      });
+    }
+    expect(rig.received).toEqual([]);
+  });
+});
+
 describe('POST /vision/assert through the in-process handlers', () => {
   afterEach(() => {
     resetGlobalRegistry();

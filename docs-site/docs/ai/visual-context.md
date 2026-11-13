@@ -218,6 +218,15 @@ an element with no box. An empty assertion list is `unknown` with
 `UB-VALIDATION-ERROR` before anything reaches the tab, and so is a
 caller-supplied `snapshot`: the tab measures the live page.
 
+The body crosses the relay into a user's tab, so it is bounded where the
+runner's is not: at most 2000 assertions per request, 256 entries in any list
+(`elements`, `palette`, `dimensions`) and 256 characters in any string. A
+larger body is refused with `UB-VALIDATION-ERROR`, and a refusal quotes at most
+64 characters of what was sent. Only the validated assertions and the routing
+keys (`tabId`) are relayed. No other key of the body reaches the tab,
+`settleTimeout` and `skipSettle` included: the tab waits at most its default
+500 ms for the page to settle before it measures.
+
 A capture result (`capture`, `annotate`, `diff`, `raw`) names its bytes by
 `url`, whose literal value is the relative HTTP path
 `/ui-bridge/vision/cache/<sha256>`, never by a host file path. `sha256` is the

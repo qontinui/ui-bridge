@@ -25,13 +25,19 @@
  * - a key vision-core does not read is ignored, inside an assertion as at the
  *   top level (the adapters add `tabId`), exactly as serde ignores it.
  *
- * One refusal is the SDK's own: a caller-supplied `snapshot`. The in-tab
+ * Two refusals are the SDK's own. A caller-supplied `snapshot`: the in-tab
  * evaluator measures the live page and reads no caller snapshot, and the five
  * kinds it evaluates are exactly the ones a snapshot would decide — so
  * accepting one would compute an answer on an input other than the one the
  * caller sent. The other runner-only inputs (`ocr_blocks`, `timelineRef`,
  * `target`, the text-hidden frame) feed only kinds the SDK answers
  * `unknown{capability_unavailable_in_build}`, so they are accepted and not read.
+ * And SIZE: the body crosses the relay into a user's tab, so it is bounded —
+ * at most {@link MAX_VISION_ASSERTIONS} assertions, {@link MAX_VISION_LIST}
+ * entries in any list (`elements`, `palette`, `dimensions`) and
+ * {@link MAX_VISION_STRING} characters in any string — where vision-core's
+ * serde has no bound. A refusal echoes at most 64 characters of a caller's
+ * value.
  *
  * The parsed assertion is NORMALIZED to the echo vision-core serializes: every
  * optional field present (`null` when not given), every default filled in.
@@ -83,6 +89,15 @@ export const VISION_ASSERTION_KINDS: readonly VisionAssertionKind[] = [
  */
 export const MAX_VISION_ASSERTIONS = 2000;
 
+/** The most entries one list field holds: `elements`, `palette`, `dimensions`. */
+export const MAX_VISION_LIST = 256;
+
+/** The most characters one string field holds: an element id, a state name, a text. */
+export const MAX_VISION_STRING = 256;
+
+/** The most characters of a caller's value a refusal echoes. */
+const ECHO_CHARS = 64;
+
 const ROUTE = '/vision/assert';
 
 /**
@@ -117,23 +132,58 @@ function refuse(path: string, what: string): never {
   throw new VisionAssertRequestError(`${ROUTE}: ${path} ${what}`);
 }
 
+/**
+ * A caller's value as a refusal may echo it: a string cut to
+ * {@link ECHO_CHARS} characters, anything else only by its JSON type — never
+ * the whole of what the caller sent.
+ */
+function echo(value: unknown): string {
+  if (typeof value === 'string') {
+    return JSON.stringify(value.length > ECHO_CHARS ? `${value.slice(0, ECHO_CHARS)}…` : value);
+  }
+  if (value === null) return 'null';
+  if (value === undefined) return 'nothing';
+  if (Array.isArray(value)) return 'an array';
+  return typeof value === 'object' ? 'an object' : `a ${typeof value}`;
+}
+
+/** `value` is a string of at most {@link MAX_VISION_STRING} characters. */
+function isBoundedString(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= MAX_VISION_STRING;
+}
+
+/** A string, refused when it is not one or is longer than {@link MAX_VISION_STRING}. */
+function boundedString(value: unknown, path: string, what: string): string {
+  if (typeof value !== 'string') refuse(path, what);
+  if (value.length > MAX_VISION_STRING) {
+    refuse(path, `must be at most ${MAX_VISION_STRING} characters (got ${value.length})`);
+  }
+  return value;
+}
+
+/** A list, refused when it is not one or holds more than {@link MAX_VISION_LIST} entries. */
+function boundedList(value: unknown, path: string, what: string): unknown[] {
+  if (!Array.isArray(value)) refuse(path, what);
+  if (value.length > MAX_VISION_LIST) {
+    refuse(path, `must hold at most ${MAX_VISION_LIST} entries (got ${value.length})`);
+  }
+  return value;
+}
+
 const U32_MAX = 4_294_967_295;
 const I32_MIN = -2_147_483_648;
 const I32_MAX = 2_147_483_647;
 
 /** A required string. */
 function str(body: Body, key: string, path: string): string {
-  const v = body[key];
-  if (typeof v !== 'string') refuse(`${path}.${key}`, 'must be a string');
-  return v;
+  return boundedString(body[key], `${path}.${key}`, 'must be a string');
 }
 
 /** An `Option<String>`: absent and `null` are `null`. */
 function optStr(body: Body, key: string, path: string): string | null {
   const v = body[key];
   if (v === undefined || v === null) return null;
-  if (typeof v !== 'string') refuse(`${path}.${key}`, 'must be a string or null');
-  return v;
+  return boundedString(v, `${path}.${key}`, 'must be a string or null');
 }
 
 function isInt(v: unknown, min: number, max: number): v is number {
@@ -194,14 +244,19 @@ function pair(body: Body, key: string, path: string): [string, string] {
   if (!Array.isArray(v) || v.length !== 2 || !v.every((s) => typeof s === 'string')) {
     refuse(`${path}.${key}`, 'must be an array of exactly 2 strings');
   }
+  if (!v.every(isBoundedString)) {
+    refuse(`${path}.${key}`, `must hold strings of at most ${MAX_VISION_STRING} characters`);
+  }
   return [v[0] as string, v[1] as string];
 }
 
-/** `Vec<String>`. */
+/** `Vec<String>`, bounded. */
 function strings(body: Body, key: string, path: string): string[] {
-  const v = body[key];
-  if (!Array.isArray(v) || !v.every((s) => typeof s === 'string')) {
-    refuse(`${path}.${key}`, 'must be an array of strings');
+  const what = `must be an array of at most ${MAX_VISION_LIST} strings`;
+  const v = boundedList(body[key], `${path}.${key}`, what);
+  if (!v.every((s) => typeof s === 'string')) refuse(`${path}.${key}`, what);
+  if (!v.every(isBoundedString)) {
+    refuse(`${path}.${key}`, `must hold strings of at most ${MAX_VISION_STRING} characters`);
   }
   return [...(v as string[])];
 }
@@ -284,7 +339,9 @@ function textTarget(body: Body, path: string): { element: string } | { region: V
   const target = body.target;
   const where = `${path}.target`;
   if (!isObject(target)) refuse(where, 'must be { element } or { region }');
-  if (typeof target.element === 'string') return { element: target.element };
+  if (typeof target.element === 'string') {
+    return { element: boundedString(target.element, `${where}.element`, 'must be a string') };
+  }
   if (target.region !== undefined) return { region: region(target.region, `${where}.region`) };
   return refuse(where, 'must be { element } or { region }');
 }
@@ -299,7 +356,7 @@ export function parseVisionAssertion(raw: unknown, path = 'assertion'): VisionAs
   if (typeof type !== 'string' || !(VISION_ASSERTION_KINDS as readonly string[]).includes(type)) {
     refuse(
       `${path}.type`,
-      `must be one of ${VISION_ASSERTION_KINDS.join(', ')} (got ${JSON.stringify(type)})`
+      `must be one of ${VISION_ASSERTION_KINDS.join(', ')} (got ${echo(type)})`
     );
   }
   const kind = type as VisionAssertionKind;
@@ -343,13 +400,12 @@ export function parseVisionAssertion(raw: unknown, path = 'assertion'): VisionAs
       const dims = raw.dimensions;
       let dimensions: TypographyDimension[] = [];
       if (dims !== undefined) {
-        if (
-          !Array.isArray(dims) ||
-          !dims.every((d) => (TYPOGRAPHY_DIMENSIONS as readonly unknown[]).includes(d))
-        ) {
-          refuse(`${path}.dimensions`, `must be an array of ${TYPOGRAPHY_DIMENSIONS.join(', ')}`);
+        const what = `must be an array of ${TYPOGRAPHY_DIMENSIONS.join(', ')}`;
+        const list = boundedList(dims, `${path}.dimensions`, what);
+        if (!list.every((d) => (TYPOGRAPHY_DIMENSIONS as readonly unknown[]).includes(d))) {
+          refuse(`${path}.dimensions`, what);
         }
-        dimensions = [...(dims as TypographyDimension[])];
+        dimensions = [...(list as TypographyDimension[])];
       }
       return { type: kind, elements: strings(raw, 'elements', path), dimensions };
     }
@@ -374,8 +430,11 @@ export function parseVisionAssertion(raw: unknown, path = 'assertion'): VisionAs
         level: enumWithDefault(raw, 'level', path, WCAG_LEVELS, 'aa'),
       };
     case 'image_palette_within': {
-      const palette = raw.palette;
-      if (!Array.isArray(palette)) refuse(`${path}.palette`, 'must be an array of colours');
+      const palette = boundedList(
+        raw.palette,
+        `${path}.palette`,
+        `must be an array of at most ${MAX_VISION_LIST} colours`
+      );
       return {
         type: kind,
         element: str(raw, 'element', path),
