@@ -389,6 +389,7 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     ]);
     expect(res.results[1].detail).toContain('text is ellipsised');
     expect(res.results[2].detail).toContain('text overflows vertically');
+    expect(res.results[2].detail).not.toContain('Line one'); // its size, never its text
     // In border-box terms: 106px of content + 24px of borders against a 124px box.
     expect(res.results[3].detail).toContain(
       'content is 130px wide but the box is only 124px (6px hidden)'

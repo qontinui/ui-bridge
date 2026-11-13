@@ -597,11 +597,13 @@ function evalTextFits(a: Of<'text_fits_container'>, byId: Map<string, MeasuredEl
   let vertical: 'measured' | 'estimated' | 'unmeasured' = 'unmeasured';
   if (sh !== undefined) {
     if (sh > box.h) {
+      // Named by its size alone, as vision-core names it: a vertical overflow
+      // hides whole lines, so the text says nothing about what was cut. Only
+      // the horizontal detail echoes it.
       return fail(
         a,
         `text overflows vertically: content is ${px(sh)}px tall but the box is only ` +
-          `${px(box.h)}px (${px(sh - box.h)}px hidden). Text: ` +
-          echoText(el.text)
+          `${px(box.h)}px (${px(sh - box.h)}px hidden)`
       );
     }
     vertical = 'measured';
