@@ -253,8 +253,16 @@ function installRelayGuard(): void {
   };
 
   relayPrototype.unregisterWebSocketClient = function (this: CommandRelay, clientId: string) {
+    // By prefix, as `destroy()` closes them: the WebSocket client registry is
+    // prefix-shared, so unregistering through a sibling relay on the same
+    // prefix removes a client registered through this one.
+    const prefix = relayPrefix(this);
     for (const transport of relayTransports) {
-      if (transport.door === 'ws' && transport.relay === this && transport.clientId === clientId) {
+      if (
+        transport.door === 'ws' &&
+        transport.clientId === clientId &&
+        relayPrefix(transport.relay) === prefix
+      ) {
         transport.closed = true;
       }
     }

@@ -420,9 +420,6 @@ export class CommandRelay {
    */
   private readonly bus: RelayBus | null;
 
-  // Cleanup interval handle
-  private cleanupInterval: ReturnType<typeof setInterval> | null = null;
-
   /**
    * Connection readiness gate. Both halves live on `globalThis` under the
    * prefix and are read there every time, never cached on the instance: a
@@ -594,7 +591,6 @@ export class CommandRelay {
         }
       }, this.pruneSweepIntervalMs);
     }
-    this.cleanupInterval = g[intervalKey];
   }
 
   // --------------------------------------------------------------------------
@@ -2074,10 +2070,15 @@ export class CommandRelay {
       };
     }
 
-    // Proactive snapshot capture
+    // Proactive snapshot capture. Both the capture and the retry ask whether
+    // the registered listener is still THIS stream, not merely whether the
+    // tab has one: a warm-up settled by `destroy()`, or by a newer stream
+    // replacing this one, must not send a duplicate `getControlSnapshot` down
+    // the newer stream for the same tab.
+    const isOwnStream = (): boolean => this.tabListeners.get(id)?.streamId === streamId;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     const captureSnapshot = async (): Promise<boolean> => {
-      if (!this.tabListeners.has(id)) return false;
+      if (!isOwnStream()) return false;
       try {
         const result = await this.queueCommand<ControlSnapshot>(
           'getControlSnapshot',
@@ -2101,7 +2102,7 @@ export class CommandRelay {
     const proactiveTimer = this.armTimer(async () => {
       if (!this.proactiveSnapshot) return;
       const captured = await captureSnapshot();
-      if (!captured && this.tabListeners.has(id)) {
+      if (!captured && isOwnStream()) {
         retryTimer = this.armTimer(() => void captureSnapshot(), 1500);
       }
     }, 500);
@@ -2649,7 +2650,6 @@ export class CommandRelay {
     const sweep = g[intervalKey] as ReturnType<typeof setInterval> | undefined;
     if (sweep) clearInterval(sweep);
     delete g[intervalKey];
-    this.cleanupInterval = null;
 
     for (const entry of this.wsClients.values()) {
       if (entry.snapshotTimer) clearTimeout(entry.snapshotTimer);
