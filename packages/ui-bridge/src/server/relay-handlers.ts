@@ -213,6 +213,51 @@ function isRelayFindRefusal(result: unknown): boolean {
   return typeof refusal === 'object' && refusal !== null && !Array.isArray(refusal);
 }
 
+/** The projection options a request named, quoted for a refusal's message. */
+function projectionOptionsOf(projection: ElementProjectionRequest): string {
+  return [
+    ...(projection.properties ? ['`properties`'] : []),
+    ...(projection.attributes ? ['`attributes`'] : []),
+  ].join(' / ');
+}
+
+/** Does `answer` (a state, or one find row) carry a `projection` object? */
+function carriesProjection(answer: unknown): boolean {
+  if (answer === null || typeof answer !== 'object') return false;
+  const projection = (answer as { projection?: unknown }).projection;
+  return typeof projection === 'object' && projection !== null && !Array.isArray(projection);
+}
+
+/** Does any row a find answered lack the projection the request asked for? */
+function anyRowLacksProjection(answer: unknown): boolean {
+  const rows =
+    answer !== null && typeof answer === 'object'
+      ? (answer as { elements?: unknown }).elements
+      : undefined;
+  return Array.isArray(rows) && rows.some((row) => !carriesProjection(row));
+}
+
+/**
+ * The refusal for a LIVE answer that lacks the projection its request asked
+ * for. The relay validated the request and the tab answered it, but without a
+ * `projection`: the page runs a UI Bridge SDK that predates the request-scoped
+ * projection (`core/element-projection.ts`), so its dispatcher ignored
+ * `properties` / `attributes`. Passing that answer on as a success would hand
+ * the caller a state, or rows, that silently lack every value asked for — the
+ * answer the cache arm is refused for too. Typed, as that one is.
+ */
+function projectionMissingFromLiveAnswer(
+  what: string,
+  projection: ElementProjectionRequest
+): APIResponse<never> {
+  return error(
+    `${what}: the tab answered without the requested ${projectionOptionsOf(projection)}: ` +
+      'its UI Bridge SDK predates the request-scoped projection and ignores them. Load an SDK ' +
+      'build that serves the projection in the page, or ask without those options.',
+    'UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD'
+  );
+}
+
 /** Maximum allowed response size for fallback screenshots (10 MB) */
 const MAX_SCREENSHOT_RESPONSE_BYTES = 10 * 1024 * 1024;
 
@@ -1169,7 +1214,16 @@ export function createRelayHandlers(
       // P0 (plan 2026-06-12 item 1): a PINNED read must never fall back to
       // the shared cross-tab cache — propagate the routing/timeout error.
       if (targetTabId !== undefined) {
-        return relayCommand('getElementState', payload, { targetTabId, ...liveOpts });
+        const pinned = await relayCommand('getElementState', payload, {
+          targetTabId,
+          ...liveOpts,
+        });
+        // A live answer that lacks the projection asked for came from a tab
+        // whose SDK predates it — see `projectionMissingFromLiveAnswer`.
+        if (projection && pinned.success && !carriesProjection(pinned.data)) {
+          return projectionMissingFromLiveAnswer(`Element state for ${id}`, projection);
+        }
+        return pinned;
       }
 
       // Live first, and a LIVE answer is the answer, under the rule
@@ -1188,6 +1242,9 @@ export function createRelayHandlers(
         const result = await relay.queueCommand('getElementState', payload, liveOpts);
         const innerFailure = readRelayInnerFailure(result);
         if (innerFailure) return relayInnerFailureResponse(innerFailure, result);
+        if (projection && !carriesProjection(result)) {
+          return projectionMissingFromLiveAnswer(`Element state for ${id}`, projection);
+        }
         return success(result);
       } catch (e) {
         const cause = noLiveAnswerCause('getElementState', e);
@@ -1200,7 +1257,7 @@ export function createRelayHandlers(
       if (projection) {
         return error(
           `Element state for ${id}: the relay's cached snapshot carries no DOM node, so it ` +
-            `cannot read the requested \`properties\` / \`attributes\` (no live answer: ${noLiveAnswer})`,
+            `cannot read the requested ${projectionOptionsOf(projection)} (no live answer: ${noLiveAnswer})`,
           'UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD'
         );
       }
@@ -1426,14 +1483,22 @@ export function createRelayHandlers(
       // A malformed projection (`properties` / `attributes`) is refused HERE,
       // before anything is queued. The tab's canonical filter would refuse it
       // too, but a request that can only be refused never has to reach a tab.
+      let projection: ElementProjectionRequest | undefined;
       try {
-        parseProjectionRequest(payload, 'body');
+        projection = parseProjectionRequest(payload, 'body');
       } catch (err) {
         if (isProjectionRequestError(err)) return error(`find ${err.message}`, err.code);
         throw err;
       }
       const result = await relayCommand<FindResponse>('find', payload, { targetTabId, context });
-      if (result.success) return result;
+      if (result.success) {
+        // A live answer whose rows lack the projection asked for came from a
+        // tab whose SDK predates it — see `projectionMissingFromLiveAnswer`.
+        if (projection && anyRowLacksProjection(result.data)) {
+          return projectionMissingFromLiveAnswer('find', projection);
+        }
+        return result;
+      }
       // The browser ANSWERED with a typed refusal (a request the canonical
       // filter will not honour, carrying `refusal`): it would refuse it over
       // the cache too, so that is the answer, and falling back would replace a
@@ -1463,7 +1528,15 @@ export function createRelayHandlers(
           payload
         ));
       } catch (err) {
-        if (isFindRefusalError(err)) return error(err.message, err.code);
+        // The cache was consulted because the live find failed: a refusal the
+        // cache raises (a projection, `root` or `selector` over rows with no
+        // DOM node, …) names that cause too, as `getElementState`'s does.
+        if (isFindRefusalError(err)) {
+          return error(
+            `${err.message} (no live answer: ${result.error ?? 'the live find failed'})`,
+            err.code
+          );
+        }
         throw err;
       }
       const _meta = staleMeta(scope);
