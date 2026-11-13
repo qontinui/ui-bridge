@@ -466,6 +466,28 @@ describe.each(transports)('the $name transport', ({ mount }) => {
       });
     });
 
+    it.each([
+      ['null', null, 'null'],
+      ['a number', 42, 'number'],
+      ['an array', ['save'], 'an array'],
+    ])(
+      'refuses a batch entry that is %s with an error envelope — never a made-up failure',
+      async (_label, entry, got) => {
+        await mount();
+        const reply = await post('/ai/assert/batch', {
+          skipSettle: true,
+          mode: 'all',
+          assertions: [{ target: 'save', type: 'exists' }, entry],
+        });
+        expect(reply.success).toBe(false);
+        expect(reply.error).toContain(
+          `assertions[1] must be an assertion object or a natural-language string, got ${got}`
+        );
+        // Nothing ran: no result for the malformed entry, nor for the good one.
+        expect(reply.data?.results).toBeUndefined();
+      }
+    );
+
     it('a single assertion reads through the projection and keeps its message', async () => {
       await mount();
       const reply = await post('/ai/assert', {
