@@ -26,6 +26,12 @@ export interface RgbaColor {
    * `oklch`/`oklab`) and its channels were clamped to fit.
    */
   outOfGamut?: boolean;
+  /**
+   * Out-of-gamut colours only: the unclamped linear-light sRGB channels
+   * (outside 0–1). Two wide-gamut spellings of one colour share these where
+   * their clamped hex cannot tell distinct colours apart.
+   */
+  linear?: [number, number, number];
 }
 
 /**
@@ -169,7 +175,11 @@ const GAMUT_EPSILON = 1e-4;
  * clamped) plus whether clamping was needed: Lab → XYZ D50 → Bradford → XYZ
  * D65 → linear sRGB (CSS Color 4 sample code matrices).
  */
-function cssLabToRgb(L: number, a: number, b: number): [number, number, number, boolean] {
+function cssLabToRgb(
+  L: number,
+  a: number,
+  b: number
+): [number, number, number, boolean, [number, number, number]] {
   const kappa = 24389 / 27;
   const epsilon = 216 / 24389;
   const fy = (L + 16) / 116;
@@ -188,14 +198,24 @@ function cssLabToRgb(L: number, a: number, b: number): [number, number, number, 
     0.05563007969699366 * x - 0.20397695888897652 * y + 1.0569715142428786 * z,
   ];
   const outOfGamut = linear.some((v) => v < -GAMUT_EPSILON || v > 1 + GAMUT_EPSILON);
-  return [encodeSrgb(linear[0]), encodeSrgb(linear[1]), encodeSrgb(linear[2]), outOfGamut];
+  return [
+    encodeSrgb(linear[0]),
+    encodeSrgb(linear[1]),
+    encodeSrgb(linear[2]),
+    outOfGamut,
+    linear as [number, number, number],
+  ];
 }
 
 /**
  * OKLab → sRGB (0–255, clamped to gamut) plus whether clamping was needed.
  * Björn Ottosson's published matrices.
  */
-function oklabToRgb(L: number, a: number, b: number): [number, number, number, boolean] {
+function oklabToRgb(
+  L: number,
+  a: number,
+  b: number
+): [number, number, number, boolean, [number, number, number]] {
   const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
   const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
   const s_ = L - 0.0894841775 * a - 1.291485548 * b;
@@ -208,7 +228,13 @@ function oklabToRgb(L: number, a: number, b: number): [number, number, number, b
     -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s,
   ];
   const outOfGamut = linear.some((v) => v < -GAMUT_EPSILON || v > 1 + GAMUT_EPSILON);
-  return [encodeSrgb(linear[0]), encodeSrgb(linear[1]), encodeSrgb(linear[2]), outOfGamut];
+  return [
+    encodeSrgb(linear[0]),
+    encodeSrgb(linear[1]),
+    encodeSrgb(linear[2]),
+    outOfGamut,
+    linear as [number, number, number],
+  ];
 }
 
 function parseHex(hex: string): RgbaColor | null {
@@ -290,16 +316,16 @@ export function parseColor(input: string): RgbaColor | null {
       const h = hueOf(c2);
       if (L === null || C === null || h === null) return null;
       const rad = (h * Math.PI) / 180;
-      const [r, g, b, outOfGamut] = oklabToRgb(L, C * Math.cos(rad), C * Math.sin(rad));
-      return outOfGamut ? { r, g, b, a, outOfGamut } : { r, g, b, a };
+      const [r, g, b, outOfGamut, linear] = oklabToRgb(L, C * Math.cos(rad), C * Math.sin(rad));
+      return outOfGamut ? { r, g, b, a, outOfGamut, linear } : { r, g, b, a };
     }
     case 'lab': {
       const L = channel(c0, 100);
       const A = channel(c1, 125);
       const B = channel(c2, 125);
       if (L === null || A === null || B === null) return null;
-      const [r, g, b, outOfGamut] = cssLabToRgb(L, A, B);
-      return outOfGamut ? { r, g, b, a, outOfGamut } : { r, g, b, a };
+      const [r, g, b, outOfGamut, linear] = cssLabToRgb(L, A, B);
+      return outOfGamut ? { r, g, b, a, outOfGamut, linear } : { r, g, b, a };
     }
     case 'lch': {
       const L = channel(c0, 100);
@@ -307,16 +333,16 @@ export function parseColor(input: string): RgbaColor | null {
       const h = hueOf(c2);
       if (L === null || C === null || h === null) return null;
       const rad = (h * Math.PI) / 180;
-      const [r, g, b, outOfGamut] = cssLabToRgb(L, C * Math.cos(rad), C * Math.sin(rad));
-      return outOfGamut ? { r, g, b, a, outOfGamut } : { r, g, b, a };
+      const [r, g, b, outOfGamut, linear] = cssLabToRgb(L, C * Math.cos(rad), C * Math.sin(rad));
+      return outOfGamut ? { r, g, b, a, outOfGamut, linear } : { r, g, b, a };
     }
     case 'oklab': {
       const L = channel(c0, 1);
       const A = channel(c1, 0.4);
       const B = channel(c2, 0.4);
       if (L === null || A === null || B === null) return null;
-      const [r, g, b, outOfGamut] = oklabToRgb(L, A, B);
-      return outOfGamut ? { r, g, b, a, outOfGamut } : { r, g, b, a };
+      const [r, g, b, outOfGamut, linear] = oklabToRgb(L, A, B);
+      return outOfGamut ? { r, g, b, a, outOfGamut, linear } : { r, g, b, a };
     }
     default:
       return null;
@@ -334,6 +360,39 @@ export function toCanonicalHex(color: RgbaColor): string {
   const base = `#${hex2(color.r)}${hex2(color.g)}${hex2(color.b)}`;
   const alpha = Math.round(clamp(color.a, 0, 1) * 255);
   return alpha >= 255 ? base : `${base}${hex2(alpha)}`;
+}
+
+/** Decimal places of a wide-gamut key's channels. */
+const WIDE_GAMUT_PLACES = 4;
+/** Channel difference within which two wide-gamut keys name one colour. */
+const WIDE_GAMUT_TOLERANCE = 0.0015;
+
+/**
+ * The unclamped identity of an out-of-gamut colour, as a CSS colour:
+ * `color(srgb-linear r g b / a)` with channels outside 0–1. `null` for a
+ * colour inside sRGB, whose canonical hex already identifies it.
+ */
+export function wideGamutKey(color: RgbaColor): string | null {
+  if (!color.outOfGamut || !color.linear) return null;
+  const [r, g, b] = color.linear.map((n) => {
+    const v = Number(n.toFixed(WIDE_GAMUT_PLACES));
+    return Object.is(v, -0) ? 0 : v;
+  });
+  const a = Number(clamp(color.a, 0, 1).toFixed(3));
+  return `color(srgb-linear ${r} ${g} ${b} / ${a})`;
+}
+
+/** Whether two `wideGamutKey`s name one colour (channels within 0.0015, alpha equal). */
+export function sameWideGamutKey(a: string, b: string): boolean {
+  const nums = (k: string): number[] | null => {
+    const m = /^color\(srgb-linear (\S+) (\S+) (\S+) \/ (\S+)\)$/.exec(k);
+    return m ? m.slice(1).map(Number) : null;
+  };
+  const na = nums(a);
+  const nb = nums(b);
+  if (!na || !nb || na.some(isNaN) || nb.some(isNaN)) return false;
+  if (na[3] !== nb[3]) return false;
+  return [0, 1, 2].every((i) => Math.abs(na[i] - nb[i]) <= WIDE_GAMUT_TOLERANCE);
 }
 
 /** Parse and canonicalise in one step; `null` when the input is not understood. */

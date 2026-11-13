@@ -42,7 +42,7 @@ function toCssValue(value: unknown): string {
 /**
  * Any RN style value as a string. Strings pass through; numbers and booleans
  * are stringified (`fontWeight: 700` → `"700"`); an object — `PlatformColor`,
- * `DynamicColorIOS` — becomes its JSON, which no CSS parser reads, so
+ * `DynamicColorIOS` — becomes `native(<its JSON>)`, which no CSS parser reads, so
  * consumers keep it verbatim (inference counts it unnormalised) instead of
  * throwing on a non-string.
  */
@@ -51,7 +51,10 @@ function toCssString(value: unknown, fallback = ''): string {
   if (typeof value === 'string') return value;
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
   try {
-    return JSON.stringify(value) ?? fallback;
+    const json = JSON.stringify(value);
+    // Wrapped in parentheses so a comma inside the JSON never splits a
+    // shadow or border list at the top level.
+    return json === undefined ? fallback : `native(${json})`;
   } catch {
     return fallback;
   }

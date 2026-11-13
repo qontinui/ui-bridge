@@ -192,10 +192,38 @@ describe('one colour-matching rule', () => {
     expect(styleValuesEquivalent(wide, canonicalColor(wide)!, 'color')).toBe(false);
   });
 
-  it('canonicalColorsMatch refuses either side out of gamut and differing alpha', () => {
-    expect(canonicalColorsMatch('#3b82f6', false, '#3b82f6', true)).toBe(false);
-    expect(canonicalColorsMatch('#3b82f680', false, '#3b82f6', false)).toBe(false);
-    expect(canonicalColorsMatch('#3b82f6', false, '#3b82f6', false)).toBe(true);
+  it('canonicalColorsMatch compares wide-gamut identities, never a clamped hex', () => {
+    const key = 'color(srgb-linear 1.1 0.5 -0.02 / 1)';
+    expect(canonicalColorsMatch('#3b82f6', null, '#3b82f6', key)).toBe(false);
+    expect(canonicalColorsMatch('#ffbb00', key, '#ffbb00', key)).toBe(true);
+    expect(
+      canonicalColorsMatch('#ffbb00', key, '#ffbb00', 'color(srgb-linear 1.2 0.5 -0.02 / 1)')
+    ).toBe(false);
+    expect(canonicalColorsMatch('#3b82f680', null, '#3b82f6', null)).toBe(false);
+    expect(canonicalColorsMatch('#3b82f6', null, '#3b82f6', null)).toBe(true);
+  });
+
+  it('a wide-gamut token used verbatim matches its own use, in drift and the validator', () => {
+    const inv = buildStyleInventory([el('a', { color: 'oklch(0.723 0.219 149.579)' })]);
+    expect(inv.entries.colors[0].outOfGamut).toBe(true);
+    const report = computeTokenDrift(inv, {
+      customProperties: { '--color-green-500': 'oklch(72.3% 0.219 149.579)' },
+    });
+    expect(report.verdict).toBe('no-drift');
+    expect(report.categories.colors.matched).toBe(1);
+    expect(report.unused).toEqual([]);
+    expect(
+      styleValuesEquivalent('oklch(0.723 0.219 149.579)', 'oklch(72.3% 0.219 149.579)', 'color')
+    ).toBe(true);
+  });
+
+  it('an entry merging two distinct wide-gamut colours matches neither', () => {
+    const a = 'oklch(0.95 0.4 150)';
+    const b = 'oklch(0.95 0.37 140)';
+    const inv = buildStyleInventory([el('x', { color: a }), el('y', { color: b })]);
+    expect(inv.entries.colors).toHaveLength(1);
+    expect(inv.entries.colors[0].wideGamutSources).toHaveLength(2);
+    expect(computeTokenDrift(inv, { tokens: { colors: { a } } }).verdict).toBe('drift');
   });
 });
 
@@ -235,5 +263,45 @@ describe('flat-map length tokens', () => {
     expect(lengthCategoryOfName('--text-sm')).toBe('fontSizes');
     expect(lengthCategoryOfName('--text-gap')).toBeUndefined();
     expect(lengthCategoryOfName('--size-2')).toBeUndefined();
+  });
+});
+
+// Second review round.
+describe('uncompared categories are never no-drift', () => {
+  it('an ambiguous length leaving a category uncompared makes a clean result unknown', () => {
+    const inv = buildStyleInventory([el('a', { color: 'rgb(59, 130, 246)', paddingTop: '13px' })]);
+    const report = computeTokenDrift(inv, {
+      customProperties: { '--brand': '#3b82f6', '--size-4': '16px' },
+    });
+    expect(report.categories.colors.status).toBe('compared');
+    expect(report.categories.spacing).toMatchObject({
+      status: 'no-declared-tokens',
+      ambiguousDeclared: 1,
+    });
+    expect(report.verdict).toBe('unknown');
+    expect(report.reason).toMatch(/spacing values/);
+  });
+
+  it('a flat-map length named for a category that fails to resolve counts there', () => {
+    const inv = buildStyleInventory([el('a', { color: 'rgb(59, 130, 246)', paddingTop: '13px' })]);
+    const report = computeTokenDrift(inv, {
+      customProperties: {
+        '--brand': '#3b82f6',
+        '--space-4': 'calc(1px * var(--missing))',
+        '--text-primary': 'var(--missing)',
+      },
+    });
+    expect(report.categories.spacing.unresolvedDeclared).toBe(1);
+    expect(report.categories.fontSizes.unresolvedDeclared).toBe(0);
+    expect(report.unresolvedUncategorised).toBe(1);
+    expect(report.verdict).toBe('unknown');
+  });
+});
+
+describe('a native object colour inside a shadow', () => {
+  it('is one layer: commas inside native(...) do not split the list', () => {
+    expect(normalizeShadow('0px 1px 2px native({"semantic":["a","b"]})')).toBe(
+      '0px 1px 2px 0px native({"semantic":["a","b"]})'
+    );
   });
 });

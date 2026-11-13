@@ -35,7 +35,14 @@
  * Pure: no DOM access. The DOM collection lives in `./style-inference-request`.
  */
 
-import { canonicalColor, colorDistance, parseColor, toCanonicalHex } from './style-color';
+import {
+  canonicalColor,
+  colorDistance,
+  parseColor,
+  sameWideGamutKey,
+  toCanonicalHex,
+  wideGamutKey,
+} from './style-color';
 import { STYLE_GUIDE_VERSION, type DesignTokens, type StyleGuideConfig } from './style-types';
 
 // ============================================================================
@@ -400,6 +407,13 @@ export interface InventoryEntry {
    */
   outOfGamut?: true;
   /**
+   * With `outOfGamut` only: the distinct sources clamped into this entry — each
+   * wide-gamut one as its unclamped `color(srgb-linear …)` identity, an in-gamut
+   * one as its hex. Sorted. A wide-gamut token matches the entry only when every
+   * source is that same colour.
+   */
+  wideGamutSources?: string[];
+  /**
    * Font-relative categories (line height, letter spacing) only: the distinct
    * px values that rendered this ratio, sorted — all of them in the full
    * inventory, at most 10 in an inferred guide's inventory.
@@ -439,6 +453,8 @@ interface Accumulator {
   properties: Set<string>;
   normalized: boolean;
   outOfGamut: boolean;
+  /** Each source's wide-gamut key, or its hex when it was in gamut (colours only). */
+  gamutSources: Set<string>;
   px: Set<string>;
 }
 
@@ -614,7 +630,7 @@ export function buildStyleInventory(
       property: string,
       normalized = true,
       px?: string,
-      outOfGamut = false
+      gamutKey?: string | null
     ): void => {
       if (!normalized) unnormalized[category]++;
       const map = acc[category];
@@ -627,6 +643,7 @@ export function buildStyleInventory(
           properties: new Set(),
           normalized,
           outOfGamut: false,
+          gamutSources: new Set(),
           px: new Set(),
         };
         map.set(value, entry);
@@ -635,7 +652,10 @@ export function buildStyleInventory(
       entry.elements.add(id);
       entry.properties.add(property);
       if (px) entry.px.add(px);
-      if (outOfGamut) entry.outOfGamut = true;
+      if (gamutKey !== undefined) {
+        entry.gamutSources.add(gamutKey ?? value);
+        if (gamutKey !== null) entry.outOfGamut = true;
+      }
     };
 
     const addColor = (raw: string | undefined, property: string): void => {
@@ -652,7 +672,7 @@ export function buildStyleInventory(
         excludedDefaults.colors++;
         return;
       }
-      add('colors', hex, property, true, undefined, parsed.outOfGamut === true);
+      add('colors', hex, property, true, undefined, wideGamutKey(parsed));
     };
 
     // Colours: text and background.
@@ -839,7 +859,10 @@ export function buildStyleInventory(
         matchingCustomProperties: matching,
         normalized: r.acc.normalized,
       };
-      if (r.acc.outOfGamut) entry.outOfGamut = true;
+      if (r.acc.outOfGamut) {
+        entry.outOfGamut = true;
+        entry.wideGamutSources = [...r.acc.gamutSources].sort();
+      }
       if (category === 'lineHeights' || category === 'letterSpacings') {
         // Uncapped here: drift matches px tokens against every spelling. The
         // guide's inventory caps the list (inferStyleGuideFromInventory).
@@ -1001,8 +1024,8 @@ interface ResolvedToken {
   categories: StyleCategory[];
   kind: TokenKind;
   key: string;
-  /** Colours only: the declared value lay outside sRGB and was clamped to `key`. */
-  outOfGamut?: boolean;
+  /** Colours only: the unclamped identity of a declared value outside sRGB (`wideGamutKey`). */
+  wideGamutKey?: string;
   /**
    * A flat-map length whose name does not say which length category it is for
    * (`categoriesInferred`): it may match values in any of them, but never makes
@@ -1015,7 +1038,11 @@ export interface UnresolvedToken {
   token: string;
   value: string;
   reason: string;
-  /** The category a structured (`tokens`) entry belongs to; absent for a flat-map entry of unknown kind. */
+  /**
+   * The category a structured (`tokens`) entry belongs to, or the length
+   * category a flat-map entry's name places it in (`lengthCategoryOfName`);
+   * absent for a flat-map entry its name does not place.
+   */
   category?: StyleCategory;
 }
 
@@ -1065,20 +1092,27 @@ export const COLOR_MATCH_DELTA_E = 0.5;
  * validator (`styleValuesEquivalent`) both use it, so an audit and a drift
  * report never disagree about whether a colour is a token's.
  *
- * Two canonical colours are the same when neither came from outside the sRGB
- * gamut, and either their hex is equal or their alpha is equal and their
- * CIEDE2000 distance is below `COLOR_MATCH_DELTA_E` (the 8-bit rounding a
- * declared `oklch` and a computed `oklab` differ by). An out-of-gamut colour
- * never matches: clamping merges distinct wide-gamut colours into one hex, and
- * that must not turn a mismatch into a match.
+ * Each side is its canonical hex plus, for a colour outside the sRGB gamut,
+ * its unclamped identity (`wideGamutKey`; `null` inside the gamut).
+ *
+ * - Both inside sRGB: the same when their hex is equal, or their alpha is equal
+ *   and their CIEDE2000 distance is below `COLOR_MATCH_DELTA_E` (the 8-bit
+ *   rounding a declared `oklch` and a computed `oklab` differ by).
+ * - Either outside: the same only when both are outside and their unclamped
+ *   identities agree (`sameWideGamutKey`). The clamped hex is never compared:
+ *   clamping merges distinct wide-gamut colours into one hex, and that must not
+ *   turn a mismatch into a match — but a wide-gamut token used verbatim (a
+ *   Tailwind v4 `oklch` palette) still matches its own use.
  */
 export function canonicalColorsMatch(
   a: string,
-  aOutOfGamut: boolean,
+  aWideGamut: string | null,
   b: string,
-  bOutOfGamut: boolean
+  bWideGamut: string | null
 ): boolean {
-  if (aOutOfGamut || bOutOfGamut) return false;
+  if (aWideGamut !== null || bWideGamut !== null) {
+    return aWideGamut !== null && bWideGamut !== null && sameWideGamutKey(aWideGamut, bWideGamut);
+  }
   if (a === b) return true;
   // ΔE ignores alpha: a 50%-alpha blue is not the opaque blue token.
   if (alphaOf(a) !== alphaOf(b)) return false;
@@ -1109,8 +1143,9 @@ export interface UndeclaredValue {
   nearMiss: boolean;
   /**
    * Colours only: present (true) when the value lay outside sRGB and was
-   * clamped. An out-of-gamut colour never matches a token (the one colour rule,
-   * `canonicalColorsMatch`), so it is listed here even when its hex equals one.
+   * clamped. Its clamped hex is never compared (the one colour rule,
+   * `canonicalColorsMatch`), so it is listed here even when that hex equals a
+   * token's; only a token naming the same wide-gamut colour matches it.
    */
   outOfGamut?: true;
 }
@@ -1154,6 +1189,12 @@ export interface CategoryDrift {
   /** In-use values matched by a token. */
   matched: number;
   undeclaredInUse: number;
+  /**
+   * Unused tokens listed under this category (`truncation.unused`). A token
+   * covering several categories is listed under its first — an unused
+   * ambiguous flat-map length under `fontSizes` — so this may count tokens
+   * `ambiguousDeclared` holds rather than `declared`.
+   */
   unusedDeclared: number;
   /** Structured tokens of this category that could not be compared (see `unresolved`). */
   unresolvedDeclared: number;
@@ -1187,8 +1228,8 @@ export interface TokenDriftReport {
   /** Declared motion values (durations, easings) skipped: computed styles carry no such value. */
   ignoredDeclared: number;
   /**
-   * Unresolved flat-map tokens whose kind could not be classified, so no
-   * category's `unresolvedDeclared` counts them. With the per-category counts
+   * Unresolved flat-map tokens whose name does not place them in a category,
+   * so no category's `unresolvedDeclared` counts them. With the per-category counts
    * this sums to `unresolved.length`.
    */
   unresolvedUncategorised: number;
@@ -1199,6 +1240,9 @@ export interface TokenDriftReport {
 }
 
 const LENGTH_CATEGORIES: StyleCategory[] = ['fontSizes', 'spacing', 'borderRadius'];
+
+/** A value that reads as a length, or a length expression: `0`, `4px`, `calc(1rem * var(--k))`. */
+const LENGTH_SHAPED = /^(?:[-+]?0*\.?0+|.*\d(?:px|rem|em|%)(?![a-z]).*|calc\(.*)$/i;
 
 /**
  * Name segments that say which length category a custom property is for,
@@ -1325,7 +1369,14 @@ function resolveTokens(
   let ignoredDeclared = 0;
 
   const unresolve = (token: string, value: string, reason: string): void => {
-    const category = categoryOfTokenPath(token);
+    // A structured path names its category. A flat-map name may (`--space-4`),
+    // but only for a value shaped like a length: `--text-primary:
+    // var(--missing)` is likelier a colour than a font size.
+    const category = token.startsWith('--')
+      ? LENGTH_SHAPED.test(value.trim())
+        ? lengthCategoryOfName(token)
+        : undefined
+      : categoryOfTokenPath(token);
     unresolved.push(category ? { token, value, reason, category } : { token, value, reason });
   };
 
@@ -1393,7 +1444,7 @@ function resolveTokens(
           categories: ['colors'],
           kind: 'color',
           key,
-          ...(parsed?.outOfGamut ? { outOfGamut: true } : {}),
+          ...(parsed && wideGamutKey(parsed) ? { wideGamutKey: wideGamutKey(parsed)! } : {}),
         });
     }
     const ty = t.typography ?? {};
@@ -1556,7 +1607,7 @@ function resolveTokens(
         categories: ['colors'],
         kind: 'color',
         key: toCanonicalHex(parsedColor),
-        ...(parsedColor.outOfGamut ? { outOfGamut: true } : {}),
+        ...(wideGamutKey(parsedColor) ? { wideGamutKey: wideGamutKey(parsedColor)! } : {}),
       });
       continue;
     }
@@ -1651,6 +1702,20 @@ function resolveTokens(
   return { resolved, unresolved, notComparable, ignoredDeclared };
 }
 
+/**
+ * An entry's colour identity for `canonicalColorsMatch`: `null` for an
+ * in-gamut entry, the shared wide-gamut key when every source clamped into it
+ * is one wide-gamut colour, and `false` (matches nothing) when it merges
+ * distinct colours under one clamped hex.
+ */
+function entryColorIdentity(entry: InventoryEntry): string | null | false {
+  if (!entry.outOfGamut) return null;
+  const sources = entry.wideGamutSources ?? [];
+  const first = sources[0];
+  if (first === undefined || !first.startsWith('color(')) return false;
+  return sources.every((k) => sameWideGamutKey(first, k)) ? first : false;
+}
+
 /** Whether a token matches an inventory entry exactly. */
 function tokenMatches(
   token: ResolvedToken,
@@ -1665,11 +1730,12 @@ function tokenMatches(
     case 'color':
       return (
         entry.normalized &&
+        entryColorIdentity(entry) !== false &&
         canonicalColorsMatch(
           entry.value,
-          entry.outOfGamut === true,
+          entryColorIdentity(entry) as string | null,
           token.key,
-          token.outOfGamut === true
+          token.wideGamutKey ?? null
         )
       );
     default:
@@ -1910,6 +1976,14 @@ export function computeTokenDrift(
   const unresolvedCovered = STYLE_CATEGORIES.filter(
     (c) => categories[c].status === 'no-declared-tokens' && categories[c].unresolvedDeclared > 0
   );
+  // Likewise a category whose only tokens are ambiguous flat-map lengths: the
+  // set may have meant to cover it, and its values went uncompared.
+  const ambiguousCovered = STYLE_CATEGORIES.filter(
+    (c) =>
+      categories[c].status === 'no-declared-tokens' &&
+      categories[c].unresolvedDeclared === 0 &&
+      categories[c].ambiguousDeclared > 0
+  );
   const ambiguousTokens = resolved.filter((t) => t.ambiguous).length;
   let verdict: DriftVerdict;
   let reason: string | undefined;
@@ -1934,13 +2008,22 @@ export function computeTokenDrift(
         : '');
   } else if (compared.some((c) => categories[c].undeclaredInUse > 0)) {
     verdict = 'drift';
-  } else if (unresolvedCovered.length > 0) {
+  } else if (unresolvedCovered.length > 0 || ambiguousCovered.length > 0) {
     verdict = 'unknown';
-    reason =
-      `every compared value matched, but ${unresolvedCovered
-        .map((c) => CATEGORY_LABEL[c])
-        .join(', ')} ` +
-      'had values in use and declared tokens none of which could be resolved, so they were not compared';
+    const parts: string[] = [];
+    if (unresolvedCovered.length > 0) {
+      parts.push(
+        `${unresolvedCovered.map((c) => CATEGORY_LABEL[c]).join(', ')} had values in use and ` +
+          'declared tokens none of which could be resolved'
+      );
+    }
+    if (ambiguousCovered.length > 0) {
+      parts.push(
+        `${ambiguousCovered.map((c) => CATEGORY_LABEL[c]).join(', ')} had values in use and only ` +
+          'custom-property lengths whose names do not say which category they are for'
+      );
+    }
+    reason = `every compared value matched, but ${parts.join('; and ')}, so they were not compared`;
   } else {
     verdict = 'no-drift';
   }
@@ -1996,9 +2079,9 @@ export function styleValuesEquivalent(
   if (pa !== null && pe !== null) {
     return canonicalColorsMatch(
       toCanonicalHex(pa),
-      pa.outOfGamut === true,
+      wideGamutKey(pa),
       toCanonicalHex(pe),
-      pe.outOfGamut === true
+      wideGamutKey(pe)
     );
   }
 
