@@ -530,9 +530,12 @@ The same read backs the `ai/assert` style and attribute checks
 `outcome: "unmeasured"` with the reason in `unmeasured` — `passed` is `false`,
 so it never passes a gate. A batch counts it in `failedCount`, which counts
 every assertion that did not pass, and again in `unmeasuredCount`, the subset
-of those that could not read their value. A value a redaction boundary withholds is one of those
-(`not_attempted_by_policy`): `[REDACTED]` is never compared as the page's
-value.
+of those that could not read their value. A value a redaction boundary
+withholds is one of those (`not_attempted_by_policy`): `[REDACTED]` is never
+compared as the page's value. An `attribute` check of `placeholder` (not on the
+projection's allow-list) reads the element's live node, so an absent
+placeholder is a measured `null`; an element with no live node, or one no
+longer in the document, is unmeasured, never judged against nothing.
 
 ## 10. Address the elements a page hides from the registry
 

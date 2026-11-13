@@ -490,6 +490,24 @@ describe.each(transports)('the $name transport', ({ mount }) => {
       });
     });
 
+    it('a placeholder the live element does not carry is a measured absence, judged', async () => {
+      await mount();
+      const reply = await post('/ai/assert', {
+        skipSettle: true,
+        target: 'save',
+        type: 'attribute',
+        attributeName: 'placeholder',
+        expected: 'Order name',
+      });
+      expect(reply.success, reply.error).toBe(true);
+      expect(reply.data).toMatchObject({
+        outcome: 'failed',
+        passed: false,
+        actual: null,
+        failureReason: 'Attribute "placeholder" is absent but expected "Order name"',
+      });
+    });
+
     const NOT_AN_ASSERTION = 'must be an assertion object or a natural-language string, got';
     const NAMES_NOTHING = 'names nothing to check';
 

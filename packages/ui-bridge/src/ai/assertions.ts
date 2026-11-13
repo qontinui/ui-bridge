@@ -27,6 +27,7 @@ import {
   projectElement,
   type ElementProjectionRequest,
 } from '../core/element-projection';
+import { readPlaceholderAttr } from '../core/a11y';
 import { resolvePageSentinel } from '../core/page-sentinel';
 import { trustDeveloperContent, verdictFromState, verdictOf } from '../core/redaction';
 
@@ -1053,9 +1054,10 @@ export class AssertionExecutor {
   /**
    * Assert attribute value.
    *
-   * `placeholder` is read off the element's search projection, which drops it
-   * inside a redaction boundary (§4.6), so there the check is UNMEASURED by
-   * policy rather than compared with nothing. Every other name is read through
+   * `placeholder` is not on the projection's allow-list: `readPlaceholder`
+   * reads it off the live node, UNMEASURED by policy inside a redaction
+   * boundary (§4.6), and unmeasured, never compared with nothing, when there is
+   * no node in the document to read it from. Every other name is read through
    * the request-scoped projection (`core/element-projection.ts`) off the
    * element's live node — the same allow-list and the same scrub as
    * `/control/find`'s `attributes` — so an absent attribute is a measured
@@ -1073,17 +1075,18 @@ export class AssertionExecutor {
   ): AssertionResult {
     let actualValue: unknown;
     if (attributeName?.toLowerCase() === 'placeholder') {
-      if (this.contentRedacted(element)) {
+      const read = this.readPlaceholder(element);
+      if ('unmeasured' in read) {
         return this.unmeasuredResult(
           element,
           description,
           expectedValue,
           'attribute "placeholder"',
-          withheldByRedaction('attribute `placeholder`'),
+          read.unmeasured,
           startTime
         );
       }
-      actualValue = element.placeholder;
+      actualValue = read.value;
     } else {
       const read = this.readProjected(element, 'attribute', attributeName);
       if ('unmeasured' in read) {
@@ -1231,6 +1234,46 @@ export class AssertionExecutor {
         failureCode: 'UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD',
       },
     };
+  }
+
+  /**
+   * The `placeholder` an attribute check judges. It is not on the projection's
+   * allow-list, so it is read here by the projection's rules for an attribute:
+   * withheld by policy inside a redaction boundary (§4.6), read off the live
+   * node (so an absent placeholder is a measured `null`), and not read off a
+   * node out of the document, which can no longer see the boundary it sat in.
+   * An element with no node (one that crossed a wire) has nothing to read it
+   * from, and its search projection carries none, so the check is UNMEASURED
+   * rather than judged against `undefined`.
+   */
+  private readPlaceholder(
+    element: AIDiscoveredElement
+  ): { value: string | null } | { unmeasured: UnmeasuredRead } {
+    if (this.contentRedacted(element)) {
+      return { unmeasured: withheldByRedaction('attribute `placeholder`') };
+    }
+    const node = this.operandNodes.get(element) ?? this.liveNodes.get(element.id);
+    if (!node) {
+      return {
+        unmeasured: {
+          code: 'capability_unavailable_in_build',
+          detail:
+            'attribute `placeholder` not available: this element has no live DOM node to read it from',
+          failureCode: UNKNOWN_CODE_DIAGNOSTICS.capability_unavailable_in_build,
+        },
+      };
+    }
+    if (!node.isConnected) {
+      return {
+        unmeasured: {
+          code: 'input_missing',
+          detail:
+            'the element is not in the document, so the redaction boundary it sat in cannot be seen from it',
+          failureCode: UNKNOWN_CODE_DIAGNOSTICS.input_missing,
+        },
+      };
+    }
+    return { value: readPlaceholderAttr(node) };
   }
 
   /**
