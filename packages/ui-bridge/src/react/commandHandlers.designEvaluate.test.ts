@@ -52,13 +52,32 @@ function serverHandlers(): ReturnType<typeof createHandlers> {
   );
 }
 
+/**
+ * Every relay `relayHandlers()` opened, with its tab subscription's
+ * unsubscribe. Both arm timers (the relay its cleanup interval, the
+ * subscription its proactive-snapshot timeout) that would otherwise fire after
+ * the file's last test and log into a closing worker.
+ */
+const openRelays: Array<{ relay: CommandRelay; unsubscribe: () => void }> = [];
+
+/** Close every relay `relayHandlers()` opened: unsubscribe its tab, then destroy it. */
+function closeRelays(): void {
+  for (const { relay, unsubscribe } of openRelays.splice(0)) {
+    unsubscribe();
+    relay.destroy();
+  }
+}
+
 /** Relay handlers whose one tab answers every command with the real in-page dispatcher. */
 function relayHandlers(): ReturnType<typeof createRelayHandlers> {
   // Own globalThis-key prefix: CommandRelay persists state on globalThis.
+  // No warm-up snapshot: these tests do not exercise it, and it would land
+  // at a time no request chose.
   const relay = new CommandRelay({
     globalPrefix: `__uiBridgeTest_${Math.random().toString(36).slice(2, 10)}`,
+    proactiveSnapshot: false,
   });
-  relay.subscribeToCommands((command) => {
+  const unsubscribe = relay.subscribeToCommands((command) => {
     void executeCommand(
       command.action,
       command.payload as Record<string, unknown>,
@@ -68,6 +87,7 @@ function relayHandlers(): ReturnType<typeof createRelayHandlers> {
       (err: unknown) => relay.rejectCommand(command.commandId, String(err))
     );
   }, 'tab-a');
+  openRelays.push({ relay, unsubscribe });
   return createRelayHandlers(relay);
 }
 
@@ -105,8 +125,22 @@ describe('/design/evaluate family · relay and server answer with one model', ()
   });
 
   afterEach(() => {
+    closeRelays();
     container.remove();
     resetGlobalRegistry();
+  });
+
+  it('closes every relay it opens: no timer outlives the test', () => {
+    vi.useFakeTimers();
+    try {
+      relayHandlers();
+      // The relay's cleanup interval plus its subscription's proactive timeout.
+      expect(vi.getTimerCount()).toBe(2);
+      closeRelays();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('evaluateQuality: the same report, 28 metrics as values, no grade', async () => {
