@@ -608,6 +608,106 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     await page.close();
   }, 60_000);
 
+  it('contrast_meets_wcag: a pointer-events: none layer that paints a frame or generated content', async () => {
+    const page = await openPage(`
+      <style>
+        .sibpseudo::after { content: ""; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.6) }
+        .sibpseudomiss::after { content: ""; position: absolute; left: 600px; top: 0; width: 40px; height: 40px; background: rgba(0, 0, 0, 0.6) }
+        .sibpseudoflow::before { content: ""; display: block; height: 40px; background: rgba(0, 0, 0, 0.6) }
+        .sibclear::after { content: ""; position: absolute; inset: 0; border: 20px solid transparent }
+        .sibring::after { content: ""; position: absolute; inset: 0; border: 2px solid #c00 }
+        .hiddenhost::after { content: ""; position: absolute; inset: 0; visibility: visible; background: rgba(0, 0, 0, 0.6) }
+      </style>
+      <div style="position:relative;height:50px;background:#fff"><p data-id="peshadow" style="margin:0;color:#000">Under a click-through inset-shadow scrim</p><div class="peshadow" style="position:absolute;inset:0;pointer-events:none;box-shadow:inset 0 0 0 100px rgba(0,0,0,0.6)"></div></div>
+      <div style="position:relative;height:50px;background:#fff"><p data-id="peborder" style="margin:0;color:#000">Under a click-through layer's top border</p><div class="peborder" style="position:absolute;inset:0;pointer-events:none;border-top:20px solid rgba(255,0,0,0.5)"></div></div>
+      <div style="position:relative;height:50px;background:#fff;padding:12px"><p data-id="pering" style="margin:0;color:#000">Inside a click-through ring that does not reach it</p><div style="position:absolute;inset:0;pointer-events:none;box-shadow:inset 0 0 0 2px #c00"></div></div>
+      <div style="position:relative;height:50px;background:#fff"><p data-id="sibpseudo" style="margin:0;color:#000">Under a click-through layer's ::after scrim</p><div class="sibpseudo" style="position:absolute;inset:0;pointer-events:none"></div></div>
+      <div style="position:relative;height:50px;background:#fff"><p data-id="sibpseudomiss" style="margin:0;color:#000">Beside a click-through layer's ::after scrim</p><div class="sibpseudomiss" style="position:absolute;inset:0;pointer-events:none"></div></div>
+      <div style="position:relative;height:50px;background:#fff"><p data-id="sibpseudoflow" style="margin:0;color:#000">Under a click-through layer's ::before in normal flow</p><div class="sibpseudoflow" style="position:absolute;inset:0;pointer-events:none"></div></div>
+      <div style="position:relative;height:50px;background:#fff"><p data-id="sibclear" style="margin:0;color:#000">Under a click-through layer's transparent ::after</p><div class="sibclear" style="position:absolute;inset:0;pointer-events:none"></div></div>
+      <div style="position:relative;height:50px;background:#fff;padding:12px"><p data-id="sibring" style="margin:0;color:#000">Inside a click-through ::after ring that does not reach it</p><div class="sibring" style="position:absolute;inset:0;pointer-events:none"></div></div>
+      <div style="position:relative;height:50px;background:#fff"><p data-id="hiddenhost" style="margin:0;color:#000">Under a hidden click-through layer's visible ::after</p><div class="hiddenhost" style="position:absolute;inset:0;pointer-events:none;visibility:hidden"></div></div>
+    `);
+    const ids = [
+      'peshadow',
+      'peborder',
+      'pering',
+      'sibpseudo',
+      'sibpseudomiss',
+      'sibpseudoflow',
+      'sibclear',
+      'sibring',
+      'hiddenhost',
+    ];
+    const res = await assertOn(
+      page,
+      ids.map((element) => ({ type: 'contrast_meets_wcag', element }))
+    );
+    // The hit test skips each of these layers, so where it lies in the paint
+    // order is unknown: a frame that reaches the text, and a ::before /
+    // ::after that paints there, make contrast unknown like a background.
+    // Each read 21:1 when only a background was looked for, where the page
+    // shows ~3.7:1 (a 60% black scrim) or ~8.6:1 (a 50% red band).
+    expect(verdicts(res)).toEqual([
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['passed', null],
+      ['unknown', 'input_missing'],
+      ['passed', null],
+      ['unknown', 'input_missing'],
+      ['passed', null],
+      ['passed', null],
+      ['unknown', 'input_missing'],
+    ]);
+    const blind = "at the text's position but computes pointer-events: none";
+    expect(res.results[0].detail).toContain(`<div.peshadow> paints its inset box-shadow ${blind}`);
+    expect(res.results[1].detail).toContain(
+      `<div.peborder> paints its border or scrollbar ${blind}`
+    );
+    expect(res.results[2].detail).toContain('contrast ratio 21.00:1');
+    expect(res.results[3].detail).toContain(`<div.sibpseudo> paints its ::after ${blind}`);
+    expect(res.results[4].detail).toContain('contrast ratio 21.00:1');
+    expect(res.results[5].detail).toContain(`<div.sibpseudoflow> paints its ::before ${blind}`);
+    expect(res.results[6].detail).toContain('contrast ratio 21.00:1');
+    expect(res.results[7].detail).toContain('contrast ratio 21.00:1');
+    // A box at visibility: hidden paints nothing, but its pseudo-element can.
+    expect(res.results[8].detail).toContain(`<div.hiddenhost> paints its ::after ${blind}`);
+    await page.close();
+  }, 60_000);
+
+  it('contrast_meets_wcag: a pointer-events: none layer that paints text', async () => {
+    const page = await openPage(`
+      <style>
+        .watermark::after { content: "DRAFT"; position: absolute; left: 0; top: 0; width: 300px; height: 40px; color: rgba(255, 0, 0, 0.5); font-size: 30px }
+        .glyphaside::before { content: "*"; position: absolute; left: 600px; top: 0; color: #c00 }
+      </style>
+      <div style="position:relative;height:50px;background:#fff"><p data-id="watermarked" style="margin:0;color:#000">Under a click-through watermark</p><div class="watermark" style="position:absolute;inset:0;pointer-events:none"></div></div>
+      <div style="position:relative;height:50px;background:#fff"><p data-id="glyphaside" style="margin:0;color:#000">Beside a click-through glyph</p><div class="glyphaside" style="position:absolute;inset:0;pointer-events:none"></div></div>
+      <div style="position:relative;height:50px;background:#fff"><p data-id="tipped" style="margin:0;color:#000">Under a click-through tooltip's text</p><div class="tip" style="position:absolute;left:0;top:0;pointer-events:none;color:#c00">A tooltip over the text</div></div>
+      <div style="position:relative;height:50px;background:#fff"><p data-id="labelaside" style="margin:0;color:#000">Beside a click-through label</p><div style="position:absolute;left:0;top:0;width:700px;pointer-events:none;color:#c00;text-align:right">Label</div></div>
+    `);
+    const ids = ['watermarked', 'glyphaside', 'tipped', 'labelaside'];
+    const res = await assertOn(
+      page,
+      ids.map((element) => ({ type: 'contrast_meets_wcag', element }))
+    );
+    // Glyphs a click-through layer paints over the text, its own or its
+    // ::before / ::after's, are as unplaceable as its background; where they
+    // lie elsewhere in its box, the text's own colours decide.
+    expect(verdicts(res)).toEqual([
+      ['unknown', 'input_missing'],
+      ['passed', null],
+      ['unknown', 'input_missing'],
+      ['passed', null],
+    ]);
+    const blind = "at the text's position but computes pointer-events: none";
+    expect(res.results[0].detail).toContain(`<div.watermark> paints its ::after ${blind}`);
+    expect(res.results[1].detail).toContain('contrast ratio 21.00:1');
+    expect(res.results[2].detail).toContain(`<div.tip> paints its own text ${blind}`);
+    expect(res.results[3].detail).toContain('contrast ratio 21.00:1');
+    await page.close();
+  }, 60_000);
+
   it('contrast_meets_wcag: the viewport scrollbar is not a frame of the root that scrolls it', async () => {
     // The root's client sizes are the viewport's, so read as a box of its
     // own they would put a "scrollbar" the height of the page beside the

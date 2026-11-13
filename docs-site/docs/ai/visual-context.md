@@ -201,7 +201,7 @@ only what the page itself can measure, and they get a verdict:
 
 | Kind | What the tab measures |
 | --- | --- |
-| `contrast_meets_wcag` | The text colour against the backdrop composited under its first rendered text run, with every translucent layer the hit test shows above the text (a scrim) composited over both. An ancestor of the text that the hit test lists above it (for a stretched link's positioned `::after`, or a shadow tree's overlay) adds only what it draws over the text: its own background stays beneath the text, unless a negative `z-index` sinks the text past it. WCAG large-text thresholds (AA 3:1 / AAA 4.5:1 at 24px, or 18.66px bold). A layer covering the text, or painting over it in a way the DOM cannot read (an image, a filter, its own text or generated content, or its border, a scrollbar or an inset box-shadow over the text), is `unknown`, and so is a border, scrollbar or inset box-shadow beneath the text that reaches it, or generated content positioned beneath it, where the backdrop shows through |
+| `contrast_meets_wcag` | The text colour against the backdrop composited under its first rendered text run, with every translucent layer the hit test shows above the text (a scrim) composited over both. An ancestor of the text that the hit test lists above it (for a stretched link's positioned `::after`, or a shadow tree's overlay) adds only what it draws over the text: its own background stays beneath the text, unless a negative `z-index` sinks the text past it. WCAG large-text thresholds (AA 3:1 / AAA 4.5:1 at 24px, or 18.66px bold). A layer covering the text, or painting over it in a way the DOM cannot read (an image, a filter, its own text or generated content, or its border, a scrollbar or an inset box-shadow over the text), is `unknown`, and so is a border, scrollbar or inset box-shadow beneath the text that reaches it, or generated content positioned beneath it, where the backdrop shows through. So is a `pointer-events: none` layer the hit test cannot place that paints at the text's position: its background, its frame, its own text, or its `::before` / `::after` |
 | `text_fits_container` | A block-level element's `scrollWidth`/`scrollHeight` (borders and scrollbars included) against its border box, rounded up. An inline element is measured by its own line fragments against the content box of the block it lays out in, so a sibling's overflow is not its own. Both sides are layout pixels, so a CSS transform neither causes an overflow nor hides one. An element with no text is `unknown` |
 | `no_overlap` | Border boxes, after the `tolerance_px` inset |
 | `element_above` | Paint order from `document.elementsFromPoint` inside the pair's visible intersection (never scrolls) |
@@ -236,7 +236,9 @@ drawn with a large spread or a wide outline), and an outline that a negative
 on colours they darken. Beneath the text, a transparent `::before` / `::after`
 whose box the computed style does not pin down (one moved by a transform, such
 as a rotated chevron) is taken to paint nothing, so its glyphs and its border
-are not seen.
+are not seen. A click-through `::before` / `::after` (one that computes
+`pointer-events: none`) is seen only inside its element's own box when the hit
+test can see that element, or when a transform moves it.
 Every
 other kind answers per result with `outcome: "unknown"` and
 `code: "capability_unavailable_in_build"`. A mixed batch still answers what it

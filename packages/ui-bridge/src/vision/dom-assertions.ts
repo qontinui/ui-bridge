@@ -36,11 +36,12 @@
  *   `unknown{input_missing}`; so does an ancestor with `opacity < 1` that
  *   contains the first opaque layer. A `pointer-events: none` layer is looked
  *   for anywhere on the page, open shadow roots included, by one walk of the
- *   composed tree per request that measures contrast: one positioned onto
- *   the text from inside an element whose own box misses it (a fixed scrim
- *   in a sticky header) is found too. A translucent colour or an opacity
- *   group above the first opaque layer is composited exactly. With no
- *   opaque layer, the base is the `Canvas` colour under the root's
+ *   composed tree per request that measures contrast — its background, its
+ *   frame, its own text and its `::before` / `::after` alike: one
+ *   positioned onto the text from inside an element whose own box misses it
+ *   (a fixed scrim in a sticky header) is found too. A translucent colour or
+ *   an opacity group above the first opaque layer is composited exactly.
+ *   With no opaque layer, the base is the `Canvas` colour under the root's
  *   `color-scheme`. Every layer the hit
  *   test shows ABOVE the text (a scrim, an overlay, a sheet), open shadow
  *   roots included, is read too: a plain translucent colour is composited
@@ -55,9 +56,11 @@
  *   negative `outline-offset` pulls inside its box, are not seen. Nor are
  *   the glyphs and the frame of a transparent `::before` / `::after` beneath
  *   the text whose box the computed style does not pin down (one moved by a
- *   transform, such as a rotated chevron). An ANCESTOR of the text the hit
- *   test lists above it paints its own box beneath its content, so only
- *   what it draws over the text is read — a positioned `::before` /
+ *   transform, such as a rotated chevron). A click-through `::before` /
+ *   `::after` outside its element's box is not seen when the hit test can
+ *   see that element, or when a transform moves it. An ANCESTOR of the text
+ *   the hit test lists above it paints its own box beneath its content, so
+ *   only what it draws over the text is read — a positioned `::before` /
  *   `::after` (a stretched link), its open shadow tree's elements above the
  *   text — unless a negative `z-index` sinks the text past it, and then all
  *   of it is a layer above. One listed above with neither (a closed shadow
@@ -508,6 +511,11 @@ function hitStack(x: number, y: number): Element[] | null {
   return fn.call(document, x, y);
 }
 
+/** Whether `el` holds a text node of its own that is not just whitespace. */
+function hasOwnText(el: Element): boolean {
+  return Array.from(el.childNodes).some((n) => n.nodeType === 3 && /\S/.test(n.nodeValue ?? ''));
+}
+
 /** Replaced content: its pixels are not CSS colours the DOM can read. */
 const REPLACED_TAGS = new Set(['IMG', 'VIDEO', 'CANVAS', 'IFRAME', 'OBJECT', 'EMBED', 'PICTURE']);
 
@@ -565,6 +573,16 @@ interface PaintItem {
   label: string;
 }
 
+/**
+ * A layer the hit test cannot see, and what it paints at a point: a phrase
+ * naming it ("a background", "its inset box-shadow"), or null where it
+ * paints nothing.
+ */
+type HitHidden = {
+  layer: Element;
+  paintsAt: (p: { x: number; y: number }) => string | null;
+};
+
 /** What an element does to its content's overflow on one axis. */
 type Overflow = 'clip' | 'scroll' | null;
 
@@ -609,7 +627,7 @@ class TabMeasurement {
   private readonly fitDone = new Set<string>();
   private readonly clipDone = new Set<string>();
   private registryIds: Map<Element, string> | null = null;
-  private hitHidden: readonly Element[] | null = null;
+  private hitHidden: readonly HitHidden[] | null = null;
   private canvas: { paint: Paint; label: string } | null = null;
   private canvasFrom: Element | null = null;
 
@@ -1485,8 +1503,8 @@ class TabMeasurement {
     if (unplaceable) {
       return missing(
         'input_missing',
-        `${this.describe(unplaceable)} paints a background at the text's position but computes ` +
-          'pointer-events: none, so the hit test cannot place it in the paint order'
+        `${this.describe(unplaceable.layer)} paints ${unplaceable.what} at the text's position ` +
+          'but computes pointer-events: none, so the hit test cannot place it in the paint order'
       );
     }
 
@@ -1784,46 +1802,79 @@ class TabMeasurement {
 
   /**
    * A layer the hit test cannot see (pointer-events: none) that paints at `p`
-   * and does not hold the text: its place in the paint order is unknown, so
-   * whether it lies under the text or over it is too. Every such layer of the
-   * page is a candidate ({@link hitHiddenLayers}), wherever it hangs in the
-   * tree: a fixed scrim inside a sticky header whose own box misses the text
-   * covers the text all the same.
+   * and does not hold the text, with what it paints there: its place in the
+   * paint order is unknown, so whether it lies under the text or over it is
+   * too. Every such layer of the page is a candidate ({@link
+   * hitHiddenLayers}), wherever it hangs in the tree: a fixed scrim inside a
+   * sticky header whose own box misses the text covers the text all the same.
    */
   private unplaceableLayerAt(
     p: { x: number; y: number },
     owner: Element,
     layers: readonly Element[]
-  ): Element | null {
-    for (const layer of this.hitHiddenLayers()) {
+  ): { layer: Element; what: string } | null {
+    for (const { layer, paintsAt } of this.hitHiddenLayers()) {
       if (layers.includes(layer) || containsComposed(layer, owner)) continue;
-      const box = boxOf(layer);
-      if (box && pointIn(p, box)) return layer;
+      const what = paintsAt(p);
+      if (what) return { layer, what };
     }
     return null;
   }
 
   /**
-   * Every element of the page that paints (a background colour or image, or
-   * replaced content) where the hit test cannot see it: `pointer-events:
-   * none`, and not `visibility: hidden`. One walk of the composed tree per
+   * Every element of the page that the hit test cannot see (it computes
+   * `pointer-events: none`) and that paints, with what it paints at a
+   * point: unless it is `visibility: hidden`, a background colour or image
+   * or replaced content anywhere in its box, else its border, a scrollbar or
+   * an inset box-shadow where that frame lies ({@link frameOf}) and its own
+   * text where that text lies; and a `::before` / `::after` of its that
+   * paints ({@link hitHiddenPseudo}). One walk of the composed tree per
    * request, open shadow roots included, reading each element's computed
-   * style once; it does not descend into a subtree that renders nothing
-   * (`display: none`) or paints nothing (`opacity: 0`). Only a request that
-   * measures contrast walks it.
+   * style once, and the pseudo-elements' only for an element that computes
+   * `pointer-events: none`; it does not descend into a subtree that renders
+   * nothing (`display: none`) or paints nothing (`opacity: 0`). Only a
+   * request that measures contrast walks it.
    */
-  private hitHiddenLayers(): readonly Element[] {
+  private hitHiddenLayers(): readonly HitHidden[] {
     if (this.hitHidden) return this.hitHidden;
-    const found: Element[] = [];
+    const found: HitHidden[] = [];
     const pending: Element[] = document.documentElement ? [document.documentElement] : [];
     while (pending.length > 0) {
       const el = pending.pop()!;
       const st = this.style(el);
       if (st.display === 'none' || st.opacity === '0') continue;
       const hidden = st.visibility === 'hidden' || st.visibility === 'collapse';
-      if (st.pointerEvents === 'none' && !hidden) {
-        const bg = parseColor(st.backgroundColor);
-        if ((bg && bg.a > 0) || st.backgroundImage !== 'none' || isReplaced(el)) found.push(el);
+      if (st.pointerEvents === 'none') {
+        // A box at visibility: hidden paints nothing; its pseudo-elements may.
+        if (!hidden) {
+          const bg = parseColor(st.backgroundColor);
+          if ((bg && bg.a > 0) || st.backgroundImage !== 'none' || isReplaced(el)) {
+            found.push({
+              layer: el,
+              paintsAt: (p) => {
+                const box = boxOf(el);
+                return box && pointIn(p, box) ? 'a background' : null;
+              },
+            });
+          } else {
+            const framed = hasFrame(st) || scrolls(st);
+            const text = hasOwnText(el);
+            if (framed || text) {
+              found.push({
+                layer: el,
+                paintsAt: (p) => {
+                  const frame = framed ? this.frameOf(el, st, p) : null;
+                  if (frame) return `its ${frame}`;
+                  return text && this.ownTextAt(el, p) ? 'its own text' : null;
+                },
+              });
+            }
+          }
+        }
+        for (const which of ['::before', '::after'] as const) {
+          const generated = this.hitHiddenPseudo(el, which);
+          if (generated) found.push(generated);
+        }
       }
       // Children last to first, so the walk visits them in document order.
       const children = [...Array.from(el.shadowRoot?.children ?? []), ...Array.from(el.children)];
@@ -1831,6 +1882,39 @@ class TabMeasurement {
     }
     this.hitHidden = found;
     return found;
+  }
+
+  /**
+   * `el`'s `::before` / `::after` as a layer the hit test cannot see: one
+   * that computes `pointer-events: none`, is not `visibility: hidden`, and
+   * paints a background colour or image, glyphs or a frame ({@link
+   * hasFrame}). Where the computed style pins its box down it is read in
+   * that box — a frame alone only where it lies there — and elsewhere
+   * anywhere in `el`'s box: one in normal flow is laid out inside it, and
+   * one moved by a transform usually stays near it.
+   */
+  private hitHiddenPseudo(el: Element, which: '::before' | '::after'): HitHidden | null {
+    const ps = this.pseudoStyle(el, which);
+    if (['none', 'normal', ''].includes(ps.content) || ps.display === 'none') return null;
+    if (ps.pointerEvents !== 'none' || ps.visibility === 'hidden' || ps.visibility === 'collapse') {
+      return null;
+    }
+    const bg = parseColor(ps.backgroundColor);
+    const image = ps.backgroundImage !== 'none' && ps.backgroundImage !== '';
+    const glyphs = ps.content !== '""' && ps.content !== "''";
+    const frameOnly = !image && !glyphs && bg !== null && bg.a === 0;
+    if (frameOnly && !hasFrame(ps)) return null;
+    const positioned = ps.position === 'absolute' || ps.position === 'fixed';
+    return {
+      layer: el,
+      paintsAt: (p) => {
+        const known = positioned ? this.pseudoBox(el, ps) : null;
+        const box = known ?? boxOf(el);
+        if (!box || !pointIn(p, box)) return null;
+        if (known && frameOnly && !frameAt(ps, insetByBorders(known, ps), 1, p)) return null;
+        return `its ${which}`;
+      },
+    };
   }
 
   /**
