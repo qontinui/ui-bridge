@@ -17,9 +17,13 @@
  */
 
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { renderHook } from '@testing-library/react';
 import { CommandRelay } from './command-relay';
 import { createNextRouteHandlers } from './nextjs';
+import { createExpressApp } from './express';
+import { StandaloneServer } from './standalone';
 import { createRelayHandlers } from './relay-handlers';
 import { createHandlers, type RegistryLike } from './handlers';
 import { useCommandRelay } from '../react/useCommandRelay';
@@ -174,6 +178,13 @@ afterEach(() => {
 
 type Row = { id: string; projection?: Record<string, unknown> };
 
+/** What `?properties=hyphens&properties=outline-offset,--brand&attributes=lang&attributes=dir` reads off `save`. */
+const REPEATED_KEYS_PROJECTION = {
+  properties: { hyphens: 'auto', 'outline-offset': '3px', '--brand': '#00aaff' },
+  attributes: { lang: 'de', dir: 'ltr' },
+  unmeasured: [],
+};
+
 const rowsOf = (reply: Reply): Row[] => (reply.data?.elements ?? []) as Row[];
 const rowOf = (reply: Reply, id: string): Row | undefined => rowsOf(reply).find((r) => r.id === id);
 
@@ -316,6 +327,16 @@ describe.each(transports)('the $name transport', ({ mount }) => {
       expect(reply.success, reply.error).toBe(true);
       expect(reply.data).toMatchObject({ id: 'save' });
       expect(reply.data).not.toHaveProperty('projection');
+    });
+
+    it('reads a repeated `properties` / `attributes` key as one list, as a comma list reads', async () => {
+      await mount();
+      const reply = await get(
+        '/control/element/save/state?properties=hyphens&properties=outline-offset,--brand' +
+          '&attributes=lang&attributes=dir'
+      );
+      expect(reply.success, reply.error).toBe(true);
+      expect(reply.data!.projection).toEqual(REPEATED_KEYS_PROJECTION);
     });
 
     it.each([
@@ -507,6 +528,55 @@ describe.each(transports)('the $name transport', ({ mount }) => {
         failureCode: 'UB-ASSERT-LAYOUT',
       });
     });
+  });
+});
+
+describe('a repeated query key on the adapters that serve no Next.js route', () => {
+  // The Next.js adapter is the one the suites above enter through. The
+  // standalone server builds its query from a `URLSearchParams` the same way
+  // (`request-query.ts`); Express builds its own (`req.query`), which already
+  // reads a repeated key as a list. Both over real HTTP, on the in-process
+  // handlers.
+  const PATH =
+    '/ui-bridge/control/element/save/state?properties=hyphens&properties=outline-offset,--brand' +
+    '&attributes=lang&attributes=dir';
+
+  function inProcessHandlers() {
+    mountPage();
+    return createHandlers(registryLike(), createActionExecutor(getGlobalRegistry()));
+  }
+
+  it('the standalone server reads it as one list', async () => {
+    const server = new StandaloneServer(inProcessHandlers(), {
+      host: '127.0.0.1',
+      port: 0,
+      log: () => {},
+    });
+    await server.start();
+    try {
+      const response = await fetch(`http://127.0.0.1:${server.getAddress()!.port}${PATH}`);
+      const reply = (await response.json()) as Reply;
+      expect(reply.success, reply.error).toBe(true);
+      expect(reply.data!.projection).toEqual(REPEATED_KEYS_PROJECTION);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('Express reads it as one list', async () => {
+    const server: Server = createServer(
+      createExpressApp(inProcessHandlers()) as Parameters<typeof createServer>[1]
+    );
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const { port } = server.address() as AddressInfo;
+      const reply = (await (await fetch(`http://127.0.0.1:${port}${PATH}`)).json()) as Reply;
+      expect(reply.success, reply.error).toBe(true);
+      expect(reply.data!.projection).toEqual(REPEATED_KEYS_PROJECTION);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
 

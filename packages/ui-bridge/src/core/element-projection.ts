@@ -109,6 +109,16 @@ export const PROJECTABLE_ATTRIBUTES: readonly string[] = Object.freeze([
   'href',
 ]);
 
+/**
+ * The request options that ask for a projection. Over HTTP they are also the
+ * query keys of `GET /control/element/:id/state`, where each is a LIST: a
+ * comma-separated value, a repeated key, or both (`server/request-query.ts`).
+ */
+export const PROJECTION_OPTIONS: readonly ('properties' | 'attributes')[] = Object.freeze([
+  'properties',
+  'attributes',
+] as const);
+
 /** A validated projection request. Both lists hold no duplicates. */
 export interface ElementProjectionRequest {
   /** CSS property names: standard (`border-top-color`, `borderTopColor`) or custom (`--brand`). */
