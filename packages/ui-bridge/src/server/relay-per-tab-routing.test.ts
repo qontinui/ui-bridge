@@ -23,13 +23,29 @@ import { CommandRelay, TabRoutingError } from './command-relay';
 import { createRelayHandlers } from './relay-handlers';
 import { createNextRouteHandlers } from './nextjs';
 
+/** Every relay `freshRelay()` built, destroyed by `destroyRelays()` after each test. */
+const relays: CommandRelay[] = [];
+
+function destroyRelays(): void {
+  for (const relay of relays.splice(0)) relay.destroy();
+}
+
+afterEach(destroyRelays);
+
 function freshRelay(
   options?: Partial<ConstructorParameters<typeof CommandRelay>[0]>
 ): CommandRelay {
   // Each test gets its own globalThis-key prefix so persisted state does
-  // not leak between tests.
+  // not leak between tests. No warm-up snapshot: it would land at a time no
+  // request chose, and these tests count which tab each command reached.
   const prefix = `__uiBridgeTest_${Math.random().toString(36).slice(2, 10)}`;
-  return new CommandRelay({ globalPrefix: prefix, ...(options ?? {}) });
+  const relay = new CommandRelay({
+    globalPrefix: prefix,
+    proactiveSnapshot: false,
+    ...(options ?? {}),
+  });
+  relays.push(relay);
+  return relay;
 }
 
 /**
@@ -360,6 +376,9 @@ describe('relay · Item #15 — stale-tab pruning', () => {
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
   });
   afterEach(() => {
+    // Before the real timers return, so the relays' fake timers are cleared
+    // rather than abandoned.
+    destroyRelays();
     vi.useRealTimers();
   });
 

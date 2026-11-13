@@ -11,7 +11,7 @@
  * This exercises the same bus contract the Redis adapter implements (which can
  * only be verified against a live multi-instance deploy).
  */
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect } from 'vitest';
 import { CommandRelay } from './command-relay';
 import type { RelayBus, RelayCommandEnvelope, RelayResponseEnvelope } from './relay-bus';
 
@@ -65,11 +65,25 @@ class InMemoryBus implements RelayBus {
   }
 }
 
+/** Every relay `freshRelay()` built, destroyed after each test. */
+const relays: CommandRelay[] = [];
+
+afterEach(() => {
+  for (const relay of relays.splice(0)) relay.destroy();
+});
+
+/** A relay on `bus` under a fixed globalThis-key prefix, with no warm-up snapshot. */
+function freshRelay(globalPrefix: string, bus: RelayBus): CommandRelay {
+  const relay = new CommandRelay({ globalPrefix, bus, proactiveSnapshot: false });
+  relays.push(relay);
+  return relay;
+}
+
 describe('CommandRelay cross-instance routing via RelayBus (P0a)', () => {
   it('routes a command to the instance holding the tab and the response back', async () => {
     const bus = new InMemoryBus();
-    const instA = new CommandRelay({ globalPrefix: '__instA_test', bus });
-    const instB = new CommandRelay({ globalPrefix: '__instB_test', bus });
+    const instA = freshRelay('__instA_test', bus);
+    const instB = freshRelay('__instB_test', bus);
 
     // Instance B holds the SSE listener for tab-1.
     const received: RelayCommandEnvelope[] = [];
@@ -104,7 +118,7 @@ describe('CommandRelay cross-instance routing via RelayBus (P0a)', () => {
 
   it('still rejects TAB_NOT_FOUND when the tab is unknown to every instance', async () => {
     const bus = new InMemoryBus();
-    const instA = new CommandRelay({ globalPrefix: '__instA_test2', bus });
+    const instA = freshRelay('__instA_test2', bus);
 
     await expect(
       instA.queueCommand('testAction', {}, { targetTabId: 'ghost-tab' })

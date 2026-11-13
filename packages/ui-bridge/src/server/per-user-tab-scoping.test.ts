@@ -14,7 +14,7 @@
  * are exercised by sibling integration tests in qontinui-web.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import {
   CommandRelay,
   OwnerMismatchError,
@@ -73,11 +73,28 @@ class InMemoryBus implements RelayBus {
   }
 }
 
+/** Every relay `freshRelay()` built, destroyed after each test. */
+const relays: CommandRelay[] = [];
+
+afterEach(() => {
+  for (const relay of relays.splice(0)) relay.destroy();
+});
+
+/**
+ * A relay with its own globalThis-key prefix (unless `options` names one) and
+ * no warm-up snapshot, which would land at a time no request chose.
+ */
 function freshRelay(
   options?: Partial<ConstructorParameters<typeof CommandRelay>[0]>,
 ): CommandRelay {
   const prefix = `__uiBridgeScopingTest_${Math.random().toString(36).slice(2, 10)}`;
-  return new CommandRelay({ globalPrefix: prefix, ...(options ?? {}) });
+  const relay = new CommandRelay({
+    globalPrefix: prefix,
+    proactiveSnapshot: false,
+    ...(options ?? {}),
+  });
+  relays.push(relay);
+  return relay;
 }
 
 /**
@@ -469,7 +486,7 @@ describe('§4.2 · cross-instance bus envelope ownership enforcement', () => {
     const captured: RelayCommandEnvelope[] = [];
     bus.subscribeCommands('tab-a', (env) => captured.push(env));
 
-    const sender = new CommandRelay({ globalPrefix: '__senderProbe_test', bus });
+    const sender = freshRelay({ globalPrefix: '__senderProbe_test', bus });
     // Tab is registered "elsewhere" — the sender does not hold it locally,
     // so the dispatch routes via the bus.
     bus.registerTab('tab-a', 60);
@@ -491,8 +508,8 @@ describe('§4.2 · cross-instance bus envelope ownership enforcement', () => {
 
   it('receiver rejects when its local ownership disagrees with senderUserId', async () => {
     const bus = new InMemoryBus();
-    const instA = new CommandRelay({ globalPrefix: '__instAOwn_test', bus });
-    const instB = new CommandRelay({ globalPrefix: '__instBOwn_test', bus });
+    const instA = freshRelay({ globalPrefix: '__instAOwn_test', bus });
+    const instB = freshRelay({ globalPrefix: '__instBOwn_test', bus });
 
     // B holds tab-1, owned by Bob.
     const delivered: string[] = [];
@@ -529,8 +546,8 @@ describe('§4.2 · cross-instance bus envelope ownership enforcement', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
     const bus = new InMemoryBus();
-    const instA = new CommandRelay({ globalPrefix: '__instAHeldElsewhere_test', bus });
-    const instB = new CommandRelay({ globalPrefix: '__instBHeldElsewhere_test', bus });
+    const instA = freshRelay({ globalPrefix: '__instAHeldElsewhere_test', bus });
+    const instB = freshRelay({ globalPrefix: '__instBHeldElsewhere_test', bus });
     try {
       const delivered: string[] = [];
       instB.subscribeToCommands((cmd) => delivered.push(cmd.commandId), 'tab-1');
@@ -552,8 +569,8 @@ describe('§4.2 · cross-instance bus envelope ownership enforcement', () => {
 
   it('receiver delivers when senderUserId matches its local ownership', async () => {
     const bus = new InMemoryBus();
-    const instA = new CommandRelay({ globalPrefix: '__instAMatch_test', bus });
-    const instB = new CommandRelay({ globalPrefix: '__instBMatch_test', bus });
+    const instA = freshRelay({ globalPrefix: '__instAMatch_test', bus });
+    const instB = freshRelay({ globalPrefix: '__instBMatch_test', bus });
 
     const delivered: string[] = [];
     instB.subscribeToCommands((cmd) => delivered.push(cmd.commandId), 'tab-2');
