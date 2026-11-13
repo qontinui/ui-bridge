@@ -307,7 +307,7 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('the projection reads what Chromium compu
       ['unmeasured', 'UB-OBS-NOT-ATTEMPTED-BY-POLICY'],
       ['passed', undefined],
     ]);
-    expect(result).toMatchObject({ passed: false, failedCount: 0, unmeasuredCount: 1 });
+    expect(result).toMatchObject({ passed: false, failedCount: 1, unmeasuredCount: 1 });
     await page.close();
   }, 60_000);
 

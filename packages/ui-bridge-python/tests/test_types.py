@@ -1,5 +1,8 @@
 """Tests for ui_bridge types."""
 
+import json
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -671,6 +674,15 @@ class TestStateSnapshot:
         assert len(snapshot.transitions) == 1
 
 
+# A REAL reply captured from the TypeScript SDK: the `data` of
+# `POST /ai/assert/batch` (mode "all") on its in-process transport, over one
+# registered button in jsdom. A `cssProperty` check of `outline-offset` passes,
+# one of the unset custom property `--not-set` is unmeasured, and an `attribute`
+# check of `lang` fails. So the batch tests hold the Python mirror to the counts
+# the SDK actually sends: `failedCount` counts every result that did not pass,
+# `unmeasuredCount` is its unmeasured subset.
+SDK_BATCH_FIXTURE = Path(__file__).parent / "fixtures" / "sdk_assert_batch_response.json"
+
 # What `POST /ai/assert` answers for a check that could not read its value: no
 # `actual` key at all (never `""`), the reason in `unmeasured`.
 UNMEASURED_WIRE = {
@@ -740,21 +752,39 @@ class TestAssertionResult:
                 {**UNMEASURED_WIRE, "unmeasured": {"code": "redacted", "detail": "x"}}
             )
 
-    def test_batch_counts_unmeasured_apart_from_failed(self):
+    def test_batch_counts_unmeasured_inside_failed(self):
         batch = BatchAssertionResult.model_validate(
             {
                 "passed": False,
                 "results": [UNMEASURED_WIRE, FAILED_WIRE],
                 "passedCount": 0,
-                "failedCount": 1,
+                "failedCount": 2,
                 "unmeasuredCount": 1,
                 "durationMs": 2.0,
                 "timestamp": 1234567890,
             }
         )
-        assert batch.failed_count == 1
+        assert batch.failed_count == 2
         assert batch.unmeasured_count == 1
         assert [r.outcome for r in batch.results] == ["unmeasured", "failed"]
+
+    def test_sdk_batch_failed_count_counts_every_result_that_did_not_pass(self):
+        # A REAL `/ai/assert/batch` reply from the TypeScript SDK: see SDK_BATCH_FIXTURE.
+        batch = BatchAssertionResult.model_validate(json.loads(SDK_BATCH_FIXTURE.read_text()))
+        assert [r.outcome for r in batch.results] == ["passed", "unmeasured", "failed"]
+        assert batch.passed is False
+        assert batch.passed_count == sum(1 for r in batch.results if r.passed)
+        assert batch.failed_count == sum(1 for r in batch.results if not r.passed) == 2
+
+    def test_sdk_batch_unmeasured_count_is_a_subset_of_failed_count(self):
+        batch = BatchAssertionResult.model_validate(json.loads(SDK_BATCH_FIXTURE.read_text()))
+        unmeasured = [r for r in batch.results if r.outcome == "unmeasured"]
+        assert batch.unmeasured_count == len(unmeasured) == 1
+        assert all(not r.passed for r in unmeasured)
+        assert batch.unmeasured_count is not None
+        assert batch.failed_count - batch.unmeasured_count == sum(
+            1 for r in batch.results if r.outcome == "failed"
+        )
 
     def test_batch_from_an_sdk_predating_unmeasured_count_is_unknown_not_zero(self):
         batch = BatchAssertionResult.model_validate(

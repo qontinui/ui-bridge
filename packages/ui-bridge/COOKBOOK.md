@@ -528,8 +528,9 @@ The same read backs the `ai/assert` style and attribute checks
 (`cssProperty`, `cssPropertyInSet`, `cssPropertyRange`, `tokenCompliance`,
 `attribute`), on both transports. A check that cannot read its value answers
 `outcome: "unmeasured"` with the reason in `unmeasured` — `passed` is `false`,
-so it never passes a gate, but it is counted in `unmeasuredCount`, apart from
-`failedCount`. A value a redaction boundary withholds is one of those
+so it never passes a gate. A batch counts it in `failedCount`, which counts
+every assertion that did not pass, and again in `unmeasuredCount`, the subset
+of those that could not read their value. A value a redaction boundary withholds is one of those
 (`not_attempted_by_policy`): `[REDACTED]` is never compared as the page's
 value.
 
