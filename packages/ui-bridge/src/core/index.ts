@@ -66,6 +66,14 @@ export {
   DEFAULT_REMOUNT_CACHE_WINDOW_MS,
 } from './registry';
 
+// §4.6 redaction predicates and the sentinel that replaces a redacted string.
+// `verdictOf` carries both axes: VALUE (password input OR `data-bridge-redact`
+// boundary) and CONTENT (boundary only). Exported so a host that reads the live
+// DOM over its own transport, such as the runner's `/tree` subtree read, applies
+// the SDK's own verdict instead of re-deriving the boundary walk.
+export { REDACTED_VALUE, verdictOf, isValueRedacted, isContentRedacted } from './redaction';
+export type { RedactionVerdict } from './redaction';
+
 // Element fingerprinting for state discovery
 export {
   computeElementFingerprint,

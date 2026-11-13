@@ -2,12 +2,11 @@
  * §4.6 redaction predicates — the minimal, self-contained split that the
  * structural-enforcement plan adopts wholesale.
  *
- * This module is the Phase-0 seed of the eventual `core/redaction.ts` choke
- * point (plan `2026-07-20-ui-bridge-structural-redaction-enforcement.md`). It
- * carries ONLY what the arbitrary-selector-bypass fix needs so it can land
- * standalone, ahead of the large structural refactor: two predicates plus a
- * re-export of the existing `REDACTED_VALUE` sentinel. When the structural
- * work lands, the predicates below are the ones it moves here verbatim.
+ * This module began as the Phase-0 seed of the `core/redaction.ts` choke point
+ * (plan `2026-07-20-ui-bridge-structural-redaction-enforcement.md`): two
+ * predicates plus the `REDACTED_VALUE` sentinel, which is defined here. The
+ * structural-enforcement machinery below (the verdict, the `Scrubbed` brand,
+ * the scrub and read minters) now lives here too.
  *
  * The two-predicate split is load-bearing for capability, not decoration:
  *   - `isValueRedacted`  — `<input type="password">` OR a `data-bridge-redact`
@@ -24,8 +23,9 @@
 // module, rather than in `core/registry.ts`, so this module is a true leaf:
 // `registry.ts` imports the predicates/minters from here, so the sentinel
 // must not import back from `registry.ts` (that was a cycle). Consumers that
-// assert on the sentinel import it from here (or the package root, which
-// surfaces it via this module).
+// assert on the sentinel import it from here. Outside the package it is
+// public through `@qontinui/ui-bridge/core` and the package root, which
+// re-export it from this module (`core/index.ts`).
 export const REDACTED_VALUE = '[REDACTED]';
 import type { ElementState, MediaFacts, MediaObservation } from './types';
 import { truncateCodePoints } from './text';

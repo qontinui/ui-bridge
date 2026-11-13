@@ -78,6 +78,18 @@ export {
   type ComponentActionInvocation,
 } from '../server/component-action-invocation';
 
+// The §4.6-gated `readValue` page primitive: the one implementation both the
+// standalone server and the React relay dispatch to, gating every element with
+// `isValueRedacted`. Exported so a host that answers read-value over its own
+// transport (the runner's webview) calls it instead of keeping an ungated copy.
+// `server/page-primitives.ts` imports only DOM helpers and `core/` modules.
+// `control-entry.browser-safe.test.ts` enforces only that no Node builtin is
+// reachable from this entry through relative imports; keeping
+// `server/handlers.ts` and npm-only server packages out of this graph is
+// still a review responsibility.
+export { readValuePrimitive } from '../server/page-primitives';
+export type { PrimitiveResult, ReadValueResult, ReadValueHit } from '../server/page-primitives';
+
 // Form fill utility
 export { fillFormFields } from './fill-form';
 
