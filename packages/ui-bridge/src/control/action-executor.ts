@@ -99,6 +99,7 @@ import {
   type RedactionVerdict,
 } from '../core/redaction';
 import {
+  currentFiber,
   hostFiberOf,
   hostElementsUnder,
   owningComponentFiber,
@@ -4119,29 +4120,59 @@ export function extractOwnerComponentProps(element: Element): Record<string, unk
   const host = hostFiberOf(element);
   if (!host) return null;
   const owner = owningComponentFiber(host);
-  if (!owner) return null;
+  return owner ? extractComponentFiberProps(owner, element) : null;
+}
+
+/**
+ * The props of a given component fiber (normalised to its current half),
+ * scrubbed under the fail-closed verdict over THAT fiber's host subtree —
+ * the same rule as {@link extractOwnerComponentProps}. `anchor` is the DOM
+ * node whose own verdict applies when the subtree is clear. The component
+ * capture uses it for a registered component's own fiber.
+ */
+export function extractComponentFiberProps(
+  fiber: FiberLike,
+  anchor: Element
+): Record<string, unknown> {
+  const owner = currentFiber(fiber) ?? fiber;
   const raw = (owner as { memoizedProps?: unknown }).memoizedProps;
   const props = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
   return scrubReactProps(
     safeSerialize(props) as Record<string, unknown>,
-    ownerSubtreeVerdict(owner, element)
+    ownerSubtreeVerdict(owner, anchor)
   );
 }
 
 /** Max fibers visited when enumerating an owner's host subtree. */
 const OWNER_SUBTREE_FIBER_BUDGET = 5000;
 
-/** The fail-closed VALUE verdict over a component's host subtree. */
-function ownerSubtreeVerdict(owner: FiberLike, element: Element): RedactionVerdict {
+/** Max DOM elements scanned below the owner's hosts (non-React DOM included). */
+const OWNER_SUBTREE_DOM_BUDGET = 20000;
+
+/**
+ * The fail-closed VALUE verdict over a component's host subtree: redacted
+ * when the enumeration is incomplete, or any host — or any DOM element below
+ * one, React-managed or not — is a password input, sits in or holds a
+ * `data-bridge-redact` boundary, or hosts a shadow root (whose contents this
+ * scan cannot see).
+ */
+function ownerSubtreeVerdict(owner: FiberLike, anchor: Element): RedactionVerdict {
   const { elements, exhausted } = hostElementsUnder(owner, OWNER_SUBTREE_FIBER_BUDGET);
   if (exhausted || elements.length === 0) return verdictFailClosed();
+  // Hosts come in pre-order, so a nested host was already scanned as a DOM
+  // descendant of its ancestor host: `seen` keeps the scan linear.
+  const seen = new Set<Element>();
   for (const node of elements) {
     if (isValueRedacted(node as HTMLElement)) return verdictFailClosed();
-    if (node.querySelector?.('input[type="password" i], [data-bridge-redact="true"]')) {
-      return verdictFailClosed();
+    if (node.shadowRoot) return verdictFailClosed();
+    if (seen.has(node)) continue;
+    for (const below of Array.from(node.querySelectorAll('*'))) {
+      if (seen.size >= OWNER_SUBTREE_DOM_BUDGET) return verdictFailClosed();
+      seen.add(below);
+      if (below.shadowRoot || isValueRedacted(below as HTMLElement)) return verdictFailClosed();
     }
   }
-  return verdictOf(element as HTMLElement);
+  return verdictOf(anchor as HTMLElement);
 }
 
 /**

@@ -28,10 +28,14 @@ import {
   type ProjectedComputedStyles,
 } from '../core/computed-styles';
 import { isValueRedacted } from '../core/redaction';
-import { extractOwnerComponentProps } from './action-executor';
+import { extractComponentFiberProps, extractOwnerComponentProps } from './action-executor';
 import {
   FIBER_TAG,
+  commonOwningComponentFiber,
   componentNameOf,
+  currentFiber,
+  fiberChainOf,
+  fiberKeyer,
   hostFiberOf,
   isElement,
   isReactManaged,
@@ -214,6 +218,8 @@ export function captureComponent(
   let root: Element;
   let state: Record<string, unknown> | null = null;
   let portalled: Element[] = [];
+  /** A component target's own fiber: owner of its props and root name. */
+  let owner: FiberLike | undefined;
 
   if (target.kind === 'element') {
     const entry = registry.getElement(target.id) as { element?: unknown } | undefined;
@@ -242,6 +248,7 @@ export function captureComponent(
         `Component ${target.id} has no mounted elementIds to root a capture on`
       );
     }
+    owner = commonOwningComponentFiber(mounted);
     const split = splitPortalled(mounted);
     let common: Element | null;
     if (split.inPlace.length === 0) {
@@ -264,7 +271,10 @@ export function captureComponent(
     }
   }
 
-  return { ok: true, capture: buildCapture(registry, target, root, state, portalled, notes) };
+  return {
+    ok: true,
+    capture: buildCapture(registry, target, root, state, portalled, owner, notes),
+  };
 }
 
 function refuse(reason: ComponentCaptureRefusalReason, message: string): ComponentCaptureResult {
@@ -289,6 +299,7 @@ function buildCapture(
   root: Element,
   state: Record<string, unknown> | null,
   extraPortals: Element[],
+  owner: FiberLike | undefined,
   notes: NoteBag
 ): ComponentCapture {
   const win = root.ownerDocument?.defaultView ?? (typeof window !== 'undefined' ? window : null);
@@ -333,6 +344,11 @@ function buildCapture(
   // mounted under another DOM parent. They are absent from the DOM walk
   // above, so they are appended with their DOM subtrees.
   const portals = findPortalHosts(root);
+  if (!portals.enumerable) {
+    notes.add(
+      'portals: not enumerable (no React fiber reachable from the root); portal facts unknown'
+    );
+  }
   if (portals.exhausted) {
     notes.add(
       `portals: React subtree walk stopped after ${MAX_PORTAL_WALK_FIBERS} fibers; portals beyond it not captured`
@@ -353,9 +369,22 @@ function buildCapture(
   // The component target's id names the root, as documented on `registeredId`.
   if (target.kind === 'component' && walk.nodes[0]) walk.nodes[0].registeredId = target.id;
 
+  // A component target's root is a common DOM ancestor, whose own owner is
+  // usually the PARENT component. Its identity and props come from the
+  // component's own fiber instead: the deepest component owning all of its
+  // registered elements. Without one (not React), the props are unknown.
+  if (target.kind === 'component' && owner && walk.nodes[0]?.componentName !== null) {
+    const name = componentNameOf(owner);
+    if (name && !looksMinified(name)) walk.nodes[0].componentName = name;
+  }
+
   let props: Record<string, unknown> | null;
   try {
-    props = extractOwnerComponentProps(root);
+    if (target.kind === 'component') {
+      props = owner ? extractComponentFiberProps(owner, root) : null;
+    } else {
+      props = extractOwnerComponentProps(root);
+    }
   } catch {
     props = null;
   }
@@ -590,34 +619,27 @@ function nearestCommonAncestor(elements: Element[]): Element | null {
 // Portals (React fiber STRUCTURE only — no props are read here)
 // ============================================================================
 
-/** The current fiber's ancestor chain (self first), up to the HostRoot. */
-function fiberChain(el: Element): FiberLike[] | undefined {
-  const host = hostFiberOf(el);
-  if (!host) return undefined;
-  const chain: FiberLike[] = [];
-  for (let f: FiberLike | null | undefined = host; f && chain.length < 10_000; f = f.return) {
-    chain.push(f);
-  }
-  return chain;
-}
-
 /**
  * Split a component's mounted elements into those rendered in place and those
  * portalled: an element is portalled when a HostPortal fiber sits between it
  * and the lowest fiber common to all the elements. Without fibers, in place.
  */
 function splitPortalled(elements: Element[]): { inPlace: Element[]; portalled: Element[] } {
-  const chains = elements.map(fiberChain);
+  const chains = elements.map(fiberChainOf);
   if (elements.length < 2 || chains.some((c) => !c)) return { inPlace: elements, portalled: [] };
-  const sets = chains.map((c) => new Set(c!));
-  const lca = chains[0]!.find((f) => sets.every((s) => s.has(f)));
+  // A fiber and its alternate are one ancestor: chains read through
+  // different halves of a pair must still meet.
+  const key = fiberKeyer();
+  const sets = chains.map((c) => new Set(c!.map(key)));
+  const lca = chains[0]!.find((f) => sets.every((set) => set.has(key(f))));
   if (!lca) return { inPlace: elements, portalled: [] };
+  const lcaKey = key(lca);
   const inPlace: Element[] = [];
   const portalled: Element[] = [];
   elements.forEach((el, i) => {
     let crossed = false;
     for (const f of chains[i]!) {
-      if (f === lca) break;
+      if (key(f) === lcaKey) break;
       if (f.tag === FIBER_TAG.HostPortal) crossed = true;
     }
     (crossed ? portalled : inPlace).push(el);
@@ -640,14 +662,20 @@ function nearestCapturedReactParent(el: Element, pathOf: Map<Element, string>): 
  * whose DOM parent differs from its React parent's host node — the definition
  * of a portal. Only the top host of each portal is returned; its DOM subtree
  * is captured by the caller's DOM walk.
+ *
+ * A root React does not manage (a `createRoot` container, a plain DOM
+ * wrapper) has no fiber of its own: the walk then starts from the React roots
+ * that render into it — the HostRoot of each top-most React-managed
+ * descendant — and keeps only portals whose React parent lies inside the
+ * root. `enumerable: false` says no fiber was reachable at all, so portal
+ * facts are unknown rather than absent.
  */
 function findPortalHosts(root: Element): {
   found: Array<{ host: Element; reactParent: Element }>;
   exhausted: boolean;
+  enumerable: boolean;
 } {
-  const rootFiber = hostFiberOf(root);
   const found: Array<{ host: Element; reactParent: Element }> = [];
-  if (!rootFiber) return { found, exhausted: false };
   let budget = MAX_PORTAL_WALK_FIBERS;
   let exhausted = false;
 
@@ -661,15 +689,54 @@ function findPortalHosts(root: Element): {
       const node = f.stateNode;
       if (isElement(node)) {
         if (!node.isConnected) continue;
-        if (node.parentNode !== reactParent) found.push({ host: node, reactParent });
+        if (
+          node.parentNode !== reactParent &&
+          (reactParent === root || root.contains(reactParent))
+        ) {
+          found.push({ host: node, reactParent });
+        }
         walk(f.child, node);
       } else {
         walk(f.child, reactParent);
       }
     }
   };
-  walk(rootFiber.child, root);
-  return { found, exhausted };
+
+  const rootFiber = hostFiberOf(root);
+  if (rootFiber) {
+    walk(rootFiber.child, root);
+    return { found, exhausted, enumerable: true };
+  }
+
+  const starts = reactRootsInside(root);
+  for (const start of starts) walk(start.fiber.child, start.container);
+  return { found, exhausted, enumerable: starts.length > 0 };
+}
+
+/**
+ * The current HostRoot fibers of the React roots rendering into `root` (found
+ * from its top-most React-managed descendants), with their containers.
+ */
+function reactRootsInside(root: Element): Array<{ fiber: FiberLike; container: Element }> {
+  const out: Array<{ fiber: FiberLike; container: Element }> = [];
+  const seen = new Set<unknown>();
+  let scanned = 0;
+  for (const el of Array.from(root.querySelectorAll('*'))) {
+    if (++scanned > MAX_PORTAL_WALK_FIBERS) break;
+    if (!isReactManaged(el)) continue;
+    const parent = el.parentElement;
+    if (parent && parent !== root && isReactManaged(parent)) continue;
+    let f: FiberLike | null | undefined = hostFiberOf(el);
+    while (f && f.tag !== FIBER_TAG.HostRoot) f = f.return;
+    const fiberRoot = f?.stateNode as { current?: FiberLike; containerInfo?: unknown } | undefined;
+    const current = fiberRoot?.current ?? (f ? (currentFiber(f) ?? f) : undefined);
+    const container = fiberRoot?.containerInfo;
+    if (!current || !isElement(container) || seen.has(fiberRoot)) continue;
+    if (container !== root && !root.contains(container)) continue;
+    seen.add(fiberRoot);
+    out.push({ fiber: current, container });
+  }
+  return out;
 }
 
 // ============================================================================
@@ -799,7 +866,10 @@ export function componentCaptureRefusalMessage(
   return `component_capture_refused:${reason}: ${message}`;
 }
 
-const REFUSAL_MESSAGE = /component_capture_refused:(not_found|no_mounted_elements)(?::\s*(.*))?/;
+// Anchored at the start: `relayCommand` passes the in-page message through
+// first (hints are only ever APPENDED), so nothing precedes the marker.
+const REFUSAL_MESSAGE =
+  /^component_capture_refused:(not_found|no_mounted_elements)(?::\s*([\s\S]*))?$/;
 
 /** Recover a refusal from a relayed failure message, or `undefined`. */
 export function parseComponentCaptureRefusal(

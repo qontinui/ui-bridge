@@ -15,6 +15,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import {
   captureComponent,
   componentCaptureCommandResult,
+  parseComponentCaptureRefusal,
   MAX_CAPTURE_NODES,
   type ComponentCaptureRegistry,
 } from './component-capture';
@@ -578,5 +579,144 @@ describe('capture refusal envelope', () => {
     } finally {
       relay.destroy();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Re-review fixes
+// ---------------------------------------------------------------------------
+
+describe('captureComponent — a component target speaks for its own fiber', () => {
+  it("takes props and the root name from the component, not the root's (parent) owner", () => {
+    function Pair2({ label }: { label: string }) {
+      return (
+        <>
+          <button type="button" className="p1" aria-label={label} />
+          <button type="button" className="p2" />
+        </>
+      );
+    }
+    function Parent({ theme }: { theme: string }) {
+      return (
+        <section className={`parent ${theme}`}>
+          <Pair2 label="inner" />
+        </section>
+      );
+    }
+    render(<Parent theme="dark" />);
+    const registry = fakeRegistry(
+      { p1: q('.p1'), p2: q('.p2') },
+      { pair2: { elementIds: ['p1', 'p2'] } }
+    );
+    const result = captureComponent(registry, { kind: 'component', id: 'pair2' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // The root is the parent's <section> (nearest common DOM ancestor) …
+    expect(result.capture.nodes[0].tag).toBe('section');
+    // … but identity and props are Pair2's, never Parent's {theme}.
+    expect(result.capture.nodes[0].componentName).toBe('Pair2');
+    expect(result.capture.props).toEqual({ label: 'inner' });
+  });
+});
+
+describe('captureComponent — owner-subtree redaction reaches non-React DOM', () => {
+  function Host({ token }: { token: string }) {
+    return <div className="host" data-token-len={token.length} />;
+  }
+
+  it('redacts props when a non-React password input sits under the owner host', () => {
+    render(<Host token="abc123" />);
+    const host = q('div.host');
+    const pw = document.createElement('input');
+    pw.type = 'password';
+    host.appendChild(pw);
+    const result = captureComponent(fakeRegistry({ host }), { kind: 'element', id: 'host' });
+    expect(result.ok && result.capture.props).toEqual({ token: REDACTED_VALUE });
+  });
+
+  it('redacts props when a node in the owner subtree hosts a shadow root', () => {
+    render(<Host token="abc123" />);
+    const host = q('div.host');
+    host.attachShadow({ mode: 'open' });
+    const result = captureComponent(fakeRegistry({ host }), { kind: 'element', id: 'host' });
+    expect(result.ok && result.capture.props).toEqual({ token: REDACTED_VALUE });
+  });
+});
+
+describe('captureComponent — portals from a root React does not manage', () => {
+  it('enumerates portals of the React root rendering into an unmanaged container', () => {
+    const layer = document.createElement('div');
+    layer.id = 'float';
+    document.body.appendChild(layer);
+    function Frag() {
+      return (
+        <>
+          <div className="in" />
+          {createPortal(<p className="out" />, layer)}
+        </>
+      );
+    }
+    const app = render(<Frag />);
+    const result = captureComponent(fakeRegistry({ app }), { kind: 'element', id: 'app' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const out = result.capture.nodes.find((n) => n.tag === 'p');
+    expect(out?.portal).toEqual({ mountTarget: 'body>div#float', reactParentPath: '' });
+    expect(result.capture.unknownChecks.some((n) => n.startsWith('portals:'))).toBe(false);
+  });
+
+  it('says portals are unknown when no React fiber is reachable', () => {
+    const plain = document.createElement('div');
+    plain.appendChild(document.createElement('span'));
+    document.body.appendChild(plain);
+    const result = captureComponent(fakeRegistry({ plain }), { kind: 'element', id: 'plain' });
+    expect(result.ok && result.capture.unknownChecks).toContain(
+      'portals: not enumerable (no React fiber reachable from the root); portal facts unknown'
+    );
+  });
+});
+
+describe('captureComponent — portalled split survives re-renders (fiber/alternate pairs)', () => {
+  it.each([1, 2, 3])('after %i state update(s)', (updates) => {
+    const layer = document.createElement('div');
+    layer.id = 'overlay2';
+    document.body.appendChild(layer);
+    let bump: () => void = () => {};
+    function Combo2() {
+      const [n, setN] = useState(0);
+      bump = () => setN((v) => v + 1);
+      return (
+        <div className="combo2" data-n={n}>
+          <button type="button" className="t2" />
+          {createPortal(<div className="lb2" data-n={n} />, layer)}
+        </div>
+      );
+    }
+    render(<Combo2 />);
+    for (let i = 0; i < updates; i++) act(() => bump());
+    const registry = fakeRegistry(
+      { t2: q('.t2'), lb2: q('.lb2') },
+      { combo2: { elementIds: ['t2', 'lb2'] } }
+    );
+    const result = captureComponent(registry, { kind: 'component', id: 'combo2' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.capture.nodes.map((n) => [n.tag, n.portal?.mountTarget ?? null])).toEqual([
+      ['button', null],
+      ['div', 'body>div#overlay2'],
+    ]);
+    expect(result.capture.nodes[0].componentName).toBe('Combo2');
+  });
+});
+
+describe('parseComponentCaptureRefusal', () => {
+  it('recognises the marker only at the start, and keeps a multi-line message', () => {
+    expect(
+      parseComponentCaptureRefusal('component_capture_refused:not_found: gone\nsecond line')
+    ).toEqual({ reason: 'not_found', message: 'gone\nsecond line' });
+    expect(
+      parseComponentCaptureRefusal('Error: component_capture_refused:not_found: x')
+    ).toBeUndefined();
+    expect(parseComponentCaptureRefusal('component_capture_refused:bogus')).toBeUndefined();
   });
 });

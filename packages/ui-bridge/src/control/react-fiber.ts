@@ -26,7 +26,7 @@ export interface FiberLike {
   stateNode?: unknown;
 }
 
-/** React work tags (stable across React 16-19). */
+/** React work tags (stable across React 18-19, the supported peer range). */
 export const FIBER_TAG = {
   FunctionComponent: 0,
   ClassComponent: 1,
@@ -144,9 +144,65 @@ export function isComponentFiber(f: FiberLike): boolean {
 /** The nearest component fiber at or above `fiber`. */
 export function owningComponentFiber(fiber: FiberLike): FiberLike | undefined {
   for (let f: FiberLike | null | undefined = fiber; f; f = f.return) {
-    if (isComponentFiber(f)) return f;
+    if (isComponentFiber(f)) return currentFiber(f) ?? f;
   }
   return undefined;
+}
+
+/**
+ * A key under which a fiber and its alternate are the SAME node, so two
+ * ancestor chains read through different halves of a pair still meet.
+ * One keyer per comparison (it remembers the pairs it has seen).
+ */
+export function fiberKeyer(): (f: FiberLike) => number {
+  const ids = new WeakMap<FiberLike, number>();
+  let next = 0;
+  return (f) => {
+    const own = ids.get(f);
+    if (own !== undefined) return own;
+    const alt = f.alternate ?? null;
+    const id = (alt && ids.get(alt)) ?? next++;
+    ids.set(f, id);
+    if (alt) ids.set(alt, id);
+    return id;
+  };
+}
+
+/** The current fiber's ancestor chain (self first), up to the HostRoot. */
+export function fiberChainOf(el: Element): FiberLike[] | undefined {
+  const host = hostFiberOf(el);
+  if (!host) return undefined;
+  const chain: FiberLike[] = [];
+  for (let f: FiberLike | null | undefined = host; f && chain.length < 10_000; f = f.return) {
+    chain.push(f);
+  }
+  return chain;
+}
+
+/**
+ * The deepest fiber present in every chain (fiber/alternate pairs count as
+ * one), optionally restricted to fibers matching `accept`. Resolved to its
+ * current half. `undefined` when the chains share none.
+ */
+export function deepestCommonFiber(
+  chains: FiberLike[][],
+  accept: (f: FiberLike) => boolean = () => true
+): FiberLike | undefined {
+  if (chains.length === 0) return undefined;
+  const key = fiberKeyer();
+  const sets = chains.map((c) => new Set(c.map(key)));
+  const hit = chains[0].find((f) => accept(f) && sets.every((s) => s.has(key(f))));
+  return hit ? (currentFiber(hit) ?? hit) : undefined;
+}
+
+/**
+ * The deepest component fiber owning ALL of these elements (the registered
+ * component's own fiber when they are its elements), or `undefined`.
+ */
+export function commonOwningComponentFiber(elements: Element[]): FiberLike | undefined {
+  const chains = elements.map(fiberChainOf);
+  if (chains.length === 0 || chains.some((c) => !c)) return undefined;
+  return deepestCommonFiber(chains as FiberLike[][], isComponentFiber);
 }
 
 /**
@@ -192,7 +248,7 @@ export function hostElementsUnder(
       if (!includeSiblings) return;
     }
   };
-  visit(fiber, false);
+  visit(currentFiber(fiber) ?? fiber, false);
   return { elements, exhausted: left <= 0 };
 }
 
