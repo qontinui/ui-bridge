@@ -1242,16 +1242,20 @@ export interface TokenDriftReport {
 const LENGTH_CATEGORIES: StyleCategory[] = ['fontSizes', 'spacing', 'borderRadius'];
 
 /** A value that reads as a length, or a length expression: `0`, `4px`, `calc(1rem * var(--k))`. */
-const LENGTH_SHAPED = /^(?:[-+]?0*\.?0+|.*\d(?:px|rem|em|%)(?![a-z]).*|calc\(.*)$/i;
+const LENGTH_SHAPED =
+  /^(?:[-+]?0*\.?0+|.*\d(?:px|rem|em|%)(?![a-z]).*|(?:calc|min|max|clamp)\(.*)$/i;
+
+/** The CSS math functions a length token may be written with (fluid type: `clamp(…)`). */
+const LENGTH_FUNCTION = /^(?:calc|min|max|clamp)\(/i;
 
 /**
  * Whether an unresolved value is shaped like a length. A function other than
- * `calc()` (`color-mix(in srgb, red 50%, blue)`, `rgb(…)`) is not, whatever
- * digits and `%` it holds.
+ * the length math functions (`color-mix(in srgb, red 50%, blue)`, `rgb(…)`) is
+ * not, whatever digits and `%` it holds.
  */
 function isLengthShaped(value: string): boolean {
   const v = value.trim();
-  if (/^[a-z-]+\(/i.test(v) && !/^calc\(/i.test(v)) return false;
+  if (/^[a-z-]+\(/i.test(v) && !LENGTH_FUNCTION.test(v)) return false;
   return LENGTH_SHAPED.test(v);
 }
 
