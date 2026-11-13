@@ -82,12 +82,19 @@ export const VISION_ASSERTION_KINDS: readonly VisionAssertionKind[] = [
 ] as const;
 
 /**
- * The most assertions one in-tab request evaluates. The relay gives a command
- * 8 s by default; a contrast measurement costs a hit test and a few style
- * reads, so a batch this size stays well inside it. A larger batch is refused,
- * loudly, rather than left to time out half-measured.
+ * The most assertions one in-tab request evaluates, set from the Chromium
+ * timing smoke (`dom-assertions.smoke.test.ts`). On its 2000-node page with
+ * 1600 registered elements, a request pays about 1.5 s once, for the registry
+ * snapshot that attributes it, and 0.4 to 0.6 ms per assertion (the slower of
+ * 500 mixed and 500 contrast measurements on distinct elements, the costliest
+ * kind). 1000 is twice the largest batch a tenant has run (504 results) and
+ * costs about 0.6 s there, so a request at the limit, with the tab's 500 ms
+ * settle wait, takes under 3 s of the relay's 8 s command timeout — the rest
+ * is room for slower hardware and larger pages. The snapshot grows with the
+ * registry, not with the batch, so no limit here bounds it. A larger batch is
+ * refused, loudly, rather than left to time out half-measured: split it.
  */
-export const MAX_VISION_ASSERTIONS = 2000;
+export const MAX_VISION_ASSERTIONS = 1000;
 
 /** The most entries one list field holds: `elements`, `palette`, `dimensions`. */
 export const MAX_VISION_LIST = 256;

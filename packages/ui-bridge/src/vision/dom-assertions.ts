@@ -28,8 +28,12 @@
  *   (`<img>`, `<video>`, `<canvas>`, …) or a `pointer-events: none` layer the
  *   hit test cannot order, anywhere the text could show it, makes the colour
  *   `unknown{input_missing}`; so does an ancestor with `opacity < 1` that
- *   contains the first opaque layer. A translucent colour or an opacity group
- *   above that layer is composited exactly. With no opaque layer, the base is
+ *   contains the first opaque layer. A `pointer-events: none` layer is looked
+ *   for below the elements the hit test returns and below the root, through
+ *   the elements it cannot return — never by a walk of the whole document —
+ *   so one positioned outside the box of every hit-testable ancestor it has
+ *   is not found. A translucent colour or an opacity group above the first
+ *   opaque layer is composited exactly. With no opaque layer, the base is
  *   the `Canvas` colour under the root's `color-scheme`. Every layer the hit
  *   test shows ABOVE the text (a scrim, an overlay, a sheet) is read too: a
  *   plain translucent colour is composited over the text and its backdrop
@@ -428,7 +432,7 @@ class TabMeasurement {
   private readonly fitDone = new Set<string>();
   private readonly clipDone = new Set<string>();
   private registryIds: Map<Element, string> | null = null;
-  private pointerNoneLayers: Element[] | null = null;
+  private readonly hitHiddenBelow = new Map<Element, readonly Element[]>();
   private canvas: { paint: Paint; label: string } | null = null;
   private canvasFrom: Element | null = null;
 
@@ -1095,7 +1099,7 @@ class TabMeasurement {
       overItems.push(...layerItems);
     }
 
-    const unplaceable = this.unplaceableLayerAt(p, owner, layers);
+    const unplaceable = this.unplaceableLayerAt(p, owner, stack, layers);
     if (unplaceable) {
       return missing(
         'input_missing',
@@ -1257,38 +1261,69 @@ class TabMeasurement {
   }
 
   /**
-   * A non-ancestor layer the hit test cannot see (pointer-events: none) that
-   * paints at `p`: its place in the paint order is unknown, so whether it lies
-   * under or over the text is too. Scanned once per request.
+   * A layer the hit test cannot see (pointer-events: none) that paints at `p`
+   * and does not hold the text: its place in the paint order is unknown, so
+   * whether it lies under the text or over it is too.
+   *
+   * The search is bounded to where such a layer can hang in the tree: below
+   * an element the hit test returned at `p`, or below the root (an overlay
+   * mounted on `<html>` or `<body>`). From there it descends only through
+   * elements the hit test cannot return either — `pointer-events: none`
+   * (inherited, so a whole overlay subtree), `visibility: hidden`, or no box
+   * of its own (`display: contents`, a zero-area portal root). It reads the
+   * styles of those elements' children, once per request, never the whole
+   * document. What it cannot reach: a `pointer-events: none` layer positioned
+   * outside the box of every hit-testable ancestor it has, onto the text.
    */
   private unplaceableLayerAt(
     p: { x: number; y: number },
     owner: Element,
+    stack: readonly Element[],
     layers: readonly Element[]
   ): Element | null {
-    if (this.pointerNoneLayers === null) {
-      this.pointerNoneLayers = [];
-      const walker = document.createTreeWalker(document.documentElement, NodeFilter.SHOW_ELEMENT);
-      for (
-        let node = walker.currentNode as Element | null;
-        node;
-        node = walker.nextNode() as Element | null
-      ) {
-        const st = this.style(node);
-        if (!readInteractionBlockers(node, st).pointerEventsNone) continue;
-        if (st.visibility === 'hidden' || st.opacity === '0' || st.display === 'none') continue;
-        const bg = parseColor(st.backgroundColor);
-        if ((bg && bg.a > 0) || st.backgroundImage !== 'none' || isReplaced(node)) {
-          this.pointerNoneLayers.push(node);
-        }
+    const doc = owner.ownerDocument;
+    const roots = new Set<Element>(stack);
+    if (doc.documentElement) roots.add(doc.documentElement);
+    if (doc.body) roots.add(doc.body);
+    for (const root of roots) {
+      for (const layer of this.hitHiddenLayersBelow(root)) {
+        if (layers.includes(layer) || containsComposed(layer, owner)) continue;
+        const box = boxOf(layer);
+        if (box && pointIn(p, box)) return layer;
       }
     }
-    for (const layer of this.pointerNoneLayers) {
-      if (layers.includes(layer) || containsComposed(layer, owner)) continue;
-      const box = boxOf(layer);
-      if (box && pointIn(p, box)) return layer;
-    }
     return null;
+  }
+
+  /**
+   * The layers below `root` that paint (a background colour or image, or
+   * replaced content) where the hit test cannot see them: `root`'s children,
+   * and under a child only when the hit test cannot see that child either.
+   * Read once per root per request.
+   */
+  private hitHiddenLayersBelow(root: Element): readonly Element[] {
+    const cached = this.hitHiddenBelow.get(root);
+    if (cached) return cached;
+    const found: Element[] = [];
+    const visit = (parent: Element): void => {
+      for (const child of Array.from(parent.children)) {
+        const st = this.style(child);
+        if (st.display === 'none') continue;
+        const unhittable = readInteractionBlockers(child, st).pointerEventsNone;
+        const hidden = st.visibility === 'hidden' || st.visibility === 'collapse';
+        if (unhittable && !hidden && st.opacity !== '0') {
+          const bg = parseColor(st.backgroundColor);
+          if ((bg && bg.a > 0) || st.backgroundImage !== 'none' || isReplaced(child)) {
+            found.push(child);
+          }
+        }
+        const box = boxOf(child);
+        if (unhittable || hidden || !box || box.w === 0 || box.h === 0) visit(child);
+      }
+    };
+    visit(root);
+    this.hitHiddenBelow.set(root, found);
+    return found;
   }
 
   /**
