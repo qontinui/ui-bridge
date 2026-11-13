@@ -870,6 +870,65 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     await unmeasured.close();
   }, 60_000);
 
+  it('no_clipping: a right-to-left scroll container with its scrollbar on the left', async () => {
+    // Playwright's Chromium hides scrollbars, so every other case here lays
+    // out without one. A user's tab draws them, and under direction: rtl
+    // Chromium draws the vertical one on the LEFT, where it pushes the
+    // padding box right by its width. The right edge is the one this
+    // container scrolls from, so a badge flush with it fits and one 5px past
+    // it is cut off at every scroll position. Left to right, the scrollbar
+    // is on the right, and a badge flush with the left edge fits.
+    const shown = await chromium.launch({ ignoreDefaultArgs: ['--hide-scrollbars'] });
+    try {
+      const page = await shown.newPage({ viewport: { width: 800, height: 600 } });
+      await page.setContent(
+        `<!doctype html><html><body style="margin:8px">
+          <div data-id="rtlv" style="direction:rtl;overflow-y:auto;width:200px;height:100px">
+            <div style="position:relative;height:300px">
+              <span data-id="flush" style="position:absolute;right:0;top:0;width:20px;height:10px"></span>
+              <span data-id="past" style="position:absolute;right:-5px;top:20px;width:20px;height:10px"></span>
+            </div>
+          </div>
+          <div data-id="ltrv" style="overflow-y:auto;width:200px;height:100px">
+            <div style="position:relative;height:300px">
+              <span data-id="flushleft" style="position:absolute;left:0;top:0;width:20px;height:10px"></span>
+            </div>
+          </div>
+        </body></html>`
+      );
+      await page.addScriptTag({ content: bundle });
+      // The scrollbars are drawn: on the left of the first container (with
+      // no border, its clientLeft is the scrollbar), on the right of the
+      // second.
+      const bars = await page.evaluate(() =>
+        ['rtlv', 'ltrv'].map((id) => {
+          const el = document.querySelector(`[data-id="${id}"]`) as HTMLElement;
+          return { left: el.clientLeft, width: el.offsetWidth - el.clientWidth };
+        })
+      );
+      expect(bars[0].width).toBeGreaterThan(0);
+      expect(bars).toEqual([
+        { left: bars[0].width, width: bars[0].width },
+        { left: 0, width: bars[0].width },
+      ]);
+      const res = await assertOn(page, [
+        { type: 'no_clipping', region: { x: 0, y: 8, w: 800, h: 10 } },
+        { type: 'no_clipping', region: { x: 0, y: 28, w: 800, h: 10 } },
+        { type: 'no_clipping', region: { x: 0, y: 108, w: 800, h: 10 } },
+      ]);
+      expect(verdicts(res)).toEqual([
+        ['passed', null],
+        ['failed', null],
+        ['passed', null],
+      ]);
+      expect(res.results[1].detail).toContain(
+        "element 'past' extends past the right edge of the scrollable area of 'rtlv'"
+      );
+    } finally {
+      await shown.close();
+    }
+  }, 60_000);
+
   it(`times 500 assertions on a 2000-node page: ${MAX_VISION_ASSERTIONS} fit the relay's 8 s`, async () => {
     // About 2000 nodes: 400 small cards, every one on screen, each a card, a
     // title, a price, a badge and an icon; all but the icon are registered.
