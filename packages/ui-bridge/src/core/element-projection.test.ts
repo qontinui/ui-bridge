@@ -525,16 +525,27 @@ describe('projectElement · properties', () => {
   });
 
   describe('a property that names something the author chose', () => {
-    /** Every name, each answering an unquoted author ident — what a page that names things by record sets. */
+    /**
+     * Every name, each answering an unquoted author ident — what a page that
+     * names things by record sets, as Chromium serializes it. None holds a
+     * quote or a `url(`, so the NAME is what must scrub each one.
+     */
     const NAMED: Record<string, string> = {
       'font-family': 'Order4711, sans-serif',
       font: '16px Order4711',
+      'font-palette': '--order-4711',
+      'font-variant-alternates': 'styleset(order-4711)',
       'counter-reset': 'order-4711 3',
       'counter-set': 'order-4711 1',
       'counter-increment': 'order-4711',
+      'list-style-type': 'order-4711',
+      'list-style': 'outside none order-4711',
       'animation-name': 'order-4711',
       animation: '1s ease 0s 1 normal none running order-4711',
       'animation-timeline': '--order-4711',
+      'transition-property': '--order-4711',
+      transition: '--order-4711 1s',
+      'will-change': 'order-4711',
       'scroll-timeline-name': '--order-4711',
       'scroll-timeline': '--order-4711 block',
       'view-timeline-name': '--order-4711',
@@ -545,9 +556,23 @@ describe('projectElement · properties', () => {
       'anchor-name': '--order-4711',
       'position-anchor': '--order-4711',
       'anchor-scope': '--order-4711',
+      'position-try-fallbacks': '--order-4711',
+      'position-try': '--order-4711',
       'container-name': 'order-4711',
       container: 'order-4711 / inline-size',
+      page: 'order-4711',
       'grid-template-areas': 'order-4711',
+      'grid-template-columns': '[order-4711] 1264px',
+      'grid-template-rows': '[order-4711] 18px',
+      'grid-template': '[order-4711] 1fr / [order-4711] 1fr',
+      grid: '[order-4711] 18px / [order-4711] 1264px / none / row / auto / auto',
+      'grid-area': 'order-4711',
+      'grid-row': 'order-4711',
+      'grid-column': 'order-4711',
+      'grid-row-start': 'order-4711',
+      'grid-row-end': 'order-4711',
+      'grid-column-start': 'order-4711',
+      'grid-column-end': 'order-4711',
       quotes: 'auto',
       '-webkit-animation-name': 'order-4711',
       '-moz-animation-name': 'order-4711',
@@ -573,21 +598,21 @@ describe('projectElement · properties', () => {
       document.body.innerHTML = '<div data-bridge-redact="true"><button>x</button></div>';
       const node = document.querySelector('button')!;
       stubComputedStyle();
-      const projection = projectElement(node, {
-        properties: [...names, 'fontFamily', 'webkitAnimationName'],
-      });
+      // A CSSOM attribute reads the same property as its CSS name.
+      const aliases = ['fontFamily', 'webkitAnimationName', 'gridArea'];
+      const projection = projectElement(node, { properties: [...names, ...aliases] });
       const expected: Record<string, string> = {};
       for (const name of names) {
         expected[name] = STYLE.includes(name) ? NAMED[name] : REDACTED_VALUE;
       }
-      expected.fontFamily = REDACTED_VALUE;
-      expected.webkitAnimationName = REDACTED_VALUE;
+      for (const alias of aliases) expected[alias] = REDACTED_VALUE;
       expect(projection.properties).toEqual(expected);
       // Each scrubbed name is listed, in request order; the style vocabulary is not.
       expect(projection.redacted).toEqual(
-        [...names.filter((n) => !STYLE.includes(n)), 'fontFamily', 'webkitAnimationName'].map(
-          (name) => ({ kind: 'property', name })
-        )
+        [...names.filter((n) => !STYLE.includes(n)), ...aliases].map((name) => ({
+          kind: 'property',
+          name,
+        }))
       );
       expect(projection.unmeasured).toEqual([]);
     });
