@@ -310,11 +310,13 @@ export class AssertionExecutor {
       if (result.passed) {
         passedCount++;
       } else {
-        // An unmeasured check is neither a pass nor a failure of the page.
+        // `failedCount` counts every result that did not pass, an unmeasured
+        // one included; `unmeasuredCount` says how many of those could not
+        // read the value they judge. A subset, never a second tally.
+        failedCount++;
         if (result.outcome === 'unmeasured') unmeasuredCount++;
-        else failedCount++;
 
-        // Stop on the first result that keeps an 'all' batch from passing.
+        // Stop on first failure if configured
         if (request.stopOnFailure) {
           // Mark remaining assertions as skipped
           break;
@@ -322,10 +324,8 @@ export class AssertionExecutor {
       }
     }
 
-    // Determine overall pass/fail. An unmeasured check never passes an 'all'
-    // batch: what could not be read was not shown to hold.
-    const passed =
-      request.mode === 'all' ? failedCount === 0 && unmeasuredCount === 0 : passedCount > 0;
+    // Determine overall pass/fail
+    const passed = request.mode === 'all' ? failedCount === 0 : passedCount > 0;
 
     return {
       passed,

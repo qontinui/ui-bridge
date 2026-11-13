@@ -11,6 +11,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from .observation import UnknownCode
 from .types import ElementState
 
 # ============================================================================
@@ -284,14 +285,43 @@ class AssertionRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class AssertionOutcome(str, Enum):
+    """The three-valued verdict of one assertion (TypeScript ``AssertionOutcome``).
+
+    ``UNMEASURED``: the check could not read the value it judges (no live DOM
+    node, a property the engine does not compute, a custom property the element
+    does not set, a name the projection refuses). It is not a failure of the
+    page and not a pass: ``passed`` is ``False``, so it never passes a gate, and
+    ``actual`` is absent.
+    """
+
+    PASSED = "passed"
+    FAILED = "failed"
+    UNMEASURED = "unmeasured"
+
+
+class AssertionUnmeasured(BaseModel):
+    """Why an ``unmeasured`` assertion could not read its value."""
+
+    code: UnknownCode
+    detail: str
+
+
 class AssertionResult(BaseModel):
     """Assertion result."""
 
     passed: bool
+    # Absent only from an SDK build that predates it.
+    outcome: AssertionOutcome | None = None
+    # Present iff ``outcome`` is ``UNMEASURED``.
+    unmeasured: AssertionUnmeasured | None = None
     target: str
     target_description: str = Field(alias="targetDescription")
-    expected: Any
-    actual: Any
+    # Both may be absent on the wire: the SDK leaves out a value it does not
+    # have (an unmeasured check carries no ``actual`` at all), and JSON drops an
+    # undefined key.
+    expected: Any = None
+    actual: Any = None
     failure_reason: str | None = Field(None, alias="failureReason")
     suggestion: str | None = None
     element_state: ElementState | None = Field(None, alias="elementState")
@@ -317,7 +347,11 @@ class BatchAssertionResult(BaseModel):
     passed: bool
     results: list[AssertionResult]
     passed_count: int = Field(alias="passedCount")
+    # Every assertion that did not pass, the unmeasured ones included.
     failed_count: int = Field(alias="failedCount")
+    # How many of ``failed_count`` could not read their value: a subset of it.
+    # 0 when an SDK build that predates it sends none.
+    unmeasured_count: int = Field(0, alias="unmeasuredCount")
     duration_ms: float = Field(alias="durationMs")
     timestamp: int
 

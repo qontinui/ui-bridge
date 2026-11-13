@@ -409,10 +409,12 @@ describe.each(transports)('the $name transport', ({ mount }) => {
         detail: 'custom property `--not-set` is not set on this element',
       });
       expect(results[3]!.actual).toBe('de');
+      // `failedCount` counts every result that did not pass; the unmeasured
+      // ones are a subset of it, not a second tally beside it.
       expect(reply.data).toMatchObject({
         passed: false,
         passedCount: 0,
-        failedCount: 1,
+        failedCount: 4,
         unmeasuredCount: 3,
       });
     });

@@ -551,6 +551,34 @@ describe('AssertionExecutor', () => {
       expect(result.passed).toBe(false);
     });
 
+    it('counts an unmeasured check in failedCount, and again in the unmeasuredCount subset', async () => {
+      // No live node and no computed style for `color`: the check cannot read
+      // its value, so it is unmeasured — it did not pass.
+      const unmeasured = {
+        target: 'Submit',
+        type: 'cssProperty' as const,
+        propertyName: 'color',
+        expected: 'red',
+      };
+      const all = await executor.assertBatch({
+        assertions: [{ target: 'Submit', type: 'visible' }, unmeasured],
+        mode: 'all',
+      });
+      expect(all.results.map((r) => r.outcome)).toEqual(['passed', 'unmeasured']);
+      expect(all).toMatchObject({
+        passed: false,
+        passedCount: 1,
+        failedCount: 1,
+        unmeasuredCount: 1,
+      });
+
+      const any = await executor.assertBatch({
+        assertions: [unmeasured, { target: 'Submit', type: 'visible' }],
+        mode: 'any',
+      });
+      expect(any).toMatchObject({ passed: true, failedCount: 1, unmeasuredCount: 1 });
+    });
+
     it('should stop on first failure when stopOnFailure is true', async () => {
       const result = await executor.assertBatch({
         assertions: [

@@ -499,9 +499,10 @@ export interface AssertionResult {
    * no value for the property, a custom property the element does not set, or
    * a name the projection refuses (see `core/element-projection.ts`). An
    * unmeasured check is NOT a failure of the page, and it is not a pass either:
-   * `passed` is `false`, so it never passes a gate, `actual` is absent (never
-   * `''`), and `unmeasured` / `failureCode` say why. Absent only on results
-   * from an SDK build that predates it.
+   * `passed` is `false`, so it never passes a gate (a batch counts it in
+   * `failedCount`, and again in the `unmeasuredCount` subset), `actual` is
+   * absent (never `''`), and `unmeasured` / `failureCode` say why. Absent only
+   * on results from an SDK build that predates it.
    */
   outcome?: AssertionOutcome;
   /** Present iff `outcome === 'unmeasured'`: why the value could not be read. */
@@ -564,11 +565,15 @@ export interface BatchAssertionResult {
   results: AssertionResult[];
   /** Number of passed assertions */
   passedCount: number;
-  /** Number of failed assertions (`outcome: 'failed'`; unmeasured ones are counted apart) */
+  /**
+   * Number of assertions that did not pass: `outcome: 'failed'` and
+   * `outcome: 'unmeasured'` alike. An `'all'` batch passes iff it is 0.
+   */
   failedCount: number;
   /**
-   * Number of assertions that could not read the value they judge
-   * (`outcome: 'unmeasured'`). Any of them keeps an `'all'` batch from passing.
+   * How many of the `failedCount` assertions could not read the value they
+   * judge (`outcome: 'unmeasured'`). A SUBSET of `failedCount`, never added
+   * to it: `failedCount - unmeasuredCount` checks read a value that failed.
    */
   unmeasuredCount: number;
   /** Total duration */
