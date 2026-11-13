@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { chromium, type Browser, type Page } from 'playwright';
 import { chromiumAvailable } from '../../../../test-support/chromium-gate.mjs';
+import { MAX_VISION_ASSERTIONS } from './assertion-request';
 import type { VisionAssertResponse } from './wire';
 
 const PLAYWRIGHT_AVAILABLE = chromiumAvailable();
@@ -73,8 +74,8 @@ afterAll(async () => {
 }, 120_000);
 
 /** Open `body` (on a white, light-scheme page) with the evaluator injected. */
-async function openPage(body: string): Promise<Page> {
-  const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
+async function openPage(body: string, viewport = { width: 800, height: 600 }): Promise<Page> {
+  const page = await browser.newPage({ viewport });
   await page.setContent(
     `<!doctype html><html><head><meta charset="utf-8"></head><body style="margin:8px">${body}</body></html>`
   );
@@ -291,6 +292,56 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     await page.close();
   }, 60_000);
 
+  it('contrast_meets_wcag: a pointer-events: none layer the hit test cannot order', async () => {
+    // Each case is one row; a row's layer reaches only its own text.
+    const at = (top: number) => `position:absolute;left:8px;top:${top}px;margin:0;color:#000`;
+    const veil = (top: number, rgba: string, left = 0) =>
+      `position:fixed;left:${left}px;top:${top}px;width:400px;height:30px;background:${rgba}`;
+    const page = await openPage(`
+      <div style="position:absolute;left:0;top:0;width:400px;height:40px;background:#fff">
+        <p data-id="carded" style="${at(10)}">Under a veil in its card</p>
+        <div style="position:absolute;inset:0;background:rgba(0,0,0,0.3);pointer-events:none"></div>
+      </div>
+      <p data-id="portaled" style="${at(60)}">Under a veil mounted on the body</p>
+      <div style="${veil(55, 'rgba(255,0,0,0.2)')};pointer-events:none"></div>
+      <p data-id="rooted" style="${at(110)}">Under a veil in a zero-size portal root</p>
+      <div style="position:absolute;left:0;top:0;width:0;height:0">
+        <div style="${veil(105, 'rgba(0,128,0,0.2)')};pointer-events:none"></div>
+      </div>
+      <p data-id="wrapped" style="${at(160)}">Under a veil inside a pointer-events: none wrapper</p>
+      <div style="position:absolute;left:500px;top:150px;width:50px;height:50px;pointer-events:none">
+        <div style="${veil(155, 'rgba(0,0,255,0.2)')}"></div>
+      </div>
+      <p data-id="elsewhere" style="${at(210)}">A veil elsewhere on the page</p>
+      <div style="${veil(205, 'rgba(0,0,0,0.5)', 600)};width:50px;pointer-events:none"></div>
+      <div style="position:absolute;left:0;top:250px;width:400px;height:40px;background:#fff;pointer-events:none">
+        <p data-id="held" style="margin:0;color:#000;pointer-events:auto">Inside a pointer-events: none card</p>
+      </div>
+    `);
+    const res = await assertOn(
+      page,
+      ['carded', 'portaled', 'rooted', 'wrapped', 'elsewhere', 'held'].map((element) => ({
+        type: 'contrast_meets_wcag',
+        element,
+      }))
+    );
+    expect(verdicts(res)).toEqual([
+      ['unknown', 'input_missing'], // found below the card the hit test returned
+      ['unknown', 'input_missing'], // found below the body
+      ['unknown', 'input_missing'], // found through a wrapper with no area
+      ['unknown', 'input_missing'], // found through a wrapper the hit test cannot see
+      ['passed', null], // a veil that does not reach the text
+      ['passed', null], // a pointer-events: none ancestor holds the text: it is the backdrop
+    ]);
+    for (const r of res.results.slice(0, 4)) {
+      expect(r.detail).toContain(
+        "paints a background at the text's position but computes pointer-events: none"
+      );
+    }
+    expect(res.results[5].detail).toContain('contrast ratio 21.00:1');
+    await page.close();
+  }, 60_000);
+
   it('text_fits_container: the nearest block box, borders and scrollbars excluded', async () => {
     const page = await openPage(`
       <div data-id="fits" style="width:300px">Short</div>
@@ -500,6 +551,89 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     ]);
     await unmeasured.close();
   }, 60_000);
+
+  it(`times 500 assertions on a 2000-node page: ${MAX_VISION_ASSERTIONS} fit the relay's 8 s`, async () => {
+    // About 2000 nodes: 400 small cards, every one on screen, each a card, a
+    // title, a price, a badge and an icon; all but the icon are registered.
+    const cards = Array.from(
+      { length: 400 },
+      (_, i) =>
+        `<div data-id="card${i}" class="card"><span data-id="title${i}" class="title">Item ${i}</span>` +
+        `<span data-id="price${i}" class="price">$${i}.00</span>` +
+        `<b data-id="badge${i}" class="badge">${i % 7 ? 'New' : 'Sale'}</b><i class="icon"></i></div>`
+    );
+    const page = await openPage(
+      `<style>
+        .grid { display: grid; grid-template-columns: repeat(20, 60px); gap: 2px }
+        .card { position: relative; height: 34px; background: #fff; border: 1px solid #ccc;
+                overflow: hidden; font: 9px/11px sans-serif }
+        .title, .price { display: block; color: #222 }
+        .badge { position: absolute; right: 1px; bottom: 1px; background: #b00; color: #fff;
+                 font-size: 8px }
+        .icon { position: absolute; left: 1px; bottom: 1px; width: 6px; height: 6px;
+                background: #08c }
+      </style><div class="grid">${cards.join('')}</div>`,
+      { width: 1280, height: 800 }
+    );
+    expect(await page.evaluate(() => document.getElementsByTagName('*').length)).toBeGreaterThan(
+      2000
+    );
+
+    const n = (k: number): number[] => Array.from({ length: k }, (_, i) => i);
+    const mixed = [
+      ...n(200).map((i) => ({ type: 'contrast_meets_wcag', element: `title${i}` })),
+      ...n(40).map((i) => ({ type: 'contrast_meets_wcag', element: `badge${i}` })),
+      ...n(100).map((i) => ({ type: 'text_fits_container', element: `price${i}` })),
+      ...n(100).map((i) => ({ type: 'no_overlap', elements: [`card${i}`, `card${i + 1}`] })),
+      ...n(50).map((i) => ({ type: 'element_above', elements: [`badge${i}`, `card${i}`] })),
+      ...n(5).map(() => ({ type: 'no_clipping' })),
+      ...n(5).map(() => ({ type: 'animation_settled' })),
+    ];
+    // The costliest kind alone, each on a different element: nothing is reused.
+    const contrast = [
+      ...n(400).map((i) => ({ type: 'contrast_meets_wcag', element: `title${i}` })),
+      ...n(100).map((i) => ({ type: 'contrast_meets_wcag', element: `price${i}` })),
+    ];
+    const timed = (assertions: unknown[]) =>
+      page.evaluate(
+        (request) => {
+          const t0 = performance.now();
+          const res = window.VA.run(request) as VisionAssertResponse;
+          return { res, ms: performance.now() - t0 };
+        },
+        { assertions }
+      );
+
+    // Cold, as a tab's first request is. An empty request times what every
+    // request pays once whatever its size: the registry snapshot that
+    // attributes it, and the envelope.
+    const fixedBefore = await timed([]);
+    const mixedRun = await timed(mixed);
+    const contrastRun = await timed(contrast);
+    const fixedAfter = await timed([]);
+    expect(mixed).toHaveLength(500);
+    expect(contrast).toHaveLength(500);
+    // Every result is a verdict but the five kinds the tab does not implement:
+    // the time is the time to measure, not to give up.
+    expect(mixedRun.res.outcomeCounts.unknown).toBe(5);
+    expect(contrastRun.res.outcomeCounts.unknown).toBe(0);
+    expect(fixedBefore.res.snapshotAttribution.state).toBe('attributed');
+
+    const fixed = Math.max(fixedBefore.ms, fixedAfter.ms);
+    const floor = Math.min(fixedBefore.ms, fixedAfter.ms);
+    const perAssertion = (Math.max(mixedRun.ms, contrastRun.ms) - floor) / 500;
+    const largest = fixed + perAssertion * MAX_VISION_ASSERTIONS + 500;
+    console.info(
+      `[vision timing] fixed ${fixedBefore.ms.toFixed(0)}/${fixedAfter.ms.toFixed(0)} ms, ` +
+        `500 mixed ${mixedRun.ms.toFixed(0)} ms, 500 contrast ${contrastRun.ms.toFixed(0)} ms: ` +
+        `${perAssertion.toFixed(3)} ms per assertion; ${MAX_VISION_ASSERTIONS} assertions ` +
+        `${largest.toFixed(0)} ms with the 500 ms settle`
+    );
+    // The largest batch the validator admits, at the slower rate, on top of the
+    // fixed cost and the tab's 500 ms settle wait, inside the relay's 8 s.
+    expect(largest).toBeLessThan(8_000);
+    await page.close();
+  }, 120_000);
 
   it('answers a mixed batch per result, with the envelope vision/wire.ts declares', async () => {
     const page = await openPage(`<p data-id="ok" style="color:#000">Readable</p>`);

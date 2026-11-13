@@ -230,13 +230,20 @@ an element with no box. An empty assertion list is `unknown` with
 caller-supplied `snapshot`: the tab measures the live page.
 
 The body crosses the relay into a user's tab, so it is bounded where the
-runner's is not: at most 2000 assertions per request, 256 entries in any list
+runner's is not: at most 1000 assertions per request, 256 entries in any list
 (`elements`, `palette`, `dimensions`) and 256 characters in any string. A
 larger body is refused with `UB-VALIDATION-ERROR`, and a refusal quotes at most
 64 characters of what was sent. Only the validated assertions and the routing
 keys (`tabId`) are relayed. No other key of the body reaches the tab,
 `settleTimeout` and `skipSettle` included: the tab waits at most its default
 500 ms for the page to settle before it measures.
+
+A request must answer within the relay's 8 s command timeout. Measuring costs
+well under a millisecond per assertion, so a full batch takes a small part of
+it. Each request also takes one registry snapshot to attribute its answer
+(`snapshotAttribution`), and that costs about as much as a `/control/snapshot`
+of the same page: it grows with the number of registered elements, whatever
+the batch size.
 
 A capture result (`capture`, `annotate`, `diff`, `raw`) names its bytes by
 `url`, whose literal value is the relative HTTP path
