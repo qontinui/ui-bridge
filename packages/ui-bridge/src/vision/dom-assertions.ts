@@ -30,7 +30,13 @@
  *   `unknown{input_missing}`; so does an ancestor with `opacity < 1` that
  *   contains the first opaque layer. A translucent colour or an opacity group
  *   above that layer is composited exactly. With no opaque layer, the base is
- *   the `Canvas` colour under the root's `color-scheme`.
+ *   the `Canvas` colour under the root's `color-scheme`. Every layer the hit
+ *   test shows ABOVE the text (a scrim, an overlay, a sheet) is read too: a
+ *   plain translucent colour is composited over the text and its backdrop
+ *   alike, so a white 80% scrim over black text is ~1.6:1, not 21:1; one that
+ *   covers the text (opaque), or paints over it in a way the DOM cannot read
+ *   (an image, a filter, a backdrop-filter, a blend, replaced or generated
+ *   content, its own text), is `unknown{input_missing}` naming the layer.
  * - `text_fits_container` — a block-level element's `scrollWidth` /
  *   `scrollHeight`, with its borders and scrollbars added back, against its
  *   border box with the size `Math.ceil`'d (vision-core's comparison and the
@@ -1065,9 +1071,11 @@ class TabMeasurement {
     // The paint stack under the text, top first: the hit stack beneath the
     // text's owner, plus the DOM ancestors the hit test skipped
     // (pointer-events: none), each placed above the first entry outside it.
+    // An ancestor the hit test shows ABOVE the owner (an owner with a
+    // negative z-index) paints over the text, so it is not added beneath.
     const layers = stack.slice(at);
     for (let a = composedParent(owner); a; a = composedParent(a)) {
-      if (layers.includes(a)) continue;
+      if (stack.includes(a)) continue;
       const after = layers.findIndex((l, i) => i > 0 && !containsComposed(a, l));
       if (after < 0) layers.push(a);
       else layers.splice(after, 0, a);
@@ -1075,6 +1083,18 @@ class TabMeasurement {
 
     const blocked = this.textAffectedBy(owner);
     if (blocked) return missing('input_missing', blocked);
+
+    // Bottom-up paint operations OVER the text: every layer the hit test
+    // shows above its owner at the sample point.
+    const overItems: PaintItem[] = [];
+    for (let i = at - 1; i >= 0; i--) {
+      const layerItems = this.paintAbove(stack[i], owner, p);
+      if (layerItems instanceof ColorUnmeasured) {
+        return missing(layerItems.reason.code, layerItems.reason.detail);
+      }
+      overItems.push(...layerItems);
+    }
+
     const unplaceable = this.unplaceableLayerAt(p, owner, layers);
     if (unplaceable) {
       return missing(
@@ -1094,9 +1114,13 @@ class TabMeasurement {
       items.push(...layerItems);
     }
 
+    // A translucent layer over the text tints the text and its backdrop alike.
     const canvas = this.canvasPaint();
-    const bg = this.composite(items, canvas.paint);
-    const fg = this.composite([...items, { color: fill, owner, label: 'the text' }], canvas.paint);
+    const bg = this.composite([...items, ...overItems], canvas.paint);
+    const fg = this.composite(
+      [...items, { color: fill, owner, label: 'the text' }, ...overItems],
+      canvas.paint
+    );
     if (bg.taint > 1e-6 || fg.taint > 1e-6) {
       // Name the topmost unreadable layer: the one that shows through.
       const unreadable = [...items].reverse().find((it) => it.color === null);
@@ -1122,6 +1146,91 @@ class TabMeasurement {
       b: Math.round(c.b),
     });
     return { fg: rgb(fg), bg: rgb(bg) };
+  }
+
+  /**
+   * What a layer the hit test shows ABOVE the text paints over it at `p`,
+   * bottom-up. Only a plain colour the text shows through is composited — over
+   * the text and its backdrop alike, at the opacity of the groups that hold the
+   * layer and not the text. A layer that covers the text (an opaque colour),
+   * or whose paint over it the DOM cannot read (an image, a filter, a
+   * backdrop-filter, a blend, replaced content, generated content, its own
+   * text), stops the measurement, named. A layer that paints nothing there —
+   * a transparent overlay, an empty stretched link — contributes nothing.
+   */
+  private paintAbove(
+    layer: Element,
+    owner: Element,
+    p: { x: number; y: number }
+  ): PaintItem[] | ColorUnmeasured {
+    let fade = 1;
+    for (const group of this.groupsOf(layer)) {
+      if (!containsComposed(group, owner)) fade *= Number(this.style(group).opacity);
+    }
+    if (!(fade > 0)) return [];
+    const st = this.style(layer);
+    const stop = (how: string): ColorUnmeasured =>
+      new ColorUnmeasured({
+        code: 'input_missing',
+        detail: `${this.describe(layer)} is painted above the text ${how}`,
+      });
+    const backdrop =
+      st.getPropertyValue('backdrop-filter') || st.getPropertyValue('-webkit-backdrop-filter');
+    if (backdrop && backdrop !== 'none') {
+      return stop(`with backdrop-filter: ${backdrop}, which alters the text beneath it`);
+    }
+    if (st.mixBlendMode && st.mixBlendMode !== 'normal') {
+      return stop(`and blends with it (mix-blend-mode: ${st.mixBlendMode})`);
+    }
+    if (st.filter && st.filter !== 'none') return stop(`with filter: ${st.filter}`);
+    if (isReplaced(layer)) return stop('and its pixels cover the text');
+    const items: PaintItem[] = [];
+    const clip =
+      st.getPropertyValue('background-clip') || st.getPropertyValue('-webkit-background-clip');
+    // A background clipped to the glyphs paints only where the layer's own
+    // text is, which the text check below answers.
+    if (clip !== 'text') {
+      if (st.backgroundImage !== 'none') return stop('with a background-image');
+      const bg = parseColor(st.backgroundColor);
+      if (!bg) {
+        return stop(`with a background colour ${JSON.stringify(st.backgroundColor)} not read`);
+      }
+      if (bg.a > 0) {
+        if (bg.a * fade >= 1 - 1e-6) {
+          return stop(`with an opaque background (${st.backgroundColor}) that covers it`);
+        }
+        items.push({ color: bg, owner: layer, label: this.describe(layer) });
+      }
+    }
+    if (this.ownTextAt(layer, p)) return stop('and its own text paints at the same position');
+    for (const which of ['::before', '::after'] as const) {
+      const ps = this.pseudoStyle(layer, which);
+      if (['none', 'normal', ''].includes(ps.content) || ps.display === 'none') continue;
+      const bg = parseColor(ps.backgroundColor);
+      const image = ps.backgroundImage !== 'none' && ps.backgroundImage !== '';
+      const glyphs = ps.content !== '""' && ps.content !== "''";
+      if (!image && !glyphs && bg && bg.a === 0) continue;
+      const box = this.pseudoBox(layer, ps);
+      if (box && !pointIn(p, box)) continue;
+      return stop(`with ${which} generated content that ${box ? 'covers' : 'may cover'} it`);
+    }
+    return items;
+  }
+
+  /** Does one of `layer`'s own text runs (not a descendant element's) paint at `p`? */
+  private ownTextAt(layer: Element, p: { x: number; y: number }): boolean {
+    const doc = layer.ownerDocument;
+    if (typeof doc.createRange !== 'function') return false;
+    for (const child of Array.from(layer.childNodes)) {
+      if (child.nodeType !== 3 || !/\S/.test(child.nodeValue ?? '')) continue;
+      const range = doc.createRange();
+      if (typeof range.getClientRects !== 'function') return false;
+      range.selectNodeContents(child);
+      for (const r of Array.from(range.getClientRects())) {
+        if (pointIn(p, { x: r.left, y: r.top, w: r.width, h: r.height })) return true;
+      }
+    }
+    return false;
   }
 
   /**

@@ -201,7 +201,7 @@ only what the page itself can measure, and they get a verdict:
 
 | Kind | What the tab measures |
 | --- | --- |
-| `contrast_meets_wcag` | The text colour against the backdrop composited under its first rendered text run; WCAG large-text thresholds (AA 3:1 / AAA 4.5:1 at 24px, or 18.66px bold) |
+| `contrast_meets_wcag` | The text colour against the backdrop composited under its first rendered text run, with every translucent layer the hit test shows above the text (a scrim) composited over both; WCAG large-text thresholds (AA 3:1 / AAA 4.5:1 at 24px, or 18.66px bold). A layer covering the text, or painting over it in a way the DOM cannot read, is `unknown` |
 | `text_fits_container` | A block-level element's `scrollWidth`/`scrollHeight` (borders and scrollbars included) against its border box, rounded up, both in layout pixels, so a CSS `transform` is not overflow; an inline element's own line fragments against the content box of its block, so a sibling's overflow is not its own; an element with no text is `unknown` |
 | `no_overlap` | Border boxes, after the `tolerance_px` inset |
 | `element_above` | Paint order from `document.elementsFromPoint` inside the pair's visible intersection (never scrolls) |
