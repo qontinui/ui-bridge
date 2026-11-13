@@ -342,15 +342,30 @@ export function trustDeveloperContent(
  * made constructible only through this factory). CONTENT axis: inside a
  * content-redaction boundary every attribute VALUE collapses to the sentinel
  * while KEYS survive (attribute names are developer-authored, not secrets).
+ *
+ * VALUE axis: the `value` attribute IS the element's value (react-dom mirrors
+ * a controlled input's live value into it), so under a VALUE-only verdict — a
+ * bare `<input type="password">` — that one entry collapses too, while every
+ * other attribute stays raw and the field stays addressable. Without this arm
+ * a password input's `state.value` was scrubbed and its `attributes.value`
+ * shipped the cleartext beside it. Identifier attributes (`data-testid`,
+ * `data-awas-element`) stay raw under a VALUE-only verdict, matching
+ * `createElementIdentifier`, which ships them for addressability anyway.
  */
 export function scrubRecord(
   rec: Record<string, string>,
   v: RedactionVerdict
 ): Scrubbed<Record<string, string>> {
-  if (!v.content) return rec as Scrubbed<Record<string, string>>;
-  const out: Record<string, string> = {};
-  for (const key of Object.keys(rec)) out[key] = REDACTED_VALUE;
-  return out as Scrubbed<Record<string, string>>;
+  if (v.content) {
+    const out: Record<string, string> = {};
+    for (const key of Object.keys(rec)) out[key] = REDACTED_VALUE;
+    return out as Scrubbed<Record<string, string>>;
+  }
+  if (v.value && Object.prototype.hasOwnProperty.call(rec, 'value')) {
+    const out: Record<string, string> = { ...rec, value: REDACTED_VALUE };
+    return out as Scrubbed<Record<string, string>>;
+  }
+  return rec as Scrubbed<Record<string, string>>;
 }
 
 /**

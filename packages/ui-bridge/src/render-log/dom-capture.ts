@@ -47,8 +47,9 @@ export interface CapturedElement {
   /**
    * Attributes relevant for automation. §4.6: `CAPTURE_ATTRIBUTES` literally
    * enumerates `value` / `alt` / `title` / `placeholder` / `aria-label`, so
-   * inside a boundary every attribute VALUE must collapse. Branded as a whole
-   * via `scrubRecord` (per-field branding is impossible on a `Record`).
+   * inside a boundary every attribute VALUE must collapse, and on a bare
+   * password input the `value` attribute collapses (VALUE axis). Branded as a
+   * whole via `scrubRecord` (per-field branding is impossible on a `Record`).
    */
   attributes: Scrubbed<Record<string, string>>;
   /** Child element count */

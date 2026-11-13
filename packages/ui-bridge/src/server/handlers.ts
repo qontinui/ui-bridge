@@ -100,6 +100,7 @@ import {
   scrubContent,
   scrubContentByVerdict,
   scrubMediaMetadata,
+  scrubRecord,
   verdictOf,
   verdictFromState,
   readScrubbedValue,
@@ -6384,7 +6385,8 @@ export function createHandlers(
             if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
               // §4.6 VALUE axis: password/boundary inputs must not ship cleartext.
               info.value = readScrubbedValue(el) ?? '';
-              info.placeholder = el.placeholder;
+              // §4.6 CONTENT axis: hint text inside a boundary is content.
+              info.placeholder = scrubContent(el.placeholder, el) ?? '';
               info.disabled = el.disabled;
             }
             if (el instanceof HTMLSelectElement) {
@@ -6400,18 +6402,21 @@ export function createHandlers(
                   }));
             }
             if (el instanceof HTMLButtonElement) info.disabled = el.disabled;
-            const attrs: Record<string, string> = {};
-            for (const a of [
-              'data-tutorial-id',
-              'title',
-              'aria-label',
-              'role',
-              'href',
-              'placeholder',
-            ]) {
+            // §4.6: `title` / `aria-label` / `placeholder` / `href` are content —
+            // inside a boundary their values collapse and the keys survive.
+            // `role` and `data-tutorial-id` are addressing and stay raw, so a
+            // redacted element stays findable by structural means.
+            const addressAttrs: Record<string, string> = {};
+            for (const a of ['data-tutorial-id', 'role']) {
               const v = el.getAttribute(a);
-              if (v) attrs[a] = v;
+              if (v) addressAttrs[a] = v;
             }
+            const contentAttrs: Record<string, string> = {};
+            for (const a of ['title', 'aria-label', 'href', 'placeholder']) {
+              const v = el.getAttribute(a);
+              if (v) contentAttrs[a] = v;
+            }
+            const attrs = { ...addressAttrs, ...scrubRecord(contentAttrs, verdictOf(el)) };
             if (Object.keys(attrs).length > 0) info.attributes = attrs;
           }
           results.push(info);

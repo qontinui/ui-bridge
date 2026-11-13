@@ -52,6 +52,31 @@ keeps its "Password" label and stays addressable — only its value hides. Match
 redacted elements by `role` / `data-testid` / structural id, not by their
 (now-scrubbed) text.
 
+**Hosts that read the DOM over their own transport.** A host app that serves
+its own element or DOM reads (outside the SDK's `/control/*` handlers) must
+apply the same verdict rather than re-derive the boundary walk:
+
+```ts
+import { verdictOf, REDACTED_VALUE } from '@qontinui/ui-bridge/core';
+import { readValuePrimitive } from '@qontinui/ui-bridge/control';
+
+const v = verdictOf(el); // { content, value }
+// CONTENT (boundary only): title, aria-label, text, accessible name.
+// VALUE (boundary OR password input): the value, and the data-* values the
+// SDK's `state.dataset` omits. Identifier attributes (`data-testid`,
+// `data-ui-bridge-test-id`, `data-awas-element`) stay raw so the element stays
+// addressable.
+const title = v.content ? REDACTED_VALUE : el.getAttribute('title');
+
+// read-value with the SDK's gate on every matched element
+// (selector, index?, { all? }); returns { ok, data } or { ok: false, error, code }:
+const result = readValuePrimitive('#password');
+```
+
+`isValueRedacted(el)` and `isContentRedacted(el)` are the single-axis forms,
+and the package root re-exports all of these. `REDACTED_VALUE` is only for
+producing the sentinel. Do not use it to detect redaction (see below).
+
 **What §4.6 does NOT cover** (state these to anyone relying on it):
 - **Shadow DOM / React portals.** The boundary walk follows `parentElement`
   only; content portalled to `document.body` from inside a boundary has no
