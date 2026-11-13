@@ -117,19 +117,21 @@ every returned row, answered in the row's `projection`:
   serialize).
 - Inside a `data-bridge-redact` boundary, values that can carry page content
   read `[REDACTED]`: free-text and URL attributes (`title`, `alt`, `href`,
-  `aria-label`, …), custom properties, property values holding a string or
-  a `url()`, and the properties whose value names something the author chose,
-  whatever the value holds: a font (`font-family`, `font-palette`,
-  `font-variant-alternates`), a counter or counter style (`counter-reset` /
-  `-set` / `-increment`, `list-style-type`), an animation or transition
-  (`animation-name`, `transition-property`, `will-change`), the timeline and
-  anchor names, a position-try rule (`position-try-fallbacks`), a container
-  (`container-name`), a view transition (`view-transition-name` / `-class`),
-  a named page (`page`), a grid area or line (`grid-template-areas`,
+  `aria-label`, …), custom properties, property values holding a string, a
+  `url()` or a `paint()` worklet name, and the properties whose value names
+  something the author chose, whatever the value holds: a font
+  (`font-family`, `font-palette`, `font-variant-alternates`), a counter or
+  counter style (`counter-reset` / `-set` / `-increment`, `list-style-type`),
+  an animation or transition (`animation-name`, `transition-property`,
+  `will-change`), the timeline and anchor names, a position-try rule
+  (`position-try-fallbacks`), a container (`container-name`), a view
+  transition (`view-transition-name` / `-class` / `-group`), a named page
+  (`page`), a grid area or line (`grid-template-areas`,
   `grid-template-columns` / `-rows`, `grid-area`, `grid-row` /
-  `grid-column` and their `-start` / `-end`), `quotes`, and the shorthands
-  that serialize them (`font`, `list-style`, `animation`, `transition`,
-  `position-try`, `container`, `grid`, `grid-template`).
+  `grid-column` and their `-start` / `-end`), the generated content
+  (`content`, `quotes`), and the shorthands that serialize them (`font`,
+  `font-variant`, `list-style`, `animation`, `transition`, `position-try`,
+  `container`, `grid`, `grid-template`).
   Structure passes when its VALUE is structure: `id`, `role`, a
   language tag in `lang`, `ltr` / `rtl` / `auto` in `dir`, an ARIA state
   holding one of its own tokens (`aria-invalid="spelling"`) or, for a numeric

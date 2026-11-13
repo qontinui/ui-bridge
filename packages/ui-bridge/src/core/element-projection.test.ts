@@ -513,6 +513,40 @@ describe('projectElement · properties', () => {
     ]);
   });
 
+  it('inside a redaction boundary, a paint() worklet name is scrubbed like a url(); a gradient passes', () => {
+    // jsdom computes none of these: answer them as Chromium does. `contain:
+    // paint` is the keyword, not the function, and passes like any keyword.
+    const VALUES: Record<string, string> = {
+      'background-image': 'paint(order-4711)',
+      'mask-image': 'paint(order-4711)',
+      'border-image-source': 'linear-gradient(rgb(1, 2, 3), rgb(4, 5, 6))',
+      contain: 'layout paint',
+    };
+    const properties = Object.keys(VALUES);
+    const computed = vi.spyOn(window, 'getComputedStyle').mockReturnValue({
+      getPropertyValue: (name: string) => VALUES[name] ?? '',
+    } as unknown as CSSStyleDeclaration);
+    try {
+      document.body.innerHTML =
+        '<div data-bridge-redact="true"><button id="in">x</button></div><button id="out">y</button>';
+      const inside = projectElement(document.getElementById('in'), { properties });
+      expect(inside.properties).toEqual({
+        'background-image': REDACTED_VALUE,
+        'mask-image': REDACTED_VALUE,
+        'border-image-source': VALUES['border-image-source'],
+        contain: 'layout paint',
+      });
+      expect(inside.redacted).toEqual([
+        { kind: 'property', name: 'background-image' },
+        { kind: 'property', name: 'mask-image' },
+      ]);
+      const outside = projectElement(document.getElementById('out'), { properties });
+      expect(outside).toEqual({ properties: VALUES, unmeasured: [] });
+    } finally {
+      computed.mockRestore();
+    }
+  });
+
   it('outside a boundary, nothing is scrubbed and no `redacted` list is carried', () => {
     document.body.innerHTML = '<button style="--user: 4111; color: rgb(1, 2, 3)">x</button>';
     const projection = projectElement(document.querySelector('button')!, {
@@ -535,6 +569,7 @@ describe('projectElement · properties', () => {
       font: '16px Order4711',
       'font-palette': '--order-4711',
       'font-variant-alternates': 'styleset(order-4711)',
+      'font-variant': 'styleset(order-4711)',
       'counter-reset': 'order-4711 3',
       'counter-set': 'order-4711 1',
       'counter-increment': 'order-4711',
@@ -553,6 +588,7 @@ describe('projectElement · properties', () => {
       'timeline-scope': '--order-4711',
       'view-transition-name': 'order-4711',
       'view-transition-class': 'order-4711',
+      'view-transition-group': 'order-4711',
       'anchor-name': '--order-4711',
       'position-anchor': '--order-4711',
       'anchor-scope': '--order-4711',
@@ -574,6 +610,7 @@ describe('projectElement · properties', () => {
       'grid-column-start': 'order-4711',
       'grid-column-end': 'order-4711',
       quotes: 'auto',
+      content: 'counter(order-4711)',
       '-webkit-animation-name': 'order-4711',
       '-moz-animation-name': 'order-4711',
       color: 'rgb(1, 2, 3)',
