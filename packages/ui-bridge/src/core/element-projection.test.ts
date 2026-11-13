@@ -178,6 +178,28 @@ describe('cssPropertyName', () => {
     expect(cssPropertyName('-Webkit-Line-Clamp')).toBe('-webkit-line-clamp');
   });
 
+  it('reads a capitalised name as the CSS name: a leading capital is a vendor prefix only for Webkit, Moz and Ms', () => {
+    // Camel-converting a capitalised word read `Opacity` as `-opacity`.
+    expect(cssPropertyName('Opacity')).toBe('opacity');
+    expect(cssPropertyName('Color')).toBe('color');
+    expect(cssPropertyName('BorderTopColor')).toBe('border-top-color');
+    expect(cssPropertyName('COLOR')).toBe('color');
+    // The vendor-prefixed CSSOM attributes still convert.
+    expect(cssPropertyName('WebkitLineClamp')).toBe('-webkit-line-clamp');
+    expect(cssPropertyName('MozAppearance')).toBe('-moz-appearance');
+    expect(cssPropertyName('MsTransform')).toBe('-ms-transform');
+    expect(cssPropertyName('webkitLineClamp')).toBe('-webkit-line-clamp');
+  });
+
+  it('a capitalised name reads the value, keyed as requested', () => {
+    document.body.innerHTML = '<button style="opacity: 0.5; color: rgb(1, 2, 3)">x</button>';
+    const node = document.body.firstElementChild!;
+    expect(projectElement(node, { properties: ['Opacity', 'Color'] })).toEqual({
+      properties: { Opacity: '0.5', Color: 'rgb(1, 2, 3)' },
+      unmeasured: [],
+    });
+  });
+
   it('a hyphenated name in upper case reads the value, keyed as requested', () => {
     document.body.innerHTML = '<button style="border-top-color: rgb(1, 2, 3)">x</button>';
     const node = document.body.firstElementChild!;
@@ -275,7 +297,7 @@ describe('projectElement · attributes', () => {
     ['aria-haspopup', 'listbox', 'Card 4111'],
     ['aria-relevant', 'additions text', 'additions 4111'],
     ['aria-level', '2', 'Card 4111'],
-    ['aria-valuemin', '-0.5', '4111 4111'],
+    ['aria-setsize', '-1', '4111 4111'],
     ['dir', 'rtl', 'Card 4111'],
     ['lang', 'de-CH', 'Card 4111'],
   ];
@@ -311,6 +333,27 @@ describe('projectElement · attributes', () => {
     const projection = projectElement(node, { attributes: SHAPES.map(([a]) => a) });
     expect(projection.attributes).toEqual(Object.fromEntries(SHAPES.map(([a, , t]) => [a, t])));
     expect(projection).not.toHaveProperty('redacted');
+  });
+
+  it('inside a boundary, the range values are scrubbed, numbers or not: a range bound can be page data', () => {
+    const ranges = ['aria-valuemin', 'aria-valuemax', 'aria-valuenow'];
+    const boundary = el(
+      '<div><div data-bridge-redact="true">' +
+        '<div id="limit" role="meter" aria-valuemin="0" aria-valuemax="4111.50" aria-valuenow="12">x</div>' +
+        '</div><div id="open" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="12">y</div></div>'
+    );
+    const inside = projectElement(boundary.querySelector('#limit')!, { attributes: ranges });
+    expect(inside.attributes).toEqual({
+      'aria-valuemin': REDACTED_VALUE,
+      'aria-valuemax': REDACTED_VALUE,
+      'aria-valuenow': REDACTED_VALUE,
+    });
+    expect(inside.redacted).toEqual(ranges.map((name) => ({ kind: 'attribute', name })));
+    // Outside a boundary they are the page's own values.
+    expect(projectElement(boundary.querySelector('#open')!, { attributes: ranges })).toEqual({
+      attributes: { 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': '12' },
+      unmeasured: [],
+    });
   });
 
   it('names every scrubbed value in `redacted`, and only those — an absent or structural one is not', () => {

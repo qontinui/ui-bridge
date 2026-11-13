@@ -94,9 +94,10 @@ every returned row, answered in the row's `projection`:
 
 - **`properties`**: CSS property names, each a CSS ident: a standard name
   (`border-inline-start-color`, `-webkit-line-clamp`, in any case), its CSSOM
-  camel-cased attribute (`borderTopColor`), or a custom property
-  (`--color-accent`, case-sensitive). The value is the COMPUTED one, so a
-  `var()` reference arrives resolved.
+  camel-cased attribute (`borderTopColor`, also capitalised: `BorderTopColor`;
+  a leading `Webkit`, `Moz` or `Ms` is the vendor prefix, as in
+  `WebkitLineClamp`), or a custom property (`--color-accent`, case-sensitive).
+  The value is the COMPUTED one, so a `var()` reference arrives resolved.
 - **`attributes`**: `lang`, `dir`, `id`, `role`, `title`, `alt`, `href`, or any
   `aria-*` name. An attribute the element does not carry answers `null`. Any
   other name is refused.
@@ -118,8 +119,10 @@ every returned row, answered in the row's `projection`:
   language tag in `lang`, `ltr` / `rtl` / `auto` in `dir`, an ARIA state
   holding one of its own tokens (`aria-invalid="spelling"`) or, for a numeric
   one, a number. Any other value is scrubbed:
-  `aria-invalid="Card 4111 declined"` reads `[REDACTED]`. The style vocabulary
-  (colours, lengths, keywords) passes.
+  `aria-invalid="Card 4111 declined"` reads `[REDACTED]`. The range values
+  `aria-valuenow`, `aria-valuemin` and `aria-valuemax` are scrubbed whatever
+  they hold: a range bound can be page data (an available balance). The style
+  vocabulary (colours, lengths, keywords) passes.
 - Every name whose value was scrubbed is listed in `redacted` as
   `{ kind, name }`, so `[REDACTED]` is never mistaken for what the page holds.
   The list is present only when something was scrubbed. The `ai/assert` style

@@ -52,11 +52,13 @@
  *     language tag in `lang`, `ltr` / `rtl` / `auto` in `dir`, and an ARIA
  *     state or property holding one of its own tokens (`aria-invalid` →
  *     `true`, `false`, `grammar` or `spelling`) or, for a numeric one
- *     (`aria-level`, `aria-valuemin`, …), a number. The shape is checked, not
+ *     (`aria-level`, `aria-setsize`, …), a number. The shape is checked, not
  *     just the name: `aria-invalid="Card 4111 declined"` is scrubbed like free
  *     text. Free text (`title`, `alt`, `aria-label`, `aria-valuetext`, …),
  *     URLs (`href`), ID references (`aria-labelledby`, …) and any ARIA name
- *     not known to be a token are scrubbed;
+ *     not known to be a token are scrubbed. So are the range values
+ *     `aria-valuenow`, `aria-valuemin` and `aria-valuemax`, numbers or not: a
+ *     range bound can be page data (an available balance, a credit limit);
  *   - properties: a custom property (author data of any shape) and any value
  *     carrying a `<string>` or a `url()` (`content`, `background-image`,
  *     `quotes`, …). The style vocabulary itself — colours, lengths, keywords,
@@ -76,14 +78,11 @@ import { scrubContentByVerdict, verdictOf } from './redaction';
 /**
  * At most this many names per list (`properties`, `attributes`).
  *
- * Why 32: the widest per-element read any check makes is the in-tab vision
- * evaluator's, 24 computed values per element; an `ai/assert` style or
- * attribute check reads one. 32 holds that whole set with room left for the
- * design tokens a page checks. The bound is the response, not the read: a
- * find answers one projection per returned row, so 32 names over a few
- * hundred rows stays at a few hundred KB, well inside the relay's command
- * budget and its 10 MB body ceiling. A caller that needs more asks again with
- * the next names.
+ * Why 32: an `ai/assert` style or attribute check reads one name, so the cap
+ * is not sized to a check; it bounds the RESPONSE. A find answers one
+ * projection per returned row, so 32 names over a few hundred rows stays at a
+ * few hundred KB, well inside the relay's command budget and its 10 MB body
+ * ceiling. A caller that needs more asks again with the next names.
  */
 export const MAX_PROJECTED_NAMES = 32;
 
@@ -242,7 +241,10 @@ const TRISTATE = oneOf('true', 'false', 'mixed', 'undefined');
  * numbers (ARIA 1.2's value sets). A value of any other shape is scrubbed like
  * free text: the name alone says nothing about what a page put in it
  * (`aria-invalid="Card 4111 declined"`). Every other projectable attribute is
- * scrubbed whatever its value.
+ * scrubbed whatever its value — the range values `aria-valuenow`,
+ * `aria-valuemin` and `aria-valuemax` included: they are numbers, but a range
+ * bound is page data as readily as the current value (an available balance, a
+ * credit limit).
  */
 const STRUCTURAL_ATTRIBUTES: ReadonlyMap<string, (value: string) => boolean> = new Map([
   ['id', () => true],
@@ -281,8 +283,6 @@ const STRUCTURAL_ATTRIBUTES: ReadonlyMap<string, (value: string) => boolean> = n
   ['aria-selected', BOOLEAN_OR_UNDEFINED],
   ['aria-setsize', isNumber],
   ['aria-sort', oneOf('ascending', 'descending', 'none', 'other')],
-  ['aria-valuemax', isNumber],
-  ['aria-valuemin', isNumber],
 ]);
 
 /** Is `raw` a structural value of attribute `attr` (lower-case) — see {@link STRUCTURAL_ATTRIBUTES}? */
@@ -306,24 +306,38 @@ export function isProjectablePropertyName(name: string): boolean {
 }
 
 /**
+ * A vendor prefix as the leading word of a CSSOM attribute: `WebkitLineClamp`,
+ * `MozAppearance`, `MsTransform`, and the webkit-cased `webkitLineClamp`.
+ */
+const VENDOR_ATTRIBUTE_PREFIX = /^(Webkit|Moz|Ms|webkit)(?=[A-Z])/;
+
+/**
  * The CSS name to read for a requested property name.
  *   - A custom property is read as written: its name is case-sensitive.
  *   - A hyphenated name is a CSS name, and CSS property names are ASCII
  *     case-insensitive, so it is read lower-cased: `Border-Top-Color` →
  *     `border-top-color`. Camel-converting it would read `-border--top--color`,
- *     a property no engine computes.
+ *     a property no engine computes. So is a name with no lower-case letter
+ *     (`COLOR` → `color`).
  *   - Only a name with no hyphen can be a CSSOM camel-cased attribute, the
  *     spelling `ElementState.computedStyles` uses, and one with an upper-case
  *     letter is read as one: `borderTopColor` → `border-top-color`,
- *     `webkitLineClamp` → `-webkit-line-clamp`, `cssFloat` → `float`.
+ *     `cssFloat` → `float`. A leading capital is a vendor prefix only for
+ *     `Webkit`, `Moz` and `Ms` (`WebkitLineClamp` → `-webkit-line-clamp`,
+ *     `MozAppearance` → `-moz-appearance`, like the webkit-cased
+ *     `webkitLineClamp`); any other is a capitalised name, read with its first
+ *     letter lower-cased (`Opacity` → `opacity`, `BorderTopColor` →
+ *     `border-top-color`) — not `-opacity`, which no engine computes.
  */
 export function cssPropertyName(name: string): string {
   if (name.startsWith('--')) return name;
-  if (name.includes('-')) return name.toLowerCase();
+  if (name.includes('-') || !/[a-z]/.test(name)) return name.toLowerCase();
   if (!/[A-Z]/.test(name)) return name;
-  if (name === 'cssFloat') return 'float';
-  const kebab = name.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
-  return kebab.startsWith('webkit-') ? `-${kebab}` : kebab;
+  const vendor = VENDOR_ATTRIBUTE_PREFIX.exec(name)?.[1];
+  const attribute = vendor ? name.slice(vendor.length) : name[0].toLowerCase() + name.slice(1);
+  if (!vendor && attribute === 'cssFloat') return 'float';
+  const kebab = attribute.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
+  return vendor ? `-${vendor.toLowerCase()}${kebab}` : kebab;
 }
 
 /**
