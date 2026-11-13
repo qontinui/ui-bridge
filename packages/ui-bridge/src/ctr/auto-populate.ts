@@ -10,6 +10,7 @@ import type { UIBridgeRegistry } from '../core/registry';
 import type { RegisteredElement } from '../core/types';
 import type { CtrEntry, CtrSelector } from './types';
 import { DEFAULT_SELECTOR_CONFIDENCE } from './types';
+import { scrubContent } from '../core/redaction';
 import type { CentralTargetRegistry } from './registry';
 
 /**
@@ -44,7 +45,12 @@ export function autoPopulateCtr(
   const { overwrite = false, prefix = '', filter } = options;
 
   const unsubscribe = uiRegistry.on('element:registered', (event) => {
-    const element = event.data as RegisteredElement | undefined;
+    // The event payload is `{ id, type, label }` — not the registry row — so
+    // resolve the row it names: selectors need its DOM element, and `filter`
+    // is typed against the full `RegisteredElement`.
+    const id = (event.data as { id?: unknown } | undefined)?.id;
+    if (typeof id !== 'string') return;
+    const element = uiRegistry.getElement(id);
     if (!element) return;
     if (filter && !filter(element)) return;
 
@@ -58,7 +64,10 @@ export function autoPopulateCtr(
       logicalName,
       selectors,
       metadata: {
-        description: element.description ?? element.label,
+        // `description` is developer-SET; the `label` fallback is the row's
+        // raw label, which may be DOM-scraped, so it takes the §4.6 CONTENT
+        // scrub (as the registry does when it serializes).
+        description: element.description ?? scrubContent(element.label, element.element),
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       },
