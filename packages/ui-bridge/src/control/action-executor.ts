@@ -109,6 +109,7 @@ import {
 import { getGlobalCtr } from '../ctr/registry';
 import { buildActionFailureDetails } from '../diagnostics';
 import { EffectVerifier } from './effect-verifier';
+import type { EffectVerifierDeps } from './effect-verifier';
 import { getGlobalEffectStore } from './effect-store';
 import {
   createDefaultSignatureRegistry,
@@ -1167,6 +1168,8 @@ export class DefaultActionExecutor implements ActionExecutor {
   private signatureRegistry: SignatureLookup;
   /** Lazily built — only constructed when verification first runs. */
   private effectVerifier?: EffectVerifier;
+  /** The verifier's clock and settle, when injected (tests); else real time. */
+  private effectTiming?: Pick<EffectVerifierDeps, 'now' | 'settle'>;
   /** Lazily built — converts a ControlSnapshot into a SemanticSnapshot. */
   private snapshotManager?: SemanticSnapshotManager;
 
@@ -1179,8 +1182,16 @@ export class DefaultActionExecutor implements ActionExecutor {
       enableEffectVerification?: boolean;
       /** Override the signature registry (default: the Phase 1 defaults). */
       signatureRegistry?: SignatureLookup;
+      /**
+       * Override the effect verifier's clock and settle (default: `Date.now`
+       * and a real `sleep`). A seam so a test can drive a slow action through
+       * `executeAction` on a pinned clock; the snapshot capture stays the
+       * executor's own.
+       */
+      effectTiming?: Pick<EffectVerifierDeps, 'now' | 'settle'>;
     }
   ) {
+    this.effectTiming = options?.effectTiming;
     this.maxDiscoveryCacheSize = options?.maxDiscoveryCacheSize ?? 500;
     this.effectVerificationEnabled = options?.enableEffectVerification ?? false;
     this.signatureRegistry =
@@ -1221,7 +1232,8 @@ export class DefaultActionExecutor implements ActionExecutor {
     if (!this.effectVerifier) {
       this.effectVerifier = new EffectVerifier({
         captureSnapshot: (scope: ObservabilityScope) => this.captureSemanticSnapshot(scope),
-        settle: (ms: number) => sleep(ms),
+        settle: this.effectTiming?.settle ?? ((ms: number) => sleep(ms)),
+        now: this.effectTiming?.now,
       });
     }
     return this.effectVerifier;

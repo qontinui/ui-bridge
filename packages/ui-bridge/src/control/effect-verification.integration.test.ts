@@ -232,6 +232,63 @@ describe('DefaultActionExecutor — D3 effect verification wiring', () => {
     expect(res.effectVerification?.containment.observedSubsetPredicted).toBe(true);
   });
 
+  it("cause: 'mixed' when a slow click (outlasting settleMs) is observed late in the action and during the settle, via executeAction on a pinned clock", async () => {
+    const SETTLE_MS = 150; // the click band
+    const ACTION_MS = 500; // the click outlasts the band
+    let clock = 50_000;
+    const observations: number[] = [];
+    const observe = (atMs: number) => {
+      observations.push(atMs);
+      getGlobalActionWindowRegistry().recordConcurrentObservation(atMs);
+    };
+    let openedAt = Number.NaN;
+
+    const executor = new DefaultActionExecutor(registry, undefined, {
+      enableEffectVerification: true,
+      effectTiming: {
+        now: () => {
+          // The first read inside the action cycle is the verifier's own start;
+          // record the clock before the action advances it.
+          if (Number.isNaN(openedAt)) openedAt = clock;
+          return clock;
+        },
+        settle: async (ms) => {
+          expect(ms).toBe(SETTLE_MS);
+          observe(clock + 50); // concurrent with the real settle
+          clock += ms;
+        },
+      },
+    });
+    const btn = makeButton('menu-btn');
+    registry.registerElement('menu-btn', btn, {
+      type: 'button',
+      label: 'Menu',
+      reveals: ['user-menu'],
+    });
+    btn.addEventListener('click', () => {
+      clock += ACTION_MS; // the action takes 500 ms of (pinned) time
+      const menu = document.createElement('div');
+      menu.setAttribute('data-testid', 'user-menu');
+      container.appendChild(menu);
+      registry.registerElement('user-menu', menu, { type: 'menu', label: 'User Menu' });
+      observe(clock); // late in the action, past open + settleMs
+    });
+
+    const res = await executor.executeAction('menu-btn', {
+      action: 'click',
+      requestId: 'req-mixed-slow',
+    });
+
+    // Both observations fall outside a window anchored at open time.
+    expect(observations.length).toBe(2);
+    for (const at of observations) expect(at).toBeGreaterThan(openedAt + SETTLE_MS);
+    expect(res.effectVerification?.cause).toBe('mixed');
+    expect(res.effectVerification?.outcome).toBe('Surprise');
+    expect(res.effectVerification?.containment.predictedSubsetObserved).toBe(true);
+    expect(res.effectVerification?.containment.observedSubsetPredicted).toBe(true);
+    expect(res.effectVerification?.durationMs).toBe(ACTION_MS + SETTLE_MS);
+  });
+
   it('records each verified cycle into the global effect store (newest-first)', async () => {
     const executor = new DefaultActionExecutor(registry, undefined, {
       enableEffectVerification: true,
