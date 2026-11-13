@@ -272,6 +272,39 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('the projection reads what Chromium compu
     await page.close();
   }, 60_000);
 
+  it('ai/assert: a token the boundary withholds is unmeasured by policy, its colour still judged', async () => {
+    const page = await openPage();
+    const result = await page.evaluate(async () =>
+      window.UB.executeCommand(
+        'aiAssertBatch',
+        {
+          mode: 'all',
+          assertions: [
+            { target: 'secret', type: 'cssProperty', propertyName: '--tone', expected: '#00aaff' },
+            {
+              target: 'secret',
+              type: 'cssProperty',
+              propertyName: 'border-top-color',
+              expected: 'rgb(0, 170, 255)',
+            },
+          ],
+        },
+        window.UB.bridge()
+      )
+    );
+    expect(
+      result.results.map((r: { outcome: string; failureCode?: string }) => [
+        r.outcome,
+        r.failureCode,
+      ])
+    ).toEqual([
+      ['unmeasured', 'UB-OBS-NOT-ATTEMPTED-BY-POLICY'],
+      ['passed', undefined],
+    ]);
+    expect(result).toMatchObject({ passed: false, failedCount: 0, unmeasuredCount: 1 });
+    await page.close();
+  }, 60_000);
+
   it('ai/assert reads its cssProperty* checks through the projection in a real page', async () => {
     const page = await openPage();
     const result = await page.evaluate(async () =>

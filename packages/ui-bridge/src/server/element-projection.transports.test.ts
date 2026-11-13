@@ -85,7 +85,8 @@ const PAGE = `
              border-bottom-color: rgb(7, 8, 9); border-left-color: rgb(10, 11, 12);
              outline-offset: 3px; hyphens: auto; --brand: #00aaff">Save</button>
     <div data-bridge-redact="true">
-      <button id="pay" title="Card 4111" aria-expanded="true">Pay</button>
+      <button id="pay" title="Card 4111" aria-expanded="true"
+        style="border-top-color: rgb(1, 2, 3); --tone: #123456">Pay</button>
     </div>
   </main>`;
 
@@ -413,6 +414,54 @@ describe.each(transports)('the $name transport', ({ mount }) => {
         passed: false,
         passedCount: 0,
         failedCount: 1,
+        unmeasuredCount: 3,
+      });
+    });
+
+    it('a value a redaction boundary withholds is UNMEASURED by policy — the sentinel is never compared', async () => {
+      await mount();
+      const reply = await post('/ai/assert/batch', {
+        skipSettle: true,
+        mode: 'all',
+        assertions: [
+          { target: 'pay', type: 'attribute', attributeName: 'title', expected: 'Card 4111' },
+          { target: 'pay', type: 'cssProperty', propertyName: '--tone', expected: '#123456' },
+          {
+            target: 'pay',
+            type: 'tokenCompliance',
+            propertyName: '--tone',
+            tokenPath: 'color.tone',
+            expected: '#123456',
+          },
+          // Structure and the style vocabulary are not withheld: they are judged.
+          { target: 'pay', type: 'attribute', attributeName: 'aria-expanded', expected: 'true' },
+          {
+            target: 'pay',
+            type: 'cssProperty',
+            propertyName: 'border-top-color',
+            expected: 'rgb(1, 2, 3)',
+          },
+        ],
+      });
+      expect(reply.success, reply.error).toBe(true);
+      const results = reply.data!.results as Array<Record<string, unknown>>;
+      expect(results.map((r) => [r.outcome, r.failureCode])).toEqual([
+        ['unmeasured', 'UB-OBS-NOT-ATTEMPTED-BY-POLICY'],
+        ['unmeasured', 'UB-OBS-NOT-ATTEMPTED-BY-POLICY'],
+        ['unmeasured', 'UB-OBS-NOT-ATTEMPTED-BY-POLICY'],
+        ['passed', undefined],
+        ['passed', undefined],
+      ]);
+      for (const r of results.slice(0, 3)) {
+        // Neither a failure of the page nor a value: no `actual` at all.
+        expect(r).not.toHaveProperty('actual');
+        expect(r.passed).toBe(false);
+        expect(r.unmeasured).toMatchObject({ code: 'not_attempted_by_policy' });
+      }
+      expect(reply.data).toMatchObject({
+        passed: false,
+        passedCount: 2,
+        failedCount: 0,
         unmeasuredCount: 3,
       });
     });
