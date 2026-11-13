@@ -522,8 +522,8 @@ set, a property the engine does not compute — is listed in
 `data-bridge-redact` boundary a value that can carry page content reads
 `[REDACTED]`, and its name is listed in `projection.redacted`. Only `lang`,
 `dir`, `id`, `role`, `title`, `alt`, `href` and `aria-*` attributes are
-readable; any other name, an invalid property name, or more than 32 names is
-refused with `UB-VALIDATION-ERROR`. On the state route each list may also be a
+readable; any other name, an invalid property name, a name over 128
+characters, or more than 32 names is refused with `UB-VALIDATION-ERROR`. On the state route each list may also be a
 repeated key (`?properties=hyphens&properties=outline-offset`). The 32 are
 counted as sent: 33 array entries, or 33 values of a repeated key, are
 refused even when they all name one property, and so is a query list longer

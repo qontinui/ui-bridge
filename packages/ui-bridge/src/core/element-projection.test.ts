@@ -80,6 +80,39 @@ describe('parseProjectionRequest · property names', () => {
     expect(err.message).toContain(`at most ${MAX_PROJECTION_NAME_LENGTH}`);
   });
 
+  /** The refusal for an entry of `length` characters. */
+  const tooLong = (option: string, length: number): string =>
+    `\`${option}\` entry is ${length} characters long; at most ${MAX_PROJECTION_NAME_LENGTH} are accepted`;
+
+  it('a body entry is one name, measured when it is reached: before a later entry, and before de-duplication', () => {
+    // Refused for its own length, not for the entry of the wrong type after it.
+    expect(refusal({ properties: ['x'.repeat(MAX_PROJECTION_NAME_LENGTH + 1), 42] }).message).toBe(
+      tooLong('properties', MAX_PROJECTION_NAME_LENGTH + 1)
+    );
+    // At the bound an entry is read, and a repeat of it folds as before.
+    const atBound = `--${'a'.repeat(MAX_PROJECTION_NAME_LENGTH - 2)}`;
+    expect(atBound).toHaveLength(MAX_PROJECTION_NAME_LENGTH);
+    expect(parseProjectionRequest({ properties: [atBound, atBound] })).toEqual({
+      properties: [atBound],
+    });
+  });
+
+  it('a query entry is a list, so its names are measured once it is split', () => {
+    // A repeated-key value longer than one name is not refused for its length...
+    const names = Array.from({ length: 20 }, (_, i) => `--token-${i}`);
+    const value = names.join(',');
+    expect(value.length).toBeGreaterThan(MAX_PROJECTION_NAME_LENGTH);
+    expect(parseProjectionRequest({ properties: [value] }, 'query')).toEqual({
+      properties: names,
+    });
+    // ...but a name it splits into is, on the attribute list too (whose
+    // allow-list does not measure a name).
+    const long = `aria-${'a'.repeat(MAX_PROJECTION_NAME_LENGTH - 4)}`;
+    expect(refusal({ attributes: `lang,${long}` }, 'query').message).toBe(
+      tooLong('attributes', MAX_PROJECTION_NAME_LENGTH + 1)
+    );
+  });
+
   it(`reads at most ${MAX_PROJECTED_NAMES} names per list`, () => {
     const names = Array.from({ length: MAX_PROJECTED_NAMES + 1 }, (_, i) => `--t${i}`);
     expect(parseProjectionRequest({ properties: names.slice(0, MAX_PROJECTED_NAMES) })).toEqual({

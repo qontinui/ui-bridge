@@ -21,10 +21,13 @@
  *     `title`, `alt`, `href` or an `aria-*` name. Anything else (`onclick`,
  *     `style`, `data-*`, `value`) is refused rather than read;
  *   - each list holds at most {@link MAX_PROJECTED_NAMES} names of at most
- *     {@link MAX_PROJECTION_NAME_LENGTH} characters. The bound is checked on
+ *     {@link MAX_PROJECTION_NAME_LENGTH} characters. The bounds are checked on
  *     the list AS SENT, before it is split or de-duplicated: an array of more
  *     entries, or a query list longer than {@link MAX_PROJECTION_QUERY_LENGTH}
- *     characters, is refused without being read any further.
+ *     characters, is refused without being read any further, and a body
+ *     entry (one name) longer than {@link MAX_PROJECTION_NAME_LENGTH} is
+ *     refused when it is reached. A query entry is a comma-separated list, so
+ *     its names are measured once it is split.
  * A request that breaks any of these is refused whole with
  * `UB-VALIDATION-ERROR` ({@link ProjectionRequestError}); nothing is measured on
  * it.
@@ -366,6 +369,14 @@ function tooManyNames(option: 'properties' | 'attributes', count: number): Proje
   );
 }
 
+/** The refusal for a name of `length` characters, over {@link MAX_PROJECTION_NAME_LENGTH}. */
+function tooLongName(option: 'properties' | 'attributes', length: number): ProjectionRequestError {
+  return new ProjectionRequestError(
+    option,
+    `\`${option}\` entry is ${length} characters long; at most ${MAX_PROJECTION_NAME_LENGTH} are accepted`
+  );
+}
+
 /**
  * Normalise one list from a request. `form: 'body'` takes an array of strings
  * (a JSON body); `form: 'query'` also takes the URL-query encoding of the same
@@ -375,7 +386,12 @@ function tooManyNames(option: 'properties' | 'attributes', count: number): Proje
  * The bounds are checked on the list as sent, before any of it is split or
  * de-duplicated: an array of more than {@link MAX_PROJECTED_NAMES} entries, or
  * query text longer than {@link MAX_PROJECTION_QUERY_LENGTH}, is refused
- * without being walked.
+ * without being walked. A body entry is one name, so each is checked as it is
+ * reached — its type, then its length against
+ * {@link MAX_PROJECTION_NAME_LENGTH} — and a long one is refused before the
+ * list is de-duplicated, which would hash it whole. A query entry is a
+ * comma-separated list: its names are measured once it is split, still before
+ * de-duplication.
  */
 function readNameList(
   option: 'properties' | 'attributes',
@@ -394,6 +410,9 @@ function readNameList(
           option,
           `\`${option}\` must be an array of strings, got an entry of type ${typeof entry}`
         );
+      }
+      if (form === 'body' && entry.length > MAX_PROJECTION_NAME_LENGTH) {
+        throw tooLongName(option, entry.length);
       }
     }
     entries = raw as string[];
@@ -420,6 +439,9 @@ function readNameList(
       .flatMap((entry) => entry.split(','))
       .map((n) => n.trim())
       .filter((n) => n !== '');
+    for (const name of names) {
+      if (name.length > MAX_PROJECTION_NAME_LENGTH) throw tooLongName(option, name.length);
+    }
   }
   const unique = [...new Set(names)];
   if (unique.length > MAX_PROJECTED_NAMES) throw tooManyNames(option, unique.length);
@@ -441,19 +463,6 @@ export function parseProjectionRequest(
   if (!raw) return undefined;
   const properties = readNameList('properties', raw.properties, form);
   const attributes = readNameList('attributes', raw.attributes, form);
-  for (const [option, names] of [
-    ['properties', properties],
-    ['attributes', attributes],
-  ] as const) {
-    for (const name of names ?? []) {
-      if (name.length > MAX_PROJECTION_NAME_LENGTH) {
-        throw new ProjectionRequestError(
-          option,
-          `\`${option}\` entry is ${name.length} characters long; at most ${MAX_PROJECTION_NAME_LENGTH} are accepted`
-        );
-      }
-    }
-  }
   for (const name of properties ?? []) {
     if (!isProjectablePropertyName(name)) {
       throw new ProjectionRequestError(
