@@ -408,6 +408,71 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     await page.close();
   }, 60_000);
 
+  it('contrast_meets_wcag: a layer above the text whose border or inset box-shadow lies over it', async () => {
+    const page = await openPage(`
+      <style>
+        .shadowpseudo::after { content: ""; position: absolute; left: 0; top: 0; width: 300px; height: 50px; box-shadow: inset 0 0 0 100px rgba(0, 0, 0, 0.5) }
+        .ringpseudo::after { content: ""; position: absolute; left: 0; top: 0; width: 300px; height: 50px; box-shadow: inset 0 0 0 2px #c00 }
+      </style>
+      <div style="position:relative;height:50px;background:#fff"><p data-id="shadowscrim" style="margin:0;color:#000">Under a scrim drawn with an inset shadow</p><div class="shadowed" style="position:absolute;inset:0;background:rgba(0,0,0,0.1);box-shadow:inset 0 0 0 100vmax rgba(0,0,0,0.5)"></div></div>
+      <div style="position:relative;height:50px;background:#fff"><p data-id="ringinset" style="margin:0;color:#000">Inside a thin inset ring</p><div style="position:absolute;inset:0;box-shadow:inset 0 0 0 2px #c00"></div></div>
+      <div style="position:relative;height:50px;background:#fff"><p data-id="bordered" style="margin:0;color:#000">Under a layer's top border</p><div class="banded" style="position:absolute;inset:0;border-top:20px solid rgba(255,0,0,0.5)"></div></div>
+      <div style="position:relative;height:50px;background:#fff"><p data-id="shadowpseudo" style="margin:0;color:#000">Under generated content's inset shadow</p><div class="shadowpseudo" style="position:absolute;inset:0"></div></div>
+      <div style="position:relative;height:50px;background:#fff"><p data-id="ringpseudo" style="margin:0;color:#000">Inside generated content's thin ring</p><div class="ringpseudo" style="position:absolute;inset:0"></div></div>
+      <div style="position:relative;height:50px;background:#fff"><p data-id="inlineframed" style="margin:0;color:#000">Under an inline box's top border</p><div style="position:absolute;left:0;right:0;top:12px"><span class="inlineband" style="padding:0 150px;border-top:10px solid rgba(255,0,0,0.5)"></span></div></div>
+      <div style="position:relative;height:50px;background:#fff"><p data-id="inlineclear" style="margin:0;color:#000">Under an empty inline box</p><div style="position:absolute;left:0;right:0;top:0"><span style="padding:0 150px"></span></div></div>
+      <div style="position:relative;height:50px;background:#fff"><p data-id="clearshadow" style="margin:0;color:#000">Under a transparent inset shadow</p><div style="position:absolute;inset:0;box-shadow:inset 0 0 0 100px rgba(0,0,0,0)"></div></div>
+      <div style="position:relative;height:50px;margin-top:10px;background:#fff"><p data-id="outershadow" style="margin:0;color:#000">Inside a layer's outer shadow</p><div style="position:absolute;inset:0;box-shadow:0 0 0 20px rgba(0,0,0,0.5)"></div></div>
+    `);
+    const ids = [
+      'shadowscrim',
+      'ringinset',
+      'bordered',
+      'shadowpseudo',
+      'ringpseudo',
+      'inlineframed',
+      'inlineclear',
+      'clearshadow',
+      'outershadow',
+    ];
+    const res = await assertOn(
+      page,
+      ids.map((element) => ({ type: 'contrast_meets_wcag', element }))
+    );
+    // A box paints its border and an inset box-shadow over its own
+    // background, and neither is composited: the scrim's 10% tint alone
+    // would read ~16.8:1 where its 50% shadow over it leaves ~4.4:1. A ring
+    // that does not reach the text, a transparent shadow, and an outer
+    // shadow (painted outside the box only) leave the text's own 21:1.
+    expect(verdicts(res)).toEqual([
+      ['unknown', 'input_missing'],
+      ['passed', null],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['passed', null],
+      ['unknown', 'input_missing'],
+      ['passed', null],
+      ['passed', null],
+      ['passed', null],
+    ]);
+    expect(res.results[0].detail).toContain('<div.shadowed> paints over the text at');
+    expect(res.results[0].detail).toContain('with its inset box-shadow');
+    expect(res.results[1].detail).toContain('contrast ratio 21.00:1');
+    expect(res.results[2].detail).toContain('<div.banded> paints over the text at');
+    expect(res.results[2].detail).toContain('with its border or scrollbar');
+    expect(res.results[3].detail).toContain('<div.shadowpseudo> paints over the text at');
+    expect(res.results[3].detail).toContain('with ::after generated content that covers it');
+    expect(res.results[4].detail).toContain('contrast ratio 21.00:1');
+    // An inline box draws its border around each line fragment, above the
+    // line where the border is a top one.
+    expect(res.results[5].detail).toContain('<span.inlineband> paints over the text at');
+    expect(res.results[5].detail).toContain('with its border or scrollbar');
+    expect(res.results[6].detail).toContain('contrast ratio 21.00:1');
+    expect(res.results[7].detail).toContain('contrast ratio 21.00:1');
+    expect(res.results[8].detail).toContain('contrast ratio 21.00:1');
+    await page.close();
+  }, 60_000);
+
   it('contrast_meets_wcag: an ancestor of the text the hit test lists above it', async () => {
     // The hit test lists an ancestor above its own text for what it draws
     // over that text: a positioned ::after, an open shadow tree's overlay, a

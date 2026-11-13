@@ -41,9 +41,12 @@
  *   over the text and its backdrop alike, so a white 80% scrim over black
  *   text is ~1.6:1, not 21:1; one that covers the text (opaque), or paints
  *   over it in a way the DOM cannot read (an image, a filter, a
- *   backdrop-filter, a blend, replaced or generated content, its own text, a
- *   custom element with no open shadow root), is `unknown{input_missing}`
- *   naming the layer. An ANCESTOR of the text the hit test lists above it
+ *   backdrop-filter, a blend, replaced or generated content, its own text,
+ *   its border, a scrollbar or an inset box-shadow over the text, a custom
+ *   element with no open shadow root), is `unknown{input_missing}` naming
+ *   the layer. A box-shadow is read nowhere else: an inset one beneath the
+ *   text, and an outer one cast over it by an element whose box misses it,
+ *   are not seen. An ANCESTOR of the text the hit test lists above it
  *   paints its own box beneath its content, so only what it draws over the
  *   text is read — a positioned `::before` / `::after` (a stretched link),
  *   its open shadow tree's elements above the text — unless a negative
@@ -356,6 +359,62 @@ function pointIn(p: { x: number; y: number }, r: VisionRegion): boolean {
 /** A resolved `px` length, or NaN. */
 function pxValue(v: string): number {
   return v.endsWith('px') ? Number(v.slice(0, -2)) : NaN;
+}
+
+/**
+ * How far in from the padding box's edge the inset shadows of a computed
+ * `box-shadow` can paint: the larger offset plus the blur and the spread,
+ * for the widest-reaching inset shadow whose colour is not transparent. 0
+ * when there is none. A colour that cannot be read counts as painting.
+ */
+function insetShadowReach(boxShadow: string): number {
+  let reach = 0;
+  // The commas between shadows, not the ones inside a colour function.
+  for (const shadow of boxShadow.split(/,(?![^(]*\))/)) {
+    if (!/\binset\b/.test(shadow)) continue;
+    const colour = shadow.match(/[a-z-]+\([^)]*\)|#[0-9a-f]{3,8}\b/i);
+    const rgba = colour ? parseColor(colour[0]) : null;
+    if (rgba && rgba.a === 0) continue;
+    const lengths = (shadow.match(/-?[\d.]+(?:e[+-]?\d+)?px/gi) ?? []).map((v) => pxValue(v) || 0);
+    const [x = 0, y = 0, blur = 0, spread = 0] = lengths;
+    reach = Math.max(reach, Math.max(Math.abs(x), Math.abs(y)) + blur + Math.max(0, spread));
+  }
+  return reach;
+}
+
+/** An edge-to-edge box in viewport pixels. */
+type Edges = { left: number; top: number; right: number; bottom: number };
+
+/** A border box inset by the border widths its style resolves, unscaled. */
+function insetByBorders(r: VisionRegion, st: CSSStyleDeclaration): Edges {
+  const side = (s: string): number => pxValue(st.getPropertyValue(`border-${s}-width`)) || 0;
+  return {
+    left: r.x + side('left'),
+    top: r.y + side('top'),
+    right: r.x + r.w - side('right'),
+    bottom: r.y + r.h - side('bottom'),
+  };
+}
+
+/**
+ * What of a box's frame lies at `p`, a point inside its border box, over its
+ * background: its border or a scrollbar where `p` lies outside its padding
+ * box `pad`, else an inset box-shadow that reaches `p` from the padding
+ * box's edge. `scale` turns the shadow's CSS pixels into the viewport's.
+ * Null when neither does. Neither is composited: a border's colour is not
+ * read and a shadow's blur is not modelled.
+ */
+function frameAt(
+  st: CSSStyleDeclaration,
+  pad: Edges,
+  scale: number,
+  p: { x: number; y: number }
+): string | null {
+  if (p.x < pad.left || p.x >= pad.right || p.y < pad.top || p.y >= pad.bottom) {
+    return 'border or scrollbar';
+  }
+  const depth = Math.min(p.x - pad.left, pad.right - p.x, p.y - pad.top, pad.bottom - p.y);
+  return depth < insetShadowReach(st.boxShadow ?? '') * scale ? 'inset box-shadow' : null;
 }
 
 /** A box size in CSS pixels, unrounded. */
@@ -1450,9 +1509,10 @@ class TabMeasurement {
    * over the text and its backdrop alike, at the opacity of the groups that
    * hold the layer and not the text. A layer that covers the text (an opaque
    * colour), or whose paint over it the DOM cannot read (an image, a filter,
-   * a backdrop-filter, a blend, replaced content, generated content, its own
-   * text), stops the measurement, named. A layer that paints nothing there —
-   * a transparent overlay, an empty stretched link — contributes nothing.
+   * a backdrop-filter, a blend, replaced content, its border, a scrollbar or
+   * an inset box-shadow there, generated content, its own text), stops the
+   * measurement, named. A layer that paints nothing there — a transparent
+   * overlay, an empty stretched link — contributes nothing.
    */
   private paintAbove(
     layer: Element,
@@ -1499,6 +1559,12 @@ class TabMeasurement {
         items.push({ color: bg, owner: layer, label: this.describe(layer) });
       }
     }
+    // Over its background a box paints its frame: a border, a scrollbar, an
+    // inset box-shadow.
+    if (st.visibility !== 'hidden' && st.display !== 'contents') {
+      const frame = this.frameOf(layer, st, p);
+      if (frame) return stop(`with its ${frame}`);
+    }
     if (this.ownTextAt(layer, p)) return stop('with its own text at the same position');
     const generated = this.generatedOver(layer, p, false);
     if (generated instanceof ColorUnmeasured) return generated;
@@ -1537,11 +1603,12 @@ class TabMeasurement {
 
   /**
    * Whether `layer`'s `::before` / `::after` lies over the text at `p`. One
-   * that paints anything there — a background colour or image, glyphs —
-   * stops the measurement, named, and so does one whose box the computed
-   * style does not pin down, since it may lie there. `true` when the only
-   * ones there are transparent (an empty stretched link), `false` when none
-   * is. `positionedOnly` reads only the ones that can lie over their own
+   * that paints anything there — a background colour or image, glyphs, its
+   * border or an inset box-shadow — stops the measurement, named, and so
+   * does one whose box the computed style does not pin down, since it may
+   * lie there. `true` when the only ones there are transparent (an empty
+   * stretched link), `false` when none is. `positionedOnly` reads only the
+   * ones that can lie over their own
    * element's content: positioned, with a z-index that is not negative. One
    * in normal flow is laid out beside that content, and one with a negative
    * z-index paints beneath it.
@@ -1562,7 +1629,9 @@ class TabMeasurement {
       const glyphs = ps.content !== '""' && ps.content !== "''";
       const box = this.pseudoBox(layer, ps);
       if (box && !pointIn(p, box)) continue;
-      if (!image && !glyphs && bg && bg.a === 0) {
+      // Its frame (a border, an inset box-shadow) is read where its box is known.
+      const framed = box !== null && frameAt(ps, insetByBorders(box, ps), 1, p) !== null;
+      if (!image && !glyphs && bg && bg.a === 0 && !framed) {
         if (box) transparentThere = true;
         continue;
       }
@@ -1579,6 +1648,30 @@ class TabMeasurement {
         `${this.describe(layer)} paints over the text at (${Math.round(p.x)}, ` +
         `${Math.round(p.y)}) ${how}, so the colours a reader sees there were not measured`,
     });
+  }
+
+  /**
+   * What of `layer`'s frame lies at `p` over its background ({@link frameAt}),
+   * or null. An inline box draws its frame around each of its line
+   * fragments, so the fragment `p` lies in is read as a box of its own, with
+   * all four borders.
+   */
+  private frameOf(
+    layer: Element,
+    st: CSSStyleDeclaration,
+    p: { x: number; y: number }
+  ): string | null {
+    if (st.display === 'inline') {
+      for (const r of Array.from(layer.getClientRects())) {
+        const fragment = { x: r.left, y: r.top, w: r.width, h: r.height };
+        if (pointIn(p, fragment)) return frameAt(st, insetByBorders(fragment, st), 1, p);
+      }
+      return null;
+    }
+    const box = boxOf(layer);
+    if (!box || !pointIn(p, box)) return null;
+    const pad = this.clipBox(layer, st);
+    return frameAt(st, pad, Math.max(pad.sx, pad.sy), p);
   }
 
   /**
