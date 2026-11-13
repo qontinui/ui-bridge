@@ -162,7 +162,7 @@ const STANDARD_PROPERTY = /^-?[A-Za-z_][A-Za-z0-9_-]*$/;
  * A custom property: `--` then one or more ident code points (non-ASCII
  * included — an astral one is its two surrogate units), no escapes.
  */
-const CUSTOM_PROPERTY = /^--[A-Za-z0-9_\-\u0080-￿]+$/;
+const CUSTOM_PROPERTY = /^--[A-Za-z0-9_\-\u0080-\uffff]+$/;
 /** An ARIA attribute name. */
 const ARIA_ATTRIBUTE = /^aria-[a-z]+$/;
 
@@ -358,7 +358,8 @@ function readProperties(
   node: Element | null | undefined,
   names: readonly string[],
   values: Record<string, string>,
-  unmeasured: ProjectionUnmeasured[]
+  unmeasured: ProjectionUnmeasured[],
+  redacted: Set<string>
 ): void {
   if (!node) {
     unmeasuredAll(
@@ -431,8 +432,12 @@ function readProperties(
       );
       continue;
     }
-    values[name] =
-      custom || CONTENT_BEARING_VALUE.test(raw) ? scrubContentByVerdict(raw, verdict)! : raw;
+    if (custom || CONTENT_BEARING_VALUE.test(raw)) {
+      values[name] = scrubContentByVerdict(raw, verdict)!;
+      if (verdict.content) redacted.add(name);
+    } else {
+      values[name] = raw;
+    }
   }
 }
 
@@ -440,7 +445,8 @@ function readAttributes(
   node: Element | null | undefined,
   names: readonly string[],
   values: Record<string, string | null>,
-  unmeasured: ProjectionUnmeasured[]
+  unmeasured: ProjectionUnmeasured[],
+  redacted: Set<string>
 ): void {
   if (!node) {
     unmeasuredAll(
@@ -464,8 +470,49 @@ function readAttributes(
       values[name] = raw;
     } else {
       values[name] = scrubContentByVerdict(raw, verdict)!;
+      if (verdict.content) redacted.add(name);
     }
   }
+}
+
+/**
+ * A projection plus which of its values §4.6 replaced. A name in `redacted`
+ * reads `REDACTED_VALUE` in the value map: the redaction sentinel, not a
+ * reading of the page. The wire carries the sentinel as is; a caller that
+ * JUDGES a value (the `ai/assert` checks) must not take it for one.
+ */
+export interface DetailedElementProjection {
+  projection: ElementProjection;
+  redacted: {
+    /** Requested property names whose value was redacted. */
+    properties: ReadonlySet<string>;
+    /** Requested attribute names whose value was redacted. */
+    attributes: ReadonlySet<string>;
+  };
+}
+
+/**
+ * Read `request` off `node`, and say which values §4.6 redacted — see
+ * {@link projectElement}.
+ */
+export function projectElementDetailed(
+  node: Element | null | undefined,
+  request: ElementProjectionRequest
+): DetailedElementProjection {
+  const unmeasured: ProjectionUnmeasured[] = [];
+  const projection: ElementProjection = { unmeasured };
+  const redacted = { properties: new Set<string>(), attributes: new Set<string>() };
+  if (request.properties && request.properties.length > 0) {
+    const values: Record<string, string> = {};
+    readProperties(node, request.properties, values, unmeasured, redacted.properties);
+    projection.properties = values;
+  }
+  if (request.attributes && request.attributes.length > 0) {
+    const values: Record<string, string | null> = {};
+    readAttributes(node, request.attributes, values, unmeasured, redacted.attributes);
+    projection.attributes = values;
+  }
+  return { projection, redacted };
 }
 
 /**
@@ -477,19 +524,7 @@ export function projectElement(
   node: Element | null | undefined,
   request: ElementProjectionRequest
 ): ElementProjection {
-  const unmeasured: ProjectionUnmeasured[] = [];
-  const projection: ElementProjection = { unmeasured };
-  if (request.properties && request.properties.length > 0) {
-    const values: Record<string, string> = {};
-    readProperties(node, request.properties, values, unmeasured);
-    projection.properties = values;
-  }
-  if (request.attributes && request.attributes.length > 0) {
-    const values: Record<string, string | null> = {};
-    readAttributes(node, request.attributes, values, unmeasured);
-    projection.attributes = values;
-  }
-  return projection;
+  return projectElementDetailed(node, request).projection;
 }
 
 /** `node` as an `Element` when it is one (a registry row's `.element`, a scan row's node). */

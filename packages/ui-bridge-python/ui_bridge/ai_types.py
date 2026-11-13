@@ -290,9 +290,10 @@ class AssertionOutcome(str, Enum):
 
     ``UNMEASURED``: the check could not read the value it judges (no live DOM
     node, a property the engine does not compute, a custom property the element
-    does not set, a name the projection refuses). It is not a failure of the
-    page and not a pass: ``passed`` is ``False``, so it never passes a gate, and
-    ``actual`` is absent.
+    does not set, a name the projection refuses, or a value redacted inside a
+    ``data-bridge-redact`` boundary - the sentinel is never judged). It is not a
+    failure of the page and not a pass: ``passed`` is ``False``, so it never
+    passes a gate, and ``actual`` is absent.
     """
 
     PASSED = "passed"

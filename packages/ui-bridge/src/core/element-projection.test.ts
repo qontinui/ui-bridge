@@ -18,6 +18,7 @@ import {
   isProjectionRequestError,
   parseProjectionRequest,
   projectElement,
+  projectElementDetailed,
 } from './element-projection';
 import { REDACTED_VALUE } from './redaction';
 
@@ -289,5 +290,35 @@ describe('projectElement · properties', () => {
       color: 'rgb(1, 2, 3)',
       'background-image': REDACTED_VALUE,
     });
+  });
+});
+
+describe('projectElementDetailed', () => {
+  const request = {
+    properties: ['--tone', 'color'],
+    attributes: ['href', 'title', 'lang', 'aria-expanded'],
+  };
+
+  it('names each value §4.6 replaced, beside the same projection', () => {
+    document.body.innerHTML =
+      '<div data-bridge-redact="true"><a href="/pay" title="Card 4111" lang="en" ' +
+      'aria-expanded="true" style="--tone: #00aaff; color: rgb(1, 2, 3)">x</a></div>';
+    const node = document.querySelector('a')!;
+    const { projection, redacted } = projectElementDetailed(node, request);
+    expect(projection).toEqual(projectElement(node, request));
+    expect([...redacted.properties]).toEqual(['--tone']);
+    expect([...redacted.attributes]).toEqual(['href', 'title']);
+  });
+
+  it('outside a boundary nothing is redacted — a value that spells the sentinel is a value', () => {
+    document.body.innerHTML =
+      `<a href="/pay" title="${REDACTED_VALUE}" lang="en" aria-expanded="true" ` +
+      'style="--tone: #00aaff; color: rgb(1, 2, 3)">x</a>';
+    const node = document.querySelector('a')!;
+    const { projection, redacted } = projectElementDetailed(node, request);
+    expect(projection.attributes!.title).toBe(REDACTED_VALUE);
+    expect(projection.properties!['--tone']).toBe('#00aaff');
+    expect(redacted.properties.size).toBe(0);
+    expect(redacted.attributes.size).toBe(0);
   });
 });

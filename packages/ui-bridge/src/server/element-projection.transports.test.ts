@@ -75,7 +75,7 @@ async function get(path: string): Promise<Reply> {
 /**
  * The page. `save` carries every style the projection is asked for, as inline
  * longhands jsdom computes, plus attributes inside and outside the allow-list;
- * `pay` sits in a §4.6 redaction boundary.
+ * `pay` sits in a §4.6 redaction boundary, with a design token of its own.
  */
 const PAGE = `
   <main>
@@ -85,7 +85,7 @@ const PAGE = `
              border-bottom-color: rgb(7, 8, 9); border-left-color: rgb(10, 11, 12);
              outline-offset: 3px; hyphens: auto; --brand: #00aaff">Save</button>
     <div data-bridge-redact="true">
-      <button id="pay" title="Card 4111" aria-expanded="true">Pay</button>
+      <button id="pay" title="Card 4111" aria-expanded="true" style="--tone: #00aaff">Pay</button>
     </div>
   </main>`;
 
@@ -416,6 +416,76 @@ describe.each(transports)('the $name transport', ({ mount }) => {
         passedCount: 0,
         failedCount: 4,
         unmeasuredCount: 3,
+      });
+    });
+
+    it('a value §4.6 redacted is UNMEASURED: the sentinel is not a reading to judge', async () => {
+      await mount();
+      const reply = await post('/ai/assert/batch', {
+        skipSettle: true,
+        mode: 'all',
+        assertions: [
+          {
+            target: 'pay',
+            type: 'tokenCompliance',
+            propertyName: '--tone',
+            tokenPath: 'color.accent',
+            expected: '#00aaff',
+          },
+          // An `expected` of the sentinel itself must not pass either.
+          { target: 'pay', type: 'cssProperty', propertyName: '--tone', expected: REDACTED_VALUE },
+          { target: 'pay', type: 'attribute', attributeName: 'title', expected: REDACTED_VALUE },
+          {
+            target: 'pay',
+            type: 'attribute',
+            attributeName: 'placeholder',
+            expected: REDACTED_VALUE,
+          },
+          // Structure inside the boundary is not redacted, and still judged.
+          { target: 'pay', type: 'attribute', attributeName: 'aria-expanded', expected: 'true' },
+        ],
+      });
+      expect(reply.success, reply.error).toBe(true);
+      const results = reply.data!.results as Array<Record<string, unknown>>;
+      expect(results.map((r) => [r.outcome, r.passed])).toEqual([
+        ['unmeasured', false],
+        ['unmeasured', false],
+        ['unmeasured', false],
+        ['unmeasured', false],
+        ['passed', true],
+      ]);
+      for (const r of results.slice(0, 4)) {
+        expect(r).not.toHaveProperty('actual');
+        expect(r.unmeasured).toEqual({
+          code: 'capability_unavailable_in_build',
+          detail: 'value redacted by §4.6',
+        });
+        expect(r.failureCode).toBe('UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD');
+        expect(r.suggestion).toContain('data-bridge-redact');
+      }
+      expect(reply.data).toMatchObject({
+        passed: false,
+        passedCount: 1,
+        failedCount: 4,
+        unmeasuredCount: 4,
+      });
+    });
+
+    it('a placeholder the live element does not carry is a measured absence, judged', async () => {
+      await mount();
+      const reply = await post('/ai/assert', {
+        skipSettle: true,
+        target: 'save',
+        type: 'attribute',
+        attributeName: 'placeholder',
+        expected: 'Order name',
+      });
+      expect(reply.success, reply.error).toBe(true);
+      expect(reply.data).toMatchObject({
+        outcome: 'failed',
+        passed: false,
+        actual: null,
+        failureReason: 'Attribute "placeholder" is absent but expected "Order name"',
       });
     });
 

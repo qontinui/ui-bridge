@@ -496,8 +496,10 @@ export interface AssertionResult {
   /**
    * The verdict, three-valued. `unmeasured` means the check could not read the
    * value it judges: an element with no live DOM node, an engine that computes
-   * no value for the property, a custom property the element does not set, or
-   * a name the projection refuses (see `core/element-projection.ts`). An
+   * no value for the property, a custom property the element does not set, a
+   * name the projection refuses (see `core/element-projection.ts`), or a value
+   * §4.6 redacted inside a `data-bridge-redact` boundary — the sentinel is
+   * never judged. An
    * unmeasured check is NOT a failure of the page, and it is not a pass either:
    * `passed` is `false`, so it never passes a gate (a batch counts it in
    * `failedCount`, and again in the `unmeasuredCount` subset), `actual` is

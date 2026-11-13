@@ -504,6 +504,14 @@ so it never passes a gate. A batch counts it in `failedCount`, which counts
 every assertion that did not pass, and again in `unmeasuredCount`, the subset
 of those that could not read their value.
 
+A value §4.6 redacted is not a reading either. A check on an element inside a
+`data-bridge-redact` boundary whose value reads `[REDACTED]` — its `title`,
+`placeholder`, a custom property — answers `unmeasured`
+(`capability_unavailable_in_build`, detail `value redacted by §4.6`); it is
+never compared with the sentinel, so `expected: "[REDACTED]"` does not pass.
+Structure inside the boundary (`aria-expanded`, `lang`, colours) is still
+read and judged.
+
 ## 10. Address the elements a page hides from the registry
 
 Auto-registration (`AutoRegisterProvider` / `useAutoRegister`) registers

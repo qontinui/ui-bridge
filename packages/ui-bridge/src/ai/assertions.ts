@@ -24,11 +24,11 @@ import {
   isProjectionRequestError,
   liveElementOf,
   parseProjectionRequest,
-  projectElement,
+  projectElementDetailed,
   type ElementProjectionRequest,
 } from '../core/element-projection';
 import { resolvePageSentinel } from '../core/page-sentinel';
-import { trustDeveloperContent } from '../core/redaction';
+import { trustDeveloperContent, verdictFromState, verdictOf } from '../core/redaction';
 
 /**
  * Stable `UB-ASSERT-*` diagnostic code for a failed assertion.
@@ -142,6 +142,36 @@ interface UnmeasuredRead {
   code: UnknownCode;
   detail: string;
   failureCode: UiBridgeErrorCode;
+  /** What to do instead, where the default advice does not apply. */
+  suggestion?: string;
+}
+
+/**
+ * A value §4.6 withheld. The redaction sentinel is not a reading of the page,
+ * so a check cannot be judged against it — and an `expected: "[REDACTED]"`
+ * must not pass. `UnknownCode` is a closed set mirrored by the Python client
+ * and qontinui-schemas, so no redaction-specific member is minted here; the
+ * detail names the cause.
+ */
+const REDACTED_READ: UnmeasuredRead = {
+  code: 'capability_unavailable_in_build',
+  detail: 'value redacted by §4.6',
+  failureCode: 'UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD',
+  suggestion:
+    'The element is inside a `data-bridge-redact` boundary, whose content is never ' +
+    'reported: check an element outside the boundary',
+};
+
+/** A value an element with no live DOM node (one that crossed a wire) cannot answer. */
+function noLiveNodeRead(kind: 'property' | 'attribute', name: string): UnmeasuredRead {
+  return {
+    code: 'capability_unavailable_in_build',
+    detail:
+      `${kind === 'property' ? 'computed style' : 'attribute'} \`${name}\` not available: ` +
+      'this element has no live DOM node to read it from' +
+      (kind === 'property' ? ', and its state carries no such computed style' : ''),
+    failureCode: 'UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD',
+  };
 }
 
 /**
@@ -1037,8 +1067,11 @@ export class AssertionExecutor {
   /**
    * Assert attribute value.
    *
-   * `placeholder` is read off the element's search projection (already
-   * §4.6-scrubbed). Every other name is read through the request-scoped
+   * `placeholder` is read off the element's search projection, which reads it
+   * off the live node: an absent one is a measured `null`, while a redacted
+   * element's and one with no live node to read it from make the check
+   * UNMEASURED (see `readPlaceholder`). Every other name is read through the
+   * request-scoped
    * projection (`core/element-projection.ts`) off the element's live node — the
    * same allow-list and the same scrub as `/control/find`'s `attributes` — so an
    * absent attribute is a measured `null`, and a name the projection refuses or
@@ -1052,23 +1085,21 @@ export class AssertionExecutor {
     message?: string,
     startTime: number = performance.now()
   ): AssertionResult {
-    let actualValue: unknown;
-    if (attributeName?.toLowerCase() === 'placeholder') {
-      actualValue = element.placeholder;
-    } else {
-      const read = this.readProjected(element, 'attribute', attributeName);
-      if ('unmeasured' in read) {
-        return this.unmeasuredResult(
-          element,
-          description,
-          expectedValue,
-          `attribute "${attributeName ?? ''}"`,
-          read.unmeasured,
-          startTime
-        );
-      }
-      actualValue = read.value;
+    const read =
+      attributeName?.toLowerCase() === 'placeholder'
+        ? this.readPlaceholder(element)
+        : this.readProjected(element, 'attribute', attributeName);
+    if ('unmeasured' in read) {
+      return this.unmeasuredResult(
+        element,
+        description,
+        expectedValue,
+        `attribute "${attributeName ?? ''}"`,
+        read.unmeasured,
+        startTime
+      );
     }
+    const actualValue = read.value;
 
     const passed = actualValue === expectedValue;
 
@@ -1120,8 +1151,9 @@ export class AssertionExecutor {
    * custom property, and the allow-listed attributes, §4.6-scrubbed. Without
    * one (an element that crossed a wire): the fixed `ElementState.computedStyles`
    * subset for a property it carries, and the search projection's `title`.
-   * Anything else, and any name the projection refuses or cannot read, comes
-   * back UNMEASURED with its code — never as `''`.
+   * Anything else, any name the projection refuses or cannot read, and any
+   * value §4.6 redacted comes back UNMEASURED with its code — never as `''`,
+   * and never as the redaction sentinel.
    */
   private readProjected(
     element: AIDiscoveredElement,
@@ -1153,9 +1185,9 @@ export class AssertionExecutor {
       };
     }
 
-    const node = this.operandNodes.get(element) ?? this.liveNodes.get(element.id);
+    const node = this.liveNodeOf(element);
     if (node && request) {
-      const projection = projectElement(node, request);
+      const { projection, redacted } = projectElementDetailed(node, request);
       const miss = projection.unmeasured[0];
       if (miss) {
         return {
@@ -1165,6 +1197,9 @@ export class AssertionExecutor {
             failureCode: UNKNOWN_CODE_DIAGNOSTICS[miss.code],
           },
         };
+      }
+      if ((kind === 'property' ? redacted.properties : redacted.attributes).has(name)) {
+        return { unmeasured: REDACTED_READ };
       }
       const value =
         kind === 'property' ? projection.properties?.[name] : projection.attributes?.[name];
@@ -1177,19 +1212,45 @@ export class AssertionExecutor {
       const styles = element.state?.computedStyles as Record<string, unknown> | undefined;
       const value = styles?.[key];
       if (typeof value === 'string' && value !== '') return { value };
-    } else if (name.toLowerCase() === 'title' && typeof element.title === 'string') {
-      return { value: element.title };
+    } else if (name.toLowerCase() === 'title') {
+      // The search projection drops a redacted element's title (§4.6).
+      if (this.contentRedacted(element)) return { unmeasured: REDACTED_READ };
+      if (typeof element.title === 'string') return { value: element.title };
     }
-    return {
-      unmeasured: {
-        code: 'capability_unavailable_in_build',
-        detail:
-          `${kind === 'property' ? 'computed style' : 'attribute'} \`${name}\` not available: ` +
-          'this element has no live DOM node to read it from' +
-          (kind === 'property' ? ', and its state carries no such computed style' : ''),
-        failureCode: 'UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD',
-      },
-    };
+    return { unmeasured: noLiveNodeRead(kind, name) };
+  }
+
+  /**
+   * The `placeholder` a check judges, off the element's search projection —
+   * which reads it off the live node, and is not the projection's allow-list.
+   * The search projection drops a redacted element's placeholder (§4.6) and
+   * carries none for an element with no live node: neither is a value to
+   * judge, and neither is an absent attribute, so both are UNMEASURED. With a
+   * live node, an absent placeholder is a measured `null`.
+   */
+  private readPlaceholder(
+    element: AIDiscoveredElement
+  ): { value: string | null } | { unmeasured: UnmeasuredRead } {
+    if (this.contentRedacted(element)) return { unmeasured: REDACTED_READ };
+    if (typeof element.placeholder === 'string') return { value: element.placeholder };
+    if (this.liveNodeOf(element)) return { value: null };
+    return { unmeasured: noLiveNodeRead('attribute', 'placeholder') };
+  }
+
+  /** The live node a check reads `element` through, when it has one. */
+  private liveNodeOf(element: AIDiscoveredElement): Element | undefined {
+    return this.operandNodes.get(element) ?? this.liveNodes.get(element.id);
+  }
+
+  /**
+   * Is `element`'s content §4.6-redacted? Its live node decides when it has
+   * one; an element that crossed a wire carries the verdict in its state.
+   */
+  private contentRedacted(element: AIDiscoveredElement): boolean {
+    const node = this.liveNodeOf(element);
+    return node
+      ? verdictOf(node as HTMLElement).content
+      : verdictFromState(element.state ?? {}).content;
   }
 
   /**
@@ -1212,9 +1273,10 @@ export class AssertionExecutor {
       expected,
       undefined,
       `Cannot check ${what}: ${unmeasured.detail}`,
-      unmeasured.failureCode === 'UB-VALIDATION-ERROR'
-        ? 'Name a CSS property or an allow-listed attribute (lang, dir, id, role, title, alt, href, aria-*)'
-        : 'The value could not be read here: assert against an element with a live DOM node',
+      unmeasured.suggestion ??
+        (unmeasured.failureCode === 'UB-VALIDATION-ERROR'
+          ? 'Name a CSS property or an allow-listed attribute (lang, dir, id, role, title, alt, href, aria-*)'
+          : 'The value could not be read here: assert against an element with a live DOM node'),
       startTime,
       element.state
     );

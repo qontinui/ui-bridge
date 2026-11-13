@@ -701,6 +701,51 @@ describe('AssertionExecutor', () => {
       expect(result.target).toBeDefined();
     });
 
+    it('a value §4.6 redacted is unmeasured, never judged: a DOM-less element carries the verdict in its state', async () => {
+      // What the search projection emits for an element inside a
+      // `data-bridge-redact` boundary: no title, no placeholder, and the
+      // content verdict stamped on its state.
+      const inside = createMockAIElement('card-number', { type: 'input' });
+      inside.state.redaction = { content: true };
+      const outside = createMockAIElement('card-holder', { type: 'input' });
+      executor.updateElements([inside, outside]);
+
+      for (const attributeName of ['placeholder', 'title']) {
+        const result = await executor.assert({
+          target: 'card-number',
+          type: 'attribute',
+          attributeName,
+          expected: '[REDACTED]',
+        });
+        expect(result.outcome, attributeName).toBe('unmeasured');
+        expect(result.passed).toBe(false);
+        expect(result.actual).toBeUndefined();
+        expect(result.unmeasured).toEqual({
+          code: 'capability_unavailable_in_build',
+          detail: 'value redacted by §4.6',
+        });
+        expect(result.failureCode).toBe('UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD');
+        expect(result.suggestion).toContain('data-bridge-redact');
+      }
+
+      // Outside the boundary a DOM-less element carries neither value either:
+      // unmeasured as well, for that reason and not for redaction — never a
+      // failure against a value nobody read.
+      for (const attributeName of ['placeholder', 'title']) {
+        const result = await executor.assert({
+          target: 'card-holder',
+          type: 'attribute',
+          attributeName,
+          expected: 'Name on card',
+        });
+        expect(result.outcome, attributeName).toBe('unmeasured');
+        expect(result.unmeasured).toEqual({
+          code: 'capability_unavailable_in_build',
+          detail: `attribute \`${attributeName}\` not available: this element has no live DOM node to read it from`,
+        });
+      }
+    });
+
     it('should fail for unsupported attributes', async () => {
       const elements = [
         createMockAIElement('btn-1', { textContent: 'Submit', aliases: ['btn-1', 'submit'] }),
