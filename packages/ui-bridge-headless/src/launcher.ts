@@ -12,7 +12,13 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
+import {
+  chromium,
+  type Browser,
+  type BrowserContext,
+  type BrowserContextOptions,
+  type Page,
+} from 'playwright';
 import {
   restoreSessionStorageInitScript,
   splitSessionStorageArtifact,
@@ -21,6 +27,28 @@ import {
 
 /** The two `prefers-color-scheme` values a launch can emulate. */
 export type LaunchColorScheme = 'light' | 'dark';
+
+/**
+ * HAR recording for the launch's browser context: Playwright's own
+ * `recordHar` shape (`{ path, content?, mode?, urlFilter?, omitContent? }`),
+ * passed to `browser.newContext` unchanged.
+ *
+ * Playwright writes the archive when the CONTEXT closes, which the tab's
+ * `close()` does before it closes the browser. A `path` ending in `.zip` with
+ * `content: 'attach'` stores response bodies as files inside the zip.
+ */
+export type LaunchRecordHarOptions = NonNullable<BrowserContextOptions['recordHar']>;
+
+/** Whether the launch's context lets pages register service workers. */
+export type LaunchServiceWorkersPolicy = NonNullable<BrowserContextOptions['serviceWorkers']>;
+
+/**
+ * Called with the launch's browser context after it is created and before its
+ * first page exists, so whatever it installs (`context.route('**\/*', …)`,
+ * `context.routeWebSocket(…)`, an extra init script) is in place for the very
+ * first request the navigation makes. The launcher awaits it.
+ */
+export type LaunchInitRouter = (context: BrowserContext) => void | Promise<void>;
 
 /**
  * Validate a requested device scale factor, returning it unchanged.
@@ -208,6 +236,40 @@ export interface LaunchHeadlessTabOptions {
    * refusal there still closes the browser before the launch rejects.
    */
   storageStatePath?: string;
+
+  /**
+   * Record a HAR of every request the context makes, passed to
+   * `newContext({ recordHar })` unchanged (see {@link LaunchRecordHarOptions}).
+   * The file is written when the context closes: the tab's `close()` closes the
+   * context before the browser, so it is complete once `close()` resolves. A
+   * context close that fails (including a HAR that could not be written) is
+   * reported on stderr, like a browser close that fails.
+   *
+   * Backward-compatible: when unset, no HAR is recorded.
+   */
+  recordHar?: LaunchRecordHarOptions;
+
+  /**
+   * `'block'` stops pages registering service workers, passed to
+   * `newContext({ serviceWorkers })`. A service worker answers requests
+   * itself, so they never reach `recordHar` or a route installed by
+   * `initRouter`; block them when either must see every request.
+   *
+   * Default: unset, so Playwright's default (`'allow'`) applies.
+   */
+  serviceWorkers?: LaunchServiceWorkersPolicy;
+
+  /**
+   * Install routes on the context before the first page loads (see
+   * {@link LaunchInitRouter}). Runs after the context and its init scripts are
+   * set up and before `newPage`, so a `context.route('**\/*', …)` it installs
+   * intercepts the first navigation's own document request. If it throws, the
+   * launch fails like any other post-launch step: the browser is closed and the
+   * error is rethrown.
+   *
+   * Backward-compatible: when unset, nothing is installed.
+   */
+  initRouter?: LaunchInitRouter;
 }
 
 export interface HeadlessTab {
@@ -218,9 +280,11 @@ export interface HeadlessTab {
   /** The underlying browser instance. Closing this closes everything. */
   browser: Browser;
   /**
-   * Close the browser and all associated resources. Safe to call multiple
-   * times; subsequent calls resolve immediately. Resolves even when closing
-   * the browser fails: that failure is reported on stderr, not thrown.
+   * Close the context, then the browser and all associated resources. The
+   * context is closed first so a `recordHar` archive is written before the
+   * browser goes away. Safe to call multiple times; subsequent calls resolve
+   * immediately. Resolves even when closing the context or the browser fails:
+   * that failure is reported on stderr, not thrown.
    */
   close(): Promise<void>;
   /**
@@ -446,6 +510,27 @@ async function closeBrowserReportingFailure(browser: Browser, what: string): Pro
 }
 
 /**
+ * Close a tab's `context`, then its `browser`, reporting either failure on
+ * stderr instead of throwing it.
+ *
+ * The context is closed explicitly, BEFORE the browser, because Playwright
+ * writes a `recordHar` archive on `BrowserContext.close()`; a bare
+ * `browser.close()` would end the context without writing it. The browser is
+ * closed even when the context close fails.
+ */
+async function closeTabReportingFailure(context: BrowserContext, browser: Browser): Promise<void> {
+  try {
+    await context.close();
+  } catch (closeError) {
+    const detail = closeError instanceof Error ? closeError.message : String(closeError);
+    process.stderr.write(
+      `[ui-bridge] could not close the tab's browser context (a recordHar archive may be missing or incomplete): ${detail}\n`
+    );
+  }
+  await closeBrowserReportingFailure(browser, "the tab's browser");
+}
+
+/**
  * Close the browser that a failed {@link launchHeadlessTab} launched.
  *
  * Awaited BEFORE the launch's original error is rethrown, so the browser is
@@ -501,6 +586,9 @@ export async function launchHeadlessTab(
     authToken,
     callerUserId,
     pinnedTabId,
+    recordHar,
+    serviceWorkers,
+    initRouter,
   } = options;
 
   if (deviceScaleFactor !== undefined) validateDeviceScaleFactor(deviceScaleFactor);
@@ -545,6 +633,8 @@ export async function launchHeadlessTab(
       ...(colorScheme !== undefined ? { colorScheme } : {}),
       userAgent,
       ...(storageStateSeed ? { storageState: storageStateSeed as never } : {}),
+      ...(recordHar !== undefined ? { recordHar } : {}),
+      ...(serviceWorkers !== undefined ? { serviceWorkers } : {}),
     });
 
     // sessionStorage restore (Playwright's storageState can't carry it). The
@@ -562,6 +652,12 @@ export async function launchHeadlessTab(
     // bundle script should list the config script first.
     for (const content of initScripts ?? []) {
       await context.addInitScript({ content });
+    }
+
+    // Caller routes go in before the first page exists, so they intercept the
+    // first navigation's own requests, its document included.
+    if (initRouter) {
+      await initRouter(context);
     }
 
     const page = await context.newPage();
@@ -607,7 +703,7 @@ export async function launchHeadlessTab(
       if (closed) return;
       // Set before the await, so a second call, even a concurrent one, is a no-op.
       closed = true;
-      await closeBrowserReportingFailure(browser, "the tab's browser");
+      await closeTabReportingFailure(context, browser);
     };
 
     const navigate = async (nextUrl: string): Promise<void> => {
