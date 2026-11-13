@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   MAX_PROJECTED_NAMES,
   MAX_PROJECTION_NAME_LENGTH,
+  MAX_PROJECTION_QUERY_LENGTH,
   ProjectionRequestError,
   cssPropertyName,
   isProjectionRequestError,
@@ -84,6 +85,53 @@ describe('parseProjectionRequest · property names', () => {
       properties: names.slice(0, MAX_PROJECTED_NAMES),
     });
     expect(refusal({ properties: names }).message).toContain(`at most ${MAX_PROJECTED_NAMES}`);
+  });
+
+  it('the bounds are checked on the list as sent, before it is split or de-duplicated', () => {
+    // An array is counted as sent: duplicates are entries too.
+    const repeated = Array.from({ length: MAX_PROJECTED_NAMES + 1 }, () => 'color');
+    for (const form of ['body', 'query'] as const) {
+      expect(refusal({ properties: repeated }, form).message).toBe(
+        `\`properties\` names ${MAX_PROJECTED_NAMES + 1} entries; at most ${MAX_PROJECTED_NAMES} are read per request`
+      );
+    }
+    expect(parseProjectionRequest({ properties: repeated.slice(1) })).toEqual({
+      properties: ['color'],
+    });
+    // Refused before an entry is looked at: the bad one is past the bound.
+    expect(refusal({ attributes: [...repeated, 42] }).message).toContain(
+      `at most ${MAX_PROJECTED_NAMES} are read`
+    );
+
+    // The query text is measured before it is split, a repeated key's values together.
+    expect(MAX_PROJECTION_QUERY_LENGTH).toBe(
+      MAX_PROJECTED_NAMES * (MAX_PROJECTION_NAME_LENGTH + 2)
+    );
+    const split = vi.spyOn(String.prototype, 'split');
+    try {
+      const long = ','.repeat(MAX_PROJECTION_QUERY_LENGTH) + 'color';
+      expect(refusal({ properties: long }, 'query').message).toContain(
+        `is ${MAX_PROJECTION_QUERY_LENGTH + 5} characters long`
+      );
+      const half = ','.repeat(MAX_PROJECTION_QUERY_LENGTH / 2);
+      expect(refusal({ attributes: [half, `${half}lang`] }, 'query').message).toContain(
+        `is ${MAX_PROJECTION_QUERY_LENGTH + 4} characters long`
+      );
+      expect(split).not.toHaveBeenCalled();
+    } finally {
+      split.mockRestore();
+    }
+    // Inside the length, the names it splits into are still counted.
+    const distinct = Array.from({ length: MAX_PROJECTED_NAMES + 1 }, (_, i) => `--t${i}`);
+    expect(refusal({ properties: distinct.join(',') }, 'query').message).toContain(
+      `names ${MAX_PROJECTED_NAMES + 1} entries`
+    );
+    // At the bound, the text is read: empty entries drop, duplicates fold.
+    const atBound = `${','.repeat(MAX_PROJECTION_QUERY_LENGTH - 11)}color,color`;
+    expect(atBound).toHaveLength(MAX_PROJECTION_QUERY_LENGTH);
+    expect(parseProjectionRequest({ properties: atBound }, 'query')).toEqual({
+      properties: ['color'],
+    });
   });
 
   it('a body list must be an array of strings', () => {

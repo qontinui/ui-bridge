@@ -151,6 +151,7 @@ export type {
 export {
   MAX_PROJECTED_NAMES,
   MAX_PROJECTION_NAME_LENGTH,
+  MAX_PROJECTION_QUERY_LENGTH,
   PROJECTABLE_ATTRIBUTES,
   ProjectionRequestError,
   cssPropertyName,

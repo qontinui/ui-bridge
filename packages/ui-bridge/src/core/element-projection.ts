@@ -21,7 +21,10 @@
  *     `title`, `alt`, `href` or an `aria-*` name. Anything else (`onclick`,
  *     `style`, `data-*`, `value`) is refused rather than read;
  *   - each list holds at most {@link MAX_PROJECTED_NAMES} names of at most
- *     {@link MAX_PROJECTION_NAME_LENGTH} characters.
+ *     {@link MAX_PROJECTION_NAME_LENGTH} characters. The bound is checked on
+ *     the list AS SENT, before it is split or de-duplicated: an array of more
+ *     entries, or a query list longer than {@link MAX_PROJECTION_QUERY_LENGTH}
+ *     characters, is refused without being read any further.
  * A request that breaks any of these is refused whole with
  * `UB-VALIDATION-ERROR` ({@link ProjectionRequestError}); nothing is measured on
  * it.
@@ -89,6 +92,15 @@ export const MAX_PROJECTED_NAMES = 32;
  * keeping a refused request's echo short.
  */
 export const MAX_PROJECTION_NAME_LENGTH = 128;
+
+/**
+ * At most this many characters in one list's query form (`?properties=a,b`),
+ * all of a repeated key's values together: {@link MAX_PROJECTED_NAMES} names of
+ * {@link MAX_PROJECTION_NAME_LENGTH} characters, each with a separator and a
+ * space. Checked before the list is split, so an oversized query string is
+ * refused at the cost of reading its length.
+ */
+export const MAX_PROJECTION_QUERY_LENGTH = MAX_PROJECTED_NAMES * (MAX_PROJECTION_NAME_LENGTH + 2);
 
 /** The attributes a projection may read, besides the `aria-*` family. */
 export const PROJECTABLE_ATTRIBUTES: readonly string[] = [
@@ -261,11 +273,24 @@ export function cssPropertyName(name: string): string {
   return kebab.startsWith('webkit-') ? `-${kebab}` : kebab;
 }
 
+/** The refusal for a list of `count` entries, over {@link MAX_PROJECTED_NAMES}. */
+function tooManyNames(option: 'properties' | 'attributes', count: number): ProjectionRequestError {
+  return new ProjectionRequestError(
+    option,
+    `\`${option}\` names ${count} entries; at most ${MAX_PROJECTED_NAMES} are read per request`
+  );
+}
+
 /**
  * Normalise one list from a request. `form: 'body'` takes an array of strings
  * (a JSON body); `form: 'query'` also takes the URL-query encoding of the same
  * list — a comma-separated string, or an array of them (a repeated key) — and
  * trims each entry. `null` / `undefined` is "not asked".
+ *
+ * The bounds are checked on the list as sent, before any of it is split or
+ * de-duplicated: an array of more than {@link MAX_PROJECTED_NAMES} entries, or
+ * query text longer than {@link MAX_PROJECTION_QUERY_LENGTH}, is refused
+ * without being walked.
  */
 function readNameList(
   option: 'properties' | 'attributes',
@@ -273,11 +298,11 @@ function readNameList(
   form: 'body' | 'query'
 ): string[] | undefined {
   if (raw === null || raw === undefined) return undefined;
-  let names: string[];
+  let entries: string[];
   if (form === 'query' && typeof raw === 'string') {
-    names = raw.split(',');
+    entries = [raw];
   } else if (Array.isArray(raw)) {
-    names = [];
+    if (raw.length > MAX_PROJECTED_NAMES) throw tooManyNames(option, raw.length);
     for (const entry of raw) {
       if (typeof entry !== 'string') {
         throw new ProjectionRequestError(
@@ -285,9 +310,8 @@ function readNameList(
           `\`${option}\` must be an array of strings, got an entry of type ${typeof entry}`
         );
       }
-      if (form === 'query') names.push(...entry.split(','));
-      else names.push(entry);
     }
+    entries = raw as string[];
   } else {
     throw new ProjectionRequestError(
       option,
@@ -296,14 +320,24 @@ function readNameList(
         : `\`${option}\` must be an array of strings, got ${typeof raw}`
     );
   }
-  if (form === 'query') names = names.map((n) => n.trim()).filter((n) => n !== '');
-  const unique = [...new Set(names)];
-  if (unique.length > MAX_PROJECTED_NAMES) {
-    throw new ProjectionRequestError(
-      option,
-      `\`${option}\` names ${unique.length} entries; at most ${MAX_PROJECTED_NAMES} are read per request`
-    );
+  let names = entries;
+  if (form === 'query') {
+    const length = entries.reduce((sum, entry) => sum + entry.length, 0);
+    if (length > MAX_PROJECTION_QUERY_LENGTH) {
+      throw new ProjectionRequestError(
+        option,
+        `\`${option}\` is ${length} characters long; a list of at most ${MAX_PROJECTED_NAMES} ` +
+          `names of at most ${MAX_PROJECTION_NAME_LENGTH} characters is at most ` +
+          `${MAX_PROJECTION_QUERY_LENGTH}`
+      );
+    }
+    names = entries
+      .flatMap((entry) => entry.split(','))
+      .map((n) => n.trim())
+      .filter((n) => n !== '');
   }
+  const unique = [...new Set(names)];
+  if (unique.length > MAX_PROJECTED_NAMES) throw tooManyNames(option, unique.length);
   return unique;
 }
 

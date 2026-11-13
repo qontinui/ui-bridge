@@ -495,7 +495,9 @@ set, a property the engine does not compute — is listed in
 `projection.unmeasured` with its code instead of reading as `""`. Only `lang`,
 `dir`, `id`, `role`, `title`, `alt`, `href` and `aria-*` attributes are
 readable; any other name, an invalid property name, or more than 32 names is
-refused with `UB-VALIDATION-ERROR`.
+refused with `UB-VALIDATION-ERROR`. The 32 are counted as sent: an array of 33
+entries is refused even when they repeat, and so is a query list longer than
+4160 characters.
 
 The same read backs the `ai/assert` style and attribute checks
 (`cssProperty`, `cssPropertyInSet`, `cssPropertyRange`, `tokenCompliance`,
