@@ -251,20 +251,78 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       }))
     );
     expect(verdicts(res)).toEqual([
-      ['unknown', 'input_missing'], // a translucent scrim paints over the text
+      // Black under an 80% white scrim is #ccc on white: ~1.61:1, never the
+      // 21:1 the text and its card alone would give.
+      ['failed', null],
       ['unknown', 'input_missing'], // an opaque box hides the text
       ['passed', null], // a transparent overlay paints nothing: measured through it
       ['unknown', 'input_missing'], // icon-only: no text to measure
       ['unknown', 'input_missing'], // empty box
-      ['unknown', 'input_missing'], // a scrim inside an open shadow root
-      ['unknown', 'input_missing'], // a scrim two open shadow roots deep
+      ['failed', null], // the same scrim inside an open shadow root
+      ['failed', null], // the same scrim two open shadow roots deep
       ['unknown', 'input_missing'], // a custom element with a closed shadow root
       ['unknown', 'input_missing'], // slotted text: the shadow <button> paints it, not the host
       ['passed', null], // a light-DOM custom element holding text is measured
       ['passed', null], // an opacity:0 overlay paints nothing
     ]);
-    expect(res.results[0].detail).toContain('paints over the text');
+    for (const i of [0, 5, 6]) expect(res.results[i].detail).toContain('contrast ratio 1.61:1');
+    expect(res.results[1].detail).toContain('paints over the text');
+    expect(res.results[1].detail).toContain('with an opaque background');
     expect(res.results[3].detail).toContain('no rendered text');
+    expect(res.results[7].detail).toContain('no open shadow root');
+    await page.close();
+  }, 60_000);
+
+  it('contrast_meets_wcag: a fixed scrim over the text tints the text and its backdrop', async () => {
+    const page = await openPage(`
+      <p data-id="scrimmed" style="color:#000">Black text under a white scrim</p>
+      <div style="position:fixed;inset:0;background:rgba(255,255,255,0.8)"></div>
+    `);
+    const res = await assertOn(page, [{ type: 'contrast_meets_wcag', element: 'scrimmed' }]);
+    // Black under 80% white is #ccc on white: ~1.61:1, never the 21:1 the
+    // text and the page alone would give.
+    expect(verdicts(res)).toEqual([['failed', null]]);
+    expect(res.results[0].detail).toContain('contrast ratio 1.61:1');
+    await page.close();
+  }, 60_000);
+
+  it('contrast_meets_wcag: the layers painted above the text', async () => {
+    const page = await openPage(`
+      <div style="position:relative;height:50px;background:#000"><p data-id="tinted" style="margin:0;color:#fff">Under a translucent sheet</p><div style="position:absolute;inset:0;background:rgba(255,255,255,0.5)"></div></div>
+      <div style="position:relative;height:50px"><p data-id="faded" style="margin:0;color:#000">Under a faded white sheet</p><div style="position:absolute;inset:0;background:#fff;opacity:0.8"></div></div>
+      <div style="position:relative;height:50px"><p data-id="covered" style="margin:0;color:#000">Under an opaque sheet</p><div class="sheet" style="position:absolute;inset:0;background:#fff"></div></div>
+      <div style="position:relative;height:50px"><p data-id="pictured" style="margin:0;color:#000">Under an image</p><img src="${PIXEL_PNG}" style="position:absolute;left:0;top:0;width:300px;height:50px;opacity:0.5"></div>
+      <div style="position:relative;height:50px"><p data-id="linked" style="margin:0;color:#000;background:#fff">Under an empty stretched link</p><a href="#" style="position:absolute;inset:0"></a></div>
+      <div style="position:relative;z-index:0;height:50px;background:#000"><div style="position:relative;height:50px;background:rgba(255,255,255,0.5)"><p data-id="sunk" style="position:relative;z-index:-1;margin:0;color:#fff">Beneath its own translucent card</p></div></div>
+    `);
+    const res = await assertOn(
+      page,
+      ['tinted', 'faded', 'covered', 'pictured', 'linked', 'sunk'].map((element) => ({
+        type: 'contrast_meets_wcag',
+        element,
+      }))
+    );
+    expect(verdicts(res)).toEqual([
+      ['failed', null], // white on black under a 50% white sheet: #fff on #808080, ~3.95:1
+      ['failed', null], // an opaque white sheet at opacity 0.8: the same tint as an 80% scrim
+      ['unknown', 'input_missing'], // an opaque layer covers the text
+      ['unknown', 'input_missing'], // an image's pixels cover the text
+      ['passed', null], // a transparent link over the card paints nothing
+      // z-index: -1 sinks the text beneath its own parent's 50% white card,
+      // which therefore tints it once, from above: #fff on #808080, ~3.95:1.
+      // Counted beneath the text as well, the card would read ~1.84:1.
+      ['failed', null],
+    ]);
+    expect(res.results[0].detail).toMatch(/contrast ratio 3\.9\d:1/);
+    expect(res.results[1].detail).toContain('contrast ratio 1.61:1');
+    expect(res.results[2].detail).toContain('<div.sheet> paints over the text at');
+    expect(res.results[2].detail).toContain(
+      'with an opaque background (rgb(255, 255, 255)) that covers it'
+    );
+    expect(res.results[3].detail).toContain('<img> paints over the text at');
+    expect(res.results[3].detail).toContain('with pixels the DOM cannot read');
+    expect(res.results[4].detail).toContain('contrast ratio 21.00:1');
+    expect(res.results[5].detail).toMatch(/contrast ratio 3\.9\d:1/);
     await page.close();
   }, 60_000);
 

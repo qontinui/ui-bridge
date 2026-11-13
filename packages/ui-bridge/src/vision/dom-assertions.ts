@@ -34,7 +34,15 @@
  *   so one positioned outside the box of every hit-testable ancestor it has
  *   is not found. A translucent colour or an opacity group above the first
  *   opaque layer is composited exactly. With no opaque layer, the base is
- *   the `Canvas` colour under the root's `color-scheme`.
+ *   the `Canvas` colour under the root's `color-scheme`. Every layer the hit
+ *   test shows ABOVE the text (a scrim, an overlay, a sheet), open shadow
+ *   roots included, is read too: a plain translucent colour is composited
+ *   over the text and its backdrop alike, so a white 80% scrim over black
+ *   text is ~1.6:1, not 21:1; one that covers the text (opaque), or paints
+ *   over it in a way the DOM cannot read (an image, a filter, a
+ *   backdrop-filter, a blend, replaced or generated content, its own text, a
+ *   custom element with no open shadow root), is `unknown{input_missing}`
+ *   naming the layer.
  *
  * ROUNDING (plan 2026-11-09 Phase 0's contract): every box below is handed to
  * the evaluator UNROUNDED, and the evaluator rounds it as its kind does —
@@ -342,27 +350,31 @@ function pxValue(v: string): number {
 type FitSize = { w: number; h: number };
 
 /**
- * The layers above the text at `p`: each hit-stack entry above the owner and,
- * at any depth, whatever an OPEN shadow root it hosts places at `p` —
- * `document.elementsFromPoint` retargets shadow content to its host, so a
- * scrim inside a custom element (or one nested in another) would otherwise go
- * unseen. A CLOSED shadow root cannot be read; the caller treats a custom
- * element with no open root lying over the text as unmeasurable.
+ * The layers above the text at `p`, top first: each hit-stack entry above the
+ * owner and, directly above it, whatever an OPEN shadow root it hosts places
+ * at `p`, at any depth — `document.elementsFromPoint` retargets shadow
+ * content to its host, so a scrim inside a custom element (or one nested in
+ * another) would otherwise go unseen. A host's shadow content paints over the
+ * host's own background, so it is listed before the host: the order is paint
+ * order, which compositing the translucent ones needs. A CLOSED shadow root
+ * cannot be read; the caller treats a custom element with no open root lying
+ * over the text as unmeasurable.
  */
 function coversAbove(above: readonly Element[], p: { x: number; y: number }): Element[] {
   const out: Element[] = [];
-  const pending: Element[] = [...above];
-  while (pending.length > 0) {
-    const el = pending.shift()!;
-    if (out.includes(el)) continue;
-    out.push(el);
+  const seen = new Set<Element>();
+  const visit = (el: Element): void => {
+    if (seen.has(el)) return;
+    seen.add(el);
     const root = el.shadowRoot;
     if (root && typeof root.elementsFromPoint === 'function') {
       for (const inner of root.elementsFromPoint(p.x, p.y)) {
-        if (inner !== el && inner.getRootNode() === root) pending.push(inner);
+        if (inner !== el && inner.getRootNode() === root) visit(inner);
       }
     }
-  }
+    out.push(el);
+  };
+  for (const el of above) visit(el);
   return out;
 }
 
@@ -1203,12 +1215,14 @@ class TabMeasurement {
     }
 
     // Layers the hit test places ABOVE the text's owner at the sample point
-    // paint over the text (a scrim, a sticky header, a tooltip): they change
-    // the colours a reader sees, so a cover that paints anything there leaves
-    // contrast unknown instead of measured as if uncovered. A layer at
-    // effective opacity 0 paints nothing and is skipped. The document hit test
-    // retargets shadow content to its host, so an open shadow root above the
-    // owner is hit-tested too and its painters count as covers.
+    // paint over the text (a scrim, a sticky header, a tooltip) and change the
+    // colours a reader sees. A plain translucent colour is composited over the
+    // text and its backdrop alike; a layer that covers the text, or paints
+    // over it in a way the DOM cannot read, leaves contrast unknown, named
+    // ({@link paintAbove}). A layer at effective opacity 0 paints nothing and
+    // is skipped. The document hit test retargets shadow content to its host,
+    // so an open shadow root above the owner is hit-tested too.
+    const covers: PaintItem[][] = [];
     for (const cover of coversAbove(stack.slice(0, at), p)) {
       if (this.effectiveOpacity(cover) === 0) continue;
       if (isClosedCustomElement(cover)) {
@@ -1218,25 +1232,25 @@ class TabMeasurement {
             'shadow root; it may have a closed shadow tree, and what that paints there cannot be read'
         );
       }
-      const coverItems = this.paintOf(cover, owner, p);
+      const coverItems = this.paintAbove(cover, owner, p);
       if (coverItems instanceof ColorUnmeasured) {
         return missing(coverItems.reason.code, coverItems.reason.detail);
       }
-      if (coverItems.length > 0) {
-        return missing(
-          'input_missing',
-          `${this.describe(cover)} paints over the text at (${Math.round(p.x)}, ` +
-            `${Math.round(p.y)}), so the colours a reader sees there were not measured`
-        );
-      }
+      covers.push(coverItems);
     }
+    // Bottom-up paint operations OVER the text: the covers, lowest first.
+    const overItems: PaintItem[] = [];
+    for (let i = covers.length - 1; i >= 0; i--) overItems.push(...covers[i]);
 
     // The paint stack under the text, top first: the hit stack beneath the
     // text's owner, plus the DOM ancestors the hit test skipped
     // (pointer-events: none), each placed above the first entry outside it.
+    // An ancestor the hit test shows ABOVE the owner (an owner with a
+    // negative z-index) paints over the text, as a cover, so it is not added
+    // beneath it too.
     const layers = stack.slice(at);
     for (let a = composedParent(owner); a; a = composedParent(a)) {
-      if (layers.includes(a)) continue;
+      if (stack.includes(a)) continue;
       const after = layers.findIndex((l, i) => i > 0 && !containsComposed(a, l));
       if (after < 0) layers.push(a);
       else layers.splice(after, 0, a);
@@ -1263,9 +1277,13 @@ class TabMeasurement {
       items.push(...layerItems);
     }
 
+    // A translucent layer over the text tints the text and its backdrop alike.
     const canvas = this.canvasPaint();
-    const bg = this.composite(items, canvas.paint);
-    const fg = this.composite([...items, { color: fill, owner, label: 'the text' }], canvas.paint);
+    const bg = this.composite([...items, ...overItems], canvas.paint);
+    const fg = this.composite(
+      [...items, { color: fill, owner, label: 'the text' }, ...overItems],
+      canvas.paint
+    );
     if (bg.taint > 1e-6 || fg.taint > 1e-6) {
       // Name the topmost unreadable layer: the one that shows through.
       const unreadable = [...items].reverse().find((it) => it.color === null);
@@ -1291,6 +1309,98 @@ class TabMeasurement {
       b: Math.round(c.b),
     });
     return { fg: rgb(fg), bg: rgb(bg) };
+  }
+
+  /**
+   * What a layer the hit test shows ABOVE the text paints over it at `p`,
+   * bottom-up. Only a plain colour the text shows through is composited —
+   * over the text and its backdrop alike, at the opacity of the groups that
+   * hold the layer and not the text. A layer that covers the text (an opaque
+   * colour), or whose paint over it the DOM cannot read (an image, a filter,
+   * a backdrop-filter, a blend, replaced content, generated content, its own
+   * text), stops the measurement, named. A layer that paints nothing there —
+   * a transparent overlay, an empty stretched link — contributes nothing.
+   */
+  private paintAbove(
+    layer: Element,
+    owner: Element,
+    p: { x: number; y: number }
+  ): PaintItem[] | ColorUnmeasured {
+    let fade = 1;
+    for (const group of this.groupsOf(layer)) {
+      if (!containsComposed(group, owner)) fade *= Number(this.style(group).opacity);
+    }
+    if (!(fade > 0)) return [];
+    const st = this.style(layer);
+    const stop = (how: string): ColorUnmeasured =>
+      new ColorUnmeasured({
+        code: 'input_missing',
+        detail:
+          `${this.describe(layer)} paints over the text at (${Math.round(p.x)}, ` +
+          `${Math.round(p.y)}) ${how}, so the colours a reader sees there were not measured`,
+      });
+    const backdrop =
+      st.getPropertyValue('backdrop-filter') || st.getPropertyValue('-webkit-backdrop-filter');
+    if (backdrop && backdrop !== 'none') {
+      return stop(`with backdrop-filter: ${backdrop}, which alters the text beneath it`);
+    }
+    if (st.mixBlendMode && st.mixBlendMode !== 'normal') {
+      return stop(`and blends with it (mix-blend-mode: ${st.mixBlendMode})`);
+    }
+    if (st.filter && st.filter !== 'none') return stop(`with filter: ${st.filter}`);
+    if (isReplaced(layer)) return stop('with pixels the DOM cannot read');
+    const items: PaintItem[] = [];
+    // The root's or body's background is painted on the canvas, beneath
+    // everything, and a box that is not rendered paints none.
+    this.canvasPaint();
+    const paintsBackground =
+      this.canvasFrom !== layer && st.visibility !== 'hidden' && st.display !== 'contents';
+    const clip =
+      st.getPropertyValue('background-clip') || st.getPropertyValue('-webkit-background-clip');
+    // A background clipped to the glyphs paints only where the layer's own
+    // text is, which the text check below answers.
+    if (paintsBackground && clip !== 'text') {
+      if (st.backgroundImage !== 'none') return stop('with a background-image');
+      const bg = parseColor(st.backgroundColor);
+      if (!bg) {
+        return stop(`with a background colour ${JSON.stringify(st.backgroundColor)} not read`);
+      }
+      if (bg.a > 0) {
+        if (bg.a * fade >= 1 - 1e-6) {
+          return stop(`with an opaque background (${st.backgroundColor}) that covers it`);
+        }
+        items.push({ color: bg, owner: layer, label: this.describe(layer) });
+      }
+    }
+    if (this.ownTextAt(layer, p)) return stop('with its own text at the same position');
+    for (const which of ['::before', '::after'] as const) {
+      const ps = this.pseudoStyle(layer, which);
+      if (['none', 'normal', ''].includes(ps.content) || ps.display === 'none') continue;
+      const bg = parseColor(ps.backgroundColor);
+      const image = ps.backgroundImage !== 'none' && ps.backgroundImage !== '';
+      const glyphs = ps.content !== '""' && ps.content !== "''";
+      if (!image && !glyphs && bg && bg.a === 0) continue;
+      const box = this.pseudoBox(layer, ps);
+      if (box && !pointIn(p, box)) continue;
+      return stop(`with ${which} generated content that ${box ? 'covers' : 'may cover'} it`);
+    }
+    return items;
+  }
+
+  /** Does one of `layer`'s own text runs (not a descendant element's) paint at `p`? */
+  private ownTextAt(layer: Element, p: { x: number; y: number }): boolean {
+    const doc = layer.ownerDocument;
+    if (typeof doc.createRange !== 'function') return false;
+    for (const child of Array.from(layer.childNodes)) {
+      if (child.nodeType !== 3 || !/\S/.test(child.nodeValue ?? '')) continue;
+      const range = doc.createRange();
+      if (typeof range.getClientRects !== 'function') return false;
+      range.selectNodeContents(child);
+      for (const r of Array.from(range.getClientRects())) {
+        if (pointIn(p, { x: r.left, y: r.top, w: r.width, h: r.height })) return true;
+      }
+    }
+    return false;
   }
 
   /**
