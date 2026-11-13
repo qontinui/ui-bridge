@@ -19,6 +19,8 @@ const recorded = vi.hoisted(() => ({
   /** Every step the launcher took, in order. */
   calls: [] as string[],
   contextCloseRejects: false,
+  /** When set, the fake context.close waits on this before resolving. */
+  contextCloseGate: null as Promise<void> | null,
   contexts: [] as unknown[],
 }));
 
@@ -49,6 +51,7 @@ vi.mock('playwright', () => ({
           }),
           close: vi.fn(async () => {
             recorded.calls.push('context.close');
+            if (recorded.contextCloseGate) await recorded.contextCloseGate;
             if (recorded.contextCloseRejects) throw new Error('fake context.close rejected');
           }),
         };
@@ -70,6 +73,7 @@ beforeEach(() => {
   recorded.contextOptions.length = 0;
   recorded.calls.length = 0;
   recorded.contextCloseRejects = false;
+  recorded.contextCloseGate = null;
   recorded.contexts.length = 0;
 });
 
@@ -179,6 +183,28 @@ describe('launchHeadlessTab — context passthrough options', () => {
     await tab.close();
     await tab.close();
     expect(recorded.calls).toEqual(['context.close', 'browser.close']);
+  });
+
+  it('a concurrent second close() waits for the first one to finish closing the context', async () => {
+    const tab = await launchHeadlessTab({
+      url: 'http://app.local/',
+      headless: true,
+      forwardConsole: false,
+      recordHar: { path: '/tmp/x.har' },
+    });
+    let release!: () => void;
+    recorded.contextCloseGate = new Promise<void>((r) => (release = r));
+    let secondDone = false;
+    const first = tab.close();
+    const second = tab.close().then(() => {
+      secondDone = true;
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(secondDone).toBe(false);
+    release();
+    await Promise.all([first, second]);
+    expect(secondDone).toBe(true);
+    expect(recorded.calls.filter((c) => c === 'context.close')).toHaveLength(1);
   });
 
   it('a context close that fails is reported on stderr, and the browser is still closed', async () => {

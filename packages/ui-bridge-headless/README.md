@@ -127,7 +127,7 @@ A registration wait that runs out is not a failure: the launch resolves with
 `uiBridgeRegistered: false`, and the tab is still yours to close.
 
 `tab.close()` resolves even when closing the browser fails, and reports that
-failure on stderr the same way. Calling it again is a no-op.
+failure on stderr the same way. Calling it again returns the same promise.
 
 Up to 0.7.0, a launch whose first navigation failed (or any earlier step after
 the browser started) rejected with Chromium still running and no handle to
