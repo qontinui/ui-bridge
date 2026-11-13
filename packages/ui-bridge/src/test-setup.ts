@@ -132,6 +132,20 @@ type RelayTransport =
 
 const relayTransports: RelayTransport[] = [];
 
+// The guard wraps the prototype exactly once per `CommandRelay` class. If this
+// module were evaluated twice against one class (a setup-file instance and a
+// separately imported instance), each would keep its own `relayTransports`,
+// and `openRelaySubscriptions` below would read records the guard's own
+// `afterAll` never checks. The marker turns that into a setup-time throw.
+const GUARD_INSTALLED = Symbol.for('ui-bridge.test-setup.relay-guard');
+if ((CommandRelay.prototype as unknown as Record<symbol, unknown>)[GUARD_INSTALLED]) {
+  throw new Error(
+    'test-setup: the CommandRelay open-subscription guard is already installed on this ' +
+      'class, so test-setup.ts was evaluated twice and its records would be split.'
+  );
+}
+(CommandRelay.prototype as unknown as Record<symbol, unknown>)[GUARD_INSTALLED] = true;
+
 const relayPrototype = CommandRelay.prototype as unknown as Record<string, unknown>;
 
 /** The prototype method `name`, or a setup-time throw that names it. */
@@ -198,11 +212,25 @@ relayPrototype.addCommandListener = function (this: CommandRelay, ...args: unkno
   };
 };
 
+/** The `globalPrefix` whose shared state `relay` reads and `destroy()` tears down. */
+function relayPrefix(relay: CommandRelay): string {
+  const prefix = (relay as unknown as { prefix?: unknown }).prefix;
+  if (typeof prefix !== 'string') {
+    throw new Error(
+      'test-setup: CommandRelay#prefix is not a string, so the open-subscription guard ' +
+        'cannot tell which relays a destroy() tears down.'
+    );
+  }
+  return prefix;
+}
+
 relayPrototype.destroy = function (this: CommandRelay) {
-  // Every subscription open now, through either door: `destroy()` clears the
-  // timers of both. One opened after `destroy()` is live.
+  // Every subscription open now, through either door, on ANY relay sharing
+  // this one's prefix: the transports live in prefix-shared state, so
+  // `destroy()` tears all of them down. One opened after `destroy()` is live.
+  const prefix = relayPrefix(this);
   for (const transport of relayTransports) {
-    if (transport.relay === this) transport.closed = true;
+    if (relayPrefix(transport.relay) === prefix) transport.closed = true;
   }
   destroy.call(this);
 };
@@ -231,8 +259,10 @@ relayPrototype.unregisterWebSocketClient = function (this: CommandRelay, clientI
 
 /**
  * The subscriptions recorded on `relay` that the guard would flag now. Read by
- * the guard's own tests (`server/command-relay.destroy.test.ts`); this setup
- * file is the module those tests import, so they see the same records.
+ * the guard's own tests (`server/command-relay.destroy.test.ts`). They import
+ * this module; that the import is the same evaluation the setup file ran, and
+ * so reads the records the guard's `afterAll` checks, is enforced by the
+ * install-once marker above rather than assumed.
  */
 export function openRelaySubscriptions(
   relay: CommandRelay

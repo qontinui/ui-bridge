@@ -7,6 +7,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CommandRelay, RelayDestroyedError, type WebSocketClient } from './command-relay';
+import type { RelayBus } from './relay-bus';
 import { openRelaySubscriptions } from '../test-setup';
 
 function uniquePrefix(): string {
@@ -17,6 +18,31 @@ function wsClient(clientId: string): WebSocketClient & { send: ReturnType<typeof
   return { clientId, send: vi.fn(), isConnected: () => true, close: vi.fn() };
 }
 
+/** A bus whose every method is a spy; `isTabKnown` answers `false` unless overridden. */
+function busStub(overrides: Partial<RelayBus> = {}) {
+  return {
+    publishCommand: vi.fn(),
+    subscribeCommands: vi.fn(() => vi.fn()),
+    publishResponse: vi.fn(),
+    subscribeResponse: vi.fn(() => vi.fn()),
+    registerTab: vi.fn(),
+    unregisterTab: vi.fn(),
+    isTabKnown: vi.fn(async () => false),
+    close: vi.fn(async () => {}),
+    ...overrides,
+  } satisfies RelayBus;
+}
+
+/** A promise's outcome, readable synchronously once it has settled. */
+function track<T>(promise: Promise<T>): { settled: boolean; value?: T; error?: unknown } {
+  const state: { settled: boolean; value?: T; error?: unknown } = { settled: false };
+  promise.then(
+    (value) => Object.assign(state, { settled: true, value }),
+    (error: unknown) => Object.assign(state, { settled: true, error })
+  );
+  return state;
+}
+
 /** Let the relay's async dispatch run up to the point a command is pending. */
 async function flushMicrotasks(): Promise<void> {
   for (let i = 0; i < 20; i++) await Promise.resolve();
@@ -25,7 +51,9 @@ async function flushMicrotasks(): Promise<void> {
 describe('CommandRelay.destroy()', () => {
   let relays: CommandRelay[] = [];
 
-  function relay(options: { proactiveSnapshot?: boolean; globalPrefix?: string } = {}) {
+  function relay(
+    options: { proactiveSnapshot?: boolean; globalPrefix?: string; bus?: RelayBus } = {}
+  ) {
     const r = new CommandRelay({ globalPrefix: uniquePrefix(), ...options });
     relays.push(r);
     return r;
@@ -162,5 +190,101 @@ describe('CommandRelay.destroy()', () => {
     expect(openRelaySubscriptions(r)).toEqual([{ door: 'ws', clientId: 'ws-after' }]);
     r.unregisterWebSocketClient('ws-after');
     expect(openRelaySubscriptions(r)).toEqual([]);
+  });
+
+  it('fails a command suspended at the bus presence lookup with RelayDestroyedError, and dispatches nothing', async () => {
+    let answer!: (known: boolean) => void;
+    const bus = busStub({
+      isTabKnown: vi.fn(
+        () =>
+          new Promise<boolean>((resolve) => {
+            answer = resolve;
+          })
+      ),
+    });
+    const r = relay({ bus, proactiveSnapshot: false });
+    const outcome = track(r.queueCommand('getControlSnapshot', {}, { targetTabId: 'remote-tab' }));
+    await flushMicrotasks();
+    expect(bus.isTabKnown).toHaveBeenCalledWith('remote-tab');
+
+    r.destroy();
+    answer(true);
+    await flushMicrotasks();
+
+    expect(outcome.settled).toBe(true);
+    expect(outcome.error).toBeInstanceOf(RelayDestroyedError);
+    expect(bus.publishCommand).not.toHaveBeenCalled();
+    expect(r.getTransportDiagnostics().pendingCommandCount).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("drops each SSE listener's bus subscription and tab presence", () => {
+    const unsubscribeCommands = vi.fn();
+    const bus = busStub({ subscribeCommands: vi.fn(() => unsubscribeCommands) });
+    const r = relay({ bus, proactiveSnapshot: false });
+    const stream = r.openCommandStream(() => {}, 'tab-1');
+    expect(bus.registerTab).toHaveBeenCalledWith('tab-1', expect.any(Number));
+
+    r.destroy();
+
+    expect(unsubscribeCommands).toHaveBeenCalledTimes(1);
+    expect(bus.unregisterTab).toHaveBeenCalledWith('tab-1');
+    // The stream's own unsubscribe, run after destroy(), releases nothing twice.
+    stream.unsubscribe();
+    expect(unsubscribeCommands).toHaveBeenCalledTimes(1);
+    expect(bus.unregisterTab).toHaveBeenCalledTimes(1);
+  });
+
+  it('finishes the teardown when a bus unsubscribe throws', () => {
+    const bus = busStub({
+      subscribeCommands: vi.fn(() => () => {
+        throw new Error('bus down');
+      }),
+    });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const r = relay({ bus, proactiveSnapshot: false });
+    r.openCommandStream(() => {}, 'tab-1');
+    r.openCommandStream(() => {}, 'tab-2');
+
+    expect(() => r.destroy()).not.toThrow();
+
+    expect(bus.unregisterTab).toHaveBeenCalledWith('tab-1');
+    expect(bus.unregisterTab).toHaveBeenCalledWith('tab-2');
+    expect(r.getTransportDiagnostics().commandListenerCount).toBe(0);
+    expect(error).toHaveBeenCalledTimes(2);
+  });
+
+  it('closes the connection gate a sibling relay on the same prefix opened', async () => {
+    const prefix = uniquePrefix();
+    const a = relay({ globalPrefix: prefix, proactiveSnapshot: false });
+    const b = relay({ globalPrefix: prefix, proactiveSnapshot: false });
+    // b opens the prefix's gate; a, which never did, sees the last transport go.
+    b.registerWebSocketClient(wsClient('ws-1'));
+    a.unregisterWebSocketClient('ws-1');
+
+    const outcome = track(a.queueCommand('getControlSnapshot', {}));
+    await vi.advanceTimersByTimeAsync(1000);
+    // Still waiting for a browser: the gate was closed again, not left open.
+    expect(outcome.settled).toBe(false);
+
+    const client = wsClient('ws-2');
+    b.registerWebSocketClient(client);
+    await flushMicrotasks();
+    expect(client.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes the guard records of every relay sharing the destroyed prefix', () => {
+    const prefix = uniquePrefix();
+    const a = relay({ globalPrefix: prefix, proactiveSnapshot: true });
+    const b = relay({ globalPrefix: prefix, proactiveSnapshot: true });
+    b.registerWebSocketClient(wsClient('ws-b'));
+    b.subscribeToCommands(() => {}, 'tab-b');
+    expect(openRelaySubscriptions(b)).toHaveLength(2);
+
+    // destroy() on a tears down b's transports too: they are prefix state.
+    a.destroy();
+
+    expect(b.getTransportDiagnostics().wsClientCount).toBe(0);
+    expect(openRelaySubscriptions(b)).toEqual([]);
   });
 });

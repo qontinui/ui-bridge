@@ -44,6 +44,13 @@ export interface TabListener {
   streamId?: string;
   /** The verified identity that opened this stream, when one was present. */
   userId?: string;
+  /**
+   * Set when a cross-instance bus is configured: drops this stream's bus
+   * command subscription and removes its tab from the shared presence
+   * registry. Idempotent. Run by `destroy()`, which forgets the listener
+   * without going through its unsubscribe.
+   */
+  releaseBus?: () => void;
 }
 
 export interface PendingCommand {
@@ -413,9 +420,49 @@ export class CommandRelay {
   // Cleanup interval handle
   private cleanupInterval: ReturnType<typeof setInterval> | null = null;
 
-  // Connection readiness gate
-  private connectionReadyResolve: (() => void) | null;
-  private connectionReady: Promise<void>;
+  /**
+   * Connection readiness gate. Both halves live on `globalThis` under the
+   * prefix and are read there every time, never cached on the instance: a
+   * sibling relay on the same prefix opens and resets the same gate, and a
+   * cached copy would go stale the moment it did.
+   */
+  private get connectionReady(): Promise<void> {
+    return this.prefixGlobal('ConnectionReady') as Promise<void>;
+  }
+
+  /** The resolver of an unopened gate; `null` once a transport opened it. */
+  private get connectionReadyResolve(): (() => void) | null {
+    return (this.prefixGlobal('ConnectionReadyResolve') as (() => void) | null) ?? null;
+  }
+
+  /**
+   * How many times `destroy()` has run on this prefix. Captured before an
+   * `await` in the dispatch path and compared after it, so a command whose
+   * relay was destroyed while it was suspended settles with
+   * {@link RelayDestroyedError} instead of dispatching on the torn-down relay.
+   * Prefix-wide, because `destroy()` is.
+   */
+  private get destroyEpoch(): number {
+    return (this.prefixGlobal('DestroyEpoch') as number | undefined) ?? 0;
+  }
+
+  /** The prefix-shared global `${prefix}${suffix}`. */
+  private prefixGlobal(suffix: string): unknown {
+    return (globalThis as Record<string, unknown>)[`${this.prefix}${suffix}`];
+  }
+
+  /** Open the connection gate, if it is not open already. */
+  private openConnectionGate(): void {
+    const resolve = this.connectionReadyResolve;
+    if (!resolve) return;
+    resolve();
+    (globalThis as Record<string, unknown>)[`${this.prefix}ConnectionReadyResolve`] = null;
+  }
+
+  /** Throw {@link RelayDestroyedError} when `destroy()` ran since `epoch` was read. */
+  private throwIfDestroyedSince(epoch: number): void {
+    if (this.destroyEpoch !== epoch) throw new RelayDestroyedError();
+  }
 
   /**
    * The command timeout a command can rely on whichever path delivers it: the
@@ -474,8 +521,6 @@ export class CommandRelay {
       g[key('ConnectionReady')] = promise;
       g[key('ConnectionReadyResolve')] = resolve;
     }
-    this.connectionReady = g[key('ConnectionReady')];
-    this.connectionReadyResolve = g[key('ConnectionReadyResolve')];
 
     this.pendingCommands = g[key('PendingCommands')];
     this.tabListeners = g[key('TabListeners')];
@@ -753,8 +798,6 @@ export class CommandRelay {
       });
       g[key('ConnectionReady')] = promise;
       g[key('ConnectionReadyResolve')] = resolve;
-      this.connectionReady = promise;
-      this.connectionReadyResolve = resolve;
     }
   }
 
@@ -866,6 +909,9 @@ export class CommandRelay {
     // else's tab to connect.
     const ownerCheck = options?.ownerCheck;
     const hasOwnerCheck = !!ownerCheck;
+    // Every `await` below is followed by a check against this: a `destroy()`
+    // that lands while the command is suspended must not let it dispatch.
+    const epoch = this.destroyEpoch;
     const ownedCount = hasOwnerCheck
       ? this.listOwnedTabs(ownerCheck!.userId).length
       : this.tabListeners.size + this.wsClients.size;
@@ -887,11 +933,12 @@ export class CommandRelay {
               'Use `GET /tabs/wait?timeoutMs=<ms>` to block until the tab registers.'
           )
       );
+      this.throwIfDestroyedSince(epoch);
     }
 
     // Attempt the command — if SDK_DISCONNECTED, wait for reconnection and retry once
     try {
-      return await this.queueCommandInner<T>(action, payload, options);
+      return await this.queueCommandInner<T>(action, payload, options, epoch);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // Ownership mismatch surfaces as TAB_NOT_FOUND at the HTTP layer.
@@ -906,8 +953,9 @@ export class CommandRelay {
         console.log(`[ui-bridge] ${action} failed (disconnected), waiting for reconnection...`);
         try {
           await this.waitForConnection(2000, () => new Error('Reconnection timeout'));
+          this.throwIfDestroyedSince(epoch);
           console.log(`[ui-bridge] Reconnected, retrying ${action}`);
-          return await this.queueCommandInner<T>(action, payload, options);
+          return await this.queueCommandInner<T>(action, payload, options, epoch);
         } catch (retryErr) {
           // A relay destroyed mid-wait says so; any other retry failure
           // throws the original error.
@@ -974,13 +1022,17 @@ export class CommandRelay {
   }
 
   /**
-   * Inner command queue implementation (no retry logic).
+   * Inner command queue implementation (no retry logic). `epoch` is the
+   * {@link destroyEpoch} the caller read before its first `await`; a dispatch
+   * reached after a `destroy()` throws {@link RelayDestroyedError} instead.
    */
   private async queueCommandInner<T>(
     action: string,
     payload: unknown,
-    options?: { targetTabId?: string; ownerCheck?: { userId: string } }
+    options: { targetTabId?: string; ownerCheck?: { userId: string } } | undefined,
+    epoch: number
   ): Promise<T> {
+    this.throwIfDestroyedSince(epoch);
     const targetTabId = options?.targetTabId;
     const ownerCheck = options?.ownerCheck;
 
@@ -1007,8 +1059,10 @@ export class CommandRelay {
         // instance (Vercel serverless fan-out). Consult the shared presence
         // registry; if the tab is known elsewhere, dispatch via the bus (which
         // routes the command to the holding instance and the response back).
-        if (this.bus && (await this.bus.isTabKnown(targetTabId))) {
-          return this.sendCommand<T>(action, payload, options);
+        if (this.bus) {
+          const known = await this.bus.isTabKnown(targetTabId);
+          this.throwIfDestroyedSince(epoch);
+          if (known) return this.sendCommand<T>(action, payload, options);
         }
         // Owner-scoped TAB_NOT_FOUND: redact the connectedTabs list to the
         // caller's own tabs so the response doesn't reveal that other users
@@ -1079,6 +1133,8 @@ export class CommandRelay {
         targetTabId: ownedPrimary,
         ownerCheck,
       }).catch((firstError: Error) => {
+        // A command settled by `destroy()` fails over to nothing.
+        this.throwIfDestroyedSince(epoch);
         if (owned.length <= 1) throw firstError;
         // One automatic failover across the user's other tabs. Mirrors
         // the global primary-tab failover behavior, bounded to this user.
@@ -1095,6 +1151,8 @@ export class CommandRelay {
     if (primaryId) {
       return this.sendCommand<T>(action, payload, { targetTabId: primaryId }).catch(
         (firstError: Error) => {
+          // A command settled by `destroy()` fails over to nothing.
+          this.throwIfDestroyedSince(epoch);
           this.demotePrimaryTab(primaryId);
           const newPrimaryId = this.getPrimaryTabId();
           if (newPrimaryId) {
@@ -1549,10 +1607,7 @@ export class CommandRelay {
     this.wsClients.set(client.clientId, entry);
 
     // Signal that a transport is ready
-    if (this.connectionReadyResolve) {
-      this.connectionReadyResolve();
-      this.connectionReadyResolve = null;
-    }
+    this.openConnectionGate();
 
     console.log(`[UIBridge] WebSocket client registered: ${client.clientId}`);
 
@@ -1886,22 +1941,20 @@ export class CommandRelay {
   ): { streamId: string; unsubscribe: () => void } {
     const id = tabId || `anon_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     const streamId = crypto.randomUUID();
-    this.tabListeners.set(id, {
+    const tabListener: TabListener = {
       tabId: id,
       callback: listener,
       streamId,
       ...(userId ? { userId } : {}),
-    });
+    };
+    this.tabListeners.set(id, tabListener);
 
     // New tab becomes primary
     this.demotedTabs.delete(id);
     this.setPrimaryTab(id);
 
     // Signal that a transport is ready
-    if (this.connectionReadyResolve) {
-      this.connectionReadyResolve();
-      this.connectionReadyResolve = null;
-    }
+    this.openConnectionGate();
 
     console.log(`[ui-bridge] SSE listener connected: ${id} (total: ${this.tabListeners.size})`);
 
@@ -1909,12 +1962,20 @@ export class CommandRelay {
     // Subscribe to the bus so commands dispatched from OTHER instances (which
     // have no local listener for this tab) are delivered down this stream.
     let busUnsubCmd: (() => void) | null = null;
+    // Drops the bus command subscription at most once, whichever of
+    // `unsubscribe` and `destroy()` reaches it first.
+    const releaseBusCommands = () => {
+      const unsub = busUnsubCmd;
+      busUnsubCmd = null;
+      if (unsub) unsub();
+    };
     if (this.bus) {
       // Announce this tab in the shared presence registry so OTHER instances'
       // routing guard knows it exists here. TTL > sweep interval; refreshed by
       // the periodic cleanup sweep. Removed on unsubscribe.
       this.bus.registerTab(id, this.busTabTtlSeconds());
-      busUnsubCmd = this.bus.subscribeCommands(id, (env) => {
+      const bus = this.bus;
+      busUnsubCmd = bus.subscribeCommands(id, (env) => {
         // Deliver only if this tab's listener is still registered here.
         const current = this.tabListeners.get(id);
         if (!current) return;
@@ -1953,6 +2014,17 @@ export class CommandRelay {
           /* self-cleaning */
         }
       });
+      let busReleased = false;
+      tabListener.releaseBus = () => {
+        if (busReleased) return;
+        busReleased = true;
+        // Both halves run even when one throws: `destroy()` must finish.
+        try {
+          releaseBusCommands();
+        } finally {
+          bus.unregisterTab(id);
+        }
+      };
     }
 
     // Proactive snapshot capture
@@ -1990,11 +2062,14 @@ export class CommandRelay {
     const unsubscribe = () => {
       this.disarmTimer(proactiveTimer);
       this.disarmTimer(retryTimer);
-      if (busUnsubCmd) busUnsubCmd();
-      // A newer stream for the same tab replaced this one: its state is not
-      // this stream's to remove.
-      if (this.tabListeners.get(id)?.streamId !== streamId) return;
-      if (this.bus) this.bus.unregisterTab(id);
+      // A newer stream for the same tab replaced this one: its state, and the
+      // tab's presence in the shared registry, are not this stream's to
+      // remove — only its own bus command subscription is.
+      if (this.tabListeners.get(id)?.streamId !== streamId) {
+        releaseBusCommands();
+        return;
+      }
+      tabListener.releaseBus?.();
       this.tabListeners.delete(id);
       this.demotedTabs.delete(id);
       this.tabMetadata.delete(id);
@@ -2485,28 +2560,40 @@ export class CommandRelay {
   }
 
   /**
-   * Tear the relay down: after this returns, no timer the relay armed can
-   * send a command or log. Relay state is shared by every relay on the same
+   * Tear the relay down. Relay state is shared by every relay on the same
    * `globalPrefix`, so this acts prefix-wide, as it always has for the tab
-   * maps.
+   * maps. After it returns:
    *
-   * - The cleanup sweep is cleared, and its `globalThis` handle deleted when
-   *   it is the one this relay holds, so a relay built later on the prefix
-   *   arms its own sweep.
+   * - This relay's cleanup sweep is cleared. Its `globalThis` handle is
+   *   deleted when it is still the prefix's, so a relay built later on the
+   *   prefix arms its own; a newer sweep a later relay armed is left running.
    * - Every WebSocket client's warm-up timer is cleared and the clients are
    *   forgotten. The sockets are NOT closed: the transport owner (the
    *   standalone server's connection set, a host's WS handler) owns them.
-   * - Every pending command is settled with a {@link RelayDestroyedError}
-   *   (its timeout and grace timers cleared, its bus subscription dropped),
-   *   and every caller waiting for a transport fails the same way.
-   * - The SSE warm-up timers and the tab-info probe bounds are cleared.
+   * - Every SSE listener is forgotten. With a cross-instance bus, each one's
+   *   bus command subscription is dropped and its tab removed from the shared
+   *   presence registry. The streams themselves belong to their HTTP handlers.
+   * - Every pending command (fire-and-forget recorders included) is settled
+   *   with a {@link RelayDestroyedError}: its timeout and grace timers are
+   *   cleared and its bus response subscription dropped. Every caller waiting
+   *   for a transport fails the same way, and so does a command suspended at
+   *   an `await` in `queueCommand` (a bus presence lookup, a connection wait)
+   *   when it resumes, instead of dispatching. A command that fails over
+   *   after being settled here does not fail over.
+   * - The SSE warm-up timers and the tab-info probe bounds are cleared, and
+   *   the bus deliveries, HTTP-poll queue, tab registries and change-event
+   *   buffer are emptied.
+   * - The connection gate is closed, so the next command waits for a
+   *   transport to connect.
    *
    * A transport registered on the relay afterwards is live, and its timers
-   * belong to it. The relay itself runs no cleanup sweep after this.
+   * belong to it. The bus itself is not closed: its owner passed it in.
    */
   destroy(): void {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const g = globalThis as any;
+    // First, so a dispatch resuming from any `await` below sees it.
+    g[`${this.prefix}DestroyEpoch`] = this.destroyEpoch + 1;
     const intervalKey = `${this.prefix}CleanupInterval`;
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
@@ -2544,6 +2631,14 @@ export class CommandRelay {
     this.tabLastSuccess.clear();
     this.tabOwnership.clear();
     this.demotedTabs.clear();
+    for (const listener of this.tabListeners.values()) {
+      // A failing bus must not stop the teardown.
+      try {
+        listener.releaseBus?.();
+      } catch (err) {
+        console.error('[ui-bridge] releasing a listener from the bus failed:', err);
+      }
+    }
     this.tabListeners.clear();
     this.commandQueue.length = 0;
     this.changeEventBuffer.length = 0;
