@@ -23,10 +23,14 @@
  *   element's first rendered text run, composited bottom-up over the paint
  *   stack at that point: the DOM ancestors, every element
  *   `document.elementsFromPoint` shows beneath the text, and each layer's
- *   `::before` / `::after` background. A background image (gradients
- *   included), `filter`, `backdrop-filter`, `mix-blend-mode`, replaced content
- *   (`<img>`, `<video>`, `<canvas>`, …) or a `pointer-events: none` layer the
- *   hit test cannot order, anywhere the text could show it, makes the colour
+ *   `::before` / `::after` background. That hit test retargets shadow
+ *   content to its host, so beneath text slotted into an open shadow tree
+ *   only the slot's ancestors are read: a layer of that tree beside the
+ *   slot, painting beneath the text, is not seen. A background image
+ *   (gradients included), `filter`, `backdrop-filter`, `mix-blend-mode`,
+ *   replaced content (`<img>`, `<video>`, `<canvas>`, …) or a
+ *   `pointer-events: none` layer the hit test cannot order, anywhere the
+ *   text could show it, makes the colour
  *   `unknown{input_missing}`; so does an ancestor with `opacity < 1` that
  *   contains the first opaque layer. A `pointer-events: none` layer is looked
  *   for anywhere on the page, open shadow roots included, by one walk of the

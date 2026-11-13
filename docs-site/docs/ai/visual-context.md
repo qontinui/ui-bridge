@@ -220,7 +220,11 @@ fixture's rules. Shadow DOM: covers inside open shadow roots are hit-tested at
 any depth; a *defined* custom element with no open shadow root lying over the
 text, and text held directly by an OPEN shadow host (so its shadow tree paints
 it), make contrast `unknown`; an element slotted into an open root is measured
-through its slot. A closed shadow root cannot be read: a scrim inside one
+through its slot, whose ancestors in the shadow tree are read beneath it. A
+layer of that shadow tree beside the slot, painting beneath the slotted text (a
+background `div` positioned behind the slot), is not seen, so contrast is
+measured against what lies under that layer and can pass or fail wrongly. A
+closed shadow root cannot be read: a scrim inside one
 attached to an undefined tag or a built-in element (such as `div`) is not seen,
 unless it lies over text slotted into that same element, which the hit test
 then lists above its own text, so contrast is `unknown`. Content slotted into a
@@ -233,7 +237,7 @@ with a large spread) are not seen, so contrast can pass on colours they darken.
 Every
 other kind answers per result with `outcome: "unknown"` and
 `code: "capability_unavailable_in_build"`. A mixed batch still answers what it
-can. Apart from the closed-root and box-shadow limits above, anything the page
+can. Apart from the shadow-tree and box-shadow limits above, anything the page
 cannot decide is
 `unknown` with a code, never `passed`:
 a gradient or image under the text, a hit test that cannot show both elements,
