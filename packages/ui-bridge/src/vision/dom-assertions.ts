@@ -21,9 +21,9 @@
  *
  * - `contrast_meets_wcag` — the text colour and the opaque backdrop under the
  *   element's first rendered text run, composited bottom-up over the paint
- *   stack at that point: the DOM ancestors, every element
- *   `document.elementsFromPoint` shows beneath the text, and each layer's
- *   `::before` / `::after` background. That hit test retargets shadow
+ *   stack at that point: the DOM ancestors whose box lies under it, every
+ *   element `document.elementsFromPoint` shows beneath the text, and each
+ *   layer's `::before` / `::after` background. That hit test retargets shadow
  *   content to its host, so beneath the text a shadow tree's own elements
  *   are read only where they hold the text's slot: an open shadow host
  *   beneath light-DOM text laid over it is read by its own box alone, and a
@@ -41,10 +41,16 @@
  *   composed tree per request that measures contrast — its background, its
  *   frame, its own text and its `::before` / `::after` alike: one
  *   positioned onto the text from inside an element whose own box misses it
- *   (a fixed scrim in a sticky header) is found too. A translucent colour or
- *   an opacity group above the first opaque layer is composited exactly.
- *   With no opaque layer, the base is the `Canvas` colour under the root's
- *   `color-scheme`. Every layer the hit
+ *   (a fixed scrim in a sticky header) is found too, and so is an open
+ *   popover's `::backdrop`, which the UA sheet makes click-through: one that
+ *   paints over text outside its popover is `unknown{input_missing}`, even
+ *   where the popover, or a block holding it, is at `opacity: 0`: neither
+ *   fades the backdrop. Content in the top layer (an open popover, a modal
+ *   dialog) is read as the browser draws it: out of its ancestors'
+ *   transforms, opacity, filters and clips, at the zoom it inherits. A
+ *   translucent colour or an opacity group above the first opaque layer is
+ *   composited exactly. With no opaque layer, the base is the `Canvas`
+ *   colour under the root's `color-scheme`. Every layer the hit
  *   test shows ABOVE the text (a scrim, an overlay, a sheet), open shadow
  *   roots included, is read too: a plain translucent colour is composited
  *   over the text and its backdrop alike, so a white 80% scrim over black
@@ -59,23 +65,37 @@
  *   read nowhere: one cast over the text by an element whose box misses it,
  *   and an outline a negative `outline-offset` pulls inside its box, are not
  *   seen. A positioned `::before` / `::after` is read where its 2D transform
- *   (its `transform`, `translate`, `rotate` and `scale`) places it, the
- *   text's point taken into its own box; one in normal flow is looked for
- *   only in its element's box, as its relative offsets and its own transform
- *   move it, so one that overflows that box is not seen past it; one at
- *   `opacity: 0` paints nothing. A transparent one of the text's own element
- *   or of a layer beneath the text, whose box the computed style does not
- *   pin down (one its relative offsets nudge, a 3D transform, a motion
- *   path), is taken to paint nothing, so its glyphs and its frame are not
- *   seen, over the text as well. A click-through `::before` / `::after`
- *   outside its element's box is not seen when the hit test can see that
- *   element, or when its box is not pinned down. An ANCESTOR of the text
- *   the hit test lists above it paints its own box beneath its content, so
- *   only what it draws over the text is read — a positioned `::before` /
- *   `::after` (a stretched link), its open shadow tree's elements above the
- *   text — unless a negative `z-index` sinks the text past it, and then all
- *   of it is a layer above. One listed above with neither (a closed shadow
- *   tree's overlay) is `unknown{input_missing}`. The text's own element
+ *   (its `transform`, `translate`, `rotate` and `scale`) places it and every
+ *   2D transform and `zoom` above it (and its own `zoom`) draws it, the
+ *   text's point taken into its own box; under a 3D transform or a motion
+ *   path, or fixed inside an element that holds fixed boxes (a transform, a
+ *   filter, `contain`, `content-visibility`, `transform-style: preserve-3d`,
+ *   a `will-change` naming one), it is not pinned down. One in normal flow
+ *   (static, or relatively positioned) of the text's element or of an ancestor is laid out beside
+ *   the text, so it is read only where its relative offsets or its 2D
+ *   transform, as the transforms and zoom above draw them, move it at least
+ *   as far as the text's point lies inside its run (half the run's height or
+ *   width, the lesser); one a negative margin or a shared grid area lays over
+ *   the text is not seen, and one a 3D transform or a motion path moves is
+ *   read only where its offsets move it. One in normal flow of any other
+ *   layer beneath the text lies somewhere in that layer's box, which lies
+ *   under the text, so one that paints and can reach the text is
+ *   `unknown{input_missing}`. Past how far its offsets and its transform
+ *   move it, one in normal flow that overflows its element's box is not
+ *   seen; one at `opacity: 0` paints nothing. A transparent one of the
+ *   text's own element or of a layer beneath the text, whose box the
+ *   computed style does not pin down (one its relative offsets nudge, a 3D
+ *   transform, a motion path), is taken to paint nothing, so its glyphs and
+ *   its frame are not seen, over the text as well. A click-through
+ *   `::before` / `::after` outside its element's box is not seen when the
+ *   hit test can see that element, or when its box is not pinned down. An
+ *   ANCESTOR of the text the hit test lists above it paints its own box
+ *   beneath its content, so only what it draws over the text is read — a
+ *   positioned `::before` / `::after` (a stretched link), one in normal flow
+ *   its transform moves over the text, its open shadow tree's elements above
+ *   the text — unless a negative `z-index` sinks the text past it, and then
+ *   all of it is a layer above. One listed above with none of them (a closed
+ *   shadow tree's overlay) is `unknown{input_missing}`. The text's own element
  *   listed twice with layers between — for its text and for its own
  *   positioned `::before` / `::after`, a stretched link under a veil — is
  *   `unknown{hit_test_unmeasurable}`: which listing is the text's is not
@@ -108,8 +128,10 @@
  *   box of its nearest ancestor that clips that axis (`overflow-x` /
  *   `overflow-y` of `hidden` or `clip`, or `contain: paint`), following the
  *   containing-block chain, so an absolutely or fixed positioned element is
- *   not checked against an ancestor that does not clip it. A scroll container
- *   (`overflow` `auto` or `scroll`) clips on one side only: content scrolled
+ *   not checked against an ancestor that does not clip it, and nothing above
+ *   the top layer clips an open popover or a modal dialog, or what they
+ *   hold. A scroll container (`overflow` `auto` or `scroll`) clips on one
+ *   side only: content scrolled
  *   out past its far side is reachable, while content past the edge it
  *   scrolls from (its block-start and inline-start edges as `writing-mode`
  *   and `direction` place them: the top and the left by default; in a
@@ -361,6 +383,32 @@ function containsComposed(ancestor: Element, el: Element): boolean {
   return false;
 }
 
+/**
+ * Whether `el` is drawn in the top layer — an open popover, a modal dialog,
+ * a fullscreen element — which lifts it out of its ancestors' transforms,
+ * opacity, filters and clips, though not out of their zoom, which it
+ * inherits.
+ */
+function inTopLayer(el: Element): boolean {
+  const is = (state: string): boolean => {
+    try {
+      return el.matches(state);
+    } catch {
+      return false;
+    }
+  };
+  return (
+    (el.hasAttribute('popover') && is(':popover-open')) ||
+    (el.localName === 'dialog' && is(':modal')) ||
+    (document.fullscreenElement != null && is(':fullscreen'))
+  );
+}
+
+/** The element `el` is painted inside: its composed parent, or none in the top layer. */
+function paintParent(el: Element): Element | null {
+  return inTopLayer(el) ? null : composedParent(el);
+}
+
 /** A border box in viewport CSS pixels, or undefined when the element generates no box. */
 function boxOf(el: Element): VisionRegion | undefined {
   if (el.getClientRects().length === 0) return undefined;
@@ -499,15 +547,46 @@ function scrolls(st: CSSStyleDeclaration): boolean {
 }
 
 /**
+ * The `will-change` values that make a box hold fixed descendants: the
+ * properties some value of which would (as Chromium 147 lays them out). Each
+ * is matched whole: one that only begins with such a name (`transform-origin`,
+ * `contain-intrinsic-size`) holds none.
+ */
+const WILL_CHANGE_HOLDS_FIXED: ReadonlySet<string> = new Set([
+  'transform',
+  '-webkit-transform',
+  'translate',
+  'rotate',
+  'scale',
+  'offset-path',
+  'perspective',
+  '-webkit-perspective',
+  'filter',
+  '-webkit-filter',
+  'backdrop-filter',
+  'contain',
+  'transform-style',
+]);
+
+/** Whether a box is transformed: by `transform`, `translate`, `rotate`, `scale` or a motion path. */
+function hasTransform(st: CSSStyleDeclaration): boolean {
+  return ['transform', 'translate', 'rotate', 'scale', 'offset-path'].some(
+    (prop) => !['', 'none'].includes(st.getPropertyValue(prop).trim())
+  );
+}
+
+/**
  * Where a positioned `::before` / `::after` paints: its border box as laid
- * out before any transform, and `toLocal`, which takes a viewport point to
- * where that point lies in that box's own coordinates (the inverse of its
- * transform; the point itself when there is none), or null where nothing of
+ * out before any transform, in its containing block's own CSS pixels, and
+ * `toLocal`, which takes a viewport point to where that point lies in those
+ * coordinates (the inverse of the box's transform and of every transform
+ * and zoom its containing block is drawn under), or null where nothing of
  * the box can lie (a transform that flattens it). A point lies in the
  * painted box when its local point lies in `box`, and its frame is read at
- * the local point, so a turned box is read as exactly as an upright one.
- * `bounds` is the upright box in the viewport that holds the painted one,
- * a pixel wider on each side, outside which no point lies in it.
+ * the local point, so a turned or scaled box is read as exactly as an
+ * upright one. `bounds` is the upright box in the viewport that holds the
+ * painted one, a pixel wider on each side, outside which no point lies in
+ * it.
  */
 interface PseudoExtent {
   box: VisionRegion;
@@ -520,12 +599,27 @@ interface PseudoExtent {
  * and `transform` apply, in the order CSS applies them, a percentage
  * `translate` resolved against the box's `size`: '' for none, null for one
  * that is not 2D (a 3D rotation, a z translation or scale, a `matrix3d`) or
- * not read here (a `calc()` translate).
+ * not read here (a `calc()` translate). With no `size` the translate is left
+ * out: the list then stretches and turns as the box's does, but moves
+ * nothing.
  */
-function transformList(st: CSSStyleDeclaration, size: { w: number; h: number }): string | null {
+function transformList(
+  st: CSSStyleDeclaration,
+  size: { w: number; h: number } | null
+): string | null {
+  // A property's values, split at the spaces between them, not at those
+  // inside a function such as `calc()`.
   const value = (prop: string): string[] => {
     const v = st.getPropertyValue(prop).trim();
-    return v === '' || v === 'none' ? [] : v.split(/\s+/);
+    if (v === '' || v === 'none') return [];
+    const parts = [''];
+    let depth = 0;
+    for (const ch of v) {
+      depth += ch === '(' ? 1 : ch === ')' ? -1 : 0;
+      if (depth > 0 || !/\s/.test(ch)) parts[parts.length - 1] += ch;
+      else if (parts[parts.length - 1] !== '') parts.push('');
+    }
+    return parts;
   };
   // A translate length in px; a percentage is of the box's size on its axis.
   const length = (v: string, along: number): string | null => {
@@ -535,7 +629,7 @@ function transformList(st: CSSStyleDeclaration, size: { w: number; h: number }):
   const fns: string[] = [];
   const t = value('translate');
   if (t.length > 2 && pxValue(t[2]) !== 0) return null;
-  if (t.length > 0) {
+  if (t.length > 0 && size) {
     const x = length(t[0], size.w);
     const y = length(t[1] ?? '0px', size.h);
     if (x === null || y === null) return null;
@@ -553,52 +647,145 @@ function transformList(st: CSSStyleDeclaration, size: { w: number; h: number }):
   return fns.join(' ');
 }
 
+/** The 2D linear part of a transform: `x' = a·x + c·y`, `y' = b·x + d·y`. */
+interface Linear {
+  a: number;
+  b: number;
+  c: number;
+  d: number;
+}
+
+const NO_TRANSFORM: Linear = { a: 1, b: 0, c: 0, d: 1 };
+
+/** `outer` applied after `inner`. */
+function composeLinear(outer: Linear, inner: Linear): Linear {
+  return {
+    a: outer.a * inner.a + outer.c * inner.b,
+    b: outer.b * inner.a + outer.d * inner.b,
+    c: outer.a * inner.c + outer.c * inner.d,
+    d: outer.b * inner.c + outer.d * inner.d,
+  };
+}
+
+/** The most `m` stretches any length: its largest singular value. */
+function stretchOf(m: Linear): number {
+  const t = m.a * m.a + m.b * m.b + m.c * m.c + m.d * m.d;
+  const det = m.a * m.d - m.b * m.c;
+  return Math.sqrt((t + Math.sqrt(Math.max(0, t * t - 4 * det * det))) / 2);
+}
+
+/** A box's own `zoom`: 1 for none, or for a value that is not a positive number. */
+function zoomOf(st: CSSStyleDeclaration): number {
+  const z = Number(st.getPropertyValue('zoom'));
+  return z > 0 ? z : 1;
+}
+
 /**
- * `box`, a border box laid out before its transform, with the map from the
- * viewport into its own coordinates: the inverse of its computed
- * `translate`, `rotate`, `scale` and `transform` about its
- * `transform-origin`. Null when that cannot be read here: a motion path
- * (`offset-path`), a 3D transform, a `calc()` translate, one about a box
- * other than the border box (`transform-box`), a value `DOMMatrixReadOnly`
- * does not parse, or no `DOMMatrixReadOnly` at all.
+ * How a box draws what it holds: the linear part of its own 2D transform
+ * (its computed `rotate`, `scale` and `transform`; a `translate` only moves
+ * it), at its own `zoom`. Null for one this cannot read: a 3D one, a motion
+ * path (`offset-path`).
  */
-function pseudoExtent(box: VisionRegion, st: CSSStyleDeclaration): PseudoExtent | null {
+function ownLinear(st: CSSStyleDeclaration): Linear | null {
+  const path = st.getPropertyValue('offset-path').trim();
+  if (path !== '' && path !== 'none') return null;
+  const zoom = zoomOf(st);
+  const list = transformList(st, null);
+  if (list === null) return null;
+  if (list === '') return { a: zoom, b: 0, c: 0, d: zoom };
+  if (typeof DOMMatrixReadOnly === 'undefined') return null;
+  try {
+    const m = new DOMMatrixReadOnly(list);
+    // A zoom scales evenly, so before the transform or after is the same.
+    return m.is2D ? { a: m.a * zoom, b: m.b * zoom, c: m.c * zoom, d: m.d * zoom } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * How a containing block's own coordinates are drawn into the viewport by
+ * every transform and zoom from it up: `x' = a·x + c·y + e`,
+ * `y' = b·x + d·y + f`.
+ */
+interface Placement extends Linear {
+  e: number;
+  f: number;
+}
+
+/** The viewport's own coordinates, for a box positioned against it. */
+const VIEWPORT: Placement = { ...NO_TRANSFORM, e: 0, f: 0 };
+
+/**
+ * `box`, a border box laid out before its transform in its containing
+ * block's coordinates, which `place` draws into the viewport, with the map
+ * from the viewport into those coordinates: the inverse of that placement
+ * and of the box's computed `translate`, `rotate`, `scale` and `transform`
+ * about its `transform-origin`. Null when that cannot be read here: a
+ * motion path (`offset-path`), a 3D transform, a `calc()` translate, one
+ * about a box other than the border box (`transform-box`), a value
+ * `DOMMatrixReadOnly` does not parse, or no `DOMMatrixReadOnly` at all.
+ */
+function pseudoExtent(
+  box: VisionRegion,
+  st: CSSStyleDeclaration,
+  place: Placement = VIEWPORT
+): PseudoExtent | null {
   const path = st.getPropertyValue('offset-path').trim();
   if (path !== '' && path !== 'none') return null;
   const list = transformList(st, box);
   if (list === null) return null;
-  if (list === '') return { box, bounds: grown(box, 1), toLocal: (p) => p };
-  const reference = st.getPropertyValue('transform-box').trim();
-  if (reference === 'content-box' || reference === 'fill-box') return null;
-  if (typeof DOMMatrixReadOnly === 'undefined') return null;
-  let matrix: DOMMatrixReadOnly;
-  let inverse: DOMMatrixReadOnly;
-  try {
-    matrix = new DOMMatrixReadOnly(list);
-    inverse = matrix.inverse();
-  } catch {
-    return null;
-  }
-  const [ox, oy] = st.transformOrigin.split(' ').map(pxValue);
-  if (!Number.isFinite(ox) || !Number.isFinite(oy)) return null;
-  const cx = box.x + ox;
-  const cy = box.y + oy;
   const corners = [
     [box.x, box.y],
     [box.x + box.w, box.y],
     [box.x, box.y + box.h],
     [box.x + box.w, box.y + box.h],
-  ].map(([x, y]) => matrix.transformPoint({ x: x - cx, y: y - cy }));
-  const xs = corners.map((q) => q.x + cx);
-  const ys = corners.map((q) => q.y + cy);
-  const left = Math.min(...xs);
-  const top = Math.min(...ys);
+  ];
+  const upright = (qs: Array<{ x: number; y: number }>): VisionRegion => {
+    const xs = qs.map((q) => q.x);
+    const ys = qs.map((q) => q.y);
+    const left = Math.min(...xs);
+    const top = Math.min(...ys);
+    return grown({ x: left, y: top, w: Math.max(...xs) - left, h: Math.max(...ys) - top }, 1);
+  };
+  if (list === '') {
+    const { a, b, c, d, e, f } = place;
+    const det = a * d - b * c;
+    return {
+      box,
+      bounds: upright(corners.map(([x, y]) => ({ x: a * x + c * y + e, y: b * x + d * y + f }))),
+      toLocal: (p) =>
+        det === 0
+          ? null
+          : { x: (d * (p.x - e) - c * (p.y - f)) / det, y: (a * (p.y - f) - b * (p.x - e)) / det },
+    };
+  }
+  const reference = st.getPropertyValue('transform-box').trim();
+  if (reference === 'content-box' || reference === 'fill-box') return null;
+  if (typeof DOMMatrixReadOnly === 'undefined') return null;
+  const [ox, oy] = st.transformOrigin.split(' ').map(pxValue);
+  if (!Number.isFinite(ox) || !Number.isFinite(oy)) return null;
+  const cx = box.x + ox;
+  const cy = box.y + oy;
+  let matrix: DOMMatrixReadOnly;
+  let inverse: DOMMatrixReadOnly;
+  try {
+    // Into the viewport: the box's own transform about its origin, then
+    // the placement of its containing block.
+    matrix = new DOMMatrixReadOnly([place.a, place.b, place.c, place.d, place.e, place.f])
+      .translate(cx, cy)
+      .multiply(new DOMMatrixReadOnly(list))
+      .translate(-cx, -cy);
+    inverse = matrix.inverse();
+  } catch {
+    return null;
+  }
   return {
     box,
-    bounds: grown({ x: left, y: top, w: Math.max(...xs) - left, h: Math.max(...ys) - top }, 1),
+    bounds: upright(corners.map(([x, y]) => matrix.transformPoint({ x, y }))),
     toLocal: (p) => {
-      const q = inverse.transformPoint({ x: p.x - cx, y: p.y - cy });
-      return Number.isFinite(q.x) && Number.isFinite(q.y) ? { x: q.x + cx, y: q.y + cy } : null;
+      const q = inverse.transformPoint({ x: p.x, y: p.y });
+      return Number.isFinite(q.x) && Number.isFinite(q.y) ? { x: q.x, y: q.y } : null;
     },
   };
 }
@@ -786,6 +973,7 @@ class TabMeasurement {
   private readonly clipDone = new Set<string>();
   private registryIds: Map<Element, string> | null = null;
   private hitHidden: readonly HitHidden[] | null = null;
+  private readonly linears = new Map<Element, Linear | null>();
   private canvas: { paint: Paint; label: string } | null = null;
   private canvasFrom: Element | null = null;
 
@@ -1258,13 +1446,81 @@ class TabMeasurement {
   /** Does `st` establish a containing block for a fixed-position descendant? */
   private fixedContainer(st: CSSStyleDeclaration): boolean {
     return (
-      (st.transform !== '' && st.transform !== 'none') ||
+      hasTransform(st) ||
       (st.perspective !== '' && st.perspective !== 'none') ||
       (st.filter !== '' && st.filter !== 'none') ||
-      !['', 'none'].includes(st.getPropertyValue('backdrop-filter')) ||
+      !['', 'none'].includes(st.getPropertyValue('backdrop-filter').trim()) ||
+      ['auto', 'hidden'].includes(st.getPropertyValue('content-visibility').trim()) ||
+      st.getPropertyValue('transform-style').trim() === 'preserve-3d' ||
       /\b(paint|layout|strict|content)\b/.test(st.contain ?? '') ||
-      /\b(transform|perspective|filter)\b/.test(st.willChange ?? '')
+      (st.willChange ?? '').split(',').some((v) => WILL_CHANGE_HOLDS_FIXED.has(v.trim()))
     );
+  }
+
+  /**
+   * How `el`'s own coordinates are drawn into the viewport, less where: the
+   * linear parts of its own 2D transform and zoom and of every ancestor's,
+   * composed (outermost last), up to the top layer, which draws an element
+   * at the zoom it inherits alone ({@link inTopLayer}). Null when one of
+   * them is not read ({@link ownLinear}).
+   */
+  private linearOf(el: Element): Linear | null {
+    const chain: Element[] = [];
+    let at: Element | null = el;
+    while (at && !this.linears.has(at)) {
+      chain.push(at);
+      at = paintParent(at);
+    }
+    const top = chain[chain.length - 1];
+    let outer: Linear | null = at
+      ? (this.linears.get(at) ?? null)
+      : top
+        ? this.zoomAbove(top)
+        : NO_TRANSFORM;
+    for (let i = chain.length - 1; i >= 0; i--) {
+      const own = outer ? ownLinear(this.style(chain[i])) : null;
+      outer = outer && own ? composeLinear(outer, own) : null;
+      this.linears.set(chain[i], outer);
+    }
+    return outer;
+  }
+
+  /** The zoom `el` inherits from its ancestors, as a linear map. */
+  private zoomAbove(el: Element): Linear {
+    let zoom = 1;
+    for (let a = composedParent(el); a; a = composedParent(a)) zoom *= zoomOf(this.style(a));
+    return { a: zoom, b: 0, c: 0, d: zoom };
+  }
+
+  /**
+   * How `el`'s padding box, scrolled, is drawn into the viewport: what an
+   * absolutely positioned descendant's insets are measured from, under
+   * every transform and zoom from `el` up ({@link linearOf}). Its border
+   * box is drawn inside its bounding rectangle: at the far side of an axis
+   * a transform flips, and, where one turns or skews it, as far in as the
+   * farthest of its laid-out corners is drawn back. Null when a transform
+   * is not read, or `el` is turned or skewed and its computed style does
+   * not give the size it is laid out at.
+   */
+  private paddingPlacement(el: Element): Placement | null {
+    const m = this.linearOf(el);
+    if (!m) return null;
+    const st = this.style(el);
+    const r = el.getBoundingClientRect();
+    let x0: number;
+    let y0: number;
+    if (Math.abs(m.b) < 1e-9 && Math.abs(m.c) < 1e-9) {
+      x0 = m.a < 0 ? r.right : r.left;
+      y0 = m.d < 0 ? r.bottom : r.top;
+    } else {
+      const size = this.layoutSizes(el)?.border;
+      if (!size) return null;
+      x0 = r.left - Math.min(0, m.a * size.w, m.c * size.h, m.a * size.w + m.c * size.h);
+      y0 = r.top - Math.min(0, m.b * size.w, m.d * size.h, m.b * size.w + m.d * size.h);
+    }
+    const x = (pxValue(st.borderLeftWidth) || 0) - el.scrollLeft;
+    const y = (pxValue(st.borderTopWidth) || 0) - el.scrollTop;
+    return { ...m, e: x0 + m.a * x + m.c * y, f: y0 + m.b * x + m.d * y };
   }
 
   /**
@@ -1397,7 +1653,7 @@ class TabMeasurement {
     type Side = { lo: number; hi: number; by: string };
     let x: Side | null = null;
     let y: Side | null = null;
-    for (let a = composedParent(el); a && !(x && y); a = composedParent(a)) {
+    for (let a = paintParent(el); a && !(x && y); a = paintParent(a)) {
       const st = this.style(a);
       const eligible =
         need === 'all' ||
@@ -1477,10 +1733,10 @@ class TabMeasurement {
     record.bgColor = measured.bg;
   }
 
-  /** The product of `opacity` from `el` up its composed ancestry. */
+  /** The product of `opacity` from `el` up its composed ancestry, to the top layer. */
   private effectiveOpacity(el: Element): number {
     let product = 1;
-    for (let a: Element | null = el; a; a = composedParent(a)) {
+    for (let a: Element | null = el; a; a = paintParent(a)) {
       const o = Number(this.style(a).opacity);
       if (Number.isFinite(o)) product *= o;
       if (product === 0) return 0;
@@ -1578,6 +1834,9 @@ class TabMeasurement {
       );
     }
     const p = { x: visible.x + visible.w / 2, y: visible.y + visible.h / 2 };
+    // How far the point lies inside the text's run: a ::before / ::after laid
+    // out beside the text is drawn over the point only when moved this far.
+    const hold = run ? Math.min(visible.w, visible.h) / 2 : 0;
     const stack = hitStack(p.x, p.y);
     if (stack === null) {
       return missing(
@@ -1656,15 +1915,18 @@ class TabMeasurement {
     for (let i = covers.length - 1; i >= 0; i--) overItems.push(...covers[i]);
 
     // The paint stack under the text, top first: the hit stack beneath the
-    // text's owner, plus the DOM ancestors it does not list there — the ones
-    // the hit test skipped (pointer-events: none), and one it lists only
-    // above the owner for its generated content or shadow tree — each placed
-    // above the first entry outside it. An ancestor the text sinks beneath
-    // (a negative z-index) paints over the text, as a cover, so it is not
-    // added beneath it too.
+    // text's owner, plus the DOM ancestors it does not list there whose box
+    // lies under the text — the ones the hit test skipped (pointer-events:
+    // none), and one it lists only above the owner for its generated
+    // content or shadow tree — each placed above the first entry outside it.
+    // An ancestor whose box misses the text (text positioned out of it, or
+    // lifted into the top layer) paints its background elsewhere. An
+    // ancestor the text sinks beneath (a negative z-index) paints over the
+    // text, as a cover, so it is not added beneath it too.
     const layers = [...beneath];
     for (let a = composedParent(owner); a; a = composedParent(a)) {
       if (layers.includes(a) || sunkPast.has(a)) continue;
+      if (!this.boxHolds(a, this.style(a), p)) continue;
       const after = layers.findIndex((l, i) => i > 0 && !containsComposed(a, l));
       if (after < 0) layers.push(a);
       else layers.splice(after, 0, a);
@@ -1684,7 +1946,7 @@ class TabMeasurement {
     // Bottom-up paint operations under the text.
     const items: PaintItem[] = [];
     for (let i = layers.length - 1; i >= 0; i--) {
-      const layerItems = this.paintOf(layers[i], owner, p);
+      const layerItems = this.paintOf(layers[i], owner, p, hold);
       if (layerItems instanceof ColorUnmeasured) {
         return missing(layerItems.reason.code, layerItems.reason.detail);
       }
@@ -1807,8 +2069,9 @@ class TabMeasurement {
    * beneath the text: an ancestor of the text's owner, which paints its
    * background and borders before its content, or an element the hit test
    * lists beneath the text as well. Such a layer is listed above the text for
-   * what it draws over that content — a positioned `::before` / `::after`
-   * ({@link generatedOver}), or its open shadow tree, whose elements over the
+   * what it draws over that content — a positioned or transformed
+   * `::before` / `::after` ({@link generatedOver}), or its open shadow tree,
+   * whose elements over the
    * text {@link coversAbove} lists as layers of their own — so its own
    * background is never composited over the text. When neither explains the
    * listing (a closed shadow tree may), what lies over the text is not known,
@@ -1834,8 +2097,8 @@ class TabMeasurement {
     return new ColorUnmeasured({
       code: 'input_missing',
       detail:
-        `the hit test lists ${this.describe(layer)} ${listed} and neither a positioned ` +
-        `::before / ::after nor an open shadow tree of its paints there (${may}), so the ` +
+        `the hit test lists ${this.describe(layer)} ${listed} and neither a positioned or ` +
+        `transformed ::before / ::after nor an open shadow tree of its paints there (${may}), so the ` +
         'colours a reader sees there were not measured',
     });
   }
@@ -1851,9 +2114,11 @@ class TabMeasurement {
    * tint at rest) paints nothing there. `true` when the only ones there are
    * transparent (an empty stretched link) or at `opacity: 0`, `false` when
    * none is. `positionedOnly` reads only the ones that can lie over their
-   * own element's content: positioned, with a z-index that is not negative.
-   * One in normal flow is laid out beside that content, and one with a
-   * negative z-index paints beneath it.
+   * own element's content: positioned, with a z-index that is not negative,
+   * or in normal flow and transformed, which paints it over that content as
+   * far as the transform moves it. One in normal flow and untransformed is
+   * laid out beside that content, and one with a negative z-index paints
+   * beneath it.
    */
   private generatedOver(
     layer: Element,
@@ -1865,7 +2130,8 @@ class TabMeasurement {
     for (const which of ['::before', '::after'] as const) {
       const ps = this.pseudoStyle(layer, which);
       if (!this.pseudoShown(ps)) continue;
-      if (positionedOnly && (ps.position === 'static' || Number(ps.zIndex) < 0)) continue;
+      const flowing = ps.position === 'static' && !hasTransform(ps);
+      if (positionedOnly && (flowing || Number(ps.zIndex) < 0)) continue;
       const bg = parseColor(ps.backgroundColor);
       const image = ps.backgroundImage !== 'none' && ps.backgroundImage !== '';
       const glyphs = ps.content !== '""' && ps.content !== "''";
@@ -1996,11 +2262,11 @@ class TabMeasurement {
 
   /**
    * A filter, blend or background-clipped glyph fill on the text's owner or
-   * any ancestor alters the text itself: no backdrop read can say what it
-   * paints. Returns the detail, or null.
+   * any ancestor below the top layer alters the text itself: no backdrop
+   * read can say what it paints. Returns the detail, or null.
    */
   private textAffectedBy(owner: Element): string | null {
-    for (let a: Element | null = owner; a; a = composedParent(a)) {
+    for (let a: Element | null = owner; a; a = paintParent(a)) {
       const st = this.style(a);
       if (st.filter && st.filter !== 'none') {
         return `${this.describe(a)} applies filter: ${st.filter} to the text`;
@@ -2049,25 +2315,35 @@ class TabMeasurement {
    * or replaced content anywhere in its box, else its border, a scrollbar or
    * an inset box-shadow where that frame lies ({@link frameOf}) and its own
    * text where that text lies; and a `::before` / `::after` of its that
-   * paints ({@link hitHiddenPseudo}). One walk of the composed tree per
-   * request, open shadow roots included, reading each element's computed
-   * style once, and the pseudo-elements' only for an element that computes
+   * paints ({@link hitHiddenPseudo}); and an open popover's `::backdrop`
+   * ({@link popoverBackdrop}). One walk of the composed tree per request,
+   * open shadow roots included, reading each element's computed style once,
+   * and the pseudo-elements' only for an element that computes
    * `pointer-events: none`; it does not descend into a subtree that renders
-   * nothing (`display: none`) or paints nothing (`opacity: 0`). Only a
-   * request that measures contrast walks it. Each layer's bounds — its box,
-   * and its own text's line boxes, which may overflow it — are read once,
-   * at the first point tested against it.
+   * nothing (`display: none`), and in one that paints nothing (`opacity:
+   * 0`) it reads only what the top layer lifts out of it ({@link
+   * inTopLayer}) and a popover's backdrop, which its opacity does not fade.
+   * Only a request that measures contrast walks it. Each layer's bounds —
+   * its box, and its own text's line boxes, which may overflow it — are read
+   * once, at the first point tested against it.
    */
   private hitHiddenLayers(): readonly HitHidden[] {
     if (this.hitHidden) return this.hitHidden;
     const found: HitHidden[] = [];
-    const pending: Element[] = document.documentElement ? [document.documentElement] : [];
+    const pending: Array<[Element, boolean]> = document.documentElement
+      ? [[document.documentElement, false]]
+      : [];
     while (pending.length > 0) {
-      const el = pending.pop()!;
+      const [el, underFaded] = pending.pop()!;
       const st = this.style(el);
-      if (st.display === 'none' || st.opacity === '0') continue;
+      if (st.display === 'none') continue;
+      if (el.hasAttribute('popover')) {
+        const backdrop = this.popoverBackdrop(el);
+        if (backdrop) found.push(backdrop);
+      }
+      const faded = st.opacity === '0' || (underFaded && !inTopLayer(el));
       const hidden = st.visibility === 'hidden' || st.visibility === 'collapse';
-      if (st.pointerEvents === 'none') {
+      if (!faded && st.pointerEvents === 'none') {
         // A box at visibility: hidden paints nothing; its pseudo-elements may.
         if (!hidden) {
           const bg = parseColor(st.backgroundColor);
@@ -2108,10 +2384,38 @@ class TabMeasurement {
       }
       // Children last to first, so the walk visits them in document order.
       const children = [...Array.from(el.shadowRoot?.children ?? []), ...Array.from(el.children)];
-      for (let i = children.length - 1; i >= 0; i--) pending.push(children[i]);
+      for (let i = children.length - 1; i >= 0; i--) pending.push([children[i], faded]);
     }
     this.hitHidden = found;
     return found;
+  }
+
+  /**
+   * An open popover's `::backdrop` as a layer the hit test cannot see: the
+   * UA sheet makes it click-through, and it lies over the whole viewport,
+   * over all that is not in the top layer, beneath the popover and out of
+   * its opacity. Null when the popover is not open, or its backdrop paints
+   * nothing: no background colour or image, frame or `backdrop-filter`, or
+   * it is hidden or at `opacity: 0` itself.
+   */
+  private popoverBackdrop(el: Element): HitHidden | null {
+    try {
+      if (!el.matches(':popover-open')) return null;
+    } catch {
+      return null;
+    }
+    const bs = getComputedStyle(el, '::backdrop');
+    if (bs.visibility === 'hidden' || Number(bs.opacity) === 0) return null;
+    const bg = parseColor(bs.backgroundColor);
+    const image = bs.backgroundImage !== 'none' && bs.backgroundImage !== '';
+    const filter = bs.getPropertyValue('backdrop-filter').trim();
+    const blurs = filter !== '' && filter !== 'none';
+    if (bg && bg.a === 0 && !image && !blurs && !hasFrame(bs)) return null;
+    return {
+      layer: el,
+      bounds: () => viewport(),
+      paintsAt: (p) => (pointIn(p, viewport()) ? 'its ::backdrop' : null),
+    };
   }
 
   /**
@@ -2166,27 +2470,29 @@ class TabMeasurement {
   }
 
   /**
-   * Where a `::before` / `::after` of `layer` in normal flow (static, or
-   * relatively positioned) can paint: `layer`'s box, which it is laid out
-   * in, grown by how far its relative offsets and its own transform move it
-   * from there. A transform does not apply to a plain inline box; another's
-   * 2D transform is read from the computed style against its own size, as
-   * the farthest its corners move. Null when that is not known: a 3D
-   * transform or a motion path, a size the computed style does not give, a
-   * `display: contents` element, or a box that is not in flow. One that
-   * overflows `layer`'s box is not seen past it.
+   * How far a `::before` / `::after` of `layer` in normal flow (static, or
+   * relatively positioned) can be drawn from where it is laid out, in
+   * viewport pixels: by its relative offsets, and by its own transform as
+   * the farthest its corners move. A transform does not apply to a plain
+   * inline box; another's 2D transform is read from the computed style
+   * against its own size. Both are CSS pixels, drawn as far as its own
+   * zoom and the transforms and zoom of `layer` and its ancestors stretch
+   * them. Null when
+   * that is not known: a 3D transform or a motion path, here or above, a
+   * size the computed style does not give, a `display: contents` element,
+   * or a box that is not in flow.
    */
-  private flowReach(layer: Element, ps: CSSStyleDeclaration): VisionRegion | null {
+  private flowShift(layer: Element, ps: CSSStyleDeclaration): number | null {
     if (ps.position !== 'static' && ps.position !== 'relative') return null;
     if (this.style(layer).display === 'contents') return null;
-    const box = boxOf(layer);
-    if (!box) return null;
+    const drawn = this.linearOf(layer);
+    if (!drawn) return null;
     let by = 0;
     if (ps.position === 'relative') {
-      for (const side of ['top', 'right', 'bottom', 'left']) {
-        const offset = pxValue(ps.getPropertyValue(side));
-        if (Number.isFinite(offset)) by += Math.abs(offset);
-      }
+      // A relatively positioned box's resolved offsets come in opposite
+      // pairs (`right` is minus `left`), so each axis moves it once.
+      const offset = (side: string): number => Math.abs(pxValue(ps.getPropertyValue(side))) || 0;
+      by += Math.max(offset('left'), offset('right')) + Math.max(offset('top'), offset('bottom'));
     }
     if (ps.display !== 'inline') {
       const w = pxValue(ps.width) + this.pseudoExtra(ps, 'left', 'right');
@@ -2194,10 +2500,23 @@ class TabMeasurement {
       if (!Number.isFinite(w) || !Number.isFinite(h)) return null;
       const extent = pseudoExtent({ x: 0, y: 0, w, h }, ps);
       if (!extent) return null;
+      // Its bounds are a pixel wider on each side than its corners reach.
       const b = extent.bounds;
-      by += Math.max(0, -b.x, -b.y, b.x + b.w - w, b.y + b.h - h);
+      by += Math.max(0, Math.max(-b.x, -b.y, b.x + b.w - w, b.y + b.h - h) - 1);
     }
-    return grown(box, by);
+    return by * stretchOf(drawn) * zoomOf(ps);
+  }
+
+  /**
+   * Where a `::before` / `::after` of `layer` in normal flow can paint:
+   * `layer`'s box, which it is laid out in, grown by how far it can be drawn
+   * from there ({@link flowShift}) and a pixel more; null when that is not
+   * known. One that overflows `layer`'s box is not seen past it.
+   */
+  private flowReach(layer: Element, ps: CSSStyleDeclaration): VisionRegion | null {
+    const shift = this.flowShift(layer, ps);
+    const box = shift === null ? undefined : boxOf(layer);
+    return box && shift !== null ? grown(box, shift + 1) : null;
   }
 
   /**
@@ -2287,7 +2606,8 @@ class TabMeasurement {
   private paintOf(
     layer: Element,
     owner: Element,
-    p: { x: number; y: number }
+    p: { x: number; y: number },
+    hold: number
   ): PaintItem[] | ColorUnmeasured {
     const st = this.style(layer);
     const name = this.describe(layer);
@@ -2343,7 +2663,7 @@ class TabMeasurement {
     }
 
     for (const which of ['::before', '::after'] as const) {
-      const pseudo = this.pseudoPaint(layer, st, which, p);
+      const pseudo = this.pseudoPaint(layer, st, which, p, owner, hold);
       if (pseudo instanceof ColorUnmeasured) return pseudo;
       if (pseudo) items.push(...pseudo);
     }
@@ -2352,14 +2672,20 @@ class TabMeasurement {
 
   /**
    * A pseudo-element's paint at `p`, under the plan's rule that each layer's
-   * `::before` / `::after` background joins the backdrop. In normal flow a
-   * pseudo-element is laid out beside the text, never under it, so only a
-   * POSITIONED one can sit at the text's position. One whose box provably
-   * misses `p`, or that paints nothing there, contributes nothing; so does a
-   * transparent one whose box the computed style does not pin down (one its
-   * relative offsets nudge, a 3D transform), whose glyphs and frame are not
-   * known to reach `p`. One a 2D transform places is read in its own box at
-   * the point `p` maps to.
+   * `::before` / `::after` background joins the backdrop. One in normal flow
+   * (static, or relatively positioned) of the text's owner or of an
+   * ancestor of it is laid out beside the text, never under it, so it lies
+   * at `p` only when its relative offsets or its 2D transform move it at
+   * least `hold`, the distance from `p` to the nearest edge of the text's
+   * run ({@link flowShift}); one a 3D transform or a motion path moves is
+   * not followed, so it is read only when its relative offsets move it.
+   * One in normal flow of a layer beneath the text that does not hold it is
+   * laid out inside that layer's box, so it may lie under the text wherever
+   * it can reach ({@link flowReach}). One whose box provably misses `p`, or
+   * that paints nothing there, contributes nothing; so does a transparent
+   * one whose box the computed style does not pin down (one in normal flow,
+   * a 3D transform), whose glyphs and frame are not known to reach `p`. One
+   * a 2D transform places is read in its own box at the point `p` maps to.
    * One at `opacity: 0` or `visibility: hidden` paints nothing.
    * One with a negative `z-index` paints under its element's content, so it
    * joins the backdrop — its colour faded by its own opacity, its glyphs and
@@ -2371,7 +2697,9 @@ class TabMeasurement {
     layer: Element,
     layerSt: CSSStyleDeclaration,
     which: '::before' | '::after',
-    p: { x: number; y: number }
+    p: { x: number; y: number },
+    owner: Element,
+    hold: number
   ): PaintItem[] | null | ColorUnmeasured {
     const ps = this.pseudoStyle(layer, which);
     if (!this.pseudoShown(ps) || Number(ps.opacity) === 0) return null;
@@ -2387,10 +2715,21 @@ class TabMeasurement {
       const v = ps.getPropertyValue(side);
       return v === 'auto' || v === '0px' || v === '';
     });
-    if (
-      position === 'static' ||
-      ((position === 'relative' || position === 'sticky') && offsetsZero)
-    ) {
+    let flowing: 'beside' | 'inside' | null = null;
+    if (position === 'static' || position === 'relative') {
+      if (containsComposed(layer, owner)) {
+        // Beside the text: it reaches `p` only as far as it is moved. Where
+        // that is not known it is read only when its offsets move it.
+        const shift = this.flowShift(layer, ps);
+        if (shift === null ? offsetsZero : shift < hold) return null;
+        flowing = 'beside';
+      } else {
+        // Inside a layer beneath the text, which may lie under the text.
+        const reach = this.flowReach(layer, ps);
+        if (reach && !pointIn(p, reach)) return null;
+        flowing = 'inside';
+      }
+    } else if (position === 'sticky' && offsetsZero) {
       return null;
     }
     const extent = this.pseudoBox(layer, ps);
@@ -2421,42 +2760,52 @@ class TabMeasurement {
       }
       return items;
     }
-    return new ColorUnmeasured({
-      code: 'input_missing',
-      detail:
-        `${label} is a positioned box that ${extent ? 'covers' : 'may cover'} the text's position, ` +
-        'and its paint order relative to the text is not resolved in the tab',
-    });
+    const detail =
+      flowing === 'beside'
+        ? `${label} is laid out beside the text, and its relative offsets or its transform ` +
+          "move it far enough to reach the text's position; where it lies, and its paint " +
+          'order relative to the text, are not resolved in the tab'
+        : flowing === 'inside'
+          ? `${label} is laid out in normal flow inside ${this.describe(layer)}, which lies ` +
+            "beneath the text there, and whether it lies at the text's position is not " +
+            'resolved in the tab'
+          : `${label} is a positioned box that ${extent ? 'covers' : 'may cover'} the text's ` +
+            'position, and its paint order relative to the text is not resolved in the tab';
+    return new ColorUnmeasured({ code: 'input_missing', detail });
   }
 
   /**
    * Where an absolutely or fixed positioned pseudo-element paints: its border
    * box from its resolved insets and size against its containing block, as
-   * its own transform places it ({@link pseudoExtent}); null when the
-   * computed style does not pin it down.
+   * its own transform places it ({@link pseudoExtent}) and every transform
+   * and zoom above it draws it — those from that block up ({@link
+   * paddingPlacement}), and the zoom of the elements between and its own,
+   * which draw its lengths alone; null when the computed style does not pin
+   * it down, or one of those transforms is not read.
    */
   private pseudoBox(layer: Element, ps: CSSStyleDeclaration): PseudoExtent | null {
-    let cb: { left: number; top: number };
+    let zoom = zoomOf(ps);
+    let place: Placement | null;
     if (ps.position === 'fixed') {
-      for (let a: Element | null = layer; a; a = composedParent(a)) {
+      // No transform lies above it, up to the top layer: one would make its
+      // containing block. A zoom above it still draws it larger.
+      for (let a: Element | null = layer; a; a = paintParent(a)) {
         if (this.fixedContainer(this.style(a))) return null;
       }
-      cb = { left: 0, top: 0 };
+      const above = this.linearOf(layer);
+      place = above && { ...above, e: 0, f: 0 };
     } else if (ps.position === 'absolute') {
       let container: Element | null = layer;
       while (container && !this.absoluteContainer(this.style(container))) {
+        zoom *= zoomOf(this.style(container));
         container = composedParent(container);
       }
-      if (!container) return null;
-      const st = this.style(container);
-      const r = container.getBoundingClientRect();
-      cb = {
-        left: r.left + (pxValue(st.borderLeftWidth) || 0) - container.scrollLeft,
-        top: r.top + (pxValue(st.borderTopWidth) || 0) - container.scrollTop,
-      };
+      place = container && this.paddingPlacement(container);
     } else {
       return null;
     }
+    if (!place) return null;
+    place = { ...place, ...composeLinear(place, { a: zoom, b: 0, c: 0, d: zoom }) };
     const left = pxValue(ps.left);
     const top = pxValue(ps.top);
     const width = pxValue(ps.width);
@@ -2464,12 +2813,13 @@ class TabMeasurement {
     if (![left, top, width, height].every(Number.isFinite)) return null;
     return pseudoExtent(
       {
-        x: cb.left + left + (pxValue(ps.marginLeft) || 0),
-        y: cb.top + top + (pxValue(ps.marginTop) || 0),
+        x: left + (pxValue(ps.marginLeft) || 0),
+        y: top + (pxValue(ps.marginTop) || 0),
         w: width + this.pseudoExtra(ps, 'left', 'right'),
         h: height + this.pseudoExtra(ps, 'top', 'bottom'),
       },
-      ps
+      ps,
+      place
     );
   }
 
@@ -2486,10 +2836,10 @@ class TabMeasurement {
     );
   }
 
-  /** The `opacity < 1` ancestors-or-self of `el`, outermost first. */
+  /** The `opacity < 1` ancestors-or-self of `el`, outermost first, to the top layer. */
   private groupsOf(el: Element): Element[] {
     const groups: Element[] = [];
-    for (let a: Element | null = el; a; a = composedParent(a)) {
+    for (let a: Element | null = el; a; a = paintParent(a)) {
       if (Number(this.style(a).opacity) < 1) groups.unshift(a);
     }
     return groups;

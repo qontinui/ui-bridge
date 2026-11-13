@@ -238,16 +238,32 @@ drawn with a large spread or a wide outline), and an outline that a negative
 `outline-offset` pulls inside its own box, are not seen, so contrast can pass
 on colours they darken. A positioned `::before` / `::after` is read where its
 2D transform (`transform`, `translate`, `rotate`, `scale`) places it, turned or
-scaled. One in normal flow is looked for only in its element's box, as its
-relative offsets and its own transform move it, so one that overflows that box
-is not seen past it, and one at `opacity: 0` paints nothing. A transparent one
-of the text's own element or of a layer beneath the text, whose box the
-computed style does not pin down (one its relative offsets nudge, a 3D
-transform, a motion path), is taken to paint nothing, so its glyphs and its
-border are not seen, over the text as well. A click-through
-`::before` / `::after` (one that computes `pointer-events: none`) is seen only
-inside its element's own box when the hit test can see that element, or when
-its box is not pinned down.
+scaled, as every 2D transform and `zoom` above it, and its own `zoom`, draw it.
+Under a 3D transform or a motion path, or fixed inside an element that holds
+fixed boxes (a transform, a filter, `contain`, `content-visibility`,
+`transform-style: preserve-3d`, a `will-change` naming one), its box is not
+pinned down; `will-change: transform-origin` and the like name none. One in
+normal flow of the text's own element or of an ancestor is laid out beside the
+text, so it is read only where its relative offsets or its transform move it at
+least half the height of the text's run (half its width, if that is less): one
+that a negative margin or a shared grid area lays over the text is not seen,
+and one a 3D transform or a motion path moves is read only as far as its
+offsets move it. One in normal flow of any other layer beneath the text may lie
+anywhere in that layer's box, so one that paints and can reach the text makes
+contrast `unknown`. Past how far its offsets and its transform move it, one in
+normal flow that overflows its element's box is not seen, and one at
+`opacity: 0` paints nothing. A transparent one of the text's own element or of
+a layer beneath the text, whose box the computed style does not pin down (one
+its relative offsets nudge, a 3D transform, a motion path), is taken to paint
+nothing, so its glyphs and its border are not seen, over the text as well. A
+click-through `::before` / `::after` (one that computes `pointer-events: none`)
+is seen only inside its element's own box when the hit test can see that
+element, or when its box is not pinned down. An open popover's `::backdrop` is
+click-through too: one that paints over text outside its popover makes contrast
+`unknown`, even when the popover or a block holding it is at `opacity: 0`.
+Content in the top layer (an open popover, a modal dialog) is read as the
+browser draws it, out of its ancestors' transforms, opacity, filters and clips,
+at the zoom it inherits.
 Every
 other kind answers per result with `outcome: "unknown"` and
 `code: "capability_unavailable_in_build"`. A mixed batch still answers what it

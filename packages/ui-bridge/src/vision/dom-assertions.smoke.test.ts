@@ -718,13 +718,13 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     const page = await openPage(
       `
       <style>
-        .bullet, .pctbullet { padding-left: 16px }
+        .bullet { padding-left: 16px }
         .bullet::before { content: ""; position: absolute; left: 0; top: 50%; width: 6px; height: 6px; background: #c00; transform: translateY(-50%) }
-        .pctbullet::before { content: ""; position: absolute; left: 0; top: 50%; width: 6px; height: 6px; background: #c00; translate: 0 -50% }
+        .pctband::after { content: ""; position: absolute; left: 0; top: 0; width: 100%; height: 20px; background: rgba(0, 0, 0, 0.6); translate: 0 150% }
         .ribbon { overflow: hidden }
         .ribbon::before { content: "SALE"; position: absolute; right: -30px; top: 8px; width: 120px; text-align: center; color: #fff; background: #c00; transform: rotate(45deg) }
-        .chev2 { padding-right: 40px }
-        .chev2::after { content: ""; position: absolute; right: 12px; top: 40%; width: 8px; height: 8px; border-right: 2px solid #000; border-bottom: 2px solid #000; rotate: 45deg }
+        .rotband::after { content: ""; position: absolute; inset: 0; border-top: 25px solid rgba(0, 0, 0, 0.6); rotate: 180deg }
+        .scaleband::after { content: ""; position: absolute; left: 0; top: 0; width: 100%; height: 25px; background: rgba(0, 0, 0, 0.6); transform-origin: 0 100%; scale: 1 -1 }
         .movedaway::after { content: ""; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.6); translate: 2000px 0 }
         .flat::after { content: ""; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.6); transform: scale(0) }
         .band::after { content: ""; position: absolute; inset: 0; border-top: 25px solid rgba(0, 0, 0, 0.6); transform: rotate(180deg) }
@@ -742,9 +742,9 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
         .negband::before { content: ""; position: absolute; inset: 0; z-index: -1; border-top: 25px solid #000; transform: rotate(180deg) }
       </style>
       <div class="bullet" style="${row}"><p data-id="bullet" style="margin:0;color:#000;line-height:50px">Beside a transformed bullet</p></div>
-      <div class="pctbullet" style="${row}"><p data-id="pctbullet" style="margin:0;color:#000;line-height:50px">Beside a bullet a percentage translates</p></div>
+      <div class="pctband" style="${row}"><p data-id="pctband" style="${top}">Above a band a percentage translate moves down</p></div>
       <div class="ribbon" style="${row};width:700px"><p data-id="ribbon" style="margin:0;color:#000">A card title away from its ribbon</p></div>
-      <div class="chev2" style="${row}"><p data-id="chev2" style="margin:0;color:#000">Beside a chevron turned by rotate</p></div>
+      <div class="rotband" style="${row}"><p data-id="rotband" style="${top}">Above a band the rotate property turns down</p></div>
       <div class="movedaway" style="${row}"><p data-id="movedaway" style="margin:0;color:#000">A scrim its translate moves away</p></div>
       <div class="flat" style="${row}"><p data-id="flat" style="margin:0;color:#000">A scrim a scale(0) flattens</p></div>
       <div class="band" style="${row}"><p data-id="ringflip" style="${top}">Above a band turned to the bottom</p></div>
@@ -761,14 +761,15 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       <div class="negband" style="${row}"><p data-id="negband" style="${low};color:#fff">Over a band turned beneath it</p></div>
       <div style="${row}"><p data-id="pebandaway" style="${top}">Above a click-through band turned away</p><div class="band" style="position:absolute;inset:0;pointer-events:none"></div></div>
       <div style="${row}"><p data-id="pebandover" style="${low}">Under a click-through band turned onto it</p><div class="band" style="position:absolute;inset:0;pointer-events:none"></div></div>
+      <div class="scaleband" style="${row}"><p data-id="scaleband" style="${top}">Above a band the scale property flips down</p></div>
     `,
-      { width: 800, height: 1300 }
+      { width: 800, height: 1400 }
     );
     const ids = [
       'bullet',
-      'pctbullet',
+      'pctband',
       'ribbon',
-      'chev2',
+      'rotband',
       'movedaway',
       'flat',
       'ringflip',
@@ -785,17 +786,21 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       'negband',
       'pebandaway',
       'pebandover',
+      'scaleband',
     ];
     const res = await assertOn(
       page,
       ids.map((element) => ({ type: 'contrast_meets_wcag', element }))
     );
     // A positioned ::before / ::after is read where its 2D transform places
-    // it, the text's point taken into its own box: a bullet, a ribbon and a
-    // chevron beside the text, a scrim a translate moves away or a scale(0)
-    // flattens, and a band a half turn moves off the text each leave the
-    // text's own 21:1, where each read unknown while any transform left the
-    // box unknown. Moved onto the text, the band, a scrim and the text's own
+    // it, the text's point taken into its own box: a bullet and a ribbon
+    // beside the text, a scrim a translate moves away or a scale(0)
+    // flattens, a band a half turn moves off the text, and a band that the
+    // translate, rotate or scale property alone moves off it (by a
+    // percentage of its own height, a half turn, a flip about its bottom
+    // edge) each leave the text's own 21:1, where each read unknown while a
+    // transform left the box unknown and those three properties were not
+    // read. Moved onto the text, the band, a scrim and the text's own
     // turned glyphs or strike-through stop the measurement as covering it:
     // the last two read 21:1 when a transformed pseudo was taken to paint
     // nothing. The same band sunk beneath white text is a frame beneath it,
@@ -824,8 +829,9 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       ['unknown', 'input_missing'],
       ['passed', null],
       ['unknown', 'input_missing'],
+      ['passed', null],
     ]);
-    for (const i of [0, 1, 2, 3, 4, 5, 6, 18]) {
+    for (const i of [0, 1, 2, 3, 4, 5, 6, 18, 20]) {
       expect(res.results[i].detail).toContain('contrast ratio 21.00:1');
     }
     expect(res.results[7].detail).toContain('<div.band> paints over the text at');
@@ -948,6 +954,621 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     expect(res.results[11].detail).toContain('with ::before generated content that may cover it');
     expect(res.results[12].detail).toContain(`<div.slideup> paints its ::before ${blind}`);
     await page.close();
+  }, 60_000);
+
+  it('contrast_meets_wcag: a ::before / ::after the transforms and zoom above it draw', async () => {
+    const page = await openPage(
+      `
+      <style>
+        .row { position: relative; height: 110px; margin-top: 10px; background: #fff }
+        .twice, .twiceaway { position: absolute; left: 0; top: 0; width: 300px; height: 50px; transform: scale(2); transform-origin: 0 0 }
+        .twice::after { content: ""; position: absolute; left: 150px; top: 0; width: 150px; height: 50px; background: rgba(0, 0, 0, 0.6) }
+        .twiceaway::after { content: ""; position: absolute; left: 0; top: 0; width: 100px; height: 50px; background: rgba(0, 0, 0, 0.6) }
+        .flip { position: absolute; left: 0; top: 0; width: 600px; height: 50px; transform: scale(-1, 1) }
+        .flip::after { content: ""; position: absolute; left: 0; top: 0; width: 200px; height: 50px; background: rgba(0, 0, 0, 0.6) }
+        .quarter { position: absolute; left: 0; top: 0; width: 100px; height: 100px; transform: rotate(90deg) }
+        .quarter::after { content: ""; position: absolute; left: 0; top: 0; width: 100px; height: 20px; background: rgba(0, 0, 0, 0.6) }
+        .byscale { scale: 2; transform-origin: 0 0; width: 300px; height: 50px }
+        .byscale::after { content: ""; position: absolute; left: 150px; top: 0; width: 150px; height: 50px; background: rgba(0, 0, 0, 0.6) }
+        .zoomed { zoom: 2; position: relative; height: 40px }
+        .zband, .zbandaway { position: absolute; left: 0; top: 0; width: 300px; height: 25px }
+        .zband::after { content: ""; position: absolute; left: 150px; top: 0; width: 150px; height: 25px; background: rgba(0, 0, 0, 0.6) }
+        .zbandaway::after { content: ""; position: absolute; left: 0; top: 0; width: 60px; height: 25px; background: rgba(0, 0, 0, 0.6) }
+        .deck { transform: scale(0.5); transform-origin: 0 0; width: 800px; height: 240px }
+        .slide { position: relative; width: 800px; height: 240px; background: #fff }
+        .caption::after { content: ""; position: absolute; left: 40px; top: 90px; width: 600px; height: 50px; background: rgba(0, 0, 0, 0.75); transform: rotate(-2deg) }
+        .lazy { content-visibility: auto; margin-left: 300px; height: 60px }
+        .flat3d { transform-style: preserve-3d; margin-left: 300px; height: 60px }
+        .pinned::after { content: ""; position: fixed; left: 0; top: 0; width: 200px; height: 40px; background: rgba(0, 0, 0, 0.6) }
+        .placed::after { content: ""; position: absolute; left: 0; top: 0; width: 200px; height: 40px; background: rgba(0, 0, 0, 0.6) }
+        .card2 { position: relative; width: 200px; transform: scale(2); transform-origin: 0 0; background: #fff; padding: 6px }
+        .stretched::after { content: ""; position: absolute; inset: 0; z-index: 1 }
+        .slideup { display: inline-block; margin-top: 8px }
+        .slideup::before { content: ""; display: inline-block; width: 180px; height: 0; border-top: 10px solid rgba(0, 0, 0, 0.6); transform: translateY(-26px) }
+        .zmid { zoom: 2 }
+        .zmid::after, .zown::after { content: ""; position: absolute; left: 100px; top: 0; width: 150px; height: 25px; background: rgba(0, 0, 0, 0.6) }
+        .zown::after { zoom: 2 }
+        .tilted { position: relative; width: 400px; height: 50px; transform: rotateY(60deg) }
+        .tilted::after, .pathed::after { content: ""; position: absolute; left: 300px; top: 0; width: 100px; height: 50px; background: rgba(0, 0, 0, 0.6) }
+        .pathed { position: relative; width: 400px; height: 50px; offset-path: path('M 200 25 L 400 25'); offset-distance: 0; offset-rotate: 0deg }
+        .flipup { position: absolute; left: 0; top: 0; width: 400px; height: 60px; transform: scale(1, -1) }
+        .flipup::after { content: ""; position: absolute; left: 0; top: 0; width: 400px; height: 20px; background: rgba(0, 0, 0, 0.6) }
+        .calcmoved { position: absolute; left: 0; top: 0; width: 300px; height: 50px; translate: calc(10% - 30px) 0; scale: 2; transform-origin: 0 0 }
+        .calcmoved::after { content: ""; position: absolute; left: 150px; top: 0; width: 150px; height: 50px; background: rgba(0, 0, 0, 0.6) }
+      </style>
+      <div class="row"><p data-id="twice" style="margin:0;padding-left:310px;color:#000">Under a scrim its layer doubles</p><div class="twice"></div></div>
+      <div class="row"><p data-id="twiceaway" style="margin:0;padding-left:310px;color:#000">Beside a scrim its layer doubles</p><div class="twiceaway"></div></div>
+      <div class="row"><p data-id="flipfar" style="margin:0;padding-left:410px;color:#000">Under a scrim its layer flips</p><div class="flip"></div></div>
+      <div class="row"><p data-id="flipnear" style="margin:0;padding-left:10px;color:#000">Clear of a scrim its layer flips</p><div class="flip"></div></div>
+      <div class="row"><p data-id="quarter" style="margin:0;color:#000">Clear of it</p><div class="quarter"></div></div>
+      <div class="row"><div class="byscale"><p data-id="byscale" style="margin:0;padding-left:150px;color:#000">Under a scrim</p></div></div>
+      <div class="row"><div class="zoomed"><p data-id="zoomed" style="margin:0;padding-left:155px;color:#000">Under</p><div class="zband"></div></div></div>
+      <div class="row"><div class="zoomed"><p data-id="zoomedaway" style="margin:0;padding-left:155px;color:#000">Beside</p><div class="zbandaway"></div></div></div>
+      <div style="height:130px;margin-top:10px"><div class="deck"><div class="slide"><p data-id="deck" style="position:absolute;left:60px;top:100px;margin:0;color:#000;font-size:28px">Revenue grew this quarter</p><i class="caption"></i></div></div></div>
+      <div class="row"><div class="lazy"><p data-id="lazy" class="pinned" style="margin:0;color:#000">Under a fixed scrim lazily rendered</p></div></div>
+      <div class="row"><div class="flat3d"><p data-id="flat3d" class="placed" style="margin:0;color:#000">Under a scrim in a 3D context</p></div></div>
+      <div class="row" style="height:140px"><div class="card2"><h3 data-id="card2" style="margin:0;font-size:12px;color:#000">Title of a doubled card</h3><a class="stretched slideup" href="#">Go</a></div></div>
+      <div class="row"><div class="zmid"></div><span data-id="zoommid" style="position:absolute;left:210px;top:5px;color:#000">Over a scrim a block between doubles</span></div>
+      <div class="row"><div class="zown"></div><span data-id="zoomown" style="position:absolute;left:210px;top:5px;color:#000">Over a scrim its own zoom doubles</span></div>
+      <div class="row"><div class="tilted"><p data-id="tilted" style="margin:0;padding-left:300px;color:#000">Tilted</p></div></div>
+      <div class="row"><div class="pathed"><p data-id="pathed" style="margin:0;padding-left:300px;color:#000">On a path</p></div></div>
+      <div class="row"><div class="flipup"></div><p data-id="flipup" style="position:absolute;left:10px;top:42px;margin:0;color:#000">Under a band its layer flips down</p></div>
+      <div class="row"><p data-id="calcmoved" style="margin:0;padding-left:310px;color:#000">Under a scrim its layer doubles</p><div class="calcmoved"></div></div>
+    `,
+      { width: 800, height: 2450 }
+    );
+    // A content-visibility: auto block skips its content, which the hit test
+    // then misses, until a rendered frame finds it on screen.
+    await page.waitForFunction(() =>
+      document.querySelector('[data-id="lazy"]')?.checkVisibility({ contentVisibilityAuto: true })
+    );
+    const ids = [
+      'twice',
+      'twiceaway',
+      'flipfar',
+      'flipnear',
+      'quarter',
+      'byscale',
+      'zoomed',
+      'zoomedaway',
+      'deck',
+      'lazy',
+      'flat3d',
+      'card2',
+      'zoommid',
+      'zoomown',
+      'tilted',
+      'pathed',
+      'flipup',
+      'calcmoved',
+    ];
+    const res = await assertOn(
+      page,
+      ids.map((element) => ({ type: 'contrast_meets_wcag', element }))
+    );
+    // A positioned ::before / ::after is drawn by every transform and zoom
+    // from its containing block up, so its box is read in that block's own
+    // pixels and drawn into the viewport as they are. A scrim a layer at
+    // scale(2) doubles onto the text, one a flipped layer draws across onto
+    // it, and one a zoom: 2 doubles each cover it, where reading the box
+    // unscaled passed them at 21:1; one in a layer the scale property alone
+    // doubles covers it too, where that layer was not taken to hold it and
+    // nothing was named over the text. The same scrims doubled, flipped or
+    // zoomed away, and a band its layer's quarter turn moves off the text,
+    // leave it at 21:1, where the flipped one and the turned one read as
+    // covering it. A caption band on a slide scaled to fit (scale(0.5)),
+    // itself turned 2deg, covers the slide's title: read unscaled it missed
+    // the title, which passed at 21:1 where the page shows ~2.0:1. A lazily
+    // rendered block (content-visibility: auto) and a 3D context
+    // (transform-style: preserve-3d) hold their positioned descendants, fixed
+    // ones too: a fixed scrim there is not pinned down and may cover the
+    // text, and an absolute one there covers it, where each, placed against
+    // the viewport or the row, passed at 21:1. A band a stretched link's own
+    // transform slides up a doubled card reaches twice as far as that
+    // transform says, so it may cover the card's title, which passed at 21:1.
+    // A zoom draws a positioned one's own lengths wherever it lies above it:
+    // a scrim whose static block (zoom: 2) lies between it and its
+    // containing block, or that is at zoom: 2 itself, lies twice as far in
+    // and twice as wide, under the text set over it, which passed at 21:1
+    // where that block's scale alone placed the scrim short of it. A scrim
+    // in a block turned in 3D, or moved along a motion path, is not pinned
+    // down, and may cover the text: neither is read. A band a block flips
+    // upside down lies at its foot, under the text set there, which passed
+    // at 21:1 where the band was read at the block's top. A block moved by
+    // a calc() translate is still read at the scale it is drawn at, so its
+    // scrim covers the text, where splitting the calc() at its spaces left
+    // the block unread and the scrim one that only may cover it.
+    expect(verdicts(res)).toEqual([
+      ['unknown', 'input_missing'],
+      ['passed', null],
+      ['unknown', 'input_missing'],
+      ['passed', null],
+      ['passed', null],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['passed', null],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+    ]);
+    for (const i of [1, 3, 4, 7]) {
+      expect(res.results[i].detail).toContain('contrast ratio 21.00:1');
+    }
+    const covers = 'with ::after generated content that covers it';
+    for (const [i, layer] of [
+      [0, '<div.twice>'],
+      [2, '<div.flip>'],
+      [5, '<div.byscale>'],
+      [6, '<div.zband>'],
+      [8, '<i.caption>'],
+    ] as const) {
+      expect(res.results[i].detail).toContain(`${layer} paints over the text at`);
+      expect(res.results[i].detail).toContain(covers);
+    }
+    expect(res.results[9].detail).toContain(
+      "'lazy'::after is a positioned box that may cover the text's position"
+    );
+    expect(res.results[10].detail).toContain(
+      "'flat3d'::after is a positioned box that covers the text's position"
+    );
+    expect(res.results[11].detail).toContain('<a.stretched.slideup> paints over the text at');
+    expect(res.results[11].detail).toContain('with ::before generated content that may cover it');
+    for (const [i, layer] of [
+      [12, '<div.zmid>'],
+      [13, '<div.zown>'],
+      [16, '<div.flipup>'],
+    ] as const) {
+      expect(res.results[i].detail).toContain(
+        `${layer}::after is a positioned box that covers the text's position`
+      );
+    }
+    for (const [i, layer] of [
+      [14, '<div.tilted>'],
+      [15, '<div.pathed>'],
+    ] as const) {
+      expect(res.results[i].detail).toContain(`${layer} paints over the text at`);
+      expect(res.results[i].detail).toContain('with ::after generated content that may cover it');
+    }
+    expect(res.results[17].detail).toContain('<div.calcmoved> paints over the text at');
+    expect(res.results[17].detail).toContain(covers);
+    await page.close();
+  }, 60_000);
+
+  it('contrast_meets_wcag: a ::before / ::after a turned, bordered, nested or click-through block draws', async () => {
+    const page = await openPage(
+      `
+      <style>
+        .row { position: relative; height: 130px; margin-top: 10px; background: #fff }
+        .fz::after { content: ""; position: fixed; left: 70px; top: 0; width: 80px; height: 30px; background: rgba(0, 0, 0, 0.6) }
+        .turnr, .turnl { position: absolute; left: 0; top: 0; width: 100px; height: 100px; transform: rotate(90deg) }
+        .turnl { transform: rotate(-90deg) }
+        .turnr::after, .turnl::after { content: ""; position: absolute; left: 0; top: 0; width: 100px; height: 20px; background: rgba(0, 0, 0, 0.6) }
+        .bordered { position: absolute; left: 0; top: 0; width: 300px; height: 50px; border-left: 50px solid transparent; transform: scale(2); transform-origin: 0 0 }
+        .bordered::after { content: ""; position: absolute; left: 0; top: 0; width: 100px; height: 25px; background: rgba(0, 0, 0, 0.6) }
+        .twicepe { position: absolute; left: 0; top: 0; width: 300px; height: 50px; transform: scale(2); transform-origin: 0 0; pointer-events: none }
+        .twicepe::after { content: ""; position: absolute; left: 150px; top: 0; width: 150px; height: 50px; background: rgba(0, 0, 0, 0.6) }
+        .rot { position: absolute; left: 0; top: 0; width: 100px; height: 100px; transform: rotate(90deg) }
+        .flipx { position: absolute; left: 0; top: 0; width: 100px; height: 100px; transform: scale(-1, 1) }
+        .flipx::after { content: ""; position: absolute; left: 0; top: 0; width: 30px; height: 20px; background: rgba(0, 0, 0, 0.6) }
+        .willmove { position: absolute; left: 0; top: 0; width: 300px; height: 60px; will-change: translate }
+        .willmove::after, .willcontain::after { content: ""; position: fixed; left: 0; top: 0; width: 100px; height: 60px; background: rgba(0, 0, 0, 0.6) }
+        .willcontain { position: absolute; left: 0; top: 0; width: 300px; height: 60px; will-change: contain }
+        .willorigin { margin-left: 300px; width: 200px; height: 60px; will-change: transform-origin }
+        .willorigin::after { content: ""; position: absolute; left: 0; top: 0; width: 100px; height: 60px; background: rgba(0, 0, 0, 0.6) }
+      </style>
+      <div class="row"><div style="zoom:2"><i class="fz"></i></div><span data-id="fixedzoom" style="position:absolute;left:200px;top:5px;color:#000">Hi</span></div>
+      <div class="row"><div class="turnr"></div><span data-id="turnedright" style="position:absolute;left:82px;top:40px;color:#000">Hi</span></div>
+      <div class="row"><div class="turnl"></div><span data-id="turnedleft" style="position:absolute;left:2px;top:40px;color:#000">Hi</span></div>
+      <div class="row"><div class="bordered"></div><span data-id="bordered" style="position:absolute;left:265px;top:10px;color:#000">Hi</span></div>
+      <div class="row"><p data-id="twicepe" style="margin:0;padding-left:310px;color:#000">Under a click-through scrim</p><div class="twicepe"></div></div>
+      <div class="row"><div class="rot"><div class="flipx"></div></div><span data-id="composed" style="position:absolute;left:82px;top:76px;color:#000">Hi</span></div>
+      <div class="row"><div class="willmove"></div><span data-id="willmove" style="position:absolute;left:20px;top:20px;color:#000">Hi</span></div>
+      <div class="row"><div class="willcontain"></div><span data-id="willcontain" style="position:absolute;left:20px;top:20px;color:#000">Hi</span></div>
+      <div class="row"><div class="willorigin"></div><span data-id="willorigin" style="position:absolute;left:20px;top:20px;color:#000">Hi</span></div>
+    `,
+      { width: 800, height: 1300 }
+    );
+    const ids = [
+      'fixedzoom',
+      'turnedright',
+      'turnedleft',
+      'bordered',
+      'twicepe',
+      'composed',
+      'willmove',
+      'willcontain',
+      'willorigin',
+    ];
+    const res = await assertOn(
+      page,
+      ids.map((element) => ({ type: 'contrast_meets_wcag', element }))
+    );
+    // Each text lies under a scrim (the page shows ~3.7:1), placed only by
+    // reading its containing block as it is drawn. A fixed one is drawn at
+    // the zoom above it (zoom: 2), twice as far in and twice as wide. A band
+    // a block turned a quarter turn either way stands along one of its
+    // sides, and one a flip nested in a quarter turn lands in its far
+    // corner. One a bordered block at scale(2) lies past that border, which
+    // the scale draws twice as wide too, and one in a doubled block that
+    // computes pointer-events: none lies where the hit test cannot place it
+    // against the text. A fixed one whose block's will-change names
+    // translate or contain, which hold fixed boxes at some value, is not
+    // pinned down (the latter passed at 21:1), and one whose static block's
+    // will-change names transform-origin, which holds none, is placed
+    // against the row and covers the text, where read against that block it
+    // passed at 21:1. Each passed at 21:1 at 56b111b.
+    expect(verdicts(res)).toEqual([
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+    ]);
+    for (const [i, layer] of [
+      [0, '<i.fz>'],
+      [1, '<div.turnr>'],
+      [2, '<div.turnl>'],
+      [3, '<div.bordered>'],
+      [5, '<div.flipx>'],
+      [8, '<div.willorigin>'],
+    ] as const) {
+      expect(res.results[i].detail).toContain(
+        `${layer}::after is a positioned box that covers the text's position`
+      );
+    }
+    expect(res.results[4].detail).toContain(
+      "<div.twicepe> paints its ::after at the text's position but computes pointer-events: none"
+    );
+    for (const [i, layer] of [
+      [6, '<div.willmove>'],
+      [7, '<div.willcontain>'],
+    ] as const) {
+      expect(res.results[i].detail).toContain(
+        `${layer}::after is a positioned box that may cover the text's position`
+      );
+    }
+    await page.close();
+  }, 60_000);
+
+  it('contrast_meets_wcag: a ::before / ::after in normal flow, as far as its offsets or its transform move it', async () => {
+    const page = await openPage(
+      `
+      <style>
+        .row { position: relative; margin-top: 10px; background: #fff; width: 500px }
+        .hl::after { content: ""; display: block; height: 12px; background: rgba(0, 0, 0, 0.6); transform: translateY(-16px) }
+        .hlrel::after { content: ""; display: block; height: 12px; background: rgba(0, 0, 0, 0.6); position: relative; top: -16px }
+        .parentband::after { content: ""; display: block; height: 12px; background: rgba(0, 0, 0, 0.6); transform: translateY(-16px) }
+        .nudge li { list-style: none }
+        .nudge li::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 8px; background: #000; position: relative; top: -5px }
+        .dot::after { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #d00; transform: translate(4px, -6px) }
+        .acc { display: flex; align-items: center; width: 300px; padding: 12px; background: #fff; color: #111 }
+        .acc::after { content: ""; flex-shrink: 0; width: 20px; height: 20px; margin-left: auto; background: #333; transform: rotate(45deg) }
+        .hero { position: relative; height: 80px; background: #fff }
+        .herobg { position: absolute; inset: 0 }
+        .herobg::after { content: ""; display: block; height: 100%; background: rgba(0, 0, 0, 0.6) }
+        .hlsmall::after { content: ""; display: block; height: 12px; background: rgba(0, 0, 0, 0.6); position: relative; top: -12px }
+        .zoomnudge::after { content: ""; display: inline-block; width: 20px; height: 10px; background: rgba(0, 0, 0, 0.6); position: relative; left: -6px; zoom: 2 }
+        .tiltnudge::after { content: ""; display: block; height: 12px; background: rgba(0, 0, 0, 0.6); position: relative; top: -16px; transform: rotateX(20deg) }
+        .tiltaway::after { content: ""; display: block; height: 12px; background: rgba(0, 0, 0, 0.6); transform: rotateX(20deg) }
+        .digitdot::after { content: ""; display: inline-block; width: 8px; height: 8px; background: rgba(0, 0, 0, 0.6); position: relative; left: -7px }
+        .cardz { position: absolute; z-index: 0; left: 0; top: 0; width: 300px; height: 30px }
+        .cardz::before { content: ""; position: absolute; z-index: -1; left: 0; top: 40px; width: 300px; height: 60px; background: #000 }
+        .cardz::after { content: ""; display: block; height: 6px; background: #00f }
+      </style>
+      <div class="row"><p data-id="hl" class="hl" style="margin:0;color:#000;line-height:20px">Under its own band moved up</p></div>
+      <div class="row"><p data-id="hlrel" class="hlrel" style="margin:0;color:#000;line-height:20px">Under its own band nudged up</p></div>
+      <div class="row parentband" style="padding:4px"><p data-id="parentband" style="margin:0;color:#000;line-height:20px">Under its parent's band moved up</p></div>
+      <div class="row"><ul class="nudge" style="margin:0;padding:0"><li><a data-id="nudge" href="#" style="color:#000">Beside a bullet nudged up</a></li></ul></div>
+      <div class="row"><span data-id="dot" class="dot" style="color:#000">Inbox</span></div>
+      <div class="row"><div data-id="acc" class="acc">Beside a square turned in its line</div></div>
+      <div class="row"><div class="hero"><div class="herobg"></div><h1 data-id="hero" style="position:relative;margin:0;font-size:20px;color:#fff;padding:20px">Over a dim its layer draws</h1></div></div>
+      <div class="row" style="height:90px"><div style="transform:scale(2);transform-origin:0 0"><p data-id="hlscaled" class="hlsmall" style="margin:0;color:#000;line-height:20px">Under its own band, doubled</p></div></div>
+      <div class="row"><span data-id="nudgezoom" class="zoomnudge" style="color:#000">Ab</span></div>
+      <div class="row"><p data-id="tiltnudge" class="tiltnudge" style="margin:0;color:#000;line-height:20px">Under its own band nudged up and tilted</p></div>
+      <div class="row"><p data-id="tiltaway" class="tiltaway" style="margin:0;color:#000;line-height:20px">Over its own band tilted in its line</p></div>
+      <div class="row"><span data-id="onedigit" class="digitdot" style="color:#000">1</span></div>
+      <div class="row" style="height:110px"><div class="cardz"></div><span data-id="overbefore" style="position:absolute;left:20px;top:60px;color:#fff">Over a card's sunk ::before</span></div>
+    `,
+      { width: 800, height: 900 }
+    );
+    const ids = [
+      'hl',
+      'hlrel',
+      'parentband',
+      'nudge',
+      'dot',
+      'acc',
+      'hero',
+      'hlscaled',
+      'nudgezoom',
+      'tiltnudge',
+      'tiltaway',
+      'onedigit',
+      'overbefore',
+    ];
+    const res = await assertOn(
+      page,
+      ids.map((element) => ({ type: 'contrast_meets_wcag', element }))
+    );
+    // A ::before / ::after in normal flow of the text's element, or of an
+    // ancestor, is laid out beside the text, so it reaches the text only as
+    // far as its relative offsets or its transform move it: a band moved up
+    // 16px over its own paragraph, by a transform or by top, may cover it,
+    // where the transformed one passed at 21:1; so does a parent's band its
+    // transform moves up, where the parent was listed above with nothing
+    // named there. A bullet nudged up 5px, a notification dot moved 6px and
+    // a square turned in its flex line each move less than half the height
+    // of the text's run, the least that reaches its middle, and leave it
+    // readable, where the nudged bullet read as possibly covering it, and
+    // then, its resolved top and bottom both counted, as moved 10px. One in
+    // normal flow of a layer beneath the text lies wherever in that layer
+    // its flow puts it: a dim a hero's background layer draws with its
+    // ::after under white text is not resolved, where it read as white on
+    // white, 1:1, and failed (the page shows ~5.7:1). How far one is moved
+    // is measured as it is drawn: a band nudged up 12px in a block at
+    // scale(2) is moved 24px, past half its doubled run, and a bullet at
+    // zoom: 2 nudged 6px is moved 12px, past half its run, and each covers
+    // the middle of the text, which passed at 21:1 where the move was read
+    // in the CSS pixels its block or the bullet's zoom draws larger. Where a
+    // 3D transform leaves its move unknown, it is read as far as its offsets
+    // move it: a band nudged up 16px and tilted may cover its paragraph, and
+    // the same band tilted in its own line leaves the text above it readable.
+    // The least move that reaches the middle of the text is half its run's
+    // lesser side: a dot nudged back 7px over a one-digit count (a run 8px
+    // wide) may cover it. A layer the hit test lists beneath the text for
+    // its negative-z ::before, while its own box misses the text, lays its
+    // ::after out in that box, away from the text, which reads 21:1 over the
+    // ::before.
+    expect(verdicts(res)).toEqual([
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['passed', null],
+      ['passed', null],
+      ['passed', null],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['passed', null],
+      ['unknown', 'input_missing'],
+      ['passed', null],
+    ]);
+    for (const [i, id] of [
+      [0, 'hl'],
+      [1, 'hlrel'],
+      [7, 'hlscaled'],
+      [8, 'nudgezoom'],
+      [9, 'tiltnudge'],
+      [11, 'onedigit'],
+    ] as const) {
+      expect(res.results[i].detail).toContain(
+        `'${id}'::after is laid out beside the text, and its relative offsets or its transform move it far enough to reach the text's position`
+      );
+    }
+    expect(res.results[2].detail).toContain('<div.row.parentband> paints over the text at');
+    expect(res.results[2].detail).toContain('with ::after generated content that may cover it');
+    for (const i of [3, 4, 10, 12]) {
+      expect(res.results[i].detail).toContain('contrast ratio 21.00:1');
+    }
+    expect(res.results[5].detail).toContain('contrast ratio 18.88:1');
+    expect(res.results[6].detail).toContain(
+      '<div.herobg>::after is laid out in normal flow inside <div.herobg>, which lies beneath the text there'
+    );
+    await page.close();
+  }, 60_000);
+
+  it('contrast_meets_wcag: a popover’s ::backdrop, which the hit test passes through', async () => {
+    // A popover is in the top layer, above the page, and its ::backdrop is
+    // click-through (the UA sheet's pointer-events: none) and does not make
+    // the page inert, so the hit test lists the page's text with nothing
+    // above it under a dimming backdrop.
+    const popover = (backdrop: string) => `
+      <style>
+        #pop::backdrop { ${backdrop} }
+        #pop { margin: 0; left: auto; right: 10px; top: 300px; width: 200px; height: 80px; background: #fff; border: 1px solid #ccc }
+      </style>
+      <p data-id="page" style="margin:0;color:#000;background:#fff">Page text beside a popover</p>
+      <div id="pop" popover="manual"><span data-id="inside" style="color:#000">A popover</span></div>
+    `;
+    const outcomes: Array<Array<[string, string | null]>> = [];
+    const details: string[][] = [];
+    for (const backdrop of [
+      'background: rgba(0, 0, 0, 0.6)',
+      '',
+      'background: rgba(0, 0, 0, 0.6); opacity: 0',
+    ]) {
+      const page = await openPage(popover(backdrop));
+      await page.evaluate(() => document.getElementById('pop')?.showPopover());
+      const res = await assertOn(
+        page,
+        ['page', 'inside'].map((element) => ({ type: 'contrast_meets_wcag', element }))
+      );
+      outcomes.push(verdicts(res));
+      details.push(res.results.map((r) => r.detail));
+      await page.close();
+    }
+    // The dimmed page text passed at 21:1 where the page shows ~3.7:1, under
+    // the 4.5:1 it needs; the popover's own text lies above its backdrop. A
+    // popover whose ::backdrop paints nothing (the UA default), or is at
+    // opacity: 0, leaves the page as it was.
+    expect(outcomes).toEqual([
+      [
+        ['unknown', 'input_missing'],
+        ['passed', null],
+      ],
+      [
+        ['passed', null],
+        ['passed', null],
+      ],
+      [
+        ['passed', null],
+        ['passed', null],
+      ],
+    ]);
+    expect(details[0][0]).toContain(
+      "<div#pop> paints its ::backdrop at the text's position but computes pointer-events: none"
+    );
+    for (const detail of [details[0][1], ...details[1], ...details[2]]) {
+      expect(detail).toContain('contrast ratio 21.00:1');
+    }
+  }, 60_000);
+
+  it('contrast_meets_wcag and no_clipping: what the top layer lifts out of its ancestors', async () => {
+    // An open popover is drawn in the top layer: out of its ancestors'
+    // transforms, opacity, filters and clips, at the zoom it inherits.
+    const openWith = async (body: string, popovers: string[]): Promise<Page> => {
+      const page = await openPage(body);
+      await page.evaluate((ids) => {
+        for (const id of ids) document.getElementById(id)?.showPopover();
+      }, popovers);
+      return page;
+    };
+    const lifted = await openWith(
+      `
+      <style>
+        [popover] { margin: 0; padding: 0; border: 0; inset: auto; overflow: visible }
+        #scaled { left: 20px; top: 20px; width: 400px; height: 40px; background: #fff }
+        #scaled::after { content: ""; position: absolute; left: 200px; top: 0; width: 200px; height: 40px; background: rgba(0, 0, 0, 0.6); pointer-events: none }
+        #zoomed { left: 20px; top: 50px; width: 200px; height: 20px; background: #fff }
+        #zoomed::after { content: ""; position: absolute; left: 100px; top: 0; width: 100px; height: 20px; background: rgba(0, 0, 0, 0.6); pointer-events: none }
+        #menu { left: 10px; top: 190px; width: 300px; height: 40px; background: #fff }
+        #tint { left: 10px; top: 250px; width: 300px; height: 40px; background: rgba(0, 0, 0, 0.5) }
+        #clear { left: 20px; top: 330px; width: 300px; height: 30px; background: #fff }
+        #fixedin { left: 20px; top: 480px; width: 400px; height: 40px; background: #fff }
+        .fscrim::after { content: ""; position: fixed; left: 220px; top: 480px; width: 200px; height: 40px; background: rgba(0, 0, 0, 0.6) }
+      </style>
+      <div style="transform:scale(0.5);transform-origin:0 0"><div id="scaled" popover="manual"><span data-id="liftedclear" style="position:absolute;left:120px;top:10px;color:#000">Item</span><span data-id="liftedunder" style="position:absolute;left:260px;top:10px;color:#000">Item</span></div></div>
+      <div style="zoom:2"><div id="zoomed" popover="manual"><span data-id="zoomedunder" style="position:absolute;left:130px;top:0;color:#000;font-size:8px">Item</span></div></div>
+      <p data-id="covered" style="position:absolute;left:20px;top:200px;margin:0;color:#000">Page text under a menu</p>
+      <div style="opacity:0"><div id="menu" popover="manual">A menu</div></div>
+      <p data-id="tinted" style="position:absolute;left:20px;top:260px;margin:0;color:#000">Page text under a tint</p>
+      <div style="opacity:0.5"><div id="tint" popover="manual"></div></div>
+      <div style="filter:grayscale(1) blur(0)"><div id="clear" popover="manual"><span data-id="unfiltered" style="color:#000">Out of a filter</span></div></div>
+      <div style="position:absolute;left:20px;top:420px;width:40px;height:20px;background:#000"><span data-id="escaped" style="position:absolute;left:60px;top:0;color:#000;white-space:nowrap">Beside its parent's box</span></div>
+      <div style="opacity:0;transform:translate(10px, 10px)"><div id="fixedin" popover="manual"><span class="fscrim" style="pointer-events:none"></span><span data-id="fixedclear" style="position:absolute;left:20px;top:10px;color:#000">Item</span><span data-id="fixedunder" style="position:absolute;left:260px;top:10px;color:#000">Item</span></div></div>
+    `,
+      ['scaled', 'zoomed', 'menu', 'tint', 'clear', 'fixedin']
+    );
+    const ids = [
+      'liftedclear',
+      'liftedunder',
+      'zoomedunder',
+      'covered',
+      'tinted',
+      'unfiltered',
+      'escaped',
+      'fixedclear',
+      'fixedunder',
+    ];
+    const res = await assertOn(
+      lifted,
+      ids.map((element) => ({ type: 'contrast_meets_wcag', element }))
+    );
+    await lifted.close();
+    // A popover in a block at scale(0.5) is drawn at full size, so its
+    // click-through scrim lies over its right half: one item there is
+    // covered and the other clear, where drawing the scrim at half size
+    // put it over the clear one and passed the covered one at 21:1. One in
+    // a block at zoom: 2 is drawn at twice its size, its scrim too, over
+    // its item. A menu whose block is at opacity: 0 still covers the page
+    // text under it, which passed at 21:1, and a half-black tint whose
+    // block is at opacity: 0.5 tints it at its own half (5.32:1, where it
+    // read 11.42:1); a block's filter does not reach a popover's text. A
+    // span positioned out of its parent's black box lies on the white page,
+    // where the parent's black read beneath it failed at 1:1. A fixed scrim
+    // in a popover a faded, transformed block holds is placed against the
+    // viewport and painted, as neither the transform nor the opacity above
+    // the top layer reaches it: it covers one item and clears the other,
+    // where it was taken as not pinned down and, click-through, not seen,
+    // which passed both at 21:1.
+    expect(verdicts(res)).toEqual([
+      ['passed', null],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['passed', null],
+      ['passed', null],
+      ['passed', null],
+      ['passed', null],
+      ['unknown', 'input_missing'],
+    ]);
+    for (const i of [0, 5, 6, 7]) {
+      expect(res.results[i].detail).toContain('contrast ratio 21.00:1');
+    }
+    for (const [i, id] of [
+      [1, 'scaled'],
+      [2, 'zoomed'],
+    ] as const) {
+      expect(res.results[i].detail).toContain(
+        `<div#${id}>::after is a positioned box that covers the text's position`
+      );
+    }
+    expect(res.results[3].detail).toContain('<div#menu> paints over the text at');
+    expect(res.results[3].detail).toContain('with an opaque background (rgb(255, 255, 255))');
+    expect(res.results[4].detail).toContain('contrast ratio 5.32:1');
+    expect(res.results[8].detail).toContain(
+      "<span.fscrim> paints its ::after at the text's position but computes pointer-events: none"
+    );
+
+    // A popover's ::backdrop lies beneath it, out of its opacity: a popover
+    // at opacity: 0, or one whose block is, still dims the page.
+    const dims: string[] = [];
+    for (const [where, holder] of [
+      ['#dim { opacity: 0 }', '<div id="dim" popover="manual">A popover</div>'],
+      ['', '<div style="opacity:0"><div id="dim" popover="manual">A popover</div></div>'],
+    ]) {
+      const page = await openWith(
+        `<style>#dim::backdrop { background: rgba(0, 0, 0, 0.6) } ${where}</style>
+        <p data-id="dimmed" style="margin:0;color:#000">Page text under a popover's backdrop</p>${holder}`,
+        ['dim']
+      );
+      const dimmed = await assertOn(page, [{ type: 'contrast_meets_wcag', element: 'dimmed' }]);
+      expect(verdicts(dimmed)).toEqual([['unknown', 'input_missing']]);
+      dims.push(dimmed.results[0].detail);
+      await page.close();
+    }
+    for (const detail of dims) {
+      expect(detail).toContain(
+        "<div#dim> paints its ::backdrop at the text's position but computes pointer-events: none"
+      );
+    }
+
+    // A modal dialog is in the top layer too: its text is read out of a
+    // faded, transformed block, where that block's opacity: 0 was taken to
+    // blend it away.
+    const modal = await openPage(
+      `<div style="opacity:0;transform:translate(10px, 10px)"><dialog id="dlg" style="padding:10px;border:0;background:#fff"><p data-id="modal" style="margin:0;color:#000">Text in a modal dialog</p></dialog></div>`
+    );
+    await modal.evaluate(() => (document.getElementById('dlg') as HTMLDialogElement).showModal());
+    const inModal = await assertOn(modal, [{ type: 'contrast_meets_wcag', element: 'modal' }]);
+    expect(verdicts(inModal)).toEqual([['passed', null]]);
+    expect(inModal.results[0].detail).toContain('contrast ratio 21.00:1');
+    await modal.close();
+
+    // Nothing above the top layer clips it: an item in a popover whose
+    // block clips to 10px tall is not cut off, where it failed.
+    const clips = await openWith(
+      `
+      <style>#lifted { margin: 0; inset: auto; left: 20px; top: 100px; width: 200px; height: 60px; overflow: visible }</style>
+      <div style="overflow:hidden;height:10px;transform:translate(0)"><div id="lifted" popover="manual"><span data-id="popitem">Item in a popover</span></div></div>
+      <div style="overflow:hidden;width:300px;height:40px;margin-top:20px"><span data-id="boxed">Inside its box</span></div>
+    `,
+      ['lifted']
+    );
+    expect(verdicts(await assertOn(clips, [{ type: 'no_clipping' }]))).toEqual([['passed', null]]);
+    await clips.close();
   }, 60_000);
 
   it('contrast_meets_wcag: the viewport scrollbar is not a frame of the root that scrolls it', async () => {
