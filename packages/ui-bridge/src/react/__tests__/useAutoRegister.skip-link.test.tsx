@@ -107,7 +107,7 @@ describe('a skip link hidden until focused', () => {
     expect(found.success, found.error).toBe(true);
     expect(found.data!.elements.map((e) => e.id)).toEqual([id]);
 
-    const state = await handlers.getElementState(id!, { attributes: 'href' });
+    const state = await handlers.getElementState(id!, undefined, { attributes: 'href' });
     expect(state.success, state.error).toBe(true);
     expect(state.data).toMatchObject({
       id,

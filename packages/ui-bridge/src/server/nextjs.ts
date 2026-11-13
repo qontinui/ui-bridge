@@ -46,7 +46,7 @@ import { createHandlers, type RegistryLike, type ActionExecutorLike } from './ha
 import { SSEManager } from './sse-handler';
 import type { CommandRelay } from './command-relay';
 import { CDPTabDiscovery } from './cdp-tabs';
-import { withoutReservedCaller } from './reserved-caller';
+import { queryAndContextArgs, withoutReservedCaller } from './reserved-caller';
 import { scopedCallerRefusal } from './scoped-refusal';
 import { readJsonBody } from './request-body';
 import { routeQueryOf } from './request-query';
@@ -272,16 +272,17 @@ export function createNextRouteHandlers(
         }
       }
 
-      // Add the query object when the route's handler takes one — EMPTY
-      // included, so the trailing context below always lands in the
-      // context slot. A route whose handler takes no query never gets one:
-      // it would land in that slot, and a query string could then name the
-      // caller identity. Per-user tab scoping (§4.2): `__callerUserId` is
-      // delivered via the trailing `context` arg (below), never spliced
-      // into the searchParams bag. The `tabId` splice stays (it's a payload
-      // field many handlers read via `extractTabRouting`). A repeated
-      // list-valued key (`?properties=a&properties=b`) arrives as the whole
-      // list, not its last value (`request-query.ts`).
+      // The query object, when the route's handler takes one — EMPTY
+      // included, so the context below always lands in the context slot. A
+      // route whose handler takes no query never gets one: it would land in
+      // that slot, and a query string could then name the caller identity.
+      // Per-user tab scoping (§4.2): `__callerUserId` is delivered via the
+      // `context` arg (below), never spliced into the searchParams bag. The
+      // `tabId` splice stays (it's a payload field many handlers read via
+      // `extractTabRouting`). A repeated list-valued key
+      // (`?properties=a&properties=b`) arrives as the whole list, not its
+      // last value (`request-query.ts`).
+      let query: unknown;
       if (route.queryRequired) {
         const searchParams = withoutReservedCaller(routeQueryOf(request.nextUrl.searchParams));
         if (
@@ -291,18 +292,19 @@ export function createNextRouteHandlers(
         ) {
           searchParams.tabId = externalTabId;
         }
-        args.push(searchParams);
+        query = searchParams;
       }
 
-      // Per-user tab scoping (§4.2) — trailing context arg. The adapter
-      // ALWAYS supplies this final positional argument so zero-arg /
-      // id-only handlers (captureSnapshot, clearRenderLog,
-      // getElementState(id)) — whose signatures don't carry
+      // Per-user tab scoping (§4.2) — the context arg. The adapter ALWAYS
+      // supplies it so zero-arg / id-only handlers (captureSnapshot,
+      // clearRenderLog, getElementState(id)) — whose signatures don't carry
       // __callerUserId in the body/query — still enforce ownership when
       // X-Caller-User-Id is present. Adds NO overhead when the header is
       // absent (context.callerUserId undefined → relay falls back to
-      // primary-tab dispatch).
-      args.push({ callerUserId });
+      // primary-tab dispatch). It is the last argument, except on a
+      // `queryAfterContext` route, where the query follows it
+      // (`queryAndContextArgs`).
+      args.push(...queryAndContextArgs(route, query, { callerUserId }));
 
       // Call handler
       const result = await (handler as (...args: unknown[]) => Promise<APIResponse<unknown>>)(
