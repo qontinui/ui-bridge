@@ -219,9 +219,10 @@ export function isAssertionRequestError(err: unknown): err is AssertionRequestEr
  * it, so a field it starts or stops reading fails until this list follows). A
  * criteria target selects something only through a non-blank one of these.
  * Nothing else in `SearchCriteria` selects on its own: `fuzzy`,
- * `fuzzyThreshold`, `strict`, `includeContent` and `contentOnly` only modify a
- * search, and the assertion search reads no `selector`, `xpath`,
- * `dataAttributes` or `contentRole` at all.
+ * `fuzzyThreshold` and `strict` only modify a search, and the assertion search
+ * reads no `selector`, `xpath`, `dataAttributes`, `contentRole`,
+ * `includeContent` or `contentOnly` at all. `near` names an anchor by element
+ * id; a description there resolves nothing.
  */
 export const SELECTING_CRITERIA: readonly string[] = Object.freeze([
   'text',
@@ -267,9 +268,9 @@ function namesNothing(input: NLAssertionInput): string | undefined {
   if (typeof target === 'object' && target !== null && !Array.isArray(target)) {
     return (
       `its search-criteria \`target\` selects by none of ${SELECTING_CRITERIA.join(', ')} ` +
-      '(a blank value selects nothing; `fuzzy`, `fuzzyThreshold`, `strict`, `includeContent` ' +
-      'and `contentOnly` only modify a search, and the assertion search does not read ' +
-      '`selector`, `xpath`, `dataAttributes` or `contentRole`)'
+      '(a blank value selects nothing; `fuzzy`, `fuzzyThreshold` and `strict` only modify a ' +
+      'search, and the assertion search does not read `selector`, `xpath`, `dataAttributes`, ' +
+      '`contentRole`, `includeContent` or `contentOnly`)'
     );
   }
   return (

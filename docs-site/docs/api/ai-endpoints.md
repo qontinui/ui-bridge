@@ -57,7 +57,7 @@ required; all are optional and combined with AND.
 | `selector`       | `string`                | CSS selector applied to the rendered DOM.                                                                                                             |
 | `xpath`          | `string`                | XPath expression.                                                                                                                                     |
 | `dataAttributes` | `Record<string,string>` | Match `data-*` attributes by exact value.                                                                                                             |
-| `near`           | `string`                | Spatial proximity hint (e.g. `"near the URL input"`).                                                                                                 |
+| `near`           | `string`                | Spatial proximity anchor: an element **id** (e.g. `"url-input"`); a description resolves no anchor.                                                  |
 | `within`         | `string`                | Container hint (e.g. `"within the login form"`).                                                                                                      |
 | `fuzzy`          | `boolean`               | Enable fuzzy matching. Default `true` when `text`/`textContains` set.                                                                                 |
 | `fuzzyThreshold` | `number`                | Confidence floor for fuzzy matches, `0..1`. Default `0.7`.                                                                                            |
@@ -256,10 +256,10 @@ an array), or that names nothing to check — no `target` and no
 `UB-VALIDATION-ERROR`, and so does an `assertions` that is not an array:
 nothing runs. A criteria `target` selects only through a non-blank
 `text`, `textContent`, `textContains`, `accessibleName`, `role`, `type`,
-`near`, `within`, `idPattern`, `placeholder` or `title`: the rest only
-modify a search (`fuzzy`, `fuzzyThreshold`, `strict`, `includeContent`,
-`contentOnly`) or are not read by it (`selector`, `xpath`,
-`dataAttributes`, `contentRole`), and a check on criteria that select
+`near`, `within`, `idPattern`, `placeholder` or `title` (`near` takes an
+element id): the rest only modify a search (`fuzzy`, `fuzzyThreshold`,
+`strict`) or are not read by it (`selector`, `xpath`, `dataAttributes`,
+`contentRole`, `includeContent`, `contentOnly`), and a check on criteria that select
 nothing would find no element — so `{ "target": {}, "type": "notExists" }`
 would pass without looking. A single `/ai/assert` is refused the same
 way. Through the relay the refusal is made before anything reaches a tab.
