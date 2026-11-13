@@ -20,6 +20,7 @@ import { SSEManager } from './sse-handler';
 import { withoutReservedCaller } from './reserved-caller';
 import { scopedCallerRefusal } from './scoped-refusal';
 import { MAX_BODY_BYTES, interpretJsonBody } from './request-body';
+import { routeQueryOf } from './request-query';
 import type { BridgeEvent } from '../core';
 
 /**
@@ -485,9 +486,10 @@ export class StandaloneServer {
       }
 
       // The query object goes to a handler that takes one, EMPTY included,
-      // and to no other (see nextjs.ts).
+      // and to no other (see nextjs.ts). A repeated list-valued key arrives as
+      // the whole list, not its last value (`request-query.ts`).
       if (route.queryRequired) {
-        args.push(withoutReservedCaller(Object.fromEntries(url.searchParams)));
+        args.push(withoutReservedCaller(routeQueryOf(url.searchParams)));
       }
 
       // Per-user tab scoping (§4.2) — trailing context arg. Adapter

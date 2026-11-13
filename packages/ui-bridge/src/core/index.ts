@@ -160,6 +160,7 @@ export {
   MAX_PROJECTED_NAMES,
   MAX_PROJECTION_NAME_LENGTH,
   PROJECTABLE_ATTRIBUTES,
+  PROJECTION_OPTIONS,
   ProjectionRequestError,
   cssPropertyName,
   isProjectableAttribute,
