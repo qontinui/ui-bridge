@@ -111,6 +111,10 @@ case("router invoked but no job routed", 1, "no job's runs-on reads",
      lambda r: mutate(r, "smoke-test.yml", "needs.route.outputs.labels", "'[\"ubuntu-24.04\"]'"))
 
 
+case("routed runs-on forces the pool under no lane variable", 1, "under no",
+     lambda r: mutate(r, "smoke-test.yml", "vars.UIBRIDGE_CI_LINUX_LANE == 'self-hosted'",
+                      "vars.UIBRIDGE_CI_LINUX_LANE == 'forced'"))
+
 case("lane-variable declaration missing", 1, "ci-pool-variables.toml: missing",
      lambda r: os.remove(os.path.join(r, DECL)))
 
