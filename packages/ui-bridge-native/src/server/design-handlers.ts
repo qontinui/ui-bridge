@@ -43,11 +43,71 @@ let qualityEvaluator: {
   diffSnapshots: (baseline: unknown, current: ElementDesignData[]) => unknown;
 } | null = null;
 
+/**
+ * The web SDK's pure style-inference functions (`@qontinui/ui-bridge/specs`,
+ * releases after 0.47.0). The peer range admits older versions that load but lack them, so
+ * availability is decided by the functions' presence, not by the `require`.
+ */
+export interface StyleInferenceModule {
+  buildStyleInventory: (
+    samples: Array<{ elementId: string; styles: Record<string, string> }>,
+    options?: { rootFontSizePx?: number; customProperties?: Record<string, string> }
+  ) => unknown;
+  inferStyleGuideFromInventory: (
+    inventory: unknown,
+    options?: { maxPerCategory?: number; limits?: Record<string, number>; name?: string }
+  ) => Record<string, unknown>;
+  computeTokenDrift: (
+    inventory: unknown,
+    declared: { tokens?: unknown; customProperties?: Record<string, string | number> },
+    options?: { colorDeltaE?: number; px?: number; maxListed?: number; rootFontSizePx?: number }
+  ) => Record<string, unknown>;
+  /** The web transports' body validation: throws an error whose `code` is `INVALID_REQUEST`. */
+  parseInferBody: (request: unknown) => InferBodyLike;
+  parseDriftBody: (request: unknown) => InferBodyLike & {
+    tolerance: { colorDeltaE?: number; px?: number };
+    maxListed?: number;
+    source:
+      | { kind: 'tokens'; tokens: unknown }
+      | { kind: 'customProperties'; customProperties: Record<string, string | number> }
+      | { kind: 'pageCustomProperties'; prefix: string }
+      | { kind: 'loadedStyleGuide' };
+  };
+  loadedGuideTokens: (loadedGuide: { tokens?: unknown } | null | undefined) => unknown;
+}
+
+/** The sampling fields a parsed body carries (plus the infer-only options). */
+interface InferBodyLike {
+  scope: 'registered' | 'document';
+  elementIds?: string[];
+  maxElements: number;
+  rootFontSizePx?: number;
+  maxPerCategory?: number;
+  limits?: Record<string, number>;
+  name?: string;
+}
+
+let styleInference: StyleInferenceModule | null = null;
+
+function asStyleInference(specs: unknown): StyleInferenceModule | null {
+  const s = specs as Partial<StyleInferenceModule> | null;
+  return s &&
+    typeof s.buildStyleInventory === 'function' &&
+    typeof s.inferStyleGuideFromInventory === 'function' &&
+    typeof s.computeTokenDrift === 'function' &&
+    typeof s.parseInferBody === 'function' &&
+    typeof s.parseDriftBody === 'function' &&
+    typeof s.loadedGuideTokens === 'function'
+    ? (s as StyleInferenceModule)
+    : null;
+}
+
 try {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const specs = require('@qontinui/ui-bridge/specs');
   styleValidator = specs;
   qualityEvaluator = specs;
+  styleInference = asStyleInference(specs);
 } catch {
   // Optional dependency not installed — audit/evaluate endpoints will return an error
 }
@@ -84,6 +144,24 @@ export interface NativeDesignHandlers {
     ctx: HandlerContext
   ) => Promise<APIResponse<{ saved: boolean; elementCount: number }>>;
   diffBaseline: (ctx: HandlerContext) => Promise<APIResponse<unknown>>;
+  inferStyleGuide: (ctx: HandlerContext) => Promise<APIResponse<unknown>>;
+  diffDesignTokens: (ctx: HandlerContext) => Promise<APIResponse<unknown>>;
+}
+
+/** Options for `createDesignHandlers`. */
+export interface DesignHandlerOptions {
+  /**
+   * The style-inference functions to use. Absent: the optional
+   * `@qontinui/ui-bridge/specs` peer, when it carries them. `null`: none
+   * (the routes answer `INFERENCE_NOT_AVAILABLE`). Tests inject the module
+   * because `vi.mock` does not intercept this file's CJS `require`.
+   */
+  styleInference?: StyleInferenceModule | null;
+}
+
+/** A request-validation error from the shared parser (its `code` is `INVALID_REQUEST`). */
+function isInvalidRequest(err: unknown): err is Error {
+  return err instanceof Error && (err as { code?: unknown }).code === 'INVALID_REQUEST';
 }
 
 /**
@@ -108,8 +186,66 @@ export interface NativeDesignHandlers {
  */
 export function createDesignHandlers(
   registry: NativeUIBridgeRegistry,
-  viewportProvider?: () => { width: number; height: number }
+  viewportProvider?: () => { width: number; height: number },
+  options: DesignHandlerOptions = {}
 ): NativeDesignHandlers {
+  const inference = 'styleInference' in options ? (options.styleInference ?? null) : styleInference;
+
+  /**
+   * Style samples for the inference routes: the flattened StyleSheet of each
+   * registered element, mapped to the web SDK's computed-style shape. React
+   * Native has no CSS custom properties and no document, so the capture says so.
+   */
+  function inferenceSamples(body: InferBodyLike): {
+    samples: Array<{ elementId: string; styles: Record<string, string> }>;
+    capture: Record<string, unknown>;
+  } {
+    let elements = registry.getAllElements();
+    if (body.elementIds) {
+      const idSet = new Set(body.elementIds);
+      elements = elements.filter((e) => idSet.has(e.id));
+    }
+    const available = elements.length;
+    const notes = [
+      "React Native: styles are each element's flattened StyleSheet; there are no CSS custom properties and no cascade",
+    ];
+    if (body.elementIds && available === 0) notes.push('elementIds matched no registered element');
+    const capped = elements.slice(0, body.maxElements);
+    const samples = capped.map((el) => {
+      const state = el.getState();
+      const data = getNativeElementDesignData(el.id, el.label, el.type, el.flatStyle, state.layout);
+      return { elementId: el.id, styles: data.styles as unknown as Record<string, string> };
+    });
+    const rootFontSizePx = body.rootFontSizePx ?? 16;
+    return {
+      samples,
+      capture: {
+        scope: 'registered',
+        elementsAvailable: available,
+        elementsSampled: samples.length,
+        elementsSkipped: 0,
+        elementCapReached: capped.length < available,
+        customPropertiesSeen: 0,
+        rootFontSizePx,
+        notes,
+      },
+    };
+  }
+
+  /** Native's refusal of a request the web transports accept but RN cannot answer. */
+  function unsupportedOnNative(body: InferBodyLike): string | null {
+    return body.scope === 'document'
+      ? 'scope must be "registered" on React Native (there is no document)'
+      : null;
+  }
+
+  function inferenceUnavailable<T>(): APIResponse<T> {
+    return error(
+      'Install a @qontinui/ui-bridge release later than 0.47.0 for style inference support.',
+      'INFERENCE_NOT_AVAILABLE'
+    );
+  }
+
   // Helper to get screen dimensions via the injected provider.
   //
   // The 0.6.3/0.6.4 implementation called `require('react-native')` here
@@ -401,6 +537,89 @@ export function createDesignHandlers(
         return error(
           'Diff failed: ' + (err instanceof Error ? err.message : String(err)),
           'DIFF_BASELINE_ERROR'
+        );
+      }
+    },
+
+    // 13. POST /design/style-guide/infer
+    inferStyleGuide: async (ctx) => {
+      if (!inference) return inferenceUnavailable();
+      const started = Date.now();
+      try {
+        const body = inference.parseInferBody(ctx.body);
+        const refusal = unsupportedOnNative(body);
+        if (refusal) return error(refusal, 'INVALID_REQUEST');
+        const { samples, capture } = inferenceSamples(body);
+        const inventory = inference.buildStyleInventory(samples, {
+          rootFontSizePx: capture.rootFontSizePx as number,
+        });
+        const inferred = inference.inferStyleGuideFromInventory(inventory, {
+          maxPerCategory: body.maxPerCategory,
+          limits: body.limits,
+          name: body.name,
+        });
+        return success({
+          ...inferred,
+          capture,
+          timestamp: Date.now(),
+          durationMs: Date.now() - started,
+        });
+      } catch (err) {
+        if (isInvalidRequest(err)) return error(err.message, 'INVALID_REQUEST');
+        return error(
+          'Inference failed: ' + (err instanceof Error ? err.message : String(err)),
+          'STYLE_INFERENCE_ERROR'
+        );
+      }
+    },
+
+    // 14. POST /design/tokens/drift
+    diffDesignTokens: async (ctx) => {
+      if (!inference) return inferenceUnavailable();
+      const started = Date.now();
+      try {
+        const body = inference.parseDriftBody(ctx.body);
+        const refusal = unsupportedOnNative(body);
+        if (refusal) return error(refusal, 'INVALID_REQUEST');
+        let declared: { tokens?: unknown; customProperties?: Record<string, string | number> };
+        switch (body.source.kind) {
+          case 'tokens':
+            declared = { tokens: body.source.tokens };
+            break;
+          case 'customProperties':
+            declared = { customProperties: body.source.customProperties };
+            break;
+          case 'pageCustomProperties':
+            return error(
+              'pageCustomPropertyPrefix is not available on React Native (no CSS custom properties)',
+              'INVALID_REQUEST'
+            );
+          case 'loadedStyleGuide':
+            declared = {
+              tokens: inference.loadedGuideTokens(loadedStyleGuide as { tokens?: unknown } | null),
+            };
+            break;
+        }
+        const { samples, capture } = inferenceSamples(body);
+        const rootFontSizePx = capture.rootFontSizePx as number;
+        const inventory = inference.buildStyleInventory(samples, { rootFontSizePx });
+        const report = inference.computeTokenDrift(inventory, declared, {
+          ...body.tolerance,
+          maxListed: body.maxListed,
+          rootFontSizePx,
+        });
+        return success({
+          ...report,
+          declaredSource: body.source.kind,
+          capture,
+          timestamp: Date.now(),
+          durationMs: Date.now() - started,
+        });
+      } catch (err) {
+        if (isInvalidRequest(err)) return error(err.message, 'INVALID_REQUEST');
+        return error(
+          'Drift failed: ' + (err instanceof Error ? err.message : String(err)),
+          'TOKEN_DRIFT_ERROR'
         );
       }
     },

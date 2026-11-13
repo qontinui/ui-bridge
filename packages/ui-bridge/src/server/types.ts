@@ -90,6 +90,10 @@ import type {
 } from '../core/types';
 import type { StyleGuideConfig, StyleAuditReport } from '../specs/style-types';
 import type {
+  StyleInferenceResponse,
+  TokenDriftResponse,
+} from '../specs/style-inference-request';
+import type {
   QualityEvaluationReport,
   SnapshotDiffReport,
   EvaluateRequest,
@@ -1193,6 +1197,24 @@ export interface UIBridgeServerHandlers {
   ) => Promise<APIResponse<{ loaded: boolean }>>;
   getStyleGuide: (context?: HandlerContext) => Promise<APIResponse<StyleGuideConfig | null>>;
   clearStyleGuide: (context?: HandlerContext) => Promise<APIResponse<{ cleared: boolean }>>;
+  /**
+   * `POST /design/style-guide/infer` — a draft `StyleGuideConfig` and a ranked,
+   * capped token inventory derived from the page's computed styles. The body is
+   * validated in `specs/style-inference-request.ts`, which both transports call.
+   */
+  inferStyleGuide: (
+    request?: unknown,
+    context?: HandlerContext
+  ) => Promise<APIResponse<StyleInferenceResponse>>;
+  /**
+   * `POST /design/tokens/drift` — computed values vs a declared token set
+   * (`tokens`, `customProperties`, `pageCustomPropertyPrefix`, else the loaded
+   * style guide's tokens).
+   */
+  diffDesignTokens: (
+    request?: unknown,
+    context?: HandlerContext
+  ) => Promise<APIResponse<TokenDriftResponse>>;
 
   // Quality evaluation endpoints
   evaluateQuality: (
@@ -2349,6 +2371,13 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   },
   { method: 'GET', path: '/design/style-guide', handler: 'getStyleGuide' },
   { method: 'DELETE', path: '/design/style-guide', handler: 'clearStyleGuide' },
+  {
+    method: 'POST',
+    path: '/design/style-guide/infer',
+    handler: 'inferStyleGuide',
+    bodyRequired: true,
+  },
+  { method: 'POST', path: '/design/tokens/drift', handler: 'diffDesignTokens', bodyRequired: true },
 
   // Quality evaluation
   { method: 'POST', path: '/design/evaluate', handler: 'evaluateQuality', bodyRequired: true },
