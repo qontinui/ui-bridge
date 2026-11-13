@@ -53,6 +53,14 @@ describe('parseColor — CSS Color 4', () => {
     expectColor('color(display-p3 1 0 0)', { r: 255, g: 0, b: 0, a: 1 });
   });
 
+  it('converts mid-tones through the right transfer function and matrix (Chromium-measured)', () => {
+    // 1 1 1 and 1 0 0 convert identically under a wrong transfer function;
+    // these do not. Expectations are Chromium's canvas readback.
+    expectColor('color(srgb-linear 0.2 0.2 0.2)', { r: 124, g: 124, b: 124, a: 1 });
+    expectColor('color(display-p3 0.5 0.3 0.2)', { r: 136, g: 73, b: 45, a: 1 });
+    expectColor('color(xyz-d50 0.3 0.3 0.2)', { r: 161, g: 146, b: 133, a: 1 });
+  });
+
   it('reads `none` as a missing (zero) component', () => {
     expectColor('oklch(none none none)', { r: 0, g: 0, b: 0, a: 1 }, 0);
   });

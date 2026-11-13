@@ -356,6 +356,9 @@ export default tseslint.config(
           'packages/ui-bridge/src/react/media-capture.ts',
           'packages/ui-bridge/src/shortcuts/shortcut-tracker.ts',
           'packages/ui-bridge/src/undo/undo-detector.ts',
+          // `vision/assert`'s in-tab evaluator: element text reaches a result
+          // detail only through scrubContentByVerdict.
+          'packages/ui-bridge/src/vision/dom-assertions.ts',
         ],
         // redaction-surface:projection-modules:end
         // redaction-surface:projection-module-ignores:start
