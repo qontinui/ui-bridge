@@ -71,10 +71,16 @@ export class NetworkRequestTracker {
   /** Patch fetch and optionally XHR to begin tracking requests. */
   install(): void {
     if (this.installed) return;
+    // This tracker observes a PAGE's requests. In a server runtime (Node, a
+    // Next.js route handler — `createHandlers()` installs it on construction)
+    // there is no page: patching the process's `fetch` there would record the
+    // server's own outbound calls, credential headers included, and serve them
+    // on `GET /control/network-requests`. Stay uninstalled.
+    if (typeof document === 'undefined') return;
     this.installed = true;
 
     this.installFetchInterceptor();
-    if (this.config.trackXHR) {
+    if (this.config.trackXHR && typeof XMLHttpRequest !== 'undefined') {
       this.installXHRInterceptor();
     }
   }

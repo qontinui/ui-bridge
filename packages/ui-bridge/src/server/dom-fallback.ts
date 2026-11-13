@@ -201,6 +201,15 @@ export interface DOMFallbackElementWithRef extends DOMFallbackElement {
 }
 
 /**
+ * The default scan root: the page's `<body>`, or `null` in a server runtime
+ * (Node, a Next.js route handler) where there is no `document` to scan, so
+ * every scan answers "no elements" instead of throwing a ReferenceError.
+ */
+function defaultRoot(): HTMLElement | null {
+  return typeof document === 'undefined' ? null : document.body;
+}
+
+/**
  * Core DOM scan: returns each interactive element's structured data **and**
  * its live `HTMLElement` ref. The single source of truth for the selector
  * walk, id derivation, and collision disambiguation.
@@ -212,7 +221,7 @@ export interface DOMFallbackElementWithRef extends DOMFallbackElement {
 export function scanDOMForInteractiveElementsWithRefs(
   root?: HTMLElement
 ): DOMFallbackElementWithRef[] {
-  const container = root ?? document.body;
+  const container = root ?? defaultRoot();
   if (!container) return [];
 
   const nodeList = container.querySelectorAll<HTMLElement>(COMBINED_SELECTOR);
@@ -302,7 +311,7 @@ export function scanDOMForInteractiveElements(root?: HTMLElement): DOMFallbackEl
  * Used by the diagnostics endpoint.
  */
 export function countDOMInteractiveElements(root?: HTMLElement): number {
-  const container = root ?? document.body;
+  const container = root ?? defaultRoot();
   if (!container) return 0;
   return container.querySelectorAll<HTMLElement>(COMBINED_SELECTOR).length;
 }
@@ -314,7 +323,7 @@ export function findElementsByText(
   text: string,
   options?: { tag?: string; exact?: boolean; root?: HTMLElement }
 ): HTMLElement[] {
-  const container = options?.root ?? document.body;
+  const container = options?.root ?? defaultRoot();
   if (!container) return [];
 
   // Validate tag is a simple tag name (no selectors/combinators) to prevent injection
@@ -343,7 +352,7 @@ export function findElementBySelector(
   index?: number,
   root?: HTMLElement
 ): HTMLElement | null {
-  const container = root ?? document.body;
+  const container = root ?? defaultRoot();
   if (!container) return null;
 
   if (index !== undefined && index > 0) {
@@ -362,7 +371,7 @@ export function findElementBySelector(
  * set the singular read indexes into.
  */
 export function findAllElementsBySelector(selector: string, root?: HTMLElement): HTMLElement[] {
-  const container = root ?? document.body;
+  const container = root ?? defaultRoot();
   if (!container) return [];
   return Array.from(container.querySelectorAll<HTMLElement>(selector));
 }
@@ -371,7 +380,7 @@ export function findAllElementsBySelector(selector: string, root?: HTMLElement):
  * Find a form element by its associated label text.
  */
 export function findElementByLabel(labelText: string, root?: HTMLElement): HTMLElement | null {
-  const container = root ?? document.body;
+  const container = root ?? defaultRoot();
   if (!container) return null;
 
   const labels = container.querySelectorAll<HTMLLabelElement>('label');

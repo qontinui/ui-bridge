@@ -824,6 +824,23 @@ function devControlUnavailable(command: string): APIResponse<unknown> {
   };
 }
 
+/**
+ * The answer a page-only route (`PAGE_ONLY_HANDLERS`) gives from handlers
+ * built in a runtime with no page — the same typed shape as
+ * {@link devControlUnavailable}: nothing was attempted.
+ */
+function noPageRuntime(handler: string): APIResponse<unknown> {
+  return {
+    success: false,
+    error:
+      `${handler} reads or drives the live page, and these handlers were built in a ` +
+      'runtime with none (server-side). Use the relay handlers or the in-tab bridge.',
+    code: 'UB-CAPABILITY-UNAVAILABLE',
+    data: { code: 'capability_unavailable_in_build', reason: 'no_browser_context' },
+    timestamp: Date.now(),
+  };
+}
+
 // `buildComponentNotFoundError` now lives in its own zero-dependency module
 // (`./component-not-found`) so browser-side consumers (the relay command
 // dispatcher, the injected runtime bundle) can import it without pulling the
@@ -982,6 +999,23 @@ export async function closeAllSpawnedHeadlessTabs(): Promise<void> {
   await Promise.allSettled(allTabs.map((t) => t.close()));
 }
 
+/**
+ * Handlers that read or drive the live page and have no meaning without one;
+ * in a server runtime `createHandlers` refuses them `UB-CAPABILITY-UNAVAILABLE`
+ * (`no_browser_context`). `nextjs.node-construct.test.ts` sweeps every
+ * route in a Node environment, so a page-only handler missing here fails it.
+ */
+const PAGE_ONLY_HANDLERS = [
+  'pageRefresh',
+  'pageGoBack',
+  'pageGoForward',
+  'getResponsiveSnapshots',
+  'setViewportConstraints',
+  'evaluateQuality',
+  'saveBaseline',
+  'getRoutes',
+] as const satisfies readonly (keyof UIBridgeServerHandlers)[];
+
 export function createHandlers(
   registry: RegistryLike,
   actionExecutor: ActionExecutorLike,
@@ -1022,8 +1056,15 @@ export function createHandlers(
 
   // Network request monitoring — create early so idle detector and chain tracker
   // can subscribe to events instead of independently patching fetch/XHR.
+  // A server runtime (Node, a Next.js route handler — `createUIBridgeHandler`)
+  // has no page to watch. Network monitoring and idle detection are then not
+  // built at all, so their routes answer the typed *_DISABLED refusal naming
+  // why, rather than an idle/empty reading that nothing observed — and the
+  // server's own outbound fetches are never recorded.
+  const pageRuntime = typeof document !== 'undefined';
+  const noPageReason = pageRuntime ? '' : ': no page in this runtime (server-side handlers)';
   const networkTracker =
-    config.networkMonitoring !== false
+    pageRuntime && config.networkMonitoring !== false
       ? new NetworkRequestTracker(
           typeof config.networkMonitoring === 'object' ? config.networkMonitoring : undefined
         )
@@ -1153,7 +1194,7 @@ export function createHandlers(
   // Idle detection — pass the shared network tracker so the idle detector
   // subscribes to events instead of independently patching fetch/XHR.
   const idleDetector =
-    config.idleDetection !== false
+    pageRuntime && config.idleDetection !== false
       ? CompositeIdleDetector.create(
           (() => {
             const idleConfig =
@@ -1531,7 +1572,7 @@ export function createHandlers(
     }
   };
 
-  return {
+  const handlers: UIBridgeServerHandlers = {
     // =========================================================================
     // Render Log Handlers
     // =========================================================================
@@ -5354,7 +5395,10 @@ export function createHandlers(
 
     getNetworkRequests: async (params) => {
       if (!networkTracker) {
-        return error('Network monitoring is disabled', 'NETWORK_MONITORING_DISABLED');
+        return error(
+          `Network monitoring is disabled${noPageReason}`,
+          'NETWORK_MONITORING_DISABLED'
+        );
       }
       const filter: NetworkRequestFilter = {};
       if (params?.status) filter.status = params.status as NetworkRequestStatus;
@@ -5375,7 +5419,10 @@ export function createHandlers(
 
     getNetworkRequestsInFlight: async () => {
       if (!networkTracker) {
-        return error('Network monitoring is disabled', 'NETWORK_MONITORING_DISABLED');
+        return error(
+          `Network monitoring is disabled${noPageReason}`,
+          'NETWORK_MONITORING_DISABLED'
+        );
       }
       const requests = networkTracker.getInFlight();
       return {
@@ -5387,7 +5434,10 @@ export function createHandlers(
 
     waitForNetworkRequest: async (request) => {
       if (!networkTracker) {
-        return error('Network monitoring is disabled', 'NETWORK_MONITORING_DISABLED');
+        return error(
+          `Network monitoring is disabled${noPageReason}`,
+          'NETWORK_MONITORING_DISABLED'
+        );
       }
       try {
         const result = await networkTracker.waitForRequest(request);
@@ -5403,7 +5453,10 @@ export function createHandlers(
 
     getNetworkRequest: async (id) => {
       if (!networkTracker) {
-        return error('Network monitoring is disabled', 'NETWORK_MONITORING_DISABLED');
+        return error(
+          `Network monitoring is disabled${noPageReason}`,
+          'NETWORK_MONITORING_DISABLED'
+        );
       }
       const entry = networkTracker.getById(id);
       if (!entry) {
@@ -5427,14 +5480,14 @@ export function createHandlers(
 
     getIdleStatus: async () => {
       if (!idleDetector) {
-        return error('Idle detection is disabled', 'IDLE_DISABLED');
+        return error(`Idle detection is disabled${noPageReason}`, 'IDLE_DISABLED');
       }
       return success(idleDetector.getStatus());
     },
 
     getIdleSignalStatus: async (signal: string) => {
       if (!idleDetector) {
-        return error('Idle detection is disabled', 'IDLE_DISABLED');
+        return error(`Idle detection is disabled${noPageReason}`, 'IDLE_DISABLED');
       }
       const status = idleDetector.getSignalStatus(signal);
       if (!status) {
@@ -5452,7 +5505,7 @@ export function createHandlers(
       exclude?: string[];
     }) => {
       if (!idleDetector) {
-        return error('Idle detection is disabled', 'IDLE_DISABLED');
+        return error(`Idle detection is disabled${noPageReason}`, 'IDLE_DISABLED');
       }
       try {
         const status = await idleDetector.waitForIdle({
@@ -5471,7 +5524,7 @@ export function createHandlers(
       request?: { timeout?: number; minStableMs?: number }
     ) => {
       if (!idleDetector) {
-        return error('Idle detection is disabled', 'IDLE_DISABLED');
+        return error(`Idle detection is disabled${noPageReason}`, 'IDLE_DISABLED');
       }
       try {
         const status = await idleDetector.waitForSignal(signal, {
@@ -5490,7 +5543,7 @@ export function createHandlers(
       minStableMs?: number;
     }) => {
       if (!idleDetector) {
-        return error('Idle detection is disabled', 'IDLE_DISABLED');
+        return error(`Idle detection is disabled${noPageReason}`, 'IDLE_DISABLED');
       }
       try {
         const results = await idleDetector.waitFor(request.targets, {
@@ -7283,6 +7336,17 @@ export function createHandlers(
       });
     },
   };
+
+  if (!pageRuntime) {
+    // These read or drive the live page itself (history, viewport, layout,
+    // computed styles, the router's links) and have nothing to fall back on
+    // without one. Refuse them typed — nothing was attempted — instead of a
+    // `ReferenceError` surfacing as UB-UNKNOWN-ERROR.
+    for (const name of PAGE_ONLY_HANDLERS) {
+      (handlers as unknown as Record<string, unknown>)[name] = async () => noPageRuntime(name);
+    }
+  }
+  return handlers;
 }
 
 /**
