@@ -285,15 +285,20 @@ export class AssertionExecutor {
   /**
    * The operand for a check whose target is a `read` page sentinel
    * (`document` → `<html>`, `core/page-sentinel.ts`), or `null`. Only the
-   * checks that read through the projection take one, and a registered element
-   * with the same id wins — the precedence every sentinel site applies.
+   * checks that read through the projection take one.
+   *
+   * A target here is a search, not an id, so the sentinel yields to whatever
+   * that search resolves: an element whose id, label or text matches —
+   * `Document` finds a link labelled "Documents" — is the operand, as it was
+   * before the sentinel existed. `<html>` answers only a target that resolves
+   * to no element at all.
    */
   private pageSentinelOperand(request: AssertionRequest): AIDiscoveredElement | null {
     const target = request.target;
     if (!PROJECTED_CHECKS.has(request.type) || typeof target !== 'string') return null;
-    if (this.elements.some((el) => el.id === target)) return null;
     const node = resolvePageSentinel(target, 'read');
     if (!node) return null;
+    if (this.findElementDetailed(target, false)) return null;
     const operand = {
       id: target,
       type: 'document',

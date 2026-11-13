@@ -566,4 +566,7 @@ curl -s -X POST "$BASE/ai/assert" -H 'Content-Type: application/json' \
 Only `document` names an element for a read. `body` and `window` remain what
 they always were — page sentinels for a `scroll` action, where all three
 scroll the page. An element an app registers under one of these ids wins over
-the sentinel everywhere.
+the sentinel on a read and a scroll. An `ai/assert` target is a search, not an
+id: any element it resolves wins, by id, label or text and a near match
+included (`Document` finds a link labelled "Documents"), and `document` names
+`<html>` only when the search finds no element at all.
