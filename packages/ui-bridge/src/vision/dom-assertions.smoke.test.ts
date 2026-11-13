@@ -218,6 +218,46 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     await page.close();
   }, 60_000);
 
+  it('text_fits_container: layout boxes under a transform, inline fragments, scrubbed text', async () => {
+    const page = await openPage(`
+      <div data-id="scaled" style="width:300px;white-space:nowrap;transform:scale(0.5);transform-origin:0 0">Fits at its layout width</div>
+      <div data-id="scaledover" style="width:60px;white-space:nowrap;overflow:hidden;transform:scale(2);transform-origin:0 0">A very long label that cannot fit</div>
+      <p style="width:80px;white-space:nowrap;overflow:hidden;margin-top:40px"><span data-id="shortinl">Hi</span> <span>a long sibling that overflows the line</span></p>
+      <p style="width:120px;height:20px;line-height:20px;overflow:hidden"><span data-id="firstline">First</span> then a sibling that wraps onto lines the box hides</p>
+      <p style="width:120px;height:20px;line-height:20px;overflow:hidden">Lead text that wraps <span data-id="wrapped">onto a hidden line</span></p>
+      <p style="width:300px"><span data-id="zeroinl" style="font-size:0">gone</span> visible sibling text</p>
+      <div data-id="acct" style="width:120px;white-space:nowrap;overflow:hidden">Card <span data-bridge-redact="true">4111 1111 1111 1111</span> on file</div>
+    `);
+    const res = await assertOn(
+      page,
+      ['scaled', 'scaledover', 'shortinl', 'firstline', 'wrapped', 'zeroinl', 'acct'].map(
+        (element) => ({
+          type: 'text_fits_container',
+          element,
+        })
+      )
+    );
+    expect(verdicts(res)).toEqual([
+      // Its 300px layout box holds the text; the box it paints at scale(0.5)
+      // is 150px wide, which a getBoundingClientRect fit box would read as
+      // overflowing by half.
+      ['passed', null],
+      ['failed', null], // overflows at any scale
+      ['passed', null], // the long sibling overflows the line, this label does not
+      ['passed', null], // the block overflows vertically, but on later lines
+      ['failed', null], // this span's text is on the lines the box hides
+      ['unknown', 'input_missing'], // no fragment of its own, and the block holds more
+      ['failed', null],
+    ]);
+    expect(res.results[1].detail).toContain('text is clipped');
+    expect(res.results[4].detail).toContain('text overflows vertically');
+    expect(res.results[5].detail).toContain("inline element 'zeroinl' exposes no box of its own");
+    // The redacted child's text never leaves through the container's detail.
+    expect(res.results[6].detail).toContain('Full text: "Card [REDACTED] on file"');
+    expect(JSON.stringify(res)).not.toContain('4111');
+    await page.close();
+  }, 60_000);
+
   it('no_overlap: border boxes, with the tolerance inset', async () => {
     const page = await openPage(`
       <div data-id="a" style="position:absolute;left:0;top:0;width:100px;height:100px"></div>

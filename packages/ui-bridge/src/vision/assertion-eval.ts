@@ -510,8 +510,7 @@ function evalTextFits(a: Of<'text_fits_container'>, byId: Map<string, MeasuredEl
       return fail(
         a,
         `text overflows vertically: content is ${px(sh)}px tall but the box is only ` +
-          `${px(box.h)}px (${px(sh - box.h)}px hidden). Full text: ` +
-          JSON.stringify((el.text ?? '').trim())
+          `${px(box.h)}px (${px(sh - box.h)}px hidden)`
       );
     }
     vertical = 'measured';

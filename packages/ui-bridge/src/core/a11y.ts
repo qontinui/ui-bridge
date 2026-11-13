@@ -24,6 +24,7 @@
 // `moduleResolution: bundler` won't auto-resolve them. The ambient declaration
 // for our use is in `dom-accessibility-api.d.ts` next to this file.
 import { computeAccessibleName, getRole } from 'dom-accessibility-api';
+import { REDACTED_VALUE, scrubContentByVerdict, verdictOf, type Scrubbed } from './redaction';
 
 /**
  * Collapse runs of whitespace to a single space and trim. Matches the
@@ -268,6 +269,64 @@ export function computeVisibleText(node: Element): string | undefined {
   const raw = typeof inner === 'string' && inner.length > 0 ? inner : (node.textContent ?? '');
   const normalized = normalizeWhitespace(raw);
   return normalized || undefined;
+}
+
+const REDACTION_BOUNDARY = '[data-bridge-redact="true"]';
+
+/**
+ * An element's visible text for a projection, scrubbed — including a
+ * `data-bridge-redact` boundary INSIDE the element, which the element's own
+ * verdict cannot see: that verdict reads the element and its ancestors, so a
+ * container's `innerText` would carry a redacted descendant's content out.
+ * Each such subtree is replaced by the sentinel here. The element's own
+ * verdict (it, or an ancestor, inside a boundary) still redacts the whole.
+ *
+ * With no boundary inside (the common case) this is {@link computeVisibleText}
+ * scrubbed by the element's verdict. With one, the text is assembled from the
+ * DOM around the boundary, leaving out `display: none` subtrees and
+ * `visibility: hidden` text as `innerText` does, with a space where a line
+ * break or a box that is not inline separates words; whitespace is collapsed.
+ */
+export function readScrubbedVisibleText(el: Element): Scrubbed<string> | undefined {
+  const verdict = verdictOf(el as HTMLElement);
+  if (verdict.content || el.querySelector(REDACTION_BOUNDARY) === null) {
+    return scrubContentByVerdict(computeVisibleText(el), verdict);
+  }
+  const view = el.ownerDocument.defaultView;
+  const style = (e: Element): CSSStyleDeclaration | null => {
+    try {
+      return view ? view.getComputedStyle(e) : null;
+    } catch {
+      return null;
+    }
+  };
+  const parts: string[] = [];
+  const walk = (parent: Element): void => {
+    const hidden = style(parent)?.visibility === 'hidden';
+    for (const child of Array.from(parent.childNodes)) {
+      if (child.nodeType === 3) {
+        if (!hidden) parts.push(child.nodeValue ?? '');
+        continue;
+      }
+      if (child.nodeType !== 1) continue;
+      const e = child as Element;
+      const display = style(e)?.display ?? '';
+      if (display === 'none') continue;
+      if (e.matches(REDACTION_BOUNDARY)) {
+        parts.push(` ${REDACTED_VALUE} `);
+        continue;
+      }
+      // A line break, or a box that is not inline, separates words as
+      // `innerText`'s line breaks do.
+      const separate =
+        e.tagName === 'BR' || !(display.startsWith('inline') || display === 'contents');
+      if (separate) parts.push(' ');
+      walk(e);
+      if (separate) parts.push(' ');
+    }
+  };
+  walk(el);
+  return scrubContentByVerdict(normalizeWhitespace(parts.join('')) || undefined, verdict);
 }
 
 // ===========================================================================

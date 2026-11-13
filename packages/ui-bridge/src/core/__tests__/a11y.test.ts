@@ -15,7 +15,9 @@ import {
   computeAccessibleNameSafe,
   computeRoleSafe,
   computeVisibleText,
+  readScrubbedVisibleText,
 } from '../a11y';
+import { REDACTED_VALUE } from '../redaction';
 import { getGlobalRegistry, resetGlobalRegistry } from '../registry';
 
 describe('computeRoleSafe', () => {
@@ -190,6 +192,62 @@ describe('computeVisibleText', () => {
     const el = document.createElement('span');
     container.appendChild(el);
     expect(computeVisibleText(el)).toBeUndefined();
+  });
+});
+
+describe('readScrubbedVisibleText', () => {
+  let container: HTMLDivElement;
+  beforeEach(() => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+  });
+  afterEach(() => {
+    document.body.removeChild(container);
+  });
+
+  const mount = (html: string): HTMLElement => {
+    container.innerHTML = html;
+    return container.firstElementChild as HTMLElement;
+  };
+
+  it('is the visible text when no boundary is inside', () => {
+    const el = mount('<p>  Hello <b>bold</b>\t\t world </p>');
+    expect(readScrubbedVisibleText(el)).toBe(computeVisibleText(el));
+    expect(readScrubbedVisibleText(el)).toBe('Hello bold world');
+  });
+
+  it('replaces a redacted descendant subtree with the sentinel', () => {
+    const el = mount(
+      '<div>Card <span data-bridge-redact="true">4111 <b>1111</b></span> on file</div>'
+    );
+    // The container's own verdict cannot see the boundary below it.
+    expect(computeVisibleText(el)).toContain('4111');
+    expect(readScrubbedVisibleText(el)).toBe(`Card ${REDACTED_VALUE} on file`);
+  });
+
+  it('redacts the whole text of an element inside a boundary', () => {
+    const el = mount('<div data-bridge-redact="true"><p id="inner">secret <i>words</i></p></div>');
+    expect(readScrubbedVisibleText(el.querySelector('#inner')!)).toBe(REDACTED_VALUE);
+  });
+
+  it('leaves out hidden text, and only the exact "true" is a boundary', () => {
+    const el = mount(
+      '<div>A <span style="display:none">gone</span><span style="visibility:hidden">ghost</span>' +
+        '<span data-bridge-redact="true">pin</span> <span data-bridge-redact="false">kept</span>' +
+        '<span style="display:none" data-bridge-redact="true">hidden pin</span></div>'
+    );
+    expect(readScrubbedVisibleText(el)).toBe(`A ${REDACTED_VALUE} kept`);
+  });
+
+  it('separates words across line breaks and block boxes', () => {
+    const el = mount(
+      '<div>one<br>two<div>three</div><span data-bridge-redact="true">x</span></div>'
+    );
+    expect(readScrubbedVisibleText(el)).toBe(`one two three ${REDACTED_VALUE}`);
+  });
+
+  it('is undefined for an element with no text', () => {
+    expect(readScrubbedVisibleText(mount('<div><span></span></div>'))).toBeUndefined();
   });
 });
 

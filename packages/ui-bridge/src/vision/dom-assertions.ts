@@ -31,11 +31,16 @@
  *   contains the first opaque layer. A translucent colour or an opacity group
  *   above that layer is composited exactly. With no opaque layer, the base is
  *   the `Canvas` colour under the root's `color-scheme`.
- * - `text_fits_container` — the nearest block box's `scrollWidth` /
+ * - `text_fits_container` — a block-level element's `scrollWidth` /
  *   `scrollHeight`, with its borders and scrollbars added back, against its
  *   border box with the size `Math.ceil`'d (vision-core's comparison and the
- *   producer contract); strictly greater fails. No text is
- *   `unknown{input_missing}`.
+ *   producer contract); strictly greater fails. Both sides are LAYOUT sizes
+ *   (`offset*` / `scroll*` / `client*`), so a CSS transform does not read as
+ *   overflow. An inline element is measured by its own line fragments
+ *   (`getClientRects`) against the content box of the block it lays out in,
+ *   so a sibling's overflow is not its own; when it exposes no fragment, the
+ *   block's extents stand in only if it is all the block holds, else
+ *   `unknown{input_missing}`. No text is `unknown{input_missing}`.
  * - `no_overlap` — border boxes (`getBoundingClientRect`), exact: geometry is
  *   never rounded up, or adjacent fractional boxes would read as overlapping.
  * - `element_above` — paint order from `document.elementsFromPoint` at sample
@@ -57,9 +62,11 @@
  * tab and writes nothing to it.
  *
  * REDACTION (§4.6): element text reaches a result only through
- * `scrubContentByVerdict`, against the element's own verdict — inside a
- * `data-bridge-redact` boundary it is `[REDACTED]`. Geometry, colours and ids
- * are not content.
+ * `readScrubbedVisibleText` (core/a11y.ts), which mints it through
+ * `scrubContentByVerdict`: inside a `data-bridge-redact` boundary it is
+ * `[REDACTED]`, and so is every boundary INSIDE the element, so a container's
+ * text cannot carry a redacted child out. Geometry, colours and ids are not
+ * content.
  */
 
 import {
@@ -69,9 +76,12 @@ import {
   type UnmeasuredDimension,
 } from '../observation/observation';
 import { parseColor, type RGBA } from '../specs/color-utils';
-import { computeVisibleText, isInteractionBlocked, readInteractionBlockers } from '../core/a11y';
+import {
+  isInteractionBlocked,
+  readInteractionBlockers,
+  readScrubbedVisibleText,
+} from '../core/a11y';
 import { classList } from '../core/class-name';
-import { scrubContentByVerdict, verdictOf } from '../core/redaction';
 import { parseVisionAssertRequest } from './assertion-request';
 import {
   evaluateVisionAssertion,
@@ -631,6 +641,11 @@ class TabMeasurement {
     const fontSize = pxValue(this.style(el).fontSize);
     if (Number.isFinite(fontSize)) record.fontSizePx = fontSize;
     if (!record.bbox) return;
+    const display = this.style(el).display;
+    if (display !== 'inline' && display !== 'inline flow') {
+      this.fitOwnBox(el, record);
+      return;
+    }
     const block = this.nearestBlockBox(el);
     if (!block) {
       record.unmeasured = {
@@ -644,30 +659,149 @@ class TabMeasurement {
       };
       return;
     }
-    // vision-core compares the scroll extents with the BORDER box, strictly,
-    // and the producer contract (plan 2026-11-09 Phase 0) makes that box the
-    // `Math.ceil` of the fractional `getBoundingClientRect` size, so integer
-    // extents never fail against a fractional box. `scrollWidth` /
-    // `scrollHeight` measure only the padding box, excluding borders and
-    // scrollbars, so those are added back (`offset*` - `client*`): without
-    // them an overflow narrower than the borders plus a scrollbar would pass.
-    // The block box's own extents are used, so an inline element is measured
-    // where its text actually wraps or clips.
-    const r = block.getBoundingClientRect();
-    const html = block as HTMLElement;
-    const frameX = (html.offsetWidth ?? block.clientWidth) - block.clientWidth;
-    const frameY = (html.offsetHeight ?? block.clientHeight) - block.clientHeight;
-    record.scrollWidthPx = block.scrollWidth + Math.max(0, frameX);
-    record.scrollHeightPx = block.scrollHeight + Math.max(0, frameY);
-    record.fitBox = { w: Math.ceil(r.width), h: Math.ceil(r.height) };
+    this.fitInlineFragments(id, el, block, record);
+  }
+
+  /**
+   * A block-level element is its own fit box. vision-core compares the scroll
+   * extents with the BORDER box, strictly, and the producer contract (plan
+   * 2026-11-09 Phase 0) takes that box's size rounded UP, so an integer extent
+   * never fails against a fractional box. Both sides come from LAYOUT sizes
+   * (`offset*` / `scroll*` / `client*`), which a CSS transform does not change
+   * — `getBoundingClientRect` is the transformed box, and a `scale(0.5)` card
+   * would otherwise read as overflowing by half. `scroll*` measures only the
+   * padding box, so the borders and scrollbars (`offset*` - `client*`) are
+   * added back: without them an overflow narrower than the borders plus a
+   * scrollbar would pass.
+   */
+  private fitOwnBox(el: Element, record: MeasuredElement): void {
+    const html = el as HTMLElement;
+    if (typeof html.offsetWidth === 'number' && typeof html.offsetHeight === 'number') {
+      record.fitBox = { w: Math.ceil(html.offsetWidth), h: Math.ceil(html.offsetHeight) };
+      record.scrollWidthPx = el.scrollWidth + Math.max(0, html.offsetWidth - el.clientWidth);
+      record.scrollHeightPx = el.scrollHeight + Math.max(0, html.offsetHeight - el.clientHeight);
+    } else {
+      // No layout sizes (an SVG element): its own box, untransformed only if
+      // it is not transformed — the best this DOM exposes.
+      const r = el.getBoundingClientRect();
+      record.fitBox = { w: Math.ceil(r.width), h: Math.ceil(r.height) };
+      record.scrollWidthPx = el.scrollWidth;
+      record.scrollHeightPx = el.scrollHeight;
+    }
+    const overflow = this.style(el).textOverflow;
+    if (overflow) record.textOverflow = overflow;
+  }
+
+  /**
+   * An inline element's text is measured by its OWN line fragments
+   * (`getClientRects`) against the content box of the block it lays out in.
+   * The block's scroll extents alone would answer for every sibling in it: a
+   * short label beside a long one would read as overflowing. They still decide
+   * that an axis does NOT overflow; where it does, the fragments say whose
+   * text overflows. Fragments and box are both viewport rectangles, so a
+   * transform scales them alike. The fit box is the content box rounded up;
+   * the extent is how far the fragments reach, rounded, so sub-pixel layout
+   * noise is not overflow.
+   */
+  private fitInlineFragments(
+    id: string,
+    el: Element,
+    block: Element,
+    record: MeasuredElement
+  ): void {
+    const fragments = Array.from(el.getClientRects()).filter((r) => r.width > 0 || r.height > 0);
+    const content = this.contentBox(block);
+    if (fragments.length === 0 || !content) {
+      // Its own boxes cannot be compared. The block's extents stand in only
+      // when this element is all the block holds.
+      if (this.hasOtherInFlowChildren(block, el)) {
+        record.unmeasured = {
+          ...record.unmeasured,
+          textFit: {
+            code: 'input_missing',
+            detail:
+              `inline element '${id}' exposes no box of its own to compare, and the block it ` +
+              `lays out in (${this.describe(block)}) holds other content, so the block's ` +
+              'overflow does not say whether this text fits; it was not checked',
+          },
+        };
+        return;
+      }
+      this.fitOwnBox(block, record);
+      return;
+    }
+    const left = Math.min(...fragments.map((r) => r.left));
+    const right = Math.max(...fragments.map((r) => r.right));
+    const top = Math.min(...fragments.map((r) => r.top));
+    const bottom = Math.max(...fragments.map((r) => r.bottom));
+    const w = content.right - content.left;
+    const h = content.bottom - content.top;
+    const fitW = Math.ceil(w);
+    const fitH = Math.ceil(h);
+    // A block that does not overflow an axis cuts no line on it, whatever
+    // its fragments' sub-pixel and font-metric rounding say; where it does,
+    // the fragments say whether THIS element's text is what overflows.
+    const overX =
+      block.scrollWidth > block.clientWidth
+        ? Math.max(0, right - content.right, content.left - left)
+        : 0;
+    const overY =
+      block.scrollHeight > block.clientHeight
+        ? Math.max(0, bottom - content.bottom, content.top - top)
+        : 0;
+    record.fitBox = { w: fitW, h: fitH };
+    record.scrollWidthPx = Math.round(fitW + overX);
+    record.scrollHeightPx = Math.round(fitH + overY);
     const overflow = this.style(block).textOverflow;
     if (overflow) record.textOverflow = overflow;
   }
 
-  /** The element's visible text, scrubbed by its own redaction verdict. */
+  /**
+   * The content box of `el` in viewport pixels: its border box less borders,
+   * padding and scrollbars, scaled like the box when it is transformed. Null
+   * when the box has no layout size to scale by.
+   */
+  private contentBox(
+    el: Element
+  ): { left: number; top: number; right: number; bottom: number } | null {
+    const html = el as HTMLElement;
+    if (typeof html.offsetWidth !== 'number' || html.offsetWidth <= 0 || html.offsetHeight <= 0) {
+      return null;
+    }
+    const r = el.getBoundingClientRect();
+    const st = this.style(el);
+    const sx = r.width / html.offsetWidth;
+    const sy = r.height / html.offsetHeight;
+    const px = (v: string): number => pxValue(v) || 0;
+    return {
+      left: r.left + (px(st.borderLeftWidth) + px(st.paddingLeft)) * sx,
+      right: r.left + (px(st.borderLeftWidth) + el.clientWidth - px(st.paddingRight)) * sx,
+      top: r.top + (px(st.borderTopWidth) + px(st.paddingTop)) * sy,
+      bottom: r.top + (px(st.borderTopWidth) + el.clientHeight - px(st.paddingBottom)) * sy,
+    };
+  }
+
+  /** Does `block` lay out anything besides `el`: another element child in flow, or text? */
+  private hasOtherInFlowChildren(block: Element, el: Element): boolean {
+    for (const child of Array.from(block.childNodes)) {
+      if (child === el) continue;
+      if (child.nodeType === 3) {
+        if (/\S/.test(child.nodeValue ?? '')) return true;
+        continue;
+      }
+      if (child.nodeType !== 1) continue;
+      const st = this.style(child as Element);
+      if (st.display === 'none' || st.position === 'absolute' || st.position === 'fixed') {
+        continue;
+      }
+      if (!containsComposed(child as Element, el)) return true;
+    }
+    return false;
+  }
+
+  /** The element's visible text, scrubbed — its own boundary and every boundary inside it. */
   private scrubbedText(el: Element): string | undefined {
-    const raw = computeVisibleText(el);
-    return scrubContentByVerdict(raw, verdictOf(el as HTMLElement));
+    return readScrubbedVisibleText(el);
   }
 
   // ---- no_clipping -----------------------------------------------------------
