@@ -516,17 +516,22 @@ curl -s "$BASE/control/element/save-btn/state?properties=hyphens,--color-accent&
 Values are COMPUTED (`var()` arrives resolved). An absent attribute reads
 `null`. A name that could not be read — a custom property the element does not
 set, a property the engine does not compute — is listed in
-`projection.unmeasured` with its code instead of reading as `""`. Only `lang`,
+`projection.unmeasured` with its code instead of reading as `""`. Inside a
+`data-bridge-redact` boundary a value that can carry page content reads
+`[REDACTED]`, and its name is listed in `projection.redacted`. Only `lang`,
 `dir`, `id`, `role`, `title`, `alt`, `href` and `aria-*` attributes are
 readable; any other name, an invalid property name, or more than 32 names is
-refused with `UB-VALIDATION-ERROR`.
+refused with `UB-VALIDATION-ERROR`. On the state route each list may also be a
+repeated key (`?properties=hyphens&properties=outline-offset`).
 
 The same read backs the `ai/assert` style and attribute checks
 (`cssProperty`, `cssPropertyInSet`, `cssPropertyRange`, `tokenCompliance`,
 `attribute`), on both transports. A check that cannot read its value answers
 `outcome: "unmeasured"` with the reason in `unmeasured` — `passed` is `false`,
 so it never passes a gate, but it is counted in `unmeasuredCount`, apart from
-`failedCount`.
+`failedCount`. A value a redaction boundary withholds is one of those
+(`not_attempted_by_policy`): `[REDACTED]` is never compared as the page's
+value.
 
 ## 10. Address the elements a page hides from the registry
 
