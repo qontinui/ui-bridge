@@ -200,10 +200,11 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       <div style="position:relative;height:50px"><p data-id="covered" style="margin:0;color:#000">Under an opaque sheet</p><div class="sheet" style="position:absolute;inset:0;background:#fff"></div></div>
       <div style="position:relative;height:50px"><p data-id="pictured" style="margin:0;color:#000">Under an image</p><img src="${PIXEL_PNG}" style="position:absolute;left:0;top:0;width:300px;height:50px;opacity:0.5"></div>
       <div style="position:relative;height:50px"><p data-id="linked" style="margin:0;color:#000;background:#fff">Under an empty stretched link</p><a href="#" style="position:absolute;inset:0"></a></div>
+      <div style="position:relative;z-index:0;height:50px;background:#000"><div style="position:relative;height:50px;background:rgba(255,255,255,0.5)"><p data-id="sunk" style="position:relative;z-index:-1;margin:0;color:#fff">Beneath its own translucent card</p></div></div>
     `);
     const res = await assertOn(
       page,
-      ['tinted', 'faded', 'covered', 'pictured', 'linked'].map((element) => ({
+      ['tinted', 'faded', 'covered', 'pictured', 'linked', 'sunk'].map((element) => ({
         type: 'contrast_meets_wcag',
         element,
       }))
@@ -214,6 +215,10 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       ['unknown', 'input_missing'], // an opaque layer covers the text
       ['unknown', 'input_missing'], // an image's pixels cover the text
       ['passed', null], // a transparent link over the card paints nothing
+      // z-index: -1 sinks the text beneath its own parent's 50% white card,
+      // which therefore tints it once, from above: #fff on #808080, ~3.95:1.
+      // Counted beneath the text as well, the card would read ~1.84:1.
+      ['failed', null],
     ]);
     expect(res.results[0].detail).toMatch(/contrast ratio 3\.9\d:1/);
     expect(res.results[1].detail).toContain('contrast ratio 1.61:1');
@@ -222,6 +227,7 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     );
     expect(res.results[3].detail).toContain('<img> is painted above the text');
     expect(res.results[4].detail).toContain('contrast ratio 21.00:1');
+    expect(res.results[5].detail).toMatch(/contrast ratio 3\.9\d:1/);
     await page.close();
   }, 60_000);
 
@@ -323,10 +329,11 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       <p style="width:120px;height:20px;line-height:20px;overflow:hidden">Lead text that wraps <span data-id="wrapped">onto a hidden line</span></p>
       <p style="width:300px"><span data-id="zeroinl" style="font-size:0">gone</span> visible sibling text</p>
       <div data-id="acct" style="width:120px;white-space:nowrap;overflow:hidden">Card <span data-bridge-redact="true">4111 1111 1111 1111</span> on file</div>
+      <p style="width:200px;font-size:16px;line-height:10px;padding:6px 0;overflow:hidden"><span data-id="padded">Tight lines</span></p>
     `);
     const res = await assertOn(
       page,
-      ['scaled', 'scaledover', 'shortinl', 'firstline', 'wrapped', 'zeroinl', 'acct'].map(
+      ['scaled', 'scaledover', 'shortinl', 'firstline', 'wrapped', 'zeroinl', 'acct', 'padded'].map(
         (element) => ({
           type: 'text_fits_container',
           element,
@@ -344,6 +351,10 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       ['failed', null], // this span's text is on the lines the box hides
       ['unknown', 'input_missing'], // no fragment of its own, and the block holds more
       ['failed', null],
+      // Its 16px font's content area reaches 3-4px past the 10px line, above
+      // and below, into padding the block does not overflow: the block cuts
+      // nothing, as measuring the <p> itself would also say.
+      ['passed', null],
     ]);
     expect(res.results[1].detail).toContain('text is clipped');
     expect(res.results[4].detail).toContain('text overflows vertically');

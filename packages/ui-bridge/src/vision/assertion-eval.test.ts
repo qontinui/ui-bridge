@@ -111,6 +111,23 @@ describe('text_fits_container — the measured fit box', () => {
     expect(r.detail).toContain('Full text: "A long product name"');
   });
 
+  it('names a vertical overflow by its size alone, never its text, as vision-core does', () => {
+    const el: MeasuredElement = {
+      id: 'note',
+      text: 'Line one line two line three',
+      bbox: box(0, 0, 80, 20),
+      fitBox: { w: 80, h: 20 },
+      scrollWidthPx: 80,
+      scrollHeightPx: 60,
+    };
+    const r = evaluate({ type: 'text_fits_container', element: 'note' }, { elements: [el] });
+    expect(r.outcome).toBe('failed');
+    expect(r.detail).toContain(
+      'text overflows vertically: content is 60px tall but the box is only 20px (40px hidden)'
+    );
+    expect(r.detail).not.toContain('Line one');
+  });
+
   it("computes the vertical estimate's needed height in f32, as vision-core does", () => {
     // 10.666667 * 1.5 is 16.0000005 in f64 (ceil 17) but rounds to 16 in f32
     // (ceil 16): a 16px-tall box fits by vision-core's arithmetic.
