@@ -473,6 +473,158 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     await page.close();
   }, 60_000);
 
+  it('contrast_meets_wcag: a frame that paints nothing, or lies anywhere in a layer above the text', async () => {
+    const page = await openPage(`
+      <style>
+        .staticframe::after { content: ""; display: block; height: 30px; border-top: 20px solid rgba(255, 0, 0, 0.5) }
+        .staticclear::after { content: ""; display: block; height: 30px }
+        .staticclearborder::after { content: ""; display: block; height: 30px; border-top: 20px solid transparent }
+      </style>
+      <div style="position:relative;height:50px;background:#fff"><p data-id="staticframe" style="margin:0;color:#000">Under generated content in normal flow with a border</p><div class="staticframe" style="position:absolute;inset:0"></div></div>
+      <div style="position:relative;height:50px;background:#fff"><p data-id="staticclear" style="margin:0;color:#000">Under transparent generated content in normal flow</p><div class="staticclear" style="position:absolute;inset:0"></div></div>
+      <div style="position:relative;height:50px;background:#fff"><p data-id="staticclearborder" style="margin:0;color:#000">Under generated content with a transparent border</p><div class="staticclearborder" style="position:absolute;inset:0"></div></div>
+      <div style="position:relative;height:50px;background:#fff"><p data-id="clearband" style="margin:0;color:#000">Under a layer's transparent top border</p><div style="position:absolute;inset:0;border-top:20px solid transparent"></div></div>
+    `);
+    const ids = ['staticframe', 'staticclear', 'staticclearborder', 'clearband'];
+    const res = await assertOn(
+      page,
+      ids.map((element) => ({ type: 'contrast_meets_wcag', element }))
+    );
+    // A ::before / ::after in normal flow has no box the computed style pins
+    // down, so its border may lie anywhere in the layer, the text included:
+    // here a 50% red band over black text (~8.6:1) read 21:1 when it was
+    // skipped. A transparent border paints nothing, on generated content or
+    // on the layer itself, and leaves the text's own 21:1.
+    expect(verdicts(res)).toEqual([
+      ['unknown', 'input_missing'],
+      ['passed', null],
+      ['passed', null],
+      ['passed', null],
+    ]);
+    expect(res.results[0].detail).toContain('<div.staticframe> paints over the text at');
+    expect(res.results[0].detail).toContain('with ::after generated content that may cover it');
+    for (const i of [1, 2, 3]) expect(res.results[i].detail).toContain('contrast ratio 21.00:1');
+    await page.close();
+  }, 60_000);
+
+  it('contrast_meets_wcag: a frame or generated content beneath the text', async () => {
+    const page = await openPage(`
+      <style>
+        .ancpseudo { position: relative }
+        .ancpseudo::after { content: ""; position: absolute; left: 0; top: 0; width: 300px; height: 10px; border-top: 20px solid rgba(255, 0, 0, 0.5); pointer-events: none }
+        .ancring { position: relative }
+        .ancring::after { content: ""; position: absolute; inset: 0; border: 2px solid #c00; pointer-events: none }
+        .negframe { position: relative; z-index: 0 }
+        .negframe::before { content: ""; position: absolute; left: 0; top: 0; width: 300px; height: 10px; z-index: -1; border-top: 20px solid #000 }
+        .ownglyph { position: relative }
+        .ownglyph::after { content: "XXXXXXXXXXXXXXXXXXXX"; position: absolute; left: 0; top: 0; color: #f00 }
+        .ownshadow { position: relative }
+        .ownshadow::after { content: ""; position: absolute; inset: 0; box-shadow: inset 0 0 0 100px rgba(0, 0, 0, 0.5) }
+        .negglyph { position: relative; z-index: 0 }
+        .negglyph::before { content: "SALE"; position: absolute; left: 0; top: 0; width: 300px; height: 50px; z-index: -1; color: #ccc; font-size: 40px }
+        .chevron { position: relative }
+        .chevron::before { content: "v"; position: absolute; right: 30px; top: 50%; color: #000; transform: translateY(-50%) }
+        .chevron::after { content: ""; position: absolute; right: 12px; top: 50%; width: 8px; height: 8px; border-right: 2px solid #000; border-bottom: 2px solid #000; transform: translateY(-50%) rotate(45deg) }
+      </style>
+      <div class="under" style="background:#fff;border-top:30px solid #000"><p data-id="beneathborder" style="margin:-30px 0 0;color:#fff">Over its container's border</p></div>
+      <div class="vignette" style="margin-top:10px;height:50px;background:#fff;box-shadow:inset 0 0 0 100px rgba(0,0,0,0.6)"><p data-id="beneathshadow" style="margin:0;color:#000">Over an inset shadow</p></div>
+      <div style="height:50px;background:#fff;box-shadow:inset 0 0 0 100px rgba(0,0,0,0.6)"><div style="background:#fff"><p data-id="beneathcovered" style="margin:0;color:#000">Over an opaque layer above an inset shadow</p></div></div>
+      <div style="height:50px;background:#fff;padding:12px;box-shadow:inset 0 0 0 2px #c00"><p data-id="beneathring" style="margin:0;color:#000">Inside an inset ring that does not reach it</p></div>
+      <div class="ancpseudo" style="height:50px;background:#fff"><p data-id="ancpseudo" style="margin:0;color:#000">Under an ancestor's click-through border</p></div>
+      <div class="ancring" style="height:50px;background:#fff;padding:12px"><p data-id="ancring" style="margin:0;color:#000">Inside an ancestor's click-through ring</p></div>
+      <div class="negframe" style="height:50px;background:#fff"><p data-id="negframe" style="margin:0;color:#fff">Over a border its ancestor paints beneath it</p></div>
+      <div style="height:50px;background:#fff"><p data-id="ownglyph" class="ownglyph" style="margin:0;color:#000">Under its own positioned glyphs</p></div>
+      <div style="height:50px;background:#fff"><p data-id="ownshadow" class="ownshadow" style="margin:0;color:#595959;background:#fff">Under its own inset-shadow pseudo</p></div>
+      <div class="negglyph" style="height:50px;background:#fff"><p data-id="negglyph" style="margin:0;color:#000">Over glyphs its ancestor paints beneath it</p></div>
+      <div class="chevron" style="height:50px;background:#fff;padding:12px 40px 12px 12px"><p data-id="chevron" style="margin:0;color:#000">Beside a rotated chevron and an arrow</p></div>
+    `);
+    const ids = [
+      'beneathborder',
+      'beneathshadow',
+      'beneathcovered',
+      'beneathring',
+      'ancpseudo',
+      'ancring',
+      'negframe',
+      'ownglyph',
+      'ownshadow',
+      'negglyph',
+      'chevron',
+    ];
+    const res = await assertOn(
+      page,
+      ids.map((element) => ({ type: 'contrast_meets_wcag', element }))
+    );
+    // A box paints its border and an inset box-shadow over its own background
+    // and beneath its content, and neither is composited: white text over a
+    // black border is 21:1 where the container's own white would read 1:1,
+    // and black text over a 60% black shadow ~3.7:1, not 21:1. Where an
+    // opaque layer above the frame hides it, or the frame does not reach the
+    // text, the text's own colours decide. A positioned ::before / ::after
+    // that paints only glyphs, a border or an inset box-shadow is read the
+    // same way, the text's own one included (the hit test lists it as the
+    // text's owner): red glyphs over the text, and #595959 under a 50% black
+    // shadow (~1.75:1), read 21:1 and 7:1 when such a pseudo was skipped.
+    expect(verdicts(res)).toEqual([
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['passed', null],
+      ['passed', null],
+      ['unknown', 'input_missing'],
+      ['passed', null],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['passed', null],
+    ]);
+    expect(res.results[0].detail).toContain(
+      'the border or scrollbar of <div.under> lies beneath the text where the backdrop shows through'
+    );
+    expect(res.results[1].detail).toContain('the inset box-shadow of <div.vignette> lies beneath');
+    expect(res.results[2].detail).toContain('contrast ratio 21.00:1');
+    expect(res.results[3].detail).toContain('contrast ratio 21.00:1');
+    expect(res.results[4].detail).toContain(
+      "<div.ancpseudo>::after is a positioned box that covers the text's position"
+    );
+    expect(res.results[5].detail).toContain('contrast ratio 21.00:1');
+    // A negative z-index sinks the pseudo, its border and its glyphs beneath
+    // the text.
+    expect(res.results[6].detail).toContain(
+      'the border or scrollbar of <div.negframe>::before lies beneath'
+    );
+    expect(res.results[7].detail).toContain(
+      "'ownglyph'::after is a positioned box that covers the text's position"
+    );
+    expect(res.results[8].detail).toContain(
+      "'ownshadow'::after is a positioned box that covers the text's position"
+    );
+    expect(res.results[9].detail).toContain(
+      'the generated content of <div.negglyph>::before lies beneath'
+    );
+    // A transformed pseudo's box is not pinned down, and a transparent one,
+    // glyphs or a frame, is taken to paint nothing there.
+    expect(res.results[10].detail).toContain('contrast ratio 21.00:1');
+    await page.close();
+  }, 60_000);
+
+  it('contrast_meets_wcag: the viewport scrollbar is not a frame of the root that scrolls it', async () => {
+    // The root's client sizes are the viewport's, so read as a box of its
+    // own they would put a "scrollbar" the height of the page beside the
+    // viewport, over every text once the page is scrolled.
+    const page = await openPage(`
+      <style>html { overflow-y: scroll }</style>
+      <div style="height:3000px"></div>
+      <p data-id="deep" style="margin:0;color:#000">Deep in a scrolled page</p>
+      <div style="height:600px"></div>
+    `);
+    await page.evaluate(() => window.scrollTo(0, 2900));
+    const res = await assertOn(page, [{ type: 'contrast_meets_wcag', element: 'deep' }]);
+    expect(verdicts(res)).toEqual([['passed', null]]);
+    expect(res.results[0].detail).toContain('contrast ratio 21.00:1');
+    await page.close();
+  }, 60_000);
+
   it('contrast_meets_wcag: an ancestor of the text the hit test lists above it', async () => {
     // The hit test lists an ancestor above its own text for what it draws
     // over that text: a positioned ::after, an open shadow tree's overlay, a

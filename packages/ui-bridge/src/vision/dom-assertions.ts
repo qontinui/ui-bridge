@@ -28,7 +28,9 @@
  *   only the slot's ancestors are read: a layer of that tree beside the
  *   slot, painting beneath the text, is not seen. A background image
  *   (gradients included), `filter`, `backdrop-filter`, `mix-blend-mode`,
- *   replaced content (`<img>`, `<video>`, `<canvas>`, …) or a
+ *   replaced content (`<img>`, `<video>`, `<canvas>`, …), a layer's border,
+ *   scrollbar or inset box-shadow where it reaches the text, the glyphs of a
+ *   `::before` / `::after` positioned there, or a
  *   `pointer-events: none` layer the hit test cannot order, anywhere the
  *   text could show it, makes the colour
  *   `unknown{input_missing}`; so does an ancestor with `opacity < 1` that
@@ -48,15 +50,18 @@
  *   backdrop-filter, a blend, replaced or generated content, its own text,
  *   its border, a scrollbar or an inset box-shadow over the text, a custom
  *   element with no open shadow root), is `unknown{input_missing}` naming
- *   the layer. A box-shadow is read nowhere else: an inset one beneath the
- *   text, and an outer one cast over it by an element whose box misses it,
- *   are not seen. An ANCESTOR of the text the hit test lists above it
- *   paints its own box beneath its content, so only what it draws over the
- *   text is read — a positioned `::before` / `::after` (a stretched link),
- *   its open shadow tree's elements above the text — unless a negative
- *   `z-index` sinks the text past it, and then all of it is a layer above.
- *   One listed above with neither (a closed shadow tree's overlay) is
- *   `unknown{input_missing}`.
+ *   the layer. An outer box-shadow and an outline are read nowhere: one
+ *   cast over the text by an element whose box misses it, and an outline a
+ *   negative `outline-offset` pulls inside its box, are not seen. Nor are
+ *   the glyphs and the frame of a transparent `::before` / `::after` beneath
+ *   the text whose box the computed style does not pin down (one moved by a
+ *   transform, such as a rotated chevron). An ANCESTOR of the text the hit
+ *   test lists above it paints its own box beneath its content, so only
+ *   what it draws over the text is read — a positioned `::before` /
+ *   `::after` (a stretched link), its open shadow tree's elements above the
+ *   text — unless a negative `z-index` sinks the text past it, and then all
+ *   of it is a layer above. One listed above with neither (a closed shadow
+ *   tree's overlay) is `unknown{input_missing}`.
  *
  * ROUNDING (plan 2026-11-09 Phase 0's contract): every box below is handed to
  * the evaluator UNROUNDED, and the evaluator rounds it as its kind does —
@@ -419,6 +424,24 @@ function frameAt(
   }
   const depth = Math.min(p.x - pad.left, pad.right - p.x, p.y - pad.top, pad.bottom - p.y);
   return depth < insetShadowReach(st.boxShadow ?? '') * scale ? 'inset box-shadow' : null;
+}
+
+/**
+ * Whether a box draws a frame anywhere — a border side with a width and a
+ * colour that is not transparent, or an inset box-shadow — for a box whose
+ * geometry is not known, so neither is where its frame lies. A colour that
+ * cannot be read counts as painting.
+ */
+function hasFrame(st: CSSStyleDeclaration): boolean {
+  const side = (s: string): boolean =>
+    (pxValue(st.getPropertyValue(`border-${s}-width`)) || 0) > 0 &&
+    parseColor(st.getPropertyValue(`border-${s}-color`))?.a !== 0;
+  return ['top', 'right', 'bottom', 'left'].some(side) || insetShadowReach(st.boxShadow ?? '') > 0;
+}
+
+/** Whether a box can show a scrollbar: it scrolls on an axis. */
+function scrolls(st: CSSStyleDeclaration): boolean {
+  return /auto|scroll|overlay/.test(`${st.overflowX} ${st.overflowY}`);
 }
 
 /** A box size in CSS pixels, unrounded. */
@@ -1613,10 +1636,10 @@ class TabMeasurement {
    * Whether `layer`'s `::before` / `::after` lies over the text at `p`. One
    * that paints anything there — a background colour or image, glyphs, its
    * border or an inset box-shadow — stops the measurement, named, and so
-   * does one whose box the computed style does not pin down, since it may
-   * lie there. `true` when the only ones there are transparent (an empty
-   * stretched link), `false` when none is. `positionedOnly` reads only the
-   * ones that can lie over their own
+   * does one that paints any of them when the computed style does not pin
+   * its box down, since it may lie there. `true` when the only ones there
+   * are transparent (an empty stretched link), `false` when none is.
+   * `positionedOnly` reads only the ones that can lie over their own
    * element's content: positioned, with a z-index that is not negative. One
    * in normal flow is laid out beside that content, and one with a negative
    * z-index paints beneath it.
@@ -1637,8 +1660,9 @@ class TabMeasurement {
       const glyphs = ps.content !== '""' && ps.content !== "''";
       const box = this.pseudoBox(layer, ps);
       if (box && !pointIn(p, box)) continue;
-      // Its frame (a border, an inset box-shadow) is read where its box is known.
-      const framed = box !== null && frameAt(ps, insetByBorders(box, ps), 1, p) !== null;
+      // Its frame (a border, an inset box-shadow) is read where its box is
+      // known; where it is not, a frame anywhere may lie there.
+      const framed = box ? frameAt(ps, insetByBorders(box, ps), 1, p) !== null : hasFrame(ps);
       if (!image && !glyphs && bg && bg.a === 0 && !framed) {
         if (box) transparentThere = true;
         continue;
@@ -1660,15 +1684,17 @@ class TabMeasurement {
 
   /**
    * What of `layer`'s frame lies at `p` over its background ({@link frameAt}),
-   * or null. An inline box draws its frame around each of its line
-   * fragments, so the fragment `p` lies in is read as a box of its own, with
-   * all four borders.
+   * or null. A box with no border or inset box-shadow that paints ({@link
+   * hasFrame}), and no scrollbar since it does not scroll, has none. An
+   * inline box draws its frame around each of its line fragments, so the
+   * fragment `p` lies in is read as a box of its own, with all four borders.
    */
   private frameOf(
     layer: Element,
     st: CSSStyleDeclaration,
     p: { x: number; y: number }
   ): string | null {
+    if (!hasFrame(st) && !scrolls(st)) return null;
     if (st.display === 'inline') {
       for (const r of Array.from(layer.getClientRects())) {
         const fragment = { x: r.left, y: r.top, w: r.width, h: r.height };
@@ -1678,6 +1704,12 @@ class TabMeasurement {
     }
     const box = boxOf(layer);
     if (!box || !pointIn(p, box)) return null;
+    // The viewport's scrollbars are not the frame of the element that
+    // scrolls it, whose client sizes are the viewport's: its frame is its
+    // border and inset box-shadow alone.
+    if (layer === document.documentElement || layer === document.scrollingElement) {
+      return frameAt(st, insetByBorders(box, st), 1, p);
+    }
     const pad = this.clipBox(layer, st);
     return frameAt(st, pad, Math.max(pad.sx, pad.sy), p);
   }
@@ -1878,8 +1910,9 @@ class TabMeasurement {
 
   /**
    * The paint operations one layer contributes at `p`, bottom-up: what its
-   * `backdrop-filter` hides, its own background, and a negative-z positioned
-   * pseudo-element under its content. A layer whose paint cannot be read
+   * `backdrop-filter` hides, its own background, its frame over that
+   * background ({@link frameOf}), and a negative-z positioned pseudo-element
+   * under its content. A layer whose paint cannot be read
    * contributes an UNREADABLE operation, which matters only where nothing
    * opaque covers it. A pseudo that may paint OVER the text stops the
    * measurement instead.
@@ -1935,6 +1968,12 @@ class TabMeasurement {
         }
       }
     }
+    // Over its background a box paints its frame — a border, a scrollbar,
+    // an inset box-shadow — which is not composited.
+    if (st.visibility !== 'hidden' && st.display !== 'contents') {
+      const frame = this.frameOf(layer, st, p);
+      if (frame) items.push({ color: null, owner: layer, label: `the ${frame} of ${name}` });
+    }
 
     for (const which of ['::before', '::after'] as const) {
       const pseudo = this.pseudoPaint(layer, st, which, p);
@@ -1949,9 +1988,13 @@ class TabMeasurement {
    * `::before` / `::after` background joins the backdrop. In normal flow a
    * pseudo-element is laid out beside the text, never under it, so only a
    * POSITIONED one can sit at the text's position. One whose box provably
-   * misses `p` contributes nothing; one with a negative `z-index` paints under
-   * its element's content, so it joins the backdrop; any other positioned
-   * pseudo there may paint over the text, and the measurement stops.
+   * misses `p`, or that paints nothing there, contributes nothing; so does a
+   * transparent one whose box the computed style does not pin down (a
+   * transform moves it), whose glyphs and frame are not known to reach `p`.
+   * One with a negative `z-index` paints under its element's content, so it
+   * joins the backdrop, its glyphs and its frame (a border, an inset
+   * box-shadow) as unreadable operations; any other positioned pseudo that
+   * paints there may paint over the text, and the measurement stops.
    */
   private pseudoPaint(
     layer: Element,
@@ -1970,7 +2013,10 @@ class TabMeasurement {
     }
     const bg = parseColor(ps.backgroundColor);
     const image = ps.backgroundImage !== 'none' && ps.backgroundImage !== '';
-    if (!image && bg && bg.a === 0) return null;
+    const glyphs = ps.content !== '""' && ps.content !== "''";
+    // A transparent one paints only its glyphs and its frame.
+    const clear = !image && bg !== null && bg.a === 0;
+    if (clear && !glyphs && !hasFrame(ps)) return null;
     const label = `${this.describe(layer)}${which}`;
     const position = ps.position;
     const offsetsZero = ['top', 'left', 'bottom', 'right'].every((side) => {
@@ -1985,6 +2031,13 @@ class TabMeasurement {
     }
     const box = this.pseudoBox(layer, ps);
     if (box && !pointIn(p, box)) return null;
+    // A transparent one whose box is not pinned down is taken to paint
+    // nothing here: read as lying anywhere, a rotated chevron's border would
+    // stop every text of its element. Where its box is known, its frame is
+    // read at `p`.
+    if (clear && !box) return null;
+    const frame = box ? frameAt(ps, insetByBorders(box, ps), 1, p) : null;
+    if (clear && !glyphs && !frame) return null;
     const z = ps.zIndex === 'auto' ? NaN : Number(ps.zIndex);
     if (box && Number.isFinite(z) && z < 0 && this.isStackingContext(layer, layerSt)) {
       const items: PaintItem[] = [];
@@ -1992,6 +2045,10 @@ class TabMeasurement {
       if (image)
         items.push({ color: null, owner: layer, label: `the background-image of ${label}` });
       if (!bg) items.push({ color: null, owner: layer, label });
+      if (frame) items.push({ color: null, owner: layer, label: `the ${frame} of ${label}` });
+      if (glyphs) {
+        items.push({ color: null, owner: layer, label: `the generated content of ${label}` });
+      }
       return items;
     }
     return new ColorUnmeasured({
