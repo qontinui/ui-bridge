@@ -504,14 +504,17 @@ function evalElementAbove(
         : az === undefined
           ? `'${aboveId}'`
           : `'${belowId}'`;
+    // No paint-order evidence at all: the fact the hit test reports when no
+    // sample shows both elements, so the same code, as vision-core answers it.
+    // An `occluded_by` naming a third element is no evidence about this pair.
     return unknown(
       a,
-      'input_missing',
-      `${tag}: CANNOT ANSWER — no ordering verdict was reached. Neither element carries an ` +
-        `\`occluded_by\` attribution, and \`z_index\` is missing on ${which}. Reported as ` +
-        '`unknown`, not as a failure: nothing was measured, so nothing is known — and not as a ' +
-        'pass either, because a vacuous pass would silently hide the very stacking bug this ' +
-        "assertion exists to catch. Note `z_index` is the producer's RESOLVED, GLOBAL paint " +
+      'hit_test_unmeasurable',
+      `${tag}: CANNOT ANSWER — no ordering verdict was reached. No \`occluded_by\` attribution ` +
+        `names either element as painting over the other, and \`z_index\` is missing on ${which}. ` +
+        'Reported as `unknown`, not as a failure: nothing was measured, so nothing is known — and ' +
+        'not as a pass either, because a vacuous pass would silently hide the very stacking bug ' +
+        "this assertion exists to catch. Note `z_index` is the producer's RESOLVED, GLOBAL paint " +
         'rank: a raw CSS `z-index` value is NOT a substitute and must not be projected in its place.'
     );
   }

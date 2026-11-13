@@ -3,8 +3,8 @@
   "kind": "git",
   "repo": "qontinui/qontinui-schemas",
   "path": "rust-vision-core/tests/fixtures/vision_assertions_conformance.json",
-  "ref": "13b6dfecf56a994f5c95243ac51db1d87eb7efb9",
-  "commit": "13b6dfecf56a994f5c95243ac51db1d87eb7efb9",
-  "sha256": "49883935204831c64d748116d65d62c213f8070f1b16022df652b85d597a91b4",
-  "cases": 81
+  "ref": "67398716a0b2bfabe9c0a6f0614cc4f72ad820e8",
+  "commit": "67398716a0b2bfabe9c0a6f0614cc4f72ad820e8",
+  "sha256": "4fe310f84c10bd5319d770be41ba2c152bb4a261b204667b0fdb46c6b545d73c",
+  "cases": 99
 }

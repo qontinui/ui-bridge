@@ -152,16 +152,58 @@
     {
       "id": "text-fits-both-arms-measured-passes",
       "kind": "text_fits_container",
+      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 200, "h": 24}, "text": "Save changes", "scroll_width_px": 120, "scroll_height_px": 18}]},
+      "assertion": {"type": "text_fits_container", "element": "label"},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "text-fits-content-exactly-filling-the-ceiled-box-passes",
+      "kind": "text_fits_container",
+      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 120, "h": 20}, "text": "Save changes", "scroll_width_px": 120, "scroll_height_px": 20}]},
+      "assertion": {"type": "text_fits_container", "element": "label"},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "text-fits-content-as-tall-as-the-ceiled-box-passes",
+      "kind": "text_fits_container",
       "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 200, "h": 20}, "text": "Save changes", "scroll_width_px": 120, "scroll_height_px": 20}]},
       "assertion": {"type": "text_fits_container", "element": "label"},
       "expected": {"outcome": "passed", "code": null}
     },
     {
-      "id": "text-fits-content-exactly-filling-the-box-passes",
+      "id": "text-fits-content-one-px-taller-than-the-ceiled-box-fails",
       "kind": "text_fits_container",
-      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 120, "h": 20}, "text": "Save changes", "scroll_width_px": 120, "scroll_height_px": 20}]},
+      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 200, "h": 20}, "text": "Save changes", "scroll_width_px": 120, "scroll_height_px": 21}]},
+      "assertion": {"type": "text_fits_container", "element": "label"},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "text-fits-content-one-px-wider-than-the-ceiled-box-fails",
+      "kind": "text_fits_container",
+      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 120, "h": 20}, "text": "Save changes", "scroll_width_px": 121, "scroll_height_px": 20}]},
+      "assertion": {"type": "text_fits_container", "element": "label"},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "text-fits-content-filling-the-ceiling-of-a-fractional-width-passes",
+      "kind": "text_fits_container",
+      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 119.4, "h": 20}, "text": "Save changes", "scroll_width_px": 120, "scroll_height_px": 20}]},
       "assertion": {"type": "text_fits_container", "element": "label"},
       "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "text-fits-content-filling-the-ceiling-of-a-fractional-height-passes",
+      "kind": "text_fits_container",
+      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 200, "h": 19.4}, "text": "Save changes", "scroll_width_px": 120, "scroll_height_px": 20}]},
+      "assertion": {"type": "text_fits_container", "element": "label"},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "text-fits-content-one-px-wider-than-the-ceiling-of-a-fractional-width-fails",
+      "kind": "text_fits_container",
+      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 119.4, "h": 20}, "text": "Save changes", "scroll_width_px": 121, "scroll_height_px": 20}]},
+      "assertion": {"type": "text_fits_container", "element": "label"},
+      "expected": {"outcome": "failed", "code": null}
     },
     {
       "id": "text-fits-horizontal-overflow-fails",
@@ -211,6 +253,13 @@
       "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 200, "h": 19}, "text": "Save changes", "font_size_px": 13, "scroll_width_px": 120}]},
       "assertion": {"type": "text_fits_container", "element": "label"},
       "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "text-fits-vertical-estimate-against-the-ceiling-of-a-fractional-height-passes",
+      "kind": "text_fits_container",
+      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 200, "h": 23.4}, "text": "Save changes", "font_size_px": 16, "scroll_width_px": 120}]},
+      "assertion": {"type": "text_fits_container", "element": "label"},
+      "expected": {"outcome": "passed", "code": null}
     },
     {
       "id": "text-fits-unmeasured-horizontal-arm-is-unknown",
@@ -271,7 +320,7 @@
     {
       "id": "text-fits-element-without-text-is-unknown",
       "kind": "text_fits_container",
-      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 200, "h": 20}}]},
+      "snapshot": {"elements": [{"id": "label", "bbox": {"x": 0, "y": 0, "w": 200, "h": 20}, "scroll_width_px": 120, "scroll_height_px": 20}]},
       "assertion": {"type": "text_fits_container", "element": "label"},
       "expected": {"outcome": "unknown", "code": "input_missing"}
     },
@@ -304,6 +353,66 @@
       ]},
       "assertion": {"type": "no_overlap", "elements": ["a", "b"]},
       "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "no-overlap-adjacent-flex-thirds-rounded-to-the-nearest-pixel-pass",
+      "kind": "no_overlap",
+      "snapshot": {"elements": [
+        {"id": "a", "bbox": {"x": 33, "y": 0, "w": 34, "h": 20}},
+        {"id": "b", "bbox": {"x": 67, "y": 0, "w": 33, "h": 20}}
+      ]},
+      "assertion": {"type": "no_overlap", "elements": ["a", "b"]},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "no-overlap-adjacent-fractional-flex-thirds-pass",
+      "kind": "no_overlap",
+      "snapshot": {"elements": [
+        {"id": "a", "bbox": {"x": 33.333333333333336, "y": 0, "w": 33.333333333333336, "h": 20}},
+        {"id": "b", "bbox": {"x": 66.66666666666667, "y": 0, "w": 33.333333333333336, "h": 20}}
+      ]},
+      "assertion": {"type": "no_overlap", "elements": ["a", "b"]},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "no-overlap-fractional-sub-pixel-overlap-snapping-to-touching-edges-passes",
+      "kind": "no_overlap",
+      "snapshot": {"elements": [
+        {"id": "a", "bbox": {"x": 0, "y": 0, "w": 50.3, "h": 20}},
+        {"id": "b", "bbox": {"x": 50.2, "y": 0, "w": 50, "h": 20}}
+      ]},
+      "assertion": {"type": "no_overlap", "elements": ["a", "b"]},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "no-overlap-fractional-shared-edge-stays-shared-on-the-grid-passes",
+      "kind": "no_overlap",
+      "snapshot": {"elements": [
+        {"id": "a", "bbox": {"x": 0.6, "y": 0, "w": 10.6, "h": 20}},
+        {"id": "b", "bbox": {"x": 11.2, "y": 0, "w": 5, "h": 20}}
+      ]},
+      "assertion": {"type": "no_overlap", "elements": ["a", "b"]},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "no-overlap-fractional-overlap-surviving-the-snap-fails",
+      "kind": "no_overlap",
+      "snapshot": {"elements": [
+        {"id": "a", "bbox": {"x": 0, "y": 0, "w": 50.6, "h": 20}},
+        {"id": "b", "bbox": {"x": 50.2, "y": 0, "w": 50, "h": 20}}
+      ]},
+      "assertion": {"type": "no_overlap", "elements": ["a", "b"]},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "no-overlap-fractional-negative-tie-rounding-toward-positive-infinity-fails",
+      "kind": "no_overlap",
+      "snapshot": {"elements": [
+        {"id": "a", "bbox": {"x": -20, "y": 0, "w": 8.5, "h": 20}},
+        {"id": "b", "bbox": {"x": -11.6, "y": 0, "w": 5, "h": 20}}
+      ]},
+      "assertion": {"type": "no_overlap", "elements": ["a", "b"]},
+      "expected": {"outcome": "failed", "code": null}
     },
     {
       "id": "no-overlap-negative-origin-intersecting-fails",
@@ -450,7 +559,7 @@
         {"id": "panel", "bbox": {"x": 100, "y": 50, "w": 400, "h": 400}}
       ]},
       "assertion": {"type": "element_above", "elements": ["menu", "panel"]},
-      "expected": {"outcome": "unknown", "code": "input_missing"}
+      "expected": {"outcome": "unknown", "code": "hit_test_unmeasurable"}
     },
     {
       "id": "element-above-one-paint-rank-missing-is-unknown",
@@ -460,7 +569,27 @@
         {"id": "panel", "bbox": {"x": 100, "y": 50, "w": 400, "h": 400}}
       ]},
       "assertion": {"type": "element_above", "elements": ["menu", "panel"]},
-      "expected": {"outcome": "unknown", "code": "input_missing"}
+      "expected": {"outcome": "unknown", "code": "hit_test_unmeasurable"}
+    },
+    {
+      "id": "element-above-attribution-to-a-third-element-without-paint-ranks-is-unknown",
+      "kind": "element_above",
+      "snapshot": {"elements": [
+        {"id": "menu", "bbox": {"x": 0, "y": 0, "w": 200, "h": 300}},
+        {"id": "panel", "bbox": {"x": 100, "y": 50, "w": 400, "h": 400}, "occluded_by": "toast"}
+      ]},
+      "assertion": {"type": "element_above", "elements": ["menu", "panel"]},
+      "expected": {"outcome": "unknown", "code": "hit_test_unmeasurable"}
+    },
+    {
+      "id": "element-above-without-geometry-or-paint-order-is-unknown-when-overlap-is-not-required",
+      "kind": "element_above",
+      "snapshot": {"elements": [
+        {"id": "menu"},
+        {"id": "panel"}
+      ]},
+      "assertion": {"type": "element_above", "elements": ["menu", "panel"], "require_overlap": false},
+      "expected": {"outcome": "unknown", "code": "hit_test_unmeasurable"}
     },
     {
       "id": "element-above-disjoint-boxes-fail-when-overlap-is-required",
@@ -478,6 +607,16 @@
       "snapshot": {"elements": [
         {"id": "menu", "bbox": {"x": 0, "y": 0, "w": 100, "h": 100}, "z_index": 2},
         {"id": "panel", "bbox": {"x": 100, "y": 0, "w": 100, "h": 100}, "z_index": 1}
+      ]},
+      "assertion": {"type": "element_above", "elements": ["menu", "panel"]},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "element-above-fractional-sub-pixel-overlap-snapping-to-touching-edges-fails",
+      "kind": "element_above",
+      "snapshot": {"elements": [
+        {"id": "menu", "bbox": {"x": 0, "y": 0, "w": 50.3, "h": 20}, "z_index": 2},
+        {"id": "panel", "bbox": {"x": 50.2, "y": 0, "w": 50, "h": 20}, "z_index": 1}
       ]},
       "assertion": {"type": "element_above", "elements": ["menu", "panel"]},
       "expected": {"outcome": "failed", "code": null}
@@ -546,6 +685,26 @@
       "snapshot": {"elements": [
         {"id": "card", "bbox": {"x": 100, "y": 100, "w": 300, "h": 200}},
         {"id": "badge", "bbox": {"x": 380, "y": 90, "w": 60, "h": 24}, "parent_id": "card"}
+      ]},
+      "assertion": {"type": "no_clipping"},
+      "expected": {"outcome": "failed", "code": null}
+    },
+    {
+      "id": "no-clipping-fractional-sub-pixel-overhang-snapping-inside-its-parent-passes",
+      "kind": "no_clipping",
+      "snapshot": {"elements": [
+        {"id": "card", "bbox": {"x": 0, "y": 0, "w": 100, "h": 50}},
+        {"id": "title", "bbox": {"x": 10.4, "y": 10, "w": 89.8, "h": 20}, "parent_id": "card"}
+      ]},
+      "assertion": {"type": "no_clipping"},
+      "expected": {"outcome": "passed", "code": null}
+    },
+    {
+      "id": "no-clipping-fractional-overhang-surviving-the-snap-fails",
+      "kind": "no_clipping",
+      "snapshot": {"elements": [
+        {"id": "card", "bbox": {"x": 0, "y": 0, "w": 100, "h": 50}},
+        {"id": "title", "bbox": {"x": 10.4, "y": 10, "w": 90.2, "h": 20}, "parent_id": "card"}
       ]},
       "assertion": {"type": "no_clipping"},
       "expected": {"outcome": "failed", "code": null}

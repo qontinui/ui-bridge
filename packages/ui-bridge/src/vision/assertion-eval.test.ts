@@ -84,6 +84,34 @@ describe('element_above — the tab hit test', () => {
     expect(evaluate(assertion, disjoint).outcome).toBe('failed');
   });
 
+  it('is unknown{hit_test_unmeasurable} with no paint-order evidence at all, as vision-core answers it', () => {
+    // No hit test, no attribution about the pair (one names a third element),
+    // and a paint rank on one operand only.
+    const r = evaluate(assertion, {
+      elements: [
+        { ...pair[0], occludedBy: 'toast' },
+        { ...pair[1], zIndex: 4 },
+      ],
+    });
+    expect(r).toMatchObject({ outcome: 'unknown', code: 'hit_test_unmeasurable', passed: false });
+    expect(r.detail).toContain(
+      'No `occluded_by` attribution names either element as painting over the other, and ' +
+        "`z_index` is missing on 'menu'."
+    );
+    // Without geometry either, when the overlap is not required.
+    const bare = evaluate(
+      { ...assertion, require_overlap: false },
+      { elements: [{ id: 'menu' }, { id: 'panel' }] }
+    );
+    expect(bare).toMatchObject({ outcome: 'unknown', code: 'hit_test_unmeasurable' });
+    expect(bare.detail).toContain("`z_index` is missing on both 'menu' and 'panel'");
+    // A missing operand stays input_missing.
+    expect(evaluate(assertion, { elements: [pair[0]] })).toMatchObject({
+      outcome: 'unknown',
+      code: 'input_missing',
+    });
+  });
+
   it('a producer attribution outranks the hit test, as it outranks z_index', () => {
     const attributed: VisionEvalInput = {
       elements: [pair[0], { ...pair[1], occludedBy: 'menu' }],
