@@ -268,7 +268,7 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     await page.close();
   }, 60_000);
 
-  it('text_fits_container: extents are compared in the transformed box, and redacted text is never echoed', async () => {
+  it('text_fits_container: layout sizes under a transform, and redacted text is never echoed', async () => {
     const page = await openPage(`
       <div style="transform:scale(2);transform-origin:0 0;width:100px">
         <div data-id="up" style="width:100px;white-space:nowrap;overflow:hidden"><span style="display:inline-block;width:150px">x</span></div>
@@ -277,18 +277,34 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
         <div data-id="down" style="width:100px;white-space:nowrap;overflow:hidden">Short</div>
       </div>
       <div data-id="row" style="width:60px;white-space:nowrap;overflow:hidden">Order total: <span data-bridge-redact="true">4111 1111 1111 1111</span> card</div>
+      <div style="transform:scale(0.4);transform-origin:0 0;width:100px">
+        <div data-id="tiny" style="width:100px;white-space:nowrap;overflow:hidden"><span style="display:inline-block;width:101px">x</span></div>
+        <div data-id="tinyfit" style="width:100px;white-space:nowrap;overflow:hidden"><span style="display:inline-block;width:100px">x</span></div>
+        <p style="width:100px;white-space:nowrap;overflow:hidden;margin:0"><span data-id="tinyinl"><span style="display:inline-block;width:101px">x</span></span></p>
+      </div>
     `);
     const res = await assertOn(
       page,
-      ['up', 'down', 'row'].map((element) => ({ type: 'text_fits_container', element }))
+      ['up', 'down', 'row', 'tiny', 'tinyfit', 'tinyinl'].map((element) => ({
+        type: 'text_fits_container',
+        element,
+      }))
     );
     expect(verdicts(res)).toEqual([
       ['failed', null], // 150px of content in a 100px box, drawn at scale(2)
       ['passed', null], // fitting text drawn at scale(0.5)
       ['failed', null],
+      // One pixel past a 100px box drawn at scale(0.4) is 0.4px on the page,
+      // which compared in the drawn box would round away: both sides are
+      // layout pixels, for a block and for an inline element's fragments.
+      ['failed', null],
+      ['passed', null], // exactly 100px of content
+      ['failed', null],
     ]);
     expect(res.results[2].detail).not.toContain('4111');
     expect(res.results[2].detail).toContain('[REDACTED]');
+    expect(res.results[3].detail).toContain('content is 101px wide but the box is only 100px');
+    expect(res.results[5].detail).toContain('content is 101px wide but the box is only 100px');
     await page.close();
   }, 60_000);
 
@@ -342,7 +358,7 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     await page.close();
   }, 60_000);
 
-  it('text_fits_container: the nearest block box, borders and scrollbars excluded', async () => {
+  it('text_fits_container: a block-level element’s own box, borders and scrollbars excluded', async () => {
     const page = await openPage(`
       <div data-id="fits" style="width:300px">Short</div>
       <div data-id="trunc" style="width:60px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">A very long label that cannot fit</div>
@@ -366,7 +382,7 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       // Overflows its 100px client box by 6px — inside its 124px border box,
       // so comparing the raw scrollWidth with the border box would pass it.
       ['failed', null],
-      ['failed', null], // an inline span, measured on its block box
+      ['failed', null], // an inline span whose own fragments overflow its block
       ['unknown', 'input_missing'], // display: none: no geometry
       ['unknown', 'input_missing'], // no text: nothing to fit
       ['unknown', 'input_missing'], // not registered
@@ -378,6 +394,55 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       'content is 130px wide but the box is only 124px (6px hidden)'
     );
     expect(res.results[5].detail).toContain('carries no geometry (bbox)');
+    await page.close();
+  }, 60_000);
+
+  it('text_fits_container: an inline element by its own fragments, and fractional boxes', async () => {
+    const page = await openPage(`
+      <p style="width:80px;white-space:nowrap;overflow:hidden"><span data-id="shortinl">Hi</span> <span>a long sibling that overflows the line</span></p>
+      <p style="width:120px;height:20px;line-height:20px;overflow:hidden"><span data-id="firstline">First</span> then a sibling that wraps onto lines the box hides</p>
+      <p style="width:120px;height:20px;line-height:20px;overflow:hidden">Lead text that wraps <span data-id="wrapped">onto a hidden line</span></p>
+      <p style="width:300px"><span data-id="zeroinl" style="font-size:0">gone</span> visible sibling text</p>
+      <p style="width:300px"><b>Lead <span data-id="zeronested" style="font-size:0">gone</span></b></p>
+      <p style="width:200px;font-size:16px;line-height:10px;padding:6px 0;overflow:hidden"><span data-id="padded">Tight lines</span></p>
+      <div data-id="fractional" style="width:100.4px;white-space:nowrap;overflow:hidden"><span style="display:inline-block;width:100.9px">x</span></div>
+      <div data-id="fractionalover" style="width:100.4px;white-space:nowrap;overflow:hidden"><span style="display:inline-block;width:101.6px">x</span></div>
+    `);
+    const res = await assertOn(
+      page,
+      [
+        'shortinl',
+        'firstline',
+        'wrapped',
+        'zeroinl',
+        'zeronested',
+        'padded',
+        'fractional',
+        'fractionalover',
+      ].map((element) => ({ type: 'text_fits_container', element }))
+    );
+    expect(verdicts(res)).toEqual([
+      ['passed', null], // the long sibling overflows the line, this label does not
+      ['passed', null], // the block overflows vertically, but on later lines
+      ['failed', null], // this span's text is on the lines the box hides
+      ['unknown', 'input_missing'], // no fragment of its own, and the block holds more
+      ['unknown', 'input_missing'], // the same, with the other text inside its wrapper
+      // Its 16px font's content area reaches 3-4px past the 10px line, above
+      // and below, into padding the block does not overflow: the block cuts
+      // nothing, as measuring the <p> itself would also say.
+      ['passed', null],
+      // The 100.4px box reaches the evaluator unrounded and is 101px to the
+      // fit, as the DOM's integer scrollWidth of 100.9px of content is.
+      // offsetWidth would have handed it over as 100px, already rounded.
+      ['passed', null],
+      ['failed', null], // 101.6px of content is a scrollWidth of 102px
+    ]);
+    expect(res.results[2].detail).toContain('text overflows vertically');
+    expect(res.results[3].detail).toContain("inline element 'zeroinl' exposes no box of its own");
+    expect(res.results[4].detail).toContain(
+      "inline element 'zeronested' exposes no box of its own"
+    );
+    expect(res.results[7].detail).toContain('content is 102px wide but the box is only 101px');
     await page.close();
   }, 60_000);
 

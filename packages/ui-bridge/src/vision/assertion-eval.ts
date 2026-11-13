@@ -24,8 +24,9 @@
  * measure that a snapshot cannot carry, each of which a vision-core snapshot
  * maps onto exactly:
  *  - `fitBox` — the box `text_fits_container` compares the scroll extents
- *    against. The tab measures the nearest block box's client (padding) box;
- *    a snapshot has only `bbox`, which the adapter uses.
+ *    against. The tab measures it in layout pixels: a block-level element's
+ *    border box, or the content box of the block an inline element's text
+ *    lays out in; a snapshot has only `bbox`, which the adapter uses.
  *  - `clip` — the clip `no_clipping` checks an element against. The tab
  *    measures the padding box of the nearest ancestor that clips each axis; a
  *    snapshot has only `parent_id`, whose bbox the adapter uses, as vision-core
@@ -147,17 +148,18 @@ export interface MeasuredElement {
   /** vision-core `text_overflow`; sharpens a finding's wording only. */
   textOverflow?: string;
   /**
-   * The box the scroll extents are compared against: the border box of the
-   * box the text lays out in. The evaluator rounds its width and height UP
-   * (vision-core `ElementRect::ceil_size`), so a producer hands it over
-   * unrounded. The tab measures the nearest block box, which for an inline
-   * element is an ancestor, so it cannot be the element's own `bbox`;
-   * absent, `bbox` is used, as vision-core compares a snapshot's
-   * `scroll_width_px` with `bbox.w`. Kept apart from `bbox` because the two
-   * round differently: up for a fit (an integer extent never fails against
-   * the box's own fractional pixel), and to the nearest pixel for geometry
-   * (rounding up would inflate every box, so adjacent fractional boxes would
-   * read as overlapping).
+   * The box the scroll extents are compared against, in the same pixels as
+   * the extents. The evaluator rounds its width and height UP (vision-core
+   * `ElementRect::ceil_size`), so a producer hands it over unrounded. The tab
+   * measures it in LAYOUT pixels, which a CSS transform does not change: a
+   * block-level element's own border box, and for an inline element the
+   * content box of the block its text lays out in. So it cannot be the
+   * element's `bbox`, which is the transformed box on the page; absent,
+   * `bbox` is used, as vision-core compares a snapshot's `scroll_width_px`
+   * with `bbox.w`. Kept apart from `bbox` for the rounding too: up for a fit
+   * (an integer extent never fails against the box's own fractional pixel),
+   * and to the nearest pixel for geometry (rounding up would inflate every
+   * box, so adjacent fractional boxes would read as overlapping).
    */
   fitBox?: { w: number; h: number };
   /**

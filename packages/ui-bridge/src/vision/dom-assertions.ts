@@ -35,14 +35,26 @@
  *   is not found. A translucent colour or an opacity group above the first
  *   opaque layer is composited exactly. With no opaque layer, the base is
  *   the `Canvas` colour under the root's `color-scheme`.
- * - `text_fits_container` — the nearest block box's `scrollWidth` /
+ *
+ * ROUNDING (plan 2026-11-09 Phase 0's contract): every box below is handed to
+ * the evaluator UNROUNDED, and the evaluator rounds it as its kind does —
+ * `text_fits_container`'s comparison box UP, the geometry kinds' boxes and
+ * clips edge by edge to the NEAREST pixel. Nothing here rounds a box.
+ *
+ * - `text_fits_container` — a block-level element's `scrollWidth` /
  *   `scrollHeight`, with its borders and scrollbars added back, against its
- *   border box, handed over unrounded; the evaluator rounds the box's size
- *   UP (vision-core `ElementRect::ceil_size`), and strictly greater fails. No
- *   text is `unknown{input_missing}`.
- * - `no_overlap` — border boxes (`getBoundingClientRect`), handed over
- *   unrounded; the evaluator rounds each edge to the nearest pixel and never
- *   up, or adjacent fractional boxes would read as overlapping.
+ *   border box (vision-core's comparison); strictly greater fails. Both sides
+ *   are LAYOUT sizes (the used `width` / `height`, `scroll*`, `client*`), so a
+ *   CSS transform neither reads as overflow nor rounds one away. An inline
+ *   element is measured by its own line fragments (`getClientRects`) against
+ *   the content box of the block it lays out in, brought back to layout
+ *   pixels by the block's scale, so a sibling's overflow is not its own; when
+ *   it exposes no fragment, the block's extents stand in only if it is all
+ *   the block holds, else `unknown{input_missing}`. No text is
+ *   `unknown{input_missing}`.
+ * - `no_overlap` — border boxes (`getBoundingClientRect`), each edge rounded
+ *   to the nearest pixel by the evaluator and never up, or adjacent
+ *   fractional boxes would read as overlapping.
  * - `element_above` — paint order from `document.elementsFromPoint` at sample
  *   points inside both the pair's intersection and the viewport. The
  *   evaluator never scrolls; no sample showing both is
@@ -683,6 +695,11 @@ class TabMeasurement {
     const fontSize = pxValue(this.style(el).fontSize);
     if (Number.isFinite(fontSize)) record.fontSizePx = fontSize;
     if (!record.bbox) return;
+    const display = this.style(el).display;
+    if (display !== 'inline' && display !== 'inline flow') {
+      this.fitOwnBox(el, record);
+      return;
+    }
     const block = this.nearestBlockBox(el);
     if (!block) {
       record.unmeasured = {
@@ -696,30 +713,38 @@ class TabMeasurement {
       };
       return;
     }
-    // vision-core compares the scroll extents with the BORDER box, strictly.
-    // The box goes over as the fractional `getBoundingClientRect` size: the
-    // evaluator rounds it UP (vision-core `ElementRect::ceil_size`), so
-    // integer extents never fail against a fractional box. `scrollWidth` /
-    // `scrollHeight` measure only the padding box, excluding borders and
-    // scrollbars, so those are added back (`offset*` - `client*`): without
-    // them an overflow narrower than the borders plus a scrollbar would pass.
-    // The block box's own extents are used, so an inline element is measured
-    // where its text actually wraps or clips. Scroll extents are LAYOUT
-    // pixels, while the rect is transformed: under a scaled ancestor they are
-    // scaled into the rect's space (as `clipBox` does), else a scale(2)
-    // overflow would pass and a scale(0.5) fit would fail.
-    const r = block.getBoundingClientRect();
-    const html = block as HTMLElement;
-    const ow = html.offsetWidth ?? block.clientWidth;
-    const oh = html.offsetHeight ?? block.clientHeight;
-    const sx = ow > 0 ? r.width / ow : 1;
-    const sy = oh > 0 ? r.height / oh : 1;
-    const frameX = ow - block.clientWidth;
-    const frameY = oh - block.clientHeight;
-    record.scrollWidthPx = Math.round((block.scrollWidth + Math.max(0, frameX)) * sx);
-    record.scrollHeightPx = Math.round((block.scrollHeight + Math.max(0, frameY)) * sy);
-    record.fitBox = { w: r.width, h: r.height };
-    const overflow = this.style(block).textOverflow;
+    this.fitInlineFragments(id, el, block, record);
+  }
+
+  /**
+   * A block-level element is its own fit box. vision-core compares the scroll
+   * extents with the BORDER box, strictly, rounded UP — and the evaluator does
+   * that rounding (plan 2026-11-09 Phase 0's contract), so the box is handed
+   * over unrounded: {@link layoutSizes}, fractional, where `offsetWidth` would
+   * already be the browser's integer rounding of it. Both sides are LAYOUT
+   * sizes, which a CSS transform does not change: `getBoundingClientRect` is
+   * the transformed box, and scaling the integer extents into it would round
+   * a one-pixel overflow away under a scale below 0.5. The extents are the
+   * DOM's integer `scrollWidth` / `scrollHeight`, which measure only the
+   * padding box, so the borders and scrollbars (`offset*` - `client*`) are
+   * added back: without them an overflow narrower than the borders plus a
+   * scrollbar would pass.
+   */
+  private fitOwnBox(el: Element, record: MeasuredElement): void {
+    const html = el as HTMLElement;
+    if (typeof html.offsetWidth === 'number' && typeof html.offsetHeight === 'number') {
+      record.fitBox = this.layoutSizes(el)?.border ?? { w: html.offsetWidth, h: html.offsetHeight };
+      record.scrollWidthPx = el.scrollWidth + Math.max(0, html.offsetWidth - el.clientWidth);
+      record.scrollHeightPx = el.scrollHeight + Math.max(0, html.offsetHeight - el.clientHeight);
+    } else {
+      // No layout sizes (an SVG element): its own box, untransformed only if
+      // it is not transformed — the best this DOM exposes.
+      const r = el.getBoundingClientRect();
+      record.fitBox = { w: r.width, h: r.height };
+      record.scrollWidthPx = el.scrollWidth;
+      record.scrollHeightPx = el.scrollHeight;
+    }
+    const overflow = this.style(el).textOverflow;
     if (overflow) record.textOverflow = overflow;
   }
 
@@ -755,6 +780,132 @@ class TabMeasurement {
       border,
       padding: { w: border.w - framesX - barX, h: border.h - framesY - barY },
     };
+  }
+
+  /**
+   * An inline element's text is measured by its OWN line fragments
+   * (`getClientRects`) against the content box of the block it lays out in.
+   * The block's scroll extents alone would answer for every sibling in it: a
+   * short label beside a long one would read as overflowing. They still decide
+   * that an axis does NOT overflow; where it does, the fragments say whose
+   * text overflows. Both sides are in LAYOUT pixels, as the block-level arm
+   * measures ({@link fitOwnBox}): the fit box is the content box's layout
+   * size, unrounded (the evaluator rounds it up), and how far the fragments
+   * reach past it — a distance between viewport rectangles — is divided by
+   * the block's scale. In viewport pixels a one-pixel overflow under
+   * `scale(0.4)` would round away. The extent is rounded to an integer as the
+   * DOM's scroll extents are, so sub-pixel layout noise is not overflow.
+   */
+  private fitInlineFragments(
+    id: string,
+    el: Element,
+    block: Element,
+    record: MeasuredElement
+  ): void {
+    const fragments = Array.from(el.getClientRects()).filter((r) => r.width > 0 || r.height > 0);
+    const content = this.contentBox(block);
+    if (fragments.length === 0 || !content) {
+      // Its own boxes cannot be compared. The block's extents stand in only
+      // when this element is all the block holds.
+      if (this.hasOtherInFlowChildren(block, el)) {
+        record.unmeasured = {
+          ...record.unmeasured,
+          textFit: {
+            code: 'input_missing',
+            detail:
+              `inline element '${id}' exposes no box of its own to compare, and the block it ` +
+              `lays out in (${this.describe(block)}) holds other content, so the block's ` +
+              'overflow does not say whether this text fits; it was not checked',
+          },
+        };
+        return;
+      }
+      this.fitOwnBox(block, record);
+      return;
+    }
+    const left = Math.min(...fragments.map((r) => r.left));
+    const right = Math.max(...fragments.map((r) => r.right));
+    const top = Math.min(...fragments.map((r) => r.top));
+    const bottom = Math.max(...fragments.map((r) => r.bottom));
+    // A block that does not overflow an axis cuts no line on it, whatever
+    // its fragments' sub-pixel and font-metric rounding say; where it does,
+    // the fragments say whether THIS element's text is what overflows.
+    const overX =
+      block.scrollWidth > block.clientWidth
+        ? Math.max(0, right - content.right, content.left - left) / content.sx
+        : 0;
+    const overY =
+      block.scrollHeight > block.clientHeight
+        ? Math.max(0, bottom - content.bottom, content.top - top) / content.sy
+        : 0;
+    record.fitBox = { w: content.w, h: content.h };
+    record.scrollWidthPx = Math.round(content.w + overX);
+    record.scrollHeightPx = Math.round(content.h + overY);
+    const overflow = this.style(block).textOverflow;
+    if (overflow) record.textOverflow = overflow;
+  }
+
+  /**
+   * The content box of `el` — its border box less borders, padding and
+   * scrollbars — in viewport pixels (`left` … `bottom`, scaled like the box
+   * when it is transformed), its size in LAYOUT pixels (`w`, `h`, unrounded)
+   * and that scale (`sx`, `sy`: viewport pixels per layout pixel). The layout
+   * size is read, never divided back out of the viewport box, so a whole
+   * width stays whole for the evaluator's ceiling. Null when the box has no
+   * layout size to scale by.
+   */
+  private contentBox(el: Element): {
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+    w: number;
+    h: number;
+    sx: number;
+    sy: number;
+  } | null {
+    const html = el as HTMLElement;
+    if (typeof html.offsetWidth !== 'number' || html.offsetWidth <= 0 || html.offsetHeight <= 0) {
+      return null;
+    }
+    const sizes = this.layoutSizes(el);
+    const border = sizes?.border ?? { w: html.offsetWidth, h: html.offsetHeight };
+    const padding = sizes?.padding ?? { w: el.clientWidth, h: el.clientHeight };
+    if (!(border.w > 0) || !(border.h > 0)) return null;
+    const r = el.getBoundingClientRect();
+    const st = this.style(el);
+    const sx = r.width / border.w;
+    const sy = r.height / border.h;
+    if (!(sx > 0) || !(sy > 0)) return null;
+    const px = (v: string): number => pxValue(v) || 0;
+    const w = Math.max(0, padding.w - px(st.paddingLeft) - px(st.paddingRight));
+    const h = Math.max(0, padding.h - px(st.paddingTop) - px(st.paddingBottom));
+    const left = r.left + (px(st.borderLeftWidth) + px(st.paddingLeft)) * sx;
+    const top = r.top + (px(st.borderTopWidth) + px(st.paddingTop)) * sy;
+    return { left, top, right: left + w * sx, bottom: top + h * sy, w, h, sx, sy };
+  }
+
+  /**
+   * Does `block` lay out anything besides `el`: another element in flow, or
+   * text? A wrapper that holds `el` is looked into, so text beside `el`
+   * inside it counts too.
+   */
+  private hasOtherInFlowChildren(block: Element, el: Element): boolean {
+    for (const child of Array.from(block.childNodes)) {
+      if (child === el) continue;
+      if (child.nodeType === 3) {
+        if (/\S/.test(child.nodeValue ?? '')) return true;
+        continue;
+      }
+      if (child.nodeType !== 1) continue;
+      const st = this.style(child as Element);
+      if (st.display === 'none' || st.position === 'absolute' || st.position === 'fixed') {
+        continue;
+      }
+      if (!containsComposed(child as Element, el)) return true;
+      if (this.hasOtherInFlowChildren(child as Element, el)) return true;
+    }
+    return false;
   }
 
   /**
