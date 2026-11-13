@@ -1049,14 +1049,18 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     await unmeasured.close();
   }, 60_000);
 
-  it('no_clipping: a right-to-left scroll container with its scrollbar on the left', async () => {
+  it('no_clipping: a scrollbar or a reserved gutter on the left or the top', async () => {
     // Playwright's Chromium hides scrollbars, so every other case here lays
     // out without one. A user's tab draws them, and under direction: rtl
     // Chromium draws the vertical one on the LEFT, where it pushes the
     // padding box right by its width. The right edge is the one this
     // container scrolls from, so a badge flush with it fits and one 5px past
     // it is cut off at every scroll position. Left to right, the scrollbar
-    // is on the right, and a badge flush with the left edge fits.
+    // is on the right, and a badge flush with the left edge fits. Under
+    // scrollbar-gutter: stable both-edges a gutter as wide is reserved on
+    // the left too, and clientLeft counts that one alone: a badge flush with
+    // it fits, one 5px past it is cut off. In a vertical writing mode the
+    // gutters are above and below, and clientTop counts the top one.
     const shown = await chromium.launch({ ignoreDefaultArgs: ['--hide-scrollbars'] });
     try {
       const page = await shown.newPage({ viewport: { width: 800, height: 600 } });
@@ -1073,35 +1077,64 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
               <span data-id="flushleft" style="position:absolute;left:0;top:0;width:20px;height:10px"></span>
             </div>
           </div>
+          <div data-id="gutters" style="overflow-y:auto;scrollbar-gutter:stable both-edges;width:200px;height:100px">
+            <div style="position:relative;height:300px">
+              <span data-id="guttered" style="position:absolute;left:0;top:0;width:20px;height:10px"></span>
+              <span data-id="pastgutter" style="position:absolute;left:-5px;top:20px;width:20px;height:10px"></span>
+            </div>
+          </div>
+          <div data-id="guttersv" style="writing-mode:vertical-lr;overflow:auto;scrollbar-gutter:stable both-edges;width:200px;height:100px">
+            <div style="position:relative;width:400px;height:100%">
+              <span data-id="gutteredtop" style="position:absolute;left:0;top:0;width:10px;height:10px"></span>
+            </div>
+          </div>
         </body></html>`
       );
       await page.addScriptTag({ content: bundle });
       // The scrollbars are drawn: on the left of the first container (with
       // no border, its clientLeft is the scrollbar), on the right of the
-      // second.
+      // second; the third reserves a gutter on both sides, the fourth above
+      // and below.
       const bars = await page.evaluate(() =>
-        ['rtlv', 'ltrv'].map((id) => {
+        ['rtlv', 'ltrv', 'gutters', 'guttersv'].map((id) => {
           const el = document.querySelector(`[data-id="${id}"]`) as HTMLElement;
-          return { left: el.clientLeft, width: el.offsetWidth - el.clientWidth };
+          return {
+            left: el.clientLeft,
+            top: el.clientTop,
+            width: el.offsetWidth - el.clientWidth,
+            height: el.offsetHeight - el.clientHeight,
+          };
         })
       );
-      expect(bars[0].width).toBeGreaterThan(0);
+      const bar = bars[0].width;
+      expect(bar).toBeGreaterThan(0);
       expect(bars).toEqual([
-        { left: bars[0].width, width: bars[0].width },
-        { left: 0, width: bars[0].width },
+        { left: bar, top: 0, width: bar, height: 0 },
+        { left: 0, top: 0, width: bar, height: 0 },
+        { left: bar, top: 0, width: 2 * bar, height: 0 },
+        { left: 0, top: bar, width: 0, height: 2 * bar },
       ]);
       const res = await assertOn(page, [
         { type: 'no_clipping', region: { x: 0, y: 8, w: 800, h: 10 } },
         { type: 'no_clipping', region: { x: 0, y: 28, w: 800, h: 10 } },
         { type: 'no_clipping', region: { x: 0, y: 108, w: 800, h: 10 } },
+        { type: 'no_clipping', region: { x: 0, y: 208, w: 800, h: 10 } },
+        { type: 'no_clipping', region: { x: 0, y: 228, w: 800, h: 10 } },
+        { type: 'no_clipping', region: { x: 0, y: 308 + bar, w: 800, h: 10 } },
       ]);
       expect(verdicts(res)).toEqual([
+        ['passed', null],
+        ['failed', null],
+        ['passed', null],
         ['passed', null],
         ['failed', null],
         ['passed', null],
       ]);
       expect(res.results[1].detail).toContain(
         "element 'past' extends past the right edge of the scrollable area of 'rtlv'"
+      );
+      expect(res.results[4].detail).toContain(
+        "element 'pastgutter' extends past the left edge of the scrollable area of 'gutters'"
       );
     } finally {
       await shown.close();

@@ -1117,7 +1117,9 @@ class TabMeasurement {
    * and then the padding box starts past it. `clientLeft` (`clientTop`)
    * counts such a scrollbar with the border, so it says which side the
    * scrollbar is on. Its width is the border box less the borders and the
-   * padding box.
+   * padding box, but no more than `clientLeft` counts past the border:
+   * under `scrollbar-gutter: stable both-edges` a gutter as wide is
+   * reserved on the other side too.
    */
   private clipBox(el: Element, st: CSSStyleDeclaration): PaddingBox {
     const r = el.getBoundingClientRect();
@@ -1133,8 +1135,10 @@ class TabMeasurement {
     const bt = pxValue(st.borderTopWidth) || 0;
     const br = pxValue(st.borderRightWidth) || 0;
     const bb = pxValue(st.borderBottomWidth) || 0;
-    const barLeft = el.clientLeft - bl >= 1 ? Math.max(0, ow - pw - bl - br) : 0;
-    const barTop = el.clientTop - bt >= 1 ? Math.max(0, oh - ph - bt - bb) : 0;
+    const barLeft =
+      el.clientLeft - bl >= 1 ? Math.max(0, Math.min(el.clientLeft - bl, ow - pw - bl - br)) : 0;
+    const barTop =
+      el.clientTop - bt >= 1 ? Math.max(0, Math.min(el.clientTop - bt, oh - ph - bt - bb)) : 0;
     const left = r.left + (bl + barLeft) * sx;
     const top = r.top + (bt + barTop) * sy;
     return { left, top, right: left + pw * sx, bottom: top + ph * sy, sx, sy };
