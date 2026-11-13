@@ -326,6 +326,44 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     await page.close();
   }, 60_000);
 
+  it('contrast_meets_wcag: layers above the text composite in paint order', async () => {
+    const page = await openPage(`
+      <div style="position:relative;height:50px;background:#fff"><p data-id="twosheets" style="margin:0;color:#000">Under two sheets</p><div style="position:absolute;inset:0;background:rgba(0,0,0,0.5)"></div><div style="position:absolute;inset:0;background:rgba(255,255,255,0.5)"></div></div>
+      <div style="position:relative;height:50px;background:#fff"><p data-id="tintedhost" style="margin:0;color:#000">Under a tinted host</p><x-tint style="position:absolute;inset:0;display:block;background:rgba(0,0,0,0.5)"></x-tint></div>
+    `);
+    await page.evaluate(() => {
+      document.querySelector('x-tint')!.attachShadow({ mode: 'open' }).innerHTML =
+        '<div style="position:absolute;inset:0;background:rgba(255,255,255,0.5)"></div>';
+    });
+    const res = await assertOn(
+      page,
+      ['twosheets', 'tintedhost'].map((element) => ({ type: 'contrast_meets_wcag', element }))
+    );
+    // A 50% black sheet, then a 50% white one above it: the text is #808080
+    // on #bfbfbf, ~2.15:1. Composited the other way round it would be
+    // #404040 on #808080, ~2.62:1. A shadow root's content paints over its
+    // host's own background, so the host's black is the lower sheet.
+    expect(verdicts(res)).toEqual([
+      ['failed', null],
+      ['failed', null],
+    ]);
+    expect(res.results[0].detail).toContain('contrast ratio 2.15:1');
+    expect(res.results[1].detail).toContain('contrast ratio 2.15:1');
+    await page.close();
+
+    // White text sunk beneath the body (z-index: -1): the body's black is
+    // propagated to the canvas, beneath everything, so the body above the
+    // text paints nothing over it.
+    const sunk = await openPage(`
+      <style>body { background: #000 }</style>
+      <p data-id="underbody" style="position:relative;z-index:-1;color:#fff">Beneath the body</p>
+    `);
+    const sunkRes = await assertOn(sunk, [{ type: 'contrast_meets_wcag', element: 'underbody' }]);
+    expect(verdicts(sunkRes)).toEqual([['passed', null]]);
+    expect(sunkRes.results[0].detail).toContain('contrast ratio 21.00:1');
+    await sunk.close();
+  }, 60_000);
+
   it('text_fits_container: layout sizes under a transform, and redacted text is never echoed', async () => {
     const page = await openPage(`
       <div style="transform:scale(2);transform-origin:0 0;width:100px">
