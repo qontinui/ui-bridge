@@ -165,6 +165,11 @@ import {
   evaluateRegisteredQuality,
   qualityFailureCode,
 } from '../specs/quality-request';
+import {
+  diffRegisteredDesignTokens,
+  inferRegisteredStyleGuide,
+  styleInferenceFailureCode,
+} from '../specs/style-inference-request';
 import type { SnapshotBaseline } from '../specs/quality-types';
 import type { StyleGuideConfig } from '../specs/style-types';
 import { sdkDispatch } from '../core/sdk-dispatch';
@@ -5492,6 +5497,31 @@ export async function executeCommand(
     case 'clearStyleGuide':
       loadedStyleGuide = null;
       return { success: true, timestamp: Date.now() };
+
+    // The same functions the server handlers call
+    // (specs/style-inference-request.ts), so the two routes answer with one
+    // model over either transport, failures included.
+    case 'inferStyleGuide': {
+      try {
+        return inferRegisteredStyleGuide(elements, payload);
+      } catch (err) {
+        return qualityFailure(
+          (err as Error).message,
+          styleInferenceFailureCode(err, 'STYLE_INFERENCE_ERROR')
+        );
+      }
+    }
+
+    case 'diffDesignTokens': {
+      try {
+        return diffRegisteredDesignTokens(elements, payload, loadedGuideConfig());
+      } catch (err) {
+        return qualityFailure(
+          (err as Error).message,
+          styleInferenceFailureCode(err, 'TOKEN_DRIFT_ERROR')
+        );
+      }
+    }
 
     // ======================================================================
     // Quality Evaluation

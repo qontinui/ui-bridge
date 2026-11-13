@@ -266,6 +266,8 @@ const WS_ROUTES: readonly WsRoute[] = [
   // We keep a WS-only entry for the explicit "clear" subpath, and add a DELETE-on-style-guide entry.
   { pattern: 'design/style-guide/clear', handler: 'clearStyleGuide' },
   { pattern: 'design/style-guide', handler: 'clearStyleGuide', httpMethods: ['DELETE'] },
+  { pattern: 'design/style-guide/infer', handler: 'inferStyleGuide', httpMethods: ['POST'] },
+  { pattern: 'design/tokens/drift', handler: 'diffDesignTokens', httpMethods: ['POST'] },
 
   // Quality Evaluation
   { pattern: 'design/evaluate', handler: 'evaluateQuality', httpMethods: ['POST'] },
@@ -449,6 +451,8 @@ const HANDLER_DESCRIPTIONS: Record<string, string> = {
   loadStyleGuide: 'Load a design system style guide',
   getStyleGuide: 'Fetch the currently loaded style guide',
   clearStyleGuide: 'Unload the style guide',
+  inferStyleGuide: 'Infer a draft style guide and token inventory from element styles',
+  diffDesignTokens: 'Report drift between element styles and declared design tokens',
   evaluateQuality: 'Score the current UI against a quality context',
   getQualityContexts: 'List available quality evaluation contexts',
   saveBaseline: 'Save a quality baseline snapshot',

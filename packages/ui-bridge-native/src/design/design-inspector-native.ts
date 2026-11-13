@@ -36,7 +36,64 @@ import type { NativeLayout } from '../core/types';
 function toCssValue(value: unknown): string {
   if (value == null) return '';
   if (typeof value === 'number') return `${value}px`;
-  return String(value);
+  return toCssString(value);
+}
+
+/**
+ * Any RN style value as a string. Strings pass through; numbers and booleans
+ * are stringified (`fontWeight: 700` → `"700"`); an object — `PlatformColor`,
+ * `DynamicColorIOS` — becomes `native(<its JSON>)`, which no CSS parser reads, so
+ * consumers keep it verbatim (inference counts it unnormalised) instead of
+ * throwing on a non-string.
+ */
+function toCssString(value: unknown, fallback = ''): string {
+  if (value == null) return fallback;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  try {
+    const json = JSON.stringify(value);
+    // Wrapped in parentheses so a comma inside the JSON never splits a
+    // shadow or border list at the top level.
+    return json === undefined ? fallback : `native(${json})`;
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * A colour with an opacity folded into its alpha, as `rgba()`, for the colour
+ * spellings RN shadows use (hex, `rgb()`/`rgba()`, `black`, `white`).
+ * `null` when the colour is not one of those.
+ */
+function withOpacity(color: string, opacity: number): string | null {
+  const c = color.trim().toLowerCase();
+  let rgba: [number, number, number, number] | null = null;
+  const hex = /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/.exec(c);
+  if (hex) {
+    const h = hex[1].length <= 4 ? [...hex[1]].map((d) => d + d).join('') : hex[1];
+    rgba = [
+      parseInt(h.slice(0, 2), 16),
+      parseInt(h.slice(2, 4), 16),
+      parseInt(h.slice(4, 6), 16),
+      h.length === 8 ? parseInt(h.slice(6, 8), 16) / 255 : 1,
+    ];
+  } else if (c === 'black' || c === 'white') {
+    const v = c === 'black' ? 0 : 255;
+    rgba = [v, v, v, 1];
+  } else {
+    const fn =
+      /^rgba?\(\s*([\d.]+)\s*[, ]\s*([\d.]+)\s*[, ]\s*([\d.]+)\s*(?:[,/]\s*([\d.]+%?)\s*)?\)$/.exec(
+        c
+      );
+    if (fn) {
+      const alpha =
+        fn[4] === undefined ? 1 : fn[4].endsWith('%') ? parseFloat(fn[4]) / 100 : parseFloat(fn[4]);
+      rgba = [parseFloat(fn[1]), parseFloat(fn[2]), parseFloat(fn[3]), alpha];
+    }
+  }
+  if (!rgba || rgba.some((n) => !Number.isFinite(n))) return null;
+  const a = Math.round(Math.min(1, Math.max(0, rgba[3] * opacity)) * 1000) / 1000;
+  return `rgba(${rgba[0]}, ${rgba[1]}, ${rgba[2]}, ${a})`;
 }
 
 /**
@@ -71,17 +128,21 @@ function shadowToCss(style: Record<string, unknown>): string {
   const parts: string[] = [];
 
   // iOS shadow
-  const shadowColor = style.shadowColor as string | undefined;
+  const shadowColor = style.shadowColor == null ? undefined : toCssString(style.shadowColor);
   const shadowOffset = style.shadowOffset as { width: number; height: number } | undefined;
   const shadowOpacity = style.shadowOpacity as number | undefined;
   const shadowRadius = style.shadowRadius as number | undefined;
 
   if (shadowColor && shadowOffset && shadowOpacity != null && shadowOpacity > 0) {
     const { width, height } = shadowOffset;
-    parts.push(
-      `${width}px ${height}px ${shadowRadius ?? 0}px ${shadowColor}` +
-        (shadowOpacity < 1 ? ` /* opacity: ${shadowOpacity} */` : '')
-    );
+    // The opacity is folded into the colour's alpha: a CSS comment carrying it
+    // is invisible to every CSS consumer, and its bare number read as a length.
+    // A colour that cannot be folded keeps the opacity as an explicit token.
+    let color = shadowColor;
+    if (shadowOpacity < 1) {
+      color = withOpacity(shadowColor, shadowOpacity) ?? `${shadowColor} opacity(${shadowOpacity})`;
+    }
+    parts.push(`${width}px ${height}px ${shadowRadius ?? 0}px ${color}`);
   }
 
   // Android elevation
@@ -98,7 +159,7 @@ function shadowToCss(style: Record<string, unknown>): string {
  */
 function borderToCss(style: Record<string, unknown>): string {
   const width = style.borderWidth as number | undefined;
-  const color = style.borderColor as string | undefined;
+  const color = style.borderColor == null ? undefined : toCssString(style.borderColor);
 
   if (width == null && color == null) return '';
   return `${width ?? 0}px solid ${color ?? 'transparent'}`;
@@ -200,8 +261,8 @@ export function mapNativeStyleToExtended(
 
   return {
     // Layout
-    display: (s.display as string) ?? 'flex',
-    position: (s.position as string) ?? 'relative',
+    display: toCssString(s.display, 'flex'),
+    position: toCssString(s.position, 'relative'),
     boxSizing: '', // CSS-only
     width: toCssValue(s.width),
     height: toCssValue(s.height),
@@ -219,33 +280,33 @@ export function mapNativeStyleToExtended(
     paddingRight: padding.right,
     paddingBottom: padding.bottom,
     paddingLeft: padding.left,
-    overflow: (s.overflow as string) ?? '',
+    overflow: toCssString(s.overflow),
     overflowX: '', // CSS-only
     overflowY: '', // CSS-only
 
     // Flex/Grid — RN defaults to column, not row
-    flexDirection: (s.flexDirection as string) ?? '',
-    flexWrap: (s.flexWrap as string) ?? '',
-    justifyContent: (s.justifyContent as string) ?? '',
-    alignItems: (s.alignItems as string) ?? '',
-    alignSelf: (s.alignSelf as string) ?? '',
+    flexDirection: toCssString(s.flexDirection),
+    flexWrap: toCssString(s.flexWrap),
+    justifyContent: toCssString(s.justifyContent),
+    alignItems: toCssString(s.alignItems),
+    alignSelf: toCssString(s.alignSelf),
     gap: resolveGap(s),
     gridTemplateColumns: '', // CSS-only
     gridTemplateRows: '', // CSS-only
 
     // Typography
-    fontFamily: (s.fontFamily as string) ?? '',
+    fontFamily: toCssString(s.fontFamily),
     fontSize: toCssValue(s.fontSize),
-    fontWeight: (s.fontWeight as string) ?? '',
+    fontWeight: toCssString(s.fontWeight),
     lineHeight: toCssValue(s.lineHeight),
     letterSpacing: toCssValue(s.letterSpacing),
-    textAlign: (s.textAlign as string) ?? '',
-    textTransform: (s.textTransform as string) ?? '',
-    textDecoration: (s.textDecorationLine as string) ?? '', // RN name → CSS name
-    color: (s.color as string) ?? '',
+    textAlign: toCssString(s.textAlign),
+    textTransform: toCssString(s.textTransform),
+    textDecoration: toCssString(s.textDecorationLine), // RN name → CSS name
+    color: toCssString(s.color),
 
     // Visual
-    backgroundColor: (s.backgroundColor as string) ?? '',
+    backgroundColor: toCssString(s.backgroundColor),
     backgroundImage: '', // CSS-only
     border: borderToCss(s),
     borderRadius: borderRadiusToCss(s),
@@ -259,7 +320,7 @@ export function mapNativeStyleToExtended(
     cursor: '', // CSS-only
     zIndex: s.zIndex != null ? String(s.zIndex) : '',
     visibility: '', // CSS-only
-    pointerEvents: (s.pointerEvents as string) ?? '',
+    pointerEvents: toCssString(s.pointerEvents),
   };
 }
 

@@ -16,6 +16,17 @@ import type {
   StyleValidationResult,
   StyleAuditReport,
 } from './style-types';
+import { styleValuesEquivalent } from './style-inference';
+
+/** Options for a validation pass. */
+export interface StyleValidationOptions {
+  /**
+   * The page's root font size, which `rem` values resolve against (default
+   * 16). The web audit measures it from `document.documentElement`; drift and
+   * inference resolve `rem` against the same figure, so the two agree.
+   */
+  rootFontSizePx?: number;
+}
 
 // ============================================================================
 // Token Resolution
@@ -59,16 +70,26 @@ export function evaluateConstraint(
   constraint: StyleConstraint,
   styles: ExtendedComputedStyles,
   tokens: DesignTokens,
-  customProperties?: Record<string, string>
+  customProperties?: Record<string, string>,
+  options: StyleValidationOptions = {}
 ): StyleConstraintResult {
   const isCustomProp = constraint.property.startsWith('--');
-  const actualValue = isCustomProp
+  const rawActual = isCustomProp
     ? (customProperties?.[constraint.property] ?? '')
     : styles[constraint.property as keyof ExtendedComputedStyles] || '';
+  // A host may hand over a non-string (React Native's numeric font weight).
+  const actualValue = typeof rawActual === 'string' ? rawActual : String(rawActual);
+  const root = options.rootFontSizePx;
 
   switch (constraint.type) {
     case 'exact': {
-      const passed = normalizeStyleValue(actualValue) === normalizeStyleValue(constraint.value);
+      const passed = sameStyleValue(
+        actualValue,
+        constraint.value,
+        constraint.property,
+        styles,
+        root
+      );
       return {
         passed,
         constraint,
@@ -81,8 +102,9 @@ export function evaluateConstraint(
     }
 
     case 'oneOf': {
-      const normalizedActual = normalizeStyleValue(actualValue);
-      const passed = constraint.values.some((v) => normalizeStyleValue(v) === normalizedActual);
+      const passed = constraint.values.some((v) =>
+        sameStyleValue(actualValue, v, constraint.property, styles, root)
+      );
       return {
         passed,
         constraint,
@@ -105,7 +127,7 @@ export function evaluateConstraint(
           message: `Token "${constraint.tokenPath}" not found in design tokens`,
         };
       }
-      const passed = normalizeStyleValue(actualValue) === normalizeStyleValue(tokenValue);
+      const passed = sameStyleValue(actualValue, tokenValue, constraint.property, styles, root);
       return {
         passed,
         constraint,
@@ -160,7 +182,7 @@ export function evaluateConstraint(
         };
       }
       // Nested constraint
-      return evaluateConstraint(expectedVal, styles, tokens, customProperties);
+      return evaluateConstraint(expectedVal, styles, tokens, customProperties, options);
     }
   }
 }
@@ -210,7 +232,8 @@ function ruleMatchesElement(rule: StyleRule, elementData: ElementDesignData): bo
 export function validateElement(
   data: ElementDesignData,
   rules: StyleRule[],
-  tokens: DesignTokens
+  tokens: DesignTokens,
+  options: StyleValidationOptions = {}
 ): StyleValidationResult[] {
   const results: StyleValidationResult[] = [];
 
@@ -221,7 +244,13 @@ export function validateElement(
     let allPassed = true;
 
     for (const constraint of rule.constraints) {
-      const result = evaluateConstraint(constraint, data.styles, tokens, data.customProperties);
+      const result = evaluateConstraint(
+        constraint,
+        data.styles,
+        tokens,
+        data.customProperties,
+        options
+      );
       constraintResults.push(result);
       if (!result.passed) allPassed = false;
     }
@@ -247,13 +276,14 @@ export function validateElement(
  */
 export function runStyleAudit(
   elements: ElementDesignData[],
-  guide: StyleGuideConfig
+  guide: StyleGuideConfig,
+  options: StyleValidationOptions = {}
 ): StyleAuditReport {
   const startTime = Date.now();
   const allResults: StyleValidationResult[] = [];
 
   for (const element of elements) {
-    const results = validateElement(element, guide.rules, guide.tokens);
+    const results = validateElement(element, guide.rules, guide.tokens, options);
     allResults.push(...results);
   }
 
@@ -280,6 +310,32 @@ export function runStyleAudit(
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/**
+ * Whether a computed value satisfies an expected one: equal after trimming and
+ * lowercasing, or equivalent once both are canonicalised (colours as hex,
+ * lengths as px, font-relative line heights and letter spacings as ratios —
+ * `styleValuesEquivalent`). Chrome computes colours as `rgb()`, so before the
+ * fallback a `tokenRef` to a hex token could never pass.
+ */
+function sameStyleValue(
+  actual: string,
+  expected: string,
+  property: string,
+  styles: ExtendedComputedStyles,
+  rootFontSizePx?: number
+): boolean {
+  if (normalizeStyleValue(actual) === normalizeStyleValue(expected)) return true;
+  // Custom properties are compared literally: their values carry no type.
+  if (property.startsWith('--')) return false;
+  return styleValuesEquivalent(
+    actual,
+    expected,
+    property,
+    styles as unknown as Record<string, string>,
+    rootFontSizePx
+  );
+}
 
 /**
  * Normalize a CSS value for comparison (trim whitespace, lowercase).

@@ -234,6 +234,12 @@ import {
   type QualityBaselineRequest,
   type QualityDiffRequest,
 } from '../specs/quality-request';
+import {
+  diffRegisteredDesignTokens,
+  inferRegisteredStyleGuide,
+  measureRootFontSizePx,
+  styleInferenceFailureCode,
+} from '../specs/style-inference-request';
 import { getGlobalSpecStore } from '../specs/store';
 import type { ElementAnnotation, AnnotationConfig, AnnotationCoverage } from '../annotations';
 import { AnnotationStore, getGlobalAnnotationStore } from '../annotations';
@@ -5084,6 +5090,7 @@ export function createHandlers(
     runDesignAudit: async (request?: {
       guide?: StyleGuideConfig;
       elementIds?: string[];
+      rootFontSizePx?: number;
     }): Promise<APIResponse<StyleAuditReport>> => {
       try {
         const guide = request?.guide || loadedStyleGuide;
@@ -5109,7 +5116,14 @@ export function createHandlers(
           }
         }
 
-        const report = runStyleAudit(designData, guide);
+        // `rem` resolves against the page's measured root font size (or the
+        // caller's), the same figure inference and drift use.
+        const requested = request?.rootFontSizePx;
+        const rootFontSizePx =
+          typeof requested === 'number' && Number.isFinite(requested) && requested > 0
+            ? requested
+            : measureRootFontSizePx();
+        const report = runStyleAudit(designData, guide, { rootFontSizePx });
         return success(report);
       } catch (err) {
         return error((err as Error).message, 'DESIGN_AUDIT_ERROR');
@@ -5134,6 +5148,29 @@ export function createHandlers(
     clearStyleGuide: async (): Promise<APIResponse<{ cleared: boolean }>> => {
       loadedStyleGuide = null;
       return success({ cleared: true });
+    },
+
+    // Style inference runs through specs/style-inference-request.ts, which the
+    // browser relay calls too — one model whichever transport answers.
+    inferStyleGuide: async (request) => {
+      try {
+        const elements = registry.getAllElements() as unknown as RegistryElementView[];
+        return success(inferRegisteredStyleGuide(elements, request));
+      } catch (err) {
+        return error(
+          (err as Error).message,
+          styleInferenceFailureCode(err, 'STYLE_INFERENCE_ERROR')
+        );
+      }
+    },
+
+    diffDesignTokens: async (request) => {
+      try {
+        const elements = registry.getAllElements() as unknown as RegistryElementView[];
+        return success(diffRegisteredDesignTokens(elements, request, loadedStyleGuide));
+      } catch (err) {
+        return error((err as Error).message, styleInferenceFailureCode(err, 'TOKEN_DRIFT_ERROR'));
+      }
     },
 
     // Quality evaluation endpoints
@@ -5958,6 +5995,16 @@ export function createHandlers(
                   description: 'Get current style guide',
                 },
                 { method: 'DELETE', path: '/design/style-guide', description: 'Clear style guide' },
+                {
+                  method: 'POST',
+                  path: '/design/style-guide/infer',
+                  description: 'Infer a draft style guide and token inventory from computed styles',
+                },
+                {
+                  method: 'POST',
+                  path: '/design/tokens/drift',
+                  description: 'Report drift between computed styles and declared design tokens',
+                },
                 { method: 'POST', path: '/design/evaluate', description: 'Evaluate UI quality' },
                 {
                   method: 'GET',

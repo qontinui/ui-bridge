@@ -111,6 +111,71 @@ export {
   runStyleAudit,
   evaluateConstraint,
 } from './style-validator';
+export type { StyleValidationOptions } from './style-validator';
+
+// Style inference (draft style guide + token drift from computed styles).
+// Pure — no DOM access — so the native package reaches it through this entry.
+export {
+  STYLE_CATEGORIES,
+  ORDINAL_PREFIX,
+  DEFAULT_MAX_PER_CATEGORY,
+  DEFAULT_COLOR_DELTA_E,
+  DEFAULT_PX_TOLERANCE,
+  DEFAULT_MAX_LISTED,
+  COLOR_MATCH_DELTA_E,
+  buildStyleInventory,
+  inferStyleGuideFromInventory,
+  computeTokenDrift,
+  styleValuesEquivalent,
+  canonicalColorsMatch,
+  lengthCategoryOfName,
+} from './style-inference';
+export type {
+  StyleCategory,
+  StyleSample,
+  StyleInventory,
+  StyleInventoryOptions,
+  InventoryEntry,
+  CategoryTruncation,
+  InferOptions,
+  InferredStyleGuide,
+  DeclaredTokenSet,
+  DeepPartialTokens,
+  DriftOptions,
+  DriftTolerance,
+  DriftVerdict,
+  DriftUnit,
+  NearestToken,
+  UndeclaredValue,
+  UnusedToken,
+  UnresolvedToken,
+  CategoryDrift,
+  CategoryDriftStatus,
+  ListTruncation,
+  TokenDriftReport,
+} from './style-inference';
+export {
+  DEFAULT_MAX_ELEMENTS,
+  StyleInferenceRequestError,
+  styleInferenceFailureCode,
+  parseInferBody,
+  parseDriftBody,
+  loadedGuideTokens,
+} from './style-inference-body';
+export type {
+  StyleSampleOptions,
+  InferBody,
+  DriftBody,
+  DeclaredSourceSpec,
+} from './style-inference-body';
+export type {
+  StyleCaptureReport,
+  StyleInferenceResponse,
+  TokenDriftResponse,
+} from './style-inference-request';
+export type { StyleSampleScope } from './style-inference-body';
+// Wider than color-utils' parseColor (hsl, oklch, oklab, color(srgb), all named colours).
+export { canonicalColor, deltaE2000 } from './style-color';
 
 // Quality evaluator types
 export type {

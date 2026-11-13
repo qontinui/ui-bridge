@@ -89,6 +89,7 @@ import type {
   ResponsiveSnapshot,
 } from '../core/types';
 import type { StyleGuideConfig, StyleAuditReport } from '../specs/style-types';
+import type { StyleInferenceResponse, TokenDriftResponse } from '../specs/style-inference-request';
 import type {
   QualityEvaluationReport,
   SnapshotDiffReport,
@@ -536,10 +537,7 @@ export interface UIBridgeServerHandlers {
     query?: ElementStateQuery,
     context?: HandlerContext
   ) => Promise<APIResponse<unknown>>;
-  getElementReactState: (
-    id: string,
-    context?: HandlerContext
-  ) => Promise<APIResponse<unknown>>;
+  getElementReactState: (id: string, context?: HandlerContext) => Promise<APIResponse<unknown>>;
   executeElementAction: (
     id: string,
     request: ControlActionRequest,
@@ -665,30 +663,30 @@ export interface UIBridgeServerHandlers {
   ) => Promise<APIResponse<FindResponse>>;
   getControlSnapshot: (
     request?: {
-    targetTabId?: string;
-    url?: string;
-    skipSettle?: boolean | string;
-    settleTimeout?: number | string;
-    recency?: string;
-    /**
-     * Item 1 filter: when `true`, drop elements with `kind: "content"`
-     * (semantic `data-ui-bridge-content` entries) from the response.
-     * Default `false` — include everything.
-     */
-    interactiveOnly?: boolean | string;
-    /** snake_case alias for `interactiveOnly`. */
-    interactive_only?: boolean | string;
-    /**
-     * Manual-test remediation 2026-05-10 (Item 2) filter: when `true`,
-     * keep only elements that report disabled by any of these signals in
-     * the snapshot's `state`: `disabled === true`, `ariaDisabled === true`
-     * (or the pre-R8 `"true"` string), or `enabled === false`. Default `false` —
-     * include everything. All other snapshot metadata (route, activeTab,
-     * registration, viewport, errorSummary) is preserved unchanged.
-     */
-    withDisabledOnly?: boolean | string;
-    /** snake_case alias for `withDisabledOnly`. */
-    with_disabled_only?: boolean | string;
+      targetTabId?: string;
+      url?: string;
+      skipSettle?: boolean | string;
+      settleTimeout?: number | string;
+      recency?: string;
+      /**
+       * Item 1 filter: when `true`, drop elements with `kind: "content"`
+       * (semantic `data-ui-bridge-content` entries) from the response.
+       * Default `false` — include everything.
+       */
+      interactiveOnly?: boolean | string;
+      /** snake_case alias for `interactiveOnly`. */
+      interactive_only?: boolean | string;
+      /**
+       * Manual-test remediation 2026-05-10 (Item 2) filter: when `true`,
+       * keep only elements that report disabled by any of these signals in
+       * the snapshot's `state`: `disabled === true`, `ariaDisabled === true`
+       * (or the pre-R8 `"true"` string), or `enabled === false`. Default `false` —
+       * include everything. All other snapshot metadata (route, activeTab,
+       * registration, viewport, errorSummary) is preserved unchanged.
+       */
+      withDisabledOnly?: boolean | string;
+      /** snake_case alias for `withDisabledOnly`. */
+      with_disabled_only?: boolean | string;
     },
     context?: HandlerContext
   ) => Promise<APIResponse<ControlSnapshot>>;
@@ -895,9 +893,7 @@ export interface UIBridgeServerHandlers {
   // Change buffer endpoints
   enableChangeBuffer: (context?: HandlerContext) => Promise<APIResponse<{ enabled: boolean }>>;
   disableChangeBuffer: (context?: HandlerContext) => Promise<APIResponse<{ enabled: boolean }>>;
-  drainChangeBuffer: (
-    context?: HandlerContext
-  ) => Promise<APIResponse<ChangeBufferDrainResult>>;
+  drainChangeBuffer: (context?: HandlerContext) => Promise<APIResponse<ChangeBufferDrainResult>>;
   getChangeBufferSize: (
     context?: HandlerContext
   ) => Promise<APIResponse<{ size: number; enabled: boolean }>>;
@@ -1045,10 +1041,7 @@ export interface UIBridgeServerHandlers {
   getAnnotations: (
     context?: HandlerContext
   ) => Promise<APIResponse<Record<string, ElementAnnotation>>>;
-  getAnnotation: (
-    id: string,
-    context?: HandlerContext
-  ) => Promise<APIResponse<ElementAnnotation>>;
+  getAnnotation: (id: string, context?: HandlerContext) => Promise<APIResponse<ElementAnnotation>>;
   setAnnotation: (
     id: string,
     annotation: ElementAnnotation,
@@ -1060,15 +1053,11 @@ export interface UIBridgeServerHandlers {
     context?: HandlerContext
   ) => Promise<APIResponse<{ count: number }>>;
   exportAnnotations: (context?: HandlerContext) => Promise<APIResponse<AnnotationConfig>>;
-  getAnnotationCoverage: (
-    context?: HandlerContext
-  ) => Promise<APIResponse<AnnotationCoverage>>;
+  getAnnotationCoverage: (context?: HandlerContext) => Promise<APIResponse<AnnotationCoverage>>;
 
   // Performance diagnostics endpoints
   getPerformanceEntries: (context?: HandlerContext) => Promise<APIResponse<unknown>>;
-  clearPerformanceEntries: (
-    context?: HandlerContext
-  ) => Promise<APIResponse<{ cleared: boolean }>>;
+  clearPerformanceEntries: (context?: HandlerContext) => Promise<APIResponse<{ cleared: boolean }>>;
   getBrowserEvents: (
     params?: {
       type?: string;
@@ -1110,9 +1099,7 @@ export interface UIBridgeServerHandlers {
     request: { label?: string },
     context?: HandlerContext
   ) => Promise<APIResponse<{ sessionId: string }>>;
-  endErrorSession: (
-    context?: HandlerContext
-  ) => Promise<APIResponse<ErrorSessionSummary | null>>;
+  endErrorSession: (context?: HandlerContext) => Promise<APIResponse<ErrorSessionSummary | null>>;
   getErrorSessions: (context?: HandlerContext) => Promise<APIResponse<ErrorSessionSummary[]>>;
   captureErrorBaseline: (
     request: { label: string },
@@ -1132,9 +1119,7 @@ export interface UIBridgeServerHandlers {
   ) => Promise<APIResponse<{ snapshots: ErrorSnapshot[]; count: number }>>;
 
   // Composite error report (health + recent errors + session in one call)
-  getErrorReport: (
-    context?: HandlerContext
-  ) => Promise<
+  getErrorReport: (context?: HandlerContext) => Promise<
     APIResponse<{
       health: HealthReport;
       recentErrors: AnyCapturedEvent[];
@@ -1182,6 +1167,8 @@ export interface UIBridgeServerHandlers {
     request?: {
       guide?: StyleGuideConfig;
       elementIds?: string[];
+      /** Root font size `rem` resolves against (default: measured from `documentElement`). */
+      rootFontSizePx?: number;
     },
     context?: HandlerContext
   ) => Promise<APIResponse<StyleAuditReport>>;
@@ -1193,6 +1180,24 @@ export interface UIBridgeServerHandlers {
   ) => Promise<APIResponse<{ loaded: boolean }>>;
   getStyleGuide: (context?: HandlerContext) => Promise<APIResponse<StyleGuideConfig | null>>;
   clearStyleGuide: (context?: HandlerContext) => Promise<APIResponse<{ cleared: boolean }>>;
+  /**
+   * `POST /design/style-guide/infer` — a draft `StyleGuideConfig` and a ranked,
+   * capped token inventory derived from the page's computed styles. The body is
+   * validated in `specs/style-inference-request.ts`, which both transports call.
+   */
+  inferStyleGuide: (
+    request?: unknown,
+    context?: HandlerContext
+  ) => Promise<APIResponse<StyleInferenceResponse>>;
+  /**
+   * `POST /design/tokens/drift` — computed values vs a declared token set
+   * (`tokens`, `customProperties`, `pageCustomPropertyPrefix`, else the loaded
+   * style guide's tokens).
+   */
+  diffDesignTokens: (
+    request?: unknown,
+    context?: HandlerContext
+  ) => Promise<APIResponse<TokenDriftResponse>>;
 
   // Quality evaluation endpoints
   evaluateQuality: (
@@ -2349,6 +2354,13 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   },
   { method: 'GET', path: '/design/style-guide', handler: 'getStyleGuide' },
   { method: 'DELETE', path: '/design/style-guide', handler: 'clearStyleGuide' },
+  {
+    method: 'POST',
+    path: '/design/style-guide/infer',
+    handler: 'inferStyleGuide',
+    bodyRequired: true,
+  },
+  { method: 'POST', path: '/design/tokens/drift', handler: 'diffDesignTokens', bodyRequired: true },
 
   // Quality evaluation
   { method: 'POST', path: '/design/evaluate', handler: 'evaluateQuality', bodyRequired: true },
@@ -2701,8 +2713,7 @@ export const INTERACTION_RELAY_COMMAND_ACTIONS = [
 /**
  * Union of the canonical interaction relay command action strings.
  */
-export type InteractionRelayCommandAction =
-  (typeof INTERACTION_RELAY_COMMAND_ACTIONS)[number];
+export type InteractionRelayCommandAction = (typeof INTERACTION_RELAY_COMMAND_ACTIONS)[number];
 
 /**
  * WebSocket message types

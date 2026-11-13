@@ -100,6 +100,7 @@ const sidebars: SidebarsConfig = {
         'api/render-log-endpoints',
         'api/ai-endpoints',
         'api/state-endpoints',
+        'api/design-tokens',
       ],
     },
     {
