@@ -31,6 +31,32 @@ describe('ActionWindowRegistry', () => {
     expect(reg.isWithinAnyWindow(999)).toBe(false);
   });
 
+  it('beginAction opens a window with no end until anchorSettle fixes it', () => {
+    reg.beginAction('r1', 'click', 1000);
+    expect(reg.isWithinAnyWindow(999)).toBe(false);
+    expect(reg.isWithinAnyWindow(1000)).toBe(true);
+    expect(reg.isWithinAnyWindow(1_000_000)).toBe(true); // action still running
+    reg.recordConcurrentObservation(1400); // past start + a click band, mid-action
+    expect(reg.hadConcurrentObservation('r1')).toBe(true);
+  });
+
+  it('anchorSettle sets endMs = settleStart + settleMs, keeping startMs', () => {
+    reg.beginAction('r1', 'click', 1000);
+    reg.anchorSettle('r1', 1600, 150);
+    expect(reg.isWithinAnyWindow(1000)).toBe(true); // start unchanged
+    expect(reg.isWithinAnyWindow(1750)).toBe(true); // inclusive end
+    expect(reg.isWithinAnyWindow(1751)).toBe(false);
+    reg.recordConcurrentObservation(1751);
+    expect(reg.hadConcurrentObservation('r1')).toBe(false);
+  });
+
+  it('anchorSettle ignores an unknown id', () => {
+    reg.beginAction('r1', 'click', 1000);
+    reg.anchorSettle('nope', 5000, 150);
+    expect(reg.openCount).toBe(1);
+    expect(reg.isWithinAnyWindow(9000)).toBe(true);
+  });
+
   it('end closes the window', () => {
     reg.begin('r1', 'click', 1000, 500);
     reg.end('r1');

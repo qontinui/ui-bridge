@@ -42,6 +42,12 @@ export interface EffectVerifierDeps {
   captureSnapshot: (scope: ObservabilityScope) => Promise<SemanticSnapshot>;
   /** Resolve after `settleMs` milliseconds. */
   settle: (settleMs: number) => Promise<void>;
+  /**
+   * Clock injection, so a test can pin the settle window's anchors without
+   * faking `Date`. Every time `verifyAction` reads goes through it. Defaults
+   * to `Date.now`.
+   */
+  now?: () => number;
 }
 
 /** An appeared element is "error-like" by the same heuristic the diff uses. */
@@ -64,7 +70,11 @@ function deriveNavigatedTo(
 }
 
 export class EffectVerifier {
-  constructor(private deps: EffectVerifierDeps) {}
+  private readonly now: () => number;
+
+  constructor(private deps: EffectVerifierDeps) {
+    this.now = deps.now ?? Date.now;
+  }
 
   /**
    * Run `executeFn` inside a predict-then-verify cycle. Returns both the
@@ -90,10 +100,11 @@ export class EffectVerifier {
     verification: EffectVerification;
     alsoPredicted?: PredictedDelta;
   }> {
-    const startTime = Date.now();
+    const startTime = this.now();
 
-    // Settle window length (override → per-action band → fallback). Resolved up
-    // front so the window's `endMs` matches the actual settle we await.
+    // Settle window length (override → per-action band → fallback). It sizes
+    // the settle we await in step 5, and the window's end is anchored to that
+    // same settle (start of settle + settleMs), never to when the window opened.
     const settleMs = settleMsForAction(params.action, signature.settleMs);
 
     // 1. Scoped pre-snapshot.
@@ -117,9 +128,11 @@ export class EffectVerifier {
     // 3. Open the settle window so concurrent background observations (flagged
     //    by the BackgroundObserver) can be attributed to this action. The
     //    window opens just before execution and closes after the post-snapshot.
+    //    It opens with NO end: the settle does not start until the action
+    //    returns, so its end is only knowable at step 5.
     const registry = getGlobalActionWindowRegistry();
-    const windowId = params.requestId ?? `effect-${Date.now()}-${synthSeq++}`;
-    registry.begin(windowId, params.action, Date.now(), settleMs);
+    const windowId = params.requestId ?? `effect-${this.now()}-${synthSeq++}`;
+    registry.beginAction(windowId, params.action, this.now());
 
     try {
       // 4. Execute the real action (errors propagate by design — but we still
@@ -127,7 +140,13 @@ export class EffectVerifier {
       //    perpetually-open window into the registry).
       const result = await executeFn();
 
-      // 5. Settle window.
+      // 5. Settle window. Anchor the window's end to the REAL settle start, so
+      //    it covers [action start, settleStart + settleMs]. Anchoring it at
+      //    open time instead (`open + settleMs`) expired it during any action
+      //    slower than `settleMs`, dropping every observation from then on —
+      //    the rest of the action and the whole settle (finding 736a7c2c). The
+      //    settle duration itself is unchanged.
+      registry.anchorSettle(windowId, this.now(), settleMs);
       await this.deps.settle(settleMs);
 
       // 6. Post-snapshot.
@@ -153,7 +172,7 @@ export class EffectVerifier {
 
       // 9. Classify. `cause === 'mixed'` downgrades a clean Confirmed → Surprise
       //    inside computeVerification.
-      const durationMs = Date.now() - startTime;
+      const durationMs = this.now() - startTime;
       const verification = computeVerification(
         predicted,
         observed,

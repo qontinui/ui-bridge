@@ -6,9 +6,10 @@
  * can be attributed to (or distinguished from) the action under verification.
  *
  * The verifier ({@link ./effect-verifier}) opens a window with {@link
- * ActionWindowRegistry.begin} just before it runs the action and closes it with
- * {@link ActionWindowRegistry.end} right after the post-snapshot. While a window
- * is open, the BackgroundObserver calls {@link
+ * ActionWindowRegistry.beginAction} just before it runs the action, fixes the
+ * window's end with {@link ActionWindowRegistry.anchorSettle} when the settle
+ * starts, and closes it with {@link ActionWindowRegistry.end} right after the
+ * post-snapshot. While a window is open, the BackgroundObserver calls {@link
  * ActionWindowRegistry.recordConcurrentObservation} whenever it detects a
  * significant change — flagging every currently-open window. The verifier then
  * reads {@link ActionWindowRegistry.hadConcurrentObservation} to decide whether
@@ -28,7 +29,13 @@ export interface ActionWindow {
   action: string;
   /** Window open time, ms (epoch). */
   startMs: number;
-  /** Window close time, ms (epoch) = `startMs + settleMs`. */
+  /**
+   * Window close time, ms (epoch). `startMs + settleMs` for a window opened
+   * with {@link ActionWindowRegistry.begin}. A window opened with {@link
+   * ActionWindowRegistry.beginAction} has no end yet (`Infinity`) until
+   * {@link ActionWindowRegistry.anchorSettle} sets it to
+   * `settleStart + settleMs`.
+   */
   endMs: number;
   /** Set true the first time a concurrent observation lands inside this window. */
   sawConcurrentObservation: boolean;
@@ -60,6 +67,39 @@ export class ActionWindowRegistry {
       endMs: nowMs + settleMs,
       sawConcurrentObservation: false,
     });
+  }
+
+  /**
+   * Open a window for an action that is about to run and whose settle has not
+   * started. Its end is unknown until the action returns, so the window stays
+   * open (`endMs = Infinity`) until {@link anchorSettle} fixes it. A window
+   * whose end were guessed up front (`nowMs + settleMs`) would expire during
+   * any action slower than `settleMs`, and every observation after that —
+   * during the rest of the action and the whole real settle — would be
+   * dropped (finding 736a7c2c). A duplicate requestId overwrites the prior
+   * open window.
+   */
+  beginAction(requestId: string, action: string, nowMs: number): void {
+    this.open.set(requestId, {
+      requestId,
+      action,
+      startMs: nowMs,
+      endMs: Number.POSITIVE_INFINITY,
+      sawConcurrentObservation: false,
+    });
+  }
+
+  /**
+   * Fix an open window's end to the real settle: `endMs = settleStartMs +
+   * settleMs`. Called when the verifier starts the settle it actually awaits,
+   * so the window covers `[action start, settle start + settleMs]`. The start
+   * never moves and the settle duration is the one awaited, so this does not
+   * widen the settle. No-op for an unknown requestId.
+   */
+  anchorSettle(requestId: string, settleStartMs: number, settleMs: number): void {
+    const window = this.open.get(requestId);
+    if (!window) return;
+    window.endMs = settleStartMs + settleMs;
   }
 
   /**
