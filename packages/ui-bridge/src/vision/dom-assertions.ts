@@ -29,12 +29,13 @@
  *   hit test cannot order, anywhere the text could show it, makes the colour
  *   `unknown{input_missing}`; so does an ancestor with `opacity < 1` that
  *   contains the first opaque layer. A `pointer-events: none` layer is looked
- *   for below the elements the hit test returns and below the root, through
- *   the elements it cannot return — never by a walk of the whole document —
- *   so one positioned outside the box of every hit-testable ancestor it has
- *   is not found. A translucent colour or an opacity group above the first
- *   opaque layer is composited exactly. With no opaque layer, the base is
- *   the `Canvas` colour under the root's `color-scheme`. Every layer the hit
+ *   for anywhere on the page, open shadow roots included, by one walk of the
+ *   composed tree per request that measures contrast: one positioned onto
+ *   the text from inside an element whose own box misses it (a fixed scrim
+ *   in a sticky header) is found too. A translucent colour or an opacity
+ *   group above the first opaque layer is composited exactly. With no
+ *   opaque layer, the base is the `Canvas` colour under the root's
+ *   `color-scheme`. Every layer the hit
  *   test shows ABOVE the text (a scrim, an overlay, a sheet), open shadow
  *   roots included, is read too: a plain translucent colour is composited
  *   over the text and its backdrop alike, so a white 80% scrim over black
@@ -522,7 +523,7 @@ class TabMeasurement {
   private readonly fitDone = new Set<string>();
   private readonly clipDone = new Set<string>();
   private registryIds: Map<Element, string> | null = null;
-  private readonly hitHiddenBelow = new Map<Element, readonly Element[]>();
+  private hitHidden: readonly Element[] | null = null;
   private canvas: { paint: Paint; label: string } | null = null;
   private canvasFrom: Element | null = null;
 
@@ -1390,7 +1391,7 @@ class TabMeasurement {
 
     const blocked = this.textAffectedBy(owner);
     if (blocked) return missing('input_missing', blocked);
-    const unplaceable = this.unplaceableLayerAt(p, owner, stack, layers);
+    const unplaceable = this.unplaceableLayerAt(p, owner, layers);
     if (unplaceable) {
       return missing(
         'input_missing',
@@ -1651,66 +1652,51 @@ class TabMeasurement {
   /**
    * A layer the hit test cannot see (pointer-events: none) that paints at `p`
    * and does not hold the text: its place in the paint order is unknown, so
-   * whether it lies under the text or over it is too.
-   *
-   * The search is bounded to where such a layer can hang in the tree: below
-   * an element the hit test returned at `p`, or below the root (an overlay
-   * mounted on `<html>` or `<body>`). From there it descends only through
-   * elements the hit test cannot return either — `pointer-events: none`
-   * (inherited, so a whole overlay subtree), `visibility: hidden`, or no box
-   * of its own (`display: contents`, a zero-area portal root). It reads the
-   * styles of those elements' children, once per request, never the whole
-   * document. What it cannot reach: a `pointer-events: none` layer positioned
-   * outside the box of every hit-testable ancestor it has, onto the text.
+   * whether it lies under the text or over it is too. Every such layer of the
+   * page is a candidate ({@link hitHiddenLayers}), wherever it hangs in the
+   * tree: a fixed scrim inside a sticky header whose own box misses the text
+   * covers the text all the same.
    */
   private unplaceableLayerAt(
     p: { x: number; y: number },
     owner: Element,
-    stack: readonly Element[],
     layers: readonly Element[]
   ): Element | null {
-    const doc = owner.ownerDocument;
-    const roots = new Set<Element>(stack);
-    if (doc.documentElement) roots.add(doc.documentElement);
-    if (doc.body) roots.add(doc.body);
-    for (const root of roots) {
-      for (const layer of this.hitHiddenLayersBelow(root)) {
-        if (layers.includes(layer) || containsComposed(layer, owner)) continue;
-        const box = boxOf(layer);
-        if (box && pointIn(p, box)) return layer;
-      }
+    for (const layer of this.hitHiddenLayers()) {
+      if (layers.includes(layer) || containsComposed(layer, owner)) continue;
+      const box = boxOf(layer);
+      if (box && pointIn(p, box)) return layer;
     }
     return null;
   }
 
   /**
-   * The layers below `root` that paint (a background colour or image, or
-   * replaced content) where the hit test cannot see them: `root`'s children,
-   * and under a child only when the hit test cannot see that child either.
-   * Read once per root per request.
+   * Every element of the page that paints (a background colour or image, or
+   * replaced content) where the hit test cannot see it: `pointer-events:
+   * none`, and not `visibility: hidden`. One walk of the composed tree per
+   * request, open shadow roots included, reading each element's computed
+   * style once; it does not descend into a subtree that renders nothing
+   * (`display: none`) or paints nothing (`opacity: 0`). Only a request that
+   * measures contrast walks it.
    */
-  private hitHiddenLayersBelow(root: Element): readonly Element[] {
-    const cached = this.hitHiddenBelow.get(root);
-    if (cached) return cached;
+  private hitHiddenLayers(): readonly Element[] {
+    if (this.hitHidden) return this.hitHidden;
     const found: Element[] = [];
-    const visit = (parent: Element): void => {
-      for (const child of Array.from(parent.children)) {
-        const st = this.style(child);
-        if (st.display === 'none') continue;
-        const unhittable = readInteractionBlockers(child, st).pointerEventsNone;
-        const hidden = st.visibility === 'hidden' || st.visibility === 'collapse';
-        if (unhittable && !hidden && st.opacity !== '0') {
-          const bg = parseColor(st.backgroundColor);
-          if ((bg && bg.a > 0) || st.backgroundImage !== 'none' || isReplaced(child)) {
-            found.push(child);
-          }
-        }
-        const box = boxOf(child);
-        if (unhittable || hidden || !box || box.w === 0 || box.h === 0) visit(child);
+    const pending: Element[] = document.documentElement ? [document.documentElement] : [];
+    while (pending.length > 0) {
+      const el = pending.pop()!;
+      const st = this.style(el);
+      if (st.display === 'none' || st.opacity === '0') continue;
+      const hidden = st.visibility === 'hidden' || st.visibility === 'collapse';
+      if (st.pointerEvents === 'none' && !hidden) {
+        const bg = parseColor(st.backgroundColor);
+        if ((bg && bg.a > 0) || st.backgroundImage !== 'none' || isReplaced(el)) found.push(el);
       }
-    };
-    visit(root);
-    this.hitHiddenBelow.set(root, found);
+      // Children last to first, so the walk visits them in document order.
+      const children = [...Array.from(el.shadowRoot?.children ?? []), ...Array.from(el.children)];
+      for (let i = children.length - 1; i >= 0; i--) pending.push(children[i]);
+    }
+    this.hitHidden = found;
     return found;
   }
 

@@ -555,13 +555,38 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       <div style="position:absolute;left:0;top:250px;width:400px;height:40px;background:#fff;pointer-events:none">
         <p data-id="held" style="margin:0;color:#000;pointer-events:auto">Inside a pointer-events: none card</p>
       </div>
+      <p data-id="headered" style="${at(310)}">Under a scrim inside a header that misses the text</p>
+      <div style="position:absolute;left:0;top:296px;width:400px;height:8px;background:#eee">
+        <div style="${veil(305, 'rgba(0,0,0,0.6)')};pointer-events:none"></div>
+      </div>
+      <p data-id="shadowed" style="${at(360)}">Under a scrim in a shadow tree</p>
+      <div class="scrimhost" style="position:absolute;left:0;top:346px;width:400px;height:8px"></div>
+      <p data-id="fadedveil" style="${at(410)}">A veil inside a layer at opacity 0</p>
+      <div style="opacity:0">
+        <div style="${veil(405, 'rgba(0,0,0,0.6)')};pointer-events:none"></div>
+      </div>
     `);
+    await page.evaluate(
+      (style) => {
+        document.querySelector('.scrimhost')!.attachShadow({ mode: 'open' }).innerHTML =
+          `<div style="${style};pointer-events:none"></div>`;
+      },
+      veil(355, 'rgba(0,0,0,0.6)')
+    );
+    const ids = [
+      'carded',
+      'portaled',
+      'rooted',
+      'wrapped',
+      'elsewhere',
+      'held',
+      'headered',
+      'shadowed',
+      'fadedveil',
+    ];
     const res = await assertOn(
       page,
-      ['carded', 'portaled', 'rooted', 'wrapped', 'elsewhere', 'held'].map((element) => ({
-        type: 'contrast_meets_wcag',
-        element,
-      }))
+      ids.map((element) => ({ type: 'contrast_meets_wcag', element }))
     );
     expect(verdicts(res)).toEqual([
       ['unknown', 'input_missing'], // found below the card the hit test returned
@@ -570,13 +595,20 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       ['unknown', 'input_missing'], // found through a wrapper the hit test cannot see
       ['passed', null], // a veil that does not reach the text
       ['passed', null], // a pointer-events: none ancestor holds the text: it is the backdrop
+      // A fixed scrim inside a header the hit test can see, whose own box
+      // misses the text: 60% black over #000 on white would really be about
+      // 3.7:1 (#000 on #666), not the 21:1 of the text alone.
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'], // the same scrim inside an open shadow tree
+      ['passed', null], // a layer at opacity 0 paints nothing, its veil included
     ]);
-    for (const r of res.results.slice(0, 4)) {
-      expect(r.detail).toContain(
+    for (const i of [0, 1, 2, 3, 6, 7]) {
+      expect(res.results[i].detail).toContain(
         "paints a background at the text's position but computes pointer-events: none"
       );
     }
     expect(res.results[5].detail).toContain('contrast ratio 21.00:1');
+    expect(res.results[8].detail).toContain('contrast ratio 21.00:1');
     await page.close();
   }, 60_000);
 

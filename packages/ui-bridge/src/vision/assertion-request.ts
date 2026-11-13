@@ -85,17 +85,20 @@ export const VISION_ASSERTION_KINDS: readonly VisionAssertionKind[] = [
 ] as const;
 
 /**
- * The most assertions one in-tab request evaluates, set from the Chromium
- * timing smoke (`dom-assertions.smoke.test.ts`). On its 2000-node page with
- * 1600 registered elements, a request pays about 1.5 s once, for the registry
- * snapshot that attributes it, and 0.4 to 0.6 ms per assertion (the slower of
- * 500 mixed and 500 contrast measurements on distinct elements, the costliest
- * kind). 1000 is twice the largest batch a tenant has run (504 results) and
- * costs about 0.6 s there, so a request at the limit, with the tab's 500 ms
- * settle wait, takes under 3 s of the relay's 8 s command timeout — the rest
- * is room for slower hardware and larger pages. The snapshot grows with the
- * registry, not with the batch, so no limit here bounds it. A larger batch is
- * refused, loudly, rather than left to time out half-measured: split it.
+ * The most assertions one in-tab request evaluates. A request must answer
+ * within the relay's 8 s command timeout, and the Chromium timing smoke
+ * (`dom-assertions.smoke.test.ts`) holds this limit to it on every run: on a
+ * 2000-node page with 1600 registered elements it times what every request
+ * pays once (the registry snapshot that attributes it) and the slower of 500
+ * mixed and 500 contrast measurements on distinct elements (the costliest
+ * kind), fails unless that fixed cost, this many assertions at the slower
+ * rate and the tab's 500 ms settle wait come to under 8 s, and prints what it
+ * measured. 1000 is about twice the largest batch the plan names: a tenant's
+ * acceptance run of 504 results (plan
+ * 2026-11-09-ui-bridge-relay-evaluates-vision-assertions-in-the-tab, Why).
+ * The snapshot grows with the registry, not with the batch, so no limit here
+ * bounds it. A larger batch is refused, loudly, rather than left to time out
+ * half-measured: split it.
  */
 export const MAX_VISION_ASSERTIONS = 1000;
 

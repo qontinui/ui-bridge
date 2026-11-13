@@ -245,12 +245,15 @@ keys (`tabId`) are relayed. No other key of the body reaches the tab,
 `settleTimeout` and `skipSettle` included: the tab waits at most its default
 500 ms for the page to settle before it measures.
 
-A request must answer within the relay's 8 s command timeout. Measuring costs
-well under a millisecond per assertion, so a full batch takes a small part of
-it. Each request also takes one registry snapshot to attribute its answer
-(`snapshotAttribution`), and that costs about as much as a `/control/snapshot`
-of the same page: it grows with the number of registered elements, whatever
-the batch size.
+A request must answer within the relay's 8 s command timeout, and a Chromium
+timing smoke holds the 1000-assertion limit to it on every run. On its
+2000-node page measuring costs under a millisecond per assertion, so a full
+batch takes a small part of it. A request that measures contrast also walks
+the page once, reading each element's computed style, to find the layers the
+hit test cannot see. Each request also takes one registry snapshot to
+attribute its answer (`snapshotAttribution`), and that costs about as much as
+a `/control/snapshot` of the same page: it grows with the number of
+registered elements, whatever the batch size.
 
 A capture result (`capture`, `annotate`, `diff`, `raw`) names its bytes by
 `url`, whose literal value is the relative HTTP path
