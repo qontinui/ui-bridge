@@ -523,7 +523,10 @@ set, a property the engine does not compute — is listed in
 `dir`, `id`, `role`, `title`, `alt`, `href` and `aria-*` attributes are
 readable; any other name, an invalid property name, or more than 32 names is
 refused with `UB-VALIDATION-ERROR`. On the state route each list may also be a
-repeated key (`?properties=hyphens&properties=outline-offset`).
+repeated key (`?properties=hyphens&properties=outline-offset`). The 32 are
+counted as sent: 33 array entries, or 33 values of a repeated key, are
+refused even when they all name one property, and so is a query list longer
+than 4160 characters, a repeated key's values together.
 
 The same read backs the `ai/assert` style and attribute checks
 (`cssProperty`, `cssPropertyInSet`, `cssPropertyRange`, `tokenCompliance`,

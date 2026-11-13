@@ -30,6 +30,7 @@ import { useCommandRelay } from '../react/useCommandRelay';
 import { listener } from '../react/__tests__/relay-into-listener';
 import { getGlobalRegistry, resetGlobalRegistry } from '../core/registry';
 import { createActionExecutor } from '../control/action-executor';
+import { MAX_PROJECTED_NAMES } from '../core/element-projection';
 import { REDACTED_VALUE } from '../core/redaction';
 
 const BASE = 'http://bridge.test/api/ui-bridge';
@@ -343,6 +344,12 @@ describe.each(transports)('the $name transport', ({ mount }) => {
     it.each([
       ['an attribute outside the allow-list', 'attributes=style', 'attributes'],
       ['an invalid property name', `properties=${encodeURIComponent('a{b}')}`, 'properties'],
+      // Counted as sent, before the repeats fold to one name.
+      [
+        'one more repeated key than the bound, all naming one property',
+        Array.from({ length: MAX_PROJECTED_NAMES + 1 }, () => 'properties=color').join('&'),
+        'properties',
+      ],
     ])('refuses %s with UB-VALIDATION-ERROR', async (_label, query, option) => {
       const { relay } = await mount();
       if (relay) vi.spyOn(relay, 'queueCommand');
