@@ -330,15 +330,26 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       <p style="width:300px"><span data-id="zeroinl" style="font-size:0">gone</span> visible sibling text</p>
       <div data-id="acct" style="width:120px;white-space:nowrap;overflow:hidden">Card <span data-bridge-redact="true">4111 1111 1111 1111</span> on file</div>
       <p style="width:200px;font-size:16px;line-height:10px;padding:6px 0;overflow:hidden"><span data-id="padded">Tight lines</span></p>
+      <div data-id="fractional" style="width:100.4px;white-space:nowrap;overflow:hidden"><span style="display:inline-block;width:100.9px">x</span></div>
+      <div data-id="fractionalover" style="width:100.4px;white-space:nowrap;overflow:hidden"><span style="display:inline-block;width:101.6px">x</span></div>
     `);
     const res = await assertOn(
       page,
-      ['scaled', 'scaledover', 'shortinl', 'firstline', 'wrapped', 'zeroinl', 'acct', 'padded'].map(
-        (element) => ({
-          type: 'text_fits_container',
-          element,
-        })
-      )
+      [
+        'scaled',
+        'scaledover',
+        'shortinl',
+        'firstline',
+        'wrapped',
+        'zeroinl',
+        'acct',
+        'padded',
+        'fractional',
+        'fractionalover',
+      ].map((element) => ({
+        type: 'text_fits_container',
+        element,
+      }))
     );
     expect(verdicts(res)).toEqual([
       // Its 300px layout box holds the text; the box it paints at scale(0.5)
@@ -355,7 +366,13 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       // and below, into padding the block does not overflow: the block cuts
       // nothing, as measuring the <p> itself would also say.
       ['passed', null],
+      // The 100.4px box reaches the evaluator unrounded and is 101px to the
+      // fit, as the DOM's integer scrollWidth of 100.9px of content is.
+      // offsetWidth would have handed it over as 100px, already rounded.
+      ['passed', null],
+      ['failed', null], // 101.6px of content is a scrollWidth of 102px
     ]);
+    expect(res.results[9].detail).toContain('content is 102px wide but the box is only 101px');
     expect(res.results[1].detail).toContain('text is clipped');
     expect(res.results[4].detail).toContain('text overflows vertically');
     expect(res.results[5].detail).toContain("inline element 'zeroinl' exposes no box of its own");
@@ -376,16 +393,21 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
         <div data-id="third2" style="flex:1;height:20px"></div>
         <div data-id="third3" style="flex:1;height:20px"></div>
       </div>
+      <div data-id="sub1" style="position:absolute;left:0;top:300px;width:50.25px;height:10px"></div>
+      <div data-id="sub2" style="position:absolute;left:50px;top:300px;width:50px;height:10px"></div>
     `);
     const res = await assertOn(page, [
       { type: 'no_overlap', elements: ['a', 'b'] },
       { type: 'no_overlap', elements: ['a', 'c'] },
       { type: 'no_overlap', elements: ['a', 'b'], tolerance_px: 5 },
-      // Three 33.333px flex items only touch: geometry is never rounded up.
+      // Three 33.333px flex items only touch: geometry rounds to the nearest
+      // pixel, never up.
       { type: 'no_overlap', elements: ['third1', 'third2'] },
       { type: 'no_overlap', elements: ['third2', 'third3'] },
       { type: 'no_overlap', elements: ['a', 'hidden'] },
       { type: 'no_overlap', elements: ['a', 'absent'] },
+      // A quarter pixel of overlap rounds away: [0, 50) and [50, 100).
+      { type: 'no_overlap', elements: ['sub1', 'sub2'] },
     ]);
     expect(verdicts(res)).toEqual([
       ['failed', null],
@@ -395,6 +417,7 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       ['passed', null],
       ['unknown', 'input_missing'],
       ['unknown', 'input_missing'],
+      ['passed', null],
     ]);
     expect(res.results[0].detail).toBe('a and b overlap by 400 px² (tolerance 0 px)');
     await page.close();
@@ -528,6 +551,27 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       "element 'tall' extends past the vertical clip of 'short'"
     );
     await scrolled.close();
+
+    // One pixel past the clip is clipped: the clip is the padding box itself,
+    // with no slack, and the evaluator rounds both boxes to the nearest pixel.
+    const edge = await openPage(`
+      <div data-id="edge" style="width:200px;height:50px;overflow:hidden">
+        <div data-id="onepx" style="width:201px;height:10px"></div>
+      </div>
+      <div data-id="edge2" style="width:200px;height:50px;overflow:hidden">
+        <div data-id="exact" style="width:200px;height:10px"></div>
+      </div>
+    `);
+    const edgeRes = await assertOn(edge, [
+      { type: 'no_clipping', region: { x: 0, y: 0, w: 800, h: 50 } },
+      { type: 'no_clipping', region: { x: 0, y: 60, w: 800, h: 50 } },
+    ]);
+    expect(verdicts(edgeRes)).toEqual([
+      ['failed', null],
+      ['passed', null], // exactly as wide as the clip
+    ]);
+    expect(edgeRes.results[0].detail).toContain("element 'onepx' extends past");
+    await edge.close();
 
     const unmeasured = await openPage(`<div data-id="gone" style="display:none"></div>`);
     expect(verdicts(await assertOn(unmeasured, [{ type: 'no_clipping' }]))).toEqual([

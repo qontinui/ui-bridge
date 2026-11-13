@@ -41,18 +41,24 @@
  *   covers the text (opaque), or paints over it in a way the DOM cannot read
  *   (an image, a filter, a backdrop-filter, a blend, replaced or generated
  *   content, its own text), is `unknown{input_missing}` naming the layer.
+ * ROUNDING (plan 2026-11-09 Phase 0's contract): every box below is handed to
+ * the evaluator UNROUNDED, and the evaluator rounds it as its kind does —
+ * `text_fits_container`'s comparison box UP, the geometry kinds' boxes and
+ * clips to the NEAREST pixel. Nothing here rounds a box.
+ *
  * - `text_fits_container` — a block-level element's `scrollWidth` /
  *   `scrollHeight`, with its borders and scrollbars added back, against its
- *   border box with the size `Math.ceil`'d (vision-core's comparison and the
- *   producer contract); strictly greater fails. Both sides are LAYOUT sizes
- *   (`offset*` / `scroll*` / `client*`), so a CSS transform does not read as
- *   overflow. An inline element is measured by its own line fragments
- *   (`getClientRects`) against the content box of the block it lays out in,
- *   so a sibling's overflow is not its own; when it exposes no fragment, the
- *   block's extents stand in only if it is all the block holds, else
- *   `unknown{input_missing}`. No text is `unknown{input_missing}`.
- * - `no_overlap` — border boxes (`getBoundingClientRect`), exact: geometry is
- *   never rounded up, or adjacent fractional boxes would read as overlapping.
+ *   border box (vision-core's comparison); strictly greater fails. Both sides
+ *   are LAYOUT sizes (the used `width` / `height`, `scroll*`, `client*`), so a
+ *   CSS transform does not read as overflow. An inline element is measured by
+ *   its own line fragments (`getClientRects`) against the content box of the
+ *   block it lays out in, so a sibling's overflow is not its own; when it
+ *   exposes no fragment, the block's extents stand in only if it is all the
+ *   block holds, else `unknown{input_missing}`. No text is
+ *   `unknown{input_missing}`.
+ * - `no_overlap` — border boxes (`getBoundingClientRect`), rounded to the
+ *   nearest pixel and never up, or adjacent fractional boxes would read as
+ *   overlapping.
  * - `element_above` — paint order from `document.elementsFromPoint` at sample
  *   points inside both the pair's intersection and the viewport. The
  *   evaluator never scrolls; no sample showing both is
@@ -305,7 +311,10 @@ function containsComposed(ancestor: Element, el: Element): boolean {
   return false;
 }
 
-/** A border box in viewport CSS pixels, or undefined when the element generates no box. */
+/**
+ * A border box in viewport CSS pixels, unrounded (the evaluator rounds it per
+ * kind), or undefined when the element generates no box.
+ */
 function boxOf(el: Element): VisionRegion | undefined {
   if (el.getClientRects().length === 0) return undefined;
   const r = el.getBoundingClientRect();
@@ -335,6 +344,9 @@ function pointIn(p: { x: number; y: number }, r: VisionRegion): boolean {
 function pxValue(v: string): number {
   return v.endsWith('px') ? Number(v.slice(0, -2)) : NaN;
 }
+
+/** A box size in CSS pixels, unrounded. */
+type FitSize = { w: number; h: number };
 
 /** The hit test, or null when this DOM does not implement it. */
 function hitStack(x: number, y: number): Element[] | null {
@@ -681,32 +693,67 @@ class TabMeasurement {
 
   /**
    * A block-level element is its own fit box. vision-core compares the scroll
-   * extents with the BORDER box, strictly, and the producer contract (plan
-   * 2026-11-09 Phase 0) takes that box's size rounded UP, so an integer extent
-   * never fails against a fractional box. Both sides come from LAYOUT sizes
-   * (`offset*` / `scroll*` / `client*`), which a CSS transform does not change
-   * — `getBoundingClientRect` is the transformed box, and a `scale(0.5)` card
-   * would otherwise read as overflowing by half. `scroll*` measures only the
-   * padding box, so the borders and scrollbars (`offset*` - `client*`) are
-   * added back: without them an overflow narrower than the borders plus a
-   * scrollbar would pass.
+   * extents with the BORDER box, strictly, rounded UP — and the evaluator does
+   * that rounding (plan 2026-11-09 Phase 0's contract), so the box is handed
+   * over unrounded: {@link layoutSizes}, fractional, where `offsetWidth` would
+   * already be the browser's integer rounding of it. Both sides are LAYOUT
+   * sizes, which a CSS transform does not change: `getBoundingClientRect` is
+   * the transformed box, and a `scale(0.5)` card would otherwise read as
+   * overflowing by half. The extents are the DOM's integer `scrollWidth` /
+   * `scrollHeight`, which measure only the padding box, so the borders and
+   * scrollbars (`offset*` - `client*`) are added back: without them an
+   * overflow narrower than the borders plus a scrollbar would pass.
    */
   private fitOwnBox(el: Element, record: MeasuredElement): void {
     const html = el as HTMLElement;
     if (typeof html.offsetWidth === 'number' && typeof html.offsetHeight === 'number') {
-      record.fitBox = { w: Math.ceil(html.offsetWidth), h: Math.ceil(html.offsetHeight) };
+      record.fitBox = this.layoutSizes(el)?.border ?? { w: html.offsetWidth, h: html.offsetHeight };
       record.scrollWidthPx = el.scrollWidth + Math.max(0, html.offsetWidth - el.clientWidth);
       record.scrollHeightPx = el.scrollHeight + Math.max(0, html.offsetHeight - el.clientHeight);
     } else {
       // No layout sizes (an SVG element): its own box, untransformed only if
       // it is not transformed — the best this DOM exposes.
       const r = el.getBoundingClientRect();
-      record.fitBox = { w: Math.ceil(r.width), h: Math.ceil(r.height) };
+      record.fitBox = { w: r.width, h: r.height };
       record.scrollWidthPx = el.scrollWidth;
       record.scrollHeightPx = el.scrollHeight;
     }
     const overflow = this.style(el).textOverflow;
     if (overflow) record.textOverflow = overflow;
+  }
+
+  /**
+   * `el`'s border-box and padding-box sizes in LAYOUT pixels, unrounded: the
+   * used `width` / `height` (fractional, and not changed by a CSS transform),
+   * with the padding, borders and scrollbars added back under
+   * `box-sizing: content-box`. The browser resolves a content-box `width` to
+   * the client width less the padding, so a scrollbar lies outside it; its
+   * size is what the integer `offset*` and `client*` sizes leave beside the
+   * borders. `null` when the computed style does not resolve a size to
+   * pixels.
+   */
+  private layoutSizes(el: Element): { border: FitSize; padding: FitSize } | null {
+    const st = this.style(el);
+    const w = pxValue(st.width);
+    const h = pxValue(st.height);
+    if (!Number.isFinite(w) || !Number.isFinite(h)) return null;
+    const html = el as HTMLElement;
+    const px = (v: string): number => pxValue(v) || 0;
+    const framesX = px(st.borderLeftWidth) + px(st.borderRightWidth);
+    const framesY = px(st.borderTopWidth) + px(st.borderBottomWidth);
+    const barX = Math.max(0, (html.offsetWidth ?? 0) - el.clientWidth - Math.round(framesX));
+    const barY = Math.max(0, (html.offsetHeight ?? 0) - el.clientHeight - Math.round(framesY));
+    const border =
+      st.boxSizing === 'border-box'
+        ? { w, h }
+        : {
+            w: w + px(st.paddingLeft) + px(st.paddingRight) + framesX + barX,
+            h: h + px(st.paddingTop) + px(st.paddingBottom) + framesY + barY,
+          };
+    return {
+      border,
+      padding: { w: border.w - framesX - barX, h: border.h - framesY - barY },
+    };
   }
 
   /**
@@ -716,9 +763,10 @@ class TabMeasurement {
    * short label beside a long one would read as overflowing. They still decide
    * that an axis does NOT overflow; where it does, the fragments say whose
    * text overflows. Fragments and box are both viewport rectangles, so a
-   * transform scales them alike. The fit box is the content box rounded up;
-   * the extent is how far the fragments reach, rounded, so sub-pixel layout
-   * noise is not overflow.
+   * transform scales them alike. The fit box is the content box, unrounded
+   * (the evaluator rounds it up); the extent is how far the fragments reach,
+   * rounded to an integer as the DOM's scroll extents are, so sub-pixel
+   * layout noise is not overflow.
    */
   private fitInlineFragments(
     id: string,
@@ -753,8 +801,6 @@ class TabMeasurement {
     const bottom = Math.max(...fragments.map((r) => r.bottom));
     const w = content.right - content.left;
     const h = content.bottom - content.top;
-    const fitW = Math.ceil(w);
-    const fitH = Math.ceil(h);
     // A block that does not overflow an axis cuts no line on it, whatever
     // its fragments' sub-pixel and font-metric rounding say; where it does,
     // the fragments say whether THIS element's text is what overflows.
@@ -766,9 +812,9 @@ class TabMeasurement {
       block.scrollHeight > block.clientHeight
         ? Math.max(0, bottom - content.bottom, content.top - top)
         : 0;
-    record.fitBox = { w: fitW, h: fitH };
-    record.scrollWidthPx = Math.round(fitW + overX);
-    record.scrollHeightPx = Math.round(fitH + overY);
+    record.fitBox = { w, h };
+    record.scrollWidthPx = Math.round(w + overX);
+    record.scrollHeightPx = Math.round(h + overY);
     const overflow = this.style(block).textOverflow;
     if (overflow) record.textOverflow = overflow;
   }
@@ -785,16 +831,20 @@ class TabMeasurement {
     if (typeof html.offsetWidth !== 'number' || html.offsetWidth <= 0 || html.offsetHeight <= 0) {
       return null;
     }
+    const sizes = this.layoutSizes(el);
+    const border = sizes?.border ?? { w: html.offsetWidth, h: html.offsetHeight };
+    const padding = sizes?.padding ?? { w: el.clientWidth, h: el.clientHeight };
+    if (!(border.w > 0) || !(border.h > 0)) return null;
     const r = el.getBoundingClientRect();
     const st = this.style(el);
-    const sx = r.width / html.offsetWidth;
-    const sy = r.height / html.offsetHeight;
+    const sx = r.width / border.w;
+    const sy = r.height / border.h;
     const px = (v: string): number => pxValue(v) || 0;
     return {
       left: r.left + (px(st.borderLeftWidth) + px(st.paddingLeft)) * sx,
-      right: r.left + (px(st.borderLeftWidth) + el.clientWidth - px(st.paddingRight)) * sx,
+      right: r.left + (px(st.borderLeftWidth) + padding.w - px(st.paddingRight)) * sx,
       top: r.top + (px(st.borderTopWidth) + px(st.paddingTop)) * sy,
-      bottom: r.top + (px(st.borderTopWidth) + el.clientHeight - px(st.paddingBottom)) * sy,
+      bottom: r.top + (px(st.borderTopWidth) + padding.h - px(st.paddingBottom)) * sy,
     };
   }
 
@@ -889,29 +939,25 @@ class TabMeasurement {
   /**
    * The padding box an ancestor clips its content to, in viewport pixels:
    * the border box minus borders and scrollbars, scaled when the element is
-   * transformed. Half a pixel of slack absorbs the layout's sub-pixel rounding,
-   * which is not clipping anyone can see.
+   * transformed. Unrounded, like every box handed to the evaluator: it rounds
+   * the clip and the box it bounds to the nearest pixel, which is what
+   * absorbs the layout's sub-pixel noise.
    */
   private clipBox(el: Element, st: CSSStyleDeclaration): ClipBounds {
     const r = el.getBoundingClientRect();
     const html = el as HTMLElement;
-    const ow = html.offsetWidth || r.width;
-    const oh = html.offsetHeight || r.height;
+    const sizes = this.layoutSizes(el);
+    const ow = sizes?.border.w ?? (html.offsetWidth || r.width);
+    const oh = sizes?.border.h ?? (html.offsetHeight || r.height);
+    const pw = sizes?.padding.w ?? el.clientWidth;
+    const ph = sizes?.padding.h ?? el.clientHeight;
     const sx = ow > 0 ? r.width / ow : 1;
     const sy = oh > 0 ? r.height / oh : 1;
     const bl = pxValue(st.borderLeftWidth) || 0;
     const bt = pxValue(st.borderTopWidth) || 0;
     const left = r.left + bl * sx;
     const top = r.top + bt * sy;
-    const SLACK = 0.5;
-    return {
-      left: left - SLACK,
-      top: top - SLACK,
-      right: left + el.clientWidth * sx + SLACK,
-      bottom: top + el.clientHeight * sy + SLACK,
-      byX: '',
-      byY: '',
-    };
+    return { left, top, right: left + pw * sx, bottom: top + ph * sy, byX: '', byY: '' };
   }
 
   /**

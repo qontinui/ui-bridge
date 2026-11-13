@@ -203,12 +203,16 @@ only what the page itself can measure, and they get a verdict:
 | --- | --- |
 | `contrast_meets_wcag` | The text colour against the backdrop composited under its first rendered text run, with every translucent layer the hit test shows above the text (a scrim) composited over both; WCAG large-text thresholds (AA 3:1 / AAA 4.5:1 at 24px, or 18.66px bold). A layer covering the text, or painting over it in a way the DOM cannot read, is `unknown` |
 | `text_fits_container` | A block-level element's `scrollWidth`/`scrollHeight` (borders and scrollbars included) against its border box, rounded up, both in layout pixels, so a CSS `transform` is not overflow; an inline element's own line fragments against the content box of its block, so a sibling's overflow is not its own; an element with no text is `unknown` |
-| `no_overlap` | Border boxes, after the `tolerance_px` inset |
+| `no_overlap` | Border boxes rounded to the nearest pixel, then inset by `tolerance_px` |
 | `element_above` | Paint order from `document.elementsFromPoint` inside the pair's visible intersection (never scrolls) |
 | `no_clipping` | Each registered element against the padding box of its nearest ancestor with `overflow` `hidden` or `clip`, or `contain: paint`. A scroll container (`overflow` `auto` or `scroll`) is not a clip: what is scrolled out of it is reachable, so only its own box is compared further out. No element inside a clipping ancestor is `unknown` |
 
 The evaluator is a port of the runner's (vision-core) and is held to it by
-vision-core's own conformance fixture, so both paths give the same answer. Every
+vision-core's own conformance fixture, so both paths give the same answer. Boxes
+are measured unrounded, and each kind rounds them its own way:
+`text_fits_container` rounds its box up, and the geometry kinds (`no_overlap`,
+`element_above`, `no_clipping`) round every box to the nearest pixel, so three
+33.333px flex items do not overlap. Every
 other kind answers per result with `outcome: "unknown"` and
 `code: "capability_unavailable_in_build"`. A mixed batch still answers what it
 can. Anything the page cannot decide is `unknown` with a code, never `passed`:
