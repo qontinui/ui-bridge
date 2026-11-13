@@ -175,6 +175,8 @@ import {
   readElementIdPayload,
   type ElementPayloadRefusal,
 } from './element-command-payload';
+import { evaluateVisionAssertions } from '../vision/dom-assertions';
+import { VisionAssertRequestError } from '../vision/assertion-request';
 
 // ============================================================================
 // Types
@@ -1308,6 +1310,9 @@ const SETTLE_BEFORE_READ_ACTIONS: ReadonlySet<string> = new Set([
   'aiAssert',
   'aiAssertBatch',
   'executeElementAction',
+  // Measures layout, paint order and colours: an element still registering
+  // would read as "not in the snapshot", a page mid-transition as a failure.
+  'visionAssert',
 ]);
 
 /**
@@ -5513,6 +5518,30 @@ export async function executeCommand(
 
     case 'getQualityContexts':
       return listContexts();
+
+    // ======================================================================
+    // Vision assertions
+    // ======================================================================
+
+    // `POST /vision/assert` with no runner: the same function the in-process
+    // handlers call (vision/dom-assertions.ts), measuring this page. The relay
+    // handler validated the body before queuing it; it is validated again
+    // here for a WS client that dispatches the command directly, and a
+    // malformed one is answered as a failed command carrying its code.
+    case 'visionAssert': {
+      try {
+        return evaluateVisionAssertions(registry, payload);
+      } catch (err) {
+        if (err instanceof VisionAssertRequestError) {
+          return {
+            success: false,
+            error: err.message,
+            code: mapInternalErrorCode(err.code, err.message),
+          };
+        }
+        throw err;
+      }
+    }
 
     case 'saveBaseline': {
       try {

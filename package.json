@@ -23,6 +23,8 @@
     "diagnostics:check": "node scripts/check-diagnostics.cjs",
     "observation:sync": "node scripts/sync-observation.mjs",
     "observation:check": "node scripts/sync-observation.mjs --check",
+    "vision-conformance:sync": "node scripts/sync-vision-conformance.mjs",
+    "vision-conformance:check": "node scripts/sync-vision-conformance.mjs --check",
     "redaction:check-surface": "node scripts/check-redaction-surface.cjs",
     "redaction:surface:update": "node scripts/check-redaction-surface.cjs --update",
     "deps:check-ranges": "node scripts/check-dep-ranges.cjs",

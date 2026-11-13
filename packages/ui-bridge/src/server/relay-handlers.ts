@@ -59,6 +59,7 @@ import {
   type FindFilterableElement,
   type FindUnevaluated,
 } from '../core/find-filter';
+import { parseVisionAssertRequest, VisionAssertRequestError } from '../vision/assertion-request';
 
 // ============================================================================
 // Helpers
@@ -1622,8 +1623,22 @@ export function createRelayHandlers(
       return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
-    async visionAssert(_request, _context) {
-      return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
+    // `vision/assert` is evaluated IN THE TAB (vision/dom-assertions.ts, a
+    // port of vision-core): the five snapshot-reading kinds answer from the
+    // live page, every other kind answers `unknown{capability_unavailable_in_
+    // build}` per result. The body is validated HERE, before anything is
+    // queued, so a malformed one is refused with UB-VALIDATION-ERROR and never
+    // reaches a tab (the tab validates again, for a WS client that dispatches
+    // the command directly). The runner serves this route natively and is
+    // unaffected.
+    async visionAssert(request, context) {
+      try {
+        parseVisionAssertRequest(request);
+      } catch (err) {
+        if (err instanceof VisionAssertRequestError) return error(err.message, err.code);
+        throw err;
+      }
+      return relayCommand('visionAssert', request, ctxOpts(context));
     },
 
     async visionBaseline(_request, _context) {
