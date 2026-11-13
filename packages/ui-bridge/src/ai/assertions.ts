@@ -28,7 +28,7 @@ import {
   type ElementProjectionRequest,
 } from '../core/element-projection';
 import { resolvePageSentinel } from '../core/page-sentinel';
-import { trustDeveloperContent } from '../core/redaction';
+import { trustDeveloperContent, verdictFromState, verdictOf } from '../core/redaction';
 
 /**
  * Stable `UB-ASSERT-*` diagnostic code for a failed assertion.
@@ -162,6 +162,23 @@ function computedStylesKey(cssName: string): string {
 }
 
 /**
+ * The read of a value §4.6 withheld: the element sits in a `data-bridge-redact`
+ * boundary and `what` can carry page content, so the read holds the redaction
+ * sentinel (or nothing), not the page's value. Comparing it would report the
+ * page as failing a check nobody could measure, with `actual: "[REDACTED]"`.
+ * The policy withheld the comparison: `not_attempted_by_policy`.
+ */
+function withheldByRedaction(what: string): UnmeasuredRead {
+  return {
+    code: 'not_attempted_by_policy',
+    detail:
+      `the element sits in a \`data-bridge-redact\` boundary, and ${what} can carry page ` +
+      'content, so §4.6 withholds its value',
+    failureCode: UNKNOWN_CODE_DIAGNOSTICS.not_attempted_by_policy,
+  };
+}
+
+/**
  * Assertion executor class
  */
 export class AssertionExecutor {
@@ -283,10 +300,7 @@ export class AssertionExecutor {
    * (plan Phase 1 — required whenever `passed: false`). Passing results are
    * returned unchanged. Idempotent: an already-set `failureCode` is kept.
    */
-  private withFailureCode(
-    result: AssertionResult,
-    type: AssertionType
-  ): AssertionResult {
+  private withFailureCode(result: AssertionResult, type: AssertionType): AssertionResult {
     if (!result.passed && !result.failureCode) {
       result.failureCode = resolveAssertionFailureCode(type, result.failureReason);
     }
@@ -1037,12 +1051,15 @@ export class AssertionExecutor {
   /**
    * Assert attribute value.
    *
-   * `placeholder` is read off the element's search projection (already
-   * §4.6-scrubbed). Every other name is read through the request-scoped
-   * projection (`core/element-projection.ts`) off the element's live node — the
-   * same allow-list and the same scrub as `/control/find`'s `attributes` — so an
-   * absent attribute is a measured `null`, and a name the projection refuses or
-   * cannot read makes the check UNMEASURED, never a failure with no value.
+   * `placeholder` is read off the element's search projection, which drops it
+   * inside a redaction boundary (§4.6), so there the check is UNMEASURED by
+   * policy rather than compared with nothing. Every other name is read through
+   * the request-scoped projection (`core/element-projection.ts`) off the
+   * element's live node — the same allow-list and the same scrub as
+   * `/control/find`'s `attributes` — so an absent attribute is a measured
+   * `null`, and a name the projection refuses or cannot read, or a value it
+   * scrubbed, makes the check UNMEASURED, never a failure with no value or with
+   * the sentinel as its value.
    */
   private assertAttribute(
     element: AIDiscoveredElement,
@@ -1054,6 +1071,16 @@ export class AssertionExecutor {
   ): AssertionResult {
     let actualValue: unknown;
     if (attributeName?.toLowerCase() === 'placeholder') {
+      if (this.contentRedacted(element)) {
+        return this.unmeasuredResult(
+          element,
+          description,
+          expectedValue,
+          'attribute "placeholder"',
+          withheldByRedaction('attribute `placeholder`'),
+          startTime
+        );
+      }
       actualValue = element.placeholder;
     } else {
       const read = this.readProjected(element, 'attribute', attributeName);
@@ -1121,7 +1148,10 @@ export class AssertionExecutor {
    * one (an element that crossed a wire): the fixed `ElementState.computedStyles`
    * subset for a property it carries, and the search projection's `title`.
    * Anything else, and any name the projection refuses or cannot read, comes
-   * back UNMEASURED with its code — never as `''`.
+   * back UNMEASURED with its code — never as `''`. So does a value §4.6
+   * withheld (`not_attempted_by_policy`): one the projection reports in
+   * `redacted`, or the search projection's `title` of a content-redacted
+   * element, which it drops. The sentinel is never judged as the page's value.
    */
   private readProjected(
     element: AIDiscoveredElement,
@@ -1166,6 +1196,11 @@ export class AssertionExecutor {
           },
         };
       }
+      // A value the scrub replaced is the sentinel, not the page's: the
+      // projection names it, so it is never read here as measured.
+      if (projection.redacted?.some((r) => r.kind === kind && r.name === name)) {
+        return { unmeasured: withheldByRedaction(`${kind} \`${name}\``) };
+      }
       const value =
         kind === 'property' ? projection.properties?.[name] : projection.attributes?.[name];
       if (value !== undefined) return { value };
@@ -1177,8 +1212,12 @@ export class AssertionExecutor {
       const styles = element.state?.computedStyles as Record<string, unknown> | undefined;
       const value = styles?.[key];
       if (typeof value === 'string' && value !== '') return { value };
-    } else if (name.toLowerCase() === 'title' && typeof element.title === 'string') {
-      return { value: element.title };
+    } else if (name.toLowerCase() === 'title') {
+      // The search projection drops a content-redacted element's title.
+      if (this.contentRedacted(element)) {
+        return { unmeasured: withheldByRedaction('attribute `title`') };
+      }
+      if (typeof element.title === 'string') return { value: element.title };
     }
     return {
       unmeasured: {
@@ -1190,6 +1229,17 @@ export class AssertionExecutor {
         failureCode: 'UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD',
       },
     };
+  }
+
+  /**
+   * The §4.6 CONTENT verdict of `element`: off its live node when it has one,
+   * else off the `redaction` provenance its state was stamped with (an element
+   * that crossed a wire) — never by matching the sentinel string.
+   */
+  private contentRedacted(element: AIDiscoveredElement): boolean {
+    const node = this.operandNodes.get(element) ?? this.liveNodes.get(element.id);
+    if (node) return verdictOf(node as HTMLElement).content;
+    return element.state ? verdictFromState(element.state).content : false;
   }
 
   /**
@@ -1214,7 +1264,9 @@ export class AssertionExecutor {
       `Cannot check ${what}: ${unmeasured.detail}`,
       unmeasured.failureCode === 'UB-VALIDATION-ERROR'
         ? 'Name a CSS property or an allow-listed attribute (lang, dir, id, role, title, alt, href, aria-*)'
-        : 'The value could not be read here: assert against an element with a live DOM node',
+        : unmeasured.code === 'not_attempted_by_policy'
+          ? 'The page withholds this value (§4.6 data-bridge-redact): check a structural value — a colour, a length, an ARIA token — or an element outside the boundary'
+          : 'The value could not be read here: assert against an element with a live DOM node',
       startTime,
       element.state
     );
