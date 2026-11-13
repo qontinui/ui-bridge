@@ -124,6 +124,12 @@ beforeAll(async () => {
     globalName: 'UB',
     platform: 'browser',
     target: 'chrome120',
+    // server/handlers dynamically imports the optional headless peer, which
+    // drives Playwright. Once a workspace build has produced its dist (as CI's
+    // does before the smokes), esbuild follows that import into playwright-core
+    // and fails on node builtins. Marked external, the import() stays in the
+    // bundle unresolved and only rejects if called, and the page never calls it.
+    external: ['@qontinui/ui-bridge-headless'],
     write: false,
     logLevel: 'silent',
     define: { __SDK_VERSION__: '"smoke"', 'process.env.NODE_ENV': '"test"' },
