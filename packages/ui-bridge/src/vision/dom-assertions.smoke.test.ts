@@ -392,16 +392,27 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
         <div data-id="third2" style="flex:1;height:20px"></div>
         <div data-id="third3" style="flex:1;height:20px"></div>
       </div>
+      <div data-id="sub1" style="position:absolute;left:0;top:300px;width:50.25px;height:10px"></div>
+      <div data-id="sub2" style="position:absolute;left:50px;top:300px;width:50px;height:10px"></div>
+      <div data-id="edge1" style="position:absolute;left:0.625px;top:320px;width:10.625px;height:10px"></div>
+      <div data-id="edge2" style="position:absolute;left:11.25px;top:320px;width:5px;height:10px"></div>
     `);
     const res = await assertOn(page, [
       { type: 'no_overlap', elements: ['a', 'b'] },
       { type: 'no_overlap', elements: ['a', 'c'] },
       { type: 'no_overlap', elements: ['a', 'b'], tolerance_px: 5 },
-      // Three 33.333px flex items only touch: geometry is never rounded up.
+      // Three 33.333px flex items only touch: geometry rounds to the nearest
+      // pixel, never up.
       { type: 'no_overlap', elements: ['third1', 'third2'] },
       { type: 'no_overlap', elements: ['third2', 'third3'] },
       { type: 'no_overlap', elements: ['a', 'hidden'] },
       { type: 'no_overlap', elements: ['a', 'absent'] },
+      // A quarter pixel of overlap rounds away: [0, 50) and [50, 100).
+      { type: 'no_overlap', elements: ['sub1', 'sub2'] },
+      // A shared fractional edge, 11.25, stays shared: each edge is rounded,
+      // [1, 11) and [11, 16). Rounding the width on its own would end edge1
+      // at 1 + 11 = 12, a pixel into edge2.
+      { type: 'no_overlap', elements: ['edge1', 'edge2'] },
     ]);
     expect(verdicts(res)).toEqual([
       ['failed', null],
@@ -411,6 +422,8 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       ['passed', null],
       ['unknown', 'input_missing'],
       ['unknown', 'input_missing'],
+      ['passed', null],
+      ['passed', null],
     ]);
     expect(res.results[0].detail).toBe('a and b overlap by 400 px² (tolerance 0 px)');
     await page.close();
@@ -544,6 +557,27 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       "element 'tall' extends past the vertical clip of 'short'"
     );
     await scrolled.close();
+
+    // One pixel past the clip is clipped: the clip is the padding box itself,
+    // with no slack, and the evaluator rounds both boxes to the nearest pixel.
+    const edge = await openPage(`
+      <div data-id="edge" style="width:200px;height:50px;overflow:hidden">
+        <div data-id="onepx" style="width:201px;height:10px"></div>
+      </div>
+      <div data-id="edge2" style="width:200px;height:50px;overflow:hidden">
+        <div data-id="exact" style="width:200px;height:10px"></div>
+      </div>
+    `);
+    const edgeRes = await assertOn(edge, [
+      { type: 'no_clipping', region: { x: 0, y: 0, w: 800, h: 50 } },
+      { type: 'no_clipping', region: { x: 0, y: 60, w: 800, h: 50 } },
+    ]);
+    expect(verdicts(edgeRes)).toEqual([
+      ['failed', null],
+      ['passed', null], // exactly as wide as the clip
+    ]);
+    expect(edgeRes.results[0].detail).toContain("element 'onepx' extends past");
+    await edge.close();
 
     const unmeasured = await openPage(`<div data-id="gone" style="display:none"></div>`);
     expect(verdicts(await assertOn(unmeasured, [{ type: 'no_clipping' }]))).toEqual([

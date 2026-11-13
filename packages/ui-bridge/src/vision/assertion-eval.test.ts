@@ -9,11 +9,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   echoText,
+  evalInputFromVisionCoreSnapshot,
   evaluateVisionAssertion,
   foldVisionOutcomes,
   isLargeText,
   paintOrderKey,
   snapshotCoverageOf,
+  VisionCoreSnapshotError,
   wcagMinimumRatio,
   type MeasuredElement,
   type PaintOrderEvidence,
@@ -211,6 +213,127 @@ describe('no_clipping — the measured clip', () => {
     expect(
       evaluate({ type: 'no_clipping', region: { x: 300, y: 0, w: 10, h: 10 } }, input)
     ).toMatchObject({ outcome: 'unknown', code: 'input_missing' });
+  });
+});
+
+describe('the rounding contract — unrounded boxes, each kind rounding its own way', () => {
+  const fits = (el: MeasuredElement) =>
+    evaluate({ type: 'text_fits_container', element: el.id }, { elements: [el] });
+
+  it('text_fits_container rounds its comparison box UP, here and not in the producer', () => {
+    const label = (w: number, sw: number): MeasuredElement => ({
+      id: 'label',
+      text: 'Name',
+      bbox: box(0, 0, w, 20),
+      fitBox: { w, h: 20 },
+      scrollWidthPx: sw,
+      scrollHeightPx: 20,
+    });
+    // A 100.2px box is 101px to the fit: 101px of content fits, 102px does not.
+    expect(fits(label(100.2, 101)).outcome).toBe('passed');
+    const r = fits(label(100.2, 102));
+    expect(r.outcome).toBe('failed');
+    expect(r.detail).toContain('content is 102px wide but the box is only 101px (1px hidden)');
+    // A snapshot's bbox is read the same way when no fit box was measured.
+    const { fitBox: _omit, ...fromBbox } = label(100.2, 101);
+    expect(fits(fromBbox).outcome).toBe('passed');
+  });
+
+  it('the geometry kinds round every box to the nearest pixel, never up', () => {
+    const overlap = (a: MeasuredElement, b: MeasuredElement) =>
+      evaluate({ type: 'no_overlap', elements: [a.id, b.id] }, { elements: [a, b] }).outcome;
+    // Three 33.333px flex items: rounded up, each would overlap the next.
+    const third = (i: number): MeasuredElement => ({
+      id: `t${i}`,
+      bbox: box((100 / 3) * i, 0, 100 / 3, 20),
+    });
+    expect(overlap(third(0), third(1))).toBe('passed');
+    expect(overlap(third(1), third(2))).toBe('passed');
+    // 0.1px of overlap is not a pixel: the boxes round to [0, 10) and [10, 20).
+    expect(
+      overlap({ id: 'a', bbox: box(0, 0, 10.3, 10) }, { id: 'b', bbox: box(10.2, 0, 10, 10) })
+    ).toBe('passed');
+    // 10.6px wide rounds to 11, 10.4px across to 10: a pixel of overlap.
+    expect(
+      overlap({ id: 'a', bbox: box(0, 0, 10.6, 10) }, { id: 'b', bbox: box(10.4, 0, 10, 10) })
+    ).toBe('failed');
+  });
+
+  it('each EDGE is rounded, never the size on its own, so a shared edge stays shared', () => {
+    // a ends where b starts, at 11.2. Edge by edge: a is [1, 11) and b is
+    // [11, 16), touching. Field by field, a would be x 1 + w 11 = [1, 12) and
+    // overlap b by a phantom pixel.
+    const a: MeasuredElement = { id: 'a', bbox: box(0.6, 0, 10.6, 10) };
+    const b: MeasuredElement = { id: 'b', bbox: box(11.2, 0, 5, 10) };
+    expect(
+      evaluate({ type: 'no_overlap', elements: ['a', 'b'] }, { elements: [a, b] }).outcome
+    ).toBe('passed');
+    // The same rule for a clip: the box's right edge 109.9 and the clip's
+    // 109.6 both land on 110.
+    const row: MeasuredElement = {
+      id: 'row',
+      bbox: box(10.4, 0, 99.5, 50),
+      clip: { left: 10.2, top: 0, right: 109.6, bottom: 50, byX: 'p', byY: 'p' },
+    };
+    expect(evaluate({ type: 'no_clipping' }, { elements: [row] }).outcome).toBe('passed');
+  });
+
+  it('a half rounds toward +∞, as Math.round and vision-core round it', () => {
+    // a's left edge, -10.5, snaps to -10 and only touches b's [-20, -10).
+    // Away from zero (Rust's f64::round) it would be -11, a pixel into b.
+    const a: MeasuredElement = { id: 'a', bbox: box(-10.5, 0, 5, 10) };
+    const b: MeasuredElement = { id: 'b', bbox: box(-20, 0, 9.6, 10) };
+    expect(
+      evaluate({ type: 'no_overlap', elements: ['a', 'b'] }, { elements: [a, b] }).outcome
+    ).toBe('passed');
+  });
+
+  it('element_above requires the overlap of the rounded boxes', () => {
+    const pair: MeasuredElement[] = [
+      { id: 'menu', bbox: box(0, 0, 10.3, 10) },
+      { id: 'panel', bbox: box(10.2, 0, 10, 10) },
+    ];
+    const r = evaluate(
+      { type: 'element_above', elements: ['menu', 'panel'] },
+      {
+        elements: pair,
+        paintOrder: new Map([[paintOrderKey('menu', 'panel'), { kind: 'above', samples: 1 }]]),
+      }
+    );
+    expect(r.outcome).toBe('failed');
+    expect(r.detail).toContain('do not overlap');
+  });
+
+  it('no_clipping rounds the box and its clip alike', () => {
+    // Exactly, the box pokes 0.1px left of the clip and 0.3px past its right
+    // edge; to the nearest pixel both are [10, 110).
+    const el: MeasuredElement = {
+      id: 'row',
+      bbox: box(9.7, 0, 100.2, 50),
+      clip: { left: 9.6, top: 0, right: 109.6, bottom: 50, byX: 'p', byY: 'p' },
+    };
+    expect(evaluate({ type: 'no_clipping' }, { elements: [el] }).outcome).toBe('passed');
+    const over: MeasuredElement = { ...el, bbox: box(9.7, 0, 101.2, 50) };
+    expect(evaluate({ type: 'no_clipping' }, { elements: [over] }).outcome).toBe('failed');
+  });
+
+  it("a vision-core snapshot's bbox reaches the evaluator unrounded, and a negative size is refused", () => {
+    const snapshot = (bbox: Record<string, number>) => ({
+      elements: [{ id: 'label', bbox, scroll_width_px: 120, scroll_height_px: 20, text: 'Name' }],
+    });
+    // 119.4 wide holds 120px of content only if nothing rounded the box to
+    // the nearest pixel before text_fits_container rounded it up.
+    const input = evalInputFromVisionCoreSnapshot(snapshot({ x: 0.5, y: 0, w: 119.4, h: 20 }));
+    expect(input?.elements[0].bbox).toEqual({ x: 0.5, y: 0, w: 119.4, h: 20 });
+    expect(evaluate({ type: 'text_fits_container', element: 'label' }, input).outcome).toBe(
+      'passed'
+    );
+    for (const bad of [
+      { x: 0, y: 0, w: -5, h: 10 },
+      { x: 0, y: 0, w: 5, h: -0.5 },
+    ]) {
+      expect(() => evalInputFromVisionCoreSnapshot(snapshot(bad))).toThrow(VisionCoreSnapshotError);
+    }
   });
 });
 

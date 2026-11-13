@@ -37,11 +37,12 @@
  *   the `Canvas` colour under the root's `color-scheme`.
  * - `text_fits_container` — the nearest block box's `scrollWidth` /
  *   `scrollHeight`, with its borders and scrollbars added back, against its
- *   border box with the size `Math.ceil`'d (vision-core's comparison; the
- *   ceil is this port's choice); strictly greater fails. No text is
- *   `unknown{input_missing}`.
- * - `no_overlap` — border boxes (`getBoundingClientRect`), exact: geometry is
- *   never rounded up, or adjacent fractional boxes would read as overlapping.
+ *   border box, handed over unrounded; the evaluator rounds the box's size
+ *   UP (vision-core `ElementRect::ceil_size`), and strictly greater fails. No
+ *   text is `unknown{input_missing}`.
+ * - `no_overlap` — border boxes (`getBoundingClientRect`), handed over
+ *   unrounded; the evaluator rounds each edge to the nearest pixel and never
+ *   up, or adjacent fractional boxes would read as overlapping.
  * - `element_above` — paint order from `document.elementsFromPoint` at sample
  *   points inside both the pair's intersection and the viewport. The
  *   evaluator never scrolls; no sample showing both is
@@ -324,6 +325,9 @@ function pointIn(p: { x: number; y: number }, r: VisionRegion): boolean {
 function pxValue(v: string): number {
   return v.endsWith('px') ? Number(v.slice(0, -2)) : NaN;
 }
+
+/** A box size in CSS pixels, unrounded. */
+type FitSize = { w: number; h: number };
 
 /**
  * The layers above the text at `p`: each hit-stack entry above the owner and,
@@ -693,9 +697,9 @@ class TabMeasurement {
       return;
     }
     // vision-core compares the scroll extents with the BORDER box, strictly.
-    // This port takes that box as the `Math.ceil` of the fractional
-    // `getBoundingClientRect` size (its own choice), so integer extents never
-    // fail against a fractional box. `scrollWidth` /
+    // The box goes over as the fractional `getBoundingClientRect` size: the
+    // evaluator rounds it UP (vision-core `ElementRect::ceil_size`), so
+    // integer extents never fail against a fractional box. `scrollWidth` /
     // `scrollHeight` measure only the padding box, excluding borders and
     // scrollbars, so those are added back (`offset*` - `client*`): without
     // them an overflow narrower than the borders plus a scrollbar would pass.
@@ -714,9 +718,43 @@ class TabMeasurement {
     const frameY = oh - block.clientHeight;
     record.scrollWidthPx = Math.round((block.scrollWidth + Math.max(0, frameX)) * sx);
     record.scrollHeightPx = Math.round((block.scrollHeight + Math.max(0, frameY)) * sy);
-    record.fitBox = { w: Math.ceil(r.width), h: Math.ceil(r.height) };
+    record.fitBox = { w: r.width, h: r.height };
     const overflow = this.style(block).textOverflow;
     if (overflow) record.textOverflow = overflow;
+  }
+
+  /**
+   * `el`'s border-box and padding-box sizes in LAYOUT pixels, unrounded: the
+   * used `width` / `height` (fractional, and not changed by a CSS transform),
+   * with the padding, borders and scrollbars added back under
+   * `box-sizing: content-box`. The browser resolves a content-box `width` to
+   * the client width less the padding, so a scrollbar lies outside it; its
+   * size is what the integer `offset*` and `client*` sizes leave beside the
+   * borders. `null` when the computed style does not resolve a size to
+   * pixels.
+   */
+  private layoutSizes(el: Element): { border: FitSize; padding: FitSize } | null {
+    const st = this.style(el);
+    const w = pxValue(st.width);
+    const h = pxValue(st.height);
+    if (!Number.isFinite(w) || !Number.isFinite(h)) return null;
+    const html = el as HTMLElement;
+    const px = (v: string): number => pxValue(v) || 0;
+    const framesX = px(st.borderLeftWidth) + px(st.borderRightWidth);
+    const framesY = px(st.borderTopWidth) + px(st.borderBottomWidth);
+    const barX = Math.max(0, (html.offsetWidth ?? 0) - el.clientWidth - Math.round(framesX));
+    const barY = Math.max(0, (html.offsetHeight ?? 0) - el.clientHeight - Math.round(framesY));
+    const border =
+      st.boxSizing === 'border-box'
+        ? { w, h }
+        : {
+            w: w + px(st.paddingLeft) + px(st.paddingRight) + framesX + barX,
+            h: h + px(st.paddingTop) + px(st.paddingBottom) + framesY + barY,
+          };
+    return {
+      border,
+      padding: { w: border.w - framesX - barX, h: border.h - framesY - barY },
+    };
   }
 
   /**
@@ -798,29 +836,27 @@ class TabMeasurement {
   /**
    * The padding box an ancestor clips its content to, in viewport pixels:
    * the border box minus borders and scrollbars, scaled when the element is
-   * transformed. Half a pixel of slack absorbs the layout's sub-pixel rounding,
-   * which is not clipping anyone can see.
+   * transformed. Unrounded, from the fractional layout sizes
+   * ({@link layoutSizes}) rather than the integer `offset*` / `client*`,
+   * whose rounding would read as a scale. The evaluator rounds each edge of
+   * the clip and of the box it bounds to the nearest pixel, which is what
+   * absorbs the layout's sub-pixel noise: no slack is added here.
    */
   private clipBox(el: Element, st: CSSStyleDeclaration): ClipBounds {
     const r = el.getBoundingClientRect();
     const html = el as HTMLElement;
-    const ow = html.offsetWidth || r.width;
-    const oh = html.offsetHeight || r.height;
+    const sizes = this.layoutSizes(el);
+    const ow = sizes?.border.w ?? (html.offsetWidth || r.width);
+    const oh = sizes?.border.h ?? (html.offsetHeight || r.height);
+    const pw = sizes?.padding.w ?? el.clientWidth;
+    const ph = sizes?.padding.h ?? el.clientHeight;
     const sx = ow > 0 ? r.width / ow : 1;
     const sy = oh > 0 ? r.height / oh : 1;
     const bl = pxValue(st.borderLeftWidth) || 0;
     const bt = pxValue(st.borderTopWidth) || 0;
     const left = r.left + bl * sx;
     const top = r.top + bt * sy;
-    const SLACK = 0.5;
-    return {
-      left: left - SLACK,
-      top: top - SLACK,
-      right: left + el.clientWidth * sx + SLACK,
-      bottom: top + el.clientHeight * sy + SLACK,
-      byX: '',
-      byY: '',
-    };
+    return { left, top, right: left + pw * sx, bottom: top + ph * sy, byX: '', byY: '' };
   }
 
   /**

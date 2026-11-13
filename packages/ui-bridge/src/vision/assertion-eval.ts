@@ -38,6 +38,15 @@
  *    not measure (a background image under the text, no block box) instead of
  *    a generic "the snapshot carries no bg_color".
  *
+ * ROUNDING (plan 2026-11-09 Phase 0's contract). Boxes arrive UNROUNDED — the
+ * producer's own measurement, fractional where layout is — and each kind
+ * rounds them its own way, here and nowhere earlier: `text_fits_container`
+ * rounds its comparison box's width and height UP, and the geometry kinds
+ * snap every EDGE of a box or a clip to the NEAREST pixel, a half toward +∞
+ * (vision-core `ElementRect::ceil_size` and `ElementRect::grid_region`). The
+ * scroll extents are integers, as the DOM's `scrollWidth` / `scrollHeight`
+ * are.
+ *
  * Five kinds are evaluated here — the five that read only a snapshot and that
  * the tab can measure: `contrast_meets_wcag`, `text_fits_container`,
  * `no_overlap`, `element_above`, `no_clipping`. Every other kind answers
@@ -107,7 +116,10 @@ export interface ClipBounds {
  */
 export interface MeasuredElement {
   id: string;
-  /** Border box in CSS pixels, viewport coordinates (vision-core `bbox`). */
+  /**
+   * Border box in CSS pixels, viewport coordinates (vision-core `bbox`),
+   * UNROUNDED: each kind rounds it as the module doc says.
+   */
   bbox?: VisionRegion;
   /** Visible text, scrubbed by its redaction verdict (vision-core `text`). */
   text?: string;
@@ -136,14 +148,16 @@ export interface MeasuredElement {
   textOverflow?: string;
   /**
    * The box the scroll extents are compared against: the border box of the
-   * box the text lays out in, its size `Math.ceil`'d (this port's choice).
-   * The tab measures the nearest block box, which for an inline element is
-   * an ancestor, so it cannot be the element's own `bbox`; absent, `bbox` is
-   * used, as vision-core compares a snapshot's `scroll_width_px` with
-   * `bbox.w`. Kept apart from `bbox` on purpose: a ceil'd size is the right
-   * rounding for a fit (an integer extent never fails against a fractional
-   * box) and the wrong one for geometry (it inflates every box, so adjacent
-   * fractional boxes would read as overlapping), so `bbox` stays exact.
+   * box the text lays out in. The evaluator rounds its width and height UP
+   * (vision-core `ElementRect::ceil_size`), so a producer hands it over
+   * unrounded. The tab measures the nearest block box, which for an inline
+   * element is an ancestor, so it cannot be the element's own `bbox`;
+   * absent, `bbox` is used, as vision-core compares a snapshot's
+   * `scroll_width_px` with `bbox.w`. Kept apart from `bbox` because the two
+   * round differently: up for a fit (an integer extent never fails against
+   * the box's own fractional pixel), and to the nearest pixel for geometry
+   * (rounding up would inflate every box, so adjacent fractional boxes would
+   * read as overlapping).
    */
   fitBox?: { w: number; h: number };
   /**
@@ -250,6 +264,55 @@ function px(n: number): string {
 // Geometry (vision-core `element_snapshot.rs`)
 // ============================================================================
 
+/**
+ * To the nearest integer, a half toward +∞: JavaScript's `Math.round`, as
+ * vision-core's `round_px` rounds (not Rust's `f64::round`, which sends a
+ * half away from zero: -10.5 is -11 there and -10 here). Written as
+ * `round_px` is, through the floor, so -0.4 comes out 0 rather than
+ * `Math.round`'s -0.
+ */
+function roundPx(v: number): number {
+  const floor = Math.floor(v);
+  return v - floor >= 0.5 ? floor + 1 : floor;
+}
+
+/**
+ * A box on the pixel grid, as the geometry kinds (`no_overlap`,
+ * `element_above`, `no_clipping`) read it (vision-core
+ * `ElementRect::grid_region`). Plan 2026-11-09 Phase 0's rounding contract: a
+ * snapshot carries the producer's UNROUNDED box, and each kind rounds it its
+ * own way. Here each EDGE goes to the nearest pixel — `round(x)`,
+ * `round(x + w)` — and the size is the difference of the rounded edges,
+ * never rounded on its own, so two boxes that share an edge in the layout
+ * share it on the grid too: rounded field by field, a box at 0.6 that is
+ * 10.6 wide would reach 12 and overlap a neighbour starting at 11.2.
+ * Never up, either: rounding up would inflate every box, so three 33.333px
+ * flex items would read as overlapping. `text_fits_container` rounds UP
+ * instead ({@link evalTextFits}).
+ */
+function gridRegion(r: VisionRegion): VisionRegion {
+  const left = roundPx(r.x);
+  const top = roundPx(r.y);
+  const right = roundPx(r.x + r.w);
+  const bottom = roundPx(r.y + r.h);
+  return { x: left, y: top, w: Math.max(0, right - left), h: Math.max(0, bottom - top) };
+}
+
+/**
+ * A clip's bounds on the pixel grid, each edge rounded as a box's edges are
+ * ({@link gridRegion}). An unbounded edge stays unbounded.
+ */
+function gridClip(c: ClipBounds): ClipBounds {
+  const edge = (v: number): number => (Number.isFinite(v) ? roundPx(v) : v);
+  return {
+    ...c,
+    left: edge(c.left),
+    top: edge(c.top),
+    right: edge(c.right),
+    bottom: edge(c.bottom),
+  };
+}
+
 /** Any overlap at all; touching edges do not overlap. */
 function regionsOverlap(a: VisionRegion, b: VisionRegion): boolean {
   return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
@@ -334,9 +397,11 @@ function evalNoOverlap(a: Of<'no_overlap'>, byId: Map<string, MeasuredElement>) 
     `element '${id}' carries no geometry (bbox), so overlap was never measured`;
   if (!e0.bbox) return unknown(a, 'input_missing', noGeometry(id0));
   if (!e1.bbox) return unknown(a, 'input_missing', noGeometry(id1));
+  const b0 = gridRegion(e0.bbox);
+  const b1 = gridRegion(e1.bbox);
   const tol = a.tolerance_px ?? 0;
-  if (regionsOverlap(insetRegion(e0.bbox, tol), e1.bbox)) {
-    const i = intersection(e0.bbox, e1.bbox);
+  if (regionsOverlap(insetRegion(b0, tol), b1)) {
+    const i = intersection(b0, b1);
     const area = i ? i.w * i.h : 0;
     return fail(a, `${id0} and ${id1} overlap by ${px(area)} px² (tolerance ${tol} px)`);
   }
@@ -382,7 +447,7 @@ function evalElementAbove(
           'Set `require_overlap: false` to assert stacking order without it.'
       );
     }
-    if (!regionsOverlap(above.bbox, below.bbox)) {
+    if (!regionsOverlap(gridRegion(above.bbox), gridRegion(below.bbox))) {
       return fail(
         a,
         `${tag}: the two elements do not overlap, so which one paints on top is not a question ` +
@@ -496,7 +561,13 @@ function evalTextFits(a: Of<'text_fits_container'>, byId: Map<string, MeasuredEl
   if (el.unmeasured?.textFit) {
     return unknown(a, el.unmeasured.textFit.code, el.unmeasured.textFit.detail);
   }
-  const box = el.fitBox ?? { w: bbox.w, h: bbox.h };
+  // The comparison box is the producer's unrounded box rounded UP (plan
+  // 2026-11-09 Phase 0's rounding contract, vision-core
+  // `ElementRect::ceil_size`), so the box's own fractional pixel never reads
+  // as a pixel of overflow. The extents are integers, and content exactly as
+  // large as this box fits.
+  const measured = el.fitBox ?? { w: bbox.w, h: bbox.h };
+  const box = { w: Math.ceil(measured.w), h: Math.ceil(measured.h) };
 
   // Horizontal: a measurement (the laid-out width against the box).
   const sw = el.scrollWidthPx;
@@ -533,10 +604,10 @@ function evalTextFits(a: Of<'text_fits_container'>, byId: Map<string, MeasuredEl
     // `(size * 1.5).ceil() as u32` on vision-core's `f32`: computed in f32,
     // and a negative product saturates to 0.
     const needed = Math.max(0, Math.ceil(Math.fround(Math.fround(el.fontSizePx) * 1.5)));
-    if (bbox.h < needed) {
+    if (box.h < needed) {
       return fail(
         a,
-        `element height ${px(bbox.h)} px is less than ~1.5×${px(el.fontSizePx)}px font ` +
+        `element height ${px(box.h)} px is less than ~1.5×${px(el.fontSizePx)}px font ` +
           `(${needed} px expected) — text likely clipped`
       );
     }
@@ -588,9 +659,11 @@ function evalNoClipping(a: Of<'no_clipping'>, input: VisionEvalInput) {
   const scope = a.region ?? null;
   let compared = 0;
   for (const el of input.elements) {
-    const box = el.bbox;
-    const clip = el.clip;
-    if (!box || !clip) continue;
+    if (!el.bbox || !el.clip) continue;
+    // A geometry kind: each edge of the box and of its clip to the nearest
+    // pixel.
+    const box = gridRegion(el.bbox);
+    const clip = gridClip(el.clip);
     if (scope && !regionsOverlap(scope, box)) continue;
     compared += 1;
     if (!within(box, clip)) {
@@ -802,6 +875,11 @@ function optString(raw: Record<string, unknown>, key: string, where: string): st
   return v;
 }
 
+/**
+ * A bbox as vision-core's `ElementRect` reads it: four finite numbers,
+ * fractions kept (it is the producer's unrounded measurement), and a `w` or
+ * `h` below zero refused, as a size cannot be negative.
+ */
 function optRegion(
   raw: Record<string, unknown>,
   key: string,
@@ -809,10 +887,19 @@ function optRegion(
 ): VisionRegion | undefined {
   const v = raw[key];
   if (v === undefined || v === null) return undefined;
-  if (!isRecord(v) || [v.x, v.y, v.w, v.h].some((n) => typeof n !== 'number')) {
+  if (
+    !isRecord(v) ||
+    [v.x, v.y, v.w, v.h].some((n) => typeof n !== 'number' || !Number.isFinite(n))
+  ) {
     throw new VisionCoreSnapshotError(`${where}.${key} is not a region { x, y, w, h }`);
   }
-  return { x: v.x as number, y: v.y as number, w: v.w as number, h: v.h as number };
+  const r = { x: v.x as number, y: v.y as number, w: v.w as number, h: v.h as number };
+  if (r.w < 0 || r.h < 0) {
+    throw new VisionCoreSnapshotError(
+      `${where}.${key} has a negative size (w ${r.w}, h ${r.h}); w and h are sizes`
+    );
+  }
+  return r;
 }
 
 function optRgb(raw: Record<string, unknown>, key: string, where: string): VisionRgb | undefined {

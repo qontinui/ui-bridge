@@ -207,6 +207,11 @@ only what the page itself can measure, and they get a verdict:
 | `element_above` | Paint order from `document.elementsFromPoint` inside the pair's visible intersection (never scrolls) |
 | `no_clipping` | Each registered element against the padding box of its nearest ancestor with `overflow` `hidden` or `clip`, or `contain: paint`. A scroll container (`overflow` `auto` or `scroll`) is not a clip: what is scrolled out of it is reachable, so only its own box is compared further out. No element inside a clipping ancestor is `unknown` |
 
+The tab hands every box over unrounded, and each kind rounds it as vision-core
+does: `text_fits_container` rounds its box's width and height up, and the
+geometry kinds (`no_overlap`, `element_above`, `no_clipping`) round each edge to
+the nearest pixel, so two boxes that share a fractional edge do not overlap.
+
 The evaluator is a port of the runner's (vision-core) and is held to it by
 vision-core's own conformance fixture (`rust-vision-core/tests/fixtures/
 vision_assertions_conformance.json`), so both paths give the same answer for
