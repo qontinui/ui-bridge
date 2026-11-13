@@ -99,6 +99,18 @@ interface WebSocketClientEntry {
   client: WebSocketClient;
   connectedAt: number;
   lastActivity: number;
+  /**
+   * The 500 ms warm-up snapshot timer armed at registration, while it is
+   * armed. Cleared by `unregisterWebSocketClient`, by a re-registration of
+   * the same client id, and by `destroy()`.
+   */
+  snapshotTimer?: ReturnType<typeof setTimeout>;
+}
+
+/** A caller waiting for a transport to connect, and the timer that gives up on it. */
+interface ConnectionWaiter {
+  timer: ReturnType<typeof setTimeout>;
+  fail: (error: Error) => void;
 }
 
 export interface TabInfo {
@@ -281,6 +293,20 @@ export class TabRoutingError extends Error {
 }
 
 /**
+ * Error a command, or a wait for a transport, settles with when its relay is
+ * destroyed before it completes. Distinct from a timeout, so a caller can tell
+ * "the relay went away" from "the page never answered".
+ */
+export class RelayDestroyedError extends Error {
+  readonly code = 'RELAY_DESTROYED' as const;
+
+  constructor(message = 'CommandRelay was destroyed before the command completed.') {
+    super(message);
+    this.name = 'RelayDestroyedError';
+  }
+}
+
+/**
  * Error subclass thrown when a caller asks the relay to dispatch a command
  * to a `targetTabId` whose stored ownership metadata does NOT match the
  * caller's authenticated `userId`. The relay surfaces this as
@@ -365,6 +391,14 @@ export class CommandRelay {
   private readonly tabOwnership: Map<string, TabOwnership>;
   /** Commands this instance delivered for another instance, by command id. */
   private readonly busDeliveries: Map<string, BusDelivery>;
+  /**
+   * One-shot timers armed outside a pending command and a WebSocket entry
+   * (the SSE warm-up snapshot and its retry, the tab-info probe bound), so
+   * `destroy()` can clear them. Each removes itself when it fires.
+   */
+  private readonly relayTimers: Set<ReturnType<typeof setTimeout>>;
+  /** Callers waiting for a transport to connect; `destroy()` fails them. */
+  private readonly connectionWaiters: Set<ConnectionWaiter>;
 
   // Simple value state
   private primaryTabId: string | null;
@@ -428,6 +462,8 @@ export class CommandRelay {
     if (!g[key('TabLastSuccess')]) g[key('TabLastSuccess')] = new Map();
     if (!g[key('TabOwnership')]) g[key('TabOwnership')] = new Map();
     if (!g[key('BusDeliveries')]) g[key('BusDeliveries')] = new Map();
+    if (!g[key('RelayTimers')]) g[key('RelayTimers')] = new Set();
+    if (!g[key('ConnectionWaiters')]) g[key('ConnectionWaiters')] = new Set();
     if (!g[key('BuildId')]) g[key('BuildId')] = Date.now().toString();
 
     if (!g[key('ConnectionReady')]) {
@@ -452,6 +488,8 @@ export class CommandRelay {
     this.tabLastSuccess = g[key('TabLastSuccess')];
     this.tabOwnership = g[key('TabOwnership')];
     this.busDeliveries = g[key('BusDeliveries')];
+    this.relayTimers = g[key('RelayTimers')];
+    this.connectionWaiters = g[key('ConnectionWaiters')];
     this.buildId = g[key('BuildId')];
 
     // Periodic cleanup. Runs at `pruneSweepIntervalMs` cadence and performs
@@ -834,28 +872,21 @@ export class CommandRelay {
 
     // Wait for at least one transport if none available
     if (!options?.targetTabId && ownedCount === 0) {
-      await Promise.race([
-        this.connectionReady,
-        new Promise<void>((_, reject) =>
-          setTimeout(
-            () =>
-              reject(
-                new Error(
-                  'SDK_DISCONNECTED: No browser connected — no WebSocket clients and no SSE listeners. ' +
-                    'Open the web app in a browser tab, or launch a headless one with ' +
-                    '`npx @qontinui/ui-bridge-headless --url <your-app-url>`. ' +
-                    'Use `GET /tabs/wait?timeoutMs=<ms>` to block until the tab registers.'
-                )
-              ),
-            // Owner-scoped fallback: a same-user reconnect within ~3s is
-            // plausible, but the cross-user "leak guard" cares about a
-            // FAST `NO_BROWSER_CONNECTED` shape so the caller doesn't
-            // infer "other users have tabs" from a 3s hang. Short-circuit
-            // ownership-scoped misses immediately.
-            hasOwnerCheck ? 0 : 3000
+      await this.waitForConnection(
+        // Owner-scoped fallback: a same-user reconnect within ~3s is
+        // plausible, but the cross-user "leak guard" cares about a
+        // FAST `NO_BROWSER_CONNECTED` shape so the caller doesn't
+        // infer "other users have tabs" from a 3s hang. Short-circuit
+        // ownership-scoped misses immediately.
+        hasOwnerCheck ? 0 : 3000,
+        () =>
+          new Error(
+            'SDK_DISCONNECTED: No browser connected — no WebSocket clients and no SSE listeners. ' +
+              'Open the web app in a browser tab, or launch a headless one with ' +
+              '`npx @qontinui/ui-bridge-headless --url <your-app-url>`. ' +
+              'Use `GET /tabs/wait?timeoutMs=<ms>` to block until the tab registers.'
           )
-        ),
-      ]);
+      );
     }
 
     // Attempt the command — if SDK_DISCONNECTED, wait for reconnection and retry once
@@ -874,21 +905,72 @@ export class CommandRelay {
         if (hasOwnerCheck) throw err;
         console.log(`[ui-bridge] ${action} failed (disconnected), waiting for reconnection...`);
         try {
-          await Promise.race([
-            this.connectionReady,
-            new Promise<void>((_, reject) =>
-              setTimeout(() => reject(new Error('Reconnection timeout')), 2000)
-            ),
-          ]);
+          await this.waitForConnection(2000, () => new Error('Reconnection timeout'));
           console.log(`[ui-bridge] Reconnected, retrying ${action}`);
           return await this.queueCommandInner<T>(action, payload, options);
-        } catch {
-          // Retry failed — throw original error
+        } catch (retryErr) {
+          // A relay destroyed mid-wait says so; any other retry failure
+          // throws the original error.
+          if (retryErr instanceof RelayDestroyedError) throw retryErr;
           throw err;
         }
       }
       throw err;
     }
+  }
+
+  /**
+   * Wait until a transport is connected, or fail with `makeError()` after
+   * `ms`. `destroy()` fails the wait with a {@link RelayDestroyedError} and
+   * clears its timer. The timer is cleared however the wait ends, so a
+   * connection that arrives in time leaves nothing armed.
+   */
+  private async waitForConnection(ms: number, makeError: () => Error): Promise<void> {
+    let fail!: (error: Error) => void;
+    const timedOut = new Promise<never>((_, reject) => {
+      fail = reject;
+    });
+    const waiter: ConnectionWaiter = { fail, timer: setTimeout(() => fail(makeError()), ms) };
+    this.connectionWaiters.add(waiter);
+    try {
+      await Promise.race([this.connectionReady, timedOut]);
+    } finally {
+      clearTimeout(waiter.timer);
+      this.connectionWaiters.delete(waiter);
+    }
+  }
+
+  /**
+   * Arm a one-shot timer `destroy()` clears. It forgets itself when it fires.
+   */
+  private armTimer(fn: () => void, ms: number): ReturnType<typeof setTimeout> {
+    const handle = setTimeout(() => {
+      this.relayTimers.delete(handle);
+      fn();
+    }, ms);
+    this.relayTimers.add(handle);
+    return handle;
+  }
+
+  /** Clear a timer armed by {@link armTimer}. */
+  private disarmTimer(handle: ReturnType<typeof setTimeout> | null | undefined): void {
+    if (!handle) return;
+    clearTimeout(handle);
+    this.relayTimers.delete(handle);
+  }
+
+  /**
+   * Settle a pending command with `error`: clear its timers, drop its bus
+   * response subscription, reject it, and forget it.
+   */
+  private settlePending(id: string, error: Error): void {
+    const pending = this.pendingCommands.get(id);
+    if (!pending) return;
+    clearTimeout(pending.timeout);
+    if (pending.graceTimeout) clearTimeout(pending.graceTimeout);
+    if (pending.busUnsub) pending.busUnsub();
+    pending.reject(error);
+    this.pendingCommands.delete(id);
   }
 
   /**
@@ -1228,14 +1310,7 @@ export class CommandRelay {
       if (this.pendingCommands.size >= this.maxPendingCommands) {
         const oldestKey = this.pendingCommands.keys().next().value;
         if (oldestKey) {
-          const oldest = this.pendingCommands.get(oldestKey);
-          if (oldest) {
-            clearTimeout(oldest.timeout);
-            if (oldest.graceTimeout) clearTimeout(oldest.graceTimeout);
-            if (oldest.busUnsub) oldest.busUnsub();
-            oldest.reject(new Error('Command evicted: too many pending commands'));
-          }
-          this.pendingCommands.delete(oldestKey);
+          this.settlePending(oldestKey, new Error('Command evicted: too many pending commands'));
         }
       }
 
@@ -1466,7 +1541,12 @@ export class CommandRelay {
    */
   registerWebSocketClient(client: WebSocketClient): void {
     const now = Date.now();
-    this.wsClients.set(client.clientId, { client, connectedAt: now, lastActivity: now });
+    // A re-registration replaces the entry, so the old entry's warm-up timer
+    // would otherwise be left armed with no handle to clear it.
+    const previous = this.wsClients.get(client.clientId);
+    if (previous?.snapshotTimer) clearTimeout(previous.snapshotTimer);
+    const entry: WebSocketClientEntry = { client, connectedAt: now, lastActivity: now };
+    this.wsClients.set(client.clientId, entry);
 
     // Signal that a transport is ready
     if (this.connectionReadyResolve) {
@@ -1476,9 +1556,11 @@ export class CommandRelay {
 
     console.log(`[UIBridge] WebSocket client registered: ${client.clientId}`);
 
-    // Proactive snapshot capture
-    setTimeout(async () => {
-      if (!this.proactiveSnapshot || !this.wsClients.has(client.clientId)) return;
+    // Proactive snapshot capture. The handle lives on the entry so
+    // unregistering the client, or destroying the relay, clears it.
+    entry.snapshotTimer = setTimeout(async () => {
+      entry.snapshotTimer = undefined;
+      if (!this.proactiveSnapshot || this.wsClients.get(client.clientId) !== entry) return;
       try {
         const result = await this.queueCommand<ControlSnapshot>(
           'getControlSnapshot',
@@ -1500,6 +1582,8 @@ export class CommandRelay {
    * Unregister a WebSocket client.
    */
   unregisterWebSocketClient(clientId: string): void {
+    const entry = this.wsClients.get(clientId);
+    if (entry?.snapshotTimer) clearTimeout(entry.snapshotTimer);
     this.wsClients.delete(clientId);
     // Same rationale as the SSE unsubscribe path: ownership rides on the
     // transport, so a closed transport invalidates the owner record.
@@ -1893,17 +1977,19 @@ export class CommandRelay {
       return false;
     };
 
-    const proactiveTimer = setTimeout(async () => {
+    // Both warm-up timers are armed through `armTimer`, so `destroy()` clears
+    // them along with the listener they look for.
+    const proactiveTimer = this.armTimer(async () => {
       if (!this.proactiveSnapshot) return;
       const captured = await captureSnapshot();
       if (!captured && this.tabListeners.has(id)) {
-        retryTimer = setTimeout(() => captureSnapshot(), 1500);
+        retryTimer = this.armTimer(() => void captureSnapshot(), 1500);
       }
     }, 500);
 
     const unsubscribe = () => {
-      clearTimeout(proactiveTimer);
-      if (retryTimer) clearTimeout(retryTimer);
+      this.disarmTimer(proactiveTimer);
+      this.disarmTimer(retryTimer);
       if (busUnsubCmd) busUnsubCmd();
       // A newer stream for the same tab replaced this one: its state is not
       // this stream's to remove.
@@ -1962,6 +2048,7 @@ export class CommandRelay {
     const tabIds = this.getConnectedTabs().filter((id) => !only || only.has(id));
     return Promise.all(
       tabIds.map(async (tabId): Promise<TabInfo> => {
+        let bound: ReturnType<typeof setTimeout> | undefined;
         try {
           const info = await Promise.race([
             this.queueCommand<{ url?: string; pathname?: string; title?: string }>(
@@ -1969,11 +2056,15 @@ export class CommandRelay {
               {},
               { targetTabId: tabId }
             ),
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
+            new Promise<null>((resolve) => {
+              bound = this.armTimer(() => resolve(null), 3000);
+            }),
           ]);
           return { tabId, url: info?.url, pathname: info?.pathname, title: info?.title };
         } catch {
           return { tabId };
+        } finally {
+          this.disarmTimer(bound);
         }
       })
     );
@@ -2393,11 +2484,61 @@ export class CommandRelay {
     return this.changeEventBuffer.filter((e) => e.timestamp > since).slice(-limit);
   }
 
+  /**
+   * Tear the relay down: after this returns, no timer the relay armed can
+   * send a command or log. Relay state is shared by every relay on the same
+   * `globalPrefix`, so this acts prefix-wide, as it always has for the tab
+   * maps.
+   *
+   * - The cleanup sweep is cleared, and its `globalThis` handle deleted when
+   *   it is the one this relay holds, so a relay built later on the prefix
+   *   arms its own sweep.
+   * - Every WebSocket client's warm-up timer is cleared and the clients are
+   *   forgotten. The sockets are NOT closed: the transport owner (the
+   *   standalone server's connection set, a host's WS handler) owns them.
+   * - Every pending command is settled with a {@link RelayDestroyedError}
+   *   (its timeout and grace timers cleared, its bus subscription dropped),
+   *   and every caller waiting for a transport fails the same way.
+   * - The SSE warm-up timers and the tab-info probe bounds are cleared.
+   *
+   * A transport registered on the relay afterwards is live, and its timers
+   * belong to it. The relay itself runs no cleanup sweep after this.
+   */
   destroy(): void {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const g = globalThis as any;
+    const intervalKey = `${this.prefix}CleanupInterval`;
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
+      // Only the sweep this relay holds: a relay built on the prefix after an
+      // earlier destroy() armed its own, which is not this one's to forget.
+      if (g[intervalKey] === this.cleanupInterval) delete g[intervalKey];
       this.cleanupInterval = null;
     }
+
+    for (const entry of this.wsClients.values()) {
+      if (entry.snapshotTimer) clearTimeout(entry.snapshotTimer);
+    }
+    this.wsClients.clear();
+
+    for (const id of Array.from(this.pendingCommands.keys())) {
+      this.settlePending(id, new RelayDestroyedError());
+    }
+    this.busDeliveries.clear();
+
+    for (const waiter of Array.from(this.connectionWaiters)) {
+      clearTimeout(waiter.timer);
+      waiter.fail(
+        new RelayDestroyedError(
+          'CommandRelay was destroyed while waiting for a browser to connect.'
+        )
+      );
+    }
+    this.connectionWaiters.clear();
+
+    for (const timer of this.relayTimers) clearTimeout(timer);
+    this.relayTimers.clear();
+
     this.tabHeartbeats.clear();
     this.tabMetadata.clear();
     this.tabLastSuccess.clear();
@@ -2407,5 +2548,7 @@ export class CommandRelay {
     this.commandQueue.length = 0;
     this.changeEventBuffer.length = 0;
     this.changeEventSubscribers.clear();
+    // Every transport is gone, so the next command waits for one to connect.
+    this.resetConnectionGateIfEmpty();
   }
 }
