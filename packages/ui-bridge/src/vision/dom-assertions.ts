@@ -64,7 +64,11 @@
  *   `::after` (a stretched link), its open shadow tree's elements above the
  *   text — unless a negative `z-index` sinks the text past it, and then all
  *   of it is a layer above. One listed above with neither (a closed shadow
- *   tree's overlay) is `unknown{input_missing}`.
+ *   tree's overlay) is `unknown{input_missing}`. The text's own element
+ *   listed twice with layers between — for its text and for its own
+ *   positioned `::before` / `::after`, a stretched link under a veil — is
+ *   `unknown{hit_test_unmeasurable}`: which listing is the text's is not
+ *   known.
  *
  * ROUNDING (plan 2026-11-09 Phase 0's contract): every box below is handed to
  * the evaluator UNROUNDED, and the evaluator rounds it as its kind does —
@@ -1437,6 +1441,21 @@ class TabMeasurement {
           'be ordered'
       );
     }
+    // The hit test lists a ::before / ::after as the element it belongs to,
+    // so the owner's own positioned one (a stretched link's ::after on
+    // z-index 1) lists the owner a second time, apart from its text. With
+    // other layers between the listings, which one is the text's, and so
+    // whether those layers lie over the text or beneath it, is not known.
+    const again = stack.indexOf(owner, at + 1);
+    if (again > at + 1) {
+      return missing(
+        'hit_test_unmeasurable',
+        `the hit test lists ${this.describe(owner)} more than once at (${Math.round(p.x)}, ` +
+          `${Math.round(p.y)}), for its text and for a ::before / ::after of its, with ` +
+          `${this.describe(stack[at + 1])} between, so whether that lies over the text or ` +
+          'beneath it cannot be told'
+      );
+    }
 
     // Layers the hit test places ABOVE the text's owner at the sample point
     // paint over the text (a scrim, a sticky header, a tooltip) and change the
@@ -1471,7 +1490,7 @@ class TabMeasurement {
       if (sunk) sunkPast.add(cover);
       const ownBoxBeneath = holds ? !sunk : beneath.includes(cover);
       const coverItems = ownBoxBeneath
-        ? this.generatedAbove(cover, owner, p)
+        ? this.generatedAbove(cover, owner, p, holds)
         : this.paintAbove(cover, owner, p);
       if (coverItems instanceof ColorUnmeasured) {
         return missing(coverItems.reason.code, coverItems.reason.detail);
@@ -1630,23 +1649,31 @@ class TabMeasurement {
    * text {@link coversAbove} lists as layers of their own — so its own
    * background is never composited over the text. When neither explains the
    * listing (a closed shadow tree may), what lies over the text is not known,
-   * and the measurement stops.
+   * and the measurement stops. For an element that is not an ancestor
+   * (`holds` false), the listing beneath may be its negative-z `::before`
+   * instead, and its own box the one above, so the stop says only that it is
+   * listed on both sides.
    */
   private generatedAbove(
     layer: Element,
     owner: Element,
-    p: { x: number; y: number }
+    p: { x: number; y: number },
+    holds: boolean
   ): PaintItem[] | ColorUnmeasured {
     const generated = this.generatedOver(layer, p, true);
     if (generated instanceof ColorUnmeasured) return generated;
     if (generated || shadowAbove(layer, owner, p).length > 0) return [];
+    const at = `at (${Math.round(p.x)}, ${Math.round(p.y)})`;
+    const listed = holds
+      ? `above the text ${at}, but its own box paints beneath the text,`
+      : `both above the text and beneath it ${at}, so a part of it paints over the text,`;
+    const may = holds ? 'a closed shadow tree may' : 'its own box or a closed shadow tree may';
     return new ColorUnmeasured({
       code: 'input_missing',
       detail:
-        `the hit test lists ${this.describe(layer)} above the text at (${Math.round(p.x)}, ` +
-        `${Math.round(p.y)}), but its own box paints beneath the text, and neither a ` +
-        'positioned ::before / ::after nor an open shadow tree of its paints there (a closed ' +
-        'shadow tree may), so the colours a reader sees there were not measured',
+        `the hit test lists ${this.describe(layer)} ${listed} and neither a positioned ` +
+        `::before / ::after nor an open shadow tree of its paints there (${may}), so the ` +
+        'colours a reader sees there were not measured',
     });
   }
 

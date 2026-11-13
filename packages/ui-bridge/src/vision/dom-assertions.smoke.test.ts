@@ -807,6 +807,43 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     await page.close();
   }, 60_000);
 
+  it('contrast_meets_wcag: an element the hit test lists both above the text and beneath it', async () => {
+    // The hit test lists a ::before / ::after as the element it belongs to.
+    // A stretched link's ::after on z-index 1 lists the link above a veil,
+    // and its text beneath that veil, the link again: which listing is the
+    // text's is not known, so neither is whether the veil lies over it. A
+    // veil whose negative-z ::before escapes beneath the text is listed
+    // above the text for its own box and beneath it for that ::before.
+    const page = await openPage(`
+      <style>
+        .stretched-link::after { content: ""; position: absolute; inset: 0; z-index: 1 }
+        .glass::before { content: ""; position: absolute; inset: 0; z-index: -1; background: #ddd }
+      </style>
+      <div style="position:relative;height:40px;background:#fff"><a data-id="veiled" class="stretched-link" href="#" style="color:#000">A stretched link under a veil</a><div class="veil" style="position:absolute;inset:0;background:rgba(255,255,255,0.6)"></div></div>
+      <div style="position:relative;height:40px;background:#fff"><a data-id="unveiled" class="stretched-link" href="#" style="color:#000">A stretched link</a></div>
+      <div style="position:relative;height:40px;background:#fff"><p data-id="glazed" style="margin:0;color:#000">Under a glass pane</p><div class="glass" style="position:absolute;inset:0;background:rgba(255,255,255,0.6)"></div></div>
+    `);
+    const ids = ['veiled', 'unveiled', 'glazed'];
+    const res = await assertOn(
+      page,
+      ids.map((element) => ({ type: 'contrast_meets_wcag', element }))
+    );
+    // Read from its first listing, the veiled link put the veil beneath its
+    // text and passed at 21:1, where the page shows ~2.85:1.
+    expect(verdicts(res)).toEqual([
+      ['unknown', 'hit_test_unmeasurable'],
+      ['passed', null],
+      ['unknown', 'input_missing'],
+    ]);
+    expect(res.results[0].detail).toContain("the hit test lists 'veiled' more than once at");
+    expect(res.results[0].detail).toContain('with <div.veil> between');
+    expect(res.results[1].detail).toContain('contrast ratio 21.00:1');
+    expect(res.results[2].detail).toContain(
+      'the hit test lists <div.glass> both above the text and beneath it'
+    );
+    await page.close();
+  }, 60_000);
+
   it('text_fits_container: layout sizes under a transform, and redacted text is never echoed', async () => {
     const page = await openPage(`
       <div style="transform:scale(2);transform-origin:0 0;width:100px">
