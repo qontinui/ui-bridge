@@ -408,6 +408,88 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     await page.close();
   }, 60_000);
 
+  it('contrast_meets_wcag: an ancestor of the text the hit test lists above it', async () => {
+    // The hit test lists an ancestor above its own text for what it draws
+    // over that text: a positioned ::after, an open shadow tree's overlay, a
+    // closed one's. Its own background still paints beneath the text, unless
+    // a negative z-index sinks the text past it.
+    const page = await openPage(`
+      <style>
+        .stretch::before { content: "> " }
+        .stretch::after { content: ""; position: absolute; inset: 0 }
+        .ring::after { content: ""; position: absolute; inset: 0; background: rgba(255, 0, 0, 0.5) }
+        .closedhost::before { content: ""; position: absolute; inset: 0; z-index: -1 }
+        .stretchonly::after { content: ""; position: absolute; inset: 0 }
+      </style>
+      <div style="height:40px"><button class="stretch" style="position:relative;background:rgba(0,0,0,0.2);border:0"><span data-id="stretched" style="color:#595959">Stretched link</span></button></div>
+      <div style="height:40px"><a class="ring" href="#" style="position:relative;display:inline-block"><span data-id="ringed" style="color:#000">Under a tinted ::after</span></a></div>
+      <div style="height:40px"><x-veiled style="display:block;position:relative"><span data-id="slotveiled" style="color:#333">Slotted under a veil</span></x-veiled></div>
+      <div style="height:40px"><div class="closedhost" style="position:relative"><span data-id="closedveiled" style="color:#000">Slotted under a closed veil</span></div></div>
+      <div style="height:40px"><div class="stretch" style="position:relative;z-index:0;background:rgba(0,0,0,0.2)"><span data-id="sunkinctx" style="position:relative;z-index:-1;color:#595959">Sunk in its own card's context</span></div></div>
+      <div style="position:relative;z-index:0;height:40px;background:#000"><div style="display:flex;height:40px;background:rgba(255,255,255,0.5)"><p data-id="sunkflex" style="z-index:-1;margin:0;color:#fff">A flex item beneath its card</p></div></div>
+      <div style="position:relative;height:40px"><div class="stretchonly" style="height:40px;background:rgba(0,0,0,0.2)"></div><p data-id="pulled" style="margin:-30px 0 0;color:#595959">Pulled over a sibling card</p></div>
+    `);
+    await page.evaluate(() => {
+      document.querySelector('x-veiled')!.attachShadow({ mode: 'open' }).innerHTML =
+        '<div style="background:rgba(0,0,0,0.1);padding:4px"><slot></slot></div>' +
+        '<div style="position:absolute;inset:0;background:rgba(0,0,0,0.3)"></div>';
+      document.querySelector('.closedhost')!.attachShadow({ mode: 'closed' }).innerHTML =
+        '<slot></slot><div style="position:absolute;inset:0;background:rgba(0,0,0,0.5)"></div>';
+    });
+    const ids = [
+      'stretched',
+      'ringed',
+      'slotveiled',
+      'closedveiled',
+      'sunkinctx',
+      'sunkflex',
+      'pulled',
+    ];
+    const res = await assertOn(
+      page,
+      ids.map((element) => ({ type: 'contrast_meets_wcag', element }))
+    );
+    expect(verdicts(res)).toEqual([
+      // #595959 on the button's 20% black over white (#ccc): ~4.36:1. The
+      // empty ::after paints nothing, and the "> " in normal flow lies beside
+      // the text. Composited over the text as well, the button's tint would
+      // read ~3.68:1.
+      ['failed', null],
+      ['unknown', 'input_missing'], // a tinted ::after over the text
+      // #333 on the slot's 10% black, both under the veil's 30% black:
+      // ~6.0:1. Counted above the text as well, the slot's tint would read
+      // ~5.1:1.
+      ['passed', null],
+      // What a closed shadow tree paints is not read. The host's empty
+      // ::before with a negative z-index lies beneath the text, so it does
+      // not account for the host being listed above it.
+      ['unknown', 'input_missing'],
+      // z-index: -1 inside a card that starts its own stacking context sinks
+      // the text only beneath the card's other content, never beneath the
+      // card's background: #595959 on #ccc, ~4.36:1. Composited over the
+      // text, the card's tint would read ~5.77:1, a pass.
+      ['failed', null],
+      // A flex item takes its z-index unpositioned, so it sinks beneath its
+      // card's 50% white, as the positioned text in the case above does:
+      // #fff on #808080, ~3.95:1.
+      ['failed', null],
+      // Not an ancestor: a sibling card the text is pulled over, listed
+      // beneath the text for its own box and above it for its empty
+      // stretched ::after. Its tint is the backdrop only: ~4.36:1.
+      ['failed', null],
+    ]);
+    expect(res.results[0].detail).toContain('contrast ratio 4.36:1');
+    expect(res.results[1].detail).toContain('<a.ring> paints over the text at');
+    expect(res.results[1].detail).toContain('with ::after generated content that covers it');
+    expect(res.results[2].detail).toMatch(/contrast ratio 6\.0\d:1/);
+    expect(res.results[3].detail).toContain('the hit test lists <div.closedhost> above the text');
+    expect(res.results[3].detail).toContain('a closed shadow tree may');
+    expect(res.results[4].detail).toContain('contrast ratio 4.36:1');
+    expect(res.results[5].detail).toMatch(/contrast ratio 3\.9\d:1/);
+    expect(res.results[6].detail).toContain('contrast ratio 4.36:1');
+    await page.close();
+  }, 60_000);
+
   it('text_fits_container: layout sizes under a transform, and redacted text is never echoed', async () => {
     const page = await openPage(`
       <div style="transform:scale(2);transform-origin:0 0;width:100px">

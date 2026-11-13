@@ -42,7 +42,13 @@
  *   over it in a way the DOM cannot read (an image, a filter, a
  *   backdrop-filter, a blend, replaced or generated content, its own text, a
  *   custom element with no open shadow root), is `unknown{input_missing}`
- *   naming the layer.
+ *   naming the layer. An ANCESTOR of the text the hit test lists above it
+ *   paints its own box beneath its content, so only what it draws over the
+ *   text is read — a positioned `::before` / `::after` (a stretched link),
+ *   its open shadow tree's elements above the text — unless a negative
+ *   `z-index` sinks the text past it, and then all of it is a layer above.
+ *   One listed above with neither (a closed shadow tree's overlay) is
+ *   `unknown{input_missing}`.
  *
  * ROUNDING (plan 2026-11-09 Phase 0's contract): every box below is handed to
  * the evaluator UNROUNDED, and the evaluator rounds it as its kind does —
@@ -357,29 +363,46 @@ type FitSize = { w: number; h: number };
 /**
  * The layers above the text at `p`, top first: each hit-stack entry above the
  * owner and, directly above it, whatever an OPEN shadow root it hosts places
- * at `p`, at any depth — `document.elementsFromPoint` retargets shadow
- * content to its host, so a scrim inside a custom element (or one nested in
- * another) would otherwise go unseen. A host's shadow content paints over the
- * host's own background, so it is listed before the host: the order is paint
- * order, which compositing the translucent ones needs. A CLOSED shadow root
- * cannot be read; the caller treats a custom element with no open root lying
- * over the text as unmeasurable.
+ * above the text at `p`, at any depth ({@link shadowAbove}) —
+ * `document.elementsFromPoint` retargets shadow content to its host, so a
+ * scrim inside a custom element (or one nested in another) would otherwise go
+ * unseen. A host's shadow content paints over the host's own background, so
+ * it is listed before the host: the order is paint order, which compositing
+ * the translucent ones needs. A CLOSED shadow root cannot be read; the caller
+ * treats a custom element with no open root lying over the text as
+ * unmeasurable.
  */
-function coversAbove(above: readonly Element[], p: { x: number; y: number }): Element[] {
+function coversAbove(
+  above: readonly Element[],
+  owner: Element,
+  p: { x: number; y: number }
+): Element[] {
   const out: Element[] = [];
   const seen = new Set<Element>();
   const visit = (el: Element): void => {
     if (seen.has(el)) return;
     seen.add(el);
-    const root = el.shadowRoot;
-    if (root && typeof root.elementsFromPoint === 'function') {
-      for (const inner of root.elementsFromPoint(p.x, p.y)) {
-        if (inner !== el && inner.getRootNode() === root) visit(inner);
-      }
-    }
+    for (const inner of shadowAbove(el, owner, p)) visit(inner);
     out.push(el);
   };
   for (const el of above) visit(el);
+  return out;
+}
+
+/**
+ * The elements of `host`'s OPEN shadow root at `p` that paint above the
+ * text's owner, top first. A shadow root's hit test lists the light-DOM
+ * owner too, in paint order, so the ones after it paint beneath the text:
+ * the ones its text is slotted into, among them.
+ */
+function shadowAbove(host: Element, owner: Element, p: { x: number; y: number }): Element[] {
+  const root = host.shadowRoot;
+  if (!root || typeof root.elementsFromPoint !== 'function') return [];
+  const out: Element[] = [];
+  for (const inner of root.elementsFromPoint(p.x, p.y)) {
+    if (inner === owner) break;
+    if (inner !== host && inner.getRootNode() === root) out.push(inner);
+  }
   return out;
 }
 
@@ -1314,8 +1337,18 @@ class TabMeasurement {
     // ({@link paintAbove}). A layer at effective opacity 0 paints nothing and
     // is skipped. The document hit test retargets shadow content to its host,
     // so an open shadow root above the owner is hit-tested too.
+    //
+    // An ANCESTOR of the owner listed there paints its own box beneath its
+    // content, so it is listed for what it draws over that content — a
+    // positioned ::before / ::after, its shadow tree — and its own background
+    // is not composited over the text ({@link generatedAbove}). Unless a
+    // negative z-index sinks the text past it ({@link sunkBeneath}): then all
+    // of it paints over the text. An element the hit test lists beneath the
+    // text as well paints its own box there too, and is read the same way.
+    const beneath = stack.slice(at);
+    const sunkPast = new Set<Element>();
     const covers: PaintItem[][] = [];
-    for (const cover of coversAbove(stack.slice(0, at), p)) {
+    for (const cover of coversAbove(stack.slice(0, at), owner, p)) {
       if (this.effectiveOpacity(cover) === 0) continue;
       if (isClosedCustomElement(cover)) {
         return missing(
@@ -1324,7 +1357,13 @@ class TabMeasurement {
             'shadow root; it may have a closed shadow tree, and what that paints there cannot be read'
         );
       }
-      const coverItems = this.paintAbove(cover, owner, p);
+      const holds = containsComposed(cover, owner);
+      const sunk = holds && this.sunkBeneath(owner, cover);
+      if (sunk) sunkPast.add(cover);
+      const ownBoxBeneath = holds ? !sunk : beneath.includes(cover);
+      const coverItems = ownBoxBeneath
+        ? this.generatedAbove(cover, owner, p)
+        : this.paintAbove(cover, owner, p);
       if (coverItems instanceof ColorUnmeasured) {
         return missing(coverItems.reason.code, coverItems.reason.detail);
       }
@@ -1335,14 +1374,15 @@ class TabMeasurement {
     for (let i = covers.length - 1; i >= 0; i--) overItems.push(...covers[i]);
 
     // The paint stack under the text, top first: the hit stack beneath the
-    // text's owner, plus the DOM ancestors the hit test skipped
-    // (pointer-events: none), each placed above the first entry outside it.
-    // An ancestor the hit test shows ABOVE the owner (an owner with a
-    // negative z-index) paints over the text, as a cover, so it is not added
-    // beneath it too.
-    const layers = stack.slice(at);
+    // text's owner, plus the DOM ancestors it does not list there — the ones
+    // the hit test skipped (pointer-events: none), and one it lists only
+    // above the owner for its generated content or shadow tree — each placed
+    // above the first entry outside it. An ancestor the text sinks beneath
+    // (a negative z-index) paints over the text, as a cover, so it is not
+    // added beneath it too.
+    const layers = [...beneath];
     for (let a = composedParent(owner); a; a = composedParent(a)) {
-      if (stack.includes(a)) continue;
+      if (layers.includes(a) || sunkPast.has(a)) continue;
       const after = layers.findIndex((l, i) => i > 0 && !containsComposed(a, l));
       if (after < 0) layers.push(a);
       else layers.splice(after, 0, a);
@@ -1424,13 +1464,7 @@ class TabMeasurement {
     }
     if (!(fade > 0)) return [];
     const st = this.style(layer);
-    const stop = (how: string): ColorUnmeasured =>
-      new ColorUnmeasured({
-        code: 'input_missing',
-        detail:
-          `${this.describe(layer)} paints over the text at (${Math.round(p.x)}, ` +
-          `${Math.round(p.y)}) ${how}, so the colours a reader sees there were not measured`,
-      });
+    const stop = (how: string): ColorUnmeasured => this.coverStop(layer, p, how);
     const backdrop =
       st.getPropertyValue('backdrop-filter') || st.getPropertyValue('-webkit-backdrop-filter');
     if (backdrop && backdrop !== 'none') {
@@ -1465,18 +1499,114 @@ class TabMeasurement {
       }
     }
     if (this.ownTextAt(layer, p)) return stop('with its own text at the same position');
+    const generated = this.generatedOver(layer, p, false);
+    if (generated instanceof ColorUnmeasured) return generated;
+    return items;
+  }
+
+  /**
+   * What a layer listed ABOVE the text paints over it when its own box paints
+   * beneath the text: an ancestor of the text's owner, which paints its
+   * background and borders before its content, or an element the hit test
+   * lists beneath the text as well. Such a layer is listed above the text for
+   * what it draws over that content — a positioned `::before` / `::after`
+   * ({@link generatedOver}), or its open shadow tree, whose elements over the
+   * text {@link coversAbove} lists as layers of their own — so its own
+   * background is never composited over the text. When neither explains the
+   * listing (a closed shadow tree may), what lies over the text is not known,
+   * and the measurement stops.
+   */
+  private generatedAbove(
+    layer: Element,
+    owner: Element,
+    p: { x: number; y: number }
+  ): PaintItem[] | ColorUnmeasured {
+    const generated = this.generatedOver(layer, p, true);
+    if (generated instanceof ColorUnmeasured) return generated;
+    if (generated || shadowAbove(layer, owner, p).length > 0) return [];
+    return new ColorUnmeasured({
+      code: 'input_missing',
+      detail:
+        `the hit test lists ${this.describe(layer)} above the text at (${Math.round(p.x)}, ` +
+        `${Math.round(p.y)}), but its own box paints beneath the text, and neither a ` +
+        'positioned ::before / ::after nor an open shadow tree of its paints there (a closed ' +
+        'shadow tree may), so the colours a reader sees there were not measured',
+    });
+  }
+
+  /**
+   * Whether `layer`'s `::before` / `::after` lies over the text at `p`. One
+   * that paints anything there — a background colour or image, glyphs —
+   * stops the measurement, named, and so does one whose box the computed
+   * style does not pin down, since it may lie there. `true` when the only
+   * ones there are transparent (an empty stretched link), `false` when none
+   * is. `positionedOnly` reads only the ones that can lie over their own
+   * element's content: positioned, with a z-index that is not negative. One
+   * in normal flow is laid out beside that content, and one with a negative
+   * z-index paints beneath it.
+   */
+  private generatedOver(
+    layer: Element,
+    p: { x: number; y: number },
+    positionedOnly: boolean
+  ): boolean | ColorUnmeasured {
+    const stop = (how: string): ColorUnmeasured => this.coverStop(layer, p, how);
+    let transparentThere = false;
     for (const which of ['::before', '::after'] as const) {
       const ps = this.pseudoStyle(layer, which);
       if (['none', 'normal', ''].includes(ps.content) || ps.display === 'none') continue;
+      if (positionedOnly && (ps.position === 'static' || Number(ps.zIndex) < 0)) continue;
       const bg = parseColor(ps.backgroundColor);
       const image = ps.backgroundImage !== 'none' && ps.backgroundImage !== '';
       const glyphs = ps.content !== '""' && ps.content !== "''";
-      if (!image && !glyphs && bg && bg.a === 0) continue;
       const box = this.pseudoBox(layer, ps);
       if (box && !pointIn(p, box)) continue;
+      if (!image && !glyphs && bg && bg.a === 0) {
+        if (box) transparentThere = true;
+        continue;
+      }
       return stop(`with ${which} generated content that ${box ? 'covers' : 'may cover'} it`);
     }
-    return items;
+    return transparentThere;
+  }
+
+  /** Stops the measurement at a layer that paints over the text in a way not composited. */
+  private coverStop(layer: Element, p: { x: number; y: number }, how: string): ColorUnmeasured {
+    return new ColorUnmeasured({
+      code: 'input_missing',
+      detail:
+        `${this.describe(layer)} paints over the text at (${Math.round(p.x)}, ` +
+        `${Math.round(p.y)}) ${how}, so the colours a reader sees there were not measured`,
+    });
+  }
+
+  /**
+   * Whether the text sinks beneath `ancestor`, an ancestor of its owner: an
+   * element from the owner up to `ancestor` (not included) has a negative
+   * z-index, and nothing from that element up to `ancestor`, `ancestor`
+   * included, starts a stacking context, so the one it sinks in holds
+   * `ancestor` too. A stacking context paints its negative z-index layers
+   * before the boxes of its other descendants (CSS 2.1 Appendix E), so
+   * `ancestor` paints over the text. Otherwise `ancestor` paints its own box
+   * beneath its content.
+   */
+  private sunkBeneath(owner: Element, ancestor: Element): boolean {
+    for (let e: Element | null = owner; e && e !== ancestor; e = composedParent(e)) {
+      const st = this.style(e);
+      if (!(Number(st.zIndex) < 0)) continue;
+      const parent = composedParent(e);
+      // A z-index applies to a positioned box, and to a flex or grid item.
+      const applies =
+        st.position !== 'static' ||
+        (parent !== null && /flex|grid/.test(this.style(parent).display));
+      if (!applies) continue;
+      let s = parent;
+      while (s && s !== ancestor && !this.isStackingContext(s, this.style(s))) {
+        s = composedParent(s);
+      }
+      if (s === ancestor && !this.isStackingContext(ancestor, this.style(ancestor))) return true;
+    }
+    return false;
   }
 
   /** Does one of `layer`'s own text runs (not a descendant element's) paint at `p`? */
