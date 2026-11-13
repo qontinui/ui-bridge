@@ -328,4 +328,16 @@ describe('flat-map placement edge cases', () => {
     expect(report.categories.spacing).toMatchObject({ matched: 1, undeclaredInUse: 0 });
     expect(report.verdict).toBe('no-drift');
   });
+
+  it('a fluid clamp() length named for a category still counts there', () => {
+    const inv = buildStyleInventory([el('a', { color: 'rgb(59, 130, 246)', fontSize: '17px' })]);
+    const report = computeTokenDrift(inv, {
+      customProperties: {
+        '--brand': '#3b82f6',
+        '--font-size-fluid-1': 'clamp(1rem, 0.9rem + 0.5vw, 1.25rem)',
+      },
+    });
+    expect(report.categories.fontSizes.unresolvedDeclared).toBe(1);
+    expect(report.verdict).toBe('unknown');
+  });
 });
