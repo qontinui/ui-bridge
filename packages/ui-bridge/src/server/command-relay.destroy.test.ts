@@ -287,4 +287,125 @@ describe('CommandRelay.destroy()', () => {
     expect(b.getTransportDiagnostics().wsClientCount).toBe(0);
     expect(openRelaySubscriptions(b)).toEqual([]);
   });
+
+  it("releases a replaced stream's bus subscription, keeping the tab's presence, and destroy() the newer one's", () => {
+    const firstUnsub = vi.fn();
+    const secondUnsub = vi.fn();
+    const bus = busStub({
+      subscribeCommands: vi.fn().mockReturnValueOnce(firstUnsub).mockReturnValueOnce(secondUnsub),
+    });
+    const r = relay({ bus, proactiveSnapshot: false });
+    r.openCommandStream(() => {}, 'tab-1');
+    // A second stream for the same tab replaces the first before it unsubscribed.
+    r.openCommandStream(() => {}, 'tab-1');
+
+    // Only one bus subscription is left for the tab, and its presence stands.
+    expect(firstUnsub).toHaveBeenCalledTimes(1);
+    expect(secondUnsub).not.toHaveBeenCalled();
+    expect(bus.unregisterTab).not.toHaveBeenCalled();
+
+    r.destroy();
+
+    expect(firstUnsub).toHaveBeenCalledTimes(1);
+    expect(secondUnsub).toHaveBeenCalledTimes(1);
+    expect(bus.unregisterTab).toHaveBeenCalledTimes(1);
+    expect(bus.unregisterTab).toHaveBeenCalledWith('tab-1');
+  });
+
+  it('re-arms the cleanup sweep when a transport registers after destroy(), and clears it again', () => {
+    const prefix = uniquePrefix();
+    const key = `${prefix}CleanupInterval`;
+    const g = globalThis as unknown as Record<string, unknown>;
+    const r = relay({ globalPrefix: prefix, proactiveSnapshot: false });
+    const firstSweep = g[key];
+    expect(firstSweep).toBeDefined();
+
+    r.destroy();
+    expect(g[key]).toBeUndefined();
+    expect(vi.getTimerCount()).toBe(0);
+
+    // The relay is reused: its transport gets a stale-tab prune again.
+    r.registerWebSocketClient(wsClient('ws-1'));
+    expect(g[key]).toBeDefined();
+    expect(g[key]).not.toBe(firstSweep);
+    const prune = vi.spyOn(r, 'pruneStaleTabs');
+    vi.advanceTimersByTime(60_000);
+    expect(prune).toHaveBeenCalled();
+
+    r.destroy();
+    expect(g[key]).toBeUndefined();
+    expect(vi.getTimerCount()).toBe(0);
+
+    // The SSE door re-arms it too.
+    const stream = r.openCommandStream(() => {}, 'tab-1');
+    expect(g[key]).toBeDefined();
+    stream.unsubscribe();
+  });
+
+  it('does not fail a primary-tab command over to a transport registered right after destroy()', async () => {
+    const r = relay({ proactiveSnapshot: false });
+    const primary = wsClient('tab-a');
+    r.registerWebSocketClient(primary);
+    const outcome = track(r.queueCommand('getControlSnapshot', {}));
+    await flushMicrotasks();
+    expect(primary.send).toHaveBeenCalledTimes(1);
+
+    r.destroy();
+    const later = wsClient('tab-c');
+    r.registerWebSocketClient(later);
+    await flushMicrotasks();
+
+    expect(later.send).not.toHaveBeenCalled();
+    expect(outcome.settled).toBe(true);
+    expect(outcome.error).toBeInstanceOf(RelayDestroyedError);
+  });
+
+  it("does not fail an owner-scoped command over to the user's other tab registered right after destroy()", async () => {
+    const r = relay({ proactiveSnapshot: false });
+    const ownership = (r as unknown as { tabOwnership: Map<string, unknown> }).tabOwnership;
+    const own = (tabId: string) =>
+      ownership.set(tabId, { userId: 'u1', sessionId: 's1', firstSeen: 0, lastSeen: 0 });
+    const first = wsClient('tab-a');
+    r.registerWebSocketClient(first);
+    r.registerWebSocketClient(wsClient('tab-b'));
+    own('tab-a');
+    own('tab-b');
+    const outcome = track(
+      r.queueCommand('getControlSnapshot', {}, { ownerCheck: { userId: 'u1' } })
+    );
+    await flushMicrotasks();
+    expect(first.send).toHaveBeenCalledTimes(1);
+
+    r.destroy();
+    const fallback = wsClient('tab-b');
+    r.registerWebSocketClient(fallback);
+    own('tab-b');
+    await flushMicrotasks();
+
+    expect(fallback.send).not.toHaveBeenCalled();
+    expect(outcome.settled).toBe(true);
+    expect(outcome.error).toBeInstanceOf(RelayDestroyedError);
+  });
+
+  it('does not retry a disconnected command once destroy() ran during its reconnection wait', async () => {
+    const r = relay({ proactiveSnapshot: false });
+    // Counts as a transport, so the command skips the initial wait, but
+    // delivers nothing: the dispatch fails with SDK_DISCONNECTED.
+    r.registerWebSocketClient({ ...wsClient('ws-gone'), isConnected: () => false });
+    const later = wsClient('ws-new');
+    // Land destroy() and a fresh transport between the failure and the retry.
+    const log = vi.spyOn(console, 'log').mockImplementation((message: unknown) => {
+      if (typeof message === 'string' && message.includes('waiting for reconnection')) {
+        r.destroy();
+        r.registerWebSocketClient(later);
+      }
+    });
+    const outcome = track(r.queueCommand('getControlSnapshot', {}));
+    await flushMicrotasks();
+
+    expect(outcome.settled).toBe(true);
+    expect(outcome.error).toBeInstanceOf(RelayDestroyedError);
+    expect(later.send).not.toHaveBeenCalled();
+    expect(log).not.toHaveBeenCalledWith(expect.stringContaining('Reconnected, retrying'));
+  });
 });

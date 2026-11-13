@@ -48,9 +48,12 @@ export interface TabListener {
    * Set when a cross-instance bus is configured: drops this stream's bus
    * command subscription and removes its tab from the shared presence
    * registry. Idempotent. Run by `destroy()`, which forgets the listener
-   * without going through its unsubscribe.
+   * without going through its unsubscribe, and with `keepPresence` by a newer
+   * stream for the same tab that replaces this one: the presence is the
+   * newer stream's from then on, but this stream's subscription would
+   * deliver every bus command a second time.
    */
-  releaseBus?: () => void;
+  releaseBus?: (options?: { keepPresence?: boolean }) => void;
 }
 
 export interface PendingCommand {
@@ -537,13 +540,28 @@ export class CommandRelay {
     this.connectionWaiters = g[key('ConnectionWaiters')];
     this.buildId = g[key('BuildId')];
 
-    // Periodic cleanup. Runs at `pruneSweepIntervalMs` cadence and performs
-    // two passes: (a) the legacy metadata GC for tabs that already lost their
-    // transport, and (b) Item #15 — active prune of zombie tabs whose
-    // heartbeat has gone stale despite the transport still appearing
-    // connected. Bundled into one interval to avoid two competing timers.
-    if (!g[key('CleanupInterval')]) {
-      g[key('CleanupInterval')] = setInterval(() => {
+    this.ensureCleanupSweep();
+  }
+
+  /**
+   * Arm the prefix's periodic cleanup sweep, unless one is armed already.
+   * Runs at `pruneSweepIntervalMs` cadence and performs three passes: (a) the
+   * legacy metadata GC for tabs that already lost their transport, (b) Item
+   * #15 — active prune of zombie tabs whose heartbeat has gone stale despite
+   * the transport still appearing connected, and (c) the bus presence
+   * refresh. Bundled into one interval to avoid competing timers.
+   *
+   * Called at construction and whenever a transport registers: `destroy()`
+   * clears the sweep, and a relay used again after it (or a sibling relay on
+   * the prefix) must not run its transports with no prune and no presence
+   * refresh until some other relay happens to be constructed.
+   */
+  private ensureCleanupSweep(): void {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const g = globalThis as any;
+    const intervalKey = `${this.prefix}CleanupInterval`;
+    if (!g[intervalKey]) {
+      g[intervalKey] = setInterval(() => {
         try {
           this.pruneStaleTabs();
         } catch (err) {
@@ -563,7 +581,7 @@ export class CommandRelay {
         }
       }, this.pruneSweepIntervalMs);
     }
-    this.cleanupInterval = g[key('CleanupInterval')];
+    this.cleanupInterval = g[intervalKey];
   }
 
   // --------------------------------------------------------------------------
@@ -1605,6 +1623,7 @@ export class CommandRelay {
     if (previous?.snapshotTimer) clearTimeout(previous.snapshotTimer);
     const entry: WebSocketClientEntry = { client, connectedAt: now, lastActivity: now };
     this.wsClients.set(client.clientId, entry);
+    this.ensureCleanupSweep();
 
     // Signal that a transport is ready
     this.openConnectionGate();
@@ -1947,7 +1966,18 @@ export class CommandRelay {
       streamId,
       ...(userId ? { userId } : {}),
     };
+    const replaced = this.tabListeners.get(id);
     this.tabListeners.set(id, tabListener);
+    // A stream replaced before it unsubscribed leaves its bus subscription
+    // behind, and `destroy()` reaches only the listener in the map. Drop it
+    // here, at the source; the tab's presence now belongs to this stream.
+    try {
+      replaced?.releaseBus?.({ keepPresence: true });
+    } catch (err) {
+      console.error('[ui-bridge] releasing a replaced listener from the bus failed:', err);
+    }
+
+    this.ensureCleanupSweep();
 
     // New tab becomes primary
     this.demotedTabs.delete(id);
@@ -2015,9 +2045,13 @@ export class CommandRelay {
         }
       });
       let busReleased = false;
-      tabListener.releaseBus = () => {
+      tabListener.releaseBus = (options) => {
         if (busReleased) return;
         busReleased = true;
+        if (options?.keepPresence) {
+          releaseBusCommands();
+          return;
+        }
         // Both halves run even when one throws: `destroy()` must finish.
         try {
           releaseBusCommands();
@@ -2565,8 +2599,9 @@ export class CommandRelay {
    * maps. After it returns:
    *
    * - This relay's cleanup sweep is cleared. Its `globalThis` handle is
-   *   deleted when it is still the prefix's, so a relay built later on the
-   *   prefix arms its own; a newer sweep a later relay armed is left running.
+   *   deleted when it is still the prefix's, so the next transport registered
+   *   on any relay of the prefix (this one included) re-arms it; a newer
+   *   sweep a later relay armed is left running.
    * - Every WebSocket client's warm-up timer is cleared and the clients are
    *   forgotten. The sockets are NOT closed: the transport owner (the
    *   standalone server's connection set, a host's WS handler) owns them.
