@@ -347,12 +347,17 @@ class BatchAssertionResult(BaseModel):
     results: list[AssertionResult]
     passed_count: int = Field(alias="passedCount")
     failed_count: int = Field(alias="failedCount")
-    """Assertions that FAILED (``outcome == "failed"``); unmeasured ones are counted apart."""
-    unmeasured_count: int | None = Field(None, alias="unmeasuredCount")
-    """Assertions that could not read the value they judge (``outcome == "unmeasured"``).
+    """Assertions that did not pass: ``outcome == "failed"`` and ``"unmeasured"`` alike.
 
-    Any of them keeps an ``all`` batch from passing. ``None`` only on a result
-    from an SDK build that predates the field: unknown, not zero.
+    An ``all`` batch passes iff it is 0.
+    """
+    unmeasured_count: int | None = Field(None, alias="unmeasuredCount")
+    """How many of the ``failed_count`` assertions could not read the value they judge.
+
+    A SUBSET of ``failed_count`` (``outcome == "unmeasured"``), never added to
+    it: ``failed_count - unmeasured_count`` checks read a value that failed.
+    ``None`` only on a result from an SDK build that predates the field:
+    unknown, not zero.
     """
     duration_ms: float = Field(alias="durationMs")
     timestamp: int

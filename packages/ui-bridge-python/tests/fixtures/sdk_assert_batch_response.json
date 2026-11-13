@@ -1,0 +1,246 @@
+{
+  "passed": false,
+  "results": [
+    {
+      "passed": true,
+      "outcome": "passed",
+      "target": "save",
+      "targetDescription": "\"save\" button",
+      "expected": "3px",
+      "actual": "3px",
+      "elementState": {
+        "visible": false,
+        "visibilityReason": "no-layout",
+        "scrollWidth": 0,
+        "clientWidth": 0,
+        "enabled": true,
+        "disabled": false,
+        "ariaDisabled": false,
+        "focused": false,
+        "accessibleName": "Save",
+        "nameSource": "text",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        },
+        "textContent": "Save",
+        "computedStyles": {
+          "display": "inline-block",
+          "visibility": "visible",
+          "opacity": "",
+          "pointerEvents": "auto",
+          "cursor": "default",
+          "color": "buttontext",
+          "backgroundColor": "buttonface",
+          "colorScheme": "",
+          "fontSize": "",
+          "fontWeight": "",
+          "lineHeight": "normal",
+          "overflow": "",
+          "textOverflow": "",
+          "whiteSpace": "",
+          "position": "",
+          "zIndex": "",
+          "padding": "2px 6px 3px",
+          "margin": "",
+          "borderColor": "buttonface",
+          "borderWidth": "2px",
+          "borderRadius": ""
+        },
+        "inViewport": false,
+        "normalizedRect": {
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0
+        }
+      },
+      "durationMs": 4.096100000000206,
+      "timestamp": 1794565298367,
+      "searchDetails": {
+        "confidence": 1,
+        "matchReasons": [
+          "exact literal match: \"save\"",
+          "exact label match",
+          "alias match: \"save\"",
+          "synonym match: \"save\" ~ \"keep\"",
+          "synonym match: \"save\" ~ \"store\"",
+          "synonym match: \"save\" ~ \"apply\"",
+          "synonym match: \"save\" ~ \"submit\""
+        ],
+        "candidateCount": 1
+      }
+    },
+    {
+      "passed": false,
+      "outcome": "unmeasured",
+      "target": "save",
+      "targetDescription": "\"save\" button",
+      "expected": "x",
+      "failureReason": "Cannot check CSS property \"--not-set\": custom property `--not-set` is not set on this element",
+      "suggestion": "The value could not be read here: assert against an element with a live DOM node",
+      "elementState": {
+        "visible": false,
+        "visibilityReason": "no-layout",
+        "scrollWidth": 0,
+        "clientWidth": 0,
+        "enabled": true,
+        "disabled": false,
+        "ariaDisabled": false,
+        "focused": false,
+        "accessibleName": "Save",
+        "nameSource": "text",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        },
+        "textContent": "Save",
+        "computedStyles": {
+          "display": "inline-block",
+          "visibility": "visible",
+          "opacity": "",
+          "pointerEvents": "auto",
+          "cursor": "default",
+          "color": "buttontext",
+          "backgroundColor": "buttonface",
+          "colorScheme": "",
+          "fontSize": "",
+          "fontWeight": "",
+          "lineHeight": "normal",
+          "overflow": "",
+          "textOverflow": "",
+          "whiteSpace": "",
+          "position": "",
+          "zIndex": "",
+          "padding": "2px 6px 3px",
+          "margin": "",
+          "borderColor": "buttonface",
+          "borderWidth": "2px",
+          "borderRadius": ""
+        },
+        "inViewport": false,
+        "normalizedRect": {
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0
+        }
+      },
+      "durationMs": 0.8621000000002823,
+      "timestamp": 1794565298368,
+      "unmeasured": {
+        "code": "input_missing",
+        "detail": "custom property `--not-set` is not set on this element"
+      },
+      "failureCode": "UB-OBS-INPUT-MISSING",
+      "searchDetails": {
+        "confidence": 1,
+        "matchReasons": [
+          "exact literal match: \"save\"",
+          "exact label match",
+          "alias match: \"save\"",
+          "synonym match: \"save\" ~ \"keep\"",
+          "synonym match: \"save\" ~ \"store\"",
+          "synonym match: \"save\" ~ \"apply\"",
+          "synonym match: \"save\" ~ \"submit\""
+        ],
+        "candidateCount": 1
+      }
+    },
+    {
+      "passed": false,
+      "outcome": "failed",
+      "target": "save",
+      "targetDescription": "\"save\" button",
+      "expected": "fr",
+      "actual": "de",
+      "failureReason": "Attribute \"lang\" is \"de\" but expected \"fr\"",
+      "elementState": {
+        "visible": false,
+        "visibilityReason": "no-layout",
+        "scrollWidth": 0,
+        "clientWidth": 0,
+        "enabled": true,
+        "disabled": false,
+        "ariaDisabled": false,
+        "focused": false,
+        "accessibleName": "Save",
+        "nameSource": "text",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        },
+        "textContent": "Save",
+        "computedStyles": {
+          "display": "inline-block",
+          "visibility": "visible",
+          "opacity": "",
+          "pointerEvents": "auto",
+          "cursor": "default",
+          "color": "buttontext",
+          "backgroundColor": "buttonface",
+          "colorScheme": "",
+          "fontSize": "",
+          "fontWeight": "",
+          "lineHeight": "normal",
+          "overflow": "",
+          "textOverflow": "",
+          "whiteSpace": "",
+          "position": "",
+          "zIndex": "",
+          "padding": "2px 6px 3px",
+          "margin": "",
+          "borderColor": "buttonface",
+          "borderWidth": "2px",
+          "borderRadius": ""
+        },
+        "inViewport": false,
+        "normalizedRect": {
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0
+        }
+      },
+      "durationMs": 0.4272999999998319,
+      "timestamp": 1794565298368,
+      "searchDetails": {
+        "confidence": 1,
+        "matchReasons": [
+          "exact literal match: \"save\"",
+          "exact label match",
+          "alias match: \"save\"",
+          "synonym match: \"save\" ~ \"keep\"",
+          "synonym match: \"save\" ~ \"store\"",
+          "synonym match: \"save\" ~ \"apply\"",
+          "synonym match: \"save\" ~ \"submit\""
+        ],
+        "candidateCount": 1
+      },
+      "failureCode": "UB-ASSERT-TEXT-MISMATCH"
+    }
+  ],
+  "passedCount": 1,
+  "failedCount": 2,
+  "unmeasuredCount": 1,
+  "durationMs": 5.569899999999961,
+  "timestamp": 1794565298368
+}
