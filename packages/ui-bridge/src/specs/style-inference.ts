@@ -1245,6 +1245,17 @@ const LENGTH_CATEGORIES: StyleCategory[] = ['fontSizes', 'spacing', 'borderRadiu
 const LENGTH_SHAPED = /^(?:[-+]?0*\.?0+|.*\d(?:px|rem|em|%)(?![a-z]).*|calc\(.*)$/i;
 
 /**
+ * Whether an unresolved value is shaped like a length. A function other than
+ * `calc()` (`color-mix(in srgb, red 50%, blue)`, `rgb(…)`) is not, whatever
+ * digits and `%` it holds.
+ */
+function isLengthShaped(value: string): boolean {
+  const v = value.trim();
+  if (/^[a-z-]+\(/i.test(v) && !/^calc\(/i.test(v)) return false;
+  return LENGTH_SHAPED.test(v);
+}
+
+/**
  * Name segments that say which length category a custom property is for,
  * matched as whole `-`-delimited segments anywhere in the name, so a library
  * prefix (`--chakra-space-4`, `--wp--preset--font-size--lg`) does not hide them.
@@ -1373,7 +1384,7 @@ function resolveTokens(
     // but only for a value shaped like a length: `--text-primary:
     // var(--missing)` is likelier a colour than a font size.
     const category = token.startsWith('--')
-      ? LENGTH_SHAPED.test(value.trim())
+      ? isLengthShaped(value)
         ? lengthCategoryOfName(token)
         : undefined
       : categoryOfTokenPath(token);
@@ -1982,7 +1993,9 @@ export function computeTokenDrift(
     (c) =>
       categories[c].status === 'no-declared-tokens' &&
       categories[c].unresolvedDeclared === 0 &&
-      categories[c].ambiguousDeclared > 0
+      categories[c].ambiguousDeclared > 0 &&
+      // Every value matched an ambiguous token: nothing went unexamined.
+      categories[c].matched < categories[c].inUse
   );
   const ambiguousTokens = resolved.filter((t) => t.ambiguous).length;
   let verdict: DriftVerdict;
@@ -2020,7 +2033,7 @@ export function computeTokenDrift(
     if (ambiguousCovered.length > 0) {
       parts.push(
         `${ambiguousCovered.map((c) => CATEGORY_LABEL[c]).join(', ')} had values in use and only ` +
-          'custom-property lengths whose names do not say which category they are for'
+          'custom-property lengths whose names do not say which category they are for, which did not match every value'
       );
     }
     reason = `every compared value matched, but ${parts.join('; and ')}, so they were not compared`;
