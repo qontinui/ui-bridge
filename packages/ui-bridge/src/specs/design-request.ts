@@ -28,6 +28,7 @@ import {
   captureResponsiveSnapshots,
   getElementDesignData,
 } from '../ai/design-inspector';
+import { RootWidthLockError } from '../core/root-width-lock';
 import { collectDesignData, type QualityElementSource } from './quality-request';
 import { runStyleAudit } from './style-validator';
 import type { StyleAuditReport, StyleGuideConfig } from './style-types';
@@ -65,6 +66,16 @@ export const DEFAULT_DESIGN_RECORD_BUDGET = 250;
 /** The most viewports one `/design/responsive` request may name. */
 export const MAX_RESPONSIVE_VIEWPORTS = 16;
 
+/** The most ids `missingElementIds` / `unreadableElementIds` echo; the counts cover the rest. */
+export const MAX_ECHOED_ELEMENT_IDS = 50;
+
+/**
+ * The most rule results a style-guide audit lists. One result echoes its
+ * constraints with expected and actual values, a few hundred bytes, so 1,000
+ * keeps the report under about 1 MB — the same order as the record budget.
+ */
+export const DEFAULT_AUDIT_MAX_RESULTS = 1_000;
+
 /** What the request selected, and what of it could not be read. */
 export interface DesignSelectionReport {
   /** Registered elements the request selected that have a live DOM node. */
@@ -73,14 +84,21 @@ export interface DesignSelectionReport {
   limit: number;
   /** `true` when the bound cut the selection. */
   truncated: boolean;
-  /** Requested `elementIds` that name no registered element (empty without `elementIds`). */
+  /**
+   * Requested `elementIds` that name no registered element (empty without
+   * `elementIds`), at most `MAX_ECHOED_ELEMENT_IDS` of them.
+   */
   missingElementIds: string[];
+  /** How many requested ids name no registered element. */
+  missingElementCount: number;
   /**
    * Selected registered elements whose node is not an `HTMLElement` (an SVG
-   * element, or none at all), so no design data was read for them. They are
-   * not counted in `totalElements`.
+   * element, or none at all), so no design data was read for them, at most
+   * `MAX_ECHOED_ELEMENT_IDS` of them. They are not counted in `totalElements`.
    */
   unreadableElementIds: string[];
+  /** How many selected registered elements had no `HTMLElement` node. */
+  unreadableElementCount: number;
 }
 
 /** How much of the selection a design-data response carries. */
@@ -93,12 +111,6 @@ export interface DesignSelectionBounds extends DesignSelectionReport {
 export interface DesignAuditBounds extends DesignSelectionReport {
   /** Elements the audit checked. */
   checkedElements: number;
-  /**
-   * Whether passing rule results are listed. Off by default: only failures
-   * are, so the report grows with the violations rather than the page.
-   * `passedCount` / `failedCount` always count every result.
-   */
-  includePassed: boolean;
 }
 
 // ============================================================================
@@ -120,6 +132,12 @@ export interface ResponsiveSnapshotsRequest {
   elementIds?: string[];
   /** Most elements per snapshot; default the record budget / viewport count. */
   limit?: number;
+  /**
+   * How long the capture may take, waiting for the root-width lock included;
+   * default `DEFAULT_ROOT_WIDTH_BUDGET_MS`. The relay lowers it to fit its own
+   * command timeout.
+   */
+  budgetMs?: number;
 }
 
 /** `/design/audit` request body. */
@@ -131,6 +149,8 @@ export interface DesignAuditRequest {
   limit?: number;
   /** List passing rule results too (style-guide mode); default `false`. */
   includePassed?: boolean;
+  /** Most rule results to list (style-guide mode); default `DEFAULT_AUDIT_MAX_RESULTS`. */
+  maxResults?: number;
 }
 
 // ============================================================================
@@ -156,13 +176,37 @@ export interface ResponsiveSnapshotsResponse extends DesignSelectionBounds {
   method: typeof RESPONSIVE_SNAPSHOT_METHOD;
   mediaQueriesReevaluated: false;
   windowInnerWidth: number;
+  /** Viewports the request named; `snapshots` holds fewer when `timedOut`. */
+  requestedViewports: number;
+  /** The capture's deadline ran out between viewports; it stopped and restored the page. */
+  timedOut: boolean;
+  /** The tab was hidden, so no animation frame was awaited (see `ResponsiveCapture`). */
+  framesSkipped: boolean;
   timestamp: number;
 }
 
-/** `/design/audit` answer when a style guide was provided or loaded. */
+/**
+ * `/design/audit` answer when a style guide was provided or loaded.
+ *
+ * `results` lists failures only unless `includePassed`, and at most
+ * `maxResults` of them (`resultsTruncated`, `listableResults`).
+ * `passedCount` / `failedCount` and the `summary` counts cover every result.
+ * `summary` carries counts, not lists: the failures are already in `results`,
+ * and listing them twice doubled the report.
+ */
 export interface StyleGuideDesignAuditReport
-  extends Omit<StyleAuditReport, 'totalElements'>, DesignAuditBounds {
+  extends Omit<StyleAuditReport, 'totalElements' | 'summary'>, DesignAuditBounds {
   mode: 'style-guide';
+  /** Failed results by severity. */
+  summary: { errors: number; warnings: number; info: number };
+  /** Whether passing results are listed. */
+  includePassed: boolean;
+  /** The result bound applied. */
+  maxResults: number;
+  /** Results eligible for `results` (failures, or all with `includePassed`). */
+  listableResults: number;
+  /** `true` when `maxResults` cut `results`. */
+  resultsTruncated: boolean;
 }
 
 /** One finding of the heuristic audit. */
@@ -214,7 +258,8 @@ export class DesignRequestError extends Error {
  * error's own code, otherwise the route's.
  */
 export function designFailureCode(err: unknown, routeCode: string): string {
-  return err instanceof DesignRequestError ? err.code : routeCode;
+  if (err instanceof DesignRequestError || err instanceof RootWidthLockError) return err.code;
+  return routeCode;
 }
 
 type RequestBody = Record<string, unknown>;
@@ -258,13 +303,30 @@ function booleanOf(body: RequestBody, key: string, route: string): boolean | und
   return value;
 }
 
-function limitOf(body: RequestBody, route: string): number | undefined {
-  const limit = body.limit;
-  if (!isGiven(limit)) return undefined;
-  if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1) {
-    throw new DesignRequestError(`${route}: limit must be an integer >= 1`);
+function positiveIntegerOf(body: RequestBody, key: string, route: string): number | undefined {
+  const value = body[key];
+  if (!isGiven(value)) return undefined;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+    throw new DesignRequestError(`${route}: ${key} must be an integer >= 1`);
   }
-  return limit;
+  return value;
+}
+
+function limitOf(body: RequestBody, route: string): number | undefined {
+  return positiveIntegerOf(body, 'limit', route);
+}
+
+/**
+ * The `budgetMs` a root-width request names, if any: a positive number of
+ * milliseconds. Throws `DesignRequestError` otherwise.
+ */
+export function rootWidthBudgetOf(request: unknown, route: string): number | undefined {
+  const budget = bodyOf(request, route).budgetMs;
+  if (!isGiven(budget)) return undefined;
+  if (!isPositiveNumber(budget)) {
+    throw new DesignRequestError(`${route}: budgetMs must be a finite number greater than 0`);
+  }
+  return budget;
 }
 
 function viewportsOf(body: RequestBody, route: string): Record<string, number> | number[] {
@@ -349,8 +411,10 @@ function bounded(
       totalElements: live.length,
       limit,
       truncated: kept.length < live.length,
-      missingElementIds,
-      unreadableElementIds,
+      missingElementIds: missingElementIds.slice(0, MAX_ECHOED_ELEMENT_IDS),
+      missingElementCount: missingElementIds.length,
+      unreadableElementIds: unreadableElementIds.slice(0, MAX_ECHOED_ELEMENT_IDS),
+      unreadableElementCount: unreadableElementIds.length,
     },
   };
 }
@@ -407,36 +471,50 @@ export function designSnapshotOf(
  * constraining the root element's width (`RESPONSIVE_SNAPSHOT_METHOD`) — which
  * the response says, because `@media` queries do not re-evaluate. The default
  * element bound is the record budget divided by the viewport count.
+ *
+ * `elements` is read inside the root-width lock (pass a function to read the
+ * registry then), so a capture that waited for another selects the page as it
+ * is when it runs. The capture stops between viewports when its deadline
+ * (`budgetMs`) runs out, restores the page, and reports `timedOut`.
  */
 export async function responsiveSnapshotsOf(
-  elements: readonly DesignElementSource[],
+  elements: readonly DesignElementSource[] | (() => readonly DesignElementSource[]),
   request: unknown
 ): Promise<ResponsiveSnapshotsResponse> {
   const route = '/design/responsive';
   const body = bodyOf(request, route);
   const elementIds = elementIdsOf(body, route);
   const viewports = viewportsOf(body, route);
+  const budgetMs = rootWidthBudgetOf(body, route);
   const viewportCount = Array.isArray(viewports) ? viewports.length : Object.keys(viewports).length;
   const limit =
     limitOf(body, route) ?? Math.max(1, Math.floor(DEFAULT_DESIGN_RECORD_BUDGET / viewportCount));
-  const { kept, report } = bounded(selectElements(elements, elementIds), limit);
-  const snapshots = await captureResponsiveSnapshots(
+  let selected: { kept: LiveSource[]; report: DesignSelectionReport } | undefined;
+  const capture = await captureResponsiveSnapshots(
     {
-      getAllElements: () =>
-        kept.map((el) => ({
+      getAllElements: () => {
+        const source = typeof elements === 'function' ? elements() : elements;
+        selected = bounded(selectElements(source, elementIds), limit);
+        return selected.kept.map((el) => ({
           id: el.id,
           element: el.element,
           type: el.type ?? el.element.tagName.toLowerCase(),
           label: el.label,
-        })),
+        }));
+      },
     },
-    viewports
+    viewports,
+    { budgetMs }
   );
+  const { kept, report } = selected ?? bounded(selectElements([], elementIds), limit);
   return {
-    snapshots,
+    snapshots: capture.snapshots,
     method: RESPONSIVE_SNAPSHOT_METHOD,
     mediaQueriesReevaluated: false,
     windowInnerWidth: window.innerWidth,
+    requestedViewports: viewportCount,
+    timedOut: capture.timedOut,
+    framesSkipped: capture.framesSkipped,
     ...report,
     returned: kept.length,
     timestamp: Date.now(),
@@ -452,8 +530,10 @@ export async function responsiveSnapshotsOf(
  * `runStyleAudit` yields one result per matched element x rule, passes
  * included, so an unbounded report grows with the page. Both modes therefore
  * check at most `limit` elements (default `DEFAULT_DESIGN_RECORD_BUDGET`) and
- * report the cut, and the style-guide mode lists only failed results unless
- * `includePassed` is set (its counts always cover every result).
+ * report the cut. The style-guide mode also lists only failed results unless
+ * `includePassed` is set, at most `maxResults` of them (default
+ * `DEFAULT_AUDIT_MAX_RESULTS`), and summarises by count rather than repeating
+ * the failures; its counts always cover every result.
  */
 export function designAuditOf(
   elements: readonly DesignElementSource[],
@@ -466,14 +546,29 @@ export function designAuditOf(
   const guide = guideOf(body, route) ?? loadedGuide ?? undefined;
   const limit = limitOf(body, route) ?? DEFAULT_DESIGN_RECORD_BUDGET;
   const includePassed = booleanOf(body, 'includePassed', route) ?? false;
+  const maxResults = positiveIntegerOf(body, 'maxResults', route) ?? DEFAULT_AUDIT_MAX_RESULTS;
   const { kept, report } = bounded(selectElements(elements, elementIds), limit);
-  const bounds: DesignAuditBounds = { ...report, checkedElements: kept.length, includePassed };
+  const bounds: DesignAuditBounds = { ...report, checkedElements: kept.length };
   if (guide) {
-    const { totalElements: _audited, ...audit } = runStyleAudit(collectDesignData(kept), guide);
+    const {
+      totalElements: _audited,
+      summary,
+      ...audit
+    } = runStyleAudit(collectDesignData(kept), guide);
+    const listable = includePassed ? audit.results : audit.results.filter((r) => !r.passed);
     return {
       mode: 'style-guide',
       ...audit,
-      results: includePassed ? audit.results : audit.results.filter((r) => !r.passed),
+      results: listable.slice(0, maxResults),
+      summary: {
+        errors: summary.errors.length,
+        warnings: summary.warnings.length,
+        info: summary.info.length,
+      },
+      includePassed,
+      maxResults,
+      listableResults: listable.length,
+      resultsTruncated: listable.length > maxResults,
       ...bounds,
     };
   }

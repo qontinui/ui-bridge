@@ -225,6 +225,7 @@ import {
   designSnapshotOf,
   elementStylesOf,
   responsiveSnapshotsOf,
+  rootWidthBudgetOf,
   type DesignAuditRequest,
   type DesignAuditResponse,
   type DesignSnapshotRequest,
@@ -5083,7 +5084,8 @@ export function createHandlers(
       request: ResponsiveSnapshotsRequest
     ): Promise<APIResponse<ResponsiveSnapshotsResponse>> => {
       try {
-        const elements = registry.getAllElements() as unknown as RegistryElementView[];
+        // Read inside the root-width lock, once the capture's turn comes.
+        const elements = () => registry.getAllElements() as unknown as RegistryElementView[];
         return success(await responsiveSnapshotsOf(elements, request));
       } catch (err) {
         return error((err as Error).message, designFailureCode(err, 'RESPONSIVE_SNAPSHOT_ERROR'));
@@ -5102,28 +5104,32 @@ export function createHandlers(
       }>
     > => {
       try {
+        const budgetMs = rootWidthBudgetOf(request, '/control/viewport-constraints');
         // Serialized with responsive captures (`core/root-width-lock`), which
         // would otherwise restore over a constraint set mid-capture.
-        return await withRootWidthLock(() => {
-          const root = document.documentElement;
-          if (request.restore) {
-            root.style.removeProperty('max-width');
-            root.style.removeProperty('margin');
-            root.style.removeProperty('overflow-x');
-          } else if (request.width && request.width > 0) {
-            root.style.maxWidth = `${request.width}px`;
-            root.style.margin = '0 auto';
-            root.style.overflowX = 'hidden';
-          }
-          return success({
-            success: true,
-            viewportWidth: window.innerWidth,
-            constrainedWidth: root.clientWidth,
-            timestamp: Date.now(),
-          });
-        });
+        return await withRootWidthLock(
+          () => {
+            const root = document.documentElement;
+            if (request.restore) {
+              root.style.removeProperty('max-width');
+              root.style.removeProperty('margin');
+              root.style.removeProperty('overflow-x');
+            } else if (request.width && request.width > 0) {
+              root.style.maxWidth = `${request.width}px`;
+              root.style.margin = '0 auto';
+              root.style.overflowX = 'hidden';
+            }
+            return success({
+              success: true,
+              viewportWidth: window.innerWidth,
+              constrainedWidth: root.clientWidth,
+              timestamp: Date.now(),
+            });
+          },
+          { budgetMs }
+        );
       } catch (err) {
-        return error((err as Error).message, 'VIEWPORT_CONSTRAINTS_ERROR');
+        return error((err as Error).message, designFailureCode(err, 'VIEWPORT_CONSTRAINTS_ERROR'));
       }
     },
 
