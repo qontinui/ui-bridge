@@ -15,53 +15,78 @@ import { afterEach, describe, it, expect } from 'vitest';
 import { CommandRelay } from './command-relay';
 import type { RelayBus, RelayCommandEnvelope, RelayResponseEnvelope } from './relay-bus';
 
-/** Synchronous in-memory bus implementing the full RelayBus contract. */
+/**
+ * Synchronous in-memory bus implementing the full RelayBus contract: one hub
+ * shared by every instance, and one {@link InMemoryBus} view per instance.
+ * Presence is per holder, as the Redis adapter keeps it: an instance
+ * registers and unregisters only its own hold on a tab, and a tab is known
+ * while any instance holds it.
+ */
+class InMemoryBusHub {
+  readonly cmdByTab = new Map<string, Set<(e: RelayCommandEnvelope) => void>>();
+  readonly broadcast = new Set<(e: RelayCommandEnvelope) => void>();
+  readonly respByCmd = new Map<string, Set<(e: RelayResponseEnvelope) => void>>();
+  /** Each tab's holders: the instances that registered it and have not let go. */
+  readonly holders = new Map<string, Set<string>>();
+
+  /** The bus `instance` is built with. */
+  bus(instance: string): RelayBus {
+    return new InMemoryBus(this, instance);
+  }
+
+  clear(): void {
+    this.cmdByTab.clear();
+    this.broadcast.clear();
+    this.respByCmd.clear();
+    this.holders.clear();
+  }
+}
+
 class InMemoryBus implements RelayBus {
-  private cmdByTab = new Map<string, Set<(e: RelayCommandEnvelope) => void>>();
-  private broadcast = new Set<(e: RelayCommandEnvelope) => void>();
-  private respByCmd = new Map<string, Set<(e: RelayResponseEnvelope) => void>>();
-  private present = new Set<string>();
+  constructor(
+    private readonly hub: InMemoryBusHub,
+    private readonly instance: string
+  ) {}
 
   publishCommand(env: RelayCommandEnvelope): void {
     if (env.targetTabId) {
-      this.cmdByTab.get(env.targetTabId)?.forEach((h) => h(env));
+      this.hub.cmdByTab.get(env.targetTabId)?.forEach((h) => h(env));
     } else {
-      this.broadcast.forEach((h) => h(env));
+      this.hub.broadcast.forEach((h) => h(env));
     }
   }
   subscribeCommands(tabId: string, handler: (e: RelayCommandEnvelope) => void): () => void {
-    let set = this.cmdByTab.get(tabId);
-    if (!set) this.cmdByTab.set(tabId, (set = new Set()));
+    let set = this.hub.cmdByTab.get(tabId);
+    if (!set) this.hub.cmdByTab.set(tabId, (set = new Set()));
     set.add(handler);
-    this.broadcast.add(handler);
+    this.hub.broadcast.add(handler);
     return () => {
       set!.delete(handler);
-      this.broadcast.delete(handler);
+      this.hub.broadcast.delete(handler);
     };
   }
   publishResponse(env: RelayResponseEnvelope): void {
-    this.respByCmd.get(env.commandId)?.forEach((h) => h(env));
+    this.hub.respByCmd.get(env.commandId)?.forEach((h) => h(env));
   }
   subscribeResponse(commandId: string, handler: (e: RelayResponseEnvelope) => void): () => void {
-    let set = this.respByCmd.get(commandId);
-    if (!set) this.respByCmd.set(commandId, (set = new Set()));
+    let set = this.hub.respByCmd.get(commandId);
+    if (!set) this.hub.respByCmd.set(commandId, (set = new Set()));
     set.add(handler);
     return () => set!.delete(handler);
   }
   registerTab(tabId: string): void {
-    this.present.add(tabId);
+    let holders = this.hub.holders.get(tabId);
+    if (!holders) this.hub.holders.set(tabId, (holders = new Set()));
+    holders.add(this.instance);
   }
   unregisterTab(tabId: string): void {
-    this.present.delete(tabId);
+    this.hub.holders.get(tabId)?.delete(this.instance);
   }
   async isTabKnown(tabId: string): Promise<boolean> {
-    return this.present.has(tabId);
+    return (this.hub.holders.get(tabId)?.size ?? 0) > 0;
   }
   async close(): Promise<void> {
-    this.cmdByTab.clear();
-    this.broadcast.clear();
-    this.respByCmd.clear();
-    this.present.clear();
+    this.hub.clear();
   }
 }
 
@@ -81,9 +106,9 @@ function freshRelay(globalPrefix: string, bus: RelayBus): CommandRelay {
 
 describe('CommandRelay cross-instance routing via RelayBus (P0a)', () => {
   it('routes a command to the instance holding the tab and the response back', async () => {
-    const bus = new InMemoryBus();
-    const instA = freshRelay('__instA_test', bus);
-    const instB = freshRelay('__instB_test', bus);
+    const hub = new InMemoryBusHub();
+    const instA = freshRelay('__instA_test', hub.bus('A'));
+    const instB = freshRelay('__instB_test', hub.bus('B'));
 
     // Instance B holds the SSE listener for tab-1.
     const received: RelayCommandEnvelope[] = [];
@@ -113,17 +138,17 @@ describe('CommandRelay cross-instance routing via RelayBus (P0a)', () => {
     const result = await pending;
     expect(result).toEqual({ ok: true, value: 42 });
 
-    await bus.close();
+    hub.clear();
   });
 
   it('still rejects TAB_NOT_FOUND when the tab is unknown to every instance', async () => {
-    const bus = new InMemoryBus();
-    const instA = freshRelay('__instA_test2', bus);
+    const hub = new InMemoryBusHub();
+    const instA = freshRelay('__instA_test2', hub.bus('A'));
 
     await expect(
       instA.queueCommand('testAction', {}, { targetTabId: 'ghost-tab' })
     ).rejects.toThrow(/TAB_NOT_FOUND|not in connectedTabs/);
 
-    await bus.close();
+    hub.clear();
   });
 });

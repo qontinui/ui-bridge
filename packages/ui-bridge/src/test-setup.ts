@@ -109,11 +109,14 @@ if (typeof CSS.escape !== 'function') {
 // subscription opened on the relay after `destroy()` is live.
 // - SSE: `subscribeToCommands` and `openCommandStream` both reach the private
 //   `addCommandListener`. Closed by the unsubscribe it returns, or by a later
-//   `destroy()`. Recorded whatever `proactiveSnapshot` says, on purpose: an
-//   open SSE subscription means its relay was not destroyed since it opened,
-//   so the relay's cleanup interval may still run, and the same leak logs
-//   again the moment the warm-up snapshot is turned back on. With it off, the
-//   warm-up timer itself is inert.
+//   `destroy()`. A stream that reports a heard end through its handle's
+//   `park` is not closed by that: its listener becomes a dead slot whose
+//   expiry timer is the relay's (`server/stream-slot.ts`), so it stays
+//   recorded until `destroy()`. Recorded whatever `proactiveSnapshot` says,
+//   on purpose: an open SSE subscription means its relay was not destroyed
+//   since it opened, so the relay's cleanup interval may still run, and the
+//   same leak logs again the moment the warm-up snapshot is turned back on.
+//   With it off, the warm-up timer itself is inert.
 // - WebSocket: `registerWebSocketClient` on a relay with proactive snapshots
 //   on. Closed by `unregisterWebSocketClient`, or by a later `destroy()`. With
 //   proactive snapshots off the registration arms only an inert timer, so it
