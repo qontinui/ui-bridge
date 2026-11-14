@@ -1070,7 +1070,7 @@ describe('design tokens', () => {
     });
     expect(getCSSCustomProperties(el)['--space-heading']).not.toBe(REDACTED_VALUE);
     // An untyped registration may hold any text: still fails closed.
-    for (const untyped of ['*', '<string>', '<custom-ident>', '<url>']) {
+    for (const untyped of ['*', '<string>', '<custom-ident>', '<url>', '<image>']) {
       sheets(registration(untyped));
       expect(getCSSCustomProperties(el)['--space-heading']).toBe(REDACTED_VALUE);
     }

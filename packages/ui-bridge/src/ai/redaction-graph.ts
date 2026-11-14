@@ -180,13 +180,13 @@ function declaresCustomProperty(style: CSSStyleDeclaration): boolean {
  * Syntax components that accept arbitrary text: a registration with one of
  * them can still carry a script value (a name, a URL), so it does not count.
  */
-const UNTYPED_SYNTAX = /^\s*\*\s*$|<(?:string|custom-ident|url)>/i;
+const UNTYPED_SYNTAX = /^\s*\*\s*$|<(?:string|custom-ident|url|image)>/i;
 
 /**
  * The name a TYPED `@property` rule registers (a syntax such as `<length>`
  * or `<color>`, whose value cannot be arbitrary text), or `null` for any
  * other rule, including an untyped registration (`*`, `<string>`,
- * `<custom-ident>`, `<url>`). Read from `CSSPropertyRule` where the engine
+ * `<custom-ident>`, `<url>`, `<image>`). Read from `CSSPropertyRule` where the engine
  * has it, else from the text.
  */
 function registeredName(rule: CSSRule): string | null {
