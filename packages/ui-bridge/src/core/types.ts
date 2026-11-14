@@ -3301,6 +3301,27 @@ export interface PseudoElementStyles {
 }
 
 /**
+ * How one design property value relates to the page's design tokens (CSS
+ * custom properties). See `ai/design-tokens.ts`.
+ */
+export interface TokenAttribution {
+  /**
+   * Tokens a declaration that applies to the element (a matching rule, or its
+   * inline style) references with `var()` for this property. The source uses
+   * the token; a more specific rule may still override it.
+   */
+  derived?: string[];
+  /**
+   * Tokens whose value on the document root equals this computed value. Can
+   * be coincidence: a hardcoded value that happens to equal a token matches.
+   */
+  matches?: string[];
+}
+
+/** Per design property, its token attribution; a property with none is absent. */
+export type TokenMatches = Partial<Record<keyof ExtendedComputedStyles, TokenAttribution>>;
+
+/**
  * Full design data for a single element
  */
 export interface ElementDesignData {
@@ -3310,7 +3331,19 @@ export interface ElementDesignData {
   styles: ExtendedComputedStyles;
   stateVariations?: StateStyles[];
   pseudoElements?: PseudoElementStyles[];
+  /**
+   * Custom properties in effect on the element that are declared on it, or
+   * whose value differs from the document root's (re-declared on it or an
+   * ancestor). Tokens inherited unchanged from the root are not repeated per
+   * element: a batch response reports them once, as `tokens`.
+   */
   customProperties?: Record<string, string>;
+  /**
+   * Token attribution of the element's design properties, present when the
+   * element was read with a stylesheet index (every design route does). An
+   * empty object means no property relates to a token.
+   */
+  tokenMatches?: TokenMatches;
   className?: string;
   classes?: string[];
   rect: {

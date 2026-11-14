@@ -208,7 +208,7 @@ import {
   captureStateVariations,
   analyzeStructuredChanges,
 } from '../ai';
-import type { InteractionStateName, ElementDesignData, StateStyles } from '../core/types';
+import type { InteractionStateName, StateStyles } from '../core/types';
 import type { NavigationTracker } from '../navigation';
 import type { ShortcutTracker } from '../shortcuts';
 import type { ModalDetector } from '../modal';
@@ -227,6 +227,7 @@ import {
   responsiveSnapshotsOf,
   rootWidthBudgetOf,
   type DesignAuditRequest,
+  type ElementStylesResponse,
   type DesignAuditResponse,
   type DesignSnapshotRequest,
   type DesignSnapshotResponse,
@@ -5040,7 +5041,7 @@ export function createHandlers(
 
     // The design-inspection routes run through specs/design-request.ts, which
     // the browser relay calls too — one model whichever transport answers.
-    getElementStyles: async (id: string): Promise<APIResponse<ElementDesignData>> => {
+    getElementStyles: async (id: string): Promise<APIResponse<ElementStylesResponse>> => {
       try {
         const source = registry.getElement(id) as unknown as RegistryElementView | undefined;
         return success(elementStylesOf(id, source ?? undefined));

@@ -154,6 +154,7 @@ describe('design-inspection routes · the browser path answers the full model', 
     sheet = document.createElement('style');
     sheet.textContent = [
       '#dom-save { --brand-color: rgb(255, 0, 0); color: rgb(255, 0, 0); letter-spacing: 2px; }',
+      ':root { --root-token: 8px; }',
     ].join('\n');
     stubPseudoElementStyles();
     document.head.appendChild(sheet);
@@ -216,6 +217,10 @@ describe('design-inspection routes · the browser path answers the full model', 
     expect(data.styles.backgroundImage).toBe(`url("${REDACTED_VALUE}")`);
     // So does its generated content.
     expect(data.pseudoElements?.[0].styles.backgroundImage).toBe(`url("${REDACTED_VALUE}")`);
+    // The page's root tokens are design data, not the element's content.
+    expect((data as ElementDesignData & { tokens: Record<string, string> }).tokens).toEqual({
+      '--root-token': '8px',
+    });
     const wire = JSON.stringify(data);
     expect(wire).not.toContain('Alice');
     expect(wire).not.toContain('s3cr3t');
@@ -545,9 +550,17 @@ describe('design-inspection routes · the browser path answers the full model', 
 
 describe('design-inspection routes · relay and server answer the same model', () => {
   let container: HTMLDivElement;
+  let tokenSheet: HTMLStyleElement;
 
   beforeEach(() => {
     resetGlobalRegistry();
+    tokenSheet = document.createElement('style');
+    tokenSheet.textContent = [
+      ':root { --brand: rgb(31, 78, 140); --space: 4px; }',
+      'button { background: var(--brand); padding-left: var(--space); }',
+      'h1 { color: rgb(31, 78, 140); }',
+    ].join('\n');
+    document.head.appendChild(tokenSheet);
     container = document.createElement('div');
     document.body.appendChild(container);
     for (const [id, tag, type] of [
@@ -567,9 +580,12 @@ describe('design-inspection routes · relay and server answer the same model', (
     vi.restoreAllMocks();
     closeRelays();
     container.remove();
+    tokenSheet.remove();
     document.documentElement.removeAttribute('style');
     resetGlobalRegistry();
   });
+
+  const ROOT_TOKENS = { '--brand': 'rgb(31, 78, 140)', '--space': '4px' };
 
   it('getElementStyles', async () => {
     const server = await serverHandlers().getElementStyles('save');
@@ -578,6 +594,11 @@ describe('design-inspection routes · relay and server answer the same model', (
     expect(relay.success).toBe(true);
     expect(relay.data).toEqual(server.data);
     expect(relay.data!.customProperties).toEqual({ '--token': '1px' });
+    expect(relay.data).toMatchObject({ tokens: ROOT_TOKENS, tokenCount: 2 });
+    expect(relay.data!.tokenMatches).toMatchObject({
+      backgroundColor: { derived: ['--brand'] },
+      paddingLeft: { derived: ['--space'] },
+    });
   });
 
   it('getDesignSnapshot', async () => {
@@ -587,6 +608,25 @@ describe('design-inspection routes · relay and server answer the same model', (
     expect(server.success).toBe(true);
     expect(stable(relay.data)).toEqual(stable(server.data));
     expect(relay.data).toMatchObject({ totalElements: 2, returned: 1, truncated: true });
+    expect(relay.data).toMatchObject({ tokens: ROOT_TOKENS, tokenCount: 2 });
+  });
+
+  it('getDesignSnapshot attributes token use the same way on both', async () => {
+    const request = { elementIds: ['title', 'save'] };
+    const server = await serverHandlers().getDesignSnapshot(request);
+    const relay = await relayHandlers().getDesignSnapshot(request);
+    expect(stable(relay.data)).toEqual(stable(server.data));
+    const byId = new Map(relay.data!.elements.map((e) => [e.elementId, e.tokenMatches]));
+    expect(byId.get('title')).toMatchObject({ color: { matches: ['--brand'] } });
+    expect(byId.get('save')).toMatchObject({ backgroundColor: { derived: ['--brand'] } });
+  });
+
+  it('getResponsiveSnapshots reports the root tokens once, on both', async () => {
+    const request = { viewports: [375] };
+    const server = await serverHandlers().getResponsiveSnapshots(request);
+    const relay = await relayHandlers().getResponsiveSnapshots(request);
+    expect(stable(relay.data)).toEqual(stable(server.data));
+    expect(relay.data).toMatchObject({ tokens: ROOT_TOKENS, tokenCount: 2 });
   });
 
   it('getResponsiveSnapshots', async () => {

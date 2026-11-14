@@ -107,7 +107,7 @@ _138 routes; regenerate via `npm run validate:ws-actions -- --emit-doc docs-site
 | `getControlSnapshot` | `GET /ui-bridge/sdk/components` — List components | `handle_components` |
 | `getControlSnapshot` | `GET /ui-bridge/sdk/states/snapshot` — Get state snapshot | `handle_state_snapshot` |
 | `getControlSnapshot` | `GET /ui-bridge/sdk/workflows` — List workflows | `handle_workflows` |
-| `getDesignSnapshot` | `POST /ui-bridge/sdk/design/snapshot` — Design data for all/filtered elements, bounded by `limit` (default 250) and reported (`totalElements`, `returned`, `truncated`) | `handle_design_snapshot` |
+| `getDesignSnapshot` | `POST /ui-bridge/sdk/design/snapshot` — Design data for all/filtered elements, bounded by `limit` (default 250) and reported (`totalElements`, `returned`, `truncated`); the page's root design tokens once as `tokens`, per element only overrides and `tokenMatches` | `handle_design_snapshot` |
 | `getDiagnostics` | `GET /ui-bridge/sdk/diagnostics` — SDK diagnostic information | `handle_diagnostics` |
 | `getElement` | `GET /ui-bridge/sdk/element/:id` — Get a single element | `handle_element` |
 | `getElementHistory` | `GET /ui-bridge/sdk/control/element/:id/history` — Get element history | `handle_element_history` |
@@ -115,7 +115,7 @@ _138 routes; regenerate via `npm run validate:ws-actions -- --emit-doc docs-site
 | `getElementReactState` | `GET /ui-bridge/sdk/element/:id/state` — Get element state | `handle_element_state` |
 | `getElementState` | `GET /ui-bridge/sdk/control/element/:id/state-generic` — Get generic element state | `handle_element_state_generic` |
 | `getElementStateStyles` | `POST /ui-bridge/sdk/design/element/:id/state-styles` — Styles across interaction states | `handle_design_element_state_styles` |
-| `getElementStyles` | `GET /ui-bridge/sdk/design/element/:id/styles` — `ElementDesignData` for one element: extended computed styles, custom properties, pseudo-elements | `handle_design_element_styles` |
+| `getElementStyles` | `GET /ui-bridge/sdk/design/element/:id/styles` — `ElementDesignData` for one element: extended computed styles, custom properties that differ from the root's, per-property token attribution (`tokenMatches`: `derived` / `matches`), pseudo-elements, plus the page's root tokens (`tokens`) | `handle_design_element_styles` |
 | `getElementTree` | `GET /ui-bridge/sdk/debug/element-tree` — Get element tree | `handle_element_tree` |
 | `getErrorReport` | `GET /ui-bridge/sdk/error-report` — Get error report | `handle_error_report` |
 | `getErrorSessions` | `GET /ui-bridge/sdk/console/error-sessions` — List all error session summaries | `handle_console_error_sessions_list` |

@@ -20,6 +20,16 @@ import { classString } from '../core/class-name';
 import { REDACTED_VALUE, scrubContent, scrubContentRequired, verdictOf } from '../core/redaction';
 import { withRootWidthLock } from '../core/root-width-lock';
 import {
+  inheritedOverridesOf,
+  rootTokenValues,
+  rootTokensOf,
+  tokenMatchesOf,
+  varReferencesOf,
+  type DesignTokenIndex,
+  type ReportedTokens,
+  type TokenAttributedProperty,
+} from './design-tokens';
+import {
   forcePseudoState,
   reapplyIfIdle,
   releaseForcedPseudoStateIfOwner,
@@ -204,8 +214,17 @@ export function getElementDesignData(
     }
   }
 
-  const customProperties =
-    opts?.customProperties === false ? {} : getCSSCustomProperties(el, opts?.customProperties);
+  const index = opts?.customProperties;
+  const customProperties = index === false ? {} : getCSSCustomProperties(el, index);
+  // With a batch index, the custom properties in effect that differ from the
+  // root's are added (tokens inherited unchanged are reported once, by the
+  // response), and each design property is attributed to its tokens.
+  const tokens = index !== false && index !== undefined ? index.tokens : undefined;
+  if (tokens) {
+    for (const [name, value] of Object.entries(inheritedOverridesOf(el, tokens))) {
+      if (!(name in customProperties)) customProperties[name] = value;
+    }
+  }
 
   return {
     elementId: opts?.elementId || el.id || el.getAttribute('data-testid') || '',
@@ -218,6 +237,7 @@ export function getElementDesignData(
     styles,
     pseudoElements: pseudoElements.length > 0 ? pseudoElements : undefined,
     customProperties: Object.keys(customProperties).length > 0 ? customProperties : undefined,
+    tokenMatches: tokens ? tokenMatchesOf(el, styles, tokens) : undefined,
     className: classString(el) || undefined,
     classes: el.classList.length > 0 ? Array.from(el.classList) : undefined,
     rect: {
@@ -353,7 +373,7 @@ const CONSTRAINED_ROOT_PROPERTIES = [
 ] as const;
 
 /** What `captureResponsiveSnapshots` captured, and how. */
-export interface ResponsiveCapture {
+export interface ResponsiveCapture extends ReportedTokens {
   /** One snapshot per viewport captured, in request order. */
   snapshots: ResponsiveSnapshot[];
   /**
@@ -418,16 +438,18 @@ async function captureUnderRootWidthLock(
   const snapshots: ResponsiveSnapshot[] = [];
   let timedOut = false;
   let framesSkipped = false;
+  let reported: ReportedTokens;
 
   try {
     const elements = registry.getAllElements();
-    const customProperties =
-      elements.length === 0
-        ? false
-        : indexCustomProperties(
-            document,
-            elements.map((regEl) => regEl.element)
-          );
+    // Indexed before the root is constrained: which rules declare and
+    // reference tokens does not depend on the width, and the root tokens are
+    // reported as the page has them.
+    const customProperties = indexCustomProperties(
+      document,
+      elements.map((regEl) => regEl.element)
+    );
+    reported = rootTokensOf(customProperties.tokens);
     for (const [label, width] of viewportEntries) {
       // Out of time: stop here and restore, rather than keep the live page
       // narrowed after the caller has been told "timeout".
@@ -473,7 +495,7 @@ async function captureUnderRootWidthLock(
     }
   }
 
-  return { snapshots, timedOut, framesSkipped };
+  return { snapshots, timedOut, framesSkipped, ...reported };
 }
 
 // ============================================================================
@@ -531,12 +553,15 @@ export function checkContrastCompliance(
  * 2026-10-13-image-generation-and-visual-judgment, Phase 6), that was 184,800
  * `matches()` calls, about 43 ms of every `/design/evaluate`. Only 6 of the 165
  * top-level style rules declared a custom property. The index reads the rules
- * once, keeps those that declare one, and queries each of them once with
+ * once, keeps those that declare one, and queries each selector once with
  * `querySelectorAll`. The same batch then cost about 1 ms.
  *
- * Its scope is the per-element walk's: top-level `CSSStyleRule`s of readable
- * stylesheets. Grouping rules (`@media`, `@layer`, `@supports`) are not
- * entered.
+ * `declared` keeps the per-element walk's scope: top-level `CSSStyleRule`s of
+ * readable stylesheets. The token half (`tokens`, `ai/design-tokens.ts`) is
+ * built in the same walk and also enters grouping rules — an `@media` that
+ * applies, `@layer`, `@supports` — because that is where token systems put
+ * their tokens and utilities (`@layer theme { :root { … } }`). A selector
+ * reached from both is still queried once.
  */
 export interface CustomPropertyIndex {
   /** The document whose stylesheets and elements were indexed. */
@@ -548,12 +573,57 @@ export interface CustomPropertyIndex {
   readonly scope: ReadonlySet<Element> | null;
   /** The custom properties declared by the rules each element matches, in rule order. */
   readonly declared: ReadonlyMap<Element, readonly string[]>;
+  /** The page's design tokens, their root values, overrides and `var()` references. */
+  readonly tokens: DesignTokenIndex;
 }
 
 /** The top-level style rules of a document's readable stylesheets, in cascade-source order. */
 function* topLevelStyleRules(doc: Document): Generator<CSSStyleRule> {
+  for (const { rule, topLevel } of styleRules(doc)) {
+    if (topLevel) yield rule;
+  }
+}
+
+/** Whether a grouping rule's contents apply to the page now. */
+function groupingRuleApplies(rule: CSSRule): boolean {
+  if (typeof CSSMediaRule !== 'undefined' && rule instanceof CSSMediaRule) {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return true;
+    try {
+      return window.matchMedia(rule.media.mediaText).matches;
+    } catch {
+      return true;
+    }
+  }
+  return true;
+}
+
+/**
+ * The style rules of a document's readable stylesheets in cascade-source
+ * order, each marked `topLevel` or not. Grouping rules (`@media` that applies,
+ * `@layer`, `@supports`, …) are entered; nested style rules are not.
+ */
+function* styleRules(doc: Document): Generator<{ rule: CSSStyleRule; topLevel: boolean }> {
+  function* walk(
+    rules: CSSRuleList,
+    topLevel: boolean
+  ): Generator<{ rule: CSSStyleRule; topLevel: boolean }> {
+    for (const rule of rules) {
+      if (rule instanceof CSSStyleRule) {
+        yield { rule, topLevel };
+        continue;
+      }
+      const children = (rule as Partial<CSSGroupingRule>).cssRules;
+      if (children && groupingRuleApplies(rule)) yield* walk(children, false);
+    }
+  }
+  let sheets: StyleSheetList;
   try {
-    for (const sheet of doc.styleSheets) {
+    sheets = doc.styleSheets;
+  } catch {
+    return;
+  }
+  try {
+    for (const sheet of sheets) {
       let rules: CSSRuleList;
       try {
         rules = sheet.cssRules;
@@ -561,9 +631,7 @@ function* topLevelStyleRules(doc: Document): Generator<CSSStyleRule> {
         // Cross-origin stylesheet — skip
         continue;
       }
-      for (const rule of rules) {
-        if (rule instanceof CSSStyleRule) yield rule;
-      }
+      yield* walk(rules, true);
     }
   } catch {
     // Stylesheet access failed — yield what was read
@@ -580,6 +648,12 @@ function declaredCustomProperties(rule: CSSStyleRule): string[] {
   return names;
 }
 
+function appendTo<K, V>(map: Map<K, V[]>, key: K, values: readonly V[]): void {
+  const list = map.get(key);
+  if (list) list.push(...values);
+  else map.set(key, [...values]);
+}
+
 /**
  * Index the custom properties the document's stylesheets declare, for the
  * `candidates` (every element of the document when omitted). Read once, then
@@ -591,25 +665,55 @@ export function indexCustomProperties(
   candidates?: Iterable<Element>
 ): CustomPropertyIndex {
   const scope = candidates ? new Set(candidates) : null;
+  const inScope = (el: Element): boolean => scope === null || scope.has(el);
   const declared = new Map<Element, string[]>();
-  for (const rule of topLevelStyleRules(doc)) {
-    const names = declaredCustomProperties(rule);
-    if (names.length === 0) continue;
-    let matched: NodeListOf<Element>;
-    try {
-      matched = doc.querySelectorAll(rule.selectorText);
-    } catch {
-      // Invalid selector — skip
-      continue;
+  const names = new Set<string>();
+  const overrides = new Map<Element, string[]>();
+  const varReferences = new Map<Element, Map<TokenAttributedProperty, string[]>>();
+  const root = doc.documentElement;
+  // One query per selector, however many rules (or walks) name it.
+  const queried = new Map<string, NodeListOf<Element> | null>();
+  const query = (selector: string): NodeListOf<Element> | null => {
+    if (!queried.has(selector)) {
+      try {
+        queried.set(selector, doc.querySelectorAll(selector));
+      } catch {
+        // Invalid selector — skip
+        queried.set(selector, null);
+      }
     }
+    return queried.get(selector) ?? null;
+  };
+
+  for (const { rule, topLevel } of styleRules(doc)) {
+    const declaredHere = declaredCustomProperties(rule);
+    const refs = varReferencesOf(rule.style);
+    if (declaredHere.length === 0 && refs === null) continue;
+    const matched = query(rule.selectorText);
+    if (!matched) continue;
+    for (const name of declaredHere) names.add(name);
     for (const el of matched) {
-      if (scope && !scope.has(el)) continue;
-      const list = declared.get(el);
-      if (list) list.push(...names);
-      else declared.set(el, [...names]);
+      if (declaredHere.length > 0) {
+        if (topLevel && inScope(el)) appendTo(declared, el, declaredHere);
+        if (el !== root) appendTo(overrides, el, declaredHere);
+      }
+      if (refs && inScope(el)) {
+        let perElement = varReferences.get(el);
+        if (!perElement) {
+          perElement = new Map();
+          varReferences.set(el, perElement);
+        }
+        for (const [prop, tokenNames] of refs) appendTo(perElement, prop, tokenNames);
+      }
     }
   }
-  return { document: doc, scope, declared };
+  const { rootValues, byValue } = rootTokenValues(doc, names);
+  return {
+    document: doc,
+    scope,
+    declared,
+    tokens: { names, rootValues, byValue, overrides, varReferences },
+  };
 }
 
 /**

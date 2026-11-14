@@ -89,7 +89,6 @@ import type {
 } from '../ai';
 import type {
   InteractionStateName,
-  ElementDesignData,
   StateStyles,
 } from '../core/types';
 import type { StyleGuideConfig } from '../specs/style-types';
@@ -97,6 +96,7 @@ import type {
   DesignAuditRequest,
   DesignAuditResponse,
   DesignSnapshotRequest,
+  ElementStylesResponse,
   DesignSnapshotResponse,
   ResponsiveSnapshotsRequest,
   ResponsiveSnapshotsResponse,
@@ -1213,7 +1213,7 @@ export interface UIBridgeServerHandlers {
   getElementStyles: (
     id: string,
     context?: HandlerContext
-  ) => Promise<APIResponse<ElementDesignData>>;
+  ) => Promise<APIResponse<ElementStylesResponse>>;
   getElementStateStyles: (
     id: string,
     request: { states?: InteractionStateName[] },
