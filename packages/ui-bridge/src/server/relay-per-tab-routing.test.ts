@@ -786,8 +786,8 @@ describe('relay · Phase 3 — selection prefers a live tab; a reopen keeps its 
   function streamsOn(relay: CommandRelay) {
     const deliveries: string[] = [];
     function open(tabId: string) {
-      const tab = { alive: true, unsubscribe: () => {} };
-      tab.unsubscribe = relay.subscribeToCommands((command) => {
+      const tab = { alive: true, close: () => {} };
+      tab.close = relay.subscribeToCommands((command) => {
         deliveries.push(`${tabId} ${command.action}`);
         if (tab.alive) relay.resolveCommand(command.commandId, { answeredBy: tabId }, tabId);
       }, tabId);
@@ -818,11 +818,11 @@ describe('relay · Phase 3 — selection prefers a live tab; a reopen keeps its 
    * dead tab never settles, and `destroy()` rejects it after the test.
    */
   async function sendUnpinned(relay: CommandRelay, userId?: string) {
-    const outcome = relay.queueCommand<{ answeredBy: string }>(
+    const outcome = relay.queueCommand(
       'getElement',
       {},
       userId ? { ownerCheck: { userId } } : undefined
-    );
+    ) as Promise<{ answeredBy: string }>;
     outcome.catch(() => undefined);
     await vi.advanceTimersByTimeAsync(0);
     return { outcome };
@@ -945,7 +945,7 @@ describe('relay · Phase 3 — selection prefers a live tab; a reopen keeps its 
     relay.receiveHeartbeat('tab-b');
 
     at(1_000);
-    oldB.unsubscribe(); // the relay heard B's stream end
+    oldB.close(); // the relay heard B's stream end
     at(1_000 + 4_999);
     open('tab-b');
 
@@ -1126,7 +1126,7 @@ describe('relay · Phase 3 — selection prefers a live tab; a reopen keeps its 
       relay.receiveHeartbeat('tab-a');
       relay.receiveHeartbeat('tab-b');
       vi.setSystemTime(start + 1_000);
-      oldB.unsubscribe();
+      oldB.close();
       vi.setSystemTime(start + 1_000 + gapMs);
       open('tab-b');
       return relay.getTransportDiagnostics().primaryTabId;
