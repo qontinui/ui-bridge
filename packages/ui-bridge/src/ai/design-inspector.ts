@@ -22,6 +22,7 @@ import { withRootWidthLock } from '../core/root-width-lock';
 import {
   TokenIndexBuilder,
   disposeTokenIndex,
+  redactionGraphFor,
   noReportedTokens,
   scrubScriptValue,
   referencesOf,
@@ -32,7 +33,12 @@ import {
   type ReportedTokens,
 } from './design-tokens';
 import { styleRules, type StyleBlock, type WalkedRule } from './stylesheet-walk';
-import { composedCustomRefs, inlineNamesInScope, referencesAnyOf } from './redaction-graph';
+import {
+  graphFor,
+  inlineNamesInScope,
+  referencesAnyOf,
+  type RedactionGraph,
+} from './redaction-graph';
 import {
   forcePseudoState,
   reapplyIfIdle,
@@ -729,8 +735,11 @@ export function getCSSCustomProperties(
   const scriptNames = (): Set<string> => inlineNamesInScope(el);
   const inScope = declared.length > 0 ? scriptNames() : new Set<string>();
   // The graph is read only when something is set from script at all.
-  let refs: ReadonlyMap<string, ReadonlySet<string>> = new Map();
-  if (inScope.size > 0) refs = covered ? index.tokens.redactionRefs() : composedCustomRefs(el);
+  let graph: RedactionGraph | null = null;
+  if (inScope.size > 0) {
+    // The batch's graphs when there is a batch (memoised), else read now.
+    graph = index ? redactionGraphFor(index.tokens, el) : graphFor(el);
+  }
   for (const prop of declared) {
     // An inline declaration of the same name is the value in effect (and was
     // scrubbed as an inline value above): a rule must not re-read it raw.
@@ -738,7 +747,7 @@ export function getCSSCustomProperties(
     // A rule value built with var() from a custom property set inline here or
     // on an ancestor (`--title: var(--user-name)`) carries the script value.
     const value = read(prop);
-    result[prop] = referencesAnyOf(prop, refs, inScope) ? scrubScriptValue(value) : value;
+    result[prop] = graph && referencesAnyOf(prop, graph, inScope) ? scrubScriptValue(value) : value;
   }
 
   return result;
