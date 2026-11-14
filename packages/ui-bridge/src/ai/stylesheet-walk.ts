@@ -169,15 +169,26 @@ function kindOf(rule: CSSRule): GroupKind {
  * `coverage`, when given, is filled in by a descending walk.
  */
 export function* styleRules(
-  doc: Document,
-  options: { descend: boolean; coverage?: StylesheetCoverage }
+  doc: Document | ShadowRoot,
+  options: {
+    descend: boolean;
+    coverage?: StylesheetCoverage;
+    /**
+     * Every rule, whether or not it applies now: conditions (`@media`,
+     * `@supports`, a sheet's `media`, `disabled`) are ignored and
+     * `@container` / `@scope` / `@starting-style` are entered. For an
+     * over-approximation, such as the `var()` graph redaction follows.
+     */
+    everything?: boolean;
+  }
 ): Generator<WalkedRule> {
-  const { descend, coverage } = options;
-  const mediaMatches = cached(mediaMatchesNow);
-  const supportsHolds = cached(supportsHoldsNow);
+  const { descend, coverage, everything = false } = options;
+  const mediaMatches = everything ? () => true : cached(mediaMatchesNow);
+  const supportsHolds = everything ? () => true : cached(supportsHoldsNow);
 
   /** A sheet the page does not apply (disabled, or its `media` does not match) is not read. */
   function applies(sheet: CSSStyleSheet): boolean {
+    if (everything) return true;
     if (sheet.disabled) {
       if (coverage) coverage.sheetsSkipped.disabled++;
       return false;
@@ -238,7 +249,7 @@ export function* styleRules(
         if (importedRules) yield* walk(importedRules, false, null);
         continue;
       }
-      if (kind === 'container' || kind === 'scope' || kind === 'startingStyle') {
+      if (!everything && (kind === 'container' || kind === 'scope' || kind === 'startingStyle')) {
         if (coverage) coverage.skippedRules[kind]++;
         continue;
       }
@@ -270,7 +281,7 @@ export function* styleRules(
   if (descend) {
     // Adopted sheets cascade after the document's; they are not top-level
     // rules of `document.styleSheets`.
-    const adopted = (doc as Document & { adoptedStyleSheets?: CSSStyleSheet[] }).adoptedStyleSheets;
+    const adopted = (doc as { adoptedStyleSheets?: CSSStyleSheet[] }).adoptedStyleSheets;
     for (const sheet of Array.isArray(adopted) ? adopted : []) {
       if (!applies(sheet)) continue;
       const rules = readRules(sheet);

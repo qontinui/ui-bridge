@@ -212,15 +212,6 @@ function requestedContext(
 // The /design/evaluate family
 // ============================================================================
 
-/**
- * Read live design data for the selected elements (all of them when
- * `elementIds` is absent).
- *
- * Custom properties are read rule-first, once for the whole batch
- * (`indexCustomProperties`). Pass `customProperties: false` when nothing
- * downstream reads them, and the stylesheets are not walked at all.
- * `includePseudoElements` adds each element's `::before` / `::after`.
- */
 /** What `collectDesignData` reads besides the computed styles. */
 export interface DesignCollectOptions {
   /** Read custom properties (and the token index); default `true`. */
@@ -231,6 +222,15 @@ export interface DesignCollectOptions {
   attributeTokens?: boolean;
 }
 
+/**
+ * Read live design data for the selected elements (all of them when
+ * `elementIds` is absent).
+ *
+ * Custom properties are read rule-first, once for the whole batch
+ * (`indexCustomProperties`). Pass `customProperties: false` when nothing
+ * downstream reads them, and the stylesheets are not walked at all.
+ * `includePseudoElements` adds each element's `::before` / `::after`.
+ */
 export function collectDesignData(
   elements: readonly QualityElementSource[],
   elementIds?: readonly string[],
