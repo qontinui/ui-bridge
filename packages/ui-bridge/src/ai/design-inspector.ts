@@ -156,12 +156,21 @@ export function getExtendedComputedStyles(el: HTMLElement): ExtendedComputedStyl
  * untouched. Elements outside a redaction boundary keep their URLs, as every
  * other projection keeps their content.
  */
-function scrubStyleUrls(value: string): string {
-  if (!value.includes('url(')) return value;
-  return value.replace(
-    /url\(\s*(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^)]*)\s*\)/g,
-    `url("${REDACTED_VALUE}")`
-  );
+export function scrubStyleUrls(value: string): string {
+  const lower = value.toLowerCase();
+  let scrubbed = value;
+  if (lower.includes('url(')) {
+    scrubbed = scrubbed.replace(
+      /url\(\s*(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^)]*)\s*\)/gi,
+      `url("${REDACTED_VALUE}")`
+    );
+  }
+  // `image-set("a.png" 1x, …)` / `-webkit-image-set(…)` name images with bare
+  // quoted strings as well as `url(…)`.
+  if (lower.includes('image-set(')) {
+    scrubbed = scrubbed.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, `"${REDACTED_VALUE}"`);
+  }
+  return scrubbed;
 }
 
 /**
@@ -343,6 +352,24 @@ const CONSTRAINED_ROOT_PROPERTIES = [
   'overflow-y',
 ] as const;
 
+/** What `captureResponsiveSnapshots` captured, and how. */
+export interface ResponsiveCapture {
+  /** One snapshot per viewport captured, in request order. */
+  snapshots: ResponsiveSnapshot[];
+  /**
+   * `true` when the lock's deadline ran out between viewports, so the
+   * capture stopped early; `snapshots` holds the viewports it did capture.
+   */
+  timedOut: boolean;
+  /**
+   * `true` when the tab was hidden, so no animation frame was awaited: a
+   * hidden tab runs no frames and throttles timers to a second or more. The
+   * forced reflow and `getComputedStyle` still read the settled layout, but
+   * a `requestAnimationFrame`-driven update on the page had no chance to run.
+   */
+  framesSkipped: boolean;
+}
+
 /**
  * Capture design snapshots at multiple root-element widths.
  *
@@ -360,18 +387,23 @@ const CONSTRAINED_ROOT_PROPERTIES = [
  */
 export function captureResponsiveSnapshots(
   registry: DesignRegistryLike,
-  viewports: Record<string, number> | number[]
-): Promise<ResponsiveSnapshot[]> {
+  viewports: Record<string, number> | number[],
+  options: { budgetMs?: number } = {}
+): Promise<ResponsiveCapture> {
   // Serialized with every other root-width mutation (`core/root-width-lock`):
   // an overlapping capture would otherwise save this one's constraint as the
-  // page's original and restore it last.
-  return withRootWidthLock(() => captureUnderRootWidthLock(registry, viewports));
+  // page's original and restore it last. The registry is read inside the
+  // lock, so the selection is the page as it is when the capture runs.
+  return withRootWidthLock((deadline) => captureUnderRootWidthLock(registry, viewports, deadline), {
+    budgetMs: options.budgetMs,
+  });
 }
 
 async function captureUnderRootWidthLock(
   registry: DesignRegistryLike,
-  viewports: Record<string, number> | number[]
-): Promise<ResponsiveSnapshot[]> {
+  viewports: Record<string, number> | number[],
+  deadline: number
+): Promise<ResponsiveCapture> {
   const viewportEntries: Array<[string, number]> = Array.isArray(viewports)
     ? viewports.map((w) => [`${w}px`, w])
     : Object.entries(viewports);
@@ -384,6 +416,8 @@ async function captureUnderRootWidthLock(
     priority: docEl.style.getPropertyPriority(prop),
   }));
   const snapshots: ResponsiveSnapshot[] = [];
+  let timedOut = false;
+  let framesSkipped = false;
 
   try {
     const elements = registry.getAllElements();
@@ -395,6 +429,12 @@ async function captureUnderRootWidthLock(
             elements.map((regEl) => regEl.element)
           );
     for (const [label, width] of viewportEntries) {
+      // Out of time: stop here and restore, rather than keep the live page
+      // narrowed after the caller has been told "timeout".
+      if (Date.now() >= deadline) {
+        timedOut = true;
+        break;
+      }
       // Constrain the root width
       docEl.style.setProperty('width', `${width}px`);
       docEl.style.setProperty('min-width', `${width}px`);
@@ -404,7 +444,7 @@ async function captureUnderRootWidthLock(
 
       // Force reflow
       void docEl.offsetHeight;
-      await waitFrame();
+      if (!(await waitFrame())) framesSkipped = true;
 
       const elementData: ElementDesignData[] = elements.map((regEl) =>
         getElementDesignData(regEl.element, {
@@ -433,7 +473,7 @@ async function captureUnderRootWidthLock(
     }
   }
 
-  return snapshots;
+  return { snapshots, timedOut, framesSkipped };
 }
 
 // ============================================================================
@@ -762,12 +802,19 @@ async function applyInteractionState(
 /**
  * Wait for the next animation frame
  */
-function waitFrame(): Promise<void> {
+function waitFrame(): Promise<boolean> {
+  // A hidden tab runs no animation frames and throttles timers to a second or
+  // more, so there is nothing to wait for: the caller's forced reflow and
+  // `getComputedStyle` already read the settled layout. Answer `false` ("no
+  // frame awaited") so the caller can report it.
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+    return Promise.resolve(false);
+  }
   return new Promise((resolve) => {
-    // A hidden tab runs no animation frames, so the frame is raced with a
-    // timer: whichever comes first resolves (resolving twice is a no-op).
-    setTimeout(resolve, FRAME_FALLBACK_MS);
-    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => resolve());
+    // A tab can go hidden while waiting, so the frame is raced with a timer:
+    // whichever comes first resolves (resolving twice is a no-op).
+    setTimeout(() => resolve(true), FRAME_FALLBACK_MS);
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => resolve(true));
   });
 }
 

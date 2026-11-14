@@ -1228,7 +1228,8 @@ export interface UIBridgeServerHandlers {
     context?: HandlerContext
   ) => Promise<APIResponse<ResponsiveSnapshotsResponse>>;
   setViewportConstraints: (
-    request: { width?: number; restore?: boolean },
+    /** `budgetMs`: how long to wait for the root-width lock (see `core/root-width-lock`). */
+    request: { width?: number; restore?: boolean; budgetMs?: number },
     context?: HandlerContext
   ) => Promise<
     APIResponse<{

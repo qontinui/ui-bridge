@@ -309,6 +309,12 @@ function projectionMissingFromLiveAnswer(
 const MAX_SCREENSHOT_RESPONSE_BYTES = 10 * 1024 * 1024;
 
 /**
+ * What a root-width command's page-side deadline leaves of the relay's command
+ * timeout: the command's trip to the page and the answer's trip back.
+ */
+const ROOT_WIDTH_RELAY_MARGIN_MS = 1_000;
+
+/**
  * Fetch a fallback screenshot from an external screenshot service.
  * Returns null if the service is unavailable or the request fails.
  *
@@ -465,6 +471,25 @@ export function createRelayHandlers(
   const relayCommandBudgetMs = (): number => {
     const budget = (relay as Partial<Pick<CommandRelay, 'commandBudgetMs'>>).commandBudgetMs;
     return typeof budget === 'number' && budget > 0 ? budget : 8_000;
+  };
+
+  /**
+   * A root-width request with its `budgetMs` fitted under the relay's command
+   * timeout, leaving `ROOT_WIDTH_RELAY_MARGIN_MS` for the round trip. A
+   * caller's smaller budget is kept; a malformed one is passed through for the
+   * page to refuse.
+   */
+  const fitRootWidthBudget = (request: unknown): unknown => {
+    if (request !== undefined && request !== null && typeof request !== 'object') return request;
+    if (Array.isArray(request)) return request;
+    const body = (request ?? {}) as Record<string, unknown>;
+    const cap = Math.max(1, relayCommandBudgetMs() - ROOT_WIDTH_RELAY_MARGIN_MS);
+    const asked = body.budgetMs;
+    if (asked === undefined || asked === null) return { ...body, budgetMs: cap };
+    if (typeof asked === 'number' && Number.isFinite(asked) && asked > 0) {
+      return { ...body, budgetMs: Math.min(asked, cap) };
+    }
+    return body;
   };
 
   // Server-side render log, fed by `__addRenderLogEntry`. Its entries name no
@@ -2431,12 +2456,16 @@ export function createRelayHandlers(
       return relayCommand('getDesignSnapshot', request ?? {}, ctxOpts(context));
     },
 
+    // Both mutate the root width under the page's root-width lock, whose
+    // deadline is fitted under this relay's command timeout: a capture stops
+    // (and restores the page) before the caller is told "timeout", and a
+    // queued constraint is refused rather than landing after it.
     async getResponsiveSnapshots(request, context) {
-      return relayCommand('getResponsiveSnapshots', request, ctxOpts(context));
+      return relayCommand('getResponsiveSnapshots', fitRootWidthBudget(request), ctxOpts(context));
     },
 
     async setViewportConstraints(request, context) {
-      return relayCommand('setViewportConstraints', request, ctxOpts(context));
+      return relayCommand('setViewportConstraints', fitRootWidthBudget(request), ctxOpts(context));
     },
 
     async runDesignAudit(request, context) {

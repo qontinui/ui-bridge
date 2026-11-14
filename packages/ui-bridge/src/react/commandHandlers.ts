@@ -174,6 +174,7 @@ import {
   designSnapshotOf,
   elementStylesOf,
   responsiveSnapshotsOf,
+  rootWidthBudgetOf,
 } from '../specs/design-request';
 import type { StyleGuideConfig } from '../specs/style-types';
 import { sdkDispatch } from '../core/sdk-dispatch';
@@ -5271,7 +5272,8 @@ export async function executeCommand(
 
     case 'getResponsiveSnapshots': {
       try {
-        return await responsiveSnapshotsOf(elements, payload);
+        // Read inside the root-width lock, once the capture's turn comes.
+        return await responsiveSnapshotsOf(() => registry.getAllElements(), payload);
       } catch (err) {
         return sharedRouteFailure(
           (err as Error).message,
@@ -5282,32 +5284,43 @@ export async function executeCommand(
 
     case 'setViewportConstraints': {
       const { width, restore } = payload as { width?: number; restore?: boolean };
-      // Serialized with responsive captures (`core/root-width-lock`), which
-      // would otherwise restore over a constraint set mid-capture.
-      return withRootWidthLock(() => {
-        const docEl = document.documentElement;
+      try {
+        const budgetMs = rootWidthBudgetOf(payload, '/control/viewport-constraints');
+        // Serialized with responsive captures (`core/root-width-lock`), which
+        // would otherwise restore over a constraint set mid-capture.
+        return await withRootWidthLock(
+          () => {
+            const docEl = document.documentElement;
 
-        if (restore) {
-          docEl.style.removeProperty('width');
-          docEl.style.removeProperty('min-width');
-          docEl.style.removeProperty('max-width');
-          docEl.style.removeProperty('overflow');
-        } else if (width) {
-          docEl.style.width = `${width}px`;
-          docEl.style.minWidth = `${width}px`;
-          docEl.style.maxWidth = `${width}px`;
-          docEl.style.overflow = 'hidden';
-        }
-        // Force reflow so subsequent getControlSnapshot sees updated layout
-        void docEl.offsetHeight;
+            if (restore) {
+              docEl.style.removeProperty('width');
+              docEl.style.removeProperty('min-width');
+              docEl.style.removeProperty('max-width');
+              docEl.style.removeProperty('overflow');
+            } else if (width) {
+              docEl.style.width = `${width}px`;
+              docEl.style.minWidth = `${width}px`;
+              docEl.style.maxWidth = `${width}px`;
+              docEl.style.overflow = 'hidden';
+            }
+            // Force reflow so subsequent getControlSnapshot sees updated layout
+            void docEl.offsetHeight;
 
-        return {
-          success: true,
-          viewportWidth: window.innerWidth,
-          constrainedWidth: width ?? window.innerWidth,
-          timestamp: Date.now(),
-        };
-      });
+            return {
+              success: true,
+              viewportWidth: window.innerWidth,
+              constrainedWidth: width ?? window.innerWidth,
+              timestamp: Date.now(),
+            };
+          },
+          { budgetMs }
+        );
+      } catch (err) {
+        return sharedRouteFailure(
+          (err as Error).message,
+          designFailureCode(err, 'VIEWPORT_CONSTRAINTS_ERROR')
+        );
+      }
     }
 
     case 'runDesignAudit': {

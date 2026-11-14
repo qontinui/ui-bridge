@@ -24,6 +24,7 @@ import { createRelayHandlers } from '../server/relay-handlers';
 import { CommandRelay } from '../server/command-relay';
 import { DefaultActionExecutor } from '../control/action-executor';
 import type { StyleGuideConfig } from '../specs/style-types';
+import { scrubStyleUrls } from '../ai/design-inspector';
 import type {
   DesignAuditResponse,
   DesignSnapshotResponse,
@@ -98,7 +99,11 @@ function stubPseudoElementStyles(): void {
     if (!pseudo) return real(el);
     const exists = pseudo === '::before' && (el as Element).id === 'dom-save';
     const values: Record<string, string> = exists
-      ? { content: '"→"', color: 'rgb(0, 128, 0)' }
+      ? {
+          content: '"→"',
+          color: 'rgb(0, 128, 0)',
+          'background-image': 'url("https://cdn.test/p.png?token=x")',
+        }
       : { content: 'none' };
     return { getPropertyValue: (prop: string) => values[prop] ?? '' } as CSSStyleDeclaration;
   });
@@ -209,6 +214,8 @@ describe('design-inspection routes · the browser path answers the full model', 
     expect(data.customProperties?.['--inline-token']).toBe(REDACTED_VALUE);
     // The element still reports a background image, not which one.
     expect(data.styles.backgroundImage).toBe(`url("${REDACTED_VALUE}")`);
+    // So does its generated content.
+    expect(data.pseudoElements?.[0].styles.backgroundImage).toBe(`url("${REDACTED_VALUE}")`);
     const wire = JSON.stringify(data);
     expect(wire).not.toContain('Alice');
     expect(wire).not.toContain('s3cr3t');
@@ -261,6 +268,16 @@ describe('design-inspection routes · the browser path answers the full model', 
 
     const all = await browser<DesignSnapshotResponse>('getDesignSnapshot', {});
     expect(all).toMatchObject({ missingElementIds: [], unreadableElementIds: ['chart'] });
+  });
+
+  it('getDesignSnapshot echoes at most 50 unknown ids and counts them all', async () => {
+    const ghosts = Array.from({ length: 60 }, (_, i) => `ghost-${i}`);
+    const out = await browser<DesignSnapshotResponse>('getDesignSnapshot', {
+      elementIds: ['save', ...ghosts],
+    });
+    expect(out.missingElementIds).toEqual(ghosts.slice(0, 50));
+    expect(out.missingElementCount).toBe(60);
+    expect(out.unreadableElementCount).toBe(0);
   });
 
   it('getDesignSnapshot reports a truncation, and the caller raises the bound', async () => {
@@ -423,8 +440,37 @@ describe('design-inspection routes · the browser path answers the full model', 
     expect(report.guideName).toBe('brand guide');
     expect(report.totalElements).toBe(3);
     expect(report.failedCount).toBe(1);
-    expect(report.summary.errors).toHaveLength(1);
-    expect(report.summary.errors[0]).toMatchObject({ elementId: 'save', passed: false });
+    expect(report.results).toEqual([expect.objectContaining({ elementId: 'save', passed: false })]);
+    // Counted, not listed a second time.
+    expect(report.summary).toEqual({ errors: 1, warnings: 0, info: 0 });
+    expect(report).toMatchObject({ limit: 250, maxResults: 1000, resultsTruncated: false });
+  });
+
+  it('runDesignAudit with no limit reports the default bound in both modes', async () => {
+    for (const guide of [GUIDE, undefined]) {
+      const report = await browser<DesignAuditResponse>('runDesignAudit', { guide });
+      expect(report).toMatchObject({ limit: 250, truncated: false });
+    }
+  });
+
+  it('runDesignAudit bounds the listed results and says so', async () => {
+    const guide: StyleGuideConfig = {
+      ...GUIDE,
+      rules: [
+        { ...GUIDE.rules[0], id: 'r1', elementType: undefined },
+        { ...GUIDE.rules[0], id: 'r2', elementType: undefined },
+      ],
+    };
+    const report = await browser<DesignAuditResponse>('runDesignAudit', { guide, maxResults: 2 });
+    if (report.mode !== 'style-guide') throw new Error('expected style-guide mode');
+    expect(report.results).toHaveLength(2);
+    expect(report.failedCount).toBe(6);
+    expect(report).toMatchObject({ maxResults: 2, listableResults: 6, resultsTruncated: true });
+  });
+
+  it('runDesignAudit in heuristic mode does not claim an includePassed it ignores', async () => {
+    const report = await browser<DesignAuditResponse>('runDesignAudit', {});
+    expect(report).not.toHaveProperty('includePassed');
   });
 
   it('runDesignAudit lists failures only unless includePassed, and counts every result', async () => {
@@ -564,5 +610,182 @@ describe('design-inspection routes · relay and server answer the same model', (
       expect(relay.success).toBe(true);
       expect(stable(relay.data)).toEqual(stable(server.data));
     }
+  });
+});
+
+describe('design-inspection routes · the root-width lock', () => {
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    resetGlobalRegistry();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    const el = document.createElement('button');
+    el.textContent = 'Save';
+    container.appendChild(el);
+    getGlobalRegistry().registerElement('save', el, { type: 'button', label: 'Save' });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    container.remove();
+    document.documentElement.removeAttribute('style');
+    resetGlobalRegistry();
+  });
+
+  /** Hold the lock until the returned release is called. */
+  async function holdLock(
+    lock: typeof import('../core/root-width-lock'),
+    budgetMs = 5_000
+  ): Promise<() => void> {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let entered!: () => void;
+    const isHeld = new Promise<void>((resolve) => (entered = resolve));
+    void lock.withRootWidthLock(
+      () => {
+        entered();
+        return held;
+      },
+      { budgetMs }
+    );
+    await isHeld;
+    return release;
+  }
+
+  it('two module instances of the SDK share one lock (one per page, not per bundle)', async () => {
+    vi.resetModules();
+    const a = await import('../core/root-width-lock');
+    vi.resetModules();
+    const b = await import('../core/root-width-lock');
+    expect(a).not.toBe(b);
+
+    const order: string[] = [];
+    const release = await holdLock(a);
+    const waiting = b.withRootWidthLock(() => {
+      order.push('b ran');
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    order.push('a released');
+    release();
+    await waiting;
+    expect(order).toEqual(['a released', 'b ran']);
+  });
+
+  it('refuses a waiter whose deadline passes, and its constraint never lands', async () => {
+    const lock = await import('../core/root-width-lock');
+    const release = await holdLock(lock);
+    const refused = await browser<{ success: boolean; code: string; error: string }>(
+      'setViewportConstraints',
+      { width: 500, budgetMs: 30 }
+    );
+    expect(refused).toMatchObject({ success: false, code: 'UB-ACTION-TIMEOUT' });
+    release();
+    // The lock is still usable, and the refused constraint was never applied.
+    await lock.withRootWidthLock(() => undefined);
+    expect(document.documentElement.style.getPropertyValue('max-width')).toBe('');
+  });
+
+  it('a capture stops between viewports once its deadline is spent, and restores the page', async () => {
+    const save = getGlobalRegistry().getElement('save')!.element as HTMLElement;
+    const real = save.getBoundingClientRect.bind(save);
+    save.getBoundingClientRect = () => {
+      const until = Date.now() + 80;
+      while (Date.now() < until) {
+        // A slow layout read: longer than the whole budget.
+      }
+      return real();
+    };
+    const out = await browser<ResponsiveSnapshotsResponse>('getResponsiveSnapshots', {
+      viewports: [320, 768, 1280],
+      budgetMs: 50,
+    });
+    expect(out.timedOut).toBe(true);
+    expect(out.requestedViewports).toBe(3);
+    expect(out.snapshots.map((snap) => snap.viewportWidth)).toEqual([320]);
+    expect(document.documentElement.hasAttribute('style')).toBe(false);
+  });
+
+  it('a capture that waited for the lock selects the registry as it is when it runs', async () => {
+    const lock = await import('../core/root-width-lock');
+    const release = await holdLock(lock);
+    const pending = browser<ResponsiveSnapshotsResponse>('getResponsiveSnapshots', {
+      viewports: [320],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const late = document.createElement('h2');
+    container.appendChild(late);
+    getGlobalRegistry().registerElement('late', late, { type: 'generic' });
+    release();
+    const out = await pending;
+    expect(out.snapshots[0].elements.map((e) => e.elementId)).toEqual(['save', 'late']);
+  });
+
+  it('a hidden tab awaits no animation frame, and says so', async () => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    const raf = vi.fn(() => 0);
+    vi.stubGlobal('requestAnimationFrame', raf);
+    const out = await browser<ResponsiveSnapshotsResponse>('getResponsiveSnapshots', {
+      viewports: [320, 768],
+    });
+    expect(out.snapshots).toHaveLength(2);
+    expect(out.framesSkipped).toBe(true);
+    expect(raf).not.toHaveBeenCalled();
+  });
+
+  it('a visible tab reports framesSkipped: false', async () => {
+    const out = await browser<ResponsiveSnapshotsResponse>('getResponsiveSnapshots', {
+      viewports: [320],
+    });
+    expect(out.framesSkipped).toBe(false);
+    expect(out.timedOut).toBe(false);
+  });
+
+  it('refuses re-entry instead of deadlocking', async () => {
+    const lock = await import('../core/root-width-lock');
+    await expect(
+      lock.withRootWidthLock(() => lock.withRootWidthLock(() => 1))
+    ).rejects.toMatchObject({ code: 'UB-ACTION-REJECTED' });
+    // Released: the next holder runs.
+    await expect(lock.withRootWidthLock(() => 2)).resolves.toBe(2);
+  });
+
+  it('the relay fits the capture deadline under its own command timeout', async () => {
+    const seen: unknown[] = [];
+    const relay = new CommandRelay({
+      globalPrefix: `__uiBridgeTest_${Math.random().toString(36).slice(2, 10)}`,
+      proactiveSnapshot: false,
+    });
+    const unsubscribe = relay.subscribeToCommands((command) => {
+      seen.push(command.payload);
+      relay.resolveCommand(command.commandId, { ok: true }, 'tab-a');
+    }, 'tab-a');
+    try {
+      const handlers = createRelayHandlers(relay);
+      await handlers.getResponsiveSnapshots({ viewports: [320] });
+      await handlers.getResponsiveSnapshots({ viewports: [320], budgetMs: 60_000 });
+      await handlers.setViewportConstraints({ width: 500, budgetMs: 100 });
+    } finally {
+      unsubscribe();
+      relay.destroy();
+    }
+    const budget = relay.commandBudgetMs - 1_000;
+    expect(seen.map((p) => (p as { budgetMs?: number }).budgetMs)).toEqual([budget, budget, 100]);
+  });
+});
+
+describe('scrubStyleUrls', () => {
+  it('scrubs url( in any case, and the quoted images of image-set', () => {
+    expect(scrubStyleUrls('URL("https://cdn.test/a.png?t=1"), linear-gradient(red, blue)')).toBe(
+      `url("${REDACTED_VALUE}"), linear-gradient(red, blue)`
+    );
+    expect(scrubStyleUrls('-webkit-image-set("https://cdn.test/a.png?t=1" 1x, \'b.png\' 2x)')).toBe(
+      `-webkit-image-set("${REDACTED_VALUE}" 1x, "${REDACTED_VALUE}" 2x)`
+    );
+    expect(scrubStyleUrls('image-set(url(a.png) 1x)')).toBe(
+      `image-set(url("${REDACTED_VALUE}") 1x)`
+    );
+    expect(scrubStyleUrls('linear-gradient(red, blue)')).toBe('linear-gradient(red, blue)');
   });
 });
