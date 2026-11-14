@@ -115,7 +115,9 @@ export {
 // Design-inspection request models (shared by both transports; types only, so
 // this entry does not pull the DOM-reading module in)
 export type {
+  DesignSelectionReport,
   DesignSelectionBounds,
+  DesignAuditBounds,
   DesignSnapshotRequest,
   DesignSnapshotResponse,
   ResponsiveSnapshotsRequest,
