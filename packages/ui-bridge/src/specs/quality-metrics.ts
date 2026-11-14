@@ -1462,10 +1462,17 @@ export interface CustomPropertyConsistencyRawData {
   valueMatchedColors: number;
   unverifiedColors: number;
   hardcodedColors: number;
-  /** Inherited colours (weight ½ each): from an ancestor's token, or from a literal. */
+  /**
+   * Inherited colours, by origin (`TokenAttribution.inheritedFrom`): from an
+   * ancestor's token (weight ½, token-backed), from an ancestor's literal
+   * (weight ½, hardcoded), from a var() that could not be confirmed (weight ½,
+   * half credit), or the user-agent default (not counted: no colour chosen).
+   */
   inheritedTokenColors: number;
   inheritedHardcodedColors: number;
-  /** The avoidance denominator: chosen colours + ½ x inherited colours. */
+  inheritedUnknownColors: number;
+  inheritedInitialColors: number;
+  /** The avoidance denominator: chosen colours + ½ x counted inherited colours. */
   colorWeight: number;
   /** Whether the design data carried token attribution (`tokenMatches`). */
   tokenAttribution: boolean;
@@ -1496,9 +1503,10 @@ export const CUSTOM_PROPERTY_WEIGHTS = { adoption: 0.5, consistency: 0.3, avoida
  * - **avoidance** = credit / weight over the colours (`color`,
  *   `backgroundColor`; transparent is not counted; 1 when none). A colour
  *   chosen on the element weighs 1, an inherited one ½ — symmetrically:
- *   inherited from a token it is token-backed, inherited from a literal it is
- *   hardcoded. Credit: derived 1, matches-only or unverified ½, hardcoded or
- *   `overridden` 0.
+ *   inherited from a token it is token-backed, inherited from an ancestor's
+ *   literal it is hardcoded, inherited from an unconfirmed var() it earns half;
+ *   the user-agent default is not counted. Credit: derived 1, matches-only or
+ *   unverified ½, hardcoded or `overridden` 0.
  *
  * A finding notes when inherited token use exceeds own use: the page's
  * tokens reach most elements through a few ancestors.
@@ -1579,14 +1587,24 @@ export const customPropertyConsistency: MetricFunction = (elements) => {
   let unverifiedColors = 0;
   let hardcodedColors = 0;
   let inheritedHardcodedColors = 0;
+  let inheritedUnknownColors = 0;
+  let inheritedInitialColors = 0;
   for (const el of elements) {
     const customVals = new Set(Object.values(el.customProperties ?? {}));
     for (const prop of COLOR_PROPERTIES) {
       const val = el.styles[prop] ?? '';
       const attribution = el.tokenMatches?.[prop];
       if (attribution?.inherited) {
-        // Inherited from an ancestor's literal colour: hardcoded, at half weight.
-        inheritedHardcodedColors++;
+        if (attribution.inheritedFrom === 'literal') {
+          // From an ancestor's literal colour: hardcoded, at half weight.
+          inheritedHardcodedColors++;
+        } else if (attribution.inheritedFrom === 'initial') {
+          // The user-agent default: no colour was chosen anywhere.
+          inheritedInitialColors++;
+        } else {
+          // An ancestor's var() that could not be confirmed: half credit.
+          inheritedUnknownColors++;
+        }
         continue;
       }
       if (inheritedDerived(attribution)) {
@@ -1604,9 +1622,13 @@ export const customPropertyConsistency: MetricFunction = (elements) => {
       else hardcodedColors++;
     }
   }
-  const colorWeight = totalColorProps + 0.5 * (inheritedTokenColors + inheritedHardcodedColors);
+  const colorWeight =
+    totalColorProps +
+    0.5 * (inheritedTokenColors + inheritedHardcodedColors + inheritedUnknownColors);
   const colorCredit =
-    tokenDerivedColors + 0.5 * (valueMatchedColors + unverifiedColors) + 0.5 * inheritedTokenColors;
+    tokenDerivedColors +
+    0.5 * (valueMatchedColors + unverifiedColors) +
+    0.5 * (inheritedTokenColors + 0.5 * inheritedUnknownColors);
   const avoidance = colorWeight > 0 ? colorCredit / colorWeight : 1;
   if (hardcodedColors > 5) {
     findings.push({
@@ -1643,6 +1665,8 @@ export const customPropertyConsistency: MetricFunction = (elements) => {
     unverifiedColors,
     hardcodedColors,
     inheritedHardcodedColors,
+    inheritedUnknownColors,
+    inheritedInitialColors,
     colorWeight,
     tokenAttribution: attributed,
   };

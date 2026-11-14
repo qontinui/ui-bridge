@@ -221,10 +221,20 @@ function requestedContext(
  * downstream reads them, and the stylesheets are not walked at all.
  * `includePseudoElements` adds each element's `::before` / `::after`.
  */
+/** What `collectDesignData` reads besides the computed styles. */
+export interface DesignCollectOptions {
+  /** Read custom properties (and the token index); default `true`. */
+  customProperties?: boolean;
+  /** Add each element's `::before` / `::after`. */
+  includePseudoElements?: boolean;
+  /** Attribute design properties to tokens (probes the page); default `true`. */
+  attributeTokens?: boolean;
+}
+
 export function collectDesignData(
   elements: readonly QualityElementSource[],
   elementIds?: readonly string[],
-  options: { customProperties?: boolean; includePseudoElements?: boolean } = {}
+  options: DesignCollectOptions = {}
 ): ElementDesignData[] {
   return collectDesignBatch(elements, elementIds, options).elements;
 }
@@ -237,7 +247,7 @@ export function collectDesignData(
 export function collectDesignBatch(
   elements: readonly QualityElementSource[],
   elementIds?: readonly string[],
-  options: { customProperties?: boolean; includePseudoElements?: boolean } = {}
+  options: DesignCollectOptions = {}
 ): { elements: ElementDesignData[] } & ReportedTokens {
   const wanted = elementIds ? new Set(elementIds) : null;
   const live: Array<QualityElementSource & { element: HTMLElement }> = [];
@@ -261,6 +271,7 @@ export function collectDesignBatch(
         type: el.type,
         customProperties,
         includePseudoElements: options.includePseudoElements,
+        attributeTokens: options.attributeTokens,
       })
     );
     return {

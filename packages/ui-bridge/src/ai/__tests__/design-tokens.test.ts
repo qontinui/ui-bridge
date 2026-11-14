@@ -26,11 +26,13 @@ import {
   reportedTokensOf,
   isUniversalSelector,
   scrubScriptValue,
+  varNames,
 } from '../design-tokens';
 import { normalizeColor } from '../css-color';
 import { emptyCoverage, resolveNestedSelector, styleRules } from '../stylesheet-walk';
 import { collectDesignBatch } from '../../specs/quality-request';
-import { elementStylesOf } from '../../specs/design-request';
+import { designAuditOf, elementStylesOf } from '../../specs/design-request';
+import type { StyleGuideConfig } from '../../specs/style-types';
 import { customPropertyConsistency } from '../../specs/quality-metrics';
 import { REDACTED_VALUE } from '../../core/redaction';
 import type { ElementDesignData } from '../../core/types';
@@ -48,7 +50,7 @@ function isProbe(el: Element): boolean {
  */
 function browserComputes(
   values: Map<Element, Record<string, string>>,
-  probe?: (inline: CSSStyleDeclaration, longhand: string) => string | undefined
+  probe?: (inline: CSSStyleDeclaration, longhand: string, probe: HTMLElement) => string | undefined
 ): void {
   const real = window.getComputedStyle.bind(window);
   vi.spyOn(window, 'getComputedStyle').mockImplementation((el, pseudo) => {
@@ -57,7 +59,7 @@ function browserComputes(
     if (!stated && probe && isProbe(el as Element)) {
       const inline = (el as HTMLElement).style;
       stated = new Proxy({} as Record<string, string>, {
-        get: (_t, longhand: string) => probe(inline, longhand),
+        get: (_t, longhand: string) => probe(inline, longhand, el as HTMLElement),
       });
     }
     if (!stated || pseudo) return computed;
@@ -517,6 +519,226 @@ describe('design tokens', () => {
     });
   });
 
+  it('the audit reads no stylesheets unless its guide constrains a custom property', () => {
+    sheet(':root { --brand: red; }', '.b { color: var(--brand); }');
+    const el = add('button', 'b');
+    const guide = (property: string): StyleGuideConfig =>
+      ({
+        version: '1',
+        name: 'g',
+        tokens: {},
+        rules: [
+          {
+            id: 'r',
+            elementType: 'button',
+            constraints: [{ type: 'exact', property, value: 'x' }],
+          },
+        ],
+      }) as unknown as StyleGuideConfig;
+    const sheets = vi.spyOn(document, 'styleSheets', 'get');
+    designAuditOf([{ id: 'b', element: el, type: 'button' }], { guide: guide('color') }, null);
+    // No token attribution, no custom properties: the page is not walked or probed.
+    expect(sheets).not.toHaveBeenCalled();
+    designAuditOf([{ id: 'b', element: el, type: 'button' }], { guide: guide('--brand') }, null);
+    expect(sheets).toHaveBeenCalled();
+  });
+
+  it('the heuristic audit lists at most maxResults issues and reports the cut', () => {
+    const buttons = [add('button', 'x'), add('button', 'y'), add('button', 'z')];
+    const report = designAuditOf(
+      buttons.map((element, i) => ({ id: `b${i}`, element, type: 'button' })),
+      { maxResults: 2 },
+      null
+    );
+    if (report.mode !== 'heuristic') throw new Error('expected heuristic mode');
+    // jsdom lays out nothing: every button is under the 44px touch target.
+    expect(report.issues).toHaveLength(2);
+    expect(report).toMatchObject({ maxResults: 2, listableResults: 3, resultsTruncated: true });
+  });
+
+  it('says where an inherited colour without a token came from: literal, initial or unknown', () => {
+    sheet(
+      ':root { --brand: rgb(31, 78, 140); --nope: rgb(1, 1, 1); }',
+      '.lit-parent { color: rgb(9, 9, 9); }',
+      '.var-parent { color: var(--nope); }'
+    );
+    const litParent = add('div', 'lit-parent');
+    const litChild = add('span', 'c', litParent);
+    const varParent = add('div', 'var-parent');
+    const varChild = add('span', 'c', varParent);
+    const nine = { color: 'rgb(9, 9, 9)' };
+    browserComputes(
+      new Map<Element, Record<string, string>>([
+        [litParent, nine],
+        [litChild, nine],
+        // The var() lost to something else: its colour is not --nope's.
+        [varParent, nine],
+        [varChild, nine],
+      ])
+    );
+    const index = indexCustomProperties(document, [litChild, varChild]);
+    const color = (el: HTMLElement) =>
+      getElementDesignData(el, { customProperties: index }).tokenMatches?.color;
+    expect(color(litChild)).toEqual({ inherited: true, inheritedFrom: 'literal' });
+    expect(color(varChild)).toEqual({ inherited: true, inheritedFrom: 'unknown' });
+  });
+
+  it('an element that declares the colour itself is not inheriting it, even when equal', () => {
+    sheet('.p { color: rgb(9, 9, 9); }', '.c { color: rgb(9, 9, 9); }');
+    const parent = add('div', 'p');
+    const child = add('span', 'c', parent);
+    const nine = { color: 'rgb(9, 9, 9)' };
+    browserComputes(
+      new Map<Element, Record<string, string>>([
+        [parent, nine],
+        [child, nine],
+      ])
+    );
+    // A choice made on the element (hardcoded), not an inherited value.
+    expect(read(child, [child]).tokenMatches?.color).toBeUndefined();
+  });
+
+  it('customPropertyConsistency: a page that never declares a colour is not scored as hardcoded', () => {
+    sheet(':root { --space: 4px; }', '.p { padding-left: var(--space); }');
+    const kids = [add('p', 'p'), add('p', 'p')];
+    const black = { color: 'rgb(0, 0, 0)', 'padding-left': '4px' };
+    browserComputes(
+      new Map<Element, Record<string, string>>([
+        [host, { color: 'rgb(0, 0, 0)' }],
+        [kids[0], black],
+        [kids[1], black],
+      ])
+    );
+    const batch = collectDesignBatch(kids.map((element, i) => ({ id: `k${i}`, element })));
+    const metric = customPropertyConsistency(batch.elements, VIEWPORT);
+    expect(metric.rawData).toMatchObject({
+      inheritedInitialColors: 2,
+      inheritedHardcodedColors: 0,
+      colorWeight: 0,
+      avoidanceScore: 100,
+    });
+  });
+
+  it('customPropertyConsistency: an inherited colour from an unconfirmed var() earns half', () => {
+    sheet(':root { --nope: rgb(1, 1, 1); }', '.wrap { color: var(--nope); }');
+    const wrap = add('div', 'wrap');
+    const kid = add('p', 'k', wrap);
+    const nine = { color: 'rgb(9, 9, 9)' };
+    browserComputes(
+      new Map<Element, Record<string, string>>([
+        [wrap, nine],
+        [kid, nine],
+      ])
+    );
+    const batch = collectDesignBatch([{ id: 'k', element: kid }]);
+    const metric = customPropertyConsistency(batch.elements, VIEWPORT);
+    expect(metric.rawData).toMatchObject({ inheritedUnknownColors: 1, colorWeight: 0.5 });
+    expect((metric.rawData as { avoidanceScore: number }).avoidanceScore).toBe(50);
+  });
+
+  it('follows a two-hop chain to a script value on a grandparent', () => {
+    sheet(':root { --a: var(--b); }', '.x { --b: var(--user); }', '.y { --c: var(--a); }');
+    const grandparent = add('div', 'gp');
+    grandparent.style.setProperty('--user', 'Alice');
+    const parent = add('div', 'p', grandparent);
+    const el = add('div', 'x y', parent);
+    const props = getCSSCustomProperties(el, indexCustomProperties(document, [el]));
+    // --c -> --a -> --b -> --user (set from script two levels up).
+    expect(props['--c']).toBe(REDACTED_VALUE);
+    expect(props['--b']).toBe(REDACTED_VALUE);
+  });
+
+  it('a var() reference cycle terminates', { timeout: 1_000 }, () => {
+    sheet('.cyc { --p: var(--q); --q: var(--p); }');
+    const el = add('div', 'cyc');
+    el.style.setProperty('--other', '1px');
+    const props = getCSSCustomProperties(el, indexCustomProperties(document, [el]));
+    expect(Object.keys(props)).toEqual(expect.arrayContaining(['--p', '--q']));
+    expect(props['--p']).not.toBe(REDACTED_VALUE);
+  });
+
+  it('follows a chain through rules the element does not match, outside the index', () => {
+    sheet('.a { --x: var(--user); }', '.b { --y: var(--x); }');
+    // Detached: read without a batch index, by the per-element walk.
+    const el = document.createElement('div');
+    el.className = 'b';
+    el.style.setProperty('--user', 'Alice');
+    expect(getCSSCustomProperties(el)['--y']).toBe(REDACTED_VALUE);
+  });
+
+  it('the probe cache keys on the parent value a declaration reads (em in font-size)', () => {
+    sheet(':root { --fs: 1.6em; }', '.t { font-size: var(--fs); }');
+    const small = add('div', 'small-parent');
+    const big = add('div', 'big-parent');
+    const a = add('span', 't', small);
+    const b = add('span', 't', big);
+    // Both computed 16px (b's own value is contrived to match a's): only the
+    // parent differs, and 1.6em of it is what the declaration computes.
+    browserComputes(
+      new Map<Element, Record<string, string>>([
+        [small, { 'font-size': '10px' }],
+        [big, { 'font-size': '20px' }],
+        [a, { 'font-size': '16px' }],
+        [b, { 'font-size': '16px' }],
+      ]),
+      (inline, longhand, probe) => {
+        if (longhand !== 'font-size' || inline.getPropertyValue('font-size') !== '1.6em') {
+          return undefined;
+        }
+        const parentSize = parseFloat((probe.parentElement as HTMLElement).style.fontSize);
+        return `${1.6 * parentSize}px`;
+      }
+    );
+    const index = indexCustomProperties(document, [a, b]);
+    const size = (el: HTMLElement) =>
+      getElementDesignData(el, { customProperties: index }).tokenMatches?.fontSize;
+    expect(size(a)).toEqual({ derived: ['--fs'] });
+    expect(size(b)).toEqual({ overridden: ['--fs'] });
+  });
+
+  it('a ch/ex value is resolved with the element’s font', () => {
+    sheet(':root { --w: 2ch; }', '.m { padding-left: var(--w); }');
+    const el = add('code', 'm');
+    browserComputes(
+      new Map([[el, { 'font-family': 'monospace', 'padding-left': '19.2px' }]]),
+      (inline, longhand) => {
+        if (longhand !== 'padding-left' || inline.getPropertyValue('padding-left') !== '2ch') {
+          return undefined;
+        }
+        // 2ch is wider in a monospace font than in the default one.
+        return inline.getPropertyValue('font-family') === 'monospace' ? '19.2px' : '16px';
+      }
+    );
+    expect(read(el).tokenMatches?.paddingLeft).toEqual({ derived: ['--w'] });
+  });
+
+  it('reads var() names case-insensitively, with non-ASCII and escaped characters', () => {
+    expect(varNames('VAR(--Brand) var( --ünïcode ) var(--esc\\.aped)')).toEqual([
+      '--Brand',
+      '--ünïcode',
+      '--esc\\.aped',
+    ]);
+  });
+
+  it('a line height through calc() is not a unitless factor', () => {
+    sheet(':root { --lh: 1.5; }', '.wrap { line-height: calc(var(--lh) * 1em); }');
+    const wrap = add('div', 'wrap');
+    const small = add('span', 'small', wrap);
+    browserComputes(
+      new Map<Element, Record<string, string>>([
+        [wrap, { 'font-size': '16px', 'line-height': '24px' }],
+        [small, { 'font-size': '14px', 'line-height': '21px' }],
+      ]),
+      (inline, longhand) =>
+        longhand === 'line-height' && inline.getPropertyValue('line-height').startsWith('calc(')
+          ? '24px'
+          : undefined
+    );
+    // calc(1.5 * 1em) computes to a length at .wrap, which inherits as 24px,
+    // not as a factor: 21px on 14px text is not derived from it.
+    expect(read(small, [small]).tokenMatches?.lineHeight?.derived).toBeUndefined();
+  });
+
   it('a px line-height inherited with the same ratio is not taken as a unitless factor', () => {
     sheet(':root { --lh: 24px; }', '.wrap { line-height: var(--lh); }');
     const wrap = add('div', 'wrap');
@@ -660,27 +882,40 @@ describe('design tokens', () => {
     expect(batch.elements.every((e) => e.tokenScopes === undefined)).toBe(true);
   });
 
-  it('treats universal selectors (with prefixes, :where/:is, :not) as universal, pseudo-elements alone not', () => {
+  it('treats only page-wide universal selectors as universal', () => {
     for (const selector of [
       '*',
       '*, ::before, ::after',
+      '*, ::placeholder',
+      '*, ::backdrop',
       ':where(*)',
       ':is(*)',
-      '*:not(svg)',
       'html *',
       ':root *',
-      'body > *',
-      '*::before',
+      ':root :where(*)',
     ]) {
       expect(isUniversalSelector(selector), selector).toBe(true);
     }
     for (const selector of [
+      // Pseudo-elements alone: no element is reset.
       '::backdrop',
       '::before',
       '::before, ::after',
+      '*::before',
+      // Part of the page only.
+      '.card > *',
+      '* + *',
+      '.stack > * + *',
+      '*:not(.x)',
+      '*:not(:is(.a, .b))',
+      ':where(*):not(:is(.x))',
+      'body *',
+      'body > *',
+      ':root > *',
       '.btn',
       '* .btn',
       '*.a',
+      '*, .btn',
     ]) {
       expect(isUniversalSelector(selector), selector).toBe(false);
     }
@@ -786,7 +1021,8 @@ describe('design tokens', () => {
     const at = (el: HTMLElement) =>
       getElementDesignData(el, { customProperties: index }).tokenMatches?.color;
     // The leaf is too deep to reach `.top`; an element near it still is.
-    expect(at(leaf)).toEqual({ inherited: true });
+    // Cut short at the cap: the origin is unknown, not "no token".
+    expect(at(leaf)).toEqual({ inherited: true, inheritedFrom: 'unknown' });
     expect(at(near)).toEqual({ derived: ['--brand'], via: 'inherited' });
   });
 
@@ -801,7 +1037,11 @@ describe('design tokens', () => {
         [child, black],
       ])
     );
-    expect(read(child, [child]).tokenMatches?.color).toEqual({ inherited: true });
+    // No author rule declares a colour anywhere above: the user-agent default.
+    expect(read(child, [child]).tokenMatches?.color).toEqual({
+      inherited: true,
+      inheritedFrom: 'initial',
+    });
   });
 
   // ----------------------------------------------------------- matches
@@ -1004,6 +1244,8 @@ describe('design tokens', () => {
       '.btn { background-color: var(--brand); }',
       '.lit { background-color: rgb(1, 2, 3); color: rgb(31, 78, 140); }'
     );
+    // The container chooses a literal colour, which the button inherits.
+    host.style.setProperty('color', 'rgb(0, 0, 0)');
     const btn = add('button', 'btn');
     const lit = add('div', 'lit');
     browserComputes(

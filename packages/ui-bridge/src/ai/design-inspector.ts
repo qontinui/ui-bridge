@@ -27,6 +27,7 @@ import {
   inlineNamesInScope,
   recordCustomRefs,
   referencesAnyOf,
+  scriptNamesOf,
   referencesOf,
   reportedTokensOf,
   tokenMatchesOf,
@@ -670,6 +671,7 @@ export function indexCustomProperties(
   })) {
     const declaredHere = declaredCustomProperties(rule);
     const refs = referencesOf(rule.style);
+    tokens.addLiterals(rule.style, selector);
     if (declaredHere.length === 0 && refs === null) continue;
     const matched = match(selector);
     if (!matched) continue;
@@ -720,15 +722,20 @@ export function getCSSCustomProperties(
   // 2. Custom properties declared by the stylesheet rules matching this element
   let refs: ReadonlyMap<string, ReadonlySet<string>>;
   let declared: readonly string[];
+  let scriptNames: () => Set<string>;
   if (index !== undefined && indexCovers(index, el)) {
     refs = index.tokens.customRefs;
     declared = index.declared.get(el) ?? [];
+    scriptNames = () => scriptNamesOf(index.tokens, el);
   } else {
-    const matched = new Map<string, Set<string>>();
-    declared = matchedCustomProperties(el, matched);
-    refs = matched;
+    // Outside the index (detached, shadow tree): the var() graph of every
+    // rule of the document, not just the ones this element matches, so a
+    // chain through an ancestor's rule or an @media/@layer rule is followed.
+    declared = matchedCustomProperties(el);
+    refs = documentCustomRefs(el.ownerDocument);
+    scriptNames = () => inlineNamesInScope(el);
   }
-  const scriptNames = declared.length > 0 ? inlineNamesInScope(el) : new Set<string>();
+  const inScope = declared.length > 0 ? scriptNames() : new Set<string>();
   for (const prop of declared) {
     // An inline declaration of the same name is the value in effect (and was
     // scrubbed as an inline value above): a rule must not re-read it raw.
@@ -736,7 +743,7 @@ export function getCSSCustomProperties(
     // A rule value built with var() from a custom property set inline here or
     // on an ancestor (`--title: var(--user-name)`) carries the script value.
     const value = read(prop);
-    result[prop] = referencesAnyOf(prop, refs, scriptNames) ? scrubScriptValue(value) : value;
+    result[prop] = referencesAnyOf(prop, refs, inScope) ? scrubScriptValue(value) : value;
   }
 
   return result;
@@ -751,7 +758,7 @@ function indexCovers(index: CustomPropertyIndex, el: Element): boolean {
 }
 
 /** The custom properties declared by the top-level style rules `el` matches, one rule at a time. */
-function matchedCustomProperties(el: HTMLElement, refs: Map<string, Set<string>>): string[] {
+function matchedCustomProperties(el: HTMLElement): string[] {
   const names: string[] = [];
   for (const { rule, selector } of topLevelStyleRules(document)) {
     try {
@@ -760,11 +767,56 @@ function matchedCustomProperties(el: HTMLElement, refs: Map<string, Set<string>>
       // Invalid selector — skip
       continue;
     }
-    const declaredHere = declaredCustomProperties(rule);
-    recordCustomRefs(rule.style, declaredHere, refs);
-    names.push(...declaredHere);
+    names.push(...declaredCustomProperties(rule));
   }
   return names;
+}
+
+/**
+ * The custom-property `var()` graph of a document's rules, cached until its
+ * stylesheets change: the same sheet objects with the same top-level rule
+ * counts. (A rule edited in place through the CSSOM is not detected.)
+ */
+const customRefCache = new WeakMap<
+  Document,
+  { sheets: unknown[]; counts: number[]; refs: Map<string, Set<string>> }
+>();
+
+function sheetsOf(doc: Document): { sheets: unknown[]; counts: number[] } {
+  const sheets: unknown[] = [];
+  const counts: number[] = [];
+  try {
+    for (const sheet of Array.from(doc.styleSheets)) {
+      sheets.push(sheet);
+      try {
+        counts.push(sheet.cssRules.length);
+      } catch {
+        counts.push(-1);
+      }
+    }
+  } catch {
+    // No stylesheets readable
+  }
+  return { sheets, counts };
+}
+
+/** Every custom property's `var()` references across all of the document's rules (descending walk). */
+function documentCustomRefs(doc: Document): Map<string, Set<string>> {
+  const { sheets, counts } = sheetsOf(doc);
+  const cached = customRefCache.get(doc);
+  if (
+    cached &&
+    cached.sheets.length === sheets.length &&
+    cached.sheets.every((sheet, i) => sheet === sheets[i] && cached.counts[i] === counts[i])
+  ) {
+    return cached.refs;
+  }
+  const refs = new Map<string, Set<string>>();
+  for (const { rule } of styleRules(doc, { descend: true })) {
+    recordCustomRefs(rule.style, declaredCustomProperties(rule), refs);
+  }
+  customRefCache.set(doc, { sheets, counts, refs });
+  return refs;
 }
 
 // ============================================================================

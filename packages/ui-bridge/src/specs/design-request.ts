@@ -32,6 +32,7 @@ import { RootWidthLockError } from '../core/root-width-lock';
 import {
   collectDesignBatch,
   collectDesignData,
+  type DesignCollectOptions,
   type QualityElementSource,
 } from './quality-request';
 import { indexCustomProperties } from '../ai/design-inspector';
@@ -83,9 +84,11 @@ export const MAX_RESPONSIVE_VIEWPORTS = 16;
 export const MAX_ECHOED_ELEMENT_IDS = 50;
 
 /**
- * The most rule results a style-guide audit lists. One result echoes its
- * constraints with expected and actual values, a few hundred bytes, so 1,000
- * keeps the report under about 1 MB — the same order as the record budget.
+ * The most findings an audit lists: rule results in style-guide mode,
+ * issues in heuristic mode. A rule result echoes its constraints with expected
+ * and actual values, a few hundred bytes, so 1,000 keeps the report under
+ * about 1 MB — the same order as the record budget. This bound, not the
+ * element limit, is what keeps an audit's size independent of the page.
  */
 export const DEFAULT_AUDIT_MAX_RESULTS = 1_000;
 
@@ -228,17 +231,24 @@ export interface ResponsiveSnapshotsResponse extends DesignSelectionBounds, Repo
  * and listing them twice doubled the report.
  */
 export interface StyleGuideDesignAuditReport
-  extends Omit<StyleAuditReport, 'totalElements' | 'summary'>, DesignAuditBounds {
+  extends
+    Omit<StyleAuditReport, 'totalElements' | 'summary'>,
+    DesignAuditBounds,
+    AuditResultBounds {
   mode: 'style-guide';
   /** Failed results by severity. */
   summary: { errors: number; warnings: number; info: number };
   /** Whether passing results are listed. */
   includePassed: boolean;
-  /** The result bound applied. */
+}
+
+/** How much of an audit's findings its report lists (both modes). */
+export interface AuditResultBounds {
+  /** The bound applied to the listed findings (`results`, or `issues`). */
   maxResults: number;
-  /** Results eligible for `results` (failures, or all with `includePassed`). */
+  /** Findings eligible for listing (all failures; with `includePassed`, passes too). */
   listableResults: number;
-  /** `true` when `maxResults` cut `results`. */
+  /** `true` when `maxResults` cut the list. */
   resultsTruncated: boolean;
 }
 
@@ -255,7 +265,7 @@ export interface HeuristicDesignAuditIssue {
  * heuristics (contrast, dark-mode `<select>`, font size, touch target), never a
  * style-guide verdict. `mode` says which one the caller got.
  */
-export interface HeuristicDesignAuditReport extends DesignAuditBounds {
+export interface HeuristicDesignAuditReport extends DesignAuditBounds, AuditResultBounds {
   mode: 'heuristic';
   /** Why the heuristic ran instead of a style-guide audit. */
   reason: string;
@@ -572,6 +582,27 @@ export async function responsiveSnapshotsOf(
   };
 }
 
+/** Whether a style guide reads custom properties (a constraint on a `--*` property). */
+function guideReadsCustomProperties(guide: StyleGuideConfig): boolean {
+  const reads = (c: { property?: string; breakpoints?: Record<string, unknown> }): boolean =>
+    Boolean(c.property?.startsWith('--')) ||
+    Object.values(c.breakpoints ?? {}).some(
+      (b) => typeof b === 'object' && b !== null && reads(b as never)
+    );
+  return guide.rules.some((rule) => (rule.constraints ?? []).some((c) => reads(c as never)));
+}
+
+/**
+ * What the audit reads: never token attribution (its report carries no
+ * `tokenMatches`, so the page is not probed), and custom properties only
+ * when the guide constrains one.
+ */
+function collectOptionsFor(guide: StyleGuideConfig): DesignCollectOptions {
+  return guideReadsCustomProperties(guide)
+    ? { attributeTokens: false }
+    : { customProperties: false };
+}
+
 /**
  * Answer `/design/audit`. With a guide — the request's `guide`, else the one
  * the transport has loaded — the selected elements' full design data is
@@ -582,9 +613,10 @@ export async function responsiveSnapshotsOf(
  * included, so an unbounded report grows with the page. Both modes therefore
  * check at most `limit` elements (default `DEFAULT_AUDIT_ELEMENT_LIMIT`) and
  * report the cut. The style-guide mode also lists only failed results unless
- * `includePassed` is set, at most `maxResults` of them (default
- * `DEFAULT_AUDIT_MAX_RESULTS`), and summarises by count rather than repeating
- * the failures; its counts always cover every result.
+ * `includePassed` is set, and summarises by count rather than repeating the
+ * failures (its counts always cover every result). Both modes list at most
+ * `maxResults` findings (default `DEFAULT_AUDIT_MAX_RESULTS`) and report
+ * `listableResults` / `resultsTruncated`.
  */
 export function designAuditOf(
   elements: readonly DesignElementSource[],
@@ -605,7 +637,7 @@ export function designAuditOf(
       totalElements: _audited,
       summary,
       ...audit
-    } = runStyleAudit(collectDesignData(kept), guide);
+    } = runStyleAudit(collectDesignData(kept, undefined, collectOptionsFor(guide)), guide);
     const listable = includePassed ? audit.results : audit.results.filter((r) => !r.passed);
     return {
       mode: 'style-guide',
@@ -623,11 +655,15 @@ export function designAuditOf(
       ...bounds,
     };
   }
+  const issues = kept.flatMap((el) => heuristicIssues(el.id, el.type, el.element));
   return {
     mode: 'heuristic',
     reason: 'No style guide was provided in the request or loaded with loadStyleGuide',
     ...bounds,
-    issues: kept.flatMap((el) => heuristicIssues(el.id, el.type, el.element)),
+    issues: issues.slice(0, maxResults),
+    maxResults,
+    listableResults: issues.length,
+    resultsTruncated: issues.length > maxResults,
     timestamp: Date.now(),
   };
 }

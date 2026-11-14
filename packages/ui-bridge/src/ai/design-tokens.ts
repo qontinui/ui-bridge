@@ -254,6 +254,8 @@ export interface DesignTokenIndex {
   readonly universalNames: ReadonlySet<string>;
   /** Custom property → the custom properties its rule declarations reference. */
   readonly customRefs: ReadonlyMap<string, ReadonlySet<string>>;
+  /** Inherited property → selectors of rules declaring it without `var()`. */
+  readonly literalSources: ReadonlyMap<TokenAttributedProperty, readonly string[]>;
   /** Elements (in scope, and their ancestors) → the references their matching rules make. */
   readonly references: ReadonlyMap<Element, ReferenceMap>;
   /** What the walk read and skipped. */
@@ -265,7 +267,11 @@ export interface DesignTokenIndex {
 /** State one batch accumulates while its elements are read. */
 export interface TokenBatchState {
   computed: Map<Element, CSSStyleDeclaration>;
-  inherited: Map<Element, Map<TokenAttributedProperty, InheritedDerivation | null>>;
+  /** Per element, the inherited properties a rule or its inline style declares literally. */
+  literal: Map<Element, Map<TokenAttributedProperty, boolean>>;
+  /** Per element, the custom properties set inline on it or an ancestor. */
+  scriptNames: Map<Element, Set<string>>;
+  inherited: Map<Element, Map<TokenAttributedProperty, InheritedOutcome>>;
   scopeIds: Map<Element, string | null>;
   scopes: Record<string, TokenScope>;
   scopeCount: number;
@@ -273,6 +279,17 @@ export interface TokenBatchState {
   scopeBudgetExceeded: boolean;
   truncatedScopeValues: number;
   probe: TokenProbe;
+}
+
+/** Where an inherited value with no token derivation came from (see `TokenAttribution.inheritedFrom`). */
+type InheritedReason = 'literal' | 'unknown' | 'initial';
+
+interface InheritedOutcome {
+  derivation: InheritedDerivation | null;
+  /** Why there is no derivation; `null` when there is one. */
+  reason: InheritedReason | null;
+  /** The walk stopped at `MAX_INHERITANCE_DEPTH` (not cached). */
+  capped: boolean;
 }
 
 interface InheritedDerivation {
@@ -286,7 +303,11 @@ interface InheritedDerivation {
 // Declarations → references
 // ============================================================================
 
-const VAR_PATTERN = /var\(\s*--/;
+const VAR_PATTERN = /var\(\s*--/i;
+
+/** A custom property name: `--` then name characters, non-ASCII, or escapes. */
+const CUSTOM_NAME = String.raw`--(?:[A-Za-z0-9_-]|[^\x00-\x7F]|\\[0-9a-fA-F]{1,6}\s?|\\[^\n0-9a-fA-F])+`;
+const VAR_NAMES = new RegExp(String.raw`var\(\s*(` + CUSTOM_NAME + ')', 'gi');
 
 /**
  * Whether a computed value that still contains `var()` counts as `derived`.
@@ -308,7 +329,7 @@ export function setUnsubstitutedVarIsDerived(enabled: boolean): boolean {
 /** The custom property names a value references (`var(--a, var(--b))` → both). */
 export function varNames(value: string): string[] {
   const names: string[] = [];
-  for (const m of value.matchAll(/var\(\s*(--[A-Za-z0-9_-]+)/g)) names.push(m[1]);
+  for (const m of value.matchAll(VAR_NAMES)) names.push(m[1].trim());
   return names;
 }
 
@@ -595,7 +616,6 @@ export function normalizedForms(
   return [...forms];
 }
 
-/** The kind of a computed value, for telling "differs" from "not comparable". */
 /**
  * Longhands whose computed serialisation is fully determined by the declared
  * value (no layout, no context): two different 'other'-kind values of these
@@ -611,6 +631,7 @@ const DETERMINED_LONGHANDS = new Set([
   'outline-style',
 ]);
 
+/** The kind of a computed value, for telling "differs" from "not comparable". */
 function valueKind(value: string): 'length' | 'number' | 'color' | 'percent' | 'other' {
   const v = value.trim().toLowerCase();
   if (/^-?[\d.]+px$/.test(v) || v === '0') return 'length';
@@ -656,7 +677,6 @@ function decideFamilies(
 // Building the index
 // ============================================================================
 
-/** `*`, `::before`, `::after`, `::backdrop`, `::marker`, and lists of only those. */
 /** Split on top-level occurrences of `sep` (outside parentheses and brackets). */
 function splitTop(text: string, sep: RegExp): string[] {
   const parts: string[] = [];
@@ -676,26 +696,48 @@ function splitTop(text: string, sep: RegExp): string[] {
   return parts.map((p) => p.trim()).filter((p) => p !== '');
 }
 
+/** A pseudo-element alone: a companion of a universal list (`*, ::placeholder`). */
+const PSEUDO_ELEMENT_ONLY =
+  /^\*?::?(before|after|backdrop|marker|placeholder|selection|file-selector-button|first-line|first-letter|cue|grammar-error|spelling-error|target-text)$/i;
+
 /**
- * Whether a rule applies to every element (in its subtree): each selector of
- * the list is a pseudo-element alone or ends in a universal compound — `*`,
- * `:where(*)`, `:is(*)`, optionally with `:not(…)`s and a pseudo-element —
- * after any ancestor prefix (`html *`, `:root *`, `.card > *`). A list of
- * pseudo-elements alone (`::backdrop`) is not universal.
+ * Whether a rule applies to every element of the page: each selector of the
+ * list is a bare universal — `*`, `:where(*)` or `:is(*)`, optionally with a
+ * pseudo-element, optionally after exactly `html` or `:root` as a descendant
+ * prefix — or a pseudo-element alone, and at least one is universal. Anything
+ * else (`.card > *`, `* + *`, `*:not(.x)`, `body *`) applies to part of the
+ * page only and is not universal.
  */
 export function isUniversalSelector(selector: string): boolean {
   let universal = false;
   for (const part of splitTop(selector, /,/)) {
-    const compounds = splitTop(part, /[\s>+~]/);
-    const last = (compounds[compounds.length - 1] ?? '').replace(
-      /(::[a-z-]+(\([^)]*\))?|:(before|after|first-line|first-letter))$/i,
-      ''
-    );
-    if (last === '' && /^::?(before|after|backdrop|marker)$/i.test(part)) continue;
-    if (!/^(\*|:where\(\s*\*\s*\)|:is\(\s*\*\s*\))(:not\([^)]*\))*$/i.test(last)) return false;
+    if (PSEUDO_ELEMENT_ONLY.test(part)) continue;
+    const core = part
+      .replace(/(::[a-z-]+(\([^)]*\))?|:(before|after|first-line|first-letter))$/i, '')
+      .trim();
+    if (!/^(?:(?:html|:root)\s+)?(\*|:where\(\s*\*\s*\)|:is\(\s*\*\s*\))$/i.test(core))
+      return false;
     universal = true;
   }
   return universal;
+}
+
+/** The declarations that set an inherited attributed property: itself, and `font` for the font ones. */
+const INHERITED_SOURCES: Partial<Record<TokenAttributedProperty, readonly string[]>> = {
+  color: ['color'],
+  fontFamily: ['font-family', 'font'],
+  fontSize: ['font-size', 'font'],
+  fontWeight: ['font-weight', 'font'],
+  lineHeight: ['line-height', 'font'],
+  letterSpacing: ['letter-spacing'],
+};
+
+/** Whether `style` declares an inherited property with a value that is not built from `var()`. */
+function declaresLiterally(style: CSSStyleDeclaration, prop: TokenAttributedProperty): boolean {
+  return (INHERITED_SOURCES[prop] ?? []).some((name) => {
+    const text = style.getPropertyValue(name);
+    return text !== '' && !VAR_PATTERN.test(text) && !/^(inherit|unset)$/i.test(text.trim());
+  });
 }
 
 /** Record which custom properties each of `declared` references with `var()` in `style`. */
@@ -760,6 +802,18 @@ export class TokenIndexBuilder {
   readonly universalNames = new Set<string>();
   /** Custom property → the custom properties its declarations reference with `var()`. */
   readonly customRefs = new Map<string, Set<string>>();
+  /** Inherited property → selectors of rules that declare it without `var()`. */
+  readonly literalSources = new Map<TokenAttributedProperty, string[]>();
+
+  /** Record the inherited properties a rule declares with a literal value. */
+  addLiterals(style: CSSStyleDeclaration, selector: string): void {
+    for (const prop of INHERITED_PROPERTIES) {
+      if (!declaresLiterally(style, prop)) continue;
+      const list = this.literalSources.get(prop);
+      if (list) list.push(selector);
+      else this.literalSources.set(prop, [selector]);
+    }
+  }
   private readonly usage = new Map<string, Set<TokenFamily>>();
 
   constructor(private readonly doc: Document) {}
@@ -874,10 +928,13 @@ export class TokenIndexBuilder {
       overrides: this.overrides,
       universalNames: this.universalNames,
       customRefs: this.customRefs,
+      literalSources: this.literalSources,
       references: this.references,
       coverage: this.coverage,
       batch: {
         computed: new Map(),
+        literal: new Map(),
+        scriptNames: new Map(),
         inherited: new Map(),
         scopeIds: new Map(),
         scopes: {},
@@ -1034,7 +1091,7 @@ function scopeIdOf(index: DesignTokenIndex, el: Element): string | null {
     return null;
   }
   const verdict = verdictOf(el as HTMLElement);
-  const scriptNames = inlineNamesInScope(el);
+  const scriptNames = scriptNamesOf(index, el);
   const overrides: Record<string, string> = {};
   let truncated = 0;
   for (const { name, inline } of changed.slice(0, MAX_SCOPE_OVERRIDES)) {
@@ -1221,11 +1278,41 @@ function candidatesOf(
 const hasCandidates = (c: { inline: TokenReference[]; rules: TokenReference[] }): boolean =>
   c.inline.length + c.rules.length > 0;
 
-/**
- * Whether `el`'s value of an inherited property is its parent's, unchanged.
- * A unitless line height inherits as a factor, so it is unchanged when the
- * ratio to the font size is, even where the font size (and so the px) differs.
- */
+/** Whether `el` itself declares `prop` with a literal value (inline, or a matching rule). */
+function declaresLiterallyOn(
+  index: DesignTokenIndex,
+  el: Element,
+  prop: TokenAttributedProperty
+): boolean {
+  let perElement = index.batch.literal.get(el);
+  if (!perElement) index.batch.literal.set(el, (perElement = new Map()));
+  const cached = perElement.get(prop);
+  if (cached !== undefined) return cached;
+  const style = (el as HTMLElement).style as CSSStyleDeclaration | undefined;
+  let found = style ? declaresLiterally(style, prop) : false;
+  if (!found) {
+    for (const selector of index.literalSources.get(prop) ?? []) {
+      try {
+        if (el.matches(selector)) {
+          found = true;
+          break;
+        }
+      } catch {
+        // Invalid selector — skip
+      }
+    }
+  }
+  perElement.set(prop, found);
+  return found;
+}
+
+/** The script-set custom properties in scope of `el` (memoised per batch). */
+export function scriptNamesOf(index: DesignTokenIndex, el: Element): Set<string> {
+  let names = index.batch.scriptNames.get(el);
+  if (!names) index.batch.scriptNames.set(el, (names = inlineNamesInScope(el)));
+  return names;
+}
+
 /**
  * How `el`'s value of an inherited property relates to its parent's:
  * `'same'` (equal), `'factor'` (a line height with the same ratio to the font
@@ -1331,38 +1418,56 @@ function inheritedDerivation(
   el: Element,
   prop: TokenAttributedProperty,
   depth: number
-): { derivation: InheritedDerivation | null; capped: boolean } {
+): InheritedOutcome {
   let perElement = index.batch.inherited.get(el);
   if (!perElement) index.batch.inherited.set(el, (perElement = new Map()));
-  if (perElement.has(prop)) return { derivation: perElement.get(prop) ?? null, capped: false };
-  let derivation: InheritedDerivation | null = null;
-  let capped = false;
+  const cached = perElement.get(prop);
+  if (cached) return cached;
+  let outcome: InheritedOutcome;
   const style = (el as HTMLElement).style as CSSStyleDeclaration | undefined;
   const candidates = candidatesOf(index, el, prop, style ? referencesOf(style) : null);
   if (hasCandidates(candidates)) {
     const settled = settle(index, el, candidates);
     if (settled.verdict === 'derived' && settled.ref) {
-      derivation = {
-        names: settled.names,
-        expression: settled.ref.expression,
-        unitless: /^[\d.]+$/.test(resolvedToken(index, el, settled.names[0])),
+      const text = substitute(index, el, settled.ref.text) ?? '';
+      outcome = {
+        derivation: {
+          names: settled.names,
+          expression: settled.ref.expression,
+          // A unitless line height inherits as a factor: decided on the
+          // declaration as written out (`calc(var(--lh) * 1em)` is not one).
+          unitless: /^[\d.]+$/.test(text.trim()),
+        },
+        reason: null,
+        capped: false,
+      };
+    } else {
+      outcome = { derivation: null, reason: 'unknown', capped: false };
+    }
+  } else if (declaresLiterallyOn(index, el, prop)) {
+    outcome = { derivation: null, reason: 'literal', capped: false };
+  } else if (!el.parentElement) {
+    outcome = { derivation: null, reason: 'initial', capped: false };
+  } else if (depth >= MAX_INHERITANCE_DEPTH) {
+    outcome = { derivation: null, reason: 'unknown', capped: true };
+  } else {
+    const parent = el.parentElement;
+    const step = inheritsUnchanged(index, el, parent, prop);
+    if (!step) {
+      // The value changes here with no author declaration: a user-agent style.
+      outcome = { derivation: null, reason: 'initial', capped: false };
+    } else {
+      const up = inheritedDerivation(index, parent, prop, depth + 1);
+      const derivation = throughStep(step, up.derivation);
+      outcome = {
+        derivation,
+        reason: derivation ? null : up.derivation ? 'unknown' : up.reason,
+        capped: up.capped,
       };
     }
-  } else if (el.parentElement) {
-    if (depth >= MAX_INHERITANCE_DEPTH) {
-      capped = true;
-    } else {
-      const parent = el.parentElement;
-      const step = inheritsUnchanged(index, el, parent, prop);
-      if (step) {
-        const up = inheritedDerivation(index, parent, prop, depth + 1);
-        derivation = throughStep(step, up.derivation);
-        capped = up.capped;
-      }
-    }
   }
-  if (!capped) perElement.set(prop, derivation);
-  return { derivation, capped };
+  if (!outcome.capped) perElement.set(prop, outcome);
+  return outcome;
 }
 
 /** `el`'s token attribution for its computed `styles` (see the module doc). */
@@ -1390,13 +1495,12 @@ export function tokenMatchesOf(
       } else if (settled.verdict === 'unverified') {
         entry.unverified = settled.names;
       }
-    } else if (INHERITED_PROPERTIES.has(prop) && parent) {
+    } else if (INHERITED_PROPERTIES.has(prop) && parent && !declaresLiterallyOn(index, el, prop)) {
+      // (An element that declares the property itself made a choice: not inherited.)
       const step = inheritsUnchanged(index, el, parent, prop);
       if (step) {
-        const derivation = throughStep(
-          step,
-          inheritedDerivation(index, parent, prop, 1).derivation
-        );
+        const up = inheritedDerivation(index, parent, prop, 1);
+        const derivation = throughStep(step, up.derivation);
         if (derivation) {
           inheritedUnchanged = true;
           entry.derived = derivation.names;
@@ -1405,6 +1509,7 @@ export function tokenMatchesOf(
         } else if (step === 'same') {
           inheritedUnchanged = true;
           entry.inherited = true;
+          entry.inheritedFrom = up.derivation ? 'unknown' : (up.reason ?? 'unknown');
         }
         // A 'factor' step to no unitless token: the element's own value.
       }
