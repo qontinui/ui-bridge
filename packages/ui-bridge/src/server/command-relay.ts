@@ -442,6 +442,14 @@ export class CommandRelay {
    */
   private readonly warmedUpTabs: Set<string>;
   /**
+   * Each tab's generation: incremented by a FRESH open of the tab id (one
+   * that resumes nothing), kept by a resume. A warm-up marks its tab only if
+   * the tab is still in the generation the warm-up was armed in, so a late
+   * reply to an earlier generation's warm-up cannot mark a generation that
+   * never had one. Bounded like the marks (`cleanupStaleTabs`, `destroy()`).
+   */
+  private readonly tabGenerations: Map<string, number>;
+  /**
    * Per-user tab-scoping registry. Tracks which authenticated user a tab
    * was registered under via the strict heartbeat protocol. A tab is
    * "registered" — and therefore addressable by authenticated dispatch —
@@ -563,6 +571,7 @@ export class CommandRelay {
     if (!g[key('TabLastSuccess')]) g[key('TabLastSuccess')] = new Map();
     if (!g[key('ListenerTombstones')]) g[key('ListenerTombstones')] = new Map();
     if (!g[key('WarmedUpTabs')]) g[key('WarmedUpTabs')] = new Set();
+    if (!g[key('TabGenerations')]) g[key('TabGenerations')] = new Map();
     if (!g[key('TabOwnership')]) g[key('TabOwnership')] = new Map();
     if (!g[key('BusDeliveries')]) g[key('BusDeliveries')] = new Map();
     if (!g[key('RelayTimers')]) g[key('RelayTimers')] = new Set();
@@ -589,6 +598,7 @@ export class CommandRelay {
     this.tabLastSuccess = g[key('TabLastSuccess')];
     this.listenerTombstones = g[key('ListenerTombstones')];
     this.warmedUpTabs = g[key('WarmedUpTabs')];
+    this.tabGenerations = g[key('TabGenerations')];
     this.tabOwnership = g[key('TabOwnership')];
     this.busDeliveries = g[key('BusDeliveries')];
     this.relayTimers = g[key('RelayTimers')];
@@ -825,7 +835,8 @@ export class CommandRelay {
   /**
    * Remove entries from tabHeartbeats and demotedTabs for tabs no longer
    * connected, listener tombstones too old to resume a tab, and the warm-up
-   * marks of tabs left with neither a listener nor a tombstone.
+   * marks and generations of tabs left with neither a listener nor a
+   * tombstone.
    */
   private cleanupStaleTabs(): void {
     const now = Date.now();
@@ -835,6 +846,11 @@ export class CommandRelay {
     for (const tabId of this.warmedUpTabs) {
       if (!this.tabListeners.has(tabId) && !this.listenerTombstones.has(tabId)) {
         this.warmedUpTabs.delete(tabId);
+      }
+    }
+    for (const tabId of this.tabGenerations.keys()) {
+      if (!this.tabListeners.has(tabId) && !this.listenerTombstones.has(tabId)) {
+        this.tabGenerations.delete(tabId);
       }
     }
     for (const [tabId, lastBeat] of this.tabHeartbeats.entries()) {
@@ -2089,6 +2105,9 @@ export class CommandRelay {
     this.demotedTabs.delete(id);
     if (!resumed) this.setPrimaryTab(id);
     if (!resumed) this.warmedUpTabs.delete(id);
+    // A fresh open starts the tab's next generation; a resume stays in its.
+    if (!resumed) this.tabGenerations.set(id, (this.tabGenerations.get(id) ?? 0) + 1);
+    const generation = this.tabGenerations.get(id) ?? 0;
 
     // Signal that a transport is ready
     this.openConnectionGate();
@@ -2187,9 +2206,11 @@ export class CommandRelay {
           console.log(
             `[ui-bridge] Proactive snapshot captured: ${result.elements.length} elements`
           );
-          // Marked only while the tab is still known here: after `destroy()`,
-          // or once its tombstone is gone, there is nothing left to resume.
-          if (this.tabListeners.has(id) || this.listenerTombstones.has(id)) {
+          // Marked only while the tab is still in the generation this warm-up
+          // was armed in. A later fresh open, `destroy()`, or the sweep
+          // dropping the tab's tombstone all end that generation; a resume of
+          // it does not, so a reply that lands after one still counts.
+          if (this.tabGenerations.get(id) === generation) {
             this.warmedUpTabs.add(id);
           }
           return true;
@@ -2827,6 +2848,7 @@ export class CommandRelay {
     this.tabListeners.clear();
     this.listenerTombstones.clear();
     this.warmedUpTabs.clear();
+    this.tabGenerations.clear();
     this.commandQueue.length = 0;
     this.changeEventBuffer.length = 0;
     this.changeEventSubscribers.clear();

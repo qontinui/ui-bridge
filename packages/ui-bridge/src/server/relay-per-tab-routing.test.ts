@@ -837,6 +837,7 @@ describe('relay · Phase 3 — selection prefers a live tab; a reopen keeps its 
     return relay as unknown as {
       listenerTombstones: Map<string, number>;
       warmedUpTabs: Set<string>;
+      tabGenerations: Map<string, number>;
     };
   }
 
@@ -1106,27 +1107,102 @@ describe('relay · Phase 3 — selection prefers a live tab; a reopen keeps its 
       expect(warmUps).toEqual(['tab-a stream 1', 'tab-a stream 3']);
     });
 
-    it("forgets a tab's warm-up once its tombstone ages out in the sweep, and on destroy()", async () => {
+    /**
+     * Open a stream for `tabId` that answers nothing, and keeps the id of
+     * each warm-up it is sent in `held` for the test to answer later.
+     */
+    function holdingStream(
+      relay: CommandRelay,
+      tabId: string,
+      label: string,
+      warmUps: string[],
+      held: string[]
+    ): () => void {
+      return relay.subscribeToCommands((command) => {
+        if (command.action !== 'getControlSnapshot') return;
+        warmUps.push(label);
+        held.push(command.commandId);
+      }, tabId);
+    }
+
+    /** Answer a held warm-up with a one-element snapshot. */
+    function answerWarmUp(relay: CommandRelay, commandId: string, tabId: string): void {
+      relay.resolveCommand(
+        commandId,
+        { elements: [{ id: 'e' }], components: [], workflows: [], timestamp: Date.now() },
+        tabId
+      );
+    }
+
+    it("is sent to the next resume when an earlier generation's late warm-up reply arrives after a fresh reopen", async () => {
+      // Everything here happens before the first sweep, which runs
+      // pruneSweepIntervalMs (10 000 ms by default) after the relay is built.
       const relay = freshRelay({ proactiveSnapshot: true });
-      const { listenerTombstones, warmedUpTabs } = relayState(relay);
+      const warmUps: string[] = [];
+      const held: string[] = [];
+      const endFirst = holdingStream(relay, 'tab-a', 'tab-a stream 1', warmUps, held);
+      await vi.advanceTimersByTimeAsync(600); // stream 1's warm-up is sent, unanswered
+      endFirst();
+      // 5 500 ms later the tab's tombstone is past reconnectGraceMs (5 000 ms
+      // by default): stream 2 opens the tab fresh, a new generation.
+      await vi.advanceTimersByTimeAsync(5_500);
+      const endSecond = snapshotStream(relay, 'tab-a', 'tab-a stream 2', warmUps);
+      // Stream 1's warm-up is answered only now.
+      answerWarmUp(relay, held[0]!, 'tab-a');
+      await vi.advanceTimersByTimeAsync(200);
+      endSecond(); // before its own 500 ms warm-up timer fired
+      await vi.advanceTimersByTimeAsync(100);
+      // Inside the grace: a resume of stream 2's generation, never warmed up.
+      snapshotStream(relay, 'tab-a', 'tab-a stream 3', warmUps);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(warmUps).toEqual(['tab-a stream 1', 'tab-a stream 3']);
+    });
+
+    it('keeps the mark when the warm-up reply arrives after a resume of the same generation (control)', async () => {
+      const relay = freshRelay({ proactiveSnapshot: true });
+      const warmUps: string[] = [];
+      const held: string[] = [];
+      holdingStream(relay, 'tab-a', 'tab-a stream 1', warmUps, held);
+      await vi.advanceTimersByTimeAsync(600); // stream 1's warm-up is sent, unanswered
+      // Stream 2 replaces stream 1 while it is registered: a resume, same generation.
+      const endSecond = snapshotStream(relay, 'tab-a', 'tab-a stream 2', warmUps);
+      answerWarmUp(relay, held[0]!, 'tab-a'); // stream 1's warm-up answered now
+      await vi.advanceTimersByTimeAsync(100);
+      endSecond(); // before its own 500 ms warm-up timer fired
+      await vi.advanceTimersByTimeAsync(100);
+      // The tab's warm-up was answered in this generation, so this resume skips one.
+      snapshotStream(relay, 'tab-a', 'tab-a stream 3', warmUps);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(warmUps).toEqual(['tab-a stream 1']);
+    });
+
+    it("forgets a tab's warm-up and generation once its tombstone ages out in the sweep, and on destroy()", async () => {
+      const relay = freshRelay({ proactiveSnapshot: true });
+      const { listenerTombstones, warmedUpTabs, tabGenerations } = relayState(relay);
       expect(warmedUpTabs).toBeInstanceOf(Set);
+      expect(tabGenerations).toBeInstanceOf(Map);
       const endFirst = snapshotStream(relay, 'tab-a', 'tab-a stream 1', []);
       snapshotStream(relay, 'tab-b', 'tab-b stream 1', []);
       await vi.advanceTimersByTimeAsync(2_000); // both warm-ups answered
       expect([...warmedUpTabs].sort()).toEqual(['tab-a', 'tab-b']);
+      expect([...tabGenerations.keys()].sort()).toEqual(['tab-a', 'tab-b']);
 
-      // A's stream ends: its mark is kept through the grace, for a resume.
+      // A's stream ends: its mark and generation are kept through the grace,
+      // for a resume.
       endFirst();
       expect([...listenerTombstones.keys()]).toEqual(['tab-a']);
       expect([...warmedUpTabs].sort()).toEqual(['tab-a', 'tab-b']);
+      expect([...tabGenerations.keys()].sort()).toEqual(['tab-a', 'tab-b']);
       // Past reconnectGraceMs (5 000 ms by default) and one sweep
       // (pruneSweepIntervalMs, 10 000 ms by default).
       await vi.advanceTimersByTimeAsync(5_000 + 10_000);
       expect(listenerTombstones.size).toBe(0);
       expect([...warmedUpTabs]).toEqual(['tab-b']);
+      expect([...tabGenerations.keys()]).toEqual(['tab-b']);
 
       relay.destroy();
       expect(warmedUpTabs.size).toBe(0);
+      expect(tabGenerations.size).toBe(0);
     });
   });
 
