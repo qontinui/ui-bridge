@@ -35,7 +35,7 @@ import {
   type QualityElementSource,
 } from './quality-request';
 import { indexCustomProperties } from '../ai/design-inspector';
-import { reportedTokensOf, type ReportedTokens } from '../ai/design-tokens';
+import { disposeTokenIndex, reportedTokensOf, type ReportedTokens } from '../ai/design-tokens';
 import { runStyleAudit } from './style-validator';
 import type { StyleAuditReport, StyleGuideConfig } from './style-types';
 
@@ -463,14 +463,18 @@ export function elementStylesOf(
     throw new DesignRequestError('Element does not have a DOM reference', 'NO_DOM_REFERENCE');
   }
   const index = indexCustomProperties(document, [source.element]);
-  const data = getElementDesignData(source.element, {
-    elementId: source.id,
-    label: source.label,
-    type: source.type,
-    includePseudoElements: true,
-    customProperties: index,
-  });
-  return { ...data, ...reportedTokensOf(index.tokens) };
+  try {
+    const data = getElementDesignData(source.element, {
+      elementId: source.id,
+      label: source.label,
+      type: source.type,
+      includePseudoElements: true,
+      customProperties: index,
+    });
+    return { ...data, ...reportedTokensOf(index.tokens) };
+  } finally {
+    disposeTokenIndex(index.tokens);
+  }
 }
 
 /**
@@ -552,6 +556,7 @@ export async function responsiveSnapshotsOf(
     truncatedValues: capture.truncatedValues,
     scopes: capture.scopes,
     scopeCount: capture.scopeCount,
+    scopeBudgetExceeded: capture.scopeBudgetExceeded,
     tokenCoverage: capture.tokenCoverage,
     tokenMatchesViewport: capture.snapshots[0]?.viewportLabel ?? null,
     ...report,

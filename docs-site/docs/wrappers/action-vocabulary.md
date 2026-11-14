@@ -115,7 +115,7 @@ _138 routes; regenerate via `npm run validate:ws-actions -- --emit-doc docs-site
 | `getElementReactState` | `GET /ui-bridge/sdk/element/:id/state` — Get element state | `handle_element_state` |
 | `getElementState` | `GET /ui-bridge/sdk/control/element/:id/state-generic` — Get generic element state | `handle_element_state_generic` |
 | `getElementStateStyles` | `POST /ui-bridge/sdk/design/element/:id/state-styles` — Styles across interaction states | `handle_design_element_state_styles` |
-| `getElementStyles` | `GET /ui-bridge/sdk/design/element/:id/styles` — `ElementDesignData` for one element: extended computed styles, its own custom properties, token scopes, per-property token attribution (`tokenMatches`: `derived` / `overridden` / `matches` / `inherited`), pseudo-elements, plus the page's root tokens (`tokens`), `scopes` and `tokenCoverage` | `handle_design_element_styles` |
+| `getElementStyles` | `GET /ui-bridge/sdk/design/element/:id/styles` — `ElementDesignData` for one element: extended computed styles, its own custom properties, token scopes, per-property token attribution (`tokenMatches`: `derived` / `overridden` / `unverified` / `matches` / `inherited`), pseudo-elements, plus the page's root tokens (`tokens`), `scopes` and `tokenCoverage` | `handle_design_element_styles` |
 | `getElementTree` | `GET /ui-bridge/sdk/debug/element-tree` — Get element tree | `handle_element_tree` |
 | `getErrorReport` | `GET /ui-bridge/sdk/error-report` — Get error report | `handle_error_report` |
 | `getErrorSessions` | `GET /ui-bridge/sdk/console/error-sessions` — List all error session summaries | `handle_console_error_sessions_list` |

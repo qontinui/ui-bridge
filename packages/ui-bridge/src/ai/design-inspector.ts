@@ -21,7 +21,9 @@ import { REDACTED_VALUE, scrubContent, scrubContentRequired, verdictOf } from '.
 import { withRootWidthLock } from '../core/root-width-lock';
 import {
   TokenIndexBuilder,
+  disposeTokenIndex,
   noReportedTokens,
+  scrubScriptValue,
   referencesOf,
   reportedTokensOf,
   tokenMatchesOf,
@@ -29,7 +31,7 @@ import {
   type DesignTokenIndex,
   type ReportedTokens,
 } from './design-tokens';
-import { styleRules } from './stylesheet-walk';
+import { styleRules, type StyleBlock, type WalkedRule } from './stylesheet-walk';
 import {
   forcePseudoState,
   reapplyIfIdle,
@@ -495,6 +497,8 @@ async function captureUnderRootWidthLock(
       });
     }
   } finally {
+    // The token probe leaves the document with the capture.
+    if (index) disposeTokenIndex(index.tokens);
     // Always restore the root's own inline styles, exactly
     for (const { prop, value, priority } of original) {
       if (value) docEl.style.setProperty(prop, value, priority);
@@ -590,12 +594,12 @@ export interface CustomPropertyIndex {
 }
 
 /** The top-level style rules of a document's readable stylesheets, in cascade-source order. */
-function* topLevelStyleRules(doc: Document): Generator<CSSStyleRule> {
-  for (const { rule } of styleRules(doc, { descend: false })) yield rule;
+function topLevelStyleRules(doc: Document): Generator<WalkedRule> {
+  return styleRules(doc, { descend: false });
 }
 
 /** The custom properties (`--*`) a rule declares. */
-function declaredCustomProperties(rule: CSSStyleRule): string[] {
+function declaredCustomProperties(rule: StyleBlock): string[] {
   const names: string[] = [];
   for (let i = 0; i < rule.style.length; i++) {
     const prop = rule.style[i];
@@ -700,11 +704,13 @@ export function getCSSCustomProperties(
   const read = (prop: string): string =>
     scrubContentRequired(computed.getPropertyValue(prop).trim(), verdict);
 
-  // 1. Inline style custom properties
+  // 1. Inline style custom properties. An inline value is often set from
+  // script, so possibly from user data: only a colour, a dimension or a
+  // short number keeps its value (`scrubScriptValue`).
   for (let i = 0; i < el.style.length; i++) {
     const prop = el.style[i];
     if (prop.startsWith('--')) {
-      result[prop] = read(prop);
+      result[prop] = scrubScriptValue(read(prop));
     }
   }
 
@@ -732,9 +738,9 @@ function indexCovers(index: CustomPropertyIndex, el: Element): boolean {
 /** The custom properties declared by the top-level style rules `el` matches, one rule at a time. */
 function matchedCustomProperties(el: HTMLElement): string[] {
   const names: string[] = [];
-  for (const rule of topLevelStyleRules(document)) {
+  for (const { rule, selector } of topLevelStyleRules(document)) {
     try {
-      if (!el.matches(rule.selectorText)) continue;
+      if (!el.matches(selector)) continue;
     } catch {
       // Invalid selector — skip
       continue;

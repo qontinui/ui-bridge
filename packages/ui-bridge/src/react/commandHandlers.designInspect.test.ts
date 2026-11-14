@@ -226,13 +226,26 @@ describe('design-inspection routes · the browser path answers the full model', 
     expect(wire).not.toContain('cdn.test');
   });
 
-  it('getElementStyles keeps custom-property values and URLs outside a redaction boundary', async () => {
+  it('getElementStyles keeps stylesheet custom-property values and URLs outside a redaction boundary', async () => {
     const save = document.getElementById('dom-save')!;
-    save.style.setProperty('--who', "'Alice Smith'");
     save.style.setProperty('background-image', 'url("https://cdn.test/a.png")');
     const data = await browser<ElementDesignData>('getElementStyles', { id: 'save' });
-    expect(data.customProperties?.['--who']).toBe("'Alice Smith'");
+    expect(data.customProperties?.['--brand-color']).toBe('rgb(255, 0, 0)');
     expect(data.styles.backgroundImage).toContain('cdn.test/a.png');
+  });
+
+  it('getElementStyles keeps an INLINE custom property only when it is a colour, dimension or short number', async () => {
+    // An inline value is often set from script, so possibly from user data.
+    const save = document.getElementById('dom-save')!;
+    save.style.setProperty('--who', "'Alice Smith'");
+    save.style.setProperty('--avatar', 'url("https://cdn.test/a.png?token=x")');
+    save.style.setProperty('--gap', '12px');
+    const data = await browser<ElementDesignData>('getElementStyles', { id: 'save' });
+    expect(data.customProperties).toMatchObject({
+      '--who': REDACTED_VALUE,
+      '--avatar': REDACTED_VALUE,
+      '--gap': '12px',
+    });
   });
 
   // -------------------------------------------------------------- snapshot
@@ -557,7 +570,8 @@ describe('design-inspection routes · relay and server answer the same model', (
     tokenSheet.textContent = [
       ':root { --brand: rgb(31, 78, 140); --space: 4px; }',
       'button { background-color: var(--brand); padding-left: var(--space); }',
-      'h1 { color: rgb(31, 78, 140); }',
+      // A shorthand that writes the colour with var(): the same model on both transports.
+      'h1 { color: rgb(31, 78, 140); background: var(--brand); }',
     ].join('\n');
     document.head.appendChild(tokenSheet);
     container = document.createElement('div');

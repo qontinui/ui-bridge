@@ -6,17 +6,21 @@
  *
  * jsdom's CSSOM leaves a shorthand's longhands empty when it is written with
  * `var()`, as browsers do, but its computed style substitutes no `var()` and
- * drops a `var()` shorthand. Where a test needs the value a browser computes,
- * it states that value (`browserComputes`).
+ * drops a `var()` shorthand, and it does not convert units or keywords
+ * (`1em`, `bold`, `calc()`). Where a test needs the value a browser computes,
+ * for an element or for the token probe, it states it (`browserComputes`).
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getElementDesignData, indexCustomProperties } from '../design-inspector';
 import {
+  MAX_INHERITANCE_DEPTH,
+  MAX_SCOPE_OVERRIDES,
   MAX_TOKEN_VALUE_LENGTH,
   normalizedForms,
   referencesOf,
   reportedTokensOf,
+  scrubScriptValue,
 } from '../design-tokens';
 import { normalizeColor } from '../css-color';
 import { emptyCoverage, resolveNestedSelector, styleRules } from '../stylesheet-walk';
@@ -25,12 +29,31 @@ import { customPropertyConsistency } from '../../specs/quality-metrics';
 import { REDACTED_VALUE } from '../../core/redaction';
 import type { ElementDesignData } from '../../core/types';
 
-/** State the computed values a browser would give these elements (kebab-case properties). */
-function browserComputes(values: Map<Element, Record<string, string>>): void {
+/** Whether `el` is the token probe (`ai/token-probe.ts`). */
+function isProbe(el: Element): boolean {
+  const root = el.getRootNode();
+  return root instanceof ShadowRoot && root.host.tagName === 'UI-BRIDGE-TOKEN-PROBE';
+}
+
+/**
+ * State the computed values a browser would give these elements (kebab-case
+ * properties), and, optionally, what it would compute for the token probe from
+ * the probe's inline style.
+ */
+function browserComputes(
+  values: Map<Element, Record<string, string>>,
+  probe?: (inline: CSSStyleDeclaration, longhand: string) => string | undefined
+): void {
   const real = window.getComputedStyle.bind(window);
   vi.spyOn(window, 'getComputedStyle').mockImplementation((el, pseudo) => {
     const computed = real(el, pseudo);
-    const stated = values.get(el as Element);
+    let stated = values.get(el as Element);
+    if (!stated && probe && isProbe(el as Element)) {
+      const inline = (el as HTMLElement).style;
+      stated = new Proxy({} as Record<string, string>, {
+        get: (_t, longhand: string) => probe(inline, longhand),
+      });
+    }
     if (!stated || pseudo) return computed;
     const own = computed.getPropertyValue.bind(computed);
     return new Proxy(computed, {
@@ -146,6 +169,7 @@ describe('design tokens', () => {
       'scope-1': {
         element: 'div.theme[data-theme="dark"]',
         overrides: { '--brand': 'rgb(200, 0, 0)' },
+        overrideCount: 1,
       },
     });
     expect(batch.scopeCount).toBe(1);
@@ -163,7 +187,54 @@ describe('design tokens', () => {
     theme.setAttribute('data-bridge-redact', 'true');
     const batch = collectDesignBatch([{ id: 'k', element: add('span', 'k', theme) }]);
     expect(batch.scopes['scope-1'].overrides).toEqual({ '--brand': REDACTED_VALUE });
+    // A redacted scope is named by its tag alone.
+    expect(batch.scopes['scope-1'].element).toBe('div');
     expect(batch.tokens['--brand'].value).toBe('rgb(31, 78, 140)');
+  });
+
+  it('a blanket declaration that changes nothing (Tailwind preflight) makes no scope', () => {
+    sheet(
+      ':root { --brand: rgb(31, 78, 140); }',
+      '*, ::before, ::after { --tw-ring: 0 0 #0000; --tw-shadow: 0 0 #0000; }',
+      '.theme { --brand: rgb(200, 0, 0); }'
+    );
+    const outer = add('div', 'outer');
+    const theme = add('section', 'theme', outer);
+    const inner = add('div', 'inner', theme);
+    const batch = collectDesignBatch([{ id: 'k', element: add('span', 'k', inner) }]);
+    expect(batch.scopeCount).toBe(1);
+    expect(Object.values(batch.scopes)).toEqual([
+      { element: 'section.theme', overrides: { '--brand': 'rgb(200, 0, 0)' }, overrideCount: 1 },
+    ]);
+  });
+
+  it('caps a scope’s overrides and the scopes’ total size, and says so', () => {
+    const long = 'x'.repeat(300);
+    const many = Array.from({ length: MAX_SCOPE_OVERRIDES + 1 }, (_, i) => `--t${i}: ${long}${i};`);
+    sheet(`.big { ${many.join(' ')} }`);
+    const kids = [add('div', 'big'), add('div', 'big')].map((wrapper, i) => ({
+      id: `k${i}`,
+      element: add('span', 'k', wrapper),
+    }));
+    const batch = collectDesignBatch(kids);
+    const scopes = Object.values(batch.scopes);
+    expect(batch.scopeCount).toBe(2);
+    // The second scope would pass the byte budget.
+    expect(scopes).toHaveLength(1);
+    expect(batch.scopeBudgetExceeded).toBe(true);
+    expect(scopes[0].overrideCount).toBe(MAX_SCOPE_OVERRIDES + 1);
+    expect(Object.keys(scopes[0].overrides)).toHaveLength(MAX_SCOPE_OVERRIDES);
+    expect(batch.truncatedValues).toBe(MAX_SCOPE_OVERRIDES);
+  });
+
+  it('keeps an inline value only when it is a colour, a dimension or a short number', () => {
+    expect(scrubScriptValue('#ff0000')).toBe('#ff0000');
+    expect(scrubScriptValue('12px')).toBe('12px');
+    expect(scrubScriptValue('1000')).toBe('1000');
+    expect(scrubScriptValue('0.5')).toBe('0.5');
+    expect(scrubScriptValue('5551234567')).toBe(REDACTED_VALUE);
+    expect(scrubScriptValue('Alice')).toBe(REDACTED_VALUE);
+    expect(scrubScriptValue('url("https://cdn.test/a.png")')).toBe(REDACTED_VALUE);
   });
 
   // ------------------------------------------------------- declarations
@@ -171,7 +242,7 @@ describe('design tokens', () => {
   it('expands a box shorthand per side: each side gets only its own token', () => {
     sheet('.p { padding: var(--s2) var(--s4); margin: var(--m1) var(--m2) var(--m3) var(--m4); }');
     const refs = referencesOf((style.sheet!.cssRules[0] as CSSStyleRule).style)!;
-    const names = (p: string) => refs.get(p as never)?.names;
+    const names = (p: string) => refs.get(p as never)?.[0].names;
     expect([
       names('paddingTop'),
       names('paddingRight'),
@@ -192,24 +263,44 @@ describe('design tokens', () => {
         'border-top-left-radius: var(--r); row-gap: var(--g); border-top-color: var(--bc); color: var( --c); }'
     );
     const refs = referencesOf((style.sheet!.cssRules[0] as CSSStyleRule).style)!;
-    expect(refs.get('paddingLeft')).toEqual({
-      names: ['--spacing'],
-      bare: false,
-      ambiguous: false,
-    });
-    expect(refs.get('paddingRight')?.names).toEqual(['--spacing']);
+    expect(refs.get('paddingLeft')).toEqual([
+      {
+        names: ['--spacing'],
+        source: 'padding-inline',
+        text: 'calc(var(--spacing) * 4)',
+        compare: ['padding-left'],
+        expression: true,
+        ambiguous: false,
+      },
+    ]);
+    expect(refs.get('paddingRight')?.[0].compare).toEqual(['padding-right']);
     expect(refs.get('paddingTop')).toBeUndefined();
-    expect(refs.get('marginTop')?.names).toEqual(['--mb']);
-    expect(refs.get('borderRadius')?.names).toEqual(['--r']);
-    expect(refs.get('gap')?.names).toEqual(['--g']);
-    expect(refs.get('border')?.names).toEqual(['--bc']);
-    expect(refs.get('color')).toEqual({ names: ['--c'], bare: true, ambiguous: false });
+    expect(refs.get('marginTop')?.[0]).toMatchObject({ names: ['--mb'], compare: ['margin-top'] });
+    // A longhand is compared on its own computed longhand, not the whole shorthand.
+    expect(refs.get('borderRadius')?.[0]).toMatchObject({
+      names: ['--r'],
+      compare: ['border-top-left-radius'],
+    });
+    expect(refs.get('gap')?.[0]).toMatchObject({ names: ['--g'], compare: ['row-gap'] });
+    expect(refs.get('border')?.[0]).toMatchObject({
+      names: ['--bc'],
+      compare: ['border-top-color'],
+    });
+    expect(refs.get('color')?.[0]).toMatchObject({ names: ['--c'], expression: false });
   });
 
   it('Tailwind-style calc() spacing is derived as an expression on both inline sides', () => {
     sheet(':root { --spacing: 0.25rem; }', '.tw { padding-inline: calc(var(--spacing) * 4); }');
     const el = add('div', 'tw');
-    browserComputes(new Map([[el, { 'padding-left': '16px', 'padding-right': '16px' }]]));
+    browserComputes(
+      new Map([[el, { 'padding-left': '16px', 'padding-right': '16px' }]]),
+      // calc(0.25rem * 4) at a 16px root.
+      (inline, longhand) =>
+        inline.getPropertyValue('padding-inline') === 'calc(0.25rem * 4)' &&
+        (longhand === 'padding-left' || longhand === 'padding-right')
+          ? '16px'
+          : undefined
+    );
     const { tokenMatches } = read(el);
     expect(tokenMatches?.paddingLeft).toEqual({ derived: ['--spacing'], expression: true });
     expect(tokenMatches?.paddingRight).toEqual({ derived: ['--spacing'], expression: true });
@@ -227,13 +318,23 @@ describe('design tokens', () => {
     expect(referencesOf((style.sheet!.cssRules[3] as CSSStyleRule).style)).toBeNull();
   });
 
-  it('a font shorthand token is not attributed to a longhand it did not produce', () => {
-    sheet(':root { --font-body: 700 16px/1.5 Inter; }', '.f { font: var(--font-body); }');
+  it('a multi-var() font shorthand is attributed per longhand to the token that produced it', () => {
+    sheet(':root { --w: 700; --s: 16px; --f: Inter; }', '.f { font: var(--w) var(--s) var(--f); }');
     const el = add('p', 'f');
     browserComputes(new Map([[el, { 'font-size': '16px', 'font-weight': '700' }]]));
     const { tokenMatches } = read(el);
+    expect(tokenMatches?.fontSize).toEqual({ derived: ['--s'], expression: true });
+    expect(tokenMatches?.fontWeight).toEqual({ derived: ['--w'], expression: true });
+  });
+
+  it('a font shorthand token is not attributed to a longhand it did not produce', () => {
+    sheet(':root { --font-body: 700 16px Inter; }', '.f { font: var(--font-body); }');
+    const el = add('p', 'f');
+    // A later rule set the size: the shorthand did not produce 20px.
+    browserComputes(new Map([[el, { 'font-size': '20px', 'font-weight': '700' }]]));
+    const { tokenMatches } = read(el);
     expect(tokenMatches?.fontSize).toBeUndefined();
-    expect(tokenMatches?.fontWeight).toBeUndefined();
+    expect(tokenMatches?.fontWeight).toEqual({ derived: ['--font-body'] });
   });
 
   it('a var() background shorthand is derived when the browser computed its value', () => {
@@ -244,6 +345,87 @@ describe('design tokens', () => {
   });
 
   // ------------------------------------------------------ cascade checks
+
+  it('removes its probe from the document when the batch is read', () => {
+    sheet(':root { --pad: 1em; }', '.e { padding-left: var(--pad); }');
+    const el = add('div', 'e');
+    // A resolved value, so the token is compared through the probe.
+    browserComputes(new Map([[el, { 'padding-left': '16px' }]]));
+    // Probes of earlier direct reads (no batch to dispose them) leave on the next task.
+    document.querySelectorAll('ui-bridge-token-probe').forEach((p) => p.remove());
+    collectDesignBatch([{ id: 'e', element: el }]);
+    expect(document.querySelector('ui-bridge-token-probe')).toBeNull();
+  });
+
+  it('a bare 0 token is derived on a 0px side (resolved, not compared as text)', () => {
+    sheet(
+      ':root { --space-0: 0; --space-4: 16px; }',
+      '.h { margin: var(--space-0) var(--space-4); }'
+    );
+    const el = add('h1', 'h');
+    browserComputes(
+      new Map([
+        [
+          el,
+          {
+            'margin-top': '0px',
+            'margin-right': '16px',
+            'margin-bottom': '0px',
+            'margin-left': '16px',
+          },
+        ],
+      ])
+    );
+    const { tokenMatches } = read(el);
+    expect(tokenMatches?.marginTop).toEqual({ derived: ['--space-0'] });
+    expect(tokenMatches?.marginLeft).toEqual({ derived: ['--space-4'] });
+  });
+
+  it('a keyword token (bold) is derived when the browser computes it to the element’s value', () => {
+    sheet(':root { --weight-strong: bold; }', '.b { font-weight: var(--weight-strong); }');
+    const el = add('b', 'b');
+    browserComputes(new Map([[el, { 'font-weight': '700' }]]), (inline, longhand) =>
+      longhand === 'font-weight' && inline.getPropertyValue('font-weight') === 'bold'
+        ? '700'
+        : undefined
+    );
+    expect(read(el).tokenMatches?.fontWeight).toEqual({ derived: ['--weight-strong'] });
+  });
+
+  it('a value the probe cannot compare (1em against px) is unverified, never overridden', () => {
+    sheet(':root { --pad: 1em; }', '.e { padding-left: var(--pad); }');
+    const el = add('div', 'e');
+    browserComputes(new Map([[el, { 'padding-left': '16px' }]]), (inline, longhand) =>
+      longhand === 'padding-left' ? inline.getPropertyValue('padding-left') : undefined
+    );
+    expect(read(el).tokenMatches?.paddingLeft).toEqual({ unverified: ['--pad'] });
+  });
+
+  it('in a browser, a token that does not resolve on the element does not fall back to the root', () => {
+    sheet(':root { --brand: rgb(31, 78, 140); }', '.r { color: var(--brand); }');
+    const el = add('span', 'r');
+    // A browser inherits custom properties (shown on <head>); here the token
+    // was reset (`--brand: initial`) on the element, so it resolves to nothing.
+    browserComputes(
+      new Map<Element, Record<string, string>>([
+        [document.head, { '--brand': 'rgb(31, 78, 140)' }],
+        [el, { '--brand': '', color: 'rgb(31, 78, 140)' }],
+      ])
+    );
+    expect(read(el).tokenMatches?.color).toEqual({ unverified: ['--brand'] });
+  });
+
+  it('of several declarations, the one that computes to the value is derived', () => {
+    sheet(
+      ':root { --a: rgb(1, 1, 1); --b: rgb(2, 2, 2); }',
+      // The more specific rule comes first in source order and wins.
+      '.btn.x { color: var(--a); }',
+      '.btn { color: var(--b); }'
+    );
+    const btn = add('button', 'btn x');
+    browserComputes(new Map([[btn, { color: 'rgb(1, 1, 1)' }]]));
+    expect(read(btn).tokenMatches?.color).toEqual({ derived: ['--a'] });
+  });
 
   it('a var() declaration that lost the cascade is overridden, not derived', () => {
     sheet(
@@ -277,6 +459,41 @@ describe('design tokens', () => {
     expect(at(text)?.color).toEqual({ derived: ['--brand'], via: 'inherited' });
     // A different value is not inherited, so not derived.
     expect(at(own)?.color).toBeUndefined();
+  });
+
+  it('an ancestor’s INLINE var() declaration is followed too', () => {
+    sheet(':root { --brand: rgb(31, 78, 140); }');
+    const card = add('section', 'card');
+    card.style.setProperty('color', 'var(--brand)');
+    const text = add('span', 'text', card);
+    const brand = { color: 'rgb(31, 78, 140)' };
+    browserComputes(
+      new Map<Element, Record<string, string>>([
+        [card, brand],
+        [text, brand],
+      ])
+    );
+    expect(read(text, [text]).tokenMatches?.color).toEqual({
+      derived: ['--brand'],
+      via: 'inherited',
+    });
+  });
+
+  it('a walk cut short by the depth cap is not cached as "no derivation"', () => {
+    sheet(':root { --brand: rgb(31, 78, 140); }', '.top { color: var(--brand); }');
+    const brand = { color: 'rgb(31, 78, 140)' };
+    const chain: HTMLElement[] = [add('div', 'top')];
+    for (let i = 0; i < MAX_INHERITANCE_DEPTH + 8; i++) chain.push(add('div', `d${i}`, chain[i]));
+    browserComputes(new Map(chain.map((el) => [el, brand] as [Element, Record<string, string>])));
+    const leaf = chain[chain.length - 1];
+    // Its parent lies on the leaf's capped walk, which must not be cached.
+    const near = chain[10];
+    const index = indexCustomProperties(document, [leaf, near]);
+    const at = (el: HTMLElement) =>
+      getElementDesignData(el, { customProperties: index }).tokenMatches?.color;
+    // The leaf is too deep to reach `.top`; an element near it still is.
+    expect(at(leaf)).toEqual({ inherited: true });
+    expect(at(near)).toEqual({ derived: ['--brand'], via: 'inherited' });
   });
 
   it('a colour inherited unchanged from no token is marked inherited, and matches nothing', () => {
@@ -339,8 +556,13 @@ describe('design tokens', () => {
     expect(normalizeColor('rgb(31 78 140 / 50%)')).toBe('rgba(31, 78, 140, 0.5)');
     expect(normalizeColor('rgba(300, -5, 128, 0.502)')).toBe('rgba(255, 0, 128, 0.5)');
     expect(normalizeColor('hsl(210, 64%, 34%)')).toBe('rgb(31, 87, 142)');
+    expect(normalizeColor('hsl(0.5turn 100% 50%)')).toBe(normalizeColor('hsl(180deg 100% 50%)'));
+    expect(normalizeColor('hsl(3.14159rad 100% 50%)')).toBe('rgb(0, 255, 255)');
+    expect(normalizeColor('hsl(200grad 100% 50%)')).toBe('rgb(0, 255, 255)');
+    expect(normalizeColor('hsl(1foo 100% 50%)')).toBeNull();
     expect(normalizeColor('rebeccapurple')).toBe('rgb(102, 51, 153)');
     expect(normalizeColor('oklch(0.5 0.1 200)')).toBeNull();
+    expect(normalizedForms('0', { rootFontPx: 16 })).toContain('0px');
     expect(normalizedForms('0.3rem', { rootFontPx: 16 })).toContain('4.8px');
     // 0.7 x 14 is 9.799999999999999 in floating point.
     expect(normalizedForms('0.7rem', { rootFontPx: 14 })).toEqual(['0.7rem', '9.8px']);
@@ -399,6 +621,58 @@ describe('design tokens', () => {
     });
   });
 
+  it('walks @import, adopted sheets, nested rules and nested declarations; skips unapplied sheets', () => {
+    window.matchMedia = ((query: string) => ({ matches: query !== 'print' })) as never;
+    const decl = (text: string) => {
+      const el = document.createElement('div');
+      el.setAttribute('style', text);
+      return el.style;
+    };
+    const styleRule = (selector: string, text: string, children: object[] = []) =>
+      Object.defineProperties(Object.create(CSSStyleRule.prototype), {
+        selectorText: { value: selector },
+        style: { value: decl(text) },
+        cssRules: { value: children },
+      });
+    const nested = { style: decl('color: var(--after)') };
+    const imported = {
+      cssText: '@import url(theme.css);',
+      media: { mediaText: '' },
+      styleSheet: { cssRules: [styleRule('.from-import', 'color: var(--i)')] },
+    };
+    const card = styleRule('.card', 'color: var(--c)', [
+      styleRule('& .title', 'color: var(--t)'),
+      nested,
+    ]);
+    const sheets = [
+      { cssRules: [imported, card] },
+      { disabled: true, cssRules: [styleRule('.disabled', 'color: red')] },
+      { media: { mediaText: 'print' }, cssRules: [styleRule('.print', 'color: red')] },
+    ];
+    vi.spyOn(document, 'styleSheets', 'get').mockReturnValue(sheets as never);
+    Object.defineProperty(document, 'adoptedStyleSheets', {
+      configurable: true,
+      value: [{ cssRules: [styleRule('.adopted', 'color: var(--a)')] }],
+    });
+    try {
+      const coverage = emptyCoverage();
+      const walked = [...styleRules(document, { descend: true, coverage })].map((r) => r.selector);
+      expect(walked).toEqual([
+        '.from-import',
+        '.card',
+        ':is(.card) .title',
+        // Nested declarations apply with the parent's selector.
+        '.card',
+        '.adopted',
+      ]);
+      expect(coverage.sheetsSkipped).toEqual({ disabled: 1, mediaNotMatching: 1 });
+      expect(coverage.sheetsRead).toBe(3);
+    } finally {
+      delete (document as { adoptedStyleSheets?: unknown }).adoptedStyleSheets;
+      delete (window as { matchMedia?: unknown }).matchMedia;
+    }
+  });
+
   it('resolves a nested rule’s selector against its parent', () => {
     expect(resolveNestedSelector('.card', '& .title, &:hover')).toBe(
       ':is(.card) .title, :is(.card):hover'
@@ -425,7 +699,7 @@ describe('design tokens', () => {
     const query = vi.spyOn(document, 'querySelectorAll');
     const index = indexCustomProperties(document, [el]);
     expect(query).not.toHaveBeenCalled();
-    expect(index.tokens.references.get(el)?.get('color')?.names).toEqual(['--brand']);
+    expect(index.tokens.references.get(el)?.get('color')?.[0].names).toEqual(['--brand']);
   });
 
   // ------------------------------------------------------------- metric
@@ -458,7 +732,38 @@ describe('design tokens', () => {
       tokenDerivedColors: 1,
       valueMatchedColors: 1,
       hardcodedColors: 1,
+      inheritedColors: 1,
       tokenAttribution: true,
+    });
+    // Each component is a plain share; the score is their weighted sum.
+    expect(metric.rawData).toMatchObject({
+      weights: { adoption: 0.5, consistency: 0.3, avoidance: 0.2 },
+      adoptionScore: 50,
+      consistencyScore: 100,
+      avoidanceScore: 50,
+    });
+    expect(metric.score).toBe(Math.round(50 * 0.5 + 100 * 0.3 + 50 * 0.2));
+  });
+
+  it('customPropertyConsistency: a colour inherited from a token is the ancestor’s use, not each child’s', () => {
+    sheet(':root { --fg: rgb(31, 78, 140); }', '.wrap { color: var(--fg); }');
+    const wrap = add('div', 'wrap');
+    const kids = [add('p', 'a', wrap), add('p', 'b', wrap)];
+    const fg = { color: 'rgb(31, 78, 140)' };
+    browserComputes(
+      new Map<Element, Record<string, string>>([
+        [wrap, fg],
+        [kids[0], fg],
+        [kids[1], fg],
+      ])
+    );
+    const batch = collectDesignBatch(kids.map((element, i) => ({ id: `k${i}`, element })));
+    const metric = customPropertyConsistency(batch.elements, VIEWPORT);
+    expect(metric.rawData).toMatchObject({
+      elementsUsingTokens: 0,
+      elementsInheritingTokens: 2,
+      inheritedColors: 2,
+      adoptionScore: 0,
     });
   });
 
