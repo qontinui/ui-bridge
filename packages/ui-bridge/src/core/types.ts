@@ -3335,6 +3335,13 @@ export interface TokenAttribution {
   matchCount?: number;
   /** An inherited property whose value comes unchanged from the parent, from no token. */
   inherited?: true;
+  /**
+   * With `inherited`, where the value came from: `literal` (an ancestor
+   * declares it without `var()`), `initial` (no author declaration: the
+   * user-agent default), or `unknown` (an ancestor's `var()` could not be
+   * confirmed, or the walk stopped at its depth cap).
+   */
+  inheritedFrom?: 'literal' | 'initial' | 'unknown';
 }
 
 /** Per design property, its token attribution; a property with none is absent. */

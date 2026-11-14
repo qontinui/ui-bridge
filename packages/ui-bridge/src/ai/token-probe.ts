@@ -72,9 +72,15 @@ function relevantContext(property: string, value: string): readonly string[] {
   return [...fields];
 }
 
-/** Whether `property` sets the context field `field` itself (so it resolves against the parent's). */
+/**
+ * Whether a declaration of `property` resolves `field` against the PARENT's
+ * value: the field it sets itself (`em` in `font-size` is the parent's font
+ * size), and, for `font-size` and `font`, every font field (`ch`/`ex` in a
+ * font size are measured on the parent's font).
+ */
 function setsField(property: string, field: string): boolean {
   if (property === field) return true;
+  if (property === 'font-size') return field.startsWith('font');
   return property === 'font' && (field.startsWith('font') || field === 'line-height');
 }
 
@@ -107,7 +113,10 @@ export class TokenProbe {
       value,
       longhands.join(','),
       JSON.stringify(extra),
-      ...relevant.map((f) => (setsField(property, f) ? context.parent[f] : context.own[f]) ?? ''),
+      ...relevant.map(
+        (f) =>
+          (setsField(property, f) ? context.parent[f] : context.own[f] || context.parent[f]) ?? ''
+      ),
     ].join('\u0000');
     if (this.cache.has(key)) return this.cache.get(key) ?? null;
     let result: string[] | null = null;
@@ -116,9 +125,9 @@ export class TokenProbe {
       const { wrapper, probe } = fresh;
       for (const p of relevant) {
         if (context.parent[p]) wrapper.style.setProperty(p, context.parent[p], 'important');
-        // The element's own value; the declaration under test then replaces
-        // any of them it sets.
-        if (context.own[p]) probe.style.setProperty(p, context.own[p]);
+        // The element's own value, except for fields the declaration reads
+        // from the parent (those inherit from the wrapper).
+        if (context.own[p] && !setsField(property, p)) probe.style.setProperty(p, context.own[p]);
       }
       for (const [p, v] of Object.entries(extra)) probe.style.setProperty(p, v);
       // An invalid value is dropped, which would leave the context value set
