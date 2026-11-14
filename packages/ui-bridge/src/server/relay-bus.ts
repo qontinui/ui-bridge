@@ -234,9 +234,8 @@ function describeRelayBusError(error: unknown): string {
  * Credential spans are stripped from all three before the cut to 160 characters,
  * and so is every occurrence of `secrets` — the configured credentials: the URL's
  * username and password, and `redisOptions` `username`/`password` — so a server or
- * proxy reply that repeats a bare AUTH argument cannot carry it out. Secrets are
- * replaced longest first, so a credential that contains another is never left
- * half-printed.
+ * proxy reply that repeats a bare AUTH argument cannot carry it out. Overlapping
+ * and nested credentials are redacted as one merged span ({@link redactSpans}).
  */
 function renderRelayBusError(error: unknown, secrets: readonly string[] = []): string {
   let described: string;
@@ -245,11 +244,40 @@ function renderRelayBusError(error: unknown, secrets: readonly string[] = []): s
   } catch {
     described = 'unreadable error'; // a throwing getter must not turn a handled failure into a thrown one
   }
-  let rendered = described.replace(CREDENTIAL_SPAN, '$1');
-  for (const secret of [...secrets].sort((a, b) => b.length - a.length)) {
-    rendered = rendered.split(secret).join('[redacted]');
+  const rendered = described.replace(CREDENTIAL_SPAN, '$1');
+  return redactSpans(rendered, secrets).slice(0, LAST_ERROR_MAX_CHARS);
+}
+
+/**
+ * Replace every span of `text` that any secret occupies with one `[redacted]`.
+ * Matches are found in the ORIGINAL text and their ranges merged before anything
+ * is replaced, so two credentials that overlap (`abcX` beside `Xdef`), or one
+ * nested in another, never leave part of either printed — and a short secret can
+ * never match inside an earlier `[redacted]` marker.
+ */
+function redactSpans(text: string, secrets: readonly string[]): string {
+  const ranges: Array<[number, number]> = [];
+  for (const secret of secrets) {
+    if (secret === '') continue;
+    for (let at = text.indexOf(secret); at !== -1; at = text.indexOf(secret, at + 1)) {
+      ranges.push([at, at + secret.length]);
+    }
   }
-  return rendered.slice(0, LAST_ERROR_MAX_CHARS);
+  if (ranges.length === 0) return text;
+  ranges.sort((a, b) => a[0] - b[0]);
+  let out = '';
+  let cursor = 0;
+  let [start, end] = ranges[0];
+  for (const [s, e] of ranges.slice(1)) {
+    if (s <= end) {
+      end = Math.max(end, e);
+      continue;
+    }
+    out += text.slice(cursor, start) + '[redacted]';
+    cursor = end;
+    [start, end] = [s, e];
+  }
+  return out + text.slice(cursor, start) + '[redacted]' + text.slice(end);
 }
 
 /**
@@ -274,6 +302,9 @@ function urlSecrets(url: string): string[] {
   try {
     const parsed = new URL(url);
     const secrets: string[] = [];
+    // Usernames are redacted too, deliberately: a common one such as `default`
+    // then disappears from a diagnostic reply (`NOPERM User default ...`). That is
+    // over-redaction, the safe direction, and it matches the redisOptions path.
     for (const raw of [parsed.password, parsed.username]) {
       if (raw === '') continue;
       let decoded = raw;
