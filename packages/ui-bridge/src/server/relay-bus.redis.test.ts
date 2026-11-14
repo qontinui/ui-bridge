@@ -518,6 +518,49 @@ describe('RedisRelayBus — the review follow-ups', () => {
     }
   });
 
+  it('(7) never renders a password or username passed through redisOptions either', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const { createRedisRelayBus } = await loadRelayBus();
+      const fake = fakeRedis();
+      const bus = await createRedisRelayBus('redis://host:6379', {
+        Redis: fake.Redis,
+        redisOptions: { username: 'svc-user', password: 'opt-s3cr3t' },
+      });
+      if (!bus) throw new Error('expected a bus');
+
+      fake.clients[0].emit('error', new ReplyError('ERR auth svc-user opt-s3cr3t refused'));
+      expect(bus.readiness().lastError).toBe('ERR auth [redacted] [redacted] refused');
+      for (const call of warn.mock.calls) expect(String(call[0])).not.toContain('s3cr3t');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a duplicate() that throws leaves the publisher with an error listener before it quits', async () => {
+    const { createRedisRelayBus } = await loadRelayBus();
+    const fake = fakeRedis();
+    const original = fake.Redis;
+    let publisher: FakeClient | undefined;
+    const Throwing = function (this: unknown, url: string, options?: Record<string, unknown>) {
+      const client = new (original as unknown as new (u: string, o?: Record<string, unknown>) => FakeClient)(
+        url,
+        options
+      );
+      client.duplicate = () => {
+        throw new Error('duplicate refused');
+      };
+      publisher = client;
+      return client;
+    } as unknown as RedisConstructorLike;
+
+    await expect(createRedisRelayBus('redis://h:1', { Redis: Throwing })).rejects.toThrow('duplicate refused');
+    if (!publisher) throw new Error('expected a publisher');
+    // ioredis prints an "Unhandled error event" with the raw, host-bearing message when
+    // an 'error' fires with no listener; the bus must have attached one.
+    expect(publisher.emit('error', new Error('connect ECONNREFUSED secret-host:6379'))).toBeGreaterThan(0);
+  });
+
   it('a failed isTabKnown read is recorded in lastError and answers false', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {

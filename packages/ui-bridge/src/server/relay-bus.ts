@@ -247,6 +247,20 @@ function renderRelayBusError(error: unknown, secrets: readonly string[] = []): s
   return rendered.slice(0, LAST_ERROR_MAX_CHARS);
 }
 
+/**
+ * The credentials passed through `redisOptions` (`password`, `username`), for
+ * {@link renderRelayBusError}: ioredis sends them in AUTH exactly as it sends a
+ * URL's, so a server reply that repeats an AUTH argument can carry them too.
+ */
+function optionSecrets(redisOptions: Record<string, unknown> | undefined): string[] {
+  const secrets: string[] = [];
+  for (const key of ['password', 'username']) {
+    const value = redisOptions?.[key];
+    if (typeof value === 'string' && value !== '') secrets.push(value);
+  }
+  return secrets;
+}
+
 /** The password a `redis://` / `rediss://` URL carries, decoded and raw, for {@link renderRelayBusError}. */
 function urlSecrets(url: string): string[] {
   try {
@@ -356,12 +370,18 @@ export class RedisRelayBus implements RelayBus {
     try {
       sub = pub.duplicate();
     } catch (error) {
+      // The publisher is already dialling and its 'error' listener is attached only by
+      // the constructor, which never runs on this path: without one, ioredis prints an
+      // "Unhandled error event" carrying the raw, host-bearing message before quit lands.
+      pub.on('error', () => undefined);
       void Promise.resolve()
         .then(() => pub.quit())
         .catch(() => undefined); // never leave the publisher's socket open behind a refusal
       throw error;
     }
-    return new RedisRelayBus(pub, sub, urlSecrets(url));
+    return new RedisRelayBus(pub, sub, [
+      ...new Set([...urlSecrets(url), ...optionSecrets(options.redisOptions)]),
+    ]);
   }
 
   /**

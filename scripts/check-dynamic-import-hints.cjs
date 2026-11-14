@@ -53,6 +53,11 @@
 // headless peer reappears bare there; the wrapper's OWN dist, which is what a
 // consumer installs, is checked. Excluded packages are named in the tally.
 //
+// NOT CHECKED: a computed `require(x)`. webpack turns it into the same
+// expression context, but tsup emits a computed `import()` as `import()` in
+// both ESM and CJS output, and no package's source calls `require` with a
+// computed argument today. Extend this check before introducing one.
+//
 // A RUN THAT CHECKED NOTHING IS NOT A PASS. It exits 2 (UNKNOWN), never 0, when
 // it finds no dist file to read; when a workspace package that declares a
 // `build` script has no dist/ (a partial build would otherwise pass on whatever
