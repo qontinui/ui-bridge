@@ -444,6 +444,45 @@ describe('Next.js · GET /health is scoped per-user (§4.2 · U2 regression)', (
     expect((await getHealth('health', 'eve')).primaryTabId).toBeNull();
   });
 
+  it("/tabs, /tabs?detailed=true and /tabs/wait mark as primary the tab the caller's own command reaches, as /health does", async () => {
+    // Streams that answer getTabInfo, so the detailed listing does not wait
+    // out its per-tab probe. Each replaces its tab's stream, which resumes
+    // the tab, so the global primary stays bob's.
+    for (const tabId of ['tab-alice', 'tab-bob']) {
+      relay.subscribeToCommands(
+        (command) =>
+          relay.resolveCommand(command.commandId, { url: `https://app.local/${tabId}` }, tabId),
+        tabId
+      );
+    }
+    expect(relay.getTransportDiagnostics().primaryTabId).toBe('tab-bob');
+
+    /** `{tabId: isPrimary}` for each tab one listing returns. */
+    async function primaryFlags(
+      route: 'tabs' | 'tabs/wait',
+      userId?: string,
+      query?: string
+    ): Promise<Record<string, boolean>> {
+      const req = makeRequest('GET', `/${route}`, {
+        ...(userId ? { headers: { 'X-Caller-User-Id': userId } } : {}),
+        ...(query ? { query } : {}),
+      });
+      const res = await routes.GET(req, { params: { path: route.split('/') } });
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as {
+        data: { tabs: Array<{ tabId: string; isPrimary: boolean }> };
+      };
+      return Object.fromEntries(json.data.tabs.map((tab) => [tab.tabId, tab.isPrimary]));
+    }
+
+    expect(await primaryFlags('tabs', 'alice')).toEqual({ 'tab-alice': true });
+    expect(await primaryFlags('tabs', 'alice', 'detailed=true')).toEqual({ 'tab-alice': true });
+    expect(await primaryFlags('tabs/wait', 'alice')).toEqual({ 'tab-alice': true });
+    expect(await primaryFlags('tabs', 'bob')).toEqual({ 'tab-bob': true });
+    // The unscoped (admin) view still marks the global primary.
+    expect(await primaryFlags('tabs')).toEqual({ 'tab-alice': false, 'tab-bob': true });
+  });
+
   it('pendingCommandIds are withheld from a scoped view (POST /commands settles by id)', async () => {
     // In-flight command, never resolved — a pending entry exists.
     // `afterEach`'s destroy() rejects it with RelayDestroyedError; caught here.

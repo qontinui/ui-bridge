@@ -1024,11 +1024,16 @@ function handleRelayRoute(
         const diag = relay.getTransportDiagnostics();
         const visibleIds = callerUserId ? relay.listOwnedTabs(callerUserId) : diag.connectedTabs;
         if (visibleIds.length > 0) {
+          // A scoped caller's primary is the tab its own unpinned command
+          // reaches, as its `/health` reports, not the global primary.
+          const primaryTabId = callerUserId
+            ? relay.getTransportDiagnostics({ ownerCheck: { userId: callerUserId } }).primaryTabId
+            : diag.primaryTabId;
           const tabs = visibleIds.map((tabId) => ({
             tabId,
             ...(diag.tabMetadata[tabId] || {}),
             lastHeartbeat: diag.tabHeartbeats[tabId] ?? null,
-            isPrimary: tabId === diag.primaryTabId,
+            isPrimary: tabId === primaryTabId,
             isDemoted: diag.demotedTabs.includes(tabId),
           }));
           return jsonResponse({
@@ -1073,6 +1078,11 @@ function handleRelayRoute(
     const callerUserId =
       request.headers.get('x-caller-user-id') ?? request.headers.get('X-Caller-User-Id') ?? null;
     const diag = relay.getTransportDiagnostics();
+    // A scoped caller's primary is the tab its own unpinned command reaches,
+    // as its `/health` reports, not the global primary.
+    const primaryTabId = callerUserId
+      ? relay.getTransportDiagnostics({ ownerCheck: { userId: callerUserId } }).primaryTabId
+      : diag.primaryTabId;
     const ownedSet = callerUserId ? new Set(relay.listOwnedTabs(callerUserId)) : null;
     const baseIds = activeOnly ? diag.activeTabs : diag.connectedTabs;
     const tabIds = ownedSet ? baseIds.filter((id) => ownedSet.has(id)) : baseIds;
@@ -1090,7 +1100,7 @@ function handleRelayRoute(
           ...info,
           ...(diag.tabMetadata[info.tabId] || {}),
           lastHeartbeat: diag.tabHeartbeats[info.tabId] ?? null,
-          isPrimary: info.tabId === diag.primaryTabId,
+          isPrimary: info.tabId === primaryTabId,
           isDemoted: diag.demotedTabs.includes(info.tabId),
           isActive: activeSet.has(info.tabId),
         }));
@@ -1105,7 +1115,7 @@ function handleRelayRoute(
       tabId,
       ...(diag.tabMetadata[tabId] || {}),
       lastHeartbeat: diag.tabHeartbeats[tabId] ?? null,
-      isPrimary: tabId === diag.primaryTabId,
+      isPrimary: tabId === primaryTabId,
       isDemoted: diag.demotedTabs.includes(tabId),
       isActive: activeSet.has(tabId),
     }));

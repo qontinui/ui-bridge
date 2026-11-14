@@ -244,9 +244,10 @@ export interface CommandRelayOptions {
   /**
    * How long after a tab's last SSE listener was removed a new stream for the
    * same tab still RESUMES it rather than introducing a new tab. A resumed
-   * stream keeps the tab's standing (it does not take the primary) and is sent
-   * no warm-up snapshot; a stream that opens while the tab still holds one is
-   * a resume too. See `addCommandListener`.
+   * stream keeps the tab's standing (it does not take the primary) and, when
+   * its tab's warm-up was already answered, is sent no warm-up snapshot; a
+   * stream that opens while the tab still holds one is a resume too. See
+   * `addCommandListener`.
    *
    * Defaults to 5_000 ms. Override via `UI_BRIDGE_RECONNECT_GRACE_MS`, with
    * the precedence `tabActiveWindowMs` has.
@@ -255,9 +256,9 @@ export interface CommandRelayOptions {
   /**
    * Whether a newly connected tab is sent one `getControlSnapshot` of its own
    * shortly after it connects (default true). A stream that resumes a tab
-   * (see `reconnectGraceMs`) is not. Tests that count which tab each command
-   * reached turn it off, since that warm-up command lands at a time no
-   * request chose.
+   * (see `reconnectGraceMs`) whose warm-up was already answered is not. Tests
+   * that count which tab each command reached turn it off, since that warm-up
+   * command lands at a time no request chose.
    */
   proactiveSnapshot?: boolean;
   /**
@@ -432,6 +433,14 @@ export class CommandRelay {
    */
   private readonly listenerTombstones: Map<string, number>;
   /**
+   * Tabs whose SSE warm-up `getControlSnapshot` was answered with a snapshot.
+   * Only a resume of one of these skips its own warm-up, so a stream that
+   * ends or is replaced before its warm-up ran does not cost its tab the only
+   * one it would get. A mark lasts while its tab holds a listener or a
+   * tombstone (`cleanupStaleTabs`).
+   */
+  private readonly warmedUpTabs: Set<string>;
+  /**
    * Per-user tab-scoping registry. Tracks which authenticated user a tab
    * was registered under via the strict heartbeat protocol. A tab is
    * "registered" — and therefore addressable by authenticated dispatch —
@@ -552,6 +561,7 @@ export class CommandRelay {
     if (!g[key('TabMetadata')]) g[key('TabMetadata')] = new Map();
     if (!g[key('TabLastSuccess')]) g[key('TabLastSuccess')] = new Map();
     if (!g[key('ListenerTombstones')]) g[key('ListenerTombstones')] = new Map();
+    if (!g[key('WarmedUpTabs')]) g[key('WarmedUpTabs')] = new Set();
     if (!g[key('TabOwnership')]) g[key('TabOwnership')] = new Map();
     if (!g[key('BusDeliveries')]) g[key('BusDeliveries')] = new Map();
     if (!g[key('RelayTimers')]) g[key('RelayTimers')] = new Set();
@@ -577,6 +587,7 @@ export class CommandRelay {
     this.tabMetadata = g[key('TabMetadata')];
     this.tabLastSuccess = g[key('TabLastSuccess')];
     this.listenerTombstones = g[key('ListenerTombstones')];
+    this.warmedUpTabs = g[key('WarmedUpTabs')];
     this.tabOwnership = g[key('TabOwnership')];
     this.busDeliveries = g[key('BusDeliveries')];
     this.relayTimers = g[key('RelayTimers')];
@@ -812,12 +823,18 @@ export class CommandRelay {
 
   /**
    * Remove entries from tabHeartbeats and demotedTabs for tabs no longer
-   * connected, and listener tombstones too old to resume a tab.
+   * connected, listener tombstones too old to resume a tab, and the warm-up
+   * marks of tabs left with neither a listener nor a tombstone.
    */
   private cleanupStaleTabs(): void {
     const now = Date.now();
     for (const [tabId, removedAt] of this.listenerTombstones) {
       if (now - removedAt >= this.reconnectGraceMs) this.listenerTombstones.delete(tabId);
+    }
+    for (const tabId of this.warmedUpTabs) {
+      if (!this.tabListeners.has(tabId) && !this.listenerTombstones.has(tabId)) {
+        this.warmedUpTabs.delete(tabId);
+      }
     }
     for (const [tabId, lastBeat] of this.tabHeartbeats.entries()) {
       const hasListener = this.tabListeners.has(tabId);
@@ -1204,9 +1221,9 @@ export class CommandRelay {
 
     // Owner-scoped unscoped fanout: the caller's own tabs, best first under
     // `compareByLiveness` (a live tab before a stale one, then the most
-    // recently successful), with one failover to the next. Never touches
-    // another user's tabs. If the user has zero tabs, surface
-    // SDK_DISCONNECTED — the no-leak fallback.
+    // recently successful), with one failover to the best of the others at
+    // retry time. Never touches another user's tabs. If the user has zero
+    // tabs, surface SDK_DISCONNECTED — the no-leak fallback.
     if (ownerCheck) {
       const owned = this.rankOwnedTabs(ownerCheck.userId);
       if (owned.length === 0) {
@@ -1225,10 +1242,12 @@ export class CommandRelay {
       }).catch((firstError: Error) => {
         // A command settled by `destroy()` fails over to nothing.
         this.throwIfDestroyedSince(epoch);
-        if (owned.length <= 1) throw firstError;
-        // One automatic failover across the user's other tabs. Mirrors
-        // the global primary-tab failover behavior, bounded to this user.
-        const fallback = owned[1]!;
+        // One automatic failover across the user's other tabs, ranked again
+        // now: the first attempt can have waited out its whole timeout, and a
+        // tab the earlier ranking named may since have closed or gone stale.
+        // Mirrors the global primary-tab failover, bounded to this user.
+        const fallback = this.rankOwnedTabs(ownerCheck.userId).find((id) => id !== ownedPrimary);
+        if (!fallback) throw firstError;
         console.log(
           `[ui-bridge] Owned tab ${ownedPrimary} failed for ${action}, retrying on ${fallback}`
         );
@@ -2163,6 +2182,11 @@ export class CommandRelay {
           console.log(
             `[ui-bridge] Proactive snapshot captured: ${result.elements.length} elements`
           );
+          // Marked only while the tab is still known here: after `destroy()`,
+          // or once its tombstone is gone, there is nothing left to resume.
+          if (this.tabListeners.has(id) || this.listenerTombstones.has(id)) {
+            this.warmedUpTabs.add(id);
+          }
           return true;
         }
       } catch {
@@ -2172,17 +2196,20 @@ export class CommandRelay {
     };
 
     // Both warm-up timers are armed through `armTimer`, so `destroy()` clears
-    // them along with the listener they look for. A resumed stream is sent
-    // none: its tab was sent its own when it first connected.
-    const proactiveTimer = resumed
-      ? null
-      : this.armTimer(async () => {
-          if (!this.proactiveSnapshot) return;
-          const captured = await captureSnapshot();
-          if (!captured && isOwnStream()) {
-            retryTimer = this.armTimer(() => void captureSnapshot(), 1500);
-          }
-        }, 500);
+    // them along with the listener they look for. A stream that resumes a tab
+    // whose warm-up was already answered is sent none; any other stream is,
+    // including a resume whose predecessor ended or was replaced before its
+    // own warm-up ran.
+    const proactiveTimer =
+      resumed && this.warmedUpTabs.has(id)
+        ? null
+        : this.armTimer(async () => {
+            if (!this.proactiveSnapshot) return;
+            const captured = await captureSnapshot();
+            if (!captured && isOwnStream()) {
+              retryTimer = this.armTimer(() => void captureSnapshot(), 1500);
+            }
+          }, 500);
 
     const unsubscribe = () => {
       this.disarmTimer(proactiveTimer);
@@ -2783,6 +2810,7 @@ export class CommandRelay {
     }
     this.tabListeners.clear();
     this.listenerTombstones.clear();
+    this.warmedUpTabs.clear();
     this.commandQueue.length = 0;
     this.changeEventBuffer.length = 0;
     this.changeEventSubscribers.clear();

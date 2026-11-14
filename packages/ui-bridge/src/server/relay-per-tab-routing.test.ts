@@ -828,6 +828,18 @@ describe('relay · Phase 3 — selection prefers a live tab; a reopen keeps its 
     return { outcome };
   }
 
+  /**
+   * The relay's private per-tab standing state, for the tests that must see
+   * the sweep or `destroy()` forget it. A renamed field fails their
+   * `toBeInstanceOf` check instead of passing vacuously.
+   */
+  function relayState(relay: CommandRelay) {
+    return relay as unknown as {
+      listenerTombstones: Map<string, number>;
+      warmedUpTabs: Set<string>;
+    };
+  }
+
   it('1 · a primary whose heartbeats stop yields to a live tab once tabActiveWindowMs has passed', async () => {
     const relay = freshRelay();
     const { deliveries, open } = streamsOn(relay);
@@ -874,6 +886,36 @@ describe('relay · Phase 3 — selection prefers a live tab; a reopen keeps its 
     const second = await sendUnpinned(relay, 'u1');
     expect(deliveries).toEqual(['tab-a getElement', 'tab-a getElement', 'tab-b getElement']);
     await expect(second.outcome).resolves.toEqual({ answeredBy: 'tab-b' });
+  });
+
+  it('2b · the owner-scoped failover ranks the tabs again when it retries, after the first attempt timed out', async () => {
+    const relay = freshRelay();
+    const { deliveries, open } = streamsOn(relay);
+    open('tab-c');
+    const tabB = open('tab-b');
+    const tabA = open('tab-a');
+    register(relay, 'u1', 'tab-a', 'tab-b', 'tab-c');
+    // At 31 s A and B are live and C is stale. A answered last, so the
+    // ranking is A, B, C.
+    beat(relay, [31_000], 'tab-a', 'tab-b');
+    await expect(
+      relay.queueCommand('getElement', {}, { targetTabId: 'tab-a', ownerCheck: { userId: 'u1' } })
+    ).resolves.toEqual({ answeredBy: 'tab-a' });
+
+    // A dies; the owner's next command goes to it and waits out the SSE
+    // timeout (8 000 ms by default).
+    tabA.alive = false;
+    const sent = await sendUnpinned(relay, 'u1');
+    // During that wait B's stream ends and C beats again.
+    await vi.advanceTimersByTimeAsync(4_000);
+    tabB.close();
+    relay.receiveHeartbeat('tab-c');
+    await vi.advanceTimersByTimeAsync(4_000);
+
+    // The retry goes to C, not to B, which the ranking taken before the first
+    // attempt still named.
+    expect(deliveries).toEqual(['tab-a getElement', 'tab-a getElement', 'tab-c getElement']);
+    await expect(sent.outcome).resolves.toEqual({ answeredBy: 'tab-c' });
   });
 
   it('3 · a lone tab that has gone stale is still selected, by both arms (control)', async () => {
@@ -936,7 +978,7 @@ describe('relay · Phase 3 — selection prefers a live tab; a reopen keeps its 
     await expect(sent.outcome).resolves.toEqual({ answeredBy: 'tab-a' });
   });
 
-  it('5 · nor does one that reopens less than reconnectGraceMs after its old stream ended', () => {
+  it('5b · nor does one that reopens less than reconnectGraceMs after its old stream ended', () => {
     const relay = freshRelay();
     const { open } = streamsOn(relay);
     const oldB = open('tab-b');
@@ -1017,6 +1059,69 @@ describe('relay · Phase 3 — selection prefers a live tab; a reopen keeps its 
       await vi.advanceTimersByTimeAsync(2_000);
       expect(warmUps).toEqual(['tab-a stream 1']);
     });
+
+    it('is sent to a stream that reopens inside the grace when the old one ended before its own warm-up ran', async () => {
+      const relay = freshRelay({ proactiveSnapshot: true });
+      const warmUps: string[] = [];
+      const endFirst = snapshotStream(relay, 'tab-a', 'tab-a stream 1', warmUps);
+      await vi.advanceTimersByTimeAsync(200);
+      endFirst(); // before its 500 ms warm-up timer fired
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      snapshotStream(relay, 'tab-a', 'tab-a stream 2', warmUps);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(warmUps).toEqual(['tab-a stream 2']);
+    });
+
+    it('is sent to a stream that replaces one whose own warm-up had not run yet', async () => {
+      const relay = freshRelay({ proactiveSnapshot: true });
+      const warmUps: string[] = [];
+      snapshotStream(relay, 'tab-a', 'tab-a stream 1', warmUps);
+      await vi.advanceTimersByTimeAsync(200);
+      // Stream 1 is still registered; its 500 ms warm-up then finds it replaced.
+      snapshotStream(relay, 'tab-a', 'tab-a stream 2', warmUps);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(warmUps).toEqual(['tab-a stream 2']);
+    });
+
+    it("forgets a tab's warm-up once its tombstone ages out in the sweep, and on destroy()", async () => {
+      const relay = freshRelay({ proactiveSnapshot: true });
+      const { listenerTombstones, warmedUpTabs } = relayState(relay);
+      expect(warmedUpTabs).toBeInstanceOf(Set);
+      const endFirst = snapshotStream(relay, 'tab-a', 'tab-a stream 1', []);
+      snapshotStream(relay, 'tab-b', 'tab-b stream 1', []);
+      await vi.advanceTimersByTimeAsync(2_000); // both warm-ups answered
+      expect([...warmedUpTabs].sort()).toEqual(['tab-a', 'tab-b']);
+
+      // A's stream ends: its mark is kept through the grace, for a resume.
+      endFirst();
+      expect([...listenerTombstones.keys()]).toEqual(['tab-a']);
+      expect([...warmedUpTabs].sort()).toEqual(['tab-a', 'tab-b']);
+      // Past reconnectGraceMs (5 000 ms by default) and one sweep
+      // (pruneSweepIntervalMs, 10 000 ms by default).
+      await vi.advanceTimersByTimeAsync(5_000 + 10_000);
+      expect(listenerTombstones.size).toBe(0);
+      expect([...warmedUpTabs]).toEqual(['tab-b']);
+
+      relay.destroy();
+      expect(warmedUpTabs.size).toBe(0);
+    });
+  });
+
+  it('the cleanup sweep forgets listener tombstones once reconnectGraceMs has passed', async () => {
+    const relay = freshRelay();
+    const { listenerTombstones } = relayState(relay);
+    expect(listenerTombstones).toBeInstanceOf(Map);
+    // An anonymous stream gets a fresh id each time, so no reopen ever
+    // consumes its tombstone: only the sweep can forget it.
+    const closes = [0, 1, 2].map(() => relay.subscribeToCommands(() => {}));
+    for (const close of closes) close();
+    expect(listenerTombstones.size).toBe(3);
+
+    // Past reconnectGraceMs (5 000 ms by default) and one sweep
+    // (pruneSweepIntervalMs, 10 000 ms by default).
+    await vi.advanceTimersByTimeAsync(5_000 + 10_000);
+    expect(listenerTombstones.size).toBe(0);
   });
 
   it('8 · a primary that never beat here stops being live once its stream is older than the window', async () => {
