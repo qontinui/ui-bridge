@@ -60,7 +60,7 @@ import {
   graphFor,
   inlineNamesInScope,
   referencesAnyOf,
-  type MergedGraphMemo,
+  type GraphMemo,
   type RedactionGraph,
   varNames,
 } from './redaction-graph';
@@ -282,10 +282,10 @@ export interface TokenBatchState {
   /** Per element, whether a literal declaration of an inherited property won. */
   literal: Map<Element, Map<TokenAttributedProperty, LiteralOutcome>>;
   /**
-   * Redaction graphs merged in this batch (document + shadow roots). Only
-   * the merge is memoised: every root's graph is re-validated on each read.
+   * Redaction graphs of this batch: each root validated once per read pass
+   * (`beginReadPass` starts the next one), merges reused while current.
    */
-  mergedGraphs: MergedGraphMemo;
+  graphs: GraphMemo;
   /** Per element, which selectors it matches (literal lookup). */
   matches: Map<Element, Map<string, boolean>>;
   /** Per element, the custom properties set inline on it or an ancestor. */
@@ -916,7 +916,7 @@ export class TokenIndexBuilder {
         computed: new Map(),
         literal: new Map(),
         matches: new Map(),
-        mergedGraphs: [],
+        graphs: { roots: new Map(), merged: [] },
         scriptNames: new Map(),
         inherited: new Map(),
         scopeIds: new Map(),
@@ -934,12 +934,19 @@ export class TokenIndexBuilder {
 /**
  * The redaction graph for an element of this batch: its own document's (not
  * necessarily the indexed one), merged with any shadow root its flat-tree
- * ancestors live in. Every root is re-validated on each call, so a CSSOM edit
- * between two reads of one batch (a responsive capture's viewports) is seen;
- * only the merge is memoised per batch.
+ * ancestors live in. Each root is validated once per read pass.
  */
 export function redactionGraphFor(index: DesignTokenIndex, el: Element): RedactionGraph {
-  return graphFor(el, index.batch.mergedGraphs);
+  return graphFor(el, index.batch.graphs);
+}
+
+/**
+ * Start a new read pass of this batch (a responsive capture's next
+ * viewport): the next read re-validates every root's redaction graph, so a
+ * CSSOM edit since the last pass is seen.
+ */
+export function beginReadPass(index: DesignTokenIndex): void {
+  index.batch.graphs.roots.clear();
 }
 
 /** Release what a batch holds in the document (its probe). Safe to call more than once. */
