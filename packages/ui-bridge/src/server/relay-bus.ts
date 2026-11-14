@@ -85,12 +85,16 @@ export interface RelayBus {
   // --- Shared tab-presence registry (KV) ---------------------------------
   // Lets any instance answer "is this tab connected to SOME instance?" so the
   // per-tab routing guard doesn't reject a command for a tab held elsewhere.
+  // Presence is PER HOLDER: during a stream rotation two instances can hold
+  // the same tab, and one letting go must not erase the other's hold (plan
+  // 2026-11-09-a-dead-relay-tab-stays-the-operators-primary-and-a-command-sent-during-a-stream-reopen-is-lost,
+  // D2).
 
-  /** Mark `tabId` present (refreshes a TTL). Called by the instance holding it. */
+  /** Mark THIS instance as holding `tabId` for `ttlSeconds` (a refresh extends it). */
   registerTab(tabId: string, ttlSeconds: number): void;
-  /** Remove `tabId` from the shared registry (on disconnect). */
+  /** Withdraw THIS instance's hold on `tabId`; another instance's hold stands. */
   unregisterTab(tabId: string): void;
-  /** True if `tabId` is present in the shared registry (any instance). */
+  /** True if any instance holds `tabId` unexpired. */
   isTabKnown(tabId: string): Promise<boolean>;
 
   /** Release underlying connections. */
@@ -111,15 +115,35 @@ interface RedisLike {
   subscribe(...channels: string[]): unknown;
   unsubscribe(...channels: string[]): unknown;
   on(event: 'message', cb: (channel: string, message: string) => void): unknown;
-  /** SET key value with EX ttl (used: `set(key, '1', 'EX', ttl)`). */
-  set(key: string, value: string, mode: string, ttlSeconds: number): Promise<unknown>;
-  del(key: string): Promise<unknown>;
-  exists(key: string): Promise<number>;
+  /** ZADD key score member. */
+  zadd(key: string, score: number, member: string): Promise<unknown>;
+  /** ZREM key member. */
+  zrem(key: string, member: string): Promise<unknown>;
+  /** ZREMRANGEBYSCORE key min max (`-inf`, `+inf` and `(n` bounds included). */
+  zremrangebyscore(key: string, min: number | string, max: number | string): Promise<unknown>;
+  /** ZCOUNT key min max. */
+  zcount(key: string, min: number | string, max: number | string): Promise<number>;
+  /** PEXPIRE key milliseconds. */
+  pexpire(key: string, milliseconds: number): Promise<unknown>;
   quit(): Promise<unknown>;
   duplicate(): RedisLike;
 }
 
-const TAB_PRESENCE_PREFIX = 'uibridge:tab:';
+/**
+ * Each instance holding a tab is one member of `uibridge:tab-holders:<tabId>`,
+ * a sorted set scored by when that hold expires (ms since the epoch). An
+ * instance adds and removes only its own member, so a dead stream's slot
+ * letting go of a tab never erases the hold of the instance its replacement
+ * landed on. A key of its own, not the older `uibridge:tab:<tabId>` string: an
+ * instance still running the older version SETs and DELs that key, which would
+ * overwrite this set, or turn every ZADD into a WRONGTYPE error, mid-deploy.
+ */
+const TAB_HOLDERS_PREFIX = 'uibridge:tab-holders:';
+
+/** Send a write without awaiting it, and without leaving its rejection unhandled. */
+function fireAndForget(write: Promise<unknown>): void {
+  write.catch(() => undefined);
+}
 
 /**
  * Redis (ioredis) pub/sub implementation of {@link RelayBus}.
@@ -135,6 +159,8 @@ export class RedisRelayBus implements RelayBus {
   private readonly sub: RedisLike;
   /** channel -> set of handlers (untyped envelope; narrowed per channel kind). */
   private readonly handlers = new Map<string, Set<(env: never) => void>>();
+  /** This instance's member in a tab's holder set (see {@link TAB_HOLDERS_PREFIX}). */
+  private readonly holderId = crypto.randomUUID();
 
   private constructor(pub: RedisLike, sub: RedisLike) {
     this.pub = pub;
@@ -219,16 +245,25 @@ export class RedisRelayBus implements RelayBus {
   }
 
   registerTab(tabId: string, ttlSeconds: number): void {
-    void this.pub.set(`${TAB_PRESENCE_PREFIX}${tabId}`, '1', 'EX', Math.max(1, ttlSeconds));
+    const key = `${TAB_HOLDERS_PREFIX}${tabId}`;
+    const ttlMs = Math.max(1, ttlSeconds) * 1000;
+    const now = Date.now();
+    fireAndForget(this.pub.zadd(key, now + ttlMs, this.holderId));
+    // A holder that lapsed without letting go (its instance was killed) is
+    // dropped here, and a key whose every holder lapsed expires with them.
+    // Every instance refreshes with the same TTL, so the key's expiry never
+    // cuts a later-expiring holder short.
+    fireAndForget(this.pub.zremrangebyscore(key, '-inf', now));
+    fireAndForget(this.pub.pexpire(key, ttlMs));
   }
 
   unregisterTab(tabId: string): void {
-    void this.pub.del(`${TAB_PRESENCE_PREFIX}${tabId}`);
+    fireAndForget(this.pub.zrem(`${TAB_HOLDERS_PREFIX}${tabId}`, this.holderId));
   }
 
   async isTabKnown(tabId: string): Promise<boolean> {
     try {
-      return (await this.pub.exists(`${TAB_PRESENCE_PREFIX}${tabId}`)) > 0;
+      return (await this.pub.zcount(`${TAB_HOLDERS_PREFIX}${tabId}`, `(${Date.now()}`, '+inf')) > 0;
     } catch {
       return false;
     }
@@ -245,7 +280,9 @@ export class RedisRelayBus implements RelayBus {
  * (the in-memory single-process default). Returns a promise because the ioredis
  * import is dynamic.
  */
-export async function createRedisRelayBus(url: string | undefined | null): Promise<RelayBus | null> {
+export async function createRedisRelayBus(
+  url: string | undefined | null
+): Promise<RelayBus | null> {
   if (!url || !url.trim()) return null;
   return RedisRelayBus.create(url.trim());
 }

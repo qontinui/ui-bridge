@@ -35,8 +35,14 @@
  * nothing from command-relay.ts: `CommandRelay` passes its own maps.
  */
 export interface LivenessSources {
-  /** SSE command-stream listeners by tab id, each with the time it registered. */
-  readonly listeners: ReadonlyMap<string, { readonly openedAt: number }>;
+  /**
+   * SSE command-stream listeners by tab id, each with the time it registered.
+   * A `dead` one (stream-slot.ts) is no open transport: its stream ended.
+   */
+  readonly listeners: ReadonlyMap<
+    string,
+    { readonly openedAt: number; readonly state?: 'open' | 'dead' }
+  >;
   /** WebSocket clients by tab id. Only a connected one is an open transport. */
   readonly wsClients: ReadonlyMap<
     string,
@@ -84,7 +90,7 @@ export function takeFreshnessSnapshot(
     if (tabs.has(tabId)) continue;
     const openTimes: number[] = [];
     const listener = sources.listeners.get(tabId);
-    if (listener) openTimes.push(listener.openedAt);
+    if (listener && listener.state !== 'dead') openTimes.push(listener.openedAt);
     const ws = sources.wsClients.get(tabId);
     if (ws?.client.isConnected()) openTimes.push(ws.connectedAt);
     const lastBeatAt = sources.heartbeats.get(tabId);
