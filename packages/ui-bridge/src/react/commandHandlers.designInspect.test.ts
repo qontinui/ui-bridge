@@ -472,13 +472,14 @@ describe('design-inspection routes · the browser path answers the full model', 
     expect(report.results).toEqual([expect.objectContaining({ elementId: 'save', passed: false })]);
     // Counted, not listed a second time.
     expect(report.summary).toEqual({ errors: 1, warnings: 0, info: 0 });
-    expect(report).toMatchObject({ limit: 250, maxResults: 1000, resultsTruncated: false });
+    expect(report).toMatchObject({ limit: 2000, maxResults: 1000, resultsTruncated: false });
   });
 
   it('runDesignAudit with no limit reports the default bound in both modes', async () => {
     for (const guide of [GUIDE, undefined]) {
       const report = await browser<DesignAuditResponse>('runDesignAudit', { guide });
-      expect(report).toMatchObject({ limit: 250, truncated: false });
+      // The audit returns findings, not design data: its default covers a whole page.
+      expect(report).toMatchObject({ limit: 2000, truncated: false });
     }
   });
 

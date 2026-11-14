@@ -24,6 +24,9 @@ import {
   disposeTokenIndex,
   noReportedTokens,
   scrubScriptValue,
+  inlineNamesInScope,
+  recordCustomRefs,
+  referencesAnyOf,
   referencesOf,
   reportedTokensOf,
   tokenMatchesOf,
@@ -671,7 +674,7 @@ export function indexCustomProperties(
     const matched = match(selector);
     if (!matched) continue;
     const elements = [...matched];
-    tokens.addRule(declaredHere, refs, elements, selector);
+    tokens.addRule(declaredHere, refs, elements, selector, rule.style);
     if (topLevel && declaredHere.length > 0) {
       for (const el of elements) if (inScope(el)) appendTo(declared, el, declaredHere);
     }
@@ -715,16 +718,25 @@ export function getCSSCustomProperties(
   }
 
   // 2. Custom properties declared by the stylesheet rules matching this element
-  const declared =
-    index !== undefined && indexCovers(index, el)
-      ? (index.declared.get(el) ?? [])
-      : matchedCustomProperties(el);
+  let refs: ReadonlyMap<string, ReadonlySet<string>>;
+  let declared: readonly string[];
+  if (index !== undefined && indexCovers(index, el)) {
+    refs = index.tokens.customRefs;
+    declared = index.declared.get(el) ?? [];
+  } else {
+    const matched = new Map<string, Set<string>>();
+    declared = matchedCustomProperties(el, matched);
+    refs = matched;
+  }
+  const scriptNames = declared.length > 0 ? inlineNamesInScope(el) : new Set<string>();
   for (const prop of declared) {
     // An inline declaration of the same name is the value in effect (and was
     // scrubbed as an inline value above): a rule must not re-read it raw.
     if (el.style.getPropertyValue(prop) !== '') continue;
-    // Use getComputedStyle for resolved value
-    result[prop] = read(prop);
+    // A rule value built with var() from a custom property set inline here or
+    // on an ancestor (`--title: var(--user-name)`) carries the script value.
+    const value = read(prop);
+    result[prop] = referencesAnyOf(prop, refs, scriptNames) ? scrubScriptValue(value) : value;
   }
 
   return result;
@@ -739,7 +751,7 @@ function indexCovers(index: CustomPropertyIndex, el: Element): boolean {
 }
 
 /** The custom properties declared by the top-level style rules `el` matches, one rule at a time. */
-function matchedCustomProperties(el: HTMLElement): string[] {
+function matchedCustomProperties(el: HTMLElement, refs: Map<string, Set<string>>): string[] {
   const names: string[] = [];
   for (const { rule, selector } of topLevelStyleRules(document)) {
     try {
@@ -748,7 +760,9 @@ function matchedCustomProperties(el: HTMLElement): string[] {
       // Invalid selector — skip
       continue;
     }
-    names.push(...declaredCustomProperties(rule));
+    const declaredHere = declaredCustomProperties(rule);
+    recordCustomRefs(rule.style, declaredHere, refs);
+    names.push(...declaredHere);
   }
   return names;
 }
