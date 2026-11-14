@@ -1437,30 +1437,24 @@ const COLOR_PROPERTIES = ['color', 'backgroundColor'] as const;
 /** Colour values that are not a colour choice: nothing painted, or not resolved. */
 const NON_COLOR_VALUES = new Set(['', 'transparent', 'rgba(0, 0, 0, 0)', 'inherit', 'initial']);
 
-/** Whether an element's design property relates to a token (`ElementDesignData.tokenMatches`). */
-function tokenBacked(el: ElementDesignData, prop: keyof ElementDesignData['styles']): boolean {
-  const attribution = el.tokenMatches?.[prop];
-  return Boolean(attribution?.derived?.length || attribution?.matches?.length);
-}
-
 /**
  * How consistently the page uses its design tokens (CSS custom properties).
  *
  * Read from `tokenMatches` when the design data carries it (every design
- * route's does; see `ai/design-tokens.ts`):
+ * route's does; see `ai/design-tokens.ts`). Only `derived` — the source writes
+ * the property with `var()` and that declaration is in effect, directly or
+ * inherited — is token USE; a value that merely equals a token (`matches`)
+ * agrees with the token system without showing it is used:
  *
- * - **Adoption** (50%): elements whose design properties relate to a token, or
- *   that declare custom properties of their own.
- * - **Consistency** (30%): a custom property an element re-declares resolves
- *   to one value across the page.
- * - **Hardcoded colour avoidance** (20%): of the colour properties that paint
- *   something (`color`, `backgroundColor`; transparent is not a colour
- *   choice), the share that relate to a token — `derived` (the source writes
- *   `var()`) or `matches` (the value equals a token's). A colour written
- *   `var(--x)` whose value an engine did not resolve still counts, by its
- *   `derived` reference. `matches` can be coincidence, so a page of literal
- *   colours that happen to equal its tokens also reads as token-backed: this
- *   measures agreement with the token system, not authorship.
+ * - **Adoption** (50%): elements with at least one `derived` property, font
+ *   weight excluded (a weight equal to the token for 400 says little).
+ * - **Consistency** (30%): a custom property elements re-declare resolves to
+ *   one value across them (`redeclaredVars`, `inconsistentVars`).
+ * - **Hardcoded colour avoidance** (20%): of the colour properties chosen on
+ *   each element (`color`, `backgroundColor`; transparent and colours
+ *   inherited unchanged from the parent are not choices), `derived` ones count
+ *   fully, `matches`-only ones half, and the rest — including an `overridden`
+ *   `var()` — are hardcoded.
  *
  * Design data without `tokenMatches` (read without a stylesheet index) falls
  * back to the element's own custom properties, as before.
@@ -1470,14 +1464,15 @@ export const customPropertyConsistency: MetricFunction = (elements) => {
   const attributed = elements.some((el) => el.tokenMatches !== undefined);
 
   const usesTokens = (el: ElementDesignData): boolean =>
-    (el.customProperties !== undefined && Object.keys(el.customProperties).length > 0) ||
-    Object.values(el.tokenMatches ?? {}).some(
-      (a) => Boolean(a?.derived?.length) || Boolean(a?.matches?.length)
-    );
-  const elementsWithVars = elements.filter(usesTokens);
+    attributed
+      ? Object.entries(el.tokenMatches ?? {}).some(
+          ([prop, a]) => prop !== 'fontWeight' && Boolean(a?.derived?.length)
+        )
+      : el.customProperties !== undefined && Object.keys(el.customProperties).length > 0;
+  const elementsUsingTokens = elements.filter(usesTokens);
 
-  // 1. Adoption rate (50% weight) — what % of elements use design tokens
-  const adoptionRate = elements.length > 0 ? elementsWithVars.length / elements.length : 0;
+  // 1. Adoption rate (50% weight)
+  const adoptionRate = elements.length > 0 ? elementsUsingTokens.length / elements.length : 0;
   const adoptionScore = Math.min(adoptionRate * 200, 100); // 50%+ adoption → 100
 
   if (adoptionRate < 0.1 && elements.length > 5) {
@@ -1488,7 +1483,7 @@ export const customPropertyConsistency: MetricFunction = (elements) => {
     });
   }
 
-  // 2. Consistency (30% weight) — same variable resolves to same value everywhere
+  // 2. Consistency (30% weight) — a re-declared variable resolves to one value
   const varValues = new Map<string, Set<string>>();
   for (const el of elements) {
     for (const [prop, val] of Object.entries(el.customProperties ?? {})) {
@@ -1496,9 +1491,9 @@ export const customPropertyConsistency: MetricFunction = (elements) => {
       varValues.get(prop)!.add(val);
     }
   }
-  const totalVars = varValues.size;
+  const redeclaredVars = varValues.size;
   const inconsistentVars = [...varValues.entries()].filter(([, vals]) => vals.size > 1);
-  const consistencyRate = totalVars > 0 ? 1 - inconsistentVars.length / totalVars : 1;
+  const consistencyRate = redeclaredVars > 0 ? 1 - inconsistentVars.length / redeclaredVars : 1;
   const consistencyScore = consistencyRate * 100;
 
   if (inconsistentVars.length > 0) {
@@ -1510,23 +1505,28 @@ export const customPropertyConsistency: MetricFunction = (elements) => {
     });
   }
 
-  // 3. Hardcoded color avoidance (20% weight) — painted colours not backed by a token
+  // 3. Hardcoded color avoidance (20% weight)
   let totalColorProps = 0;
+  let tokenDerivedColors = 0;
+  let valueMatchedColors = 0;
   let hardcodedColors = 0;
-  let tokenBackedColors = 0;
   for (const el of elements) {
     const customVals = new Set(Object.values(el.customProperties ?? {}));
     for (const prop of COLOR_PROPERTIES) {
       const val = el.styles[prop] ?? '';
-      const backed = attributed ? tokenBacked(el, prop) : customVals.has(val);
+      const attribution = el.tokenMatches?.[prop];
+      const derived = attributed ? Boolean(attribution?.derived?.length) : customVals.has(val);
       // A declared var() counts even when the engine left the value unresolved.
-      if (NON_COLOR_VALUES.has(val.trim()) && !backed) continue;
+      if (NON_COLOR_VALUES.has(val.trim()) && !derived) continue;
+      if (attribution?.inherited) continue;
       totalColorProps++;
-      if (backed) tokenBackedColors++;
+      if (derived) tokenDerivedColors++;
+      else if (attribution?.matches?.length) valueMatchedColors++;
       else hardcodedColors++;
     }
   }
-  const avoidanceRate = totalColorProps > 0 ? 1 - hardcodedColors / totalColorProps : 1;
+  const avoidanceRate =
+    totalColorProps > 0 ? (tokenDerivedColors + 0.5 * valueMatchedColors) / totalColorProps : 1;
   const avoidanceScore = avoidanceRate * 100;
 
   if (hardcodedColors > 5) {
@@ -1547,12 +1547,13 @@ export const customPropertyConsistency: MetricFunction = (elements) => {
     findings,
     {
       totalElements: elements.length,
-      elementsWithVars: elementsWithVars.length,
+      elementsUsingTokens: elementsUsingTokens.length,
       adoptionRate: Math.round(adoptionRate * 100),
-      totalVars,
+      redeclaredVars,
       inconsistentVars: inconsistentVars.length,
       totalColorProps,
-      tokenBackedColors,
+      tokenDerivedColors,
+      valueMatchedColors,
       hardcodedColors,
       tokenAttribution: attributed,
     }
