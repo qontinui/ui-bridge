@@ -3301,6 +3301,53 @@ export interface PseudoElementStyles {
 }
 
 /**
+ * How one design property value relates to the page's design tokens (CSS
+ * custom properties). See `ai/design-tokens.ts` for the full rules.
+ */
+export interface TokenAttribution {
+  /**
+   * Tokens a declaration that applies to the element references with `var()`
+   * for this property, and whose resolved value the computed value equals (the
+   * declaration won the cascade).
+   */
+  derived?: string[];
+  /** `derived` through an ancestor's declaration of this inherited property. */
+  via?: 'inherited';
+  /** `derived` through `calc()`, another function, or a multi-value shorthand. */
+  expression?: true;
+  /**
+   * Tokens such declarations reference when none of them computes to the
+   * element's value (and they are comparable): they lost the cascade.
+   */
+  overridden?: string[];
+  /**
+   * Tokens such declarations reference when none could be compared with the
+   * element's value (a percentage without layout, a token that does not
+   * resolve). Neither derived nor overridden.
+   */
+  unverified?: string[];
+  /**
+   * Tokens of a compatible family whose root value equals this computed value
+   * (at most 8). Can be coincidence.
+   */
+  matches?: string[];
+  /** How many tokens matched, when more than `matches` lists. */
+  matchCount?: number;
+  /** An inherited property whose value comes unchanged from the parent, from no token. */
+  inherited?: true;
+  /**
+   * With `inherited`, where the value came from: `literal` (an ancestor
+   * declares it without `var()`), `initial` (no author declaration: the
+   * user-agent default), or `unknown` (an ancestor's `var()` could not be
+   * confirmed, or the walk stopped at its depth cap).
+   */
+  inheritedFrom?: 'literal' | 'initial' | 'unknown';
+}
+
+/** Per design property, its token attribution; a property with none is absent. */
+export type TokenMatches = Partial<Record<keyof ExtendedComputedStyles, TokenAttribution>>;
+
+/**
  * Full design data for a single element
  */
 export interface ElementDesignData {
@@ -3310,7 +3357,28 @@ export interface ElementDesignData {
   styles: ExtendedComputedStyles;
   stateVariations?: StateStyles[];
   pseudoElements?: PseudoElementStyles[];
+  /**
+   * Custom properties the element itself declares (by rule or inline). Tokens
+   * from the root and from ancestor scopes are reported once per response
+   * (`tokens`, `scopes`), not repeated per element.
+   */
   customProperties?: Record<string, string>;
+  /**
+   * Token attribution of the element's design properties, present when the
+   * element was read with a stylesheet index (every design route does). An
+   * empty object means no property relates to a token.
+   */
+  tokenMatches?: TokenMatches;
+  /**
+   * The token scopes (ancestors that re-declare tokens) the element sits in,
+   * outermost first; ids into the response's `scopes`.
+   */
+  tokenScopes?: string[];
+  /**
+   * `uncovered` when the element is outside the indexed document (a shadow
+   * tree, or detached), so its tokens were not analysed.
+   */
+  tokenAnalysis?: 'uncovered';
   className?: string;
   classes?: string[];
   rect: {

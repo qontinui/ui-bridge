@@ -89,11 +89,18 @@ import type {
 } from '../ai';
 import type {
   InteractionStateName,
-  ElementDesignData,
   StateStyles,
-  ResponsiveSnapshot,
 } from '../core/types';
-import type { StyleGuideConfig, StyleAuditReport } from '../specs/style-types';
+import type { StyleGuideConfig } from '../specs/style-types';
+import type {
+  DesignAuditRequest,
+  DesignAuditResponse,
+  DesignSnapshotRequest,
+  ElementStylesResponse,
+  DesignSnapshotResponse,
+  ResponsiveSnapshotsRequest,
+  ResponsiveSnapshotsResponse,
+} from '../specs/design-request';
 import type {
   QualityEvaluationReport,
   SnapshotDiffReport,
@@ -1206,28 +1213,23 @@ export interface UIBridgeServerHandlers {
   getElementStyles: (
     id: string,
     context?: HandlerContext
-  ) => Promise<APIResponse<ElementDesignData>>;
+  ) => Promise<APIResponse<ElementStylesResponse>>;
   getElementStateStyles: (
     id: string,
     request: { states?: InteractionStateName[] },
     context?: HandlerContext
   ) => Promise<APIResponse<{ elementId: string; stateStyles: StateStyles[] }>>;
   getDesignSnapshot: (
-    request?: {
-      elementIds?: string[];
-      includePseudoElements?: boolean;
-    },
+    request?: DesignSnapshotRequest,
     context?: HandlerContext
-  ) => Promise<APIResponse<{ elements: ElementDesignData[]; timestamp: number }>>;
+  ) => Promise<APIResponse<DesignSnapshotResponse>>;
   getResponsiveSnapshots: (
-    request: {
-      viewports?: Record<string, number>;
-      elementIds?: string[];
-    },
+    request: ResponsiveSnapshotsRequest,
     context?: HandlerContext
-  ) => Promise<APIResponse<ResponsiveSnapshot[]>>;
+  ) => Promise<APIResponse<ResponsiveSnapshotsResponse>>;
   setViewportConstraints: (
-    request: { width?: number; restore?: boolean },
+    /** `budgetMs`: how long to wait for the root-width lock (see `core/root-width-lock`). */
+    request: { width?: number; restore?: boolean; budgetMs?: number },
     context?: HandlerContext
   ) => Promise<
     APIResponse<{
@@ -1238,12 +1240,9 @@ export interface UIBridgeServerHandlers {
     }>
   >;
   runDesignAudit: (
-    request?: {
-      guide?: StyleGuideConfig;
-      elementIds?: string[];
-    },
+    request?: DesignAuditRequest,
     context?: HandlerContext
-  ) => Promise<APIResponse<StyleAuditReport>>;
+  ) => Promise<APIResponse<DesignAuditResponse>>;
   loadStyleGuide: (
     request: {
       guide: StyleGuideConfig;

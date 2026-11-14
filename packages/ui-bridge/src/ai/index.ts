@@ -394,8 +394,13 @@ export {
   computeContrastRatio,
   checkContrastCompliance,
   DEFAULT_VIEWPORTS,
+  RESPONSIVE_SNAPSHOT_METHOD,
 } from './design-inspector';
-export type { CustomPropertyIndex, DesignRegistryLike } from './design-inspector';
+export type {
+  CustomPropertyIndex,
+  DesignRegistryLike,
+  ResponsiveCapture,
+} from './design-inspector';
 
 // Form Diff Tracking
 export { captureFormSnapshot, diffFormSnapshots, summarizeFormDiff } from './form-diff';

@@ -646,7 +646,7 @@ describe('captureResponsiveSnapshots', () => {
 
     const registry = createMockRegistry([{ id: 'el-1', element: el, type: 'container' }]);
 
-    const snapshots = await captureResponsiveSnapshots(registry, {
+    const { snapshots } = await captureResponsiveSnapshots(registry, {
       mobile: 375,
       desktop: 1280,
     });
@@ -666,7 +666,7 @@ describe('captureResponsiveSnapshots', () => {
 
     const registry = createMockRegistry([{ id: 'el-1', element: el, type: 'container' }]);
 
-    const snapshots = await captureResponsiveSnapshots(registry, [375, 768, 1280]);
+    const { snapshots } = await captureResponsiveSnapshots(registry, [375, 768, 1280]);
 
     expect(snapshots).toHaveLength(3);
     expect(snapshots[0].viewportWidth).toBe(375);
@@ -690,7 +690,7 @@ describe('captureResponsiveSnapshots', () => {
       { id: 'text', element: el2, type: 'text' },
     ]);
 
-    const snapshots = await captureResponsiveSnapshots(registry, { mobile: 375 });
+    const { snapshots } = await captureResponsiveSnapshots(registry, { mobile: 375 });
 
     expect(snapshots).toHaveLength(1);
     expect(snapshots[0].elements).toHaveLength(2);
@@ -706,7 +706,7 @@ describe('captureResponsiveSnapshots', () => {
   it('should include a timestamp in each snapshot', async () => {
     const registry = createMockRegistry([]);
     const before = Date.now();
-    const snapshots = await captureResponsiveSnapshots(registry, { mobile: 375 });
+    const { snapshots } = await captureResponsiveSnapshots(registry, { mobile: 375 });
     const after = Date.now();
 
     expect(snapshots[0].timestamp).toBeGreaterThanOrEqual(before);
@@ -743,7 +743,7 @@ describe('captureResponsiveSnapshots', () => {
 
   it('should handle empty registry', async () => {
     const registry = createMockRegistry([]);
-    const snapshots = await captureResponsiveSnapshots(registry, { mobile: 375 });
+    const { snapshots } = await captureResponsiveSnapshots(registry, { mobile: 375 });
 
     expect(snapshots).toHaveLength(1);
     expect(snapshots[0].elements).toHaveLength(0);
@@ -755,7 +755,7 @@ describe('captureResponsiveSnapshots', () => {
 
     const registry = createMockRegistry([{ id: 'el-1', element: el, type: 'box' }]);
 
-    const snapshots = await captureResponsiveSnapshots(registry, { mobile: 375 });
+    const { snapshots } = await captureResponsiveSnapshots(registry, { mobile: 375 });
     const elementData = snapshots[0].elements[0];
 
     expect(elementData.rect).toBeDefined();

@@ -17,7 +17,29 @@ import type {
   ResponsiveSnapshot,
 } from '../core/types';
 import { classString } from '../core/class-name';
-import { scrubContent } from '../core/redaction';
+import { REDACTED_VALUE, scrubContent, scrubContentRequired, verdictOf } from '../core/redaction';
+import { withRootWidthLock } from '../core/root-width-lock';
+import {
+  TokenIndexBuilder,
+  disposeTokenIndex,
+  beginReadPass,
+  redactionGraphFor,
+  noReportedTokens,
+  scrubScriptValue,
+  referencesOf,
+  reportedTokensOf,
+  tokenMatchesOf,
+  tokenScopesOf,
+  type DesignTokenIndex,
+  type ReportedTokens,
+} from './design-tokens';
+import { styleRules, type StyleBlock, type WalkedRule } from './stylesheet-walk';
+import {
+  graphFor,
+  inlineNamesInScope,
+  referencesAnyOf,
+  type RedactionGraph,
+} from './redaction-graph';
 import {
   forcePseudoState,
   reapplyIfIdle,
@@ -128,16 +150,48 @@ export const DEFAULT_VIEWPORTS: Record<string, number> = {
 export function getExtendedComputedStyles(el: HTMLElement): ExtendedComputedStyles {
   const computed = window.getComputedStyle(el);
   const styles = {} as ExtendedComputedStyles;
+  const redacted = verdictOf(el).content;
 
   for (const prop of DESIGN_PROPERTIES) {
     // CSSStyleDeclaration uses camelCase property access
-    styles[prop] =
+    const value =
       computed.getPropertyValue(camelToKebab(prop)) ||
       (computed as unknown as Record<string, string>)[prop] ||
       '';
+    styles[prop] = redacted ? scrubStyleUrls(value) : value;
   }
 
   return styles;
+}
+
+/**
+ * §4.6 CONTENT axis for computed style values: every `url(…)` reference of a
+ * content-redacted element becomes `url("[REDACTED]")`.
+ *
+ * A URL names the resource the element shows — an avatar keyed by a user, a
+ * document preview, a signed URL whose query carries a bearer token — which is
+ * content, not design. Scrubbing only the query would still leak the path. The
+ * rest of the value (gradient layers, `cursor` keyword fallbacks) is design
+ * data and stays, so a redacted element still reports THAT it has a
+ * background image and how it is layered. Values without `url(` are
+ * untouched. Elements outside a redaction boundary keep their URLs, as every
+ * other projection keeps their content.
+ */
+export function scrubStyleUrls(value: string): string {
+  const lower = value.toLowerCase();
+  let scrubbed = value;
+  if (lower.includes('url(')) {
+    scrubbed = scrubbed.replace(
+      /url\(\s*(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^)]*)\s*\)/gi,
+      `url("${REDACTED_VALUE}")`
+    );
+  }
+  // `image-set("a.png" 1x, …)` / `-webkit-image-set(…)` name images with bare
+  // quoted strings as well as `url(…)`.
+  if (lower.includes('image-set(')) {
+    scrubbed = scrubbed.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, `"${REDACTED_VALUE}"`);
+  }
+  return scrubbed;
 }
 
 /**
@@ -156,6 +210,8 @@ export function getElementDesignData(
     label?: string;
     type?: string;
     customProperties?: CustomPropertyIndex | false;
+    /** Attribute design properties to tokens (default `true` with an index). */
+    attributeTokens?: boolean;
   }
 ): ElementDesignData {
   const rect = el.getBoundingClientRect();
@@ -171,8 +227,15 @@ export function getElementDesignData(
     }
   }
 
-  const customProperties =
-    opts?.customProperties === false ? {} : getCSSCustomProperties(el, opts?.customProperties);
+  const index = opts?.customProperties;
+  const customProperties = index === false ? {} : getCSSCustomProperties(el, index);
+  // With a batch index, the element names the token scopes it sits in and its
+  // design properties are attributed to tokens; the root tokens and the
+  // scopes' values are reported once, by the response. An element the index
+  // never reached (a shadow tree, detached) is flagged instead.
+  const tokens = index !== false && index !== undefined ? index.tokens : undefined;
+  const covered = tokens !== undefined && el.getRootNode() === tokens.document;
+  const scopes = covered ? tokenScopesOf(el, tokens) : [];
 
   return {
     elementId: opts?.elementId || el.id || el.getAttribute('data-testid') || '',
@@ -185,6 +248,10 @@ export function getElementDesignData(
     styles,
     pseudoElements: pseudoElements.length > 0 ? pseudoElements : undefined,
     customProperties: Object.keys(customProperties).length > 0 ? customProperties : undefined,
+    tokenMatches:
+      covered && opts?.attributeTokens !== false ? tokenMatchesOf(el, styles, tokens) : undefined,
+    tokenScopes: scopes.length > 0 ? scopes : undefined,
+    tokenAnalysis: tokens !== undefined && !covered ? 'uncovered' : undefined,
     className: classString(el) || undefined,
     classes: el.classList.length > 0 ? Array.from(el.classList) : undefined,
     rect: {
@@ -298,50 +365,142 @@ export interface DesignRegistryLike {
 }
 
 /**
- * Capture design snapshots at multiple viewport widths.
+ * How `captureResponsiveSnapshots` narrows the page, as every response that
+ * carries its snapshots reports it (`method`).
  *
- * Constrains `document.documentElement.style.width` per viewport to trigger
- * CSS media queries using max-width. Forces reflow, captures all elements,
- * then restores.
- *
- * Limitation: JS-based responsive logic reading window.innerWidth won't trigger.
+ * The root element's width is constrained; the browser window is not resized.
+ * `window.innerWidth` and the viewport the CSS `@media` width queries read are
+ * therefore UNCHANGED, so a `@media (max-width: …)` breakpoint does not switch,
+ * and neither does JS reading `window.innerWidth` or `matchMedia`. What does
+ * re-flow is everything sized against its container: percentage and flex/grid
+ * layout, wrapping text, and `@container` queries.
  */
-export async function captureResponsiveSnapshots(
+export const RESPONSIVE_SNAPSHOT_METHOD = 'document-width-constraint' as const;
+
+/** The root inline-style longhands `captureResponsiveSnapshots` sets and restores. */
+const CONSTRAINED_ROOT_PROPERTIES = [
+  'width',
+  'min-width',
+  'max-width',
+  'overflow-x',
+  'overflow-y',
+] as const;
+
+/** What `captureResponsiveSnapshots` captured, and how. */
+export interface ResponsiveCapture extends ReportedTokens {
+  /** One snapshot per viewport captured, in request order. */
+  snapshots: ResponsiveSnapshot[];
+  /**
+   * `true` when the lock's deadline ran out between viewports, so the
+   * capture stopped early; `snapshots` holds the viewports it did capture.
+   */
+  timedOut: boolean;
+  /**
+   * `true` when the tab was hidden, so no animation frame was awaited: a
+   * hidden tab runs no frames and throttles timers to a second or more. The
+   * forced reflow and `getComputedStyle` still read the settled layout, but
+   * a `requestAnimationFrame`-driven update on the page had no chance to run.
+   */
+  framesSkipped: boolean;
+}
+
+/**
+ * Capture design snapshots at multiple root-element widths.
+ *
+ * Constrains `document.documentElement`'s inline width per viewport, forces a
+ * reflow, reads every element, and restores the root's inline styles (value
+ * AND priority, per longhand, removing the `style` attribute again if the root
+ * had none) in a `finally`, so a throw mid-capture still restores the page.
+ *
+ * This is NOT a narrow viewport: see `RESPONSIVE_SNAPSHOT_METHOD`. `@media`
+ * width queries and JS reading `window.innerWidth` do not re-evaluate.
+ *
+ * Custom properties are indexed once for the batch (`indexCustomProperties`);
+ * which rules declare them does not depend on the width, only their computed
+ * values do, and those are read per viewport.
+ */
+export function captureResponsiveSnapshots(
   registry: DesignRegistryLike,
-  viewports: Record<string, number> | number[]
-): Promise<ResponsiveSnapshot[]> {
+  viewports: Record<string, number> | number[],
+  options: { budgetMs?: number } = {}
+): Promise<ResponsiveCapture> {
+  // Serialized with every other root-width mutation (`core/root-width-lock`):
+  // an overlapping capture would otherwise save this one's constraint as the
+  // page's original and restore it last. The registry is read inside the
+  // lock, so the selection is the page as it is when the capture runs.
+  return withRootWidthLock((deadline) => captureUnderRootWidthLock(registry, viewports, deadline), {
+    budgetMs: options.budgetMs,
+  });
+}
+
+async function captureUnderRootWidthLock(
+  registry: DesignRegistryLike,
+  viewports: Record<string, number> | number[],
+  deadline: number
+): Promise<ResponsiveCapture> {
   const viewportEntries: Array<[string, number]> = Array.isArray(viewports)
     ? viewports.map((w) => [`${w}px`, w])
     : Object.entries(viewports);
 
   const docEl = document.documentElement;
-  const originalWidth = docEl.style.width;
-  const originalMinWidth = docEl.style.minWidth;
-  const originalMaxWidth = docEl.style.maxWidth;
-  const originalOverflow = docEl.style.overflow;
+  const hadStyleAttribute = docEl.hasAttribute('style');
+  const original = CONSTRAINED_ROOT_PROPERTIES.map((prop) => ({
+    prop,
+    value: docEl.style.getPropertyValue(prop),
+    priority: docEl.style.getPropertyPriority(prop),
+  }));
   const snapshots: ResponsiveSnapshot[] = [];
+  let timedOut = false;
+  let framesSkipped = false;
+  let index: CustomPropertyIndex | undefined;
 
   try {
+    const elements = registry.getAllElements();
+    // Indexed before the root is constrained: which rules declare and
+    // reference tokens does not depend on the width, and the root tokens are
+    // reported as the page has them.
+    const customProperties = indexCustomProperties(
+      document,
+      elements.map((regEl) => regEl.element)
+    );
+    index = customProperties;
+    let firstViewport = true;
     for (const [label, width] of viewportEntries) {
-      // Constrain the document width
-      docEl.style.width = `${width}px`;
-      docEl.style.minWidth = `${width}px`;
-      docEl.style.maxWidth = `${width}px`;
-      docEl.style.overflow = 'hidden';
+      // Out of time: stop here and restore, rather than keep the live page
+      // narrowed after the caller has been told "timeout".
+      if (Date.now() >= deadline) {
+        timedOut = true;
+        break;
+      }
+      // Constrain the root width
+      docEl.style.setProperty('width', `${width}px`);
+      docEl.style.setProperty('min-width', `${width}px`);
+      docEl.style.setProperty('max-width', `${width}px`);
+      docEl.style.setProperty('overflow-x', 'hidden');
+      docEl.style.setProperty('overflow-y', 'hidden');
 
       // Force reflow
       void docEl.offsetHeight;
-      await waitFrame();
+      if (!(await waitFrame())) framesSkipped = true;
 
-      // Capture all elements at this viewport
-      const elements = registry.getAllElements();
+      // A new read pass: the redaction graphs are re-validated once for this
+      // viewport (a stylesheet edited since the last one is seen), not per
+      // element.
+      beginReadPass(customProperties.tokens);
+
+      // Attribution is width-independent here (`@media` does not re-evaluate
+      // under a root-width constraint), so it is read once, at the first
+      // viewport, rather than repeated per snapshot.
       const elementData: ElementDesignData[] = elements.map((regEl) =>
         getElementDesignData(regEl.element, {
           elementId: regEl.id,
           label: regEl.label,
           type: regEl.type,
+          customProperties,
+          attributeTokens: firstViewport,
         })
       );
+      firstViewport = false;
 
       snapshots.push({
         viewportWidth: width,
@@ -351,14 +510,21 @@ export async function captureResponsiveSnapshots(
       });
     }
   } finally {
-    // Always restore original styles
-    docEl.style.width = originalWidth;
-    docEl.style.minWidth = originalMinWidth;
-    docEl.style.maxWidth = originalMaxWidth;
-    docEl.style.overflow = originalOverflow;
+    // The token probe leaves the document with the capture.
+    if (index) disposeTokenIndex(index.tokens);
+    // Always restore the root's own inline styles, exactly
+    for (const { prop, value, priority } of original) {
+      if (value) docEl.style.setProperty(prop, value, priority);
+      else docEl.style.removeProperty(prop);
+    }
+    if (!hadStyleAttribute && docEl.getAttribute('style') === '') {
+      docEl.removeAttribute('style');
+    }
   }
 
-  return snapshots;
+  // Read after the elements: the scopes they sit in are registered as they are read.
+  const reported: ReportedTokens = index ? reportedTokensOf(index.tokens) : noReportedTokens();
+  return { snapshots, timedOut, framesSkipped, ...reported };
 }
 
 // ============================================================================
@@ -416,12 +582,15 @@ export function checkContrastCompliance(
  * 2026-10-13-image-generation-and-visual-judgment, Phase 6), that was 184,800
  * `matches()` calls, about 43 ms of every `/design/evaluate`. Only 6 of the 165
  * top-level style rules declared a custom property. The index reads the rules
- * once, keeps those that declare one, and queries each of them once with
+ * once, keeps those that declare one, and queries each selector once with
  * `querySelectorAll`. The same batch then cost about 1 ms.
  *
- * Its scope is the per-element walk's: top-level `CSSStyleRule`s of readable
- * stylesheets. Grouping rules (`@media`, `@layer`, `@supports`) are not
- * entered.
+ * `declared` keeps the per-element walk's scope: top-level `CSSStyleRule`s of
+ * readable stylesheets. The token half (`tokens`, `ai/design-tokens.ts`) is
+ * built in the same walk and also enters grouping rules — an `@media` that
+ * applies, `@layer`, `@supports` — because that is where token systems put
+ * their tokens and utilities (`@layer theme { :root { … } }`). A selector
+ * reached from both is still queried once.
  */
 export interface CustomPropertyIndex {
   /** The document whose stylesheets and elements were indexed. */
@@ -433,30 +602,17 @@ export interface CustomPropertyIndex {
   readonly scope: ReadonlySet<Element> | null;
   /** The custom properties declared by the rules each element matches, in rule order. */
   readonly declared: ReadonlyMap<Element, readonly string[]>;
+  /** The page's design tokens, their root values, overrides and `var()` references. */
+  readonly tokens: DesignTokenIndex;
 }
 
 /** The top-level style rules of a document's readable stylesheets, in cascade-source order. */
-function* topLevelStyleRules(doc: Document): Generator<CSSStyleRule> {
-  try {
-    for (const sheet of doc.styleSheets) {
-      let rules: CSSRuleList;
-      try {
-        rules = sheet.cssRules;
-      } catch {
-        // Cross-origin stylesheet — skip
-        continue;
-      }
-      for (const rule of rules) {
-        if (rule instanceof CSSStyleRule) yield rule;
-      }
-    }
-  } catch {
-    // Stylesheet access failed — yield what was read
-  }
+function topLevelStyleRules(doc: Document): Generator<WalkedRule> {
+  return styleRules(doc, { descend: false });
 }
 
 /** The custom properties (`--*`) a rule declares. */
-function declaredCustomProperties(rule: CSSStyleRule): string[] {
+function declaredCustomProperties(rule: StyleBlock): string[] {
   const names: string[] = [];
   for (let i = 0; i < rule.style.length; i++) {
     const prop = rule.style[i];
@@ -465,36 +621,76 @@ function declaredCustomProperties(rule: CSSStyleRule): string[] {
   return names;
 }
 
+function appendTo<K, V>(map: Map<K, V[]>, key: K, values: readonly V[]): void {
+  const list = map.get(key);
+  if (list) list.push(...values);
+  else map.set(key, [...values]);
+}
+
 /**
  * Index the custom properties the document's stylesheets declare, for the
  * `candidates` (every element of the document when omitted). Read once, then
  * pass the index to `getCSSCustomProperties` / `getElementDesignData` for each
  * element of the batch.
+ *
+ * A batch queries each relevant selector once (`querySelectorAll`). A single
+ * candidate matches each relevant rule against itself and its ancestors
+ * instead (`matches`), which costs far less than querying the document per
+ * rule for one element.
  */
 export function indexCustomProperties(
   doc: Document = document,
   candidates?: Iterable<Element>
 ): CustomPropertyIndex {
   const scope = candidates ? new Set(candidates) : null;
+  const inScope = (el: Element): boolean => scope === null || scope.has(el);
   const declared = new Map<Element, string[]>();
-  for (const rule of topLevelStyleRules(doc)) {
-    const names = declaredCustomProperties(rule);
-    if (names.length === 0) continue;
-    let matched: NodeListOf<Element>;
-    try {
-      matched = doc.querySelectorAll(rule.selectorText);
-    } catch {
-      // Invalid selector — skip
-      continue;
-    }
-    for (const el of matched) {
-      if (scope && !scope.has(el)) continue;
-      const list = declared.get(el);
-      if (list) list.push(...names);
-      else declared.set(el, [...names]);
+  const tokens = new TokenIndexBuilder(doc);
+
+  let match: (selector: string) => Iterable<Element> | null;
+  if (scope !== null && scope.size === 1) {
+    // One element: test it and its ancestors (inherited tokens and scopes).
+    const relevant: Element[] = [];
+    for (let el: Element | null = [...scope][0]; el; el = el.parentElement) relevant.push(el);
+    match = (selector) => {
+      try {
+        return relevant.filter((el) => el.matches(selector));
+      } catch {
+        return null; // Invalid selector — skip
+      }
+    };
+  } else {
+    // One query per selector, however many rules (or walks) name it.
+    const queried = new Map<string, NodeListOf<Element> | null>();
+    match = (selector) => {
+      if (!queried.has(selector)) {
+        try {
+          queried.set(selector, doc.querySelectorAll(selector));
+        } catch {
+          queried.set(selector, null); // Invalid selector — skip
+        }
+      }
+      return queried.get(selector) ?? null;
+    };
+  }
+
+  for (const { rule, selector, topLevel } of styleRules(doc, {
+    descend: true,
+    coverage: tokens.coverage,
+  })) {
+    const declaredHere = declaredCustomProperties(rule);
+    const refs = referencesOf(rule.style);
+    tokens.addLiterals(rule.style, selector);
+    if (declaredHere.length === 0 && refs === null) continue;
+    const matched = match(selector);
+    if (!matched) continue;
+    const elements = [...matched];
+    tokens.addRule(declaredHere, refs, elements, selector);
+    if (topLevel && declaredHere.length > 0) {
+      for (const el of elements) if (inScope(el)) appendTo(declared, el, declaredHere);
     }
   }
-  return { document: doc, scope, declared };
+  return { document: doc, scope, declared, tokens: tokens.build() };
 }
 
 /**
@@ -514,23 +710,53 @@ export function getCSSCustomProperties(
 ): Record<string, string> {
   const result: Record<string, string> = {};
   const computed = window.getComputedStyle(el);
+  // §4.6 CONTENT axis: a custom property can hold page text
+  // (`--who: 'Alice Smith'` feeding `content: var(--who)`) or a URL, so a
+  // content-redacted element reports its token NAMES with every value
+  // collapsed.
+  const verdict = verdictOf(el);
+  const read = (prop: string): string =>
+    scrubContentRequired(computed.getPropertyValue(prop).trim(), verdict);
 
-  // 1. Inline style custom properties
+  // 1. Inline style custom properties. An inline value is often set from
+  // script, so possibly from user data: only a colour, a dimension or a
+  // short number keeps its value (`scrubScriptValue`).
   for (let i = 0; i < el.style.length; i++) {
     const prop = el.style[i];
     if (prop.startsWith('--')) {
-      result[prop] = computed.getPropertyValue(prop).trim();
+      result[prop] = scrubScriptValue(read(prop));
     }
   }
 
   // 2. Custom properties declared by the stylesheet rules matching this element
-  const declared =
-    index !== undefined && indexCovers(index, el)
-      ? (index.declared.get(el) ?? [])
-      : matchedCustomProperties(el);
+  // One redaction graph, indexed or not: every rule of the element's document
+  // (read once per batch by the index) and, outside the index, of each shadow
+  // root along its host chain, whatever the rules' conditions
+  // (`ai/redaction-graph.ts`).
+  const covered = index !== undefined && indexCovers(index, el);
+  const declared = covered ? (index.declared.get(el) ?? []) : matchedCustomProperties(el);
+  // Recomputed on every read, never cached across reads: an inline custom
+  // property set between two reads (a responsive capture's viewports) must
+  // be seen by the next one.
+  const scriptNames = (): Set<string> => inlineNamesInScope(el);
+  const inScope = declared.length > 0 ? scriptNames() : new Set<string>();
+  // The graph is read only when something is set from script at all.
+  let graph: RedactionGraph | null = null;
+  if (inScope.size > 0) {
+    // A batch validates each root once per read pass; alone, once per read.
+    graph = index ? redactionGraphFor(index.tokens, el) : graphFor(el);
+  }
   for (const prop of declared) {
-    // Use getComputedStyle for resolved value
-    result[prop] = computed.getPropertyValue(prop).trim();
+    // An inline declaration of the same name is the value in effect (and was
+    // scrubbed as an inline value above): a rule must not re-read it raw.
+    if (el.style.getPropertyValue(prop) !== '') continue;
+    // A rule value built with var() from a custom property set inline here or
+    // on an ancestor (`--title: var(--user-name)`) carries the script value.
+    const value = read(prop);
+    const fromScript =
+      graph !== null &&
+      referencesAnyOf(prop, graph, inScope, (ref) => computed.getPropertyValue(ref));
+    result[prop] = fromScript ? scrubScriptValue(value) : value;
   }
 
   return result;
@@ -547,9 +773,9 @@ function indexCovers(index: CustomPropertyIndex, el: Element): boolean {
 /** The custom properties declared by the top-level style rules `el` matches, one rule at a time. */
 function matchedCustomProperties(el: HTMLElement): string[] {
   const names: string[] = [];
-  for (const rule of topLevelStyleRules(document)) {
+  for (const { rule, selector } of topLevelStyleRules(document)) {
     try {
-      if (!el.matches(rule.selectorText)) continue;
+      if (!el.matches(selector)) continue;
     } catch {
       // Invalid selector — skip
       continue;
@@ -592,17 +818,20 @@ function getPseudoElementStyles(
   }
 
   const styles: Partial<ExtendedComputedStyles> = {};
+  const redacted = verdictOf(el).content;
   for (const prop of DESIGN_PROPERTIES) {
     const val =
       computed.getPropertyValue(camelToKebab(prop)) ||
       (computed as unknown as Record<string, string>)[prop] ||
       '';
     if (val) {
-      styles[prop] = val;
+      styles[prop] = redacted ? scrubStyleUrls(val) : val;
     }
   }
 
-  return { selector, content, styles };
+  // §4.6 CONTENT axis: generated content can carry page text
+  // (`content: attr(data-…)`), so a `data-bridge-redact` element's collapses.
+  return { selector, content: scrubContentRequired(content, verdictOf(el)), styles };
 }
 
 /**
@@ -677,12 +906,24 @@ async function applyInteractionState(
 /**
  * Wait for the next animation frame
  */
-function waitFrame(): Promise<void> {
+function waitFrame(): Promise<boolean> {
+  // A hidden tab runs no animation frames and throttles timers to a second or
+  // more, so there is nothing to wait for: the caller's forced reflow and
+  // `getComputedStyle` already read the settled layout. Answer `false` ("no
+  // frame awaited") so the caller can report it.
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+    return Promise.resolve(false);
+  }
   return new Promise((resolve) => {
-    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => resolve());
-    else setTimeout(resolve, 0);
+    // A tab can go hidden while waiting, so the frame is raced with a timer:
+    // whichever comes first resolves (resolving twice is a no-op).
+    setTimeout(() => resolve(true), FRAME_FALLBACK_MS);
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => resolve(true));
   });
 }
+
+/** How long `waitFrame` waits for an animation frame before going on without one. */
+const FRAME_FALLBACK_MS = 50;
 
 /**
  * Parse a CSS color value to [r, g, b] (0-255 range)
