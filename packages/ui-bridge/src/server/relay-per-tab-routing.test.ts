@@ -1158,6 +1158,54 @@ describe('relay · Phase 3 — selection prefers a live tab; a reopen keeps its 
       expect(warmUps).toEqual(['tab-a stream 1', 'tab-a stream 3']);
     });
 
+    it('is sent to the next resume when the late reply arrives after the sweep forgot the tab and it reopened fresh', async () => {
+      // A 30 s command timeout keeps stream 1's warm-up pending past the
+      // first sweep, which runs pruneSweepIntervalMs (10 000 ms by default)
+      // after the relay is built.
+      const relay = freshRelay({ proactiveSnapshot: true, sseTimeoutMs: 30_000 });
+      const warmUps: string[] = [];
+      const held: string[] = [];
+      const endFirst = holdingStream(relay, 'tab-a', 'tab-a stream 1', warmUps, held);
+      await vi.advanceTimersByTimeAsync(600); // stream 1's warm-up is sent, unanswered
+      endFirst();
+      // Past reconnectGraceMs (5 000 ms by default) and the first sweep, which
+      // forgets the tab's tombstone and generation.
+      await vi.advanceTimersByTimeAsync(10_000);
+      const endSecond = snapshotStream(relay, 'tab-a', 'tab-a stream 2', warmUps);
+      // Stream 1's warm-up is answered only now, against the new generation.
+      answerWarmUp(relay, held[0]!, 'tab-a');
+      await vi.advanceTimersByTimeAsync(200);
+      endSecond(); // before its own 500 ms warm-up timer fired
+      await vi.advanceTimersByTimeAsync(100);
+      // Inside the grace: a resume of stream 2's generation, never warmed up.
+      snapshotStream(relay, 'tab-a', 'tab-a stream 3', warmUps);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(warmUps).toEqual(['tab-a stream 1', 'tab-a stream 3']);
+    });
+
+    it('never reuses a generation, after the sweep forgets a tab or destroy() clears it', async () => {
+      const relay = freshRelay();
+      const { tabGenerations } = relayState(relay);
+      const generations: number[] = [];
+      /** Open tab-a fresh, record its generation, and end the stream. */
+      const openFresh = () => {
+        const end = relay.subscribeToCommands(() => {}, 'tab-a');
+        generations.push(tabGenerations.get('tab-a')!);
+        end();
+      };
+      openFresh();
+      // Past reconnectGraceMs (5 000 ms by default) and the first sweep
+      // (pruneSweepIntervalMs, 10 000 ms by default): the tab is forgotten.
+      await vi.advanceTimersByTimeAsync(5_000 + 10_000);
+      expect(tabGenerations.has('tab-a')).toBe(false);
+      openFresh();
+      relay.destroy();
+      expect(tabGenerations.size).toBe(0);
+      openFresh();
+      // One sequence for the prefix (fresh in this test), never reset.
+      expect(generations).toEqual([1, 2, 3]);
+    });
+
     it('keeps the mark when the warm-up reply arrives after a resume of the same generation (control)', async () => {
       const relay = freshRelay({ proactiveSnapshot: true });
       const warmUps: string[] = [];

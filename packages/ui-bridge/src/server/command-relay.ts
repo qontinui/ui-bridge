@@ -442,13 +442,22 @@ export class CommandRelay {
    */
   private readonly warmedUpTabs: Set<string>;
   /**
-   * Each tab's generation: incremented by a FRESH open of the tab id (one
-   * that resumes nothing), kept by a resume. A warm-up marks its tab only if
-   * the tab is still in the generation the warm-up was armed in, so a late
-   * reply to an earlier generation's warm-up cannot mark a generation that
-   * never had one. Bounded like the marks (`cleanupStaleTabs`, `destroy()`).
+   * Each tab's generation: a fresh value from `tabGenerationSeq` on a FRESH
+   * open of the tab id (one that resumes nothing), kept by a resume. A
+   * warm-up marks its tab only if the tab is still in the generation the
+   * warm-up was armed in, so a late reply to an earlier generation's warm-up
+   * cannot mark a generation that never had one. Bounded like the marks
+   * (`cleanupStaleTabs`, `destroy()`).
    */
   private readonly tabGenerations: Map<string, number>;
+  /**
+   * The one source of generation values, shared by every relay on the prefix
+   * and never reset, not even by `destroy()`. Entries in `tabGenerations` are
+   * dropped by the sweep and by `destroy()`; a per-tab counter would then
+   * restart and hand a reopened tab a value an earlier generation's warm-up
+   * still holds.
+   */
+  private readonly tabGenerationSeq: { n: number };
   /**
    * Per-user tab-scoping registry. Tracks which authenticated user a tab
    * was registered under via the strict heartbeat protocol. A tab is
@@ -572,6 +581,7 @@ export class CommandRelay {
     if (!g[key('ListenerTombstones')]) g[key('ListenerTombstones')] = new Map();
     if (!g[key('WarmedUpTabs')]) g[key('WarmedUpTabs')] = new Set();
     if (!g[key('TabGenerations')]) g[key('TabGenerations')] = new Map();
+    if (!g[key('TabGenerationSeq')]) g[key('TabGenerationSeq')] = { n: 0 };
     if (!g[key('TabOwnership')]) g[key('TabOwnership')] = new Map();
     if (!g[key('BusDeliveries')]) g[key('BusDeliveries')] = new Map();
     if (!g[key('RelayTimers')]) g[key('RelayTimers')] = new Set();
@@ -599,6 +609,7 @@ export class CommandRelay {
     this.listenerTombstones = g[key('ListenerTombstones')];
     this.warmedUpTabs = g[key('WarmedUpTabs')];
     this.tabGenerations = g[key('TabGenerations')];
+    this.tabGenerationSeq = g[key('TabGenerationSeq')];
     this.tabOwnership = g[key('TabOwnership')];
     this.busDeliveries = g[key('BusDeliveries')];
     this.relayTimers = g[key('RelayTimers')];
@@ -2105,8 +2116,9 @@ export class CommandRelay {
     this.demotedTabs.delete(id);
     if (!resumed) this.setPrimaryTab(id);
     if (!resumed) this.warmedUpTabs.delete(id);
-    // A fresh open starts the tab's next generation; a resume stays in its.
-    if (!resumed) this.tabGenerations.set(id, (this.tabGenerations.get(id) ?? 0) + 1);
+    // A fresh open starts the tab's next generation, a value no generation
+    // of any tab has had (`tabGenerationSeq`); a resume stays in its own.
+    if (!resumed) this.tabGenerations.set(id, ++this.tabGenerationSeq.n);
     const generation = this.tabGenerations.get(id) ?? 0;
 
     // Signal that a transport is ready
@@ -2848,6 +2860,7 @@ export class CommandRelay {
     this.tabListeners.clear();
     this.listenerTombstones.clear();
     this.warmedUpTabs.clear();
+    // `tabGenerationSeq` is deliberately left as it is: see its field.
     this.tabGenerations.clear();
     this.commandQueue.length = 0;
     this.changeEventBuffer.length = 0;
