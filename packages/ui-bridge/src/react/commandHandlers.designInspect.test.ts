@@ -1,0 +1,429 @@
+/**
+ * The design-inspection routes answer with one model over both transports.
+ *
+ * `/design/element/:id/styles`, `/design/snapshot`, `/design/responsive` and
+ * `/design/audit` are served by the server handlers (`createHandlers`, reading
+ * the registry directly) and by the browser dispatcher (`executeCommand`, which
+ * the relay and the in-page `ui-bridge-inject` mode both land on). The browser
+ * side used to be a cut-down reimplementation: ~22 computed properties, no
+ * custom properties, no pseudo-elements, a snapshot silently cut at 50
+ * elements, responsive snapshots refused, and an audit that ignored the style
+ * guide for four heuristics over the first 100 elements.
+ *
+ * Both now call `specs/design-request.ts`. These tests drive the BROWSER path —
+ * `executeCommand` directly, and through a relay whose tab runs it — and
+ * compare it with the server handlers over one registry.
+ */
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { executeCommand, type BridgeAccess } from './commandHandlers';
+import { getGlobalRegistry, resetGlobalRegistry, REDACTED_VALUE } from '../core/registry';
+import type { ElementDesignData, ElementType } from '../core/types';
+import { createHandlers, type RegistryLike } from '../server/handlers';
+import { createRelayHandlers } from '../server/relay-handlers';
+import { CommandRelay } from '../server/command-relay';
+import { DefaultActionExecutor } from '../control/action-executor';
+import type { StyleGuideConfig } from '../specs/style-types';
+import type {
+  DesignAuditResponse,
+  DesignSnapshotResponse,
+  ResponsiveSnapshotsResponse,
+} from '../specs/design-request';
+
+const emptyBridge: BridgeAccess = {
+  elements: [],
+  getElement: () => undefined,
+  components: [],
+  workflows: [],
+};
+
+function serverHandlers(): ReturnType<typeof createHandlers> {
+  const registry = getGlobalRegistry();
+  return createHandlers(
+    registry as unknown as RegistryLike,
+    new DefaultActionExecutor(registry) as never,
+    { idleDetection: false }
+  );
+}
+
+const openRelays: Array<{ relay: CommandRelay; unsubscribe: () => void }> = [];
+
+function closeRelays(): void {
+  for (const { relay, unsubscribe } of openRelays.splice(0)) {
+    unsubscribe();
+    relay.destroy();
+  }
+}
+
+/** Relay handlers whose one tab answers every command with the real in-page dispatcher. */
+function relayHandlers(): ReturnType<typeof createRelayHandlers> {
+  const relay = new CommandRelay({
+    globalPrefix: `__uiBridgeTest_${Math.random().toString(36).slice(2, 10)}`,
+    proactiveSnapshot: false,
+  });
+  const unsubscribe = relay.subscribeToCommands((command) => {
+    void executeCommand(
+      command.action,
+      command.payload as Record<string, unknown>,
+      emptyBridge
+    ).then(
+      (result) => relay.resolveCommand(command.commandId, result, 'tab-a'),
+      (err: unknown) => relay.rejectCommand(command.commandId, String(err))
+    );
+  }, 'tab-a');
+  openRelays.push({ relay, unsubscribe });
+  return createRelayHandlers(relay);
+}
+
+/** Run one command on the browser path, as the relay and the injected runtime do. */
+function browser<T>(action: string, payload: Record<string, unknown> = {}): Promise<T> {
+  return executeCommand(action, payload, emptyBridge) as Promise<T>;
+}
+
+/** Drop the per-run fields (when it ran, how long it took) at any depth. */
+function stable<T>(value: T): T {
+  return JSON.parse(
+    JSON.stringify(value, (key, v) => (key === 'timestamp' || key === 'durationMs' ? undefined : v))
+  ) as T;
+}
+
+/**
+ * jsdom does not compute pseudo-element styles (`getComputedStyle(el, '::before')`
+ * is "not implemented" and answers the element's own style), so stand in a
+ * browser's answer: `#dom-save::before` exists, nothing else has one.
+ */
+function stubPseudoElementStyles(): void {
+  const real = window.getComputedStyle.bind(window);
+  vi.spyOn(window, 'getComputedStyle').mockImplementation((el, pseudo) => {
+    if (!pseudo) return real(el);
+    const exists = pseudo === '::before' && (el as Element).id === 'dom-save';
+    const values: Record<string, string> = exists
+      ? { content: '"→"', color: 'rgb(0, 128, 0)' }
+      : { content: 'none' };
+    return { getPropertyValue: (prop: string) => values[prop] ?? '' } as CSSStyleDeclaration;
+  });
+}
+
+const GUIDE: StyleGuideConfig = {
+  version: '1',
+  name: 'brand guide',
+  tokens: {
+    colors: { primary: 'rgb(0, 0, 255)' },
+    typography: {
+      fontFamilies: {},
+      fontSizes: {},
+      fontWeights: {},
+      lineHeights: {},
+      letterSpacings: {},
+    },
+    spacing: {},
+    borderRadius: {},
+    shadows: {},
+    breakpoints: {},
+  },
+  rules: [
+    {
+      id: 'button-primary-color',
+      elementType: 'button',
+      constraints: [{ type: 'tokenRef', property: 'color', tokenPath: 'colors.primary' }],
+      severity: 'error',
+    },
+  ],
+};
+
+describe('design-inspection routes · the browser path answers the full model', () => {
+  let container: HTMLDivElement;
+  let sheet: HTMLStyleElement;
+
+  function register(id: string, tag: string, text: string, type: ElementType): HTMLElement {
+    const el = document.createElement(tag);
+    el.id = `dom-${id}`;
+    el.textContent = text;
+    container.appendChild(el);
+    getGlobalRegistry().registerElement(id, el, { type, label: text });
+    return el;
+  }
+
+  beforeEach(() => {
+    resetGlobalRegistry();
+    sheet = document.createElement('style');
+    sheet.textContent = [
+      '#dom-save { --brand-color: rgb(255, 0, 0); color: rgb(255, 0, 0); letter-spacing: 2px; }',
+    ].join('\n');
+    stubPseudoElementStyles();
+    document.head.appendChild(sheet);
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    register('title', 'h1', 'Dashboard', 'generic');
+    const save = register('save', 'button', 'Save', 'button');
+    save.style.setProperty('--inline-token', '4px');
+    register('name', 'input', '', 'input');
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    closeRelays();
+    container.remove();
+    sheet.remove();
+    document.documentElement.removeAttribute('style');
+    resetGlobalRegistry();
+  });
+
+  // ---------------------------------------------------------------- styles
+
+  it('getElementStyles returns ElementDesignData with custom properties and pseudo-elements', async () => {
+    const data = await browser<ElementDesignData>('getElementStyles', { id: 'save' });
+
+    expect(data.elementId).toBe('save');
+    expect(data.type).toBe('button');
+    expect(data.customProperties).toMatchObject({
+      '--brand-color': 'rgb(255, 0, 0)',
+      '--inline-token': '4px',
+    });
+    expect(data.pseudoElements?.map((p) => p.selector)).toEqual(['::before']);
+    expect(data.styles).toHaveProperty('letterSpacing');
+    expect(data.styles.color).toBe('rgb(255, 0, 0)');
+    expect(data.rect).toEqual(expect.objectContaining({ width: expect.any(Number) }));
+  });
+
+  it('getElementStyles fails an unknown id with the server’s code, not a success-wrapped error', async () => {
+    const server = await serverHandlers().getElementStyles('nope');
+    const relay = await relayHandlers().getElementStyles('nope');
+    expect(server.success).toBe(false);
+    expect(relay.success).toBe(false);
+    expect(relay.code).toBe(server.code);
+    expect(relay.error).toBe(server.error);
+  });
+
+  it('getElementStyles collapses a redacted element’s label and generated content', async () => {
+    const save = document.getElementById('dom-save')!;
+    save.setAttribute('data-bridge-redact', 'true');
+    const data = await browser<ElementDesignData>('getElementStyles', { id: 'save' });
+    expect(data.label).toBe(REDACTED_VALUE);
+    expect(data.pseudoElements?.[0].content).toBe(REDACTED_VALUE);
+  });
+
+  // -------------------------------------------------------------- snapshot
+
+  it('getDesignSnapshot honours elementIds and includePseudoElements', async () => {
+    const out = await browser<DesignSnapshotResponse>('getDesignSnapshot', {
+      elementIds: ['save', 'name'],
+      includePseudoElements: true,
+    });
+    expect(out.elements.map((e) => e.elementId)).toEqual(['save', 'name']);
+    expect(out.elements[0].pseudoElements?.length).toBe(1);
+    expect(out.elements[0].customProperties).toHaveProperty('--brand-color');
+    expect(out).toMatchObject({ totalElements: 2, returned: 2, truncated: false });
+
+    const without = await browser<DesignSnapshotResponse>('getDesignSnapshot', {
+      elementIds: ['save'],
+    });
+    expect(without.elements[0].pseudoElements).toBeUndefined();
+  });
+
+  it('getDesignSnapshot reports a truncation, and the caller raises the bound', async () => {
+    const cut = await browser<DesignSnapshotResponse>('getDesignSnapshot', { limit: 2 });
+    expect(cut.elements).toHaveLength(2);
+    expect(cut).toMatchObject({ totalElements: 3, returned: 2, limit: 2, truncated: true });
+
+    const whole = await browser<DesignSnapshotResponse>('getDesignSnapshot', { limit: 3 });
+    expect(whole).toMatchObject({ totalElements: 3, returned: 3, truncated: false });
+
+    const byDefault = await browser<DesignSnapshotResponse>('getDesignSnapshot', {});
+    expect(byDefault.limit).toBeGreaterThan(3);
+    expect(byDefault).toMatchObject({ totalElements: 3, returned: 3, truncated: false });
+  });
+
+  it('getDesignSnapshot refuses a malformed limit with UB-VALIDATION-ERROR on both transports', async () => {
+    for (const limit of [0, -1, 1.5, '10']) {
+      const server = await serverHandlers().getDesignSnapshot({ limit } as never);
+      const relay = await relayHandlers().getDesignSnapshot({ limit } as never);
+      expect(server.success).toBe(false);
+      expect(server.code).toBe('UB-VALIDATION-ERROR');
+      expect({ success: relay.success, error: relay.error, code: relay.code }).toEqual({
+        success: server.success,
+        error: server.error,
+        code: server.code,
+      });
+    }
+  });
+
+  // ------------------------------------------------------------ responsive
+
+  it('getResponsiveSnapshots returns one snapshot per viewport and says media queries did not re-evaluate', async () => {
+    const out = await browser<ResponsiveSnapshotsResponse>('getResponsiveSnapshots', {
+      viewports: { narrow: 320, wide: 1024 },
+    });
+    expect(out.snapshots.map((s) => [s.viewportLabel, s.viewportWidth])).toEqual([
+      ['narrow', 320],
+      ['wide', 1024],
+    ]);
+    for (const snapshot of out.snapshots) {
+      expect(snapshot.elements.map((e) => e.elementId)).toEqual(['title', 'save', 'name']);
+    }
+    expect(out.method).toBe('document-width-constraint');
+    expect(out.mediaQueriesReevaluated).toBe(false);
+    expect(out.windowInnerWidth).toBe(window.innerWidth);
+    expect(out).toMatchObject({ totalElements: 3, returned: 3, truncated: false });
+  });
+
+  it('getResponsiveSnapshots restores the root’s inline styles exactly', async () => {
+    const root = document.documentElement;
+    root.setAttribute('style', 'width: 50% !important; overflow-x: scroll; color: red');
+    const before = {
+      width: root.style.getPropertyValue('width'),
+      widthPriority: root.style.getPropertyPriority('width'),
+      overflowX: root.style.getPropertyValue('overflow-x'),
+      overflowY: root.style.getPropertyValue('overflow-y'),
+      minWidth: root.style.getPropertyValue('min-width'),
+      color: root.style.getPropertyValue('color'),
+    };
+    await browser('getResponsiveSnapshots', { viewports: [375] });
+    expect({
+      width: root.style.getPropertyValue('width'),
+      widthPriority: root.style.getPropertyPriority('width'),
+      overflowX: root.style.getPropertyValue('overflow-x'),
+      overflowY: root.style.getPropertyValue('overflow-y'),
+      minWidth: root.style.getPropertyValue('min-width'),
+      color: root.style.getPropertyValue('color'),
+    }).toEqual(before);
+
+    root.removeAttribute('style');
+    await browser('getResponsiveSnapshots', { viewports: [375] });
+    expect(root.hasAttribute('style')).toBe(false);
+  });
+
+  it('getResponsiveSnapshots restores the root even when a capture throws', async () => {
+    const root = document.documentElement;
+    const save = document.getElementById('dom-save')!;
+    save.getBoundingClientRect = () => {
+      throw new Error('layout read failed');
+    };
+    const out = await browser<{ success: boolean; error: string }>('getResponsiveSnapshots', {
+      viewports: [375],
+    });
+    expect(out.success).toBe(false);
+    expect(out.error).toContain('layout read failed');
+    expect(root.hasAttribute('style')).toBe(false);
+  });
+
+  it('getResponsiveSnapshots divides the record budget by the viewport count, and reports it', async () => {
+    const out = await browser<ResponsiveSnapshotsResponse>('getResponsiveSnapshots', {
+      viewports: [320, 768],
+      limit: 1,
+    });
+    expect(out.snapshots.every((s) => s.elements.length === 1)).toBe(true);
+    expect(out).toMatchObject({ totalElements: 3, returned: 1, limit: 1, truncated: true });
+
+    const byDefault = await browser<ResponsiveSnapshotsResponse>('getResponsiveSnapshots', {
+      viewports: [320, 768],
+    });
+    expect(byDefault.limit).toBe(125);
+  });
+
+  // ----------------------------------------------------------------- audit
+
+  it('runDesignAudit with a guide in the request returns a StyleAuditReport that flags the violation', async () => {
+    const report = await browser<DesignAuditResponse>('runDesignAudit', { guide: GUIDE });
+    expect(report.mode).toBe('style-guide');
+    if (report.mode !== 'style-guide') throw new Error('unreachable');
+    expect(report.guideName).toBe('brand guide');
+    expect(report.totalElements).toBe(3);
+    expect(report.failedCount).toBe(1);
+    expect(report.summary.errors).toHaveLength(1);
+    expect(report.summary.errors[0]).toMatchObject({ elementId: 'save', passed: false });
+  });
+
+  it('runDesignAudit uses a guide loaded through the browser’s own loadStyleGuide', async () => {
+    await browser('loadStyleGuide', { guide: GUIDE });
+    try {
+      const report = await browser<DesignAuditResponse>('runDesignAudit', {});
+      expect(report.mode).toBe('style-guide');
+    } finally {
+      await browser('clearStyleGuide');
+    }
+  });
+
+  it('runDesignAudit without any guide runs the heuristics, says so, and checks every element', async () => {
+    const report = await browser<DesignAuditResponse>('runDesignAudit', {});
+    expect(report.mode).toBe('heuristic');
+    if (report.mode !== 'heuristic') throw new Error('unreachable');
+    expect(report.reason).toMatch(/no style guide/i);
+    expect(report.totalElements).toBe(3);
+    expect(report.checkedElements).toBe(3);
+    // jsdom lays nothing out, so the 0x0 button is under the 44px touch target.
+    expect(report.issues).toContainEqual(
+      expect.objectContaining({ element: 'save', severity: 'warning' })
+    );
+  });
+});
+
+describe('design-inspection routes · relay and server answer the same model', () => {
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    resetGlobalRegistry();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    for (const [id, tag, type] of [
+      ['title', 'h1', 'generic'],
+      ['save', 'button', 'button'],
+    ] as const) {
+      const el = document.createElement(tag);
+      el.textContent = id;
+      el.style.setProperty('--token', '1px');
+      container.appendChild(el);
+      getGlobalRegistry().registerElement(id, el, { type: type as ElementType, label: id });
+    }
+    stubPseudoElementStyles();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    closeRelays();
+    container.remove();
+    document.documentElement.removeAttribute('style');
+    resetGlobalRegistry();
+  });
+
+  it('getElementStyles', async () => {
+    const server = await serverHandlers().getElementStyles('save');
+    const relay = await relayHandlers().getElementStyles('save');
+    expect(server.success).toBe(true);
+    expect(relay.success).toBe(true);
+    expect(relay.data).toEqual(server.data);
+    expect(relay.data!.customProperties).toEqual({ '--token': '1px' });
+  });
+
+  it('getDesignSnapshot', async () => {
+    const request = { elementIds: ['save', 'title'], includePseudoElements: true, limit: 1 };
+    const server = await serverHandlers().getDesignSnapshot(request);
+    const relay = await relayHandlers().getDesignSnapshot(request);
+    expect(server.success).toBe(true);
+    expect(stable(relay.data)).toEqual(stable(server.data));
+    expect(relay.data).toMatchObject({ totalElements: 2, returned: 1, truncated: true });
+  });
+
+  it('getResponsiveSnapshots', async () => {
+    const request = { viewports: { mobile: 375, desktop: 1280 } };
+    const server = await serverHandlers().getResponsiveSnapshots(request);
+    const relay = await relayHandlers().getResponsiveSnapshots(request);
+    expect(server.success).toBe(true);
+    expect(relay.success).toBe(true);
+    expect(stable(relay.data)).toEqual(stable(server.data));
+    expect(server.data).toMatchObject({
+      method: 'document-width-constraint',
+      mediaQueriesReevaluated: false,
+    });
+  });
+
+  it('runDesignAudit, with a guide and without one', async () => {
+    for (const request of [{ guide: GUIDE }, {}]) {
+      const server = await serverHandlers().runDesignAudit(request);
+      const relay = await relayHandlers().runDesignAudit(request);
+      expect(server.success).toBe(true);
+      expect(relay.success).toBe(true);
+      expect(stable(relay.data)).toEqual(stable(server.data));
+    }
+  });
+});

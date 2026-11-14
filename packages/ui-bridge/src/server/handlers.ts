@@ -205,18 +205,10 @@ import {
   segmentPageRegions,
   extractStructuredData,
   generateComparisonReport,
-  getElementDesignData,
   captureStateVariations,
-  captureResponsiveSnapshots,
-  DEFAULT_VIEWPORTS,
   analyzeStructuredChanges,
 } from '../ai';
-import type {
-  InteractionStateName,
-  ElementDesignData,
-  StateStyles,
-  ResponsiveSnapshot,
-} from '../core/types';
+import type { InteractionStateName, ElementDesignData, StateStyles } from '../core/types';
 import type { NavigationTracker } from '../navigation';
 import type { ShortcutTracker } from '../shortcuts';
 import type { ModalDetector } from '../modal';
@@ -225,8 +217,20 @@ import type { ToastCapture } from '../toast';
 import type { RelationshipTracker } from '../relationships';
 import type { DragDropDetector } from '../drag-drop';
 import type { UndoTracker } from '../undo';
-import type { StyleGuideConfig, StyleAuditReport } from '../specs/style-types';
-import { runStyleAudit } from '../specs/style-validator';
+import type { StyleGuideConfig } from '../specs/style-types';
+import {
+  designAuditOf,
+  designFailureCode,
+  designSnapshotOf,
+  elementStylesOf,
+  responsiveSnapshotsOf,
+  type DesignAuditRequest,
+  type DesignAuditResponse,
+  type DesignSnapshotRequest,
+  type DesignSnapshotResponse,
+  type ResponsiveSnapshotsRequest,
+  type ResponsiveSnapshotsResponse,
+} from '../specs/design-request';
 import type {
   QualityEvaluationReport,
   SnapshotDiffReport,
@@ -5032,25 +5036,14 @@ export function createHandlers(
     // Design Review Handlers
     // =========================================================================
 
+    // The design-inspection routes run through specs/design-request.ts, which
+    // the browser relay calls too — one model whichever transport answers.
     getElementStyles: async (id: string): Promise<APIResponse<ElementDesignData>> => {
       try {
-        const rawElement = registry.getElement(id);
-        if (!rawElement) {
-          return error(`Element not found: ${id}`, 'ELEMENT_NOT_FOUND');
-        }
-        const el = rawElement as unknown as RegistryElementView;
-        if (!el.element || !(el.element instanceof HTMLElement)) {
-          return error('Element does not have a DOM reference', 'NO_DOM_REFERENCE');
-        }
-        const data = getElementDesignData(el.element, {
-          elementId: el.id,
-          label: el.label,
-          type: el.type,
-          includePseudoElements: true,
-        });
-        return success(data);
+        const source = registry.getElement(id) as unknown as RegistryElementView | undefined;
+        return success(elementStylesOf(id, source ?? undefined));
       } catch (err) {
-        return error((err as Error).message, 'DESIGN_STYLES_ERROR');
+        return error((err as Error).message, designFailureCode(err, 'DESIGN_STYLES_ERROR'));
       }
     },
 
@@ -5074,65 +5067,25 @@ export function createHandlers(
       }
     },
 
-    getDesignSnapshot: async (request?: {
-      elementIds?: string[];
-      includePseudoElements?: boolean;
-    }): Promise<APIResponse<{ elements: ElementDesignData[]; timestamp: number }>> => {
+    getDesignSnapshot: async (
+      request?: DesignSnapshotRequest
+    ): Promise<APIResponse<DesignSnapshotResponse>> => {
       try {
-        const allElements = registry.getAllElements() as unknown as RegistryElementView[];
-        const elements = request?.elementIds
-          ? allElements.filter((el) => request.elementIds!.includes(el.id))
-          : allElements;
-
-        const designData: ElementDesignData[] = [];
-        for (const el of elements) {
-          if (el.element && el.element instanceof HTMLElement) {
-            designData.push(
-              getElementDesignData(el.element, {
-                elementId: el.id,
-                label: el.label,
-                type: el.type,
-                includePseudoElements: request?.includePseudoElements,
-              })
-            );
-          }
-        }
-
-        return success({ elements: designData, timestamp: Date.now() });
+        const elements = registry.getAllElements() as unknown as RegistryElementView[];
+        return success(designSnapshotOf(elements, request));
       } catch (err) {
-        return error((err as Error).message, 'DESIGN_SNAPSHOT_ERROR');
+        return error((err as Error).message, designFailureCode(err, 'DESIGN_SNAPSHOT_ERROR'));
       }
     },
 
-    getResponsiveSnapshots: async (request: {
-      viewports?: Record<string, number>;
-      elementIds?: string[];
-    }): Promise<APIResponse<ResponsiveSnapshot[]>> => {
+    getResponsiveSnapshots: async (
+      request: ResponsiveSnapshotsRequest
+    ): Promise<APIResponse<ResponsiveSnapshotsResponse>> => {
       try {
-        const viewports = request.viewports || DEFAULT_VIEWPORTS;
-
-        // Create a minimal registry adapter that filters by elementIds if specified
-        const allElements = registry.getAllElements() as unknown as RegistryElementView[];
-        const filteredElements = request.elementIds
-          ? allElements.filter((el) => request.elementIds!.includes(el.id))
-          : allElements;
-
-        const registryAdapter = {
-          getAllElements: () =>
-            filteredElements
-              .filter((el) => el.element instanceof HTMLElement)
-              .map((el) => ({
-                id: el.id,
-                element: el.element as HTMLElement,
-                type: el.type as string,
-                label: el.label,
-              })),
-        };
-
-        const snapshots = await captureResponsiveSnapshots(registryAdapter, viewports);
-        return success(snapshots);
+        const elements = registry.getAllElements() as unknown as RegistryElementView[];
+        return success(await responsiveSnapshotsOf(elements, request));
       } catch (err) {
-        return error((err as Error).message, 'RESPONSIVE_SNAPSHOT_ERROR');
+        return error((err as Error).message, designFailureCode(err, 'RESPONSIVE_SNAPSHOT_ERROR'));
       }
     },
 
@@ -5169,38 +5122,14 @@ export function createHandlers(
       }
     },
 
-    runDesignAudit: async (request?: {
-      guide?: StyleGuideConfig;
-      elementIds?: string[];
-    }): Promise<APIResponse<StyleAuditReport>> => {
+    runDesignAudit: async (
+      request?: DesignAuditRequest
+    ): Promise<APIResponse<DesignAuditResponse>> => {
       try {
-        const guide = request?.guide || loadedStyleGuide;
-        if (!guide) {
-          return error('No style guide loaded or provided', 'NO_STYLE_GUIDE');
-        }
-
-        const allElements = registry.getAllElements() as unknown as RegistryElementView[];
-        const elements = request?.elementIds
-          ? allElements.filter((el) => request.elementIds!.includes(el.id))
-          : allElements;
-
-        const designData: ElementDesignData[] = [];
-        for (const el of elements) {
-          if (el.element && el.element instanceof HTMLElement) {
-            designData.push(
-              getElementDesignData(el.element, {
-                elementId: el.id,
-                label: el.label,
-                type: el.type,
-              })
-            );
-          }
-        }
-
-        const report = runStyleAudit(designData, guide);
-        return success(report);
+        const elements = registry.getAllElements() as unknown as RegistryElementView[];
+        return success(designAuditOf(elements, request, loadedStyleGuide));
       } catch (err) {
-        return error((err as Error).message, 'DESIGN_AUDIT_ERROR');
+        return error((err as Error).message, designFailureCode(err, 'DESIGN_AUDIT_ERROR'));
       }
     },
 
@@ -6054,9 +5983,17 @@ export function createHandlers(
                 {
                   method: 'POST',
                   path: '/design/responsive',
-                  description: 'Capture responsive snapshots at viewports',
+                  description:
+                    'Capture design snapshots at constrained root widths (method ' +
+                    "'document-width-constraint': @media width queries do not re-evaluate)",
                 },
-                { method: 'POST', path: '/design/audit', description: 'Run design style audit' },
+                {
+                  method: 'POST',
+                  path: '/design/audit',
+                  description:
+                    "Audit against the provided or loaded style guide (mode 'style-guide'), " +
+                    "else built-in heuristics (mode 'heuristic')",
+                },
                 {
                   method: 'POST',
                   path: '/design/style-guide/load',

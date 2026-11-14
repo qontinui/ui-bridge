@@ -112,6 +112,21 @@ export {
   evaluateConstraint,
 } from './style-validator';
 
+// Design-inspection request models (shared by both transports; types only, so
+// this entry does not pull the DOM-reading module in)
+export type {
+  DesignSelectionBounds,
+  DesignSnapshotRequest,
+  DesignSnapshotResponse,
+  ResponsiveSnapshotsRequest,
+  ResponsiveSnapshotsResponse,
+  DesignAuditRequest,
+  DesignAuditResponse,
+  StyleGuideDesignAuditReport,
+  HeuristicDesignAuditReport,
+  HeuristicDesignAuditIssue,
+} from './design-request';
+
 // Quality evaluator types
 export type {
   ViewportDimensions,

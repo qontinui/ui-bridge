@@ -91,9 +91,16 @@ import type {
   InteractionStateName,
   ElementDesignData,
   StateStyles,
-  ResponsiveSnapshot,
 } from '../core/types';
-import type { StyleGuideConfig, StyleAuditReport } from '../specs/style-types';
+import type { StyleGuideConfig } from '../specs/style-types';
+import type {
+  DesignAuditRequest,
+  DesignAuditResponse,
+  DesignSnapshotRequest,
+  DesignSnapshotResponse,
+  ResponsiveSnapshotsRequest,
+  ResponsiveSnapshotsResponse,
+} from '../specs/design-request';
 import type {
   QualityEvaluationReport,
   SnapshotDiffReport,
@@ -1213,19 +1220,13 @@ export interface UIBridgeServerHandlers {
     context?: HandlerContext
   ) => Promise<APIResponse<{ elementId: string; stateStyles: StateStyles[] }>>;
   getDesignSnapshot: (
-    request?: {
-      elementIds?: string[];
-      includePseudoElements?: boolean;
-    },
+    request?: DesignSnapshotRequest,
     context?: HandlerContext
-  ) => Promise<APIResponse<{ elements: ElementDesignData[]; timestamp: number }>>;
+  ) => Promise<APIResponse<DesignSnapshotResponse>>;
   getResponsiveSnapshots: (
-    request: {
-      viewports?: Record<string, number>;
-      elementIds?: string[];
-    },
+    request: ResponsiveSnapshotsRequest,
     context?: HandlerContext
-  ) => Promise<APIResponse<ResponsiveSnapshot[]>>;
+  ) => Promise<APIResponse<ResponsiveSnapshotsResponse>>;
   setViewportConstraints: (
     request: { width?: number; restore?: boolean },
     context?: HandlerContext
@@ -1238,12 +1239,9 @@ export interface UIBridgeServerHandlers {
     }>
   >;
   runDesignAudit: (
-    request?: {
-      guide?: StyleGuideConfig;
-      elementIds?: string[];
-    },
+    request?: DesignAuditRequest,
     context?: HandlerContext
-  ) => Promise<APIResponse<StyleAuditReport>>;
+  ) => Promise<APIResponse<DesignAuditResponse>>;
   loadStyleGuide: (
     request: {
       guide: StyleGuideConfig;
