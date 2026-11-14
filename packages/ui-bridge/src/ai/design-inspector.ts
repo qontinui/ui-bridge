@@ -24,9 +24,6 @@ import {
   disposeTokenIndex,
   noReportedTokens,
   scrubScriptValue,
-  inlineNamesInScope,
-  recordCustomRefs,
-  referencesAnyOf,
   referencesOf,
   reportedTokensOf,
   tokenMatchesOf,
@@ -35,6 +32,7 @@ import {
   type ReportedTokens,
 } from './design-tokens';
 import { styleRules, type StyleBlock, type WalkedRule } from './stylesheet-walk';
+import { composedCustomRefs, inlineNamesInScope, referencesAnyOf } from './redaction-graph';
 import {
   forcePseudoState,
   reapplyIfIdle,
@@ -675,7 +673,7 @@ export function indexCustomProperties(
     const matched = match(selector);
     if (!matched) continue;
     const elements = [...matched];
-    tokens.addRule(declaredHere, refs, elements, selector, rule.style);
+    tokens.addRule(declaredHere, refs, elements, selector);
     if (topLevel && declaredHere.length > 0) {
       for (const el of elements) if (inScope(el)) appendTo(declared, el, declaredHere);
     }
@@ -719,25 +717,20 @@ export function getCSSCustomProperties(
   }
 
   // 2. Custom properties declared by the stylesheet rules matching this element
-  let refs: ReadonlyMap<string, ReadonlySet<string>>;
-  let declared: readonly string[];
-  if (index !== undefined && indexCovers(index, el)) {
-    refs = index.tokens.customRefs;
-    declared = index.declared.get(el) ?? [];
-  } else {
-    // Outside the index (detached, shadow tree): the var() graph of every
-    // rule of the document and, in a shadow tree, of its shadow root — all
-    // rules, whatever their conditions, so a chain through a rule this
-    // element does not match is followed (an over-approximation only
-    // scrubs more).
-    declared = matchedCustomProperties(el);
-    refs = fallbackCustomRefs(el);
-  }
+  // One redaction graph, indexed or not: every rule of the element's document
+  // (read once per batch by the index) and, outside the index, of each shadow
+  // root along its host chain, whatever the rules' conditions
+  // (`ai/redaction-graph.ts`).
+  const covered = index !== undefined && indexCovers(index, el);
+  const declared = covered ? (index.declared.get(el) ?? []) : matchedCustomProperties(el);
   // Recomputed on every read, never cached across reads: an inline custom
   // property set between two reads (a responsive capture's viewports) must
   // be seen by the next one.
   const scriptNames = (): Set<string> => inlineNamesInScope(el);
   const inScope = declared.length > 0 ? scriptNames() : new Set<string>();
+  // The graph is read only when something is set from script at all.
+  let refs: ReadonlyMap<string, ReadonlySet<string>> = new Map();
+  if (inScope.size > 0) refs = covered ? index.tokens.redactionRefs() : composedCustomRefs(el);
   for (const prop of declared) {
     // An inline declaration of the same name is the value in effect (and was
     // scrubbed as an inline value above): a rule must not re-read it raw.
@@ -772,87 +765,6 @@ function matchedCustomProperties(el: HTMLElement): string[] {
     names.push(...declaredCustomProperties(rule));
   }
   return names;
-}
-
-/**
- * The custom-property `var()` graph of a document's (or shadow root's) rules,
- * cached until its stylesheets change. The cache key is the sheets — the
- * document's, adopted and `@import`ed ones — by identity, with every rule
- * list's length, nested ones included. (A declaration edited in place
- * through the CSSOM keeps the key, and is not seen until a rule is added or
- * removed.)
- */
-const customRefCache = new WeakMap<
-  Document | ShadowRoot,
-  { key: unknown[]; refs: Map<string, Set<string>> }
->();
-
-/** The structural key of a root's stylesheets (see `customRefCache`). */
-function stylesheetKey(root: Document | ShadowRoot): unknown[] {
-  const key: unknown[] = [];
-  const visit = (rules: CSSRuleList | undefined): void => {
-    if (!rules) return;
-    key.push(rules.length);
-    for (const rule of Array.from(rules)) {
-      const sheet = (rule as Partial<CSSImportRule>).styleSheet;
-      if (sheet) {
-        key.push(sheet);
-        try {
-          visit(sheet.cssRules);
-        } catch {
-          key.push(-1);
-        }
-      }
-      visit((rule as Partial<CSSGroupingRule>).cssRules);
-    }
-  };
-  const adopted = (root as { adoptedStyleSheets?: CSSStyleSheet[] }).adoptedStyleSheets ?? [];
-  let sheets: CSSStyleSheet[] = [];
-  try {
-    sheets = [...(Array.from(root.styleSheets) as CSSStyleSheet[]), ...adopted];
-  } catch {
-    // No stylesheets readable
-  }
-  for (const sheet of sheets) {
-    key.push(sheet);
-    try {
-      visit(sheet.cssRules);
-    } catch {
-      key.push(-1);
-    }
-  }
-  return key;
-}
-
-/** Every custom property's `var()` references across all of a root's rules, whatever their conditions. */
-function rootCustomRefs(root: Document | ShadowRoot): Map<string, Set<string>> {
-  const key = stylesheetKey(root);
-  const cached = customRefCache.get(root);
-  if (cached && cached.key.length === key.length && cached.key.every((k, i) => k === key[i])) {
-    return cached.refs;
-  }
-  const refs = new Map<string, Set<string>>();
-  for (const { rule } of styleRules(root, { descend: true, everything: true })) {
-    recordCustomRefs(rule.style, declaredCustomProperties(rule), refs);
-  }
-  customRefCache.set(root, { key, refs });
-  return refs;
-}
-
-/** The fallback `var()` graph for an element: its document's, plus its shadow root's. */
-function fallbackCustomRefs(el: Element): Map<string, Set<string>> {
-  const refs = rootCustomRefs(el.ownerDocument);
-  const root = el.getRootNode();
-  if (typeof ShadowRoot === 'undefined' || !(root instanceof ShadowRoot)) return refs;
-  const merged = new Map<string, Set<string>>();
-  for (const graph of [refs, rootCustomRefs(root)]) {
-    for (const [name, targets] of graph) {
-      const set = merged.get(name) ?? new Set<string>();
-      for (const t of targets) set.add(t);
-      merged.set(name, set);
-    }
-  }
-  return merged;
 }
 
 // ============================================================================

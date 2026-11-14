@@ -55,6 +55,15 @@ import type { ExtendedComputedStyles, TokenAttribution, TokenMatches } from '../
 import { REDACTED_VALUE, scrubContentRequired, verdictOf } from '../core/redaction';
 import { normalizeColor } from './css-color';
 import { emptyCoverage, type StylesheetCoverage } from './stylesheet-walk';
+import {
+  cssUnescape,
+  inlineNamesInScope,
+  referencesAnyOf,
+  rootCustomRefs,
+  varNames,
+} from './redaction-graph';
+
+export { cssUnescape, inlineNamesInScope, referencesAnyOf, varNames } from './redaction-graph';
 import { PROBE_CONTEXT_PROPERTIES, TokenProbe, type ProbeContext } from './token-probe';
 
 /** The design properties `tokenMatches` attributes: the ones tokens are made for. */
@@ -252,8 +261,13 @@ export interface DesignTokenIndex {
    * change on an ancestor never reaches its descendants: never a scope.
    */
   readonly universalNames: ReadonlySet<string>;
-  /** Custom property → the custom properties its rule declarations reference. */
-  readonly customRefs: ReadonlyMap<string, ReadonlySet<string>>;
+  /**
+   * The redaction graph of the document (`ai/redaction-graph.ts`): every
+   * rule's `var()` references, whatever its conditions. Built on first use —
+   * only when a custom property is set inline somewhere — then kept for the
+   * batch.
+   */
+  redactionRefs(): ReadonlyMap<string, ReadonlySet<string>>;
   /** Inherited property → selector → literal declarations of rules with that selector. */
   readonly literalSources: ReadonlyMap<
     TokenAttributedProperty,
@@ -270,8 +284,8 @@ export interface DesignTokenIndex {
 /** State one batch accumulates while its elements are read. */
 export interface TokenBatchState {
   computed: Map<Element, CSSStyleDeclaration>;
-  /** Per element, the inherited properties a winning literal declaration sets. */
-  literal: Map<Element, Map<TokenAttributedProperty, boolean>>;
+  /** Per element, whether a literal declaration of an inherited property won. */
+  literal: Map<Element, Map<TokenAttributedProperty, LiteralOutcome>>;
   /** Per element, which selectors it matches (literal lookup). */
   matches: Map<Element, Map<string, boolean>>;
   /** Per element, the custom properties set inline on it or an ancestor. */
@@ -285,6 +299,9 @@ export interface TokenBatchState {
   truncatedScopeValues: number;
   probe: TokenProbe;
 }
+
+/** Whether a literal declaration won the cascade on an element (see `literalOn`). */
+type LiteralOutcome = 'wins' | 'none' | 'unknown';
 
 /** Where an inherited value with no token derivation came from (see `TokenAttribution.inheritedFrom`). */
 type InheritedReason = 'literal' | 'unknown' | 'initial';
@@ -310,10 +327,6 @@ interface InheritedDerivation {
 
 const VAR_PATTERN = /var\(\s*--/i;
 
-/** A custom property name: `--` then name characters, non-ASCII, or escapes. */
-const CUSTOM_NAME = String.raw`--(?:[A-Za-z0-9_-]|[^\x00-\x7F]|\\[0-9a-fA-F]{1,6}\s?|\\[^\n0-9a-fA-F])+`;
-const VAR_NAMES = new RegExp(String.raw`var\(\s*(` + CUSTOM_NAME + ')', 'gi');
-
 /**
  * Whether a computed value that still contains `var()` counts as `derived`.
  * A browser substitutes `var()` in the computed value of a standard longhand,
@@ -329,20 +342,6 @@ export function setUnsubstitutedVarIsDerived(enabled: boolean): boolean {
   const previous = unsubstitutedVarIsDerived;
   unsubstitutedVarIsDerived = enabled;
   return previous;
-}
-
-/** Resolve CSS escapes in an identifier (`--a\\.b` → `--a.b`, `--\\31 x` → `--1x`). */
-function cssUnescape(ident: string): string {
-  return ident.replace(/\\([0-9a-fA-F]{1,6})\s?|\\(.)/g, (_m, hex: string, ch: string) =>
-    hex ? String.fromCodePoint(parseInt(hex, 16)) : ch
-  );
-}
-
-/** The custom property names a value references (`var(--a, var(--b))` → both). */
-export function varNames(value: string): string[] {
-  const names: string[] = [];
-  for (const m of value.matchAll(VAR_NAMES)) names.push(cssUnescape(m[1].trim()));
-  return names;
 }
 
 /** Whether a value is exactly one `var()` (with an optional fallback). */
@@ -776,58 +775,6 @@ function literalDeclarations(
   return found;
 }
 
-/** Record which custom properties each of `declared` references with `var()` in `style`. */
-export function recordCustomRefs(
-  style: CSSStyleDeclaration,
-  declared: readonly string[],
-  into: Map<string, Set<string>>
-): void {
-  for (const name of declared) {
-    const text = style.getPropertyValue(name);
-    if (!VAR_PATTERN.test(text)) continue;
-    let set = into.get(name);
-    if (!set) into.set(name, (set = new Set()));
-    for (const ref of varNames(text)) set.add(ref);
-  }
-}
-
-/**
- * Whether `name`'s declarations reference (through any chain of `var()`s) one
- * of `targets`. A rule value built from a custom property set from script
- * carries that script value.
- */
-export function referencesAnyOf(
-  name: string,
-  refs: ReadonlyMap<string, ReadonlySet<string>>,
-  targets: ReadonlySet<string>
-): boolean {
-  if (targets.size === 0) return false;
-  const seen = new Set<string>();
-  const stack = [name];
-  while (stack.length > 0) {
-    const next = stack.pop()!;
-    for (const ref of refs.get(next) ?? []) {
-      if (targets.has(ref)) return true;
-      if (!seen.has(ref)) {
-        seen.add(ref);
-        stack.push(ref);
-      }
-    }
-  }
-  return false;
-}
-
-/** The custom properties set inline on `el` or any ancestor, the root included. */
-export function inlineNamesInScope(el: Element): Set<string> {
-  const names = new Set<string>();
-  for (let node: Element | null = el; node; node = node.parentElement) {
-    const style = (node as HTMLElement).style as CSSStyleDeclaration | undefined;
-    if (!style) continue;
-    for (let i = 0; i < style.length; i++) if (style[i].startsWith('--')) names.add(style[i]);
-  }
-  return names;
-}
-
 /** Collects the token index during the stylesheet walk (`indexCustomProperties`). */
 export class TokenIndexBuilder {
   readonly names = new Set<string>();
@@ -836,8 +783,6 @@ export class TokenIndexBuilder {
   readonly coverage = emptyCoverage();
   /** Names a universal rule (`*`, `::before`, …) declares: reset on every element. */
   readonly universalNames = new Set<string>();
-  /** Custom property → the custom properties its declarations reference with `var()`. */
-  readonly customRefs = new Map<string, Set<string>>();
   /** Inherited property → selector → the literal declarations rules with it make. */
   readonly literalSources = new Map<TokenAttributedProperty, Map<string, LiteralDeclaration[]>>();
 
@@ -865,11 +810,9 @@ export class TokenIndexBuilder {
     declared: readonly string[],
     refs: ReferenceMap | null,
     elements: Iterable<Element>,
-    selector = '',
-    style?: CSSStyleDeclaration
+    selector = ''
   ): void {
     for (const name of declared) this.names.add(name);
-    if (style) recordCustomRefs(style, declared, this.customRefs);
     if (declared.length > 0 && isUniversalSelector(selector)) {
       for (const name of declared) this.universalNames.add(name);
     }
@@ -966,8 +909,8 @@ export class TokenIndexBuilder {
       inheritsCustomProperties,
       overrides: this.overrides,
       universalNames: this.universalNames,
-      customRefs: this.customRefs,
       literalSources: this.literalSources,
+      redactionRefs: lazily(() => rootCustomRefs(doc)),
       references: this.references,
       coverage: this.coverage,
       batch: {
@@ -986,6 +929,19 @@ export class TokenIndexBuilder {
       },
     };
   }
+}
+
+/** A value computed on first call, then returned as is. */
+function lazily<T>(compute: () => T): () => T {
+  let done = false;
+  let value: T;
+  return () => {
+    if (!done) {
+      value = compute();
+      done = true;
+    }
+    return value;
+  };
 }
 
 /** Release what a batch holds in the document (its probe). Safe to call more than once. */
@@ -1027,7 +983,9 @@ export function reportedTokensOf(index: DesignTokenIndex): ReportedTokens {
     // A stylesheet token built with var() from a script-set inline one
     // (`:root { --bg: var(--avatar) }`) carries the script value.
     const fromScript =
-      from === 'inline' || referencesAnyOf(name, index.customRefs, index.inlineRootNames);
+      from === 'inline' ||
+      (index.inlineRootNames.size > 0 &&
+        referencesAnyOf(name, index.redactionRefs(), index.inlineRootNames));
     const scrubbed = scrubContentRequired(fromScript ? scrubScriptValue(raw) : raw, verdict);
     const capped = capValue(scrubbed);
     if (capped.truncated) truncatedValues++;
@@ -1136,7 +1094,8 @@ function scopeIdOf(index: DesignTokenIndex, el: Element): string | null {
   let truncated = 0;
   for (const { name, inline } of changed.slice(0, MAX_SCOPE_OVERRIDES)) {
     const raw = resolvedToken(index, el, name);
-    const fromScript = inline || referencesAnyOf(name, index.customRefs, scriptNames);
+    const fromScript =
+      inline || (scriptNames.size > 0 && referencesAnyOf(name, index.redactionRefs(), scriptNames));
     const capped = capValue(
       scrubContentRequired(fromScript ? scrubScriptValue(raw) : raw, verdict)
     );
@@ -1334,18 +1293,27 @@ function matchesCached(index: DesignTokenIndex, el: Element, selector: string): 
   return result;
 }
 
+/** Pass-through applies to these only: their relative units reproduce the parent's value. */
+const RELATIVE_TO_PARENT: ReadonlySet<TokenAttributedProperty> = new Set([
+  'fontSize',
+  'lineHeight',
+  'letterSpacing',
+]);
+
 /**
  * Whether a literal declaration on `el` (inline, or a matching rule) sets
  * `prop` — one that WON the cascade: resolved through the probe, it computes
- * to the element's value. A relative literal that reproduces the parent's
- * value (`font-size: 100%`, `1em`) passes the inherited value through and
- * does not count.
+ * to the element's value (`'wins'`). A relative literal of font-size, line
+ * height or letter spacing, written as that longhand, that reproduces the
+ * parent's value (`font-size: 100%`, `1em`) passes the inherited value
+ * through and does not count. When no literal wins but one could not be
+ * resolved, the answer is `'unknown'`; with none, `'none'`.
  */
-function winningLiteralOn(
+function literalOn(
   index: DesignTokenIndex,
   el: Element,
   prop: TokenAttributedProperty
-): boolean {
+): LiteralOutcome {
   let perElement = index.batch.literal.get(el);
   if (!perElement) index.batch.literal.set(el, (perElement = new Map()));
   const cached = perElement.get(prop);
@@ -1355,7 +1323,7 @@ function winningLiteralOn(
   for (const [selector, found] of index.literalSources.get(prop) ?? []) {
     if (matchesCached(index, el, selector)) declarations.push(...found);
   }
-  let wins = false;
+  let outcome: LiteralOutcome = 'none';
   if (declarations.length > 0) {
     const computed = computedOf(index, el);
     const actual = computed.getPropertyValue(KEBAB[prop]).trim();
@@ -1364,18 +1332,28 @@ function winningLiteralOn(
       : '';
     const fontPx = parseFloat(computed.getPropertyValue('font-size')) || undefined;
     const context = probeContext(index, el);
-    wins = declarations.some(({ source, text }) => {
+    let unresolved = false;
+    for (const { source, text } of declarations) {
       const probed = index.batch.probe.resolve(source, text, [KEBAB[prop]], context);
-      if (!probed || probed[0] === '' || !equalValues(index, probed[0], actual, fontPx)) {
-        return false;
+      if (!probed || probed[0] === '') {
+        unresolved = true;
+        continue;
       }
+      if (!equalValues(index, probed[0], actual, fontPx)) continue;
       const passesThrough =
-        /%|[\d.](em|ex|ch)\b/i.test(text) && equalValues(index, actual, parentValue, fontPx);
-      return !passesThrough;
-    });
+        RELATIVE_TO_PARENT.has(prop) &&
+        source === KEBAB[prop] &&
+        /%|[\d.](em|ex|ch)\b/i.test(text) &&
+        equalValues(index, actual, parentValue, fontPx);
+      if (!passesThrough) {
+        outcome = 'wins';
+        break;
+      }
+    }
+    if (outcome !== 'wins' && unresolved) outcome = 'unknown';
   }
-  perElement.set(prop, wins);
-  return wins;
+  perElement.set(prop, outcome);
+  return outcome;
 }
 
 /**
@@ -1528,11 +1506,13 @@ function inheritedDerivation(
       };
     } else {
       // The var() did not produce the value: a literal may have won instead.
-      const reason = winningLiteralOn(index, el, prop) ? 'literal' : 'unknown';
+      const reason = literalOn(index, el, prop) === 'wins' ? 'literal' : 'unknown';
       outcome = { derivation: null, reason, capped: false };
     }
-  } else if (winningLiteralOn(index, el, prop)) {
-    outcome = { derivation: null, reason: 'literal', capped: false };
+  } else if (literalOn(index, el, prop) !== 'none') {
+    // A literal won here, or one could not be resolved: never `initial`.
+    const reason = literalOn(index, el, prop) === 'wins' ? 'literal' : 'unknown';
+    outcome = { derivation: null, reason, capped: false };
   } else if (!el.parentElement) {
     outcome = { derivation: null, reason: initialOrUnknown(index), capped: false };
   } else if (depth >= MAX_INHERITANCE_DEPTH) {
@@ -1586,7 +1566,14 @@ export function tokenMatchesOf(
       // The cheap check first; then an element whose own literal won the
       // cascade made a choice: not inherited.
       const step = inheritsUnchanged(index, el, parent, prop);
-      if (step && !winningLiteralOn(index, el, prop)) {
+      const literal = step ? literalOn(index, el, prop) : 'none';
+      if (step === 'same' && literal === 'unknown') {
+        // The element's own literal could not be resolved: it may be the
+        // value's origin, so the origin is unknown.
+        inheritedUnchanged = true;
+        entry.inherited = true;
+        entry.inheritedFrom = 'unknown';
+      } else if (step && literal === 'none') {
         const up = inheritedDerivation(index, parent, prop, 1);
         const derivation = throughStep(step, up.derivation);
         if (derivation) {
