@@ -198,9 +198,30 @@ describe('design-inspection routes · the browser path answers the full model', 
   it('getElementStyles collapses a redacted element’s label and generated content', async () => {
     const save = document.getElementById('dom-save')!;
     save.setAttribute('data-bridge-redact', 'true');
+    save.style.setProperty('--who', "'Alice Smith'");
+    save.style.setProperty('background-image', 'url("https://cdn.test/a.png?token=s3cr3t")');
     const data = await browser<ElementDesignData>('getElementStyles', { id: 'save' });
     expect(data.label).toBe(REDACTED_VALUE);
     expect(data.pseudoElements?.[0].content).toBe(REDACTED_VALUE);
+    // Token names stay (design data); every value collapses.
+    expect(data.customProperties?.['--who']).toBe(REDACTED_VALUE);
+    expect(data.customProperties?.['--brand-color']).toBe(REDACTED_VALUE);
+    expect(data.customProperties?.['--inline-token']).toBe(REDACTED_VALUE);
+    // The element still reports a background image, not which one.
+    expect(data.styles.backgroundImage).toBe(`url("${REDACTED_VALUE}")`);
+    const wire = JSON.stringify(data);
+    expect(wire).not.toContain('Alice');
+    expect(wire).not.toContain('s3cr3t');
+    expect(wire).not.toContain('cdn.test');
+  });
+
+  it('getElementStyles keeps custom-property values and URLs outside a redaction boundary', async () => {
+    const save = document.getElementById('dom-save')!;
+    save.style.setProperty('--who', "'Alice Smith'");
+    save.style.setProperty('background-image', 'url("https://cdn.test/a.png")');
+    const data = await browser<ElementDesignData>('getElementStyles', { id: 'save' });
+    expect(data.customProperties?.['--who']).toBe("'Alice Smith'");
+    expect(data.styles.backgroundImage).toContain('cdn.test/a.png');
   });
 
   // -------------------------------------------------------------- snapshot
@@ -219,6 +240,27 @@ describe('design-inspection routes · the browser path answers the full model', 
       elementIds: ['save'],
     });
     expect(without.elements[0].pseudoElements).toBeUndefined();
+  });
+
+  it('getDesignSnapshot reports unknown ids and elements it could not read', async () => {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    container.appendChild(svg);
+    getGlobalRegistry().registerElement('chart', svg as unknown as HTMLElement, {
+      type: 'generic',
+    });
+    const out = await browser<DesignSnapshotResponse>('getDesignSnapshot', {
+      elementIds: ['save', 'chart', 'ghost'],
+    });
+    expect(out.elements.map((e) => e.elementId)).toEqual(['save']);
+    expect(out).toMatchObject({
+      totalElements: 1,
+      returned: 1,
+      missingElementIds: ['ghost'],
+      unreadableElementIds: ['chart'],
+    });
+
+    const all = await browser<DesignSnapshotResponse>('getDesignSnapshot', {});
+    expect(all).toMatchObject({ missingElementIds: [], unreadableElementIds: ['chart'] });
   });
 
   it('getDesignSnapshot reports a truncation, and the caller raises the bound', async () => {
@@ -293,6 +335,57 @@ describe('design-inspection routes · the browser path answers the full model', 
     expect(root.hasAttribute('style')).toBe(false);
   });
 
+  it('two overlapping captures leave the root’s inline style exactly as before', async () => {
+    const root = document.documentElement;
+    root.setAttribute('style', 'color: red');
+    const before = root.style.cssText;
+    // The shorter capture first: unserialized, the longer one saves the
+    // shorter one's constraint as the page's original and restores it last.
+    const [a, b] = await Promise.all([
+      browser<ResponsiveSnapshotsResponse>('getResponsiveSnapshots', { viewports: [768] }),
+      browser<ResponsiveSnapshotsResponse>('getResponsiveSnapshots', { viewports: [320, 480] }),
+    ]);
+    expect(a.snapshots).toHaveLength(1);
+    expect(b.snapshots).toHaveLength(2);
+    expect(root.style.cssText).toBe(before);
+  });
+
+  it('a viewport constraint set during a capture is not undone by the capture’s restore', async () => {
+    const root = document.documentElement;
+    await Promise.all([
+      browser('getResponsiveSnapshots', { viewports: [320, 480] }),
+      browser('setViewportConstraints', { width: 500 }),
+    ]);
+    expect(root.style.getPropertyValue('max-width')).toBe('500px');
+    expect(root.style.getPropertyValue('width')).toBe('500px');
+  });
+
+  it('getResponsiveSnapshots completes in a tab that runs no animation frames', async () => {
+    vi.stubGlobal('requestAnimationFrame', () => 0);
+    try {
+      const out = await browser<ResponsiveSnapshotsResponse>('getResponsiveSnapshots', {
+        viewports: [320, 768],
+      });
+      expect(out.snapshots).toHaveLength(2);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  }, 2_000);
+
+  it('getResponsiveSnapshots refuses more than 16 viewports with UB-VALIDATION-ERROR on both transports', async () => {
+    const viewports = Array.from({ length: 17 }, (_, i) => 300 + i);
+    const server = await serverHandlers().getResponsiveSnapshots({ viewports });
+    const relay = await relayHandlers().getResponsiveSnapshots({ viewports });
+    expect(server.success).toBe(false);
+    expect(server.code).toBe('UB-VALIDATION-ERROR');
+    expect(server.error).toContain('at most 16 viewports');
+    expect({ success: relay.success, error: relay.error, code: relay.code }).toEqual({
+      success: server.success,
+      error: server.error,
+      code: server.code,
+    });
+  });
+
   it('getResponsiveSnapshots restores the root even when a capture throws', async () => {
     const root = document.documentElement;
     const save = document.getElementById('dom-save')!;
@@ -332,6 +425,52 @@ describe('design-inspection routes · the browser path answers the full model', 
     expect(report.failedCount).toBe(1);
     expect(report.summary.errors).toHaveLength(1);
     expect(report.summary.errors[0]).toMatchObject({ elementId: 'save', passed: false });
+  });
+
+  it('runDesignAudit lists failures only unless includePassed, and counts every result', async () => {
+    const guide: StyleGuideConfig = {
+      ...GUIDE,
+      rules: [
+        ...GUIDE.rules,
+        {
+          id: 'button-red',
+          elementType: 'button',
+          constraints: [{ type: 'exact', property: 'color', value: 'rgb(255, 0, 0)' }],
+        },
+      ],
+    };
+    const failures = await browser<DesignAuditResponse>('runDesignAudit', { guide });
+    if (failures.mode !== 'style-guide') throw new Error('expected style-guide mode');
+    expect(failures.results.map((r) => [r.ruleId, r.passed])).toEqual([
+      ['button-primary-color', false],
+    ]);
+    expect(failures).toMatchObject({ passedCount: 1, failedCount: 1, includePassed: false });
+
+    const all = await browser<DesignAuditResponse>('runDesignAudit', {
+      guide,
+      includePassed: true,
+    });
+    if (all.mode !== 'style-guide') throw new Error('expected style-guide mode');
+    expect(all.results).toHaveLength(2);
+    expect(all.includePassed).toBe(true);
+  });
+
+  it('runDesignAudit bounds the elements it checks and reports the cut, in both modes', async () => {
+    for (const guide of [GUIDE, undefined]) {
+      const report = await browser<DesignAuditResponse>('runDesignAudit', { guide, limit: 1 });
+      expect(report).toMatchObject({
+        totalElements: 3,
+        checkedElements: 1,
+        limit: 1,
+        truncated: true,
+      });
+    }
+    const whole = await browser<DesignAuditResponse>('runDesignAudit', { guide: GUIDE });
+    expect(whole).toMatchObject({ totalElements: 3, checkedElements: 3, truncated: false });
+
+    const refused = await relayHandlers().runDesignAudit({ limit: 0 } as never);
+    expect(refused.success).toBe(false);
+    expect(refused.code).toBe('UB-VALIDATION-ERROR');
   });
 
   it('runDesignAudit uses a guide loaded through the browser’s own loadStyleGuide', async () => {

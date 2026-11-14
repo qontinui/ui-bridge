@@ -55,21 +55,50 @@ export type DesignElementSource = QualityElementSource;
  *
  * 250 records keeps a response near 1 MB. `/design/snapshot` returns up to
  * this many elements; `/design/responsive` repeats every element once per
- * viewport, so it divides the budget by the viewport count. A caller who
- * knows its transport has room passes a larger `limit`.
+ * viewport, so it divides the budget by the viewport count (at most
+ * `MAX_RESPONSIVE_VIEWPORTS`). `/design/audit` checks up to this many
+ * elements. A caller who knows its transport has room passes a larger
+ * `limit`.
  */
 export const DEFAULT_DESIGN_RECORD_BUDGET = 250;
 
-/** How much of the selection a design-data response carries. */
-export interface DesignSelectionBounds {
+/** The most viewports one `/design/responsive` request may name. */
+export const MAX_RESPONSIVE_VIEWPORTS = 16;
+
+/** What the request selected, and what of it could not be read. */
+export interface DesignSelectionReport {
   /** Registered elements the request selected that have a live DOM node. */
   totalElements: number;
-  /** Elements whose design data this response carries. */
-  returned: number;
   /** The element bound applied: the request's `limit`, else the default. */
   limit: number;
-  /** `true` when `returned < totalElements` — the bound cut the selection. */
+  /** `true` when the bound cut the selection. */
   truncated: boolean;
+  /** Requested `elementIds` that name no registered element (empty without `elementIds`). */
+  missingElementIds: string[];
+  /**
+   * Selected registered elements whose node is not an `HTMLElement` (an SVG
+   * element, or none at all), so no design data was read for them. They are
+   * not counted in `totalElements`.
+   */
+  unreadableElementIds: string[];
+}
+
+/** How much of the selection a design-data response carries. */
+export interface DesignSelectionBounds extends DesignSelectionReport {
+  /** Elements whose design data this response carries. */
+  returned: number;
+}
+
+/** How much of the selection an audit checked. */
+export interface DesignAuditBounds extends DesignSelectionReport {
+  /** Elements the audit checked. */
+  checkedElements: number;
+  /**
+   * Whether passing rule results are listed. Off by default: only failures
+   * are, so the report grows with the violations rather than the page.
+   * `passedCount` / `failedCount` always count every result.
+   */
+  includePassed: boolean;
 }
 
 // ============================================================================
@@ -98,6 +127,10 @@ export interface DesignAuditRequest {
   /** Audit against this guide; else the loaded one; else run the heuristics. */
   guide?: StyleGuideConfig;
   elementIds?: string[];
+  /** Most elements to audit; default `DEFAULT_DESIGN_RECORD_BUDGET`. */
+  limit?: number;
+  /** List passing rule results too (style-guide mode); default `false`. */
+  includePassed?: boolean;
 }
 
 // ============================================================================
@@ -127,7 +160,8 @@ export interface ResponsiveSnapshotsResponse extends DesignSelectionBounds {
 }
 
 /** `/design/audit` answer when a style guide was provided or loaded. */
-export interface StyleGuideDesignAuditReport extends StyleAuditReport {
+export interface StyleGuideDesignAuditReport
+  extends Omit<StyleAuditReport, 'totalElements'>, DesignAuditBounds {
   mode: 'style-guide';
 }
 
@@ -144,13 +178,10 @@ export interface HeuristicDesignAuditIssue {
  * heuristics (contrast, dark-mode `<select>`, font size, touch target), never a
  * style-guide verdict. `mode` says which one the caller got.
  */
-export interface HeuristicDesignAuditReport {
+export interface HeuristicDesignAuditReport extends DesignAuditBounds {
   mode: 'heuristic';
   /** Why the heuristic ran instead of a style-guide audit. */
   reason: string;
-  /** Selected registered elements with a live DOM node; all of them are checked. */
-  totalElements: number;
-  checkedElements: number;
   issues: HeuristicDesignAuditIssue[];
   timestamp: number;
 }
@@ -250,6 +281,14 @@ function viewportsOf(body: RequestBody, route: string): Record<string, number> |
         'each width a finite number greater than 0'
     );
   }
+  const count = Array.isArray(viewports)
+    ? viewports.length
+    : Object.keys(viewports as RequestBody).length;
+  if (count > MAX_RESPONSIVE_VIEWPORTS) {
+    throw new DesignRequestError(
+      `${route}: at most ${MAX_RESPONSIVE_VIEWPORTS} viewports per request (got ${count})`
+    );
+  }
   return viewports as Record<string, number> | number[];
 }
 
@@ -268,33 +307,50 @@ function guideOf(body: RequestBody, route: string): StyleGuideConfig | undefined
 
 type LiveSource = DesignElementSource & { element: HTMLElement };
 
+interface Selection {
+  /** Selected elements with an `HTMLElement` node, in registry order. */
+  live: LiveSource[];
+  missingElementIds: string[];
+  unreadableElementIds: string[];
+}
+
 /**
- * The selected registered elements that have a live DOM node, in registry
- * order (all of them when `elementIds` is absent).
+ * The selected registered elements (all of them when `elementIds` is absent),
+ * split into those with a live `HTMLElement` node and those without, plus the
+ * requested ids that name no registered element.
  */
-function liveSelection(
+function selectElements(
   elements: readonly DesignElementSource[],
   elementIds: readonly string[] | undefined
-): LiveSource[] {
+): Selection {
   const wanted = elementIds ? new Set(elementIds) : null;
-  return elements.filter(
-    (el): el is LiveSource =>
-      (wanted === null || wanted.has(el.id)) && el.element instanceof HTMLElement
-  );
+  const live: LiveSource[] = [];
+  const unreadableElementIds: string[] = [];
+  const seen = new Set<string>();
+  for (const el of elements) {
+    if (wanted !== null && !wanted.has(el.id)) continue;
+    seen.add(el.id);
+    if (el.element instanceof HTMLElement) live.push(el as LiveSource);
+    else unreadableElementIds.push(el.id);
+  }
+  const missingElementIds = wanted ? [...wanted].filter((id) => !seen.has(id)) : [];
+  return { live, missingElementIds, unreadableElementIds };
 }
 
 function bounded(
-  live: LiveSource[],
+  selection: Selection,
   limit: number
-): { kept: LiveSource[]; bounds: DesignSelectionBounds } {
+): { kept: LiveSource[]; report: DesignSelectionReport } {
+  const { live, missingElementIds, unreadableElementIds } = selection;
   const kept = live.slice(0, limit);
   return {
     kept,
-    bounds: {
+    report: {
       totalElements: live.length,
-      returned: kept.length,
       limit,
       truncated: kept.length < live.length,
+      missingElementIds,
+      unreadableElementIds,
     },
   };
 }
@@ -337,10 +393,11 @@ export function designSnapshotOf(
   const elementIds = elementIdsOf(body, route);
   const includePseudoElements = booleanOf(body, 'includePseudoElements', route);
   const limit = limitOf(body, route) ?? DEFAULT_DESIGN_RECORD_BUDGET;
-  const { kept, bounds } = bounded(liveSelection(elements, elementIds), limit);
+  const { kept, report } = bounded(selectElements(elements, elementIds), limit);
   return {
     elements: collectDesignData(kept, undefined, { includePseudoElements }),
-    ...bounds,
+    ...report,
+    returned: kept.length,
     timestamp: Date.now(),
   };
 }
@@ -362,7 +419,7 @@ export async function responsiveSnapshotsOf(
   const viewportCount = Array.isArray(viewports) ? viewports.length : Object.keys(viewports).length;
   const limit =
     limitOf(body, route) ?? Math.max(1, Math.floor(DEFAULT_DESIGN_RECORD_BUDGET / viewportCount));
-  const { kept, bounds } = bounded(liveSelection(elements, elementIds), limit);
+  const { kept, report } = bounded(selectElements(elements, elementIds), limit);
   const snapshots = await captureResponsiveSnapshots(
     {
       getAllElements: () =>
@@ -380,18 +437,23 @@ export async function responsiveSnapshotsOf(
     method: RESPONSIVE_SNAPSHOT_METHOD,
     mediaQueriesReevaluated: false,
     windowInnerWidth: window.innerWidth,
-    ...bounds,
+    ...report,
+    returned: kept.length,
     timestamp: Date.now(),
   };
 }
 
 /**
  * Answer `/design/audit`. With a guide — the request's `guide`, else the one
- * the transport has loaded — every selected element's full design data is
+ * the transport has loaded — the selected elements' full design data is
  * audited against it (`runStyleAudit`), `mode: 'style-guide'`. With none, the
- * built-in heuristics run over every selected element, `mode: 'heuristic'`.
- * No element is skipped in either mode: the report is per finding, not per
- * element, so its size follows the violations rather than the page.
+ * built-in heuristics run, `mode: 'heuristic'`.
+ *
+ * `runStyleAudit` yields one result per matched element x rule, passes
+ * included, so an unbounded report grows with the page. Both modes therefore
+ * check at most `limit` elements (default `DEFAULT_DESIGN_RECORD_BUDGET`) and
+ * report the cut, and the style-guide mode lists only failed results unless
+ * `includePassed` is set (its counts always cover every result).
  */
 export function designAuditOf(
   elements: readonly DesignElementSource[],
@@ -402,16 +464,24 @@ export function designAuditOf(
   const body = bodyOf(request, route);
   const elementIds = elementIdsOf(body, route);
   const guide = guideOf(body, route) ?? loadedGuide ?? undefined;
-  const live = liveSelection(elements, elementIds);
+  const limit = limitOf(body, route) ?? DEFAULT_DESIGN_RECORD_BUDGET;
+  const includePassed = booleanOf(body, 'includePassed', route) ?? false;
+  const { kept, report } = bounded(selectElements(elements, elementIds), limit);
+  const bounds: DesignAuditBounds = { ...report, checkedElements: kept.length, includePassed };
   if (guide) {
-    return { mode: 'style-guide', ...runStyleAudit(collectDesignData(live), guide) };
+    const { totalElements: _audited, ...audit } = runStyleAudit(collectDesignData(kept), guide);
+    return {
+      mode: 'style-guide',
+      ...audit,
+      results: includePassed ? audit.results : audit.results.filter((r) => !r.passed),
+      ...bounds,
+    };
   }
   return {
     mode: 'heuristic',
     reason: 'No style guide was provided in the request or loaded with loadStyleGuide',
-    totalElements: live.length,
-    checkedElements: live.length,
-    issues: live.flatMap((el) => heuristicIssues(el.id, el.type, el.element)),
+    ...bounds,
+    issues: kept.flatMap((el) => heuristicIssues(el.id, el.type, el.element)),
     timestamp: Date.now(),
   };
 }

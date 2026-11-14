@@ -17,7 +17,8 @@ import type {
   ResponsiveSnapshot,
 } from '../core/types';
 import { classString } from '../core/class-name';
-import { scrubContent, scrubContentRequired, verdictOf } from '../core/redaction';
+import { REDACTED_VALUE, scrubContent, scrubContentRequired, verdictOf } from '../core/redaction';
+import { withRootWidthLock } from '../core/root-width-lock';
 import {
   forcePseudoState,
   reapplyIfIdle,
@@ -128,16 +129,39 @@ export const DEFAULT_VIEWPORTS: Record<string, number> = {
 export function getExtendedComputedStyles(el: HTMLElement): ExtendedComputedStyles {
   const computed = window.getComputedStyle(el);
   const styles = {} as ExtendedComputedStyles;
+  const redacted = verdictOf(el).content;
 
   for (const prop of DESIGN_PROPERTIES) {
     // CSSStyleDeclaration uses camelCase property access
-    styles[prop] =
+    const value =
       computed.getPropertyValue(camelToKebab(prop)) ||
       (computed as unknown as Record<string, string>)[prop] ||
       '';
+    styles[prop] = redacted ? scrubStyleUrls(value) : value;
   }
 
   return styles;
+}
+
+/**
+ * §4.6 CONTENT axis for computed style values: every `url(…)` reference of a
+ * content-redacted element becomes `url("[REDACTED]")`.
+ *
+ * A URL names the resource the element shows — an avatar keyed by a user, a
+ * document preview, a signed URL whose query carries a bearer token — which is
+ * content, not design. Scrubbing only the query would still leak the path. The
+ * rest of the value (gradient layers, `cursor` keyword fallbacks) is design
+ * data and stays, so a redacted element still reports THAT it has a
+ * background image and how it is layered. Values without `url(` are
+ * untouched. Elements outside a redaction boundary keep their URLs, as every
+ * other projection keeps their content.
+ */
+function scrubStyleUrls(value: string): string {
+  if (!value.includes('url(')) return value;
+  return value.replace(
+    /url\(\s*(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^)]*)\s*\)/g,
+    `url("${REDACTED_VALUE}")`
+  );
 }
 
 /**
@@ -334,7 +358,17 @@ const CONSTRAINED_ROOT_PROPERTIES = [
  * which rules declare them does not depend on the width, only their computed
  * values do, and those are read per viewport.
  */
-export async function captureResponsiveSnapshots(
+export function captureResponsiveSnapshots(
+  registry: DesignRegistryLike,
+  viewports: Record<string, number> | number[]
+): Promise<ResponsiveSnapshot[]> {
+  // Serialized with every other root-width mutation (`core/root-width-lock`):
+  // an overlapping capture would otherwise save this one's constraint as the
+  // page's original and restore it last.
+  return withRootWidthLock(() => captureUnderRootWidthLock(registry, viewports));
+}
+
+async function captureUnderRootWidthLock(
   registry: DesignRegistryLike,
   viewports: Record<string, number> | number[]
 ): Promise<ResponsiveSnapshot[]> {
@@ -555,12 +589,19 @@ export function getCSSCustomProperties(
 ): Record<string, string> {
   const result: Record<string, string> = {};
   const computed = window.getComputedStyle(el);
+  // §4.6 CONTENT axis: a custom property can hold page text
+  // (`--who: 'Alice Smith'` feeding `content: var(--who)`) or a URL, so a
+  // content-redacted element reports its token NAMES with every value
+  // collapsed.
+  const verdict = verdictOf(el);
+  const read = (prop: string): string =>
+    scrubContentRequired(computed.getPropertyValue(prop).trim(), verdict);
 
   // 1. Inline style custom properties
   for (let i = 0; i < el.style.length; i++) {
     const prop = el.style[i];
     if (prop.startsWith('--')) {
-      result[prop] = computed.getPropertyValue(prop).trim();
+      result[prop] = read(prop);
     }
   }
 
@@ -571,7 +612,7 @@ export function getCSSCustomProperties(
       : matchedCustomProperties(el);
   for (const prop of declared) {
     // Use getComputedStyle for resolved value
-    result[prop] = computed.getPropertyValue(prop).trim();
+    result[prop] = read(prop);
   }
 
   return result;
@@ -633,13 +674,14 @@ function getPseudoElementStyles(
   }
 
   const styles: Partial<ExtendedComputedStyles> = {};
+  const redacted = verdictOf(el).content;
   for (const prop of DESIGN_PROPERTIES) {
     const val =
       computed.getPropertyValue(camelToKebab(prop)) ||
       (computed as unknown as Record<string, string>)[prop] ||
       '';
     if (val) {
-      styles[prop] = val;
+      styles[prop] = redacted ? scrubStyleUrls(val) : val;
     }
   }
 
@@ -722,10 +764,15 @@ async function applyInteractionState(
  */
 function waitFrame(): Promise<void> {
   return new Promise((resolve) => {
+    // A hidden tab runs no animation frames, so the frame is raced with a
+    // timer: whichever comes first resolves (resolving twice is a no-op).
+    setTimeout(resolve, FRAME_FALLBACK_MS);
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => resolve());
-    else setTimeout(resolve, 0);
   });
 }
+
+/** How long `waitFrame` waits for an animation frame before going on without one. */
+const FRAME_FALLBACK_MS = 50;
 
 /**
  * Parse a CSS color value to [r, g, b] (0-255 range)

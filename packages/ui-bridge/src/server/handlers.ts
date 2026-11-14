@@ -218,6 +218,7 @@ import type { RelationshipTracker } from '../relationships';
 import type { DragDropDetector } from '../drag-drop';
 import type { UndoTracker } from '../undo';
 import type { StyleGuideConfig } from '../specs/style-types';
+import { withRootWidthLock } from '../core/root-width-lock';
 import {
   designAuditOf,
   designFailureCode,
@@ -5101,21 +5102,25 @@ export function createHandlers(
       }>
     > => {
       try {
-        const root = document.documentElement;
-        if (request.restore) {
-          root.style.removeProperty('max-width');
-          root.style.removeProperty('margin');
-          root.style.removeProperty('overflow-x');
-        } else if (request.width && request.width > 0) {
-          root.style.maxWidth = `${request.width}px`;
-          root.style.margin = '0 auto';
-          root.style.overflowX = 'hidden';
-        }
-        return success({
-          success: true,
-          viewportWidth: window.innerWidth,
-          constrainedWidth: root.clientWidth,
-          timestamp: Date.now(),
+        // Serialized with responsive captures (`core/root-width-lock`), which
+        // would otherwise restore over a constraint set mid-capture.
+        return await withRootWidthLock(() => {
+          const root = document.documentElement;
+          if (request.restore) {
+            root.style.removeProperty('max-width');
+            root.style.removeProperty('margin');
+            root.style.removeProperty('overflow-x');
+          } else if (request.width && request.width > 0) {
+            root.style.maxWidth = `${request.width}px`;
+            root.style.margin = '0 auto';
+            root.style.overflowX = 'hidden';
+          }
+          return success({
+            success: true,
+            viewportWidth: window.innerWidth,
+            constrainedWidth: root.clientWidth,
+            timestamp: Date.now(),
+          });
         });
       } catch (err) {
         return error((err as Error).message, 'VIEWPORT_CONSTRAINTS_ERROR');
