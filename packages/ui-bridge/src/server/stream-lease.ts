@@ -35,8 +35,9 @@ export type StreamEndReason =
 
 /**
  * The default lease of a stream whose client declared `rotate`, in ms. A
- * numeric literal on purpose: qontinui-web restates it beside its own copy of
- * the client's reconnect delay, reading the bundled `name = <literal>;`.
+ * numeric literal on purpose: Phase 7 of the plan makes qontinui-web restate
+ * it beside its own copy of the client's reconnect delay, reading the bundled
+ * `name = <literal>;`.
  */
 export const STREAM_LEASE_MS = 50_000;
 
@@ -47,11 +48,21 @@ export const LEGACY_STREAM_LEASE_MS = 270_000;
 export const ROTATE_GRACE_MS = 10_000;
 
 /**
- * The shortest lease the relay runs: the client's reconnect delay
- * (`SSE_RECONNECT_DELAY_MS` in relay-client.ts). A shorter one would end
- * streams faster than a legacy client reopens them.
+ * The shortest lease the relay runs. It sits above the 10 s a client's stream
+ * must live to count as healthy and be reopened at once (Phase 4 of the plan),
+ * with margin: a shorter lease would end every stream before it qualified, and
+ * each rotation would then wait out the client's 10 s reconnect delay.
  */
-export const STREAM_LEASE_FLOOR_MS = 10_000;
+export const STREAM_LEASE_FLOOR_MS = 15_000;
+
+/**
+ * How long a tab whose stream the server closed at its lease (a legacy close,
+ * or a rotate nobody answered) keeps its place for its return: its tombstone,
+ * its standing and its owner. The client's reconnect delay
+ * (`SSE_RECONNECT_DELAY_MS` in relay-client.ts, 10 s) plus 5 s, so a legacy
+ * client's reopen counts as the same tab returning, not a new one.
+ */
+export const LEASE_RETURN_GRACE_MS = 15_000;
 
 /**
  * The command stream's high-water mark, in chunks. The consumer-progress check
@@ -184,6 +195,11 @@ export interface CommandStreamLeaseOptions {
    * `slotActionForEnd`.
    */
   onEnd: (reason: StreamEndReason) => void;
+  /**
+   * Called once the `rotate` frame is on the stream: the client is opening its
+   * next stream, which may land on another instance (review A2).
+   */
+  onRotate?: () => void;
 }
 
 /**
@@ -288,5 +304,6 @@ export class CommandStreamLease {
   private rotate(graceMs: number): void {
     if (!this.write(rotateFrame(this.streamId, graceMs))) return;
     this.leaseTimer = setTimeout(() => this.end('rotate_unanswered'), graceMs);
+    this.options.onRotate?.();
   }
 }

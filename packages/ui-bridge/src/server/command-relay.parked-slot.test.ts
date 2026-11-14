@@ -367,6 +367,21 @@ class FakeRedisClient {
     return 1;
   }
 
+  async pexpireat(key: string, unixTimeMs: number): Promise<number> {
+    this.server.keyExpiry.set(key, Number(unixTimeMs));
+    return 1;
+  }
+
+  /** ZRANGE by rank, ascending by score, `WITHSCORES` flattening each member and its score. */
+  async zrange(key: string, start: number, stop: number, withScores?: string): Promise<string[]> {
+    const ranked = [...(this.sortedSet(key, false)?.entries() ?? [])].sort((a, b) => a[1] - b[1]);
+    const at = (index: number) => (index < 0 ? ranked.length + index : index);
+    const slice = ranked.slice(at(start), at(stop) + 1);
+    return slice.flatMap(([member, score]) =>
+      withScores === 'WITHSCORES' ? [member, String(score)] : [member]
+    );
+  }
+
   async quit(): Promise<'OK'> {
     return 'OK';
   }
@@ -381,6 +396,48 @@ function redisBus(server: FakeRedisServer, label: string): RelayBus {
   const pub = server.client(label);
   const Bus = RedisRelayBus as unknown as new (pub: unknown, sub: unknown) => RelayBus;
   return new Bus(pub, pub.duplicate());
+}
+
+/**
+ * The tab presence of an instance still running the version before per-holder
+ * presence: one string key per tab, `uibridge:tab:<id>`, SET, DELeted and read
+ * with EXISTS, as that version's `RedisRelayBus` kept it.
+ */
+function oldShapePresence(
+  client: FakeRedisClient
+): Pick<RelayBus, 'registerTab' | 'unregisterTab' | 'isTabKnown'> {
+  return {
+    registerTab: (tabId, ttlSeconds) =>
+      void client.set(`uibridge:tab:${tabId}`, '1', 'EX', ttlSeconds),
+    unregisterTab: (tabId) => void client.del(`uibridge:tab:${tabId}`),
+    isTabKnown: async (tabId) => (await client.exists(`uibridge:tab:${tabId}`)) > 0,
+  };
+}
+
+/**
+ * A WebSocket client for `tabId` on `relay` that answers every command it is
+ * sent (as a page would, a turn later) and logs each action.
+ */
+function webSocketTab(
+  relay: CommandRelay,
+  tabId: string,
+  answer: Record<string, () => unknown>
+): { actions: string[] } {
+  const actions: string[] = [];
+  relay.registerWebSocketClient({
+    clientId: tabId,
+    isConnected: () => true,
+    close: () => undefined,
+    send: (message) => {
+      const { commandId, action } = JSON.parse(message) as { commandId: string; action: string };
+      actions.push(action);
+      const result = answer[action]?.();
+      if (result !== undefined) {
+        void Promise.resolve().then(() => relay.resolveCommand(commandId, result, tabId));
+      }
+    },
+  });
+  return { actions };
 }
 
 const NOT_DELIVERED_GET_TAB_INFO =
@@ -915,6 +972,122 @@ describe('relay parked slot · a scoped primary is never a dead slot (ownedPrima
   });
 });
 
+describe('relay lease close · the tab keeps its place for its return (review A1)', () => {
+  /** A snapshot with one element: an answered warm-up marks its tab. */
+  const SNAPSHOT = () => ({
+    timestamp: T0,
+    elements: [{ id: 'e', type: 'button', tagName: 'button', label: 'e', actions: [], state: {} }],
+    components: [],
+    workflows: [],
+  });
+
+  /** The tab's warm-up generation (Phase 3), read off the relay. */
+  function generationOf(relay: CommandRelay, tabId: string): number | undefined {
+    return (relay as unknown as { tabGenerations: Map<string, number> }).tabGenerations.get(tabId);
+  }
+
+  /** Run the clock `ms` forward in 10 s steps, each tab in `tabIds` beating at every step. */
+  async function beating(relay: CommandRelay, ms: number, ...tabIds: string[]): Promise<void> {
+    for (let left = ms; left > 0; left -= 10_000) {
+      await vi.advanceTimersByTimeAsync(Math.min(10_000, left));
+      for (const tabId of tabIds) relay.receiveHeartbeat(tabId);
+    }
+  }
+
+  it.each([
+    [
+      'a legacy lease close (no caps), reopened by the legacy client',
+      undefined,
+      undefined,
+      270_000,
+    ],
+    ['a rotate nobody answered, reopened by the same page', 'rotate', 'page-a', 60_000],
+  ])(
+    '%s 10 s later: the same primary, the same owner, the same generation, and no warm-up',
+    async (_label, caps, cid, closesAt) => {
+      const { relay, routes } = rig({ proactiveSnapshot: true });
+      // Another tab, on a WebSocket: it has no lease, and it is where an
+      // unpinned command goes while tab-a is away.
+      webSocketTab(relay, 'tab-b', {
+        getControlSnapshot: SNAPSHOT,
+        getTabInfo: () => ({ title: 'tab-b' }),
+      });
+      const stream = {
+        ...(caps === undefined ? {} : { caps }),
+        ...(cid === undefined ? {} : { cid }),
+        answer: { getControlSnapshot: SNAPSHOT },
+      };
+      const first = await openStream(routes, relay, 'tab-a', stream);
+      relay.recordRegistration('tab-a', { userId: 'u1', sessionId: 'session-a' });
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(first.actions).toEqual(['getControlSnapshot']); // its warm-up, answered
+      expect(relay.getTransportDiagnostics().primaryTabId).toBe('tab-a');
+      const owner = { ...relay.getOwnership('tab-a') };
+      const generation = generationOf(relay, 'tab-a');
+
+      // Both tabs beat, so both are live, up to tab-a's lease close.
+      await beating(relay, closesAt - 2_000, 'tab-a', 'tab-b');
+      expect(first.done()).toBe(true);
+
+      // While it is away, an unpinned command goes to tab-b, live, and still
+      // nothing takes tab-a's standing.
+      expect(relay.getTransportDiagnostics().primaryTabId).toBe('tab-b');
+      const unpinned = track(relay.queueCommand('getTabInfo', {}));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(unpinned).toEqual({ settled: true, value: { title: 'tab-b' } });
+
+      await beating(relay, 10_000, 'tab-b');
+      const second = await openStream(routes, relay, 'tab-a', stream);
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      expect({
+        primary: relay.getTransportDiagnostics().primaryTabId,
+        owner: relay.getOwnership('tab-a'),
+        generation: generationOf(relay, 'tab-a'),
+        warmUps: second.actions,
+      }).toEqual({ primary: 'tab-a', owner, generation, warmUps: [] });
+    }
+  );
+
+  it('a tab that reopens after its lease close does not take the primary from a newer, live tab', async () => {
+    const { relay, routes } = rig();
+    await openStream(routes, relay, 'tab-a'); // a legacy stream: closed at 270 s
+    await beating(relay, 20_000, 'tab-a');
+    await openStream(routes, relay, 'tab-b'); // newer: the primary; closed at 290 s
+    expect(relay.getTransportDiagnostics().primaryTabId).toBe('tab-b');
+
+    await beating(relay, 260_000, 'tab-a', 'tab-b'); // tab-a's lease closes at 270 s
+    await openStream(routes, relay, 'tab-a'); // its client reopens at 280 s
+
+    expect(relay.getTransportDiagnostics().primaryTabId).toBe('tab-b');
+  });
+
+  it('an awaited tab keeps its owner through the 15 000 ms window, however old its last heartbeat, and loses it when the window ends without its return', async () => {
+    const { relay, routes } = rig();
+    await openStream(routes, relay, 'tab-a');
+    relay.recordRegistration('tab-a', { userId: 'u1', sessionId: 'session-a' });
+    // Its last heartbeat: 270 s old at the lease close, past the 60 s after
+    // which the sweep forgets a tab that holds no transport.
+    relay.receiveHeartbeat('tab-a');
+
+    await vi.advanceTimersByTimeAsync(270_000 + 14_999);
+    expect(relay.getOwnership('tab-a')).not.toBeNull();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(relay.getOwnership('tab-a')).toBeNull();
+  });
+
+  it('the window ends with the tab forgotten when the periodic sweep runs in the same millisecond', async () => {
+    // The sweep runs every 10 s from the first registration. This lease closes
+    // at 275 s, so the window ends at 290 s, on a sweep, which is due first.
+    const { relay, routes } = rig({ legacyStreamLeaseMs: 275_000 });
+    await openStream(routes, relay, 'tab-a');
+    relay.recordRegistration('tab-a', { userId: 'u1', sessionId: 'session-a' });
+
+    await vi.advanceTimersByTimeAsync(290_000);
+    expect(relay.getOwnership('tab-a')).toBeNull();
+  });
+});
+
 describe('RedisRelayBus · tab presence is per holder', () => {
   it('an instance withdraws only its own hold, and a lapsed hold counts for nothing', async () => {
     const server = new FakeRedisServer();
@@ -936,41 +1109,85 @@ describe('RedisRelayBus · tab presence is per holder', () => {
   });
 });
 
+describe('RedisRelayBus · presence across a rolling deploy, and the key’s life (review A3, A7)', () => {
+  it('A3 · a holder of this version is seen by an instance of the old shape', async () => {
+    const server = new FakeRedisServer();
+    const current = redisBus(server, 'N');
+    const old = oldShapePresence(server.client('O'));
+
+    current.registerTab('tab-a', 60);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await old.isTabKnown('tab-a')).toBe(true);
+    current.unregisterTab('tab-a');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await old.isTabKnown('tab-a')).toBe(false);
+  });
+
+  it('A3 · a holder of the old shape is seen by this version', async () => {
+    const server = new FakeRedisServer();
+    const current = redisBus(server, 'N');
+    const old = oldShapePresence(server.client('O'));
+
+    old.registerTab('tab-a', 60);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await current.isTabKnown('tab-a')).toBe(true);
+    old.unregisterTab('tab-a');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await current.isTabKnown('tab-a')).toBe(false);
+  });
+
+  it('A7 · a holder refreshing with a shorter TTL cannot expire the key before another holder’s longer hold', async () => {
+    const server = new FakeRedisServer();
+    const [a, b] = [redisBus(server, 'A'), redisBus(server, 'B')];
+
+    a.registerTab('tab-a', 60);
+    await vi.advanceTimersByTimeAsync(0);
+    b.registerTab('tab-a', 10);
+    await vi.advanceTimersByTimeAsync(0);
+
+    vi.setSystemTime(T0 + 30_000);
+    expect(await b.isTabKnown('tab-a')).toBe(true);
+    vi.setSystemTime(T0 + 60_000);
+    expect(await b.isTabKnown('tab-a')).toBe(false);
+  });
+});
+
 describe('relay parked slot · across instances, a dead slot gives up its bus membership at death', () => {
+  /** Answers `getTabInfo`, logging which instance's stream ran it. */
+  function answerOn(instance: string, ran: string[]): Record<string, () => unknown> {
+    return {
+      getTabInfo: () => {
+        ran.push(instance);
+        return { title: `answered on ${instance}` };
+      },
+    };
+  }
+
   it('11 · A’s slot dies while the replacement holds the tab on B: A unsubscribes, the tab stays known through B, A’s expiry leaves B’s presence, and a command for the tab runs once, on B', async () => {
     const server = new FakeRedisServer();
     const busA = redisBus(server, 'A');
     const a = rig({ bus: busA });
     const b = rig({ bus: redisBus(server, 'B') });
     const ran: string[] = [];
-    const answer = (instance: string) => ({
-      getTabInfo: () => {
-        ran.push(instance);
-        return { title: `answered on ${instance}` };
-      },
-    });
 
     // The page's stream lands on A; at the lease A asks it to rotate, and the
-    // page's next stream lands on B. A never sees that replacement.
+    // page's next stream lands on B. The page then lets its old stream go (its
+    // consumer cancels): A hears that end and parks the slot.
     const onA = await openStream(a.routes, a.relay, 'tab-a', {
       caps: 'rotate,dedupe',
       cid: 'page-1',
-      answer: answer('A'),
+      answer: answerOn('A', ran),
     });
     await vi.advanceTimersByTimeAsync(50_000);
     await openStream(b.routes, b.relay, 'tab-a', {
       caps: 'rotate,dedupe',
       cid: 'page-1',
-      answer: answer('B'),
+      answer: answerOn('B', ran),
     });
-    expect(server.subscribers('uibridge:cmd:tab:tab-a')).toEqual(['A.sub', 'B.sub']);
-
-    // So A's stream ends `rotate_unanswered` at the lease plus the grace.
-    await vi.advanceTimersByTimeAsync(10_000);
-    expect(onA.done()).toBe(true);
+    await onA.cancel();
     expect(a.relay.getTransportDiagnostics().parkedTabs).toEqual(['tab-a']);
 
-    // At death A dropped its bus command subscription, and the tab is still
+    // At death A holds no bus command subscription, and the tab is still
     // known to the fleet, through B.
     expect(server.subscribers('uibridge:cmd:tab:tab-a')).toEqual(['B.sub']);
     expect(await busA.isTabKnown('tab-a')).toBe(true);
@@ -990,5 +1207,140 @@ describe('relay parked slot · across instances, a dead slot gives up its bus me
     await vi.advanceTimersByTimeAsync(0);
     expect(afterExpiry).toEqual({ settled: true, value: { title: 'answered on B' } });
     expect(ran).toEqual(['B', 'B']);
+  });
+
+  it('11b · during a cross-instance rotation a command published from a third instance runs once, on the replacement: the rotated stream left the bus at its rotate frame (review A2)', async () => {
+    const server = new FakeRedisServer();
+    const a = rig({ bus: redisBus(server, 'A') });
+    const b = rig({ bus: redisBus(server, 'B') });
+    const c = rig({ bus: redisBus(server, 'C') });
+    const ran: string[] = [];
+
+    await openStream(a.routes, a.relay, 'tab-a', {
+      caps: 'rotate,dedupe',
+      cid: 'page-1',
+      answer: answerOn('A', ran),
+    });
+    await vi.advanceTimersByTimeAsync(50_000); // A sends its rotate frame
+    await openStream(b.routes, b.relay, 'tab-a', {
+      caps: 'rotate,dedupe',
+      cid: 'page-1',
+      answer: answerOn('B', ran),
+    });
+
+    // Inside the window: A's stream is draining, B's is up. C publishes.
+    const fromC = track(c.relay.queueCommand('getTabInfo', {}, { targetTabId: 'tab-a' }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fromC).toEqual({ settled: true, value: { title: 'answered on B' } });
+    expect(ran).toEqual(['B']);
+    expect(server.subscribers('uibridge:cmd:tab:tab-a')).toEqual(['B.sub']);
+
+    // A keeps its own dispatch until its stream ends: a command dispatched on
+    // A goes down its draining stream.
+    const onA = track(a.relay.queueCommand('getTabInfo', {}, { targetTabId: 'tab-a' }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onA).toEqual({ settled: true, value: { title: 'answered on A' } });
+    expect(ran).toEqual(['B', 'A']);
+  });
+
+  it('11c · a rotate nobody answered on A while the page streams on B: A awaits the tab, and a command for it dispatched on A goes over the bus to B (control)', async () => {
+    const server = new FakeRedisServer();
+    const a = rig({ bus: redisBus(server, 'A') });
+    const b = rig({ bus: redisBus(server, 'B') });
+    const ran: string[] = [];
+
+    const onA = await openStream(a.routes, a.relay, 'tab-a', {
+      caps: 'rotate,dedupe',
+      cid: 'page-1',
+      answer: answerOn('A', ran),
+    });
+    await vi.advanceTimersByTimeAsync(50_000);
+    await openStream(b.routes, b.relay, 'tab-a', {
+      caps: 'rotate,dedupe',
+      cid: 'page-1',
+      answer: answerOn('B', ran),
+    });
+    await vi.advanceTimersByTimeAsync(10_000); // A: rotate_unanswered
+    expect(onA.done()).toBe(true);
+
+    const fromA = track(a.relay.queueCommand('getTabInfo', {}, { targetTabId: 'tab-a' }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fromA).toEqual({ settled: true, value: { title: 'answered on B' } });
+    expect(ran).toEqual(['B']);
+  });
+
+  it('A5 · at grace expiry a command parked on A goes over the bus once the page streams on B, instead of failing (review A5)', async () => {
+    const server = new FakeRedisServer();
+    const a = rig({ bus: redisBus(server, 'A') });
+    const b = rig({ bus: redisBus(server, 'B') });
+    const ran: string[] = [];
+
+    const onA = await openStream(a.routes, a.relay, 'tab-a', {
+      caps: 'rotate,dedupe',
+      cid: 'page-1',
+      answer: answerOn('A', ran),
+    });
+    await onA.cancel(); // A parks the slot; no instance holds the tab now
+    const parked = track(a.relay.queueCommand('getTabInfo', {}, { targetTabId: 'tab-a' }));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(parked.settled).toBe(false);
+
+    // The page's next stream lands on B; then A's grace ends.
+    await openStream(b.routes, b.relay, 'tab-a', {
+      caps: 'rotate,dedupe',
+      cid: 'page-1',
+      answer: answerOn('B', ran),
+    });
+    await vi.advanceTimersByTimeAsync(4_000);
+
+    expect(parked).toEqual({ settled: true, value: { title: 'answered on B' } });
+    expect(ran).toEqual(['B']);
+  });
+});
+
+describe('relay parked slot · review fixes S A8, S A9', () => {
+  it('A8 · a slot that dies while this instance holds a connected WebSocket client for the tab keeps the instance’s presence', async () => {
+    const server = new FakeRedisServer();
+    const busB = redisBus(server, 'B');
+    const { relay, routes } = rig({ bus: redisBus(server, 'A') });
+    const first = await openStream(routes, relay, 'tab-a', { caps: 'rotate', cid: 'page-1' });
+    relay.registerWebSocketClient({
+      clientId: 'tab-a',
+      send: () => undefined,
+      isConnected: () => true,
+      close: () => undefined,
+    });
+
+    await first.cancel();
+    expect(server.subscribers('uibridge:cmd:tab:tab-a')).toEqual([]);
+    expect(await busB.isTabKnown('tab-a')).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(5_000); // the dead slot's grace ends
+    expect(await busB.isTabKnown('tab-a')).toBe(true);
+  });
+
+  it('A9 · a command flushed down the replacement gets a whole timeout from the flush', async () => {
+    const { relay, routes } = rig();
+    const first = await openStream(routes, relay, 'tab-a', { caps: 'rotate', cid: 'page-1' });
+    await first.cancel();
+    const parked = track(relay.queueCommand('getTabInfo', {}, { targetTabId: 'tab-a' }));
+    await vi.advanceTimersByTimeAsync(4_000);
+
+    // Flushed 4 s after it was sent, down a stream that never answers.
+    const second = await openStream(routes, relay, 'tab-a', { caps: 'rotate', cid: 'page-1' });
+    expect(second.actions).toEqual(['getTabInfo']);
+
+    await vi.advanceTimersByTimeAsync(7_999);
+    expect(parked.settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect({
+      settled: parked.settled,
+      message: (parked.error as Error | undefined)?.message,
+    }).toEqual({
+      settled: true,
+      message:
+        'Command getTabInfo timed out after 8000ms (SSE). 1 client(s) were notified but none responded. ' +
+        'The UI Bridge SDK may not be loaded or the page may be unresponsive.',
+    });
   });
 });

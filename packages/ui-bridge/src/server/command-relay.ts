@@ -26,7 +26,12 @@ import {
   takeFreshnessSnapshot,
   type FreshnessSnapshot,
 } from './tab-liveness';
-import { streamLeaseTimings, type StreamEndReason, type StreamLeaseTimings } from './stream-lease';
+import {
+  LEASE_RETURN_GRACE_MS,
+  streamLeaseTimings,
+  type StreamEndReason,
+  type StreamLeaseTimings,
+} from './stream-lease';
 import {
   DeadSlot,
   isOpenListener,
@@ -93,6 +98,33 @@ export interface TabListener {
   state: ListenerState;
   /** While `dead`: the commands held for the tab's next stream, and the expiry. */
   deadSlot?: DeadSlot;
+  /**
+   * When the stream was sent its `rotate` frame (stream-lease.ts), if it was.
+   * A rotated stream holds no bus command subscription, and the tab's next
+   * stream closes it whatever page that stream names (`addCommandListener`).
+   */
+  rotatedAt?: number;
+}
+
+/**
+ * What the relay remembers of a tab's last SSE listener once it is gone: when,
+ * and the page instance that held it, so a stream that reopens soon after
+ * returns the tab (`addCommandListener`).
+ */
+interface ListenerTombstone {
+  removedAt: number;
+  clientInstanceId?: string;
+  /**
+   * Set when the server closed the stream at its lease (`lease`,
+   * `rotate_unanswered`): the tab keeps its tombstone, standing and owner for
+   * `graceMs` (`leaseReturnGraceMs`), awaiting its return, and `expiry` ends
+   * the wait (`endLeaseReturn`).
+   */
+  leaseReturn?: {
+    reason: StreamEndReason;
+    graceMs: number;
+    expiry: ReturnType<typeof setTimeout>;
+  };
 }
 
 export interface PendingCommand {
@@ -293,7 +325,8 @@ export interface CommandRelayOptions {
   reconnectGraceMs?: number;
   /**
    * When a stream whose client declared `rotate` is sent its `rotate` frame
-   * (stream-lease.ts). Floored at 10 000 ms, the client's reconnect delay.
+   * (stream-lease.ts). Floored at 15 000 ms (`STREAM_LEASE_FLOOR_MS`), above
+   * the 10 s a client's stream must live to count as healthy.
    * Defaults to `STREAM_LEASE_MS` (50 000); override via
    * `UI_BRIDGE_STREAM_LEASE_MS`, with the precedence `tabActiveWindowMs` has.
    */
@@ -311,6 +344,16 @@ export interface CommandRelayOptions {
    * `UI_BRIDGE_ROTATE_GRACE_MS`.
    */
   rotateGraceMs?: number;
+  /**
+   * How long a tab whose stream the server closed at its lease (a legacy
+   * close, or a rotate nobody answered) keeps its place for its return: its
+   * tombstone, its standing and its owner. A stream that reopens within it
+   * returns the tab rather than introducing it, and a command for the tab
+   * meanwhile is refused at once as not delivered, never parked. Defaults to
+   * `LEASE_RETURN_GRACE_MS` (15 000: the client's 10 s reconnect delay plus
+   * 5 s); override via `UI_BRIDGE_LEASE_RETURN_GRACE_MS`.
+   */
+  leaseReturnGraceMs?: number;
   /**
    * Whether a newly connected tab is sent one `getControlSnapshot` of its own
    * shortly after it connects (default true). A stream that resumes a tab
@@ -469,6 +512,7 @@ export class CommandRelay {
   private readonly tabDemotionTtlMs: number;
   private readonly tabActiveWindowMs: number;
   private readonly reconnectGraceMs: number;
+  private readonly leaseReturnGraceMs: number;
   /** The command stream lease in force (stream-lease.ts), read for every stream the HTTP adapter opens. */
   readonly streamLeaseTimings: StreamLeaseTimings;
   private readonly zombieTransportMs: number;
@@ -490,13 +534,10 @@ export class CommandRelay {
   /**
    * When each tab's last SSE listener was removed (its stream ended, or the
    * zombie prune dropped it), and the page instance that held it, kept for
-   * `reconnectGraceMs` so a stream that reopens within it resumes the tab
-   * (`addCommandListener`).
+   * `reconnectGraceMs`, or `leaseReturnGraceMs` after a lease close, so a
+   * stream that reopens within it returns the tab (`addCommandListener`).
    */
-  private readonly listenerTombstones: Map<
-    string,
-    { removedAt: number; clientInstanceId?: string }
-  >;
+  private readonly listenerTombstones: Map<string, ListenerTombstone>;
   /**
    * Tabs whose SSE warm-up `getControlSnapshot` was answered with a snapshot.
    * Only a resume of one of these skips its own warm-up, so a stream that
@@ -621,6 +662,9 @@ export class CommandRelay {
     // precedence as the window above.
     this.reconnectGraceMs =
       options?.reconnectGraceMs ?? envInt('UI_BRIDGE_RECONNECT_GRACE_MS', 5_000);
+    this.leaseReturnGraceMs =
+      options?.leaseReturnGraceMs ??
+      envInt('UI_BRIDGE_LEASE_RETURN_GRACE_MS', LEASE_RETURN_GRACE_MS);
     this.streamLeaseTimings = streamLeaseTimings(options ?? {}, envInt);
     this.proactiveSnapshot = options?.proactiveSnapshot ?? true;
     // Destructive prune threshold — must stay above the browser's background
@@ -911,13 +955,18 @@ export class CommandRelay {
 
   /**
    * Remove entries from tabHeartbeats and demotedTabs for tabs no longer
-   * connected, listener tombstones too old to resume a tab, and the warm-up
-   * marks and generations of tabs left with neither a listener nor a
-   * tombstone.
+   * connected (not those awaiting their return after a lease close), listener
+   * tombstones too old to resume a tab (a lease close's ends on its own
+   * timer), and the warm-up marks and generations of tabs left with neither a
+   * listener nor a tombstone.
    */
   private cleanupStaleTabs(): void {
     const now = Date.now();
-    for (const tabId of this.listenerTombstones.keys()) {
+    for (const [tabId, tombstone] of this.listenerTombstones) {
+      // A lease close's tombstone is ended by its own timer, which also
+      // forgets the tab (`endLeaseReturn`); dropping it here first would
+      // leave the tab's owner behind.
+      if (tombstone.leaseReturn) continue;
       if (!this.recentTombstone(tabId, now)) this.listenerTombstones.delete(tabId);
     }
     for (const tabId of this.warmedUpTabs) {
@@ -933,7 +982,9 @@ export class CommandRelay {
     for (const [tabId, lastBeat] of this.tabHeartbeats.entries()) {
       const hasListener = this.tabListeners.has(tabId);
       const hasWs = this.wsClients.has(tabId);
-      if (!hasListener && !hasWs) {
+      // A tab awaiting its return after a lease close keeps its place
+      // (`awaitReturn`); `endLeaseReturn` forgets it if it does not return.
+      if (!hasListener && !hasWs && !this.leaseReturnOf(tabId)) {
         // Tab is no longer connected — remove if heartbeat is stale
         if (now - lastBeat > this.tabDemotionTtlMs) {
           this.tabHeartbeats.delete(tabId);
@@ -1005,6 +1056,13 @@ export class CommandRelay {
           `[ui-bridge] Primary tab ${current} is not live ` +
             `(${age === undefined ? 'no heartbeat here' : `last heartbeat ${age}ms ago`}); re-selecting`
         );
+      } else if (this.leaseReturnOf(current)) {
+        // The primary's stream closed at its lease and has not reopened yet:
+        // it keeps its standing for its return (`awaitReturn`). Meanwhile an
+        // unpinned command goes to the best other tab, which is not made
+        // primary for it.
+        if (candidates.length === 0) return null;
+        return candidates.sort(compareByLiveness(freshness))[0]!;
       } else {
         this.primaryTabId = null;
         this.persistPrimaryTab();
@@ -1224,6 +1282,24 @@ export class CommandRelay {
   }
 
   /**
+   * A pending command's timer fired: forget it and reject it as timed out,
+   * naming how many clients it reached and over which `transport`.
+   */
+  private timeOutPending(id: string, action: string, timeoutMs: number, transport: string): void {
+    const pending = this.pendingCommands.get(id);
+    if (!pending) return;
+    if (pending.graceTimeout) clearTimeout(pending.graceTimeout);
+    this.pendingCommands.delete(id);
+    pending.reject(
+      new Error(
+        `Command ${action} timed out after ${timeoutMs}ms (${transport}). ` +
+          `${pending.tabsNotified} client(s) were notified but none responded. ` +
+          'The UI Bridge SDK may not be loaded or the page may be unresponsive.'
+      )
+    );
+  }
+
+  /**
    * Inner command queue implementation (no retry logic). `epoch` is the
    * {@link destroyEpoch} the caller read before its first `await`; a dispatch
    * reached after a `destroy()` throws {@link RelayDestroyedError} instead.
@@ -1265,6 +1341,20 @@ export class CommandRelay {
           const known = await this.bus.isTabKnown(targetTabId);
           this.throwIfDestroyedSince(epoch);
           if (known) return this.sendCommand<T>(action, payload, options);
+        }
+        // Its stream closed at its lease and has not reopened: the tab is
+        // awaited, not gone, and nothing can carry the command until it
+        // returns. Refused at once, never held: a legacy client waits 10 s
+        // before it reopens (stream-slot.ts, `slotActionForEnd`).
+        const awaited = this.leaseReturnOf(targetTabId);
+        if (awaited) {
+          throw new Error(
+            notDeliveredMessage(
+              action,
+              `Tab "${targetTabId}"'s command stream closed at its lease (${awaited.reason}) ` +
+                'and has not reopened yet.'
+            )
+          );
         }
         // Owner-scoped TAB_NOT_FOUND: redact the connectedTabs list to the
         // caller's own tabs so the response doesn't reveal that other users
@@ -1503,19 +1593,10 @@ export class CommandRelay {
         return;
       }
 
-      const timeout = setTimeout(() => {
-        const pending = this.pendingCommands.get(commandId);
-        if (pending?.graceTimeout) clearTimeout(pending.graceTimeout);
-        const notified = pending?.tabsNotified ?? 0;
-        this.pendingCommands.delete(commandId);
-        reject(
-          new Error(
-            `Command ${action} timed out after ${timeoutMs}ms (${transport}). ` +
-              `${notified} client(s) were notified but none responded. ` +
-              'The UI Bridge SDK may not be loaded or the page may be unresponsive.'
-          )
-        );
-      }, timeoutMs);
+      const timeout = setTimeout(
+        () => this.timeOutPending(commandId, action, timeoutMs, transport),
+        timeoutMs
+      );
 
       // Evict oldest if at capacity
       if (this.pendingCommands.size >= this.maxPendingCommands) {
@@ -1705,7 +1786,9 @@ export class CommandRelay {
   /**
    * The tab's next stream registered: write every command parked on its dead
    * slot down it (D2), each bound to that stream, which is the one it went
-   * down. A parked fire-and-forget command resolves now, on delivery.
+   * down. A parked fire-and-forget command resolves now, on delivery; any
+   * other gets the whole SSE timeout from its delivery, since the page could
+   * not answer it before.
    */
   private flushParked(tabId: string, parked: ParkedCommand[], listener: TabListener): void {
     for (const { command, fireAndForget, senderUserId } of parked) {
@@ -1718,6 +1801,12 @@ export class CommandRelay {
         this.settlePending(command.commandId, new Error(notDeliveredMessage(command.action, why)));
       } else if (!fireAndForget) {
         pending.tabsNotified = 1;
+        clearTimeout(pending.timeout);
+        const timeoutMs = this.sseTimeoutMs;
+        pending.timeout = setTimeout(
+          () => this.timeOutPending(command.commandId, command.action, timeoutMs, 'SSE'),
+          timeoutMs
+        );
       } else {
         clearTimeout(pending.timeout);
         this.pendingCommands.delete(command.commandId);
@@ -2273,8 +2362,9 @@ export class CommandRelay {
     const replaced = this.tabListeners.get(id);
     const tombstone = replaced ? undefined : this.recentTombstone(id, openedAt);
     // A stream for a tab that still holds a listener here (open or dead), or
-    // lost its last one under `reconnectGraceMs` ago, RETURNS the tab (a
-    // rotation, a reconnect, a reload) rather than introducing it.
+    // lost its last one under `reconnectGraceMs` ago (`leaseReturnGraceMs`
+    // after a lease close), RETURNS the tab (a rotation, a reconnect, a
+    // reload) rather than introducing it.
     const returning = replaced !== undefined || tombstone !== undefined;
     // It RESUMES the same page when both it and the stream before it name the
     // page instance (`cid`) and the two agree; when either names none, by
@@ -2285,6 +2375,7 @@ export class CommandRelay {
         ? stream.clientInstanceId === priorPage
         : returning;
     this.tabListeners.set(id, tabListener);
+    this.disarmTimer(this.listenerTombstones.get(id)?.leaseReturn?.expiry);
     this.listenerTombstones.delete(id);
     // A stream replaced before it unsubscribed leaves its bus subscription
     // behind, and `destroy()` reaches only the listener in the map. Drop it
@@ -2294,13 +2385,23 @@ export class CommandRelay {
     } catch (err) {
       console.error('[ui-bridge] releasing a replaced listener from the bus failed:', err);
     }
-    // D1/D2: a replaced open stream is closed (its `end` frame tells its
-    // client); a replaced dead slot stops expiring, and its held commands go
-    // down this stream once the stream is registered (below).
+    // D1/D2: a replaced dead slot stops expiring, and its held commands go
+    // down this stream once the stream is registered (below). A replaced open
+    // stream is closed (its `end` frame tells its client) when this stream is
+    // its page's next one: the same page instance (`cid`), or any stream after
+    // a `rotate`. Otherwise another page holds the tab id too, a duplicated
+    // browser tab or an unnamed legacy client, and its stream is left open,
+    // unheard: closing it would make that page reopen and close this one in
+    // turn, without end. This, the newer stream, holds the tab.
     const slot = replaced?.deadSlot;
     if (slot) {
       this.disarmTimer(slot.expiry);
-    } else if (replaced) {
+    } else if (
+      replaced &&
+      (replaced.rotatedAt !== undefined ||
+        (stream?.clientInstanceId !== undefined &&
+          stream.clientInstanceId === replaced.clientInstanceId))
+    ) {
       try {
         replaced.close?.();
       } catch (err) {
@@ -2386,19 +2487,19 @@ export class CommandRelay {
         // the stream that received the command (see `resolveCommand`).
         if (this.deliver(current, command)) this.recordBusDelivery(env.commandId, id, current);
       });
-      let busReleased = false;
+      // The two halves are released independently, each at most once: a
+      // release that keeps the presence (a replacement, or a WebSocket client
+      // of the tab still connected here) leaves it to a later one.
+      let presenceReleased = false;
       tabListener.releaseBus = (options) => {
-        if (busReleased) return;
-        busReleased = true;
-        if (options?.keepPresence) {
-          releaseBusCommands();
-          return;
-        }
         // Both halves run even when one throws: `destroy()` must finish.
         try {
           releaseBusCommands();
         } finally {
-          bus.unregisterTab(id);
+          if (!options?.keepPresence && !presenceReleased) {
+            presenceReleased = true;
+            bus.unregisterTab(id);
+          }
         }
       };
     }
@@ -2470,7 +2571,7 @@ export class CommandRelay {
         releaseBusCommands();
         return;
       }
-      tabListener.releaseBus?.();
+      this.releaseListenerBus(tabListener, 'an unsubscribed listener');
       this.forgetTab(id);
     };
     const park = (reason: StreamEndReason) => {
@@ -2482,19 +2583,18 @@ export class CommandRelay {
       }
       if (!isOpenListener(tabListener)) return;
       // D2: give up the bus membership at death, not at expiry: this
-      // instance's command subscription and its own presence. A holder of the
+      // instance's command subscription and its own presence (kept only while
+      // a WebSocket client of the tab is connected here). A holder of the
       // tab's newer stream elsewhere is then the only one the fleet routes
       // to, and this slot's expiry cannot touch that holder's presence.
-      try {
-        tabListener.releaseBus?.();
-      } catch (err) {
-        console.error('[ui-bridge] releasing a dead listener from the bus failed:', err);
-      }
+      this.releaseListenerBus(tabListener, 'a dead listener');
       tabListener.state = 'dead';
       tabListener.deadSlot = new DeadSlot(
         reason,
         this.armTimer(() => {
-          if (this.tabListeners.get(id) === tabListener) this.forgetTab(id);
+          if (this.tabListeners.get(id) !== tabListener) return;
+          this.releaseListenerBus(tabListener, 'an expired dead listener');
+          this.forgetTab(id);
         }, this.reconnectGraceMs)
       );
       console.log(
@@ -2502,7 +2602,90 @@ export class CommandRelay {
           `${this.reconnectGraceMs}ms for its next stream`
       );
     };
-    return { streamId, unsubscribe, park };
+    const closedAtLease = (reason: StreamEndReason) => {
+      this.disarmTimer(proactiveTimer);
+      this.disarmTimer(retryTimer);
+      if (this.tabListeners.get(id) !== tabListener) {
+        releaseBusCommands();
+        return;
+      }
+      if (!isOpenListener(tabListener)) return;
+      this.releaseListenerBus(tabListener, 'a listener closed at its lease');
+      this.awaitReturn(id, reason);
+    };
+    // The client is opening its next stream, which may land on another
+    // instance: from now on a command published for the tab is that stream's
+    // to deliver. This stream keeps its presence, and the commands this
+    // instance dispatches to it, until it ends.
+    const rotated = () => {
+      tabListener.rotatedAt = Date.now();
+      releaseBusCommands();
+    };
+    return { streamId, unsubscribe, park, closedAtLease, rotated };
+  }
+
+  /**
+   * Release `listener`'s hold on the bus: its command subscription, and this
+   * instance's presence for the tab unless a WebSocket client of the tab is
+   * still connected here, through which this instance still holds the tab.
+   * A failing bus is logged; it must not stop the transition.
+   */
+  private releaseListenerBus(listener: TabListener, what: string): void {
+    try {
+      listener.releaseBus?.({
+        keepPresence: this.wsClients.get(listener.tabId)?.client.isConnected() === true,
+      });
+    } catch (err) {
+      console.error(`[ui-bridge] releasing ${what} from the bus failed:`, err);
+    }
+  }
+
+  /**
+   * The server closed `tabId`'s stream at its lease (`lease`,
+   * `rotate_unanswered`): forget the listener now, and keep the tab's place
+   * for `leaseReturnGraceMs`. Its tombstone, standing, owner and metadata
+   * stay, so the stream its client opens next returns the tab, and a command
+   * for it meanwhile is refused at once (`queueCommandInner`).
+   */
+  private awaitReturn(tabId: string, reason: StreamEndReason): void {
+    const listener = this.tabListeners.get(tabId);
+    if (!listener) return;
+    this.tabListeners.delete(tabId);
+    const graceMs = this.leaseReturnGraceMs;
+    const tombstone: ListenerTombstone = {
+      removedAt: Date.now(),
+      ...(listener.clientInstanceId ? { clientInstanceId: listener.clientInstanceId } : {}),
+    };
+    tombstone.leaseReturn = {
+      reason,
+      graceMs,
+      expiry: this.armTimer(() => this.endLeaseReturn(tabId, tombstone), graceMs),
+    };
+    this.listenerTombstones.set(tabId, tombstone);
+    console.log(
+      `[ui-bridge] SSE listener closed at its lease: ${tabId} (${reason}); ` +
+        `the tab keeps its place ${graceMs}ms for its next stream`
+    );
+  }
+
+  /**
+   * `tabId` did not return within `leaseReturnGraceMs` of its lease close:
+   * it is gone, unless a transport for it is held here by now.
+   */
+  private endLeaseReturn(tabId: string, tombstone: ListenerTombstone): void {
+    if (this.listenerTombstones.get(tabId) !== tombstone) return;
+    this.listenerTombstones.delete(tabId);
+    if (this.tabListeners.has(tabId) || this.wsClients.has(tabId)) return;
+    this.forgetTabState(tabId);
+  }
+
+  /**
+   * `tabId`'s lease close, while the tab awaits its return: no SSE listener
+   * here, and a lease-close tombstone younger than its grace.
+   */
+  private leaseReturnOf(tabId: string): ListenerTombstone['leaseReturn'] {
+    if (this.tabListeners.has(tabId)) return undefined;
+    return this.recentTombstone(tabId, Date.now())?.leaseReturn;
   }
 
   /**
@@ -2511,6 +2694,11 @@ export class CommandRelay {
    */
   private forgetTab(tabId: string): void {
     this.dropTabListener(tabId);
+    this.forgetTabState(tabId);
+  }
+
+  /** Forget the tab state an SSE listener carried: its demotion, metadata and owner. */
+  private forgetTabState(tabId: string): void {
     this.demotedTabs.delete(tabId);
     this.tabMetadata.delete(tabId);
     // Drop ownership when the transport closes. A future tab with the
@@ -2539,23 +2727,73 @@ export class CommandRelay {
     const slot = listener.deadSlot;
     if (!slot) return;
     this.disarmTimer(slot.expiry);
+    const parked = slot.drain();
+    if (parked.length === 0) return;
+    if (this.bus) void this.settleExpiredParked(tabId, slot.reason, parked);
+    else this.failParked(tabId, slot.reason, parked);
+  }
+
+  /**
+   * A dead slot went with commands still held. The tab's next stream may
+   * have opened on another instance meanwhile: when the bus knows the tab,
+   * they go over it; otherwise they fail as not delivered.
+   */
+  private async settleExpiredParked(
+    tabId: string,
+    reason: StreamEndReason,
+    parked: ParkedCommand[]
+  ): Promise<void> {
+    const epoch = this.destroyEpoch;
+    let elsewhere: boolean;
+    try {
+      elsewhere = await this.bus!.isTabKnown(tabId);
+    } catch {
+      elsewhere = false;
+    }
+    // `destroy()` settled them meanwhile.
+    if (this.destroyEpoch !== epoch) return;
+    if (!elsewhere) {
+      this.failParked(tabId, reason, parked);
+      return;
+    }
+    for (const { command, senderUserId } of parked) {
+      const pending = this.pendingCommands.get(command.commandId);
+      if (!pending) continue; // settled meanwhile: timed out or evicted
+      clearTimeout(pending.timeout);
+      if (pending.graceTimeout) clearTimeout(pending.graceTimeout);
+      this.pendingCommands.delete(command.commandId);
+      this.routeViaBus(
+        command.commandId,
+        command.action,
+        command.payload,
+        tabId,
+        senderUserId,
+        pending.resolve,
+        pending.reject
+      );
+    }
+  }
+
+  /** Fail `parked`, held on `tabId`'s dead slot, with the not-delivered message. */
+  private failParked(tabId: string, reason: StreamEndReason, parked: ParkedCommand[]): void {
     const why =
-      `Tab "${tabId}"'s command stream ended (${slot.reason}) and no new stream opened ` +
+      `Tab "${tabId}"'s command stream ended (${reason}) and no new stream opened ` +
       `within ${this.reconnectGraceMs}ms.`;
-    for (const { command } of slot.drain()) {
+    for (const { command } of parked) {
       this.settlePending(command.commandId, new Error(notDeliveredMessage(command.action, why)));
     }
   }
 
-  /** `tabId`'s tombstone, when it lost its last SSE listener less than `reconnectGraceMs` before `now`. */
-  private recentTombstone(
-    tabId: string,
-    now: number
-  ): { removedAt: number; clientInstanceId?: string } | undefined {
+  /**
+   * `tabId`'s tombstone, when it lost its last SSE listener less than
+   * `reconnectGraceMs` before `now`, or less than its `leaseReturn` grace when
+   * it lost it to a lease close.
+   */
+  private recentTombstone(tabId: string, now: number): ListenerTombstone | undefined {
     const tombstone = this.listenerTombstones.get(tabId);
-    return tombstone !== undefined && now - tombstone.removedAt < this.reconnectGraceMs
-      ? tombstone
-      : undefined;
+    if (tombstone === undefined) return undefined;
+    const graceMs = tombstone.leaseReturn?.graceMs ?? this.reconnectGraceMs;
+    return now - tombstone.removedAt < graceMs ? tombstone : undefined;
   }
 
   /** Tab ids holding an open SSE listener here (`isOpenListener`), in registration order. */

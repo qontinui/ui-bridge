@@ -123,8 +123,14 @@ interface RedisLike {
   zremrangebyscore(key: string, min: number | string, max: number | string): Promise<unknown>;
   /** ZCOUNT key min max. */
   zcount(key: string, min: number | string, max: number | string): Promise<number>;
-  /** PEXPIRE key milliseconds. */
-  pexpire(key: string, milliseconds: number): Promise<unknown>;
+  /** ZRANGE key start stop WITHSCORES: each member, then its score. */
+  zrange(key: string, start: number, stop: number, withScores: 'WITHSCORES'): Promise<string[]>;
+  /** PEXPIREAT key unix-time-milliseconds. */
+  pexpireat(key: string, unixTimeMs: number): Promise<unknown>;
+  /** SET key value EX ttl, on the previous version's presence key (used: `set(key, '1', 'EX', ttl)`). */
+  set(key: string, value: string, mode: string, ttlSeconds: number): Promise<unknown>;
+  del(key: string): Promise<unknown>;
+  exists(key: string): Promise<number>;
   quit(): Promise<unknown>;
   duplicate(): RedisLike;
 }
@@ -139,6 +145,18 @@ interface RedisLike {
  * overwrite this set, or turn every ZADD into a WRONGTYPE error, mid-deploy.
  */
 const TAB_HOLDERS_PREFIX = 'uibridge:tab-holders:';
+
+/**
+ * The previous version's presence: one string key per tab, which an instance
+ * of that version SETs while it holds the tab, DELs when it lets go, and reads
+ * with EXISTS. For one release, so a rolling deploy runs both versions side by
+ * side, this version writes and reads that key beside its own holder set: each
+ * version then sees the other's holders. A DEL here, like one there, can
+ * erase another holder's mark on this key until that holder's next refresh;
+ * the holder set, which this version reads first, is unaffected.
+ * Delete with the release after this one (review A3).
+ */
+const PREVIOUS_TAB_PRESENCE_PREFIX = 'uibridge:tab:';
 
 /** Send a write without awaiting it, and without leaving its rejection unhandled. */
 function fireAndForget(write: Promise<unknown>): void {
@@ -246,24 +264,39 @@ export class RedisRelayBus implements RelayBus {
 
   registerTab(tabId: string, ttlSeconds: number): void {
     const key = `${TAB_HOLDERS_PREFIX}${tabId}`;
-    const ttlMs = Math.max(1, ttlSeconds) * 1000;
+    const ttl = Math.max(1, ttlSeconds);
     const now = Date.now();
-    fireAndForget(this.pub.zadd(key, now + ttlMs, this.holderId));
+    const expiresAt = now + ttl * 1000;
+    fireAndForget(this.pub.zadd(key, expiresAt, this.holderId));
     // A holder that lapsed without letting go (its instance was killed) is
-    // dropped here, and a key whose every holder lapsed expires with them.
-    // Every instance refreshes with the same TTL, so the key's expiry never
-    // cuts a later-expiring holder short.
+    // dropped here.
     fireAndForget(this.pub.zremrangebyscore(key, '-inf', now));
-    fireAndForget(this.pub.pexpire(key, ttlMs));
+    // The key lives as long as its longest hold, read back after this one was
+    // added: a holder refreshing with a shorter TTL cannot expire it early, and
+    // a key whose every holder lapsed expires with them (review A7). Two
+    // instances whose refreshes interleave their read and their PEXPIREAT can
+    // still leave the key the shorter expiry, until the longer holder's next
+    // refresh (every sweep, a third of its TTL at most) restores it.
+    fireAndForget(
+      this.pub
+        .zrange(key, -1, -1, 'WITHSCORES')
+        .then((top) => this.pub.pexpireat(key, Math.max(expiresAt, Number(top[1] ?? 0))))
+    );
+    fireAndForget(this.pub.set(`${PREVIOUS_TAB_PRESENCE_PREFIX}${tabId}`, '1', 'EX', ttl));
   }
 
   unregisterTab(tabId: string): void {
     fireAndForget(this.pub.zrem(`${TAB_HOLDERS_PREFIX}${tabId}`, this.holderId));
+    fireAndForget(this.pub.del(`${PREVIOUS_TAB_PRESENCE_PREFIX}${tabId}`));
   }
 
   async isTabKnown(tabId: string): Promise<boolean> {
     try {
-      return (await this.pub.zcount(`${TAB_HOLDERS_PREFIX}${tabId}`, `(${Date.now()}`, '+inf')) > 0;
+      const [holders, previous] = await Promise.all([
+        this.pub.zcount(`${TAB_HOLDERS_PREFIX}${tabId}`, `(${Date.now()}`, '+inf'),
+        this.pub.exists(`${PREVIOUS_TAB_PRESENCE_PREFIX}${tabId}`),
+      ]);
+      return holders > 0 || previous > 0;
     } catch {
       return false;
     }

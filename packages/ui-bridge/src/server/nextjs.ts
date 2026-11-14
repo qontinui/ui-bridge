@@ -1227,13 +1227,17 @@ function createCommandStreamResponse(request: NextRequest, relay: CommandRelay):
       desiredSize: () => controllerRef?.desiredSize ?? null,
       close: () => controllerRef?.close(),
     },
-    // A known death parks the tab's slot for its next stream; a lease close
-    // or a replacement leaves nothing to hold (stream-slot.ts).
+    // A death mid-life parks the tab's slot for its next stream; a lease
+    // close awaits the tab's return; a replacement leaves nothing to hold
+    // (stream-slot.ts).
     onEnd: (reason) => {
       if (!opened) return;
-      if (slotActionForEnd(reason) === 'park') opened.park(reason);
+      const action = slotActionForEnd(reason);
+      if (action === 'park') opened.park(reason);
+      else if (action === 'await-return') opened.closedAtLease(reason);
       else opened.unsubscribe();
     },
+    onRotate: () => opened?.rotated(),
   });
   try {
     opened = relay.openCommandStream(

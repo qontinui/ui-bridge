@@ -200,6 +200,18 @@ function failNextEnqueue(): void {
   });
 }
 
+/**
+ * The relay's not-delivered message for a command sent to `tab-a` while its
+ * stream, closed at its lease, has not reopened (review A1).
+ */
+function notDeliveredAtLease(action: string, reason: string): string {
+  return (
+    `No active UI Bridge SDK client received the ${action} command. ` +
+    `Tab "tab-a"'s command stream closed at its lease (${reason}) and has not reopened yet. ` +
+    'Ensure the web app is open in a browser tab with the UI Bridge SDK loaded.'
+  );
+}
+
 /** The frames of `stream` whose payload is a `rotate`. */
 function rotateFrames(stream: Stream): Frame[] {
   return stream.frames.filter((frame) => frame.data?.type === 'rotate');
@@ -238,7 +250,7 @@ describe('relay stream lease · a rotate-capable stream rotates make-before-brea
     expect(relay.getTransportDiagnostics().connectedTabs).toEqual(['tab-a']);
   });
 
-  it('2 · with no replacement it is ended `rotate_unanswered` at the lease plus 10 000 ms, and its slot is parked', async () => {
+  it('2 · with no replacement it is ended `rotate_unanswered` at the lease plus 10 000 ms; the tab is awaited, not parked, and a command for it is refused at once', async () => {
     const ends = streamEnds();
     const { relay, routes } = rig();
     const first = await openStream(routes, 'tab-a', { caps: 'rotate,dedupe', cid: 'page-1' });
@@ -259,8 +271,14 @@ describe('relay stream lease · a rotate-capable stream rotates make-before-brea
     const diag = relay.getTransportDiagnostics();
     expect({ connectedTabs: diag.connectedTabs, parkedTabs: diag.parkedTabs }).toEqual({
       connectedTabs: [],
-      parkedTabs: ['tab-a'],
+      parkedTabs: [],
     });
+    const outcome = track(relay.queueCommand('getTabInfo', {}, { targetTabId: 'tab-a' }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect({
+      settled: outcome.settled,
+      message: (outcome.error as Error | undefined)?.message,
+    }).toEqual({ settled: true, message: notDeliveredAtLease('getTabInfo', 'rotate_unanswered') });
   });
 
   it.each([
@@ -302,7 +320,7 @@ describe('relay stream lease · a legacy stream is closed once, at the legacy le
     ]);
   });
 
-  it('12 · the legacy-lease close removes the listener at once: nothing is parked, and a pinned command is TAB_NOT_FOUND', async () => {
+  it('12 · the legacy-lease close removes the listener at once: nothing is parked, a command for the tab is refused at once while it is awaited, and TAB_NOT_FOUND after', async () => {
     const { relay, routes } = rig();
     await openStream(routes, 'tab-a');
 
@@ -313,10 +331,80 @@ describe('relay stream lease · a legacy stream is closed once, at the legacy le
       connectedTabs: [],
       parkedTabs: [],
     });
-    const outcome = track(relay.queueCommand('getTabInfo', {}, { targetTabId: 'tab-a' }));
+    const awaited = track(relay.queueCommand('getTabInfo', {}, { targetTabId: 'tab-a' }));
     await vi.advanceTimersByTimeAsync(0);
-    expect(outcome.settled).toBe(true);
-    expect((outcome.error as { code?: unknown } | undefined)?.code).toBe('TAB_NOT_FOUND');
+    expect({
+      settled: awaited.settled,
+      message: (awaited.error as Error | undefined)?.message,
+    }).toEqual({ settled: true, message: notDeliveredAtLease('getTabInfo', 'lease') });
+
+    // 15 000 ms after the close (the client's 10 s reconnect delay, plus 5 s), it is gone.
+    await vi.advanceTimersByTimeAsync(15_000);
+    const gone = track(relay.queueCommand('getTabInfo', {}, { targetTabId: 'tab-a' }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect((gone.error as { code?: unknown } | undefined)?.code).toBe('TAB_NOT_FOUND');
+  });
+});
+
+describe('relay stream lease · a newer stream closes the old one only for the same page, or after a rotate (review A4)', () => {
+  /** The `getTabInfo` commands `stream` was sent. */
+  function tabInfoCommands(stream: Stream): Frame[] {
+    return stream.frames.filter((frame) => frame.data?.action === 'getTabInfo');
+  }
+
+  it.each([
+    ['another page instance (a duplicated browser tab)', 'page-x', 'page-y'],
+    ['two legacy clients (no cid)', undefined, undefined],
+  ])(
+    'a second stream on one tab id from %s leaves the first open: no end, so no reopen loop; the newer stream holds the tab',
+    async (_label, firstCid, secondCid) => {
+      const ends = streamEnds();
+      const { relay, routes } = rig();
+      const first = await openStream(routes, 'tab-a', {
+        caps: 'rotate,dedupe',
+        ...(firstCid === undefined ? {} : { cid: firstCid }),
+      });
+      const second = await openStream(routes, 'tab-a', {
+        caps: 'rotate,dedupe',
+        ...(secondCid === undefined ? {} : { cid: secondCid }),
+      });
+
+      expect(first.done()).toBe(false);
+      expect(first.frames.filter((frame) => frame.event === 'end')).toEqual([]);
+      expect(ends()).toEqual([]);
+      relay.queueCommand('getTabInfo', {}, { targetTabId: 'tab-a' }).catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(0);
+      expect({
+        first: tabInfoCommands(first).length,
+        second: tabInfoCommands(second).length,
+      }).toEqual({ first: 0, second: 1 });
+    }
+  );
+
+  it('the same page reopening before any rotate (same cid) closes its old stream `replaced` (control)', async () => {
+    const ends = streamEnds();
+    const { routes } = rig();
+    const first = await openStream(routes, 'tab-a', { caps: 'rotate,dedupe', cid: 'page-x' });
+    await vi.advanceTimersByTimeAsync(10_000);
+    await openStream(routes, 'tab-a', { caps: 'rotate,dedupe', cid: 'page-x' });
+
+    expect(first.done()).toBe(true);
+    expect(ends()).toEqual([
+      { event: 'stream.ended', id: 'tab-a', reason: 'replaced', age_ms: 10_000 },
+    ]);
+  });
+
+  it('a stream told to rotate is closed `replaced` by its tab’s next stream, whatever cid that names (control)', async () => {
+    const ends = streamEnds();
+    const { routes } = rig();
+    const first = await openStream(routes, 'tab-a', { caps: 'rotate,dedupe', cid: 'page-x' });
+    await vi.advanceTimersByTimeAsync(50_000);
+    await openStream(routes, 'tab-a', { caps: 'rotate,dedupe', cid: 'page-y' });
+
+    expect(first.done()).toBe(true);
+    expect(ends()).toEqual([
+      { event: 'stream.ended', id: 'tab-a', reason: 'replaced', age_ms: 50_000 },
+    ]);
   });
 });
 
@@ -546,13 +634,20 @@ describe('relay stream lease · timings', () => {
       { at: 30_000, what: 'rotate' },
     ],
     [
-      'a lease floored at 10 000 ms',
+      'a lease floored at 15 000 ms, above the 10 s a client stream must live to count as healthy',
       {},
       { streamLeaseMs: 1_000 },
       'rotate',
-      { at: 10_000, what: 'rotate' },
+      { at: 15_000, what: 'rotate' },
     ],
     ['the default legacy lease', {}, {}, undefined, { at: 270_000, what: 'end' }],
+    [
+      'a legacy lease floored at 15 000 ms too',
+      {},
+      { legacyStreamLeaseMs: 1_000 },
+      undefined,
+      { at: 15_000, what: 'end' },
+    ],
     [
       'the legacy lease from UI_BRIDGE_LEGACY_STREAM_LEASE_MS',
       { UI_BRIDGE_LEGACY_STREAM_LEASE_MS: '120000' },
