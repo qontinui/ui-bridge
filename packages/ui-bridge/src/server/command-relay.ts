@@ -19,6 +19,13 @@
 import type { ControlSnapshot } from '../control';
 import type { DOMChangeEvent } from './types';
 import type { RelayBus } from './relay-bus';
+import {
+  compareByLiveness,
+  heartbeatAgeMs,
+  keepsPrimary,
+  takeFreshnessSnapshot,
+  type FreshnessSnapshot,
+} from './tab-liveness';
 
 // ============================================================================
 // Types
@@ -44,6 +51,11 @@ export interface TabListener {
   streamId?: string;
   /** The verified identity that opened this stream, when one was present. */
   userId?: string;
+  /**
+   * When this stream registered. Bounds the warm-up of a tab that has never
+   * sent this instance a heartbeat (`isTabLive` in tab-liveness.ts).
+   */
+  openedAt: number;
   /**
    * Set when a cross-instance bus is configured: drops this stream's bus
    * command subscription and removes its tab from the shared presence
@@ -154,6 +166,12 @@ export interface TransportDiagnostics {
   connectedTabs: string[];
   /** Item #15 — subset of `connectedTabs` whose heartbeat is fresh. */
   activeTabs: string[];
+  /**
+   * The tab an unpinned command goes to first. Unscoped, the relay's primary
+   * (`getPrimaryTabId`). Scoped (`ownerCheck`), the first of the caller's own
+   * tabs under `compareByLiveness` (tab-liveness.ts), which is the tab the
+   * owner-scoped dispatch arm picks, or `null` when the caller has none.
+   */
   primaryTabId: string | null;
   demotedTabs: string[];
   buildId: string;
@@ -202,10 +220,13 @@ export interface CommandRelayOptions {
    * How recently a tab must have sent a heartbeat to count as ACTIVE.
    *
    * This is the relay's one non-destructive freshness window. It answers
-   * "did this tab beat recently?" and nothing else, for all four callers:
+   * "did this tab beat recently?" and nothing else, for all five callers:
    * `getActiveTabs()`, `isTabActive()`, `isAppResponsive()` (the `/health`
-   * `responsive` bit), and the re-promotion of a demoted tab in
-   * `getPrimaryTabId()`. Nothing is disconnected on the strength of it.
+   * `responsive` bit), the re-promotion of a demoted tab in
+   * `getPrimaryTabId()`, and the liveness every selector ranks candidate tabs
+   * by (`isTabLive` in tab-liveness.ts), which also bounds the warm-up of a
+   * tab that never beat. Nothing is disconnected on the strength of it, and
+   * no tab is refused: selection ranks a stale tab last, never out.
    *
    * Defaults to 30_000 ms (3 missed heartbeats at the SDK's 10s cadence —
    * see `HEARTBEAT_INTERVAL_MS` in `relay/relay-client.ts`). Override via
@@ -221,9 +242,21 @@ export interface CommandRelayOptions {
    */
   tabActiveWindowMs?: number;
   /**
+   * How long after a tab's last SSE listener was removed a new stream for the
+   * same tab still RESUMES it rather than introducing a new tab. A resumed
+   * stream keeps the tab's standing (it does not take the primary) and is sent
+   * no warm-up snapshot; a stream that opens while the tab still holds one is
+   * a resume too. See `addCommandListener`.
+   *
+   * Defaults to 5_000 ms. Override via `UI_BRIDGE_RECONNECT_GRACE_MS`, with
+   * the precedence `tabActiveWindowMs` has.
+   */
+  reconnectGraceMs?: number;
+  /**
    * Whether a newly connected tab is sent one `getControlSnapshot` of its own
-   * shortly after it connects (default true). Tests that count which tab each
-   * command reached turn it off, since that warm-up command lands at a time no
+   * shortly after it connects (default true). A stream that resumes a tab
+   * (see `reconnectGraceMs`) is not. Tests that count which tab each command
+   * reached turn it off, since that warm-up command lands at a time no
    * request chose.
    */
   proactiveSnapshot?: boolean;
@@ -375,6 +408,7 @@ export class CommandRelay {
   private readonly maxPendingCommands: number;
   private readonly tabDemotionTtlMs: number;
   private readonly tabActiveWindowMs: number;
+  private readonly reconnectGraceMs: number;
   private readonly zombieTransportMs: number;
   private readonly proactiveSnapshot: boolean;
   private readonly pruneSweepIntervalMs: number;
@@ -391,6 +425,12 @@ export class CommandRelay {
     { url: string; title: string; visibility: string; lastSeen: number }
   >;
   private readonly tabLastSuccess: Map<string, number>;
+  /**
+   * When each tab's last SSE listener was removed (its stream ended, or the
+   * zombie prune dropped it), kept for `reconnectGraceMs` so a stream that
+   * reopens within it resumes the tab (`addCommandListener`).
+   */
+  private readonly listenerTombstones: Map<string, number>;
   /**
    * Per-user tab-scoping registry. Tracks which authenticated user a tab
    * was registered under via the strict heartbeat protocol. A tab is
@@ -486,6 +526,10 @@ export class CommandRelay {
     // heartbeats at the SDK's 10s cadence.
     this.tabActiveWindowMs =
       options?.tabActiveWindowMs ?? envInt('UI_BRIDGE_TAB_ACTIVE_WINDOW_MS', 30_000);
+    // How long a tab's ended stream can be resumed by its next one; same
+    // precedence as the window above.
+    this.reconnectGraceMs =
+      options?.reconnectGraceMs ?? envInt('UI_BRIDGE_RECONNECT_GRACE_MS', 5_000);
     this.proactiveSnapshot = options?.proactiveSnapshot ?? true;
     // Destructive prune threshold — must stay above the browser's background
     // timer clamp (~60s) or every hidden tab loses its working transport.
@@ -507,6 +551,7 @@ export class CommandRelay {
     if (!g[key('TabHeartbeats')]) g[key('TabHeartbeats')] = new Map();
     if (!g[key('TabMetadata')]) g[key('TabMetadata')] = new Map();
     if (!g[key('TabLastSuccess')]) g[key('TabLastSuccess')] = new Map();
+    if (!g[key('ListenerTombstones')]) g[key('ListenerTombstones')] = new Map();
     if (!g[key('TabOwnership')]) g[key('TabOwnership')] = new Map();
     if (!g[key('BusDeliveries')]) g[key('BusDeliveries')] = new Map();
     if (!g[key('RelayTimers')]) g[key('RelayTimers')] = new Set();
@@ -531,6 +576,7 @@ export class CommandRelay {
     this.tabHeartbeats = g[key('TabHeartbeats')];
     this.tabMetadata = g[key('TabMetadata')];
     this.tabLastSuccess = g[key('TabLastSuccess')];
+    this.listenerTombstones = g[key('ListenerTombstones')];
     this.tabOwnership = g[key('TabOwnership')];
     this.busDeliveries = g[key('BusDeliveries')];
     this.relayTimers = g[key('RelayTimers')];
@@ -652,7 +698,7 @@ export class CommandRelay {
       // never invoked again — the stream itself will tear down on the
       // next heartbeat-timeout from the client side, which is acceptable
       // since the tab is a genuine zombie at this point.
-      this.tabListeners.delete(tabId);
+      this.dropTabListener(tabId);
       const wsEntry = this.wsClients.get(tabId);
       if (wsEntry) {
         try {
@@ -692,9 +738,8 @@ export class CommandRelay {
       );
     }
 
-    // If we dropped the primary, recompute. Picks the alternative with the
-    // most recent heartbeat (falls back to insertion order via
-    // `getPrimaryTabId`'s tabLastSuccess sort).
+    // If we dropped the primary, recompute: the best remaining tab under
+    // `compareByLiveness` (see `selectPrimarySuccessor`).
     if (pruned.length > 0 && this.primaryTabId === null) {
       const successor = this.selectPrimarySuccessor();
       if (successor) {
@@ -710,25 +755,14 @@ export class CommandRelay {
   }
 
   /**
-   * Pick the most-recently-heartbeated connected tab as the new primary.
-   * Returns `null` if no candidate is connected.
+   * Pick a new primary: the best candidate under `compareByLiveness`
+   * (tab-liveness.ts), so a live tab before a stale one. Returns `null` if no
+   * candidate is connected.
    */
   private selectPrimarySuccessor(): string | null {
-    const candidates: string[] = [];
-    for (const id of this.tabListeners.keys()) {
-      if (!this.demotedTabs.has(id)) candidates.push(id);
-    }
-    for (const [id, entry] of this.wsClients.entries()) {
-      if (entry.client.isConnected() && !this.demotedTabs.has(id) && !candidates.includes(id)) {
-        candidates.push(id);
-      }
-    }
+    const candidates = this.primaryCandidates();
     if (candidates.length === 0) return null;
-    candidates.sort((a, b) => {
-      const ah = this.tabHeartbeats.get(a) ?? 0;
-      const bh = this.tabHeartbeats.get(b) ?? 0;
-      return bh - ah;
-    });
+    candidates.sort(compareByLiveness(this.freshness(candidates)));
     return candidates[0]!;
   }
 
@@ -777,10 +811,14 @@ export class CommandRelay {
   }
 
   /**
-   * Remove entries from tabHeartbeats and demotedTabs for tabs no longer connected.
+   * Remove entries from tabHeartbeats and demotedTabs for tabs no longer
+   * connected, and listener tombstones too old to resume a tab.
    */
   private cleanupStaleTabs(): void {
     const now = Date.now();
+    for (const [tabId, removedAt] of this.listenerTombstones) {
+      if (now - removedAt >= this.reconnectGraceMs) this.listenerTombstones.delete(tabId);
+    }
     for (const [tabId, lastBeat] of this.tabHeartbeats.entries()) {
       const hasListener = this.tabListeners.has(tabId);
       const hasWs = this.wsClients.has(tabId);
@@ -845,42 +883,68 @@ export class CommandRelay {
       }
     }
 
-    if (this.primaryTabId && !this.demotedTabs.has(this.primaryTabId)) {
-      if (this.tabListeners.has(this.primaryTabId) || this.wsClients.has(this.primaryTabId)) {
-        return this.primaryTabId;
-      }
-      this.primaryTabId = null;
-      this.persistPrimaryTab();
-    }
-
-    // Collect all candidate tabs (non-demoted, connected)
-    const candidates: string[] = [];
-    for (const tab of this.tabListeners.keys()) {
-      if (!this.demotedTabs.has(tab)) {
-        candidates.push(tab);
-      }
-    }
-    for (const [clientId, entry] of this.wsClients.entries()) {
-      if (
-        entry.client.isConnected() &&
-        !this.demotedTabs.has(clientId) &&
-        !candidates.includes(clientId)
-      ) {
-        candidates.push(clientId);
+    const candidates = this.primaryCandidates();
+    const freshness = this.freshness(candidates);
+    const current = this.primaryTabId;
+    if (current && !this.demotedTabs.has(current)) {
+      if (this.tabListeners.has(current) || this.wsClients.has(current)) {
+        if (keepsPrimary(freshness, current, candidates)) return current;
+        const age = heartbeatAgeMs(freshness, current);
+        console.log(
+          `[ui-bridge] Primary tab ${current} is not live ` +
+            `(${age === undefined ? 'no heartbeat here' : `last heartbeat ${age}ms ago`}); re-selecting`
+        );
+      } else {
+        this.primaryTabId = null;
+        this.persistPrimaryTab();
       }
     }
 
     if (candidates.length === 0) return null;
-
-    // Sort candidates by tabLastSuccess (most recent first), then by insertion order
-    candidates.sort((a, b) => {
-      const aSuccess = this.tabLastSuccess.get(a) ?? 0;
-      const bSuccess = this.tabLastSuccess.get(b) ?? 0;
-      return bSuccess - aSuccess;
-    });
-
+    candidates.sort(compareByLiveness(freshness));
     this.setPrimaryTab(candidates[0]!);
     return this.primaryTabId;
+  }
+
+  /**
+   * The tabs the primary is chosen from: each non-demoted tab holding an SSE
+   * listener or a connected WebSocket client, once, in registration order.
+   */
+  private primaryCandidates(): string[] {
+    const candidates: string[] = [];
+    for (const id of this.tabListeners.keys()) {
+      if (!this.demotedTabs.has(id)) candidates.push(id);
+    }
+    for (const [id, entry] of this.wsClients.entries()) {
+      if (entry.client.isConnected() && !this.demotedTabs.has(id) && !candidates.includes(id)) {
+        candidates.push(id);
+      }
+    }
+    return candidates;
+  }
+
+  /** The freshness of `tabIds`, read once for one selection (tab-liveness.ts). */
+  private freshness(tabIds: Iterable<string>): FreshnessSnapshot {
+    return takeFreshnessSnapshot(
+      tabIds,
+      {
+        listeners: this.tabListeners,
+        wsClients: this.wsClients,
+        heartbeats: this.tabHeartbeats,
+        lastSuccess: this.tabLastSuccess,
+      },
+      { now: Date.now(), activeWindowMs: this.tabActiveWindowMs }
+    );
+  }
+
+  /**
+   * `userId`'s own connected tabs, best first under `compareByLiveness`: the
+   * order the owner-scoped dispatch arm tries them in, and so the tab a scoped
+   * `getTransportDiagnostics` reports as `primaryTabId`.
+   */
+  private rankOwnedTabs(userId: string): string[] {
+    const owned = this.listOwnedTabs(userId);
+    return owned.sort(compareByLiveness(this.freshness(owned)));
   }
 
   private setPrimaryTab(tabId: string): void {
@@ -1138,12 +1202,13 @@ export class CommandRelay {
       return this.sendCommand<T>(action, payload, options);
     }
 
-    // Owner-scoped unscoped fanout: pick the caller's primary tab (the
-    // most-recently-heartbeated of their own tabs), or fan out across
-    // their tabs only. Never touches another user's tabs. If the user
-    // has zero tabs, surface SDK_DISCONNECTED — the no-leak fallback.
+    // Owner-scoped unscoped fanout: the caller's own tabs, best first under
+    // `compareByLiveness` (a live tab before a stale one, then the most
+    // recently successful), with one failover to the next. Never touches
+    // another user's tabs. If the user has zero tabs, surface
+    // SDK_DISCONNECTED — the no-leak fallback.
     if (ownerCheck) {
-      const owned = this.listOwnedTabs(ownerCheck.userId);
+      const owned = this.rankOwnedTabs(ownerCheck.userId);
       if (owned.length === 0) {
         throw new Error(
           `SDK_DISCONNECTED: No browser connected to receive ${action} command. ` +
@@ -1153,8 +1218,6 @@ export class CommandRelay {
             'Use `GET /tabs/wait?timeoutMs=<ms>` to block until the tab registers.'
         );
       }
-      // Prefer the user's most-recently-successful tab to stay sticky.
-      owned.sort((a, b) => (this.tabLastSuccess.get(b) ?? 0) - (this.tabLastSuccess.get(a) ?? 0));
       const ownedPrimary = owned[0]!;
       return this.sendCommand<T>(action, payload, {
         targetTabId: ownedPrimary,
@@ -1969,14 +2032,23 @@ export class CommandRelay {
   ): { streamId: string; unsubscribe: () => void } {
     const id = tabId || `anon_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     const streamId = crypto.randomUUID();
+    const openedAt = Date.now();
     const tabListener: TabListener = {
       tabId: id,
       callback: listener,
       streamId,
+      openedAt,
       ...(userId ? { userId } : {}),
     };
     const replaced = this.tabListeners.get(id);
+    // A stream for a tab that still holds a listener here, or lost its last
+    // one under `reconnectGraceMs` ago, RESUMES the tab (a rotation or a
+    // reconnect) rather than introducing it. Nothing yet tells a reopen by
+    // the same page from one by a reload of it, so a reload inside the grace
+    // resumes the tab too.
+    const resumed = replaced !== undefined || this.lostListenerRecently(id, openedAt);
     this.tabListeners.set(id, tabListener);
+    this.listenerTombstones.delete(id);
     // A stream replaced before it unsubscribed leaves its bus subscription
     // behind, and `destroy()` reaches only the listener in the map. Drop it
     // here, at the source; the tab's presence now belongs to this stream.
@@ -1988,9 +2060,11 @@ export class CommandRelay {
 
     this.ensureCleanupSweep();
 
-    // New tab becomes primary
+    // A new tab becomes primary: the most-recently-registered rule the
+    // nextjs.ts header documents. A resumed tab keeps whatever standing it
+    // had, so a reconnect cannot take the primary from a live tab.
     this.demotedTabs.delete(id);
-    this.setPrimaryTab(id);
+    if (!resumed) this.setPrimaryTab(id);
 
     // Signal that a transport is ready
     this.openConnectionGate();
@@ -2098,14 +2172,17 @@ export class CommandRelay {
     };
 
     // Both warm-up timers are armed through `armTimer`, so `destroy()` clears
-    // them along with the listener they look for.
-    const proactiveTimer = this.armTimer(async () => {
-      if (!this.proactiveSnapshot) return;
-      const captured = await captureSnapshot();
-      if (!captured && isOwnStream()) {
-        retryTimer = this.armTimer(() => void captureSnapshot(), 1500);
-      }
-    }, 500);
+    // them along with the listener they look for. A resumed stream is sent
+    // none: its tab was sent its own when it first connected.
+    const proactiveTimer = resumed
+      ? null
+      : this.armTimer(async () => {
+          if (!this.proactiveSnapshot) return;
+          const captured = await captureSnapshot();
+          if (!captured && isOwnStream()) {
+            retryTimer = this.armTimer(() => void captureSnapshot(), 1500);
+          }
+        }, 500);
 
     const unsubscribe = () => {
       this.disarmTimer(proactiveTimer);
@@ -2118,7 +2195,7 @@ export class CommandRelay {
         return;
       }
       tabListener.releaseBus?.();
-      this.tabListeners.delete(id);
+      this.dropTabListener(id);
       this.demotedTabs.delete(id);
       this.tabMetadata.delete(id);
       // Drop ownership when the transport closes. A future tab with the
@@ -2130,6 +2207,20 @@ export class CommandRelay {
       this.resetConnectionGateIfEmpty();
     };
     return { streamId, unsubscribe };
+  }
+
+  /**
+   * Forget `tabId`'s SSE listener, remembering when for `reconnectGraceMs`:
+   * a stream that reopens within it resumes the tab (`addCommandListener`).
+   */
+  private dropTabListener(tabId: string): void {
+    if (this.tabListeners.delete(tabId)) this.listenerTombstones.set(tabId, Date.now());
+  }
+
+  /** Whether `tabId` lost its last SSE listener less than `reconnectGraceMs` before `now`. */
+  private lostListenerRecently(tabId: string, now: number): boolean {
+    const removedAt = this.listenerTombstones.get(tabId);
+    return removedAt !== undefined && now - removedAt < this.reconnectGraceMs;
   }
 
   /** Record a bus-dispatched command this instance delivered down a local stream. */
@@ -2550,7 +2641,10 @@ export class CommandRelay {
       // that promises a transport count.
       commandListenerCount: new Set([...connectedTabs, ...wsClientIds]).size,
       wsClientCount: wsClientIds.length,
-      primaryTabId: full.primaryTabId && owns(full.primaryTabId) ? full.primaryTabId : null,
+      // Where this caller's unpinned command goes (the owner-scoped arm), not
+      // the global primary: that one is chosen over every user's tabs, and a
+      // scoped caller's command never reads it.
+      primaryTabId: this.rankOwnedTabs(userId)[0] ?? null,
       tabHeartbeats: pickOwned(full.tabHeartbeats),
       tabMetadata: pickOwned(full.tabMetadata),
       tabOwnership: pickOwned(full.tabOwnership),
@@ -2688,6 +2782,7 @@ export class CommandRelay {
       }
     }
     this.tabListeners.clear();
+    this.listenerTombstones.clear();
     this.commandQueue.length = 0;
     this.changeEventBuffer.length = 0;
     this.changeEventSubscribers.clear();

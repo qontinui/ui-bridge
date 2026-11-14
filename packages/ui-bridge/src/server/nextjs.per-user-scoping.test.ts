@@ -431,16 +431,16 @@ describe('Next.js · GET /health is scoped per-user (§4.2 · U2 regression)', (
     expect(serialized).not.toContain('tab-bob');
   });
 
-  it('primaryTabId is nulled for a caller who does not own the primary', async () => {
-    // Whichever tab the relay elected primary, only its OWNER may see its id —
-    // `primaryTabId` is a tab id like any other.
-    const primary = relay.getTransportDiagnostics().primaryTabId;
-    expect(primary).not.toBeNull();
-    const owner = relay.getOwnership(primary!)!.userId;
-    const other = owner === 'alice' ? 'bob' : 'alice';
+  it("a scoped primaryTabId is the caller's own tab, never the global primary's id", async () => {
+    // The relay elected bob's tab primary (it registered last), so only bob
+    // may see that id: `primaryTabId` is a tab id like any other. A scoped
+    // view names the tab the caller's OWN unpinned command reaches (the
+    // owner-scoped dispatch arm), so alice sees her own tab, and a caller
+    // with no tab sees none.
+    expect(relay.getTransportDiagnostics().primaryTabId).toBe('tab-bob');
 
-    expect((await getHealth('health', owner)).primaryTabId).toBe(primary);
-    expect((await getHealth('health', other)).primaryTabId).toBeNull();
+    expect((await getHealth('health', 'bob')).primaryTabId).toBe('tab-bob');
+    expect((await getHealth('health', 'alice')).primaryTabId).toBe('tab-alice');
     expect((await getHealth('health', 'eve')).primaryTabId).toBeNull();
   });
 

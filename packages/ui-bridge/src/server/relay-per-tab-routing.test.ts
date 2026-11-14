@@ -744,3 +744,408 @@ describe('relay-handlers · getControlSnapshot per-tab pinning (item 3)', () => 
     expect(JSON.stringify(result)).not.toContain('cached-el');
   });
 });
+
+// ============================================================================
+// Phase 3 of plan 2026-11-09-a-dead-relay-tab-stays-the-operators-primary-and-
+// a-command-sent-during-a-stream-reopen-is-lost: selection prefers a live tab,
+// a reopen keeps its standing, and a resumed stream is sent no warm-up.
+//
+// The measured defect (coord finding 8e6b94f2): a dead agent tab, its browser
+// gone but its stream still registered because nothing told the relay, stayed
+// `primaryTabId` and stayed first among its owner's tabs, so unpinned commands
+// went down a stream nobody read. A tab that only reopened its stream also
+// took the primary from a live tab. "Live" is `isTabLive` (tab-liveness.ts)
+// over the relay's `tabActiveWindowMs`; these tests use its default, 30 000 ms,
+// as a literal.
+// ============================================================================
+
+describe('relay · Phase 3 — selection prefers a live tab; a reopen keeps its standing', () => {
+  const T0 = Date.UTC(2026, 0, 1, 0, 0, 0);
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+  });
+  afterEach(() => {
+    // Under the fake clock, as the stale-tab block above does.
+    destroyRelays();
+    vi.useRealTimers();
+  });
+
+  /** Move the fake clock to `ms` after T0, running no timer. */
+  function at(ms: number): void {
+    vi.setSystemTime(T0 + ms);
+  }
+
+  /**
+   * Streams on one relay, sharing one log of `"<tabId> <action>"` deliveries.
+   * A stream answers every command it is sent while its tab is `alive`. A dead
+   * tab's stream stays registered, as it does when nothing tells the relay it
+   * ended, and answers nothing.
+   */
+  function streamsOn(relay: CommandRelay) {
+    const deliveries: string[] = [];
+    function open(tabId: string) {
+      const tab = { alive: true, unsubscribe: () => {} };
+      tab.unsubscribe = relay.subscribeToCommands((command) => {
+        deliveries.push(`${tabId} ${command.action}`);
+        if (tab.alive) relay.resolveCommand(command.commandId, { answeredBy: tabId }, tabId);
+      }, tabId);
+      return tab;
+    }
+    return { deliveries, open };
+  }
+
+  /** Register each of `tabIds` to `userId`, with one heartbeat each, now. */
+  function register(relay: CommandRelay, userId: string, ...tabIds: string[]): void {
+    for (const tabId of tabIds) {
+      relay.recordRegistration(tabId, { userId, sessionId: `session-${tabId}` });
+      relay.receiveHeartbeat(tabId);
+    }
+  }
+
+  /** At each offset in `atMs` (ms after T0), a heartbeat from each of `tabIds`. */
+  function beat(relay: CommandRelay, atMs: number[], ...tabIds: string[]): void {
+    for (const ms of atMs) {
+      at(ms);
+      for (const tabId of tabIds) relay.receiveHeartbeat(tabId);
+    }
+  }
+
+  /**
+   * Send one unpinned command, scoped to `userId` when given, and let it reach
+   * a stream. Its outcome comes back unawaited, in a box: a command sent to a
+   * dead tab never settles, and `destroy()` rejects it after the test.
+   */
+  async function sendUnpinned(relay: CommandRelay, userId?: string) {
+    const outcome = relay.queueCommand<{ answeredBy: string }>(
+      'getElement',
+      {},
+      userId ? { ownerCheck: { userId } } : undefined
+    );
+    outcome.catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(0);
+    return { outcome };
+  }
+
+  it('1 · a primary whose heartbeats stop yields to a live tab once tabActiveWindowMs has passed', async () => {
+    const relay = freshRelay();
+    const { deliveries, open } = streamsOn(relay);
+    open('tab-b');
+    const tabA = open('tab-a'); // registered last: the primary
+    relay.receiveHeartbeat('tab-a');
+    relay.receiveHeartbeat('tab-b');
+
+    // A answers the unpinned command, and stays primary.
+    const first = await sendUnpinned(relay);
+    await expect(first.outcome).resolves.toEqual({ answeredBy: 'tab-a' });
+
+    // A's browser dies: its stream stays registered, its heartbeats stop. B beats on.
+    tabA.alive = false;
+    beat(relay, [10_000, 20_000, 30_000], 'tab-b');
+    // The window is inclusive: 30 000 ms after its last beat, A is still live.
+    expect(relay.getTransportDiagnostics().primaryTabId).toBe('tab-a');
+
+    at(30_001);
+    expect(relay.getTransportDiagnostics().primaryTabId).toBe('tab-b');
+    const second = await sendUnpinned(relay);
+    expect(deliveries).toEqual(['tab-a getElement', 'tab-b getElement']);
+    await expect(second.outcome).resolves.toEqual({ answeredBy: 'tab-b' });
+  });
+
+  it('2 · the owner-scoped arm does the same, with both tabs owned by one user', async () => {
+    const relay = freshRelay();
+    const { deliveries, open } = streamsOn(relay);
+    open('tab-b');
+    const tabA = open('tab-a');
+    register(relay, 'u1', 'tab-a', 'tab-b');
+
+    // A answers a pinned command: the owner's most recently successful tab,
+    // and so first for the owner's unpinned commands.
+    await expect(
+      relay.queueCommand('getElement', {}, { targetTabId: 'tab-a', ownerCheck: { userId: 'u1' } })
+    ).resolves.toEqual({ answeredBy: 'tab-a' });
+    const first = await sendUnpinned(relay, 'u1');
+    await expect(first.outcome).resolves.toEqual({ answeredBy: 'tab-a' });
+
+    tabA.alive = false;
+    beat(relay, [10_000, 20_000, 30_000], 'tab-b');
+    at(30_001);
+    const second = await sendUnpinned(relay, 'u1');
+    expect(deliveries).toEqual(['tab-a getElement', 'tab-a getElement', 'tab-b getElement']);
+    await expect(second.outcome).resolves.toEqual({ answeredBy: 'tab-b' });
+  });
+
+  it('3 · a lone tab that has gone stale is still selected, by both arms (control)', async () => {
+    const relay = freshRelay();
+    const { deliveries, open } = streamsOn(relay);
+    open('tab-a');
+    register(relay, 'u1', 'tab-a');
+    at(60_000); // twice the window, well inside zombieTransportMs
+
+    expect(relay.getTransportDiagnostics().primaryTabId).toBe('tab-a');
+    expect(relay.getTransportDiagnostics({ ownerCheck: { userId: 'u1' } }).primaryTabId).toBe(
+      'tab-a'
+    );
+    const unscoped = await sendUnpinned(relay);
+    const scoped = await sendUnpinned(relay, 'u1');
+    expect(deliveries).toEqual(['tab-a getElement', 'tab-a getElement']);
+    await expect(unscoped.outcome).resolves.toEqual({ answeredBy: 'tab-a' });
+    await expect(scoped.outcome).resolves.toEqual({ answeredBy: 'tab-a' });
+  });
+
+  it('4 · a hidden tab beating every 60 s with no fresher tab is still selected, by both arms (control)', async () => {
+    const relay = freshRelay();
+    const { deliveries, open } = streamsOn(relay);
+    open('tab-hidden');
+    register(relay, 'u1', 'tab-hidden'); // beats at 0
+    for (const cycle of [0, 1, 2]) {
+      // 45 s after each throttled beat: outside the window, before the next beat.
+      at(cycle * 60_000 + 45_000);
+      expect(relay.pruneStaleTabs()).toEqual([]);
+      await sendUnpinned(relay);
+      await sendUnpinned(relay, 'u1');
+      beat(relay, [(cycle + 1) * 60_000], 'tab-hidden');
+    }
+    expect(deliveries).toEqual([
+      'tab-hidden getElement',
+      'tab-hidden getElement',
+      'tab-hidden getElement',
+      'tab-hidden getElement',
+      'tab-hidden getElement',
+      'tab-hidden getElement',
+    ]);
+  });
+
+  it('5 · a tab that reopens its stream while another is primary and live does not take the primary', async () => {
+    const relay = freshRelay();
+    const { deliveries, open } = streamsOn(relay);
+    open('tab-b');
+    open('tab-a'); // registered last: the primary
+    relay.receiveHeartbeat('tab-a');
+    relay.receiveHeartbeat('tab-b');
+
+    // B reopens (a rotation, or a reconnect after an end nobody reported)
+    // while its old stream is still registered here.
+    at(1_000);
+    open('tab-b');
+
+    expect(relay.getTransportDiagnostics().primaryTabId).toBe('tab-a');
+    const sent = await sendUnpinned(relay);
+    expect(deliveries).toEqual(['tab-a getElement']);
+    await expect(sent.outcome).resolves.toEqual({ answeredBy: 'tab-a' });
+  });
+
+  it('5 · nor does one that reopens less than reconnectGraceMs after its old stream ended', () => {
+    const relay = freshRelay();
+    const { open } = streamsOn(relay);
+    const oldB = open('tab-b');
+    open('tab-a');
+    relay.receiveHeartbeat('tab-a');
+    relay.receiveHeartbeat('tab-b');
+
+    at(1_000);
+    oldB.unsubscribe(); // the relay heard B's stream end
+    at(1_000 + 4_999);
+    open('tab-b');
+
+    expect(relay.getTransportDiagnostics().primaryTabId).toBe('tab-a');
+  });
+
+  it('6 · a brand-new tab becomes primary (control)', async () => {
+    const relay = freshRelay();
+    const { deliveries, open } = streamsOn(relay);
+    open('tab-a');
+    relay.receiveHeartbeat('tab-a');
+
+    at(1_000);
+    open('tab-c');
+
+    expect(relay.getTransportDiagnostics().primaryTabId).toBe('tab-c');
+    const sent = await sendUnpinned(relay);
+    expect(deliveries).toEqual(['tab-c getElement']);
+    await expect(sent.outcome).resolves.toEqual({ answeredBy: 'tab-c' });
+  });
+
+  describe('7 · the warm-up getControlSnapshot', () => {
+    /**
+     * Open a stream that answers every command with a one-element snapshot,
+     * and logs each `getControlSnapshot` it is sent under `label`.
+     */
+    function snapshotStream(
+      relay: CommandRelay,
+      tabId: string,
+      label: string,
+      warmUps: string[]
+    ): () => void {
+      return relay.subscribeToCommands((command) => {
+        if (command.action === 'getControlSnapshot') warmUps.push(label);
+        relay.resolveCommand(
+          command.commandId,
+          { elements: [{ id: 'e' }], components: [], workflows: [], timestamp: Date.now() },
+          tabId
+        );
+      }, tabId);
+    }
+
+    it('is not sent to a stream that reopens while its old one is still registered; a new tab is sent one', async () => {
+      const relay = freshRelay({ proactiveSnapshot: true });
+      const warmUps: string[] = [];
+      snapshotStream(relay, 'tab-a', 'tab-a stream 1', warmUps);
+      // Past the 500 ms warm-up and its 1 500 ms retry.
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(warmUps).toEqual(['tab-a stream 1']);
+
+      snapshotStream(relay, 'tab-a', 'tab-a stream 2', warmUps);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(warmUps).toEqual(['tab-a stream 1']);
+
+      snapshotStream(relay, 'tab-b', 'tab-b stream 1', warmUps);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(warmUps).toEqual(['tab-a stream 1', 'tab-b stream 1']);
+    });
+
+    it('is not sent to a stream that reopens less than reconnectGraceMs after its old one ended', async () => {
+      const relay = freshRelay({ proactiveSnapshot: true });
+      const warmUps: string[] = [];
+      const endFirst = snapshotStream(relay, 'tab-a', 'tab-a stream 1', warmUps);
+      await vi.advanceTimersByTimeAsync(2_000);
+      endFirst();
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      snapshotStream(relay, 'tab-a', 'tab-a stream 2', warmUps);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(warmUps).toEqual(['tab-a stream 1']);
+    });
+  });
+
+  it('8 · a primary that never beat here stops being live once its stream is older than the window', async () => {
+    const relay = freshRelay();
+    const { deliveries, open } = streamsOn(relay);
+    open('tab-b');
+    relay.receiveHeartbeat('tab-b');
+    open('tab-a'); // never beats here; registered last: the primary
+    beat(relay, [10_000, 20_000, 30_000], 'tab-b');
+    // A's stream is 30 000 ms old: inside its warm-up still.
+    expect(relay.getTransportDiagnostics().primaryTabId).toBe('tab-a');
+
+    at(31_000);
+    expect(relay.getTransportDiagnostics().primaryTabId).toBe('tab-b');
+    const sent = await sendUnpinned(relay);
+    expect(deliveries).toEqual(['tab-b getElement']);
+    await expect(sent.outcome).resolves.toEqual({ answeredBy: 'tab-b' });
+  });
+
+  it("9 · a scoped primaryTabId is where the caller's own unpinned command goes, not the global primary", async () => {
+    const relay = freshRelay();
+    const { deliveries, open } = streamsOn(relay);
+    open('tab-c'); // another user's tab
+    open('tab-b');
+    const tabA = open('tab-a'); // registered last: the global primary
+    register(relay, 'u2', 'tab-c');
+    register(relay, 'u1', 'tab-a', 'tab-b');
+    // C answers its owner's pinned command: the most recently successful tab of all.
+    await expect(
+      relay.queueCommand('getElement', {}, { targetTabId: 'tab-c', ownerCheck: { userId: 'u2' } })
+    ).resolves.toEqual({ answeredBy: 'tab-c' });
+
+    // A dies; B and C beat on.
+    tabA.alive = false;
+    beat(relay, [10_000, 20_000, 30_000], 'tab-b', 'tab-c');
+    at(30_001);
+
+    // u1's view names u1's live tab...
+    expect(relay.getTransportDiagnostics({ ownerCheck: { userId: 'u1' } }).primaryTabId).toBe(
+      'tab-b'
+    );
+    // ...which is where u1's next unpinned command goes...
+    const sent = await sendUnpinned(relay, 'u1');
+    expect(deliveries).toEqual(['tab-c getElement', 'tab-b getElement']);
+    await expect(sent.outcome).resolves.toEqual({ answeredBy: 'tab-b' });
+    // ...while the global primary, chosen over every user's tabs, is C.
+    expect(relay.getTransportDiagnostics().primaryTabId).toBe('tab-c');
+  });
+
+  it('selectPrimarySuccessor elects a live tab, not a stale one, when the primary is pruned', () => {
+    const relay = freshRelay({ zombieTransportMs: 60_000 });
+    const { open } = streamsOn(relay);
+    // A tab's heartbeat can land before its stream registers: C's does.
+    relay.receiveHeartbeat('tab-c');
+    open('tab-b');
+    beat(relay, [0, 20_000], 'tab-b');
+    at(50_000);
+    open('tab-a'); // never beats here
+    at(55_000);
+    open('tab-c'); // registered last: the primary
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      // C's beat is 61 s old: a zombie. B's is 41 s old: stale, not a zombie.
+      // A never beat, and its stream is 11 s old: live.
+      at(61_000);
+      expect(relay.pruneStaleTabs()).toEqual(['tab-c']);
+      const elected = log.mock.calls
+        .map((args) => args.join(' '))
+        .filter((line) => line.startsWith('[ui-bridge] Primary tab:'));
+      expect(elected).toEqual(['[ui-bridge] Primary tab: tab-a']);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('judges liveness by the configured tabActiveWindowMs', () => {
+    const relay = freshRelay({ tabActiveWindowMs: 5_000 });
+    const { open } = streamsOn(relay);
+    open('tab-b');
+    open('tab-a'); // registered last: the primary
+    relay.receiveHeartbeat('tab-a');
+    beat(relay, [0, 5_000], 'tab-b');
+    expect(relay.getTransportDiagnostics().primaryTabId).toBe('tab-a');
+
+    at(5_001);
+    expect(relay.getTransportDiagnostics().primaryTabId).toBe('tab-b');
+  });
+
+  describe('reconnectGraceMs', () => {
+    const KEY = 'UI_BRIDGE_RECONNECT_GRACE_MS';
+    const original = process.env[KEY];
+
+    afterEach(() => {
+      if (original === undefined) delete process.env[KEY];
+      else process.env[KEY] = original;
+    });
+
+    /**
+     * The primary after this: A and B stream and beat, A is primary, B's
+     * stream ends 1 000 ms later, and B reopens `gapMs` after that.
+     */
+    function primaryAfterReopen(relay: CommandRelay, gapMs: number): string | null {
+      const start = Date.now();
+      const { open } = streamsOn(relay);
+      const oldB = open('tab-b');
+      open('tab-a');
+      relay.receiveHeartbeat('tab-a');
+      relay.receiveHeartbeat('tab-b');
+      vi.setSystemTime(start + 1_000);
+      oldB.unsubscribe();
+      vi.setSystemTime(start + 1_000 + gapMs);
+      open('tab-b');
+      return relay.getTransportDiagnostics().primaryTabId;
+    }
+
+    it('defaults to 5 000 ms: a reopen 4 999 ms after the end resumes the tab, one 5 000 ms after is a new tab', () => {
+      expect(primaryAfterReopen(freshRelay(), 4_999)).toBe('tab-a');
+      expect(primaryAfterReopen(freshRelay(), 5_000)).toBe('tab-b');
+    });
+
+    it('is read from UI_BRIDGE_RECONNECT_GRACE_MS', () => {
+      process.env[KEY] = '2000';
+      expect(primaryAfterReopen(freshRelay(), 1_999)).toBe('tab-a');
+      expect(primaryAfterReopen(freshRelay(), 2_000)).toBe('tab-b');
+    });
+
+    it('takes an explicit option over the env var', () => {
+      process.env[KEY] = '2000';
+      expect(primaryAfterReopen(freshRelay({ reconnectGraceMs: 8_000 }), 7_999)).toBe('tab-a');
+    });
+  });
+});
