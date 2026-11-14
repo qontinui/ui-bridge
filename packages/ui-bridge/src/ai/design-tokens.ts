@@ -55,7 +55,7 @@ import type { ExtendedComputedStyles, TokenAttribution, TokenMatches } from '../
 import { REDACTED_VALUE, scrubContentRequired, verdictOf } from '../core/redaction';
 import { normalizeColor } from './css-color';
 import { emptyCoverage, type StylesheetCoverage } from './stylesheet-walk';
-import { TokenProbe, type ProbeContext } from './token-probe';
+import { PROBE_CONTEXT_PROPERTIES, TokenProbe, type ProbeContext } from './token-probe';
 
 /** The design properties `tokenMatches` attributes: the ones tokens are made for. */
 export const TOKEN_ATTRIBUTED_PROPERTIES = [
@@ -247,6 +247,11 @@ export interface DesignTokenIndex {
   readonly inheritsCustomProperties: boolean;
   /** Non-root elements whose matching rules declare custom properties. */
   readonly overrides: ReadonlyMap<Element, readonly string[]>;
+  /**
+   * Names a universal rule declares. Every element re-declares them, so a
+   * change on an ancestor never reaches its descendants: never a scope.
+   */
+  readonly universalNames: ReadonlySet<string>;
   /** Elements (in scope, and their ancestors) → the references their matching rules make. */
   readonly references: ReadonlyMap<Element, ReferenceMap>;
   /** What the walk read and skipped. */
@@ -278,6 +283,22 @@ interface InheritedDerivation {
 // ============================================================================
 
 const VAR_PATTERN = /var\(\s*--/;
+
+/**
+ * Whether a computed value that still contains `var()` counts as `derived`.
+ * A browser substitutes every `var()` before computing, so this never arises
+ * there; jsdom does not, and tests that run attribution under jsdom without
+ * stating computed values opt in. Off by default: a test that leaves it off
+ * sees exactly what the candidate comparison decides.
+ */
+let unsubstitutedVarIsDerived = false;
+
+/** Test-only: see `unsubstitutedVarIsDerived`. Returns the previous setting. */
+export function setUnsubstitutedVarIsDerived(enabled: boolean): boolean {
+  const previous = unsubstitutedVarIsDerived;
+  unsubstitutedVarIsDerived = enabled;
+  return previous;
+}
 
 /** The custom property names a value references (`var(--a, var(--b))` → both). */
 export function varNames(value: string): string[] {
@@ -615,23 +636,40 @@ function decideFamilies(
 // Building the index
 // ============================================================================
 
+/** `*`, `::before`, `::after`, `::backdrop`, `::marker`, and lists of only those. */
+function isUniversalSelector(selector: string): boolean {
+  const parts = selector.split(',').map((p) => p.trim());
+  return (
+    parts.length > 0 && parts.every((p) => /^(\*|\*?::?(before|after|backdrop|marker))$/.test(p))
+  );
+}
+
 /** Collects the token index during the stylesheet walk (`indexCustomProperties`). */
 export class TokenIndexBuilder {
   readonly names = new Set<string>();
   readonly overrides = new Map<Element, string[]>();
   readonly references = new Map<Element, ReferenceMap>();
   readonly coverage = emptyCoverage();
+  /** Names a universal rule (`*`, `::before`, …) declares: reset on every element. */
+  readonly universalNames = new Set<string>();
   private readonly usage = new Map<string, Set<TokenFamily>>();
 
   constructor(private readonly doc: Document) {}
 
-  /** A rule matched `elements`; it declares `declared` custom properties and makes `refs`. */
+  /**
+   * A rule matched `elements`; it declares `declared` custom properties and
+   * makes `refs`. `selector` tells a universal rule apart.
+   */
   addRule(
     declared: readonly string[],
     refs: ReferenceMap | null,
-    elements: Iterable<Element>
+    elements: Iterable<Element>,
+    selector = ''
   ): void {
     for (const name of declared) this.names.add(name);
+    if (declared.length > 0 && isUniversalSelector(selector)) {
+      for (const name of declared) this.universalNames.add(name);
+    }
     if (refs) {
       for (const [prop, list] of refs) {
         for (const ref of list) {
@@ -724,6 +762,7 @@ export class TokenIndexBuilder {
       unitlessLineHeights,
       inheritsCustomProperties,
       overrides: this.overrides,
+      universalNames: this.universalNames,
       references: this.references,
       coverage: this.coverage,
       batch: {
@@ -856,6 +895,8 @@ function changedOn(index: DesignTokenIndex, el: Element): Array<{ name: string; 
   const parent = el.parentElement;
   const changed: Array<{ name: string; inline: boolean }> = [];
   for (const [name, isInline] of declared) {
+    // A name every element re-declares does not reach descendants.
+    if (index.universalNames.has(name)) continue;
     const here = resolvedToken(index, el, name);
     const above = parent ? resolvedToken(index, parent, name) : '';
     if (here !== above) changed.push({ name, inline: isInline });
@@ -944,12 +985,46 @@ function substitute(index: DesignTokenIndex, el: Element, text: string): string 
 function probeContext(index: DesignTokenIndex, el: Element): ProbeContext {
   const own = computedOf(index, el);
   const parent = el.parentElement ? computedOf(index, el.parentElement) : own;
-  return {
-    parentFontSize: parent.getPropertyValue('font-size') || `${index.rootFontPx}px`,
-    fontSize: own.getPropertyValue('font-size') || `${index.rootFontPx}px`,
-    parentColor: parent.getPropertyValue('color'),
-    color: own.getPropertyValue('color'),
-  };
+  const read = (computed: CSSStyleDeclaration): Record<string, string> =>
+    Object.fromEntries(PROBE_CONTEXT_PROPERTIES.map((p) => [p, computed.getPropertyValue(p)]));
+  return { parent: read(parent), own: read(own) };
+}
+
+/** Container query units: relative to a container the probe does not have. */
+const CONTAINER_UNITS = /[\d.](cqw|cqh|cqi|cqb|cqmin|cqmax)\b/i;
+
+/** Image functions in a `background` layer: never fetched by the probe, and not its colour. */
+const IMAGE_PARTS =
+  /^(url|image-set|-webkit-image-set|image|(repeating-)?(linear|radial|conic)-gradient)\(/i;
+
+/** The colour-bearing part of a `background` shorthand: its last layer without images. */
+function backgroundColorLayer(text: string): string {
+  const layers: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (const ch of text) {
+    if (ch === '(') depth++;
+    else if (ch === ')') depth--;
+    if (ch === ',' && depth === 0) {
+      layers.push(current);
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  layers.push(current);
+  return splitTopLevel(layers[layers.length - 1])
+    .filter((part) => !IMAGE_PARTS.test(part))
+    .join(' ');
+}
+
+/** A width declaration needs a visible style, or it computes to 0 (`border-style: none`). */
+function styleForWidth(source: string): Record<string, string> {
+  if (source === 'outline' || source === 'outline-width') return { 'outline-style': 'solid' };
+  if (/^border(-(top|right|bottom|left|inline|block))?(-width)?$/.test(source)) {
+    return { 'border-style': 'solid' };
+  }
+  return {};
 }
 
 type Verdict = 'derived' | 'overridden' | 'unverified' | 'dropped';
@@ -965,17 +1040,29 @@ function equalValues(index: DesignTokenIndex, a: string, b: string, fontPx?: num
 function verify(index: DesignTokenIndex, el: Element, ref: TokenReference): Verdict {
   const computed = computedOf(index, el);
   const actual = ref.compare.map((l) => computed.getPropertyValue(l).trim());
-  // An engine that does not substitute var() (jsdom) leaves it in the
-  // computed value. A browser never does, so this cannot apply there.
-  if (actual.some((v) => VAR_PATTERN.test(v))) return 'derived';
+  if (unsubstitutedVarIsDerived && actual.some((v) => VAR_PATTERN.test(v))) return 'derived';
   if (ref.source === 'background') {
     // A gradient or image token written in `background` is not the colour.
-    if (ref.names.some((n) => NON_COLOR_FUNCTIONS.test(resolvedToken(index, el, n))))
+    if (ref.names.some((n) => NON_COLOR_FUNCTIONS.test(resolvedToken(index, el, n)))) {
       return 'dropped';
+    }
   }
-  const text = substitute(index, el, ref.text);
+  let text = substitute(index, el, ref.text);
   if (text === null) return 'unverified';
-  const probed = index.batch.probe.resolve(ref.source, text, ref.compare, probeContext(index, el));
+  // Container units depend on a container the probe does not have.
+  if (CONTAINER_UNITS.test(text)) return 'unverified';
+  if (ref.source === 'background') {
+    // Probe the colour layer alone: no image is fetched.
+    text = backgroundColorLayer(text);
+    if (!text) return 'dropped';
+  }
+  const probed = index.batch.probe.resolve(
+    ref.source,
+    text,
+    ref.compare,
+    probeContext(index, el),
+    styleForWidth(ref.source)
+  );
   if (!probed || probed.some((v) => v === '' || VAR_PATTERN.test(v))) return 'unverified';
   const fontPx = parseFloat(computed.getPropertyValue('font-size')) || undefined;
   const equal = probed.every((v, i) => equalValues(index, v, actual[i], fontPx));
@@ -984,22 +1071,56 @@ function verify(index: DesignTokenIndex, el: Element, ref: TokenReference): Verd
     if (ref.ambiguous && actual.every((v) => TRIVIAL_VALUES.has(v))) return 'dropped';
     return 'derived';
   }
-  const comparable = probed.every(
-    (v, i) => valueKind(v) === valueKind(actual[i]) && valueKind(v) !== 'other'
-  );
+  // The engine computed both sides: unequal values of one kind are a
+  // different value, so the declaration lost. Only a value whose kind
+  // depends on layout the probe lacks (a percentage against a length) is
+  // not comparable.
+  const comparable = probed.every((v, i) => valueKind(v) === valueKind(actual[i]));
   if (!comparable) return 'unverified';
   // A shorthand (`font`, `background`) may not have written this property at all.
   return ref.ambiguous ? 'dropped' : 'overridden';
 }
 
-/** The candidates for `prop` on `el`: its inline declaration first, then its matching rules'. */
+/** The candidates for `prop` on `el`: its inline declarations and its matching rules' (source order). */
 function candidatesOf(
   index: DesignTokenIndex,
   el: Element,
   prop: TokenAttributedProperty,
   inline: ReferenceMap | null
-): TokenReference[] {
-  return [...(inline?.get(prop) ?? []), ...(index.references.get(el)?.get(prop) ?? [])];
+): { inline: TokenReference[]; rules: TokenReference[] } {
+  return {
+    inline: inline?.get(prop) ?? [],
+    rules: index.references.get(el)?.get(prop) ?? [],
+  };
+}
+
+const hasCandidates = (c: { inline: TokenReference[]; rules: TokenReference[] }): boolean =>
+  c.inline.length + c.rules.length > 0;
+
+/**
+ * Whether `el`'s value of an inherited property is its parent's, unchanged.
+ * A unitless line height inherits as a factor, so it is unchanged when the
+ * ratio to the font size is, even where the font size (and so the px) differs.
+ */
+function inheritsUnchanged(
+  index: DesignTokenIndex,
+  el: Element,
+  parent: Element,
+  prop: TokenAttributedProperty
+): boolean {
+  const own = computedOf(index, el);
+  const above = computedOf(index, parent);
+  const value = own.getPropertyValue(KEBAB[prop]);
+  const parentValue = above.getPropertyValue(KEBAB[prop]);
+  if (value === parentValue) return true;
+  if (prop !== 'lineHeight') return false;
+  const ratio = (c: CSSStyleDeclaration, lh: string): number =>
+    parseFloat(lh) / (parseFloat(c.getPropertyValue('font-size')) || NaN);
+  const a = ratio(own, value);
+  const b = ratio(above, parentValue);
+  return (
+    /px$/.test(value) && /px$/.test(parentValue) && Number.isFinite(a) && Math.abs(a - b) < 0.005
+  );
 }
 
 interface Settled {
@@ -1008,7 +1129,6 @@ interface Settled {
   names: string[];
 }
 
-/** Settle a property's candidates: the first `derived` one wins; else `unverified`, else `overridden`. */
 /**
  * The tokens a derived multi-`var()` shorthand owes this longhand to: those
  * whose value, written as the longhand alone, computes to the element's
@@ -1029,10 +1149,20 @@ function derivedNames(index: DesignTokenIndex, el: Element, ref: TokenReference)
   return own.length > 0 ? own : ref.names;
 }
 
-function settle(index: DesignTokenIndex, el: Element, candidates: TokenReference[]): Settled {
+/**
+ * Settle a property's candidates. They are tried in approximate cascade
+ * order — inline first, then rules from the last in source order back — and
+ * the first that computes to the element's value is `derived`; else
+ * `unverified` if any could not be compared, else `overridden`.
+ */
+function settle(
+  index: DesignTokenIndex,
+  el: Element,
+  candidates: { inline: TokenReference[]; rules: TokenReference[] }
+): Settled {
   const overridden: string[] = [];
   const unverified: string[] = [];
-  for (const ref of candidates) {
+  for (const ref of [...candidates.inline, ...[...candidates.rules].reverse()]) {
     const verdict = verify(index, el, ref);
     if (verdict === 'derived') return { verdict, ref, names: derivedNames(index, el, ref) };
     if (verdict === 'unverified') unverified.push(...ref.names);
@@ -1062,7 +1192,7 @@ function inheritedDerivation(
   let capped = false;
   const style = (el as HTMLElement).style as CSSStyleDeclaration | undefined;
   const candidates = candidatesOf(index, el, prop, style ? referencesOf(style) : null);
-  if (candidates.length > 0) {
+  if (hasCandidates(candidates)) {
     const settled = settle(index, el, candidates);
     if (settled.verdict === 'derived' && settled.ref) {
       derivation = { names: settled.names, expression: settled.ref.expression };
@@ -1072,8 +1202,7 @@ function inheritedDerivation(
       capped = true;
     } else {
       const parent = el.parentElement;
-      const value = computedOf(index, el).getPropertyValue(KEBAB[prop]);
-      if (computedOf(index, parent).getPropertyValue(KEBAB[prop]) === value) {
+      if (inheritsUnchanged(index, el, parent, prop)) {
         const up = inheritedDerivation(index, parent, prop, depth + 1);
         derivation = up.derivation;
         capped = up.capped;
@@ -1099,7 +1228,7 @@ export function tokenMatchesOf(
     const candidates = candidatesOf(index, el, prop, inlineRefs);
     const entry: TokenAttribution = {};
     let inheritedUnchanged = false;
-    if (candidates.length > 0) {
+    if (hasCandidates(candidates)) {
       const settled = settle(index, el, candidates);
       if (settled.verdict === 'derived') {
         entry.derived = settled.names;
@@ -1110,7 +1239,7 @@ export function tokenMatchesOf(
         entry.unverified = settled.names;
       }
     } else if (INHERITED_PROPERTIES.has(prop) && parent) {
-      inheritedUnchanged = computedOf(index, parent).getPropertyValue(KEBAB[prop]) === value;
+      inheritedUnchanged = inheritsUnchanged(index, el, parent, prop);
       if (inheritedUnchanged) {
         const { derivation } = inheritedDerivation(index, parent, prop, 1);
         if (derivation) {
@@ -1125,7 +1254,7 @@ export function tokenMatchesOf(
     // A value inherited unchanged is not a choice made here: no value matches.
     // Matches are reported for a value no declaration claims to derive.
     if (
-      candidates.length === 0 &&
+      !hasCandidates(candidates) &&
       !inheritedUnchanged &&
       !TRIVIAL_VALUES.has(value.trim()) &&
       !VAR_PATTERN.test(value)

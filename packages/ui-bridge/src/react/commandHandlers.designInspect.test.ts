@@ -15,7 +15,7 @@
  * compare it with the server handlers over one registry.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { executeCommand, type BridgeAccess } from './commandHandlers';
 import { getGlobalRegistry, resetGlobalRegistry, REDACTED_VALUE } from '../core/registry';
 import type { ElementDesignData, ElementType } from '../core/types';
@@ -25,11 +25,23 @@ import { CommandRelay } from '../server/command-relay';
 import { DefaultActionExecutor } from '../control/action-executor';
 import type { StyleGuideConfig } from '../specs/style-types';
 import { scrubStyleUrls } from '../ai/design-inspector';
+import { setUnsubstitutedVarIsDerived } from '../ai/design-tokens';
 import type {
   DesignAuditResponse,
   DesignSnapshotResponse,
   ResponsiveSnapshotsResponse,
 } from '../specs/design-request';
+
+// jsdom computes no var(): these tests read attribution without stating
+// computed values, so an unsubstituted var() counts as the token in effect
+// (see `setUnsubstitutedVarIsDerived`; a browser never leaves one).
+let previousVarSetting = false;
+beforeAll(() => {
+  previousVarSetting = setUnsubstitutedVarIsDerived(true);
+});
+afterAll(() => {
+  setUnsubstitutedVarIsDerived(previousVarSetting);
+});
 
 const emptyBridge: BridgeAccess = {
   elements: [],
