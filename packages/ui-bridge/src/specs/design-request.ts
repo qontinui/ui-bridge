@@ -29,7 +29,13 @@ import {
   getElementDesignData,
 } from '../ai/design-inspector';
 import { RootWidthLockError } from '../core/root-width-lock';
-import { collectDesignData, type QualityElementSource } from './quality-request';
+import {
+  collectDesignBatch,
+  collectDesignData,
+  type QualityElementSource,
+} from './quality-request';
+import { indexCustomProperties } from '../ai/design-inspector';
+import { rootTokensOf, type ReportedTokens } from '../ai/design-tokens';
 import { runStyleAudit } from './style-validator';
 import type { StyleAuditReport, StyleGuideConfig } from './style-types';
 
@@ -157,8 +163,21 @@ export interface DesignAuditRequest {
 // Response models
 // ============================================================================
 
-/** `/design/snapshot` answer. */
-export interface DesignSnapshotResponse extends DesignSelectionBounds {
+/**
+ * `/design/element/:id/styles` answer: the element's design data plus the
+ * page's root tokens (`tokens`), which its `customProperties` and
+ * `tokenMatches` are read against.
+ */
+export type ElementStylesResponse = ElementDesignData & ReportedTokens;
+
+/**
+ * `/design/snapshot` answer. The page's root design tokens are reported once,
+ * as `tokens`; each element carries only the custom properties that differ
+ * from them, plus its `tokenMatches`. For ~300 elements and ~150 tokens that
+ * costs ~5 KB of tokens once and ~150 B of attribution per element, where
+ * repeating the tokens per element would cost ~1.6 MB.
+ */
+export interface DesignSnapshotResponse extends DesignSelectionBounds, ReportedTokens {
   elements: ElementDesignData[];
   timestamp: number;
 }
@@ -171,7 +190,7 @@ export interface DesignSnapshotResponse extends DesignSelectionBounds {
  * `RESPONSIVE_SNAPSHOT_METHOD`). `windowInnerWidth` is the real viewport width
  * the page's `@media` queries kept evaluating against throughout.
  */
-export interface ResponsiveSnapshotsResponse extends DesignSelectionBounds {
+export interface ResponsiveSnapshotsResponse extends DesignSelectionBounds, ReportedTokens {
   snapshots: ResponsiveSnapshot[];
   method: typeof RESPONSIVE_SNAPSHOT_METHOD;
   mediaQueriesReevaluated: false;
@@ -431,17 +450,22 @@ function bounded(
 export function elementStylesOf(
   id: string,
   source: DesignElementSource | undefined
-): ElementDesignData {
+): ElementStylesResponse {
   if (!source) throw new DesignRequestError(`Element not found: ${id}`, 'ELEMENT_NOT_FOUND');
   if (!(source.element instanceof HTMLElement)) {
     throw new DesignRequestError('Element does not have a DOM reference', 'NO_DOM_REFERENCE');
   }
-  return getElementDesignData(source.element, {
-    elementId: source.id,
-    label: source.label,
-    type: source.type,
-    includePseudoElements: true,
-  });
+  const index = indexCustomProperties(document, [source.element]);
+  return {
+    ...getElementDesignData(source.element, {
+      elementId: source.id,
+      label: source.label,
+      type: source.type,
+      includePseudoElements: true,
+      customProperties: index,
+    }),
+    ...rootTokensOf(index.tokens),
+  };
 }
 
 /**
@@ -458,8 +482,11 @@ export function designSnapshotOf(
   const includePseudoElements = booleanOf(body, 'includePseudoElements', route);
   const limit = limitOf(body, route) ?? DEFAULT_DESIGN_RECORD_BUDGET;
   const { kept, report } = bounded(selectElements(elements, elementIds), limit);
+  const batch = collectDesignBatch(kept, undefined, { includePseudoElements });
   return {
-    elements: collectDesignData(kept, undefined, { includePseudoElements }),
+    elements: batch.elements,
+    tokens: batch.tokens,
+    tokenCount: batch.tokenCount,
     ...report,
     returned: kept.length,
     timestamp: Date.now(),
@@ -515,6 +542,8 @@ export async function responsiveSnapshotsOf(
     requestedViewports: viewportCount,
     timedOut: capture.timedOut,
     framesSkipped: capture.framesSkipped,
+    tokens: capture.tokens,
+    tokenCount: capture.tokenCount,
     ...report,
     returned: kept.length,
     timestamp: Date.now(),

@@ -27,6 +27,7 @@
 
 import type { ElementDesignData } from '../core/types';
 import { getElementDesignData, indexCustomProperties } from '../ai/design-inspector';
+import { rootTokensOf, type ReportedTokens } from '../ai/design-tokens';
 import { evaluateQuality, isMetricEnabled } from './quality-evaluator';
 import { BUILT_IN_CONTEXTS, getContext } from './quality-contexts';
 import { CUSTOM_PROPERTY_METRICS } from './quality-metrics';
@@ -220,6 +221,19 @@ export function collectDesignData(
   elementIds?: readonly string[],
   options: { customProperties?: boolean; includePseudoElements?: boolean } = {}
 ): ElementDesignData[] {
+  return collectDesignBatch(elements, elementIds, options).elements;
+}
+
+/**
+ * `collectDesignData`, plus the page's root design tokens, reported once for
+ * the batch rather than per element (`ai/design-tokens.ts`). The tokens are
+ * empty when custom properties are not read, or there is no document.
+ */
+export function collectDesignBatch(
+  elements: readonly QualityElementSource[],
+  elementIds?: readonly string[],
+  options: { customProperties?: boolean; includePseudoElements?: boolean } = {}
+): { elements: ElementDesignData[] } & ReportedTokens {
   const wanted = elementIds ? new Set(elementIds) : null;
   const live: Array<QualityElementSource & { element: HTMLElement }> = [];
   for (const el of elements) {
@@ -228,21 +242,24 @@ export function collectDesignData(
     }
   }
   const customProperties =
-    options.customProperties === false || live.length === 0
+    options.customProperties === false || typeof document === 'undefined'
       ? false
       : indexCustomProperties(
           document,
           live.map((el) => el.element)
         );
-  return live.map((el) =>
-    getElementDesignData(el.element, {
-      elementId: el.id,
-      label: el.label,
-      type: el.type,
-      customProperties,
-      includePseudoElements: options.includePseudoElements,
-    })
-  );
+  return {
+    elements: live.map((el) =>
+      getElementDesignData(el.element, {
+        elementId: el.id,
+        label: el.label,
+        type: el.type,
+        customProperties,
+        includePseudoElements: options.includePseudoElements,
+      })
+    ),
+    ...(customProperties ? rootTokensOf(customProperties.tokens) : { tokens: {}, tokenCount: 0 }),
+  };
 }
 
 function windowViewport(): ViewportDimensions {
