@@ -142,7 +142,7 @@ export interface UseUIComponentOptions {
    * Actions available on this component. Re-published when a label,
    * description, `paramSchema`, `effect` or the list itself changes, or when an
    * action gains or loses a `signature`. A changed handler needs no re-publish
-   * because calls look up the latest one.
+   * because calls look up the latest one, as of the latest committed render.
    */
   actions?: ComponentActionDef[];
   /** Child element IDs owned by this component */
@@ -152,7 +152,7 @@ export interface UseUIComponentOptions {
   /**
    * Function to get the current component state. Called at read time through a
    * stable wrapper, so a fresh inline `() => ({ open })` on each render is read
-   * as of the latest render, not the closure from registration.
+   * as of the latest committed render, not the closure from registration.
    */
   state?: () => Record<string, unknown>;
   /** Computed properties exposed by the component */
@@ -287,7 +287,10 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
 
   // The declared list is tracked on identity, so calls reach the latest closures.
   const actionsSignature = publishedActionsSignature(options.actions);
-  useEffect(() => {
+  // Layout effect, not passive: a non-discrete update commits the DOM and runs
+  // layout effects synchronously but flushes passive effects a task later, and a
+  // bridge request handled in that gap would run the previous render's handler.
+  useIsomorphicLayoutEffect(() => {
     actionsRef.current = options.actions || [];
   }, [options.actions]);
 
@@ -339,7 +342,8 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [elementIdsSignature, id, bridge]);
 
-  useEffect(() => {
+  // Layout effect for the same reason as `actionsRef` above.
+  useIsomorphicLayoutEffect(() => {
     stateRef.current = options.state;
     computedRef.current = options.computed;
   }, [options.state, options.computed]);

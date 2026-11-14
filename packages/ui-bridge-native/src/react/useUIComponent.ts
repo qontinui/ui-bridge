@@ -256,7 +256,9 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
   // overwriting unconditionally — which is what `options.actions || []` did —
   // wipes an action list installed through the imperative `updateActions` lane
   // on the very next render of a call site that declares no `actions` option.
-  useEffect(() => {
+  // Layout effect: passive effects flush a task after a non-discrete commit, and a
+  // call in that gap would run the previous render's handler.
+  useLayoutEffect(() => {
     if (options.actions !== undefined) actionsRef.current = options.actions;
   }, [options.actions]);
 

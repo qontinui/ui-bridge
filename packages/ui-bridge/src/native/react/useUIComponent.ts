@@ -252,7 +252,9 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
   // The declared list is tracked on identity, so calls reach the latest closures.
   const actionsRef = useRef(options.actions || []);
   const actionsSignature = publishedActionsSignature(options.actions);
-  useEffect(() => {
+  // Layout effect: passive effects flush a task after a non-discrete commit, and a
+  // call in that gap would run the previous render's handler.
+  useLayoutEffect(() => {
     actionsRef.current = options.actions || [];
   }, [options.actions]);
 
