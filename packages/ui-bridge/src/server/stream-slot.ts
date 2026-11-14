@@ -3,19 +3,25 @@
  * 2026-11-09-a-dead-relay-tab-stays-the-operators-primary-and-a-command-sent-during-a-stream-reopen-is-lost,
  * D2): open → dead → flushed or expired.
  *
- * When the relay hears a stream end (stream-lease.ts: `abort`, `cancel`,
- * `enqueue_failed`, `consumer_stalled`, `rotate_unanswered`), it does not
- * delete the tab's listener at once. It marks the listener `dead` and keeps it
- * for `reconnectGraceMs`, as a {@link DeadSlot}:
+ * When the relay hears a stream die mid-life (stream-lease.ts: `abort`,
+ * `cancel`, `enqueue_failed`, `consumer_stalled`), it does not delete the
+ * tab's listener at once. It marks the listener `dead` and keeps it for
+ * `reconnectGraceMs`, as a {@link DeadSlot}:
  *
  * - a command dispatched to the tab is parked on the slot, never written;
  * - the tab's next stream registering flushes the parked commands down it;
  * - at grace expiry the slot is removed, and every parked command is rejected
- *   at once with the relay's not-delivered message ({@link notDeliveredMessage}).
+ *   at once with the relay's not-delivered message ({@link notDeliveredMessage}),
+ *   unless the tab now streams on another instance: then it goes over the bus.
+ *
+ * A stream the server closed at its lease is not parked: its tab is awaited
+ * instead ({@link slotActionForEnd}).
  *
  * A dead slot is not a connected transport ({@link isOpenListener}), and it
  * gives up its cross-instance bus membership at death, not at expiry, so an
  * instance that holds the tab's newer stream is the one the fleet routes to.
+ * Its presence stays only while a WebSocket client of the tab is connected
+ * to the same instance, which still holds the tab through it.
  * `CommandRelay` (command-relay.ts) runs the transitions; this module holds
  * what they share.
  */
@@ -46,6 +52,17 @@ export interface CommandStreamHandle {
    * a dead slot holding the tab's commands for its next stream.
    */
   park: (reason: StreamEndReason) => void;
+  /**
+   * The server closed the stream at its lease (`lease`, `rotate_unanswered`):
+   * its listener goes, and the tab keeps its place for its return.
+   */
+  closedAtLease: (reason: StreamEndReason) => void;
+  /**
+   * The stream was sent its `rotate` frame: it leaves the bus's command channel
+   * now, since its replacement may land on another instance, and a newer
+   * stream for the tab closes it whatever page it names.
+   */
+  rotated: () => void;
 }
 
 /**
@@ -58,14 +75,22 @@ export function isOpenListener(listener: { readonly state: ListenerState }): boo
 }
 
 /**
- * What an ended stream leaves of its tab's listener. A known death parks the
- * slot for the tab's next stream. A legacy-lease close removes it at once: a
- * legacy client waits 10 s before reopening, longer than the grace, so a parked
- * slot could only delay its typed not-delivered answer. A replaced stream's
- * listener is already the replacement's.
+ * What an ended stream leaves of its tab's listener.
+ *
+ * - `park`: a death mid-life. The page may be reopening now, so the slot holds
+ *   the tab's commands for its next stream.
+ * - `await-return`: the server closed the stream at its lease, a legacy close
+ *   or a rotate nobody answered. The listener goes at once, but the tab keeps
+ *   its tombstone, standing and owner for `LEASE_RETURN_GRACE_MS`
+ *   (stream-lease.ts), so its reopen returns the same tab. A command for it
+ *   meanwhile is refused at once, never parked: a legacy client waits 10 s, so
+ *   holding it could only delay its typed not-delivered answer.
+ * - `remove`: a replaced stream, whose listener is the replacement's already.
  */
-export function slotActionForEnd(reason: StreamEndReason): 'park' | 'remove' {
-  return reason === 'lease' || reason === 'replaced' ? 'remove' : 'park';
+export function slotActionForEnd(reason: StreamEndReason): 'park' | 'await-return' | 'remove' {
+  if (reason === 'replaced') return 'remove';
+  if (reason === 'lease' || reason === 'rotate_unanswered') return 'await-return';
+  return 'park';
 }
 
 /** A command dispatched to a dead slot, held for the tab's next stream. */
