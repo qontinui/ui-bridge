@@ -27,7 +27,7 @@
 
 import type { ElementDesignData } from '../core/types';
 import { getElementDesignData, indexCustomProperties } from '../ai/design-inspector';
-import { rootTokensOf, type ReportedTokens } from '../ai/design-tokens';
+import { noReportedTokens, reportedTokensOf, type ReportedTokens } from '../ai/design-tokens';
 import { evaluateQuality, isMetricEnabled } from './quality-evaluator';
 import { BUILT_IN_CONTEXTS, getContext } from './quality-contexts';
 import { CUSTOM_PROPERTY_METRICS } from './quality-metrics';
@@ -248,17 +248,19 @@ export function collectDesignBatch(
           document,
           live.map((el) => el.element)
         );
+  const designData = live.map((el) =>
+    getElementDesignData(el.element, {
+      elementId: el.id,
+      label: el.label,
+      type: el.type,
+      customProperties,
+      includePseudoElements: options.includePseudoElements,
+    })
+  );
   return {
-    elements: live.map((el) =>
-      getElementDesignData(el.element, {
-        elementId: el.id,
-        label: el.label,
-        type: el.type,
-        customProperties,
-        includePseudoElements: options.includePseudoElements,
-      })
-    ),
-    ...(customProperties ? rootTokensOf(customProperties.tokens) : { tokens: {}, tokenCount: 0 }),
+    elements: designData,
+    // After the elements: the scopes they sit in are registered as they are read.
+    ...(customProperties ? reportedTokensOf(customProperties.tokens) : noReportedTokens()),
   };
 }
 

@@ -218,9 +218,8 @@ describe('design-inspection routes · the browser path answers the full model', 
     // So does its generated content.
     expect(data.pseudoElements?.[0].styles.backgroundImage).toBe(`url("${REDACTED_VALUE}")`);
     // The page's root tokens are design data, not the element's content.
-    expect((data as ElementDesignData & { tokens: Record<string, string> }).tokens).toEqual({
-      '--root-token': '8px',
-    });
+    const { tokens } = data as ElementDesignData & { tokens: Record<string, { value: string }> };
+    expect(tokens['--root-token'].value).toBe('8px');
     const wire = JSON.stringify(data);
     expect(wire).not.toContain('Alice');
     expect(wire).not.toContain('s3cr3t');
@@ -557,7 +556,7 @@ describe('design-inspection routes · relay and server answer the same model', (
     tokenSheet = document.createElement('style');
     tokenSheet.textContent = [
       ':root { --brand: rgb(31, 78, 140); --space: 4px; }',
-      'button { background: var(--brand); padding-left: var(--space); }',
+      'button { background-color: var(--brand); padding-left: var(--space); }',
       'h1 { color: rgb(31, 78, 140); }',
     ].join('\n');
     document.head.appendChild(tokenSheet);
@@ -585,7 +584,15 @@ describe('design-inspection routes · relay and server answer the same model', (
     resetGlobalRegistry();
   });
 
-  const ROOT_TOKENS = { '--brand': 'rgb(31, 78, 140)', '--space': '4px' };
+  const ROOT_TOKENS = {
+    '--brand': {
+      value: 'rgb(31, 78, 140)',
+      families: ['color'],
+      familyFrom: 'usage',
+      from: 'stylesheet',
+    },
+    '--space': { value: '4px', families: ['space'], familyFrom: 'usage', from: 'stylesheet' },
+  };
 
   it('getElementStyles', async () => {
     const server = await serverHandlers().getElementStyles('save');
@@ -627,6 +634,14 @@ describe('design-inspection routes · relay and server answer the same model', (
     const relay = await relayHandlers().getResponsiveSnapshots(request);
     expect(stable(relay.data)).toEqual(stable(server.data));
     expect(relay.data).toMatchObject({ tokens: ROOT_TOKENS, tokenCount: 2 });
+  });
+
+  it('getResponsiveSnapshots attributes tokens at the first viewport only', async () => {
+    const relay = await relayHandlers().getResponsiveSnapshots({ viewports: { a: 375, b: 768 } });
+    const [first, second] = relay.data!.snapshots;
+    expect(relay.data!.tokenMatchesViewport).toBe('a');
+    expect(first.elements.every((e) => e.tokenMatches !== undefined)).toBe(true);
+    expect(second.elements.every((e) => e.tokenMatches === undefined)).toBe(true);
   });
 
   it('getResponsiveSnapshots', async () => {

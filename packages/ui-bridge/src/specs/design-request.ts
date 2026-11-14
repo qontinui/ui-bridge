@@ -35,7 +35,7 @@ import {
   type QualityElementSource,
 } from './quality-request';
 import { indexCustomProperties } from '../ai/design-inspector';
-import { rootTokensOf, type ReportedTokens } from '../ai/design-tokens';
+import { reportedTokensOf, type ReportedTokens } from '../ai/design-tokens';
 import { runStyleAudit } from './style-validator';
 import type { StyleAuditReport, StyleGuideConfig } from './style-types';
 
@@ -171,11 +171,12 @@ export interface DesignAuditRequest {
 export type ElementStylesResponse = ElementDesignData & ReportedTokens;
 
 /**
- * `/design/snapshot` answer. The page's root design tokens are reported once,
- * as `tokens`; each element carries only the custom properties that differ
- * from them, plus its `tokenMatches`. For ~300 elements and ~150 tokens that
- * costs ~5 KB of tokens once and ~150 B of attribution per element, where
- * repeating the tokens per element would cost ~1.6 MB.
+ * `/design/snapshot` answer. The page's root design tokens (`tokens`) and the
+ * ancestor scopes that re-declare them (`scopes`) are reported once; each
+ * element carries only the custom properties it declares itself, the ids of
+ * its scopes (`tokenScopes`) and its `tokenMatches`. Token data therefore
+ * grows with tokens + elements, not tokens x elements (see
+ * `ai/design-tokens.ts`).
  */
 export interface DesignSnapshotResponse extends DesignSelectionBounds, ReportedTokens {
   elements: ElementDesignData[];
@@ -197,6 +198,12 @@ export interface ResponsiveSnapshotsResponse extends DesignSelectionBounds, Repo
   windowInnerWidth: number;
   /** Viewports the request named; `snapshots` holds fewer when `timedOut`. */
   requestedViewports: number;
+  /**
+   * The viewport whose snapshot carries `tokenMatches` (the first captured):
+   * attribution does not change under a root-width constraint, so it is not
+   * repeated per viewport. `null` when nothing was captured.
+   */
+  tokenMatchesViewport: string | null;
   /** The capture's deadline ran out between viewports; it stopped and restored the page. */
   timedOut: boolean;
   /** The tab was hidden, so no animation frame was awaited (see `ResponsiveCapture`). */
@@ -456,16 +463,14 @@ export function elementStylesOf(
     throw new DesignRequestError('Element does not have a DOM reference', 'NO_DOM_REFERENCE');
   }
   const index = indexCustomProperties(document, [source.element]);
-  return {
-    ...getElementDesignData(source.element, {
-      elementId: source.id,
-      label: source.label,
-      type: source.type,
-      includePseudoElements: true,
-      customProperties: index,
-    }),
-    ...rootTokensOf(index.tokens),
-  };
+  const data = getElementDesignData(source.element, {
+    elementId: source.id,
+    label: source.label,
+    type: source.type,
+    includePseudoElements: true,
+    customProperties: index,
+  });
+  return { ...data, ...reportedTokensOf(index.tokens) };
 }
 
 /**
@@ -483,10 +488,10 @@ export function designSnapshotOf(
   const limit = limitOf(body, route) ?? DEFAULT_DESIGN_RECORD_BUDGET;
   const { kept, report } = bounded(selectElements(elements, elementIds), limit);
   const batch = collectDesignBatch(kept, undefined, { includePseudoElements });
+  const { elements: designData, ...reported } = batch;
   return {
-    elements: batch.elements,
-    tokens: batch.tokens,
-    tokenCount: batch.tokenCount,
+    elements: designData,
+    ...reported,
     ...report,
     returned: kept.length,
     timestamp: Date.now(),
@@ -544,6 +549,11 @@ export async function responsiveSnapshotsOf(
     framesSkipped: capture.framesSkipped,
     tokens: capture.tokens,
     tokenCount: capture.tokenCount,
+    truncatedValues: capture.truncatedValues,
+    scopes: capture.scopes,
+    scopeCount: capture.scopeCount,
+    tokenCoverage: capture.tokenCoverage,
+    tokenMatchesViewport: capture.snapshots[0]?.viewportLabel ?? null,
     ...report,
     returned: kept.length,
     timestamp: Date.now(),

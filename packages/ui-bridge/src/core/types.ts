@@ -3302,20 +3302,33 @@ export interface PseudoElementStyles {
 
 /**
  * How one design property value relates to the page's design tokens (CSS
- * custom properties). See `ai/design-tokens.ts`.
+ * custom properties). See `ai/design-tokens.ts` for the full rules.
  */
 export interface TokenAttribution {
   /**
-   * Tokens a declaration that applies to the element (a matching rule, or its
-   * inline style) references with `var()` for this property. The source uses
-   * the token; a more specific rule may still override it.
+   * Tokens a declaration that applies to the element references with `var()`
+   * for this property, and whose resolved value the computed value equals (the
+   * declaration won the cascade).
    */
   derived?: string[];
+  /** `derived` through an ancestor's declaration of this inherited property. */
+  via?: 'inherited';
   /**
-   * Tokens whose value on the document root equals this computed value. Can
-   * be coincidence: a hardcoded value that happens to equal a token matches.
+   * `derived` through `calc()` or another function: the result cannot be
+   * compared with the token, so the cascade is not verified.
+   */
+  expression?: true;
+  /** Tokens such a declaration references whose value the computed value does NOT equal. */
+  overridden?: string[];
+  /**
+   * Tokens of a compatible family whose root value equals this computed value
+   * (at most 8). Can be coincidence.
    */
   matches?: string[];
+  /** How many tokens matched, when more than `matches` lists. */
+  matchCount?: number;
+  /** An inherited property whose value comes unchanged from the parent, from no token. */
+  inherited?: true;
 }
 
 /** Per design property, its token attribution; a property with none is absent. */
@@ -3332,10 +3345,9 @@ export interface ElementDesignData {
   stateVariations?: StateStyles[];
   pseudoElements?: PseudoElementStyles[];
   /**
-   * Custom properties in effect on the element that are declared on it, or
-   * whose value differs from the document root's (re-declared on it or an
-   * ancestor). Tokens inherited unchanged from the root are not repeated per
-   * element: a batch response reports them once, as `tokens`.
+   * Custom properties the element itself declares (by rule or inline). Tokens
+   * from the root and from ancestor scopes are reported once per response
+   * (`tokens`, `scopes`), not repeated per element.
    */
   customProperties?: Record<string, string>;
   /**
@@ -3344,6 +3356,16 @@ export interface ElementDesignData {
    * empty object means no property relates to a token.
    */
   tokenMatches?: TokenMatches;
+  /**
+   * The token scopes (ancestors that re-declare tokens) the element sits in,
+   * outermost first; ids into the response's `scopes`.
+   */
+  tokenScopes?: string[];
+  /**
+   * `uncovered` when the element is outside the indexed document (a shadow
+   * tree, or detached), so its tokens were not analysed.
+   */
+  tokenAnalysis?: 'uncovered';
   className?: string;
   classes?: string[];
   rect: {
