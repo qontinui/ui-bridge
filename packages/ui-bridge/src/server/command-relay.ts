@@ -168,9 +168,10 @@ export interface TransportDiagnostics {
   activeTabs: string[];
   /**
    * The tab an unpinned command goes to first. Unscoped, the relay's primary
-   * (`getPrimaryTabId`). Scoped (`ownerCheck`), the first of the caller's own
-   * tabs under `compareByLiveness` (tab-liveness.ts), which is the tab the
-   * owner-scoped dispatch arm picks, or `null` when the caller has none.
+   * (`getPrimaryTabId`). Scoped (`ownerCheck`), `ownedPrimaryTabId`: the first
+   * of the caller's own tabs under `compareByLiveness` (tab-liveness.ts), which
+   * is the tab the owner-scoped dispatch arm picks, or `null` when the caller
+   * has none.
    */
   primaryTabId: string | null;
   demotedTabs: string[];
@@ -2081,9 +2082,13 @@ export class CommandRelay {
 
     // A new tab becomes primary: the most-recently-registered rule the
     // nextjs.ts header documents. A resumed tab keeps whatever standing it
-    // had, so a reconnect cannot take the primary from a live tab.
+    // had, so a reconnect cannot take the primary from a live tab. A new tab
+    // also starts without a warm-up mark: one an earlier generation of the
+    // same id left (its tombstone past the grace but not yet swept) must not
+    // let a resume of this generation skip a warm-up it never had.
     this.demotedTabs.delete(id);
     if (!resumed) this.setPrimaryTab(id);
+    if (!resumed) this.warmedUpTabs.delete(id);
 
     // Signal that a transport is ready
     this.openConnectionGate();
@@ -2537,6 +2542,17 @@ export class CommandRelay {
   }
 
   /**
+   * The tab `userId`'s unpinned command goes to first: the first of their own
+   * tabs under `compareByLiveness` (tab-liveness.ts), as the owner-scoped
+   * dispatch arm ranks them, or `null` when they have none. The one source of
+   * a scoped caller's primary: the scoped `getTransportDiagnostics`
+   * `primaryTabId`, and `isPrimary` in `/tabs` and `/tabs/wait` (nextjs.ts).
+   */
+  ownedPrimaryTabId(userId: string): string | null {
+    return this.rankOwnedTabs(userId)[0] ?? null;
+  }
+
+  /**
    * Admin / trusted-caller bypass: return ALL connected tab ids
    * regardless of ownership. Intended for server-side callers that
    * don't know a userId (internal admin tooling, runner introspection).
@@ -2671,7 +2687,7 @@ export class CommandRelay {
       // Where this caller's unpinned command goes (the owner-scoped arm), not
       // the global primary: that one is chosen over every user's tabs, and a
       // scoped caller's command never reads it.
-      primaryTabId: this.rankOwnedTabs(userId)[0] ?? null,
+      primaryTabId: this.ownedPrimaryTabId(userId),
       tabHeartbeats: pickOwned(full.tabHeartbeats),
       tabMetadata: pickOwned(full.tabMetadata),
       tabOwnership: pickOwned(full.tabOwnership),

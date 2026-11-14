@@ -1027,7 +1027,7 @@ function handleRelayRoute(
           // A scoped caller's primary is the tab its own unpinned command
           // reaches, as its `/health` reports, not the global primary.
           const primaryTabId = callerUserId
-            ? relay.getTransportDiagnostics({ ownerCheck: { userId: callerUserId } }).primaryTabId
+            ? relay.ownedPrimaryTabId(callerUserId)
             : diag.primaryTabId;
           const tabs = visibleIds.map((tabId) => ({
             tabId,
@@ -1080,9 +1080,7 @@ function handleRelayRoute(
     const diag = relay.getTransportDiagnostics();
     // A scoped caller's primary is the tab its own unpinned command reaches,
     // as its `/health` reports, not the global primary.
-    const primaryTabId = callerUserId
-      ? relay.getTransportDiagnostics({ ownerCheck: { userId: callerUserId } }).primaryTabId
-      : diag.primaryTabId;
+    const primaryTabId = callerUserId ? relay.ownedPrimaryTabId(callerUserId) : diag.primaryTabId;
     const ownedSet = callerUserId ? new Set(relay.listOwnedTabs(callerUserId)) : null;
     const baseIds = activeOnly ? diag.activeTabs : diag.connectedTabs;
     const tabIds = ownedSet ? baseIds.filter((id) => ownedSet.has(id)) : baseIds;
