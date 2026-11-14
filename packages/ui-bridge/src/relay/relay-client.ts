@@ -12,11 +12,35 @@
  * Both consumers share one implementation, so a relay-protocol change lands
  * in exactly one place.
  *
- * Wire contract (unchanged from the hook):
- *   1. SSE  GET  `{basePath}/commands/stream?tabId=` (fetch-streaming)
- *   2. exec      `execute(action, payload)`
- *   3. POST      `{basePath}/commands`   — result envelope
+ * Wire contract:
+ *   1. SSE  GET  `{basePath}/commands/stream?tabId=&caps=rotate,dedupe&cid=`
+ *                (fetch-streaming)
+ *   2. exec      `execute(action, payload)` — once per dedupe key
+ *   3. POST      `{basePath}/commands`   — result envelope, naming the stream
+ *                the command arrived on; a repeat delivery is answered too
+ *                while the command's outcome is kept (`command-dedupe.ts`)
  *   4. POST      `{basePath}/heartbeat`  — every `heartbeatIntervalMs`
+ *
+ * Stream lifecycle (plan
+ * `2026-11-09-a-dead-relay-tab-stays-the-operators-primary-and-a-command-sent-during-a-stream-reopen-is-lost`,
+ * D4). `caps` declares that this client follows a relay's `rotate` frame and
+ * dedupes a redelivered command; `cid` names this page instance (see
+ * `command-dedupe.ts`). A relay that predates them ignores both.
+ *
+ * - A stream that received `connected` and lived {@link HEALTHY_STREAM_MIN_MS}
+ *   is reopened at once when it ends; one that failed sooner waits
+ *   `SSE_RECONNECT_DELAY_MS`. The exception is a stream its relay asked to
+ *   rotate and then ended: it reopens at the open floor (see
+ *   {@link HEALTHY_STREAM_MIN_MS}), even if it never connected.
+ * - A `rotate` frame opens the next stream before the current one ends
+ *   (make-before-break), once the current one has been connected
+ *   {@link HEALTHY_STREAM_MIN_MS}. The replaced stream drains: it is read to
+ *   its EOF, or, if its relay never ends it, aborted once its replacement
+ *   has connected and the frame's `graceMs` (counted from the frame, at most
+ *   60 s) has run out. At most one stream drains at a time, so a relay can
+ *   hold at most two open.
+ * - A replacement that fails before its `connected` hands the tab back to the
+ *   stream it was replacing, which its relay still holds.
  *
  * `X-UI-Bridge-Tab-Key` rides on all three when an injector published a tab
  * key AND `basePath` is loopback; none of them is sent from an opaque-origin
@@ -30,10 +54,56 @@
  */
 
 import { registerRelayTrafficBase } from './relay-traffic';
+import { createCommandDedupe, dedupeKeyOf } from './command-dedupe';
+import { randomUuid } from './random-uuid';
 import { safeJsonStringify } from '../core/wire-json';
 
-// SSE reconnection delay (10s to avoid Next.js route recompilation cascades)
+// SSE reconnection delay after a FAST failure: a refused open, or a stream
+// that ended before it was healthy (10s to avoid Next.js route recompilation
+// cascades, which fail fast).
 const SSE_RECONNECT_DELAY_MS = 10_000;
+
+/**
+ * How long a command stream must have lived after its `connected` event to
+ * count as healthy. A healthy stream that ends is reopened at once (plus up to
+ * `HEALTHY_REOPEN_JITTER_MS`), because a command sent into a 10s gap outlives
+ * the relay's answer timeout.
+ *
+ * It is also the floor between the streams the client opens on its own. A
+ * reopen after a stream ends, and the replacement a `rotate` frame asks for,
+ * each come at least this long after the previous open, and a rotation also
+ * waits until the stream it replaces has been connected this long (a `rotate`
+ * frame that arrives before `connected` waits for it). So those opens are
+ * capped at 6 per tab per minute, the cadence the relay's stream lane is
+ * sized for, whatever the relay does. Two opens are not floored: a call to
+ * `forceReconnect` (the heartbeat's `tabRegistered: false` recovery makes
+ * one) and a tab coming back into view with no stream open.
+ *
+ * A numeric literal on purpose, so qontinui-web's bundledNumber can read it
+ * out of the bundle (Phase 7 adds that read).
+ */
+export const HEALTHY_STREAM_MIN_MS = 10_000;
+
+// The most a healthy reopen is delayed by, chosen at random per reopen, so the
+// tabs whose streams one relay instance ends together do not reopen together.
+const HEALTHY_REOPEN_JITTER_MS = 250;
+
+// How long a replaced stream may still be read when its `rotate` frame names
+// no grace. Like a named grace, it is counted from the frame's arrival, so the
+// time spent waiting to rotate is part of it. Once it has run out and the
+// stream's replacement has connected, the stream is aborted, so a relay that
+// never ends it cannot keep it open past that. Until the replacement connects
+// (or fails, which hands the tab back), the stream is held, however long ago
+// the grace ran out.
+const DRAINING_STREAM_DEADLINE_MS = 15_000;
+
+// The longest grace a `rotate` frame can buy the stream it replaces; a longer
+// one is held to this.
+const MAX_DRAINING_GRACE_MS = 60_000;
+
+// What every command stream declares: it follows a `rotate` frame, and it
+// dedupes a redelivered command.
+const STREAM_CAPABILITIES = 'rotate,dedupe';
 
 // Heartbeat interval.
 //
@@ -105,6 +175,53 @@ export function parseSSEDataBlock(block: string): string | null {
     dataLines.push(value);
   }
   return dataLines.length > 0 ? dataLines.join('\n') : null;
+}
+
+/** A parsed `data:` payload off the command stream: a control frame or a command. */
+type StreamFrame = {
+  type?: unknown;
+  streamId?: unknown;
+  graceMs?: unknown;
+} & Partial<QueuedCommand>;
+
+/**
+ * Read an SSE body to its end, handing each event block's parsed `data:`
+ * payload to `onFrame`. Stops early, releasing the body, when `onFrame`
+ * returns `'end'`: the relay's own end frame is a normal EOF. A block that
+ * does not parse, or whose handler throws, is reported and skipped. Rejects
+ * when the read itself fails (an abort, a network drop).
+ */
+async function readSSEFrames(
+  body: ReadableStream<Uint8Array>,
+  onFrame: (frame: StreamFrame) => 'end' | void,
+  onError: (message: string, error?: unknown) => void
+): Promise<void> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) return;
+    buffer += decoder.decode(value, { stream: true });
+    let sep: number;
+    while ((sep = buffer.indexOf('\n\n')) !== -1) {
+      const block = buffer.slice(0, sep);
+      buffer = buffer.slice(sep + 2);
+      const data = parseSSEDataBlock(block);
+      if (data == null) continue;
+      let verdict: 'end' | void;
+      try {
+        verdict = onFrame(JSON.parse(data));
+      } catch (e) {
+        onError('[UIBridge] Failed to parse SSE message:', e);
+        continue;
+      }
+      if (verdict === 'end') {
+        reader.cancel().catch(() => {});
+        return;
+      }
+    }
+  }
 }
 
 /**
@@ -248,7 +365,8 @@ function isOpaqueOrigin(): boolean {
  *      id the caller had been handed and was addressing the tab by.
  *   2. The `sessionStorage` entry (per-origin, per-tab) — so an embedded app
  *      and a relay client in the same document agree on the id.
- *   3. A fresh `crypto.randomUUID()`, persisted for (2).
+ *   3. A fresh v4 uuid ({@link randomUuid}, which also works on a non-secure
+ *      page), persisted for (2).
  *
  * The resolved id is written back to `sessionStorage` in all three cases, so
  * everything in the document converges on it. Falls back to a non-persisted
@@ -272,7 +390,7 @@ export function resolveTabId(): string {
     /* access denied */
   }
   if (stored) return stored;
-  const fresh = crypto.randomUUID();
+  const fresh = randomUuid();
   persistTabId(fresh);
   return fresh;
 }
@@ -283,6 +401,46 @@ interface QueuedCommand {
   action: string;
   payload: unknown;
   timestamp?: number;
+  /** On a relay's redelivered alias: the id of the command it re-sends. */
+  redeliveryOf?: string;
+}
+
+/** What one execution of a command produced: every delivery of it is answered with this. */
+interface CommandOutcome {
+  ok: boolean;
+  result: unknown;
+}
+
+/** One command stream a client opened, and what it has learned about itself. */
+interface CommandStream {
+  readonly controller: AbortController;
+  /** Whether a `rotate` frame opened it, to replace the stream now draining. */
+  readonly replacing: boolean;
+  /** Its id, from its own `connected` event. */
+  id?: string;
+  /** When its `connected` event arrived. */
+  connectedAt?: number;
+  /**
+   * Its relay's request to replace it: when the `rotate` frame arrived, and
+   * the grace it named. Set from that frame on: while the rotation waits,
+   * and still while the stream drains after its replacement opens. Cleared
+   * only when a failed replacement hands the stream back. While it is set and
+   * the stream is current, an end of this stream is its relay's own close,
+   * not a failure.
+   */
+  rotation?: { requestedAt: number; graceMs: number };
+}
+
+/**
+ * How long a stream a `rotate` frame replaces may still be read, counted from
+ * the frame: the `graceMs` it names (at most `MAX_DRAINING_GRACE_MS`), or
+ * `DRAINING_STREAM_DEADLINE_MS` when it names none usable.
+ */
+function drainingGraceMs(graceMs: unknown): number {
+  if (typeof graceMs !== 'number' || !Number.isFinite(graceMs) || graceMs < 0) {
+    return DRAINING_STREAM_DEADLINE_MS;
+  }
+  return Math.min(graceMs, MAX_DRAINING_GRACE_MS);
 }
 
 /** Configuration for {@link startRelayClient}. */
@@ -332,9 +490,15 @@ export interface RelayClientConfig {
 export interface RelayClientHandle {
   /** The tab id this client registered under. */
   readonly tabId: string;
-  /** Force the SSE stream to close and immediately reconnect. */
+  /**
+   * The id of the CURRENT command stream, from its own `connected` event, or
+   * `undefined` until that arrives. While a replaced stream is still being
+   * read, this is its replacement's id.
+   */
+  readonly streamId: string | undefined;
+  /** Force every open SSE stream to close and immediately reconnect. */
   forceReconnect(): void;
-  /** Tear down the SSE stream + heartbeat loop. Idempotent. */
+  /** Tear down every SSE stream + the heartbeat loop. Idempotent. */
   stop(): void;
 }
 
@@ -381,13 +545,38 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
   });
 
   let stopped = false;
-  // The id of the command stream currently open, from its `connected` event.
-  // Every command result carries it, so the relay can hold the result to the
-  // stream the command was delivered on.
-  let streamId: string | undefined;
-  let abortController: AbortController | null = null;
+  // The newest stream: the one a rotation or a reconnect replaces, and whose
+  // id the handle reports. A command's result never reads it: each result
+  // carries the id of the stream its command arrived on, so the relay can hold
+  // the result to that stream.
+  let current: CommandStream | null = null;
+  // The stream a rotation replaced, still read to its EOF; the stream that
+  // replaced it; whether its grace has run out; and the timer that records
+  // that and aborts it then, if its relay never ends it and its replacement
+  // has connected. There is at most one. While the replacement neither
+  // connects nor fails, the hold is bounded by the relay (which ends a
+  // stream it replaced) and the platform, not by this client.
+  let draining: {
+    stream: CommandStream;
+    replacement: CommandStream;
+    graceSpent: boolean;
+    deadline: ReturnType<typeof setTimeout>;
+  } | null = null;
+  // A rotation the relay asked for before the current stream was healthy,
+  // waiting until it is.
+  let pendingRotation: ReturnType<typeof setTimeout> | null = null;
+  // When the newest stream was opened: the floor every scheduled open waits on.
+  let lastOpenAt: number | undefined;
   let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
   let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+  // This page instance. Its id rides on every stream GET, and its memory of
+  // the commands it ran is what lets a relay redeliver into it safely.
+  const outcomes = createCommandDedupe<CommandOutcome>();
+  const clientInstanceId = randomUuid();
+  const streamUrl =
+    `${basePath}/commands/stream?` +
+    (tabId ? `tabId=${encodeURIComponent(tabId)}&` : '') +
+    `caps=${STREAM_CAPABILITIES}&cid=${encodeURIComponent(clientInstanceId)}`;
 
   // ----- Response sender -----
   const sendResponse = async (
@@ -416,145 +605,286 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
   };
 
   // ----- Command processor -----
-  // `fromStream` is the stream the command arrived on; its result names that
-  // stream even if the connection has been reopened since.
-  const processCommand = async (command: QueuedCommand, fromStream: string | undefined) => {
+  // Run one command, and turn whatever it produced (a thrown error included)
+  // into the envelope every delivery of it is answered with.
+  const runCommand = async (command: QueuedCommand): Promise<CommandOutcome> => {
     try {
       const result = await execute(command.action, command.payload as Record<string, unknown>);
       const resultObj = result as { success?: boolean };
-      if (resultObj && resultObj.success === false) {
-        await sendResponse(command.commandId, false, result, fromStream);
-        return;
-      }
-      await sendResponse(command.commandId, true, result, fromStream);
+      return { ok: !(resultObj && resultObj.success === false), result };
     } catch (e: unknown) {
       const errorMessage = e instanceof Error ? e.message : String(e);
       let errorCode = 'UNKNOWN_ERROR';
       if (errorMessage.includes('not found')) errorCode = 'ELEMENT_NOT_FOUND';
       else if (errorMessage.includes('timeout')) errorCode = 'ACTION_TIMEOUT';
       else if (errorMessage.includes('Unknown command')) errorCode = 'UNKNOWN_COMMAND';
-
-      await sendResponse(
-        command.commandId,
-        false,
-        {
+      return {
+        ok: false,
+        result: {
           success: false,
           error: errorMessage,
           failureDetails: { errorCode, message: errorMessage, timestamp: Date.now() },
           durationMs: 0,
           timestamp: Date.now(),
         },
-        fromStream
-      );
+      };
     }
+  };
+
+  // `fromStream` is the stream the command arrived on; its result names that
+  // stream even if the connection has been reopened or rotated since.
+  const processCommand = async (command: QueuedCommand, fromStream: string | undefined) => {
+    // A command read after `stop()` (its bytes were already on the wire) is
+    // not run: the client is being torn down.
+    if (stopped) return;
+    // One page instance runs one command once, however many streams carried
+    // it. A repeat delivery is answered, under its own id and stream, with
+    // that run's outcome while the outcome is kept. After that it is neither
+    // run nor answered (see `command-dedupe.ts`).
+    const outcome = outcomes.outcomeOf(dedupeKeyOf(command), () => runCommand(command));
+    if (!outcome) return;
+    const { ok, result } = await outcome;
+    // The client stopped while the command ran: it sends nothing more.
+    if (stopped) return;
+    await sendResponse(command.commandId, ok, result, fromStream);
   };
 
   // ----- SSE connection -----
-  const closeStream = () => {
-    if (abortController) {
-      abortController.abort();
-      abortController = null;
-    }
-  };
-
-  const scheduleReconnect = () => {
-    if (stopped) return;
-    if (reconnectTimeout) return; // already scheduled
-    reconnectTimeout = setTimeout(() => {
-      reconnectTimeout = null;
-      if (!stopped) connect();
-    }, SSE_RECONNECT_DELAY_MS);
-  };
-
-  const connect = () => {
-    if (stopped) return;
-    // An opaque-origin document is refused by the runner and is about to be
-    // replaced by the navigation; the real document starts its own client.
-    if (isOpaqueOrigin()) return;
-    closeStream();
-    const controller = new AbortController();
-    abortController = controller;
-
-    const url = `${basePath}/commands/stream${tabId ? `?tabId=${encodeURIComponent(tabId)}` : ''}`;
-    const headers: Record<string, string> = { Accept: 'text/event-stream', ...tabKeyHeader };
-    const token = resolveAuthToken(authHeader);
-    if (token) headers.Authorization = `Bearer ${token}`;
-
-    fetch(url, { method: 'GET', headers, signal: controller.signal, cache: 'no-store' })
-      .then(async (resp) => {
-        if (!resp.ok || !resp.body) {
-          if (abortController === controller) abortController = null;
-          scheduleReconnect();
-          return;
-        }
-        const reader = resp.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        try {
-          for (;;) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            let sep: number;
-            while ((sep = buffer.indexOf('\n\n')) !== -1) {
-              const block = buffer.slice(0, sep);
-              buffer = buffer.slice(sep + 2);
-              const data = parseSSEDataBlock(block);
-              if (data == null) continue;
-              try {
-                const parsed = JSON.parse(data);
-                if (parsed.type === 'connected') {
-                  streamId = typeof parsed.streamId === 'string' ? parsed.streamId : undefined;
-                  continue;
-                }
-                // Throttle-immune heartbeat clock: arriving bytes are not
-                // subject to the background-tab timer clamp, so a hidden tab
-                // stays registered on the strength of these alone.
-                if (parsed.type === 'ping') {
-                  maybeSendHeartbeat();
-                  continue;
-                }
-                if (parsed.commandId && parsed.action) {
-                  void processCommand(parsed as QueuedCommand, streamId);
-                }
-              } catch (e) {
-                onError('[UIBridge] Failed to parse SSE message:', e);
-              }
-            }
-          }
-        } catch {
-          /* stream read aborted or network drop — fall through to reconnect */
-        }
-        if (abortController === controller) abortController = null;
-        if (!stopped && !controller.signal.aborted) scheduleReconnect();
-      })
-      .catch(() => {
-        if (abortController === controller) abortController = null;
-        if (!stopped && !controller.signal.aborted) scheduleReconnect();
-      });
-  };
-
-  const forceReconnect = () => {
-    if (stopped) return;
-    closeStream();
+  const cancelReconnect = () => {
     if (reconnectTimeout) {
       clearTimeout(reconnectTimeout);
       reconnectTimeout = null;
     }
-    connect();
+  };
+
+  const cancelPendingRotation = () => {
+    if (pendingRotation) {
+      clearTimeout(pendingRotation);
+      pendingRotation = null;
+    }
+  };
+
+  /** Stop reading the stream a rotation replaced, if one is still open. */
+  const endDraining = () => {
+    if (!draining) return;
+    clearTimeout(draining.deadline);
+    draining.stream.controller.abort();
+    draining = null;
+  };
+
+  /** Abort every open stream: the current one and a replaced one still read. */
+  const closeStreams = () => {
+    cancelPendingRotation();
+    endDraining();
+    current?.controller.abort();
+    current = null;
+  };
+
+  /** How long until the next scheduled open: HEALTHY_STREAM_MIN_MS after the last one. */
+  const untilOpenFloor = () =>
+    lastOpenAt === undefined ? 0 : Math.max(0, lastOpenAt + HEALTHY_STREAM_MIN_MS - Date.now());
+
+  const scheduleReconnect = (delayMs: number) => {
+    if (stopped) return;
+    if (reconnectTimeout) return; // already scheduled
+    reconnectTimeout = setTimeout(
+      () => {
+        reconnectTimeout = null;
+        if (!stopped) connect('replace');
+      },
+      Math.max(delayMs, untilOpenFloor())
+    );
+  };
+
+  /**
+   * Open the replacement `stream`'s relay asked for (`stream.rotation`), make-
+   * before-break. `stream` then drains: it is read to its EOF, or aborted once
+   * its replacement has connected and the grace its relay named, counted from
+   * the `rotate` frame, has run out. A stream still draining from an earlier
+   * rotation is aborted first, so a relay that rotates without ending streams
+   * holds at most two open.
+   */
+  const replace = (stream: CommandStream) => {
+    const rotation = stream.rotation;
+    if (stopped || current !== stream || !rotation) return;
+    endDraining();
+    const replacement = connect('rotate');
+    if (!replacement) return;
+    // The deadline records that the grace is spent; that record, not the
+    // clock, is what the replacement's `connected` reads. Make-before-break
+    // even when the grace is already spent: the stream is held until its
+    // replacement connects (whose `connected` then ends it) or fails (which
+    // hands the tab back to it).
+    const deadline = setTimeout(
+      () => {
+        if (draining?.stream !== stream) return;
+        draining.graceSpent = true;
+        if (replacement.connectedAt !== undefined) endDraining();
+      },
+      Math.max(0, rotation.requestedAt + rotation.graceMs - Date.now())
+    );
+    draining = { stream, replacement, graceSpent: false, deadline };
+  };
+
+  /**
+   * Schedule the replacement the current `stream`'s relay asked for. It waits
+   * until `stream` has been connected HEALTHY_STREAM_MIN_MS, and until that
+   * long after the last open. A request that came before `stream`'s
+   * `connected` waits for it: the `connected` branch calls this again.
+   */
+  const scheduleRotation = (stream: CommandStream) => {
+    if (pendingRotation || !stream.rotation || stream.connectedAt === undefined) return;
+    const wait = Math.max(
+      untilOpenFloor(),
+      stream.connectedAt + HEALTHY_STREAM_MIN_MS - Date.now()
+    );
+    if (wait > 0) {
+      pendingRotation = setTimeout(() => {
+        pendingRotation = null;
+        replace(stream);
+      }, wait);
+    } else {
+      replace(stream);
+    }
+  };
+
+  /**
+   * Open a command stream and make it the current one, returning it (null
+   * when none is opened). `'rotate'` leaves the current stream open (it is
+   * draining by then); `'replace'` aborts it.
+   */
+  const connect = (mode: 'replace' | 'rotate'): CommandStream | null => {
+    if (stopped) return null;
+    // An opaque-origin document is refused by the runner and is about to be
+    // replaced by the navigation; the real document starts its own client.
+    if (isOpaqueOrigin()) return null;
+    cancelReconnect();
+    cancelPendingRotation();
+    if (mode === 'replace') current?.controller.abort();
+    // This stream's own id and age. A command read off it is answered with
+    // `stream.id`, whichever stream is current by then.
+    const stream: CommandStream = {
+      controller: new AbortController(),
+      replacing: mode === 'rotate',
+    };
+    current = stream;
+    lastOpenAt = Date.now();
+
+    const onFrame = (frame: StreamFrame): 'end' | void => {
+      if (frame.type === 'connected') {
+        stream.id = typeof frame.streamId === 'string' ? frame.streamId : undefined;
+        stream.connectedAt = Date.now();
+        // The stream this one replaced was held for it; if its deadline has
+        // recorded the grace as spent, it goes now.
+        if (draining?.replacement === stream && draining.graceSpent) endDraining();
+        // A rotation its relay asked for before this, counted from now.
+        if (current === stream) scheduleRotation(stream);
+        return;
+      }
+      // Throttle-immune heartbeat clock: arriving bytes are not subject to the
+      // background-tab timer clamp, so a hidden tab stays registered on the
+      // strength of these alone.
+      if (frame.type === 'ping') {
+        maybeSendHeartbeat();
+        return;
+      }
+      // The relay is about to end this stream: open its replacement and keep
+      // reading this one. Only the current stream rotates, once per request,
+      // so a frame on a stream already replaced, or a repeat, opens nothing.
+      if (frame.type === 'rotate') {
+        if (current === stream && !stream.rotation) {
+          stream.rotation = { requestedAt: Date.now(), graceMs: drainingGraceMs(frame.graceMs) };
+          scheduleRotation(stream);
+        }
+        return;
+      }
+      // The relay's own close, sent just before it ends the stream: an EOF.
+      if (frame.type === 'end') return 'end';
+      if (frame.commandId && frame.action) {
+        void processCommand(frame as QueuedCommand, stream.id);
+      }
+    };
+
+    // However the stream ended: EOF, an end frame, a refused open, a dropped
+    // connection, or an abort.
+    const onEnded = () => {
+      // A replaced stream ending completes its rotation: its replacement is
+      // already open, so nothing reconnects.
+      if (draining?.stream === stream) {
+        clearTimeout(draining.deadline);
+        draining = null;
+        return;
+      }
+      if (current !== stream) return;
+      current = null;
+      cancelPendingRotation();
+      if (stopped || stream.controller.signal.aborted) return;
+      // A replacement that failed before its relay announced it hands the tab
+      // back to the stream it was replacing, which that relay still holds.
+      // The `draining?.replacement === stream` test is defensive: a replacing
+      // stream is opened only by `replace()`, which records it as the
+      // replacement of the one draining stream at once, and while it is
+      // current and unconnected nothing else can replace that record (a
+      // rotation of it waits for its `connected`; every other open aborts it
+      // first). So `draining`, when set here, is always its own; the test
+      // keeps the hand-back to the stream it replaced if that ever changes.
+      if (
+        stream.replacing &&
+        stream.connectedAt === undefined &&
+        draining?.replacement === stream
+      ) {
+        current = draining.stream;
+        current.rotation = undefined;
+        clearTimeout(draining.deadline);
+        draining = null;
+        return;
+      }
+      const healthy =
+        stream.connectedAt !== undefined &&
+        Date.now() - stream.connectedAt >= HEALTHY_STREAM_MIN_MS;
+      // A stream whose relay asked to replace it and then ended it was closed
+      // by that relay on purpose, so its end is not a failure, however young
+      // the stream: it reopens as soon as the open floor allows.
+      const closedByItsRelay = stream.rotation !== undefined;
+      scheduleReconnect(
+        healthy || closedByItsRelay
+          ? Math.floor(Math.random() * (HEALTHY_REOPEN_JITTER_MS + 1))
+          : SSE_RECONNECT_DELAY_MS
+      );
+    };
+
+    const headers: Record<string, string> = { Accept: 'text/event-stream', ...tabKeyHeader };
+    const token = resolveAuthToken(authHeader);
+    if (token) headers.Authorization = `Bearer ${token}`;
+
+    fetch(streamUrl, {
+      method: 'GET',
+      headers,
+      signal: stream.controller.signal,
+      cache: 'no-store',
+    })
+      .then((resp) => {
+        if (!resp.ok || !resp.body) return;
+        return readSSEFrames(resp.body, onFrame, onError);
+      })
+      .catch(() => {
+        /* stream read aborted or network drop — fall through to reconnect */
+      })
+      .then(onEnded);
+    return stream;
+  };
+
+  const forceReconnect = () => {
+    if (stopped) return;
+    closeStreams();
+    connect('replace');
   };
 
   const handleVisibility = () => {
     if (typeof document === 'undefined') return;
     if (document.visibilityState === 'visible') {
       // Reconnect immediately if the stream was dropped while hidden.
-      if (!abortController) {
-        if (reconnectTimeout) {
-          clearTimeout(reconnectTimeout);
-          reconnectTimeout = null;
-        }
-        connect();
-      }
+      if (!current) connect('replace');
     }
     // Do NOT disconnect on hide — automation tools need background access
   };
@@ -627,7 +957,7 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
   };
 
   // ----- Boot -----
-  connect();
+  connect('replace');
   if (typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', handleVisibility);
   }
@@ -636,15 +966,16 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
 
   return {
     tabId,
+    get streamId() {
+      return current?.id;
+    },
     forceReconnect,
     stop() {
       if (stopped) return;
       stopped = true;
-      closeStream();
-      if (reconnectTimeout) {
-        clearTimeout(reconnectTimeout);
-        reconnectTimeout = null;
-      }
+      closeStreams();
+      cancelReconnect();
+      outcomes.releaseOutcomes();
       if (heartbeatInterval) {
         clearInterval(heartbeatInterval);
         heartbeatInterval = null;
