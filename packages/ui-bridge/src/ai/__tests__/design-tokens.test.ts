@@ -24,6 +24,7 @@ import {
   normalizedForms,
   referencesOf,
   reportedTokensOf,
+  isUniversalSelector,
   scrubScriptValue,
 } from '../design-tokens';
 import { normalizeColor } from '../css-color';
@@ -381,7 +382,7 @@ describe('design tokens', () => {
     expect(document.querySelector('ui-bridge-token-probe')).toBeNull();
   });
 
-  it('mutates the light DOM only by one insert (before <body>) and one remove per batch', () => {
+  it('mutates the light DOM only by one insert (after <body>) and one remove per batch', () => {
     sheet(
       ':root { --pad: 1em; --brand: rgb(31, 78, 140); }',
       '.e { padding-left: var(--pad); color: var(--brand); }'
@@ -406,7 +407,8 @@ describe('design tokens', () => {
     observer.disconnect();
     expect(records.map((r) => r.type)).toEqual(['childList', 'childList']);
     expect(records[0].addedNodes[0].nodeName).toBe('UI-BRIDGE-TOKEN-PROBE');
-    expect(records[0].nextSibling).toBe(document.body);
+    expect(records[0].previousSibling).toBe(document.body);
+    expect(records[0].nextSibling).toBeNull();
     expect(records[1].removedNodes[0].nodeName).toBe('UI-BRIDGE-TOKEN-PROBE');
   });
 
@@ -515,7 +517,63 @@ describe('design tokens', () => {
     });
   });
 
-  it('a later rule writing the same value wins over an earlier one (approximate cascade)', () => {
+  it('a px line-height inherited with the same ratio is not taken as a unitless factor', () => {
+    sheet(':root { --lh: 24px; }', '.wrap { line-height: var(--lh); }');
+    const wrap = add('div', 'wrap');
+    const title = add('h2', 'title', wrap);
+    browserComputes(
+      new Map<Element, Record<string, string>>([
+        [wrap, { 'font-size': '16px', 'line-height': '24px' }],
+        // A hardcoded 30px on 20px text: the same 1.5 ratio, but not inherited.
+        [title, { 'font-size': '20px', 'line-height': '30px' }],
+      ])
+    );
+    const tokenMatches = read(title, [title]).tokenMatches;
+    expect(tokenMatches?.lineHeight?.derived).toBeUndefined();
+    expect(tokenMatches?.lineHeight?.inherited).toBeUndefined();
+  });
+
+  it('an other-kind value the probe may lack context for (a shadow) is unverified, not overridden', () => {
+    sheet(':root { --shadow: 0 1px 2px; }', '.s { box-shadow: var(--shadow); }');
+    const el = add('div', 's');
+    browserComputes(new Map([[el, { 'box-shadow': 'rgb(9, 9, 9) 0px 1px 2px 0px' }]]));
+    expect(read(el).tokenMatches?.boxShadow).toEqual({ unverified: ['--shadow'] });
+  });
+
+  it('carries the element’s colour into the probe: an implicit currentcolor shadow is derived', () => {
+    sheet(':root { --shadow: 0 1px 2px; }', '.s { box-shadow: var(--shadow); }');
+    const el = add('div', 's');
+    browserComputes(
+      new Map([[el, { color: 'rgb(9, 9, 9)', 'box-shadow': 'rgb(9, 9, 9) 0px 1px 2px 0px' }]]),
+      // A browser serialises a colourless shadow with the element's colour.
+      (inline, longhand) =>
+        longhand === 'box-shadow' && inline.getPropertyValue('box-shadow') === '0 1px 2px'
+          ? `${inline.getPropertyValue('color')} 0px 1px 2px 0px`.trim()
+          : undefined
+    );
+    expect(read(el).tokenMatches?.boxShadow).toEqual({ derived: ['--shadow'] });
+  });
+
+  it('without shadow DOM there is no probe: the comparison is unverified and the page untouched', () => {
+    sheet(':root { --pad: 1em; }', '.e { padding-left: var(--pad); }');
+    const el = add('div', 'e');
+    browserComputes(new Map([[el, { 'padding-left': '16px' }]]));
+    document.querySelectorAll('ui-bridge-token-probe').forEach((p) => p.remove());
+    const proto = Element.prototype as unknown as { attachShadow?: unknown };
+    const original = proto.attachShadow;
+    proto.attachShadow = undefined;
+    const observer = new MutationObserver(() => undefined);
+    observer.observe(document, { subtree: true, childList: true, attributes: true });
+    try {
+      expect(read(el).tokenMatches?.paddingLeft).toEqual({ unverified: ['--pad'] });
+      expect(observer.takeRecords()).toEqual([]);
+    } finally {
+      observer.disconnect();
+      proto.attachShadow = original;
+    }
+  });
+
+  it('every declaration computing to the value is reported, the later rule first', () => {
     sheet(
       ':root { --a: rgb(1, 1, 1); --b: rgb(1, 1, 1); }',
       '.btn { color: var(--a); }',
@@ -523,7 +581,7 @@ describe('design tokens', () => {
     );
     const btn = add('button', 'btn');
     browserComputes(new Map([[btn, { color: 'rgb(1, 1, 1)' }]]));
-    expect(read(btn).tokenMatches?.color).toEqual({ derived: ['--b'] });
+    expect(read(btn).tokenMatches?.color).toEqual({ derived: ['--b', '--a'] });
   });
 
   it('a computed value of the same kind that differs is overridden, even a keyword', () => {
@@ -600,6 +658,58 @@ describe('design tokens', () => {
     const batch = collectDesignBatch(kids.map((element, i) => ({ id: `k${i}`, element })));
     expect(batch.scopeCount).toBe(0);
     expect(batch.elements.every((e) => e.tokenScopes === undefined)).toBe(true);
+  });
+
+  it('treats universal selectors (with prefixes, :where/:is, :not) as universal, pseudo-elements alone not', () => {
+    for (const selector of [
+      '*',
+      '*, ::before, ::after',
+      ':where(*)',
+      ':is(*)',
+      '*:not(svg)',
+      'html *',
+      ':root *',
+      'body > *',
+      '*::before',
+    ]) {
+      expect(isUniversalSelector(selector), selector).toBe(true);
+    }
+    for (const selector of [
+      '::backdrop',
+      '::before',
+      '::before, ::after',
+      '.btn',
+      '* .btn',
+      '*.a',
+    ]) {
+      expect(isUniversalSelector(selector), selector).toBe(false);
+    }
+  });
+
+  it('a rule value built from a script-set inline property is scrubbed like one', () => {
+    sheet(
+      ':root { --blue: #00f; --primary: var(--blue); --bg: var(--avatar); }',
+      '.card { --title: var(--user-name); }'
+    );
+    const root = document.documentElement;
+    root.style.setProperty('--avatar', 'url("https://cdn.test/u/42.png?token=s3cr3t")');
+    const card = add('div', 'card');
+    card.style.setProperty('--user-name', 'Alice');
+    const leaf = add('span', 'leaf', card);
+    // On the element itself, with and without a batch index.
+    expect(getCSSCustomProperties(card)['--title']).toBe(REDACTED_VALUE);
+    expect(getCSSCustomProperties(card, indexCustomProperties(document, [card]))['--title']).toBe(
+      REDACTED_VALUE
+    );
+    const batch = collectDesignBatch([{ id: 'leaf', element: leaf }]);
+    // In the scope it makes for its subtree.
+    expect(Object.values(batch.scopes)[0].overrides).toMatchObject({
+      '--title': REDACTED_VALUE,
+      '--user-name': REDACTED_VALUE,
+    });
+    // And among the root tokens: `--bg` is the script value; `--primary` is not.
+    expect(batch.tokens['--bg'].value).toBe(REDACTED_VALUE);
+    expect(batch.tokens['--primary'].value).not.toBe(REDACTED_VALUE);
   });
 
   it('a rule-declared name does not re-read an inline value raw (the inline whitelist holds)', () => {
@@ -908,25 +1018,28 @@ describe('design tokens', () => {
       { id: 'lit', element: lit, type: 'generic' },
     ]);
     const metric = customPropertyConsistency(batch.elements, VIEWPORT);
-    // btn: a derived background; its colour is inherited unchanged (no choice).
-    // lit: a literal background (hardcoded) and a colour equal to --brand (half).
+    // btn: a derived background; its colour is inherited from a literal
+    // (hardcoded, half weight). lit: a literal background (hardcoded) and a
+    // colour equal to --brand (half credit).
     expect(metric.rawData).toMatchObject({
       elementsUsingTokens: 1,
       totalColorProps: 3,
       tokenDerivedColors: 1,
       valueMatchedColors: 1,
       hardcodedColors: 1,
-      inheritedColors: 1,
+      inheritedHardcodedColors: 1,
+      colorWeight: 3.5,
       tokenAttribution: true,
     });
-    // Each component is a plain share; the score is their weighted sum.
+    // avoidance = (1 + 0.5) / (3 + 0.5); the score is the weighted sum.
+    const avoidance = (1.5 / 3.5) * 100;
     expect(metric.rawData).toMatchObject({
       weights: { adoption: 0.5, consistency: 0.3, avoidance: 0.2 },
       adoptionScore: 50,
       consistencyScore: 100,
-      avoidanceScore: 50,
+      avoidanceScore: Math.round(avoidance * 10) / 10,
     });
-    expect(metric.score).toBe(Math.round(50 * 0.5 + 100 * 0.3 + 50 * 0.2));
+    expect(metric.score).toBe(Math.round(50 * 0.5 + 100 * 0.3 + avoidance * 0.2));
   });
 
   it('customPropertyConsistency: a colour inherited from a token is token-backed, adoption at half weight', () => {
@@ -949,7 +1062,7 @@ describe('design tokens', () => {
       elementsUsingTokens: 0,
       elementsInheritingTokens: 2,
       inheritedTokenColors: 2,
-      inheritedColors: 0,
+      inheritedHardcodedColors: 0,
       hardcodedColors: 0,
       adoptionScore: 50,
       avoidanceScore: 100,

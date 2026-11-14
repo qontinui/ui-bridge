@@ -10,8 +10,8 @@
  * computed longhands back.
  *
  * Page hygiene: the light DOM sees exactly one insert (a `display: none` host,
- * placed before `<body>`, styled before it is inserted) and one remove per
- * batch. Everything else — the context wrapper (the parent's inherited
+ * appended to `<html>` after `<body>`, styled before it is inserted) and one
+ * remove per batch; without shadow DOM there is no probe at all. Everything else — the context wrapper (the parent's inherited
  * values), the probe (the element's own) and each declaration — lives in a
  * closed shadow root, where no page rule matches and no page observer looks;
  * each declaration gets a new wrapper and probe there, since an engine may
@@ -50,7 +50,9 @@ const HOST_TAG = 'ui-bridge-token-probe';
  */
 function relevantContext(property: string, value: string): readonly string[] {
   const v = value.toLowerCase();
-  const fields = new Set<string>();
+  // Colour is always carried: a value can read it implicitly (a box-shadow or
+  // border without a colour computes to currentcolor).
+  const fields = new Set<string>(['color']);
   if (
     /[\d.](em|ex|ch|cap|ic|lh|rlh)\b|%/.test(v) ||
     property.startsWith('font') ||
@@ -58,20 +60,27 @@ function relevantContext(property: string, value: string): readonly string[] {
   ) {
     fields.add('font-size');
   }
-  if (property.startsWith('font') || /bolder|lighter|inherit/.test(v)) {
+  // ex/ch/cap/ic are measured on the font itself.
+  if (property.startsWith('font') || /bolder|lighter|inherit|[\d.](ex|ch|cap|ic)\b/.test(v)) {
     fields.add('font-weight').add('font-family').add('font-style');
   }
-  if (property === 'line-height' || property === 'font' || /lh\b/.test(v))
+  if (property === 'line-height' || property === 'font' || /lh\b/.test(v)) {
     fields.add('line-height');
-  if (property === 'color' || /currentcolor/.test(v)) fields.add('color');
+  }
   if (/light-dark|canvas|field|buttonface/.test(v)) fields.add('color-scheme');
   if (/inline|block|start|end/.test(property)) fields.add('writing-mode').add('direction');
   return [...fields];
 }
 
+/** Whether `property` sets the context field `field` itself (so it resolves against the parent's). */
+function setsField(property: string, field: string): boolean {
+  if (property === field) return true;
+  return property === 'font' && (field.startsWith('font') || field === 'line-height');
+}
+
 export class TokenProbe {
   private host: HTMLElement | null = null;
-  private shadow: ShadowRoot | HTMLElement | null = null;
+  private shadow: ShadowRoot | null = null;
   private readonly cache = new Map<string, string[] | null>();
 
   constructor(private readonly doc: Document) {}
@@ -89,12 +98,16 @@ export class TokenProbe {
     extra: Readonly<Record<string, string>> = {}
   ): string[] | null {
     const relevant = relevantContext(property, value);
+    // The cache keys on the values the declaration can read: the parent's for
+    // a field the declaration itself sets (`em` in font-size, `bolder`), the
+    // element's own otherwise — never the element's own value of the
+    // property under test.
     const key = [
       property,
       value,
       longhands.join(','),
       JSON.stringify(extra),
-      ...relevant.flatMap((p) => [context.parent[p] ?? '', context.own[p] ?? '']),
+      ...relevant.map((f) => (setsField(property, f) ? context.parent[f] : context.own[f]) ?? ''),
     ].join('\u0000');
     if (this.cache.has(key)) return this.cache.get(key) ?? null;
     let result: string[] | null = null;
@@ -147,20 +160,24 @@ export class TokenProbe {
     return { wrapper, probe };
   }
 
-  private ensure(): ShadowRoot | HTMLElement | null {
+  private ensure(): ShadowRoot | null {
     if (this.shadow) return this.shadow;
     const root = this.doc.documentElement;
     if (!root) return null;
     const host = this.doc.createElement(HOST_TAG);
+    // Without shadow DOM every declaration would mutate the light DOM: no
+    // probe, and the comparison reports `unverified`.
+    if (typeof host.attachShadow !== 'function') return null;
     // Styled and filled before it is inserted: one light-DOM mutation.
     host.setAttribute('aria-hidden', 'true');
     host.setAttribute('data-ui-bridge-internal', 'token-probe');
     host.style.setProperty('display', 'none', 'important');
-    const shadow: ShadowRoot | HTMLElement =
-      typeof host.attachShadow === 'function' ? host.attachShadow({ mode: 'closed' }) : host;
-    const body = this.doc.body;
-    if (body && body.parentNode === root) root.insertBefore(host, body);
-    else root.appendChild(host);
+    const shadow = host.attachShadow({ mode: 'closed' });
+    // Appended after <body>, as the last child of <html>: between <head> and
+    // <body> it would break `head + body` / `head ~ body`; as the last child
+    // it can only affect `body:last-child` and `:nth-last-child()` on body,
+    // which pages rarely style.
+    root.appendChild(host);
     this.host = host;
     this.shadow = shadow;
     // Backstop: a caller that never disposes still leaves no probe behind.

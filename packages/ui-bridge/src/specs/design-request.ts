@@ -63,11 +63,18 @@ export type DesignElementSource = QualityElementSource;
  * 250 records keeps a response near 1 MB. `/design/snapshot` returns up to
  * this many elements; `/design/responsive` repeats every element once per
  * viewport, so it divides the budget by the viewport count (at most
- * `MAX_RESPONSIVE_VIEWPORTS`). `/design/audit` checks up to this many
- * elements. A caller who knows its transport has room passes a larger
- * `limit`.
+ * `MAX_RESPONSIVE_VIEWPORTS`). A caller who knows its transport has room
+ * passes a larger `limit`.
  */
 export const DEFAULT_DESIGN_RECORD_BUDGET = 250;
+
+/**
+ * The default number of elements `/design/audit` checks. Its report carries
+ * findings, not per-element design data — failures only, capped by
+ * `maxResults` — so its size does not follow the element count the way a
+ * snapshot's does, and a whole page fits.
+ */
+export const DEFAULT_AUDIT_ELEMENT_LIMIT = 2_000;
 
 /** The most viewports one `/design/responsive` request may name. */
 export const MAX_RESPONSIVE_VIEWPORTS = 16;
@@ -151,7 +158,7 @@ export interface DesignAuditRequest {
   /** Audit against this guide; else the loaded one; else run the heuristics. */
   guide?: StyleGuideConfig;
   elementIds?: string[];
-  /** Most elements to audit; default `DEFAULT_DESIGN_RECORD_BUDGET`. */
+  /** Most elements to audit; default `DEFAULT_AUDIT_ELEMENT_LIMIT`. */
   limit?: number;
   /** List passing rule results too (style-guide mode); default `false`. */
   includePassed?: boolean;
@@ -573,7 +580,7 @@ export async function responsiveSnapshotsOf(
  *
  * `runStyleAudit` yields one result per matched element x rule, passes
  * included, so an unbounded report grows with the page. Both modes therefore
- * check at most `limit` elements (default `DEFAULT_DESIGN_RECORD_BUDGET`) and
+ * check at most `limit` elements (default `DEFAULT_AUDIT_ELEMENT_LIMIT`) and
  * report the cut. The style-guide mode also lists only failed results unless
  * `includePassed` is set, at most `maxResults` of them (default
  * `DEFAULT_AUDIT_MAX_RESULTS`), and summarises by count rather than repeating
@@ -588,7 +595,7 @@ export function designAuditOf(
   const body = bodyOf(request, route);
   const elementIds = elementIdsOf(body, route);
   const guide = guideOf(body, route) ?? loadedGuide ?? undefined;
-  const limit = limitOf(body, route) ?? DEFAULT_DESIGN_RECORD_BUDGET;
+  const limit = limitOf(body, route) ?? DEFAULT_AUDIT_ELEMENT_LIMIT;
   const includePassed = booleanOf(body, 'includePassed', route) ?? false;
   const maxResults = positiveIntegerOf(body, 'maxResults', route) ?? DEFAULT_AUDIT_MAX_RESULTS;
   const { kept, report } = bounded(selectElements(elements, elementIds), limit);
