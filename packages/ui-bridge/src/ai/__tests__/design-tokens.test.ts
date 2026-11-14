@@ -1027,8 +1027,8 @@ describe('design tokens', () => {
     expect(getCSSCustomProperties(el)['--font-heading']).toBe(REDACTED_VALUE);
   });
 
-  it('with an unreadable sheet, an @property-registered name counts as declared', () => {
-    sheet('.h { --font-heading: var(--font-display, Georgia, serif); }');
+  it('with an unreadable sheet, only a typed @property registration counts as declared', () => {
+    sheet('.h { --space-heading: var(--space-display, 2rem); }');
     const el = add('h1', 'h');
     el.style.setProperty('--accent', '#ff0000');
     const crossOrigin = {
@@ -1037,28 +1037,94 @@ describe('design tokens', () => {
       },
     };
     // Its registered initial value gives it a value everywhere.
-    browserComputes(new Map([[el, { '--font-display': 'Inter' }]]));
-    const registered = {
+    browserComputes(new Map([[el, { '--space-display': '3rem' }]]));
+    const registration = (syntax: string): unknown => ({
       cssRules: [
         {
-          name: '--font-display',
-          syntax: '*',
+          name: '--space-display',
+          syntax,
           inherits: true,
-          initialValue: 'Inter',
-          cssText:
-            '@property --font-display { syntax: "*"; inherits: true; initial-value: Inter; }',
+          initialValue: '3rem',
+          cssText: `@property --space-display { syntax: "${syntax}"; inherits: true; initial-value: 3rem; }`,
         },
       ],
+    });
+    const sheets = (...extra: unknown[]): void => {
+      vi.spyOn(document, 'styleSheets', 'get').mockReturnValue([
+        crossOrigin,
+        style.sheet,
+        ...extra,
+      ] as never);
     };
-    vi.spyOn(document, 'styleSheets', 'get').mockReturnValue([
-      crossOrigin,
-      style.sheet,
-      registered,
-    ] as never);
-    expect(getCSSCustomProperties(el)['--font-heading']).not.toBe(REDACTED_VALUE);
-    // Not vacuous: without the registration it fails closed.
-    vi.spyOn(document, 'styleSheets', 'get').mockReturnValue([crossOrigin, style.sheet] as never);
-    expect(getCSSCustomProperties(el)['--font-heading']).toBe(REDACTED_VALUE);
+    // A <length> cannot be arbitrary text: declared.
+    sheets(registration('<length>'));
+    expect(getCSSCustomProperties(el)['--space-heading']).not.toBe(REDACTED_VALUE);
+    // Read from the text where the engine has no CSSPropertyRule.
+    sheets({
+      cssRules: [
+        {
+          cssText:
+            '@property --space-display { syntax: "<length>"; inherits: true; initial-value: 3rem; }',
+        },
+      ],
+    });
+    expect(getCSSCustomProperties(el)['--space-heading']).not.toBe(REDACTED_VALUE);
+    // An untyped registration may hold any text: still fails closed.
+    for (const untyped of ['*', '<string>', '<custom-ident>', '<url>']) {
+      sheets(registration(untyped));
+      expect(getCSSCustomProperties(el)['--space-heading']).toBe(REDACTED_VALUE);
+    }
+    // Without any registration it fails closed.
+    sheets();
+    expect(getCSSCustomProperties(el)['--space-heading']).toBe(REDACTED_VALUE);
+  });
+
+  it('with an unreadable sheet, an empty optional hook stays raw in a token scope too', () => {
+    sheet('.theme { --font-heading: var(--font-display, Georgia, serif); }');
+    const wrapper = add('div', 'wrapper');
+    wrapper.style.setProperty('--accent', '#ff0000');
+    const theme = add('div', 'theme', wrapper);
+    const leaf = { id: 'k', element: add('span', 'k', theme) };
+    const crossOrigin = {
+      get cssRules(): CSSRuleList {
+        throw new DOMException('cross-origin stylesheet', 'SecurityError');
+      },
+    };
+    const scoped = (fontDisplay: string): string => {
+      vi.restoreAllMocks();
+      vi.spyOn(document, 'styleSheets', 'get').mockReturnValue([crossOrigin, style.sheet] as never);
+      browserComputes(new Map([[theme, { '--font-display': fontDisplay }]]));
+      return Object.values(collectDesignBatch([leaf]).scopes)[0].overrides['--font-heading'];
+    };
+    expect(scoped('')).not.toBe(REDACTED_VALUE);
+    expect(scoped('Alice Smith')).toBe(REDACTED_VALUE);
+  });
+
+  it('with an unreadable sheet, an empty optional hook stays raw among the root tokens too', () => {
+    sheet(':root { --font-heading: var(--font-display, Georgia, serif); }');
+    const root = document.documentElement;
+    root.style.setProperty('--accent', '#ff0000');
+    const crossOrigin = {
+      get cssRules(): CSSRuleList {
+        throw new DOMException('cross-origin stylesheet', 'SecurityError');
+      },
+    };
+    try {
+      const token = (fontDisplay: string): string => {
+        vi.restoreAllMocks();
+        vi.spyOn(document, 'styleSheets', 'get').mockReturnValue([
+          crossOrigin,
+          style.sheet,
+        ] as never);
+        browserComputes(new Map([[root, { '--font-display': fontDisplay }]]));
+        return collectDesignBatch([{ id: 'k', element: add('span', 'k') }]).tokens['--font-heading']
+          .value;
+      };
+      expect(token('')).not.toBe(REDACTED_VALUE);
+      expect(token('Alice Smith')).toBe(REDACTED_VALUE);
+    } finally {
+      root.style.removeProperty('--accent');
+    }
   });
 
   it('root tokens and scope overrides follow a hop in a @media that does not hold', () => {
@@ -1130,6 +1196,49 @@ describe('design tokens', () => {
     expect(title[1]).toBe(REDACTED_VALUE);
     // Without a batch the same element reads the same.
     expect(getCSSCustomProperties(el)['--title']).toBe(REDACTED_VALUE);
+  });
+
+  it('a responsive capture validates the redaction graph once per viewport, not per element', async () => {
+    sheet('.t { --title: var(--x); }', '.a { --x: var(--user); }');
+    const card = add('div', 'card');
+    card.style.setProperty('--user', 'Alice');
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      setTimeout(() => cb(0), 0);
+      return 0;
+    });
+    const sheetReads = async (elements: number, viewports: number[]): Promise<number> => {
+      const registered = Array.from({ length: elements }, (_, i) => ({
+        id: `t${i}`,
+        element: add('h2', 't', card),
+        type: 'heading',
+        label: 't',
+      }));
+      const reads = vi.spyOn(document, 'styleSheets', 'get');
+      try {
+        const capture = await captureResponsiveSnapshots(
+          { getAllElements: () => registered },
+          viewports
+        );
+        // Not vacuous: every element read the graph (the value is script-derived).
+        expect(capture.snapshots.at(-1)!.elements[0].customProperties?.['--title']).toBe(
+          REDACTED_VALUE
+        );
+        return reads.mock.calls.length;
+      } finally {
+        reads.mockRestore();
+        for (const r of registered) r.element.remove();
+      }
+    };
+    // Warm the per-document graph cache: a first build reads the sheets more.
+    await sheetReads(1, [320]);
+    // Independent of the element count...
+    expect(await sheetReads(8, [320, 768, 1024])).toBe(await sheetReads(1, [320, 768, 1024]));
+    // ...and one more validation (one walk of the document's sheets) per viewport.
+    const one = await sheetReads(1, [320]);
+    const two = await sheetReads(1, [320, 768]);
+    const three = await sheetReads(1, [320, 768, 1024]);
+    expect(three - two).toBe(two - one);
+    expect(two - one).toBe(1);
   });
 
   it('a token scope slotted into a shadow root follows that root’s graph', () => {

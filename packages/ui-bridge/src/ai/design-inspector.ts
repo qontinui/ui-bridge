@@ -22,6 +22,7 @@ import { withRootWidthLock } from '../core/root-width-lock';
 import {
   TokenIndexBuilder,
   disposeTokenIndex,
+  beginReadPass,
   redactionGraphFor,
   noReportedTokens,
   scrubScriptValue,
@@ -482,6 +483,11 @@ async function captureUnderRootWidthLock(
       void docEl.offsetHeight;
       if (!(await waitFrame())) framesSkipped = true;
 
+      // A new read pass: the redaction graphs are re-validated once for this
+      // viewport (a stylesheet edited since the last one is seen), not per
+      // element.
+      beginReadPass(customProperties.tokens);
+
       // Attribution is width-independent here (`@media` does not re-evaluate
       // under a root-width constraint), so it is read once, at the first
       // viewport, rather than repeated per snapshot.
@@ -737,7 +743,7 @@ export function getCSSCustomProperties(
   // The graph is read only when something is set from script at all.
   let graph: RedactionGraph | null = null;
   if (inScope.size > 0) {
-    // Every root re-validated on each read; a batch memoises only the merge.
+    // A batch validates each root once per read pass; alone, once per read.
     graph = index ? redactionGraphFor(index.tokens, el) : graphFor(el);
   }
   for (const prop of declared) {

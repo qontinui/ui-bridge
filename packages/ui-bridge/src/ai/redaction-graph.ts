@@ -15,7 +15,7 @@
  *
  * What an unreadable (cross-origin) sheet leaves uncovered, exactly: when a
  * sheet could not be read, a chain reaching a name that no readable rule
- * declares and no readable `@property` registers is treated as possibly
+ * declares and no readable typed `@property` registers is treated as possibly
  * script-derived (fail closed) — but only when that name has a value on the
  * element: an empty one means nothing, script or sheet, reaches the element
  * through it (an optional hook such as `var(--font-display, Georgia)`).
@@ -177,18 +177,38 @@ function declaresCustomProperty(style: CSSStyleDeclaration): boolean {
 }
 
 /**
- * The name an `@property` rule registers, or `null` for any other rule. Read
- * from `CSSPropertyRule.name` where the engine has it, else from the text.
+ * Syntax components that accept arbitrary text: a registration with one of
+ * them can still carry a script value (a name, a URL), so it does not count.
+ */
+const UNTYPED_SYNTAX = /^\s*\*\s*$|<(?:string|custom-ident|url)>/i;
+
+/**
+ * The name a TYPED `@property` rule registers (a syntax such as `<length>`
+ * or `<color>`, whose value cannot be arbitrary text), or `null` for any
+ * other rule, including an untyped registration (`*`, `<string>`,
+ * `<custom-ident>`, `<url>`). Read from `CSSPropertyRule` where the engine
+ * has it, else from the text.
  */
 function registeredName(rule: CSSRule): string | null {
-  const name = (rule as { name?: unknown }).name;
-  if (typeof name === 'string' && name.startsWith('--') && 'syntax' in rule) return name;
-  const text = typeof rule.cssText === 'string' ? rule.cssText : '';
-  const m = /^\s*@property\s+(--[^\s{]+)/i.exec(text);
-  return m ? cssUnescape(m[1]) : null;
+  const typed = rule as { name?: unknown; syntax?: unknown };
+  let name: string;
+  let syntax: string | null;
+  if (typeof typed.name === 'string' && typed.name.startsWith('--') && 'syntax' in rule) {
+    name = typed.name;
+    syntax = typeof typed.syntax === 'string' ? typed.syntax : null;
+  } else {
+    const text = typeof rule.cssText === 'string' ? rule.cssText : '';
+    const m = /^\s*@property\s+(--[^\s{]+)/i.exec(text);
+    if (!m) return null;
+    name = cssUnescape(m[1]);
+    syntax = /syntax\s*:\s*(["'])(.*?)\1/i.exec(text)?.[2] ?? null;
+  }
+  // No syntax read, or an untyped one: not a declaration that rules out a script value.
+  if (syntax === null || UNTYPED_SYNTAX.test(syntax)) return null;
+  return name;
 }
 
-/** Every name a readable `@property` of `root` registers (inside grouping rules and imports too). */
+/** Every name a readable typed `@property` of `root` registers (inside grouping rules and imports too). */
 function registeredNames(root: Root): Set<string> {
   const names = new Set<string>();
   const visit = (rules: CSSRuleList | undefined): void => {
@@ -307,33 +327,52 @@ export type MergedGraphMemo = Array<{
   readonly merged: RedactionGraph;
 }>;
 
+/**
+ * A read pass's graphs: each root's graph validated once per pass (`roots`,
+ * cleared by whoever starts a new pass, such as a responsive capture's next
+ * viewport), and the merges (`merged`, kept across passes: a hit compares
+ * the parts by identity, so it is current whenever its parts are).
+ */
+export interface GraphMemo {
+  readonly roots: Map<Root, RedactionGraph>;
+  readonly merged: MergedGraphMemo;
+}
+
 /** Merges a memo keeps; past this the oldest is dropped (each edit adds one). */
 const MAX_MEMOISED_MERGES = 32;
 
 /**
  * The redaction graph for `el`: its own document's, merged with that of every
- * shadow root its flat-tree ancestors live in. Every root's graph is asked
- * for on every call (`rootGraph`'s structural key is the freshness test), so
- * an in-place CSSOM edit between two reads is seen; `memo` keeps only the
- * MERGED result per (roots, their current graphs).
+ * shadow root its flat-tree ancestors live in. Without `memo` every root is
+ * validated (`rootGraph`'s structural key walk) on this call. With one, each
+ * root is validated once per read pass — an in-place CSSOM edit is seen by
+ * the next pass, not mid-pass — and merges are reused while their parts are.
  */
-export function graphFor(el: Element, memo?: MergedGraphMemo): RedactionGraph {
+export function graphFor(el: Element, memo?: GraphMemo): RedactionGraph {
   const roots = new Set<ShadowRoot>();
   for (let node: Element | null = el; node; node = flatParent(node)) {
     const root = node.getRootNode();
     if (typeof ShadowRoot !== 'undefined' && root instanceof ShadowRoot) roots.add(root);
   }
-  const parts = [rootGraph(el.ownerDocument), ...[...roots].map(rootGraph)];
+  const graphOf = (root: Root): RedactionGraph => {
+    let graph = memo?.roots.get(root);
+    if (!graph) {
+      graph = rootGraph(root);
+      memo?.roots.set(root, graph);
+    }
+    return graph;
+  };
+  const parts = [graphOf(el.ownerDocument), ...[...roots].map(graphOf)];
   if (parts.length === 1) return parts[0];
-  const hit = memo?.find(
+  const hit = memo?.merged.find(
     (entry) =>
       entry.parts.length === parts.length && entry.parts.every((graph, i) => graph === parts[i])
   );
   if (hit) return hit.merged;
   const merged = mergeGraphs(parts);
   if (memo) {
-    memo.push({ parts, merged });
-    if (memo.length > MAX_MEMOISED_MERGES) memo.shift();
+    memo.merged.push({ parts, merged });
+    if (memo.merged.length > MAX_MEMOISED_MERGES) memo.merged.shift();
   }
   return merged;
 }
