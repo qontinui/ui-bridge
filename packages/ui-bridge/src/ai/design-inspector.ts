@@ -671,7 +671,7 @@ export function indexCustomProperties(
     const matched = match(selector);
     if (!matched) continue;
     const elements = [...matched];
-    tokens.addRule(declaredHere, refs, elements);
+    tokens.addRule(declaredHere, refs, elements, selector);
     if (topLevel && declaredHere.length > 0) {
       for (const el of elements) if (inScope(el)) appendTo(declared, el, declaredHere);
     }
@@ -720,6 +720,9 @@ export function getCSSCustomProperties(
       ? (index.declared.get(el) ?? [])
       : matchedCustomProperties(el);
   for (const prop of declared) {
+    // An inline declaration of the same name is the value in effect (and was
+    // scrubbed as an inline value above): a rule must not re-read it raw.
+    if (el.style.getPropertyValue(prop) !== '') continue;
     // Use getComputedStyle for resolved value
     result[prop] = read(prop);
   }

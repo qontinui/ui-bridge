@@ -12,7 +12,11 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { getElementDesignData, indexCustomProperties } from '../design-inspector';
+import {
+  getCSSCustomProperties,
+  getElementDesignData,
+  indexCustomProperties,
+} from '../design-inspector';
 import {
   MAX_INHERITANCE_DEPTH,
   MAX_SCOPE_OVERRIDES,
@@ -25,6 +29,7 @@ import {
 import { normalizeColor } from '../css-color';
 import { emptyCoverage, resolveNestedSelector, styleRules } from '../stylesheet-walk';
 import { collectDesignBatch } from '../../specs/quality-request';
+import { elementStylesOf } from '../../specs/design-request';
 import { customPropertyConsistency } from '../../specs/quality-metrics';
 import { REDACTED_VALUE } from '../../core/redaction';
 import type { ElementDesignData } from '../../core/types';
@@ -346,6 +351,65 @@ describe('design tokens', () => {
 
   // ------------------------------------------------------ cascade checks
 
+  it('without a stated computed value, an unsubstituted var() is not taken as derived', () => {
+    // jsdom leaves var() in computed values; a browser never does. With the
+    // test-only shortcut off (the default), only the candidate comparison
+    // decides, so a wrong candidate cannot pass as derived.
+    sheet(':root { --brand: rgb(31, 78, 140); }', '.x { color: var(--brand); }');
+    const el = add('span', 'x');
+    expect(read(el).tokenMatches?.color).toEqual({ unverified: ['--brand'] });
+  });
+
+  it('removes its probe on the exception path and after a single-element read', () => {
+    sheet(':root { --pad: 1em; }', '.e { padding-left: var(--pad); }');
+    const first = add('div', 'e');
+    const broken = add('div', 'e');
+    broken.getBoundingClientRect = () => {
+      throw new Error('layout read failed');
+    };
+    browserComputes(new Map([[first, { 'padding-left': '16px' }]]));
+    document.querySelectorAll('ui-bridge-token-probe').forEach((p) => p.remove());
+    expect(() =>
+      collectDesignBatch([
+        { id: 'first', element: first },
+        { id: 'broken', element: broken },
+      ])
+    ).toThrow('layout read failed');
+    expect(document.querySelector('ui-bridge-token-probe')).toBeNull();
+
+    elementStylesOf('first', { id: 'first', element: first });
+    expect(document.querySelector('ui-bridge-token-probe')).toBeNull();
+  });
+
+  it('mutates the light DOM only by one insert (before <body>) and one remove per batch', () => {
+    sheet(
+      ':root { --pad: 1em; --brand: rgb(31, 78, 140); }',
+      '.e { padding-left: var(--pad); color: var(--brand); }'
+    );
+    const els = [add('div', 'e'), add('div', 'e')];
+    browserComputes(
+      new Map(
+        els.map(
+          (el) =>
+            [el, { 'padding-left': '16px', color: 'rgb(31, 78, 140)' }] as [
+              Element,
+              Record<string, string>,
+            ]
+        )
+      )
+    );
+    document.querySelectorAll('ui-bridge-token-probe').forEach((p) => p.remove());
+    const observer = new MutationObserver(() => undefined);
+    observer.observe(document, { subtree: true, childList: true, attributes: true });
+    collectDesignBatch(els.map((element, i) => ({ id: `e${i}`, element })));
+    const records = observer.takeRecords();
+    observer.disconnect();
+    expect(records.map((r) => r.type)).toEqual(['childList', 'childList']);
+    expect(records[0].addedNodes[0].nodeName).toBe('UI-BRIDGE-TOKEN-PROBE');
+    expect(records[0].nextSibling).toBe(document.body);
+    expect(records[1].removedNodes[0].nodeName).toBe('UI-BRIDGE-TOKEN-PROBE');
+  });
+
   it('removes its probe from the document when the batch is read', () => {
     sheet(':root { --pad: 1em; }', '.e { padding-left: var(--pad); }');
     const el = add('div', 'e');
@@ -425,6 +489,126 @@ describe('design tokens', () => {
     const btn = add('button', 'btn x');
     browserComputes(new Map([[btn, { color: 'rgb(1, 1, 1)' }]]));
     expect(read(btn).tokenMatches?.color).toEqual({ derived: ['--a'] });
+  });
+
+  it('a unitless line-height inherits as a factor: derived through a font-size change', () => {
+    sheet(
+      ':root { --line-height-normal: 1.5; }',
+      '.wrap { line-height: var(--line-height-normal); }'
+    );
+    const wrap = add('div', 'wrap');
+    const small = add('span', 'small', wrap);
+    browserComputes(
+      new Map<Element, Record<string, string>>([
+        [wrap, { 'font-size': '16px', 'line-height': '24px' }],
+        [small, { 'font-size': '14px', 'line-height': '21px' }],
+      ]),
+      // A browser computes `line-height: 1.5` at 16px to 24px.
+      (inline, longhand) =>
+        longhand === 'line-height' && inline.getPropertyValue('line-height') === '1.5'
+          ? `${1.5 * parseFloat(inline.getPropertyValue('font-size'))}px`
+          : undefined
+    );
+    expect(read(small, [small]).tokenMatches?.lineHeight).toEqual({
+      derived: ['--line-height-normal'],
+      via: 'inherited',
+    });
+  });
+
+  it('a later rule writing the same value wins over an earlier one (approximate cascade)', () => {
+    sheet(
+      ':root { --a: rgb(1, 1, 1); --b: rgb(1, 1, 1); }',
+      '.btn { color: var(--a); }',
+      '.btn { color: var(--b); }'
+    );
+    const btn = add('button', 'btn');
+    browserComputes(new Map([[btn, { color: 'rgb(1, 1, 1)' }]]));
+    expect(read(btn).tokenMatches?.color).toEqual({ derived: ['--b'] });
+  });
+
+  it('a computed value of the same kind that differs is overridden, even a keyword', () => {
+    sheet(':root { --font-ui: Inter; }', '.f { font-family: var(--font-ui); }');
+    const el = add('p', 'f');
+    browserComputes(new Map([[el, { 'font-family': 'Georgia' }]]));
+    expect(read(el).tokenMatches?.fontFamily).toEqual({ overridden: ['--font-ui'] });
+  });
+
+  it('a width token is probed with a visible border style, so it does not compute to 0', () => {
+    sheet(':root { --bw: 2px; }', '.b { border-top-width: var(--bw); }');
+    const el = add('div', 'b');
+    browserComputes(new Map([[el, { 'border-top-width': '2px' }]]), (inline, longhand) => {
+      if (longhand !== 'border-top-width') return undefined;
+      // A browser computes a border width to 0 while its style is none.
+      const styled =
+        inline.getPropertyValue('border-top-style') === 'solid' ||
+        inline.getPropertyValue('border-style') === 'solid';
+      return styled ? inline.getPropertyValue('border-top-width') : '0px';
+    });
+    expect(read(el).tokenMatches?.border).toEqual({ derived: ['--bw'] });
+  });
+
+  it('a container-unit token is unverified: the probe has no container', () => {
+    sheet(':root { --w: clamp(1px, 10cqi, 99px); }', '.c { padding-left: var(--w); }');
+    const el = add('div', 'c');
+    // A browser resolves cq units without a container against the small
+    // viewport, so the probe would compute some px value unrelated to the
+    // element's container.
+    browserComputes(new Map([[el, { 'padding-left': '40px' }]]), (inline, longhand) =>
+      longhand === 'padding-left' && inline.getPropertyValue('padding-left').includes('cqi')
+        ? '128px'
+        : undefined
+    );
+    expect(read(el).tokenMatches?.paddingLeft).toEqual({ unverified: ['--w'] });
+  });
+
+  it('probes only the colour layer of a background shorthand, never its images', () => {
+    sheet(
+      ':root { --brand: rgb(31, 78, 140); }',
+      '.bg { background: url(hero.png) no-repeat var(--brand); }'
+    );
+    const el = add('div', 'bg');
+    const probed: string[] = [];
+    browserComputes(new Map([[el, { 'background-color': 'rgb(31, 78, 140)' }]]), (inline) => {
+      probed.push(inline.getPropertyValue('background'));
+      return undefined;
+    });
+    expect(read(el).tokenMatches?.backgroundColor).toEqual({
+      derived: ['--brand'],
+      expression: true,
+    });
+    expect(probed.length).toBeGreaterThan(0);
+    expect(probed.some((v) => v.includes('url('))).toBe(false);
+  });
+
+  it('a descendant re-declaring a token to the value it already has makes no scope', () => {
+    sheet(':root { --brand: rgb(31, 78, 140); }', '.theme, .theme * { --brand: rgb(200, 0, 0); }');
+    const theme = add('div', 'theme');
+    const inner = add('div', 'inner', theme);
+    const batch = collectDesignBatch([{ id: 'k', element: add('span', 'k', inner) }]);
+    // Only .theme changes the value; .inner (and the leaf) re-declare it unchanged.
+    expect(batch.scopeCount).toBe(1);
+    expect(Object.values(batch.scopes).map((scope) => scope.element)).toEqual(['div.theme']);
+  });
+
+  it('a variable every element resets (Tailwind utilities + preflight) makes no scope', () => {
+    sheet(
+      '*, ::before, ::after { --tw-shadow: 0 0 #0000; }',
+      '.shadow-md { --tw-shadow: 0 4px 6px rgb(0, 0, 0); }'
+    );
+    const card = add('div', 'shadow-md');
+    const kids = [add('p', 'a', card), add('p', 'b', card)];
+    const batch = collectDesignBatch(kids.map((element, i) => ({ id: `k${i}`, element })));
+    expect(batch.scopeCount).toBe(0);
+    expect(batch.elements.every((e) => e.tokenScopes === undefined)).toBe(true);
+  });
+
+  it('a rule-declared name does not re-read an inline value raw (the inline whitelist holds)', () => {
+    sheet('.avatar { --avatar-url: none; }');
+    const el = add('div', 'avatar');
+    el.style.setProperty('--avatar-url', 'url("https://cdn.test/u/42.png?token=s3cr3t")');
+    expect(getCSSCustomProperties(el)['--avatar-url']).toBe(REDACTED_VALUE);
+    const index = indexCustomProperties(document, [el, host]);
+    expect(getCSSCustomProperties(el, index)['--avatar-url']).toBe(REDACTED_VALUE);
   });
 
   it('a var() declaration that lost the cascade is overridden, not derived', () => {
@@ -745,7 +929,7 @@ describe('design tokens', () => {
     expect(metric.score).toBe(Math.round(50 * 0.5 + 100 * 0.3 + 50 * 0.2));
   });
 
-  it('customPropertyConsistency: a colour inherited from a token is the ancestor’s use, not each child’s', () => {
+  it('customPropertyConsistency: a colour inherited from a token is token-backed, adoption at half weight', () => {
     sheet(':root { --fg: rgb(31, 78, 140); }', '.wrap { color: var(--fg); }');
     const wrap = add('div', 'wrap');
     const kids = [add('p', 'a', wrap), add('p', 'b', wrap)];
@@ -759,18 +943,31 @@ describe('design tokens', () => {
     );
     const batch = collectDesignBatch(kids.map((element, i) => ({ id: `k${i}`, element })));
     const metric = customPropertyConsistency(batch.elements, VIEWPORT);
+    // html { color: var(--fg) }-style use reaches the children: token-backed
+    // colours, but the ancestor's choice, so adoption counts it at half.
     expect(metric.rawData).toMatchObject({
       elementsUsingTokens: 0,
       elementsInheritingTokens: 2,
-      inheritedColors: 2,
-      adoptionScore: 0,
+      inheritedTokenColors: 2,
+      inheritedColors: 0,
+      hardcodedColors: 0,
+      adoptionScore: 50,
+      avoidanceScore: 100,
     });
+    expect(metric.findings.map((f) => f.message)).toContainEqual(
+      expect.stringContaining('Token use is mostly inherited')
+    );
   });
 
   it('customPropertyConsistency: an unpainted (transparent) background is not a hardcoded colour', () => {
     sheet(':root { --brand: rgb(31, 78, 140); }');
     const els = [add('div', 'a'), add('div', 'b')];
     for (const el of els) el.style.setProperty('color', 'var(--brand)');
+    browserComputes(
+      new Map(
+        els.map((el) => [el, { color: 'rgb(31, 78, 140)' }] as [Element, Record<string, string>])
+      )
+    );
     const batch = collectDesignBatch(els.map((element, i) => ({ id: `e${i}`, element })));
     expect(batch.elements.map((e) => e.styles.backgroundColor)).toEqual([
       'rgba(0, 0, 0, 0)',
