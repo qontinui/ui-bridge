@@ -27,7 +27,6 @@ import {
   inlineNamesInScope,
   recordCustomRefs,
   referencesAnyOf,
-  scriptNamesOf,
   referencesOf,
   reportedTokensOf,
   tokenMatchesOf,
@@ -722,19 +721,22 @@ export function getCSSCustomProperties(
   // 2. Custom properties declared by the stylesheet rules matching this element
   let refs: ReadonlyMap<string, ReadonlySet<string>>;
   let declared: readonly string[];
-  let scriptNames: () => Set<string>;
   if (index !== undefined && indexCovers(index, el)) {
     refs = index.tokens.customRefs;
     declared = index.declared.get(el) ?? [];
-    scriptNames = () => scriptNamesOf(index.tokens, el);
   } else {
     // Outside the index (detached, shadow tree): the var() graph of every
-    // rule of the document, not just the ones this element matches, so a
-    // chain through an ancestor's rule or an @media/@layer rule is followed.
+    // rule of the document and, in a shadow tree, of its shadow root — all
+    // rules, whatever their conditions, so a chain through a rule this
+    // element does not match is followed (an over-approximation only
+    // scrubs more).
     declared = matchedCustomProperties(el);
-    refs = documentCustomRefs(el.ownerDocument);
-    scriptNames = () => inlineNamesInScope(el);
+    refs = fallbackCustomRefs(el);
   }
+  // Recomputed on every read, never cached across reads: an inline custom
+  // property set between two reads (a responsive capture's viewports) must
+  // be seen by the next one.
+  const scriptNames = (): Set<string> => inlineNamesInScope(el);
   const inScope = declared.length > 0 ? scriptNames() : new Set<string>();
   for (const prop of declared) {
     // An inline declaration of the same name is the value in effect (and was
@@ -773,50 +775,84 @@ function matchedCustomProperties(el: HTMLElement): string[] {
 }
 
 /**
- * The custom-property `var()` graph of a document's rules, cached until its
- * stylesheets change: the same sheet objects with the same top-level rule
- * counts. (A rule edited in place through the CSSOM is not detected.)
+ * The custom-property `var()` graph of a document's (or shadow root's) rules,
+ * cached until its stylesheets change. The cache key is the sheets — the
+ * document's, adopted and `@import`ed ones — by identity, with every rule
+ * list's length, nested ones included. (A declaration edited in place
+ * through the CSSOM keeps the key, and is not seen until a rule is added or
+ * removed.)
  */
 const customRefCache = new WeakMap<
-  Document,
-  { sheets: unknown[]; counts: number[]; refs: Map<string, Set<string>> }
+  Document | ShadowRoot,
+  { key: unknown[]; refs: Map<string, Set<string>> }
 >();
 
-function sheetsOf(doc: Document): { sheets: unknown[]; counts: number[] } {
-  const sheets: unknown[] = [];
-  const counts: number[] = [];
-  try {
-    for (const sheet of Array.from(doc.styleSheets)) {
-      sheets.push(sheet);
-      try {
-        counts.push(sheet.cssRules.length);
-      } catch {
-        counts.push(-1);
+/** The structural key of a root's stylesheets (see `customRefCache`). */
+function stylesheetKey(root: Document | ShadowRoot): unknown[] {
+  const key: unknown[] = [];
+  const visit = (rules: CSSRuleList | undefined): void => {
+    if (!rules) return;
+    key.push(rules.length);
+    for (const rule of Array.from(rules)) {
+      const sheet = (rule as Partial<CSSImportRule>).styleSheet;
+      if (sheet) {
+        key.push(sheet);
+        try {
+          visit(sheet.cssRules);
+        } catch {
+          key.push(-1);
+        }
       }
+      visit((rule as Partial<CSSGroupingRule>).cssRules);
     }
+  };
+  const adopted = (root as { adoptedStyleSheets?: CSSStyleSheet[] }).adoptedStyleSheets ?? [];
+  let sheets: CSSStyleSheet[] = [];
+  try {
+    sheets = [...(Array.from(root.styleSheets) as CSSStyleSheet[]), ...adopted];
   } catch {
     // No stylesheets readable
   }
-  return { sheets, counts };
+  for (const sheet of sheets) {
+    key.push(sheet);
+    try {
+      visit(sheet.cssRules);
+    } catch {
+      key.push(-1);
+    }
+  }
+  return key;
 }
 
-/** Every custom property's `var()` references across all of the document's rules (descending walk). */
-function documentCustomRefs(doc: Document): Map<string, Set<string>> {
-  const { sheets, counts } = sheetsOf(doc);
-  const cached = customRefCache.get(doc);
-  if (
-    cached &&
-    cached.sheets.length === sheets.length &&
-    cached.sheets.every((sheet, i) => sheet === sheets[i] && cached.counts[i] === counts[i])
-  ) {
+/** Every custom property's `var()` references across all of a root's rules, whatever their conditions. */
+function rootCustomRefs(root: Document | ShadowRoot): Map<string, Set<string>> {
+  const key = stylesheetKey(root);
+  const cached = customRefCache.get(root);
+  if (cached && cached.key.length === key.length && cached.key.every((k, i) => k === key[i])) {
     return cached.refs;
   }
   const refs = new Map<string, Set<string>>();
-  for (const { rule } of styleRules(doc, { descend: true })) {
+  for (const { rule } of styleRules(root, { descend: true, everything: true })) {
     recordCustomRefs(rule.style, declaredCustomProperties(rule), refs);
   }
-  customRefCache.set(doc, { sheets, counts, refs });
+  customRefCache.set(root, { key, refs });
   return refs;
+}
+
+/** The fallback `var()` graph for an element: its document's, plus its shadow root's. */
+function fallbackCustomRefs(el: Element): Map<string, Set<string>> {
+  const refs = rootCustomRefs(el.ownerDocument);
+  const root = el.getRootNode();
+  if (typeof ShadowRoot === 'undefined' || !(root instanceof ShadowRoot)) return refs;
+  const merged = new Map<string, Set<string>>();
+  for (const graph of [refs, rootCustomRefs(root)]) {
+    for (const [name, targets] of graph) {
+      const set = merged.get(name) ?? new Set<string>();
+      for (const t of targets) set.add(t);
+      merged.set(name, set);
+    }
+  }
+  return merged;
 }
 
 // ============================================================================

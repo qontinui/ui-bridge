@@ -13,6 +13,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  captureResponsiveSnapshots,
   getCSSCustomProperties,
   getElementDesignData,
   indexCustomProperties,
@@ -716,7 +717,8 @@ describe('design tokens', () => {
     expect(varNames('VAR(--Brand) var( --ünïcode ) var(--esc\\.aped)')).toEqual([
       '--Brand',
       '--ünïcode',
-      '--esc\\.aped',
+      // CSS escapes resolved: the name as the CSSOM reports it.
+      '--esc.aped',
     ]);
   });
 
@@ -737,6 +739,145 @@ describe('design tokens', () => {
     // calc(1.5 * 1em) computes to a length at .wrap, which inherits as 24px,
     // not as a factor: 21px on 14px text is not derived from it.
     expect(read(small, [small]).tokenMatches?.lineHeight?.derived).toBeUndefined();
+  });
+
+  it('a script value set on an ancestor between viewports is scrubbed at the later viewport', async () => {
+    sheet('.t { --title: var(--user); }');
+    const card = add('div', 'card');
+    const el = add('h2', 't', card);
+    let frames = 0;
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      setTimeout(() => {
+        frames++;
+        // Between the first viewport's read and the second's.
+        if (frames === 2) card.style.setProperty('--user', 'Alice');
+        cb(0);
+      }, 0);
+      return frames;
+    });
+    const capture = await captureResponsiveSnapshots(
+      { getAllElements: () => [{ id: 't', element: el, type: 'heading', label: 't' }] },
+      [320, 768]
+    );
+    const title = capture.snapshots.map((snap) => snap.elements[0].customProperties?.['--title']);
+    expect(title[0]).not.toBe(REDACTED_VALUE);
+    expect(title[1]).toBe(REDACTED_VALUE);
+  });
+
+  it('a literal that lost the cascade does not stop an inherited token (`color: inherit`)', () => {
+    sheet(
+      ':root { --fg: rgb(31, 78, 140); }',
+      '.nav { color: var(--fg); }',
+      'a { color: #06c; }',
+      '.nav a { color: inherit; }'
+    );
+    const nav = add('nav', 'nav');
+    const link = add('a', 'link', nav);
+    const fg = { color: 'rgb(31, 78, 140)' };
+    browserComputes(
+      new Map<Element, Record<string, string>>([
+        [nav, fg],
+        [link, fg],
+      ])
+    );
+    expect(read(link, [link]).tokenMatches?.color).toEqual({
+      derived: ['--fg'],
+      via: 'inherited',
+    });
+  });
+
+  it('a relative literal reproducing the parent (font-size: 100%) passes the inherited token through', () => {
+    sheet(
+      ':root { --fs: 16px; }',
+      '.wrap { font-size: var(--fs); }',
+      'button { font-size: 100%; }'
+    );
+    const wrap = add('div', 'wrap');
+    const button = add('button', 'b', wrap);
+    const sixteen = { 'font-size': '16px' };
+    browserComputes(
+      new Map<Element, Record<string, string>>([
+        [wrap, sixteen],
+        [button, sixteen],
+      ]),
+      (inline, longhand, probe) =>
+        longhand === 'font-size' && inline.getPropertyValue('font-size') === '100%'
+          ? (probe.parentElement as HTMLElement).style.fontSize
+          : undefined
+    );
+    expect(read(button, [button]).tokenMatches?.fontSize).toEqual({
+      derived: ['--fs'],
+      via: 'inherited',
+    });
+  });
+
+  it('an ancestor whose var() lost to a literal gives the inherited colour a literal origin', () => {
+    sheet(
+      ':root { --x: rgb(1, 1, 1); }',
+      '.p { color: var(--x); }',
+      '.p.lit { color: rgb(9, 9, 9); }'
+    );
+    const parent = add('div', 'p lit');
+    const child = add('span', 'c', parent);
+    const nine = { color: 'rgb(9, 9, 9)' };
+    browserComputes(
+      new Map<Element, Record<string, string>>([
+        [parent, nine],
+        [child, nine],
+      ])
+    );
+    expect(read(child, [child]).tokenMatches?.color).toEqual({
+      inherited: true,
+      inheritedFrom: 'literal',
+    });
+  });
+
+  it('with a sheet it could not read, an undeclared inherited colour is unknown, not initial', () => {
+    sheet(':root { --x: 1px; }');
+    const crossOrigin = {
+      get cssRules(): CSSRuleList {
+        throw new DOMException('cross-origin stylesheet', 'SecurityError');
+      },
+    };
+    vi.spyOn(document, 'styleSheets', 'get').mockReturnValue([crossOrigin, style.sheet] as never);
+    const parent = add('div', 'parent');
+    const child = add('span', 'child', parent);
+    const black = { color: 'rgb(0, 0, 0)' };
+    browserComputes(
+      new Map<Element, Record<string, string>>([
+        [parent, black],
+        [child, black],
+      ])
+    );
+    expect(read(child, [child]).tokenMatches?.color).toEqual({
+      inherited: true,
+      inheritedFrom: 'unknown',
+    });
+  });
+
+  it('the fallback var() graph sees a rule added after a first read, also inside @media', () => {
+    sheet('.b { --y: var(--x); }', '@media (min-width: 1px) { .z { color: red; } }');
+    const el = document.createElement('div');
+    el.className = 'b';
+    el.style.setProperty('--user', 'Alice');
+    // No rule links --x to the script value yet.
+    expect(getCSSCustomProperties(el)['--y']).not.toBe(REDACTED_VALUE);
+    const media = style.sheet!.cssRules[1] as CSSMediaRule;
+    media.insertRule('.a { --x: var(--user); }', 0);
+    expect(getCSSCustomProperties(el)['--y']).toBe(REDACTED_VALUE);
+  });
+
+  it('the fallback var() graph includes rules whose condition does not hold now', () => {
+    window.matchMedia = ((query: string) => ({ matches: !query.includes('9999px') })) as never;
+    try {
+      sheet('@media (min-width: 9999px) { .a { --x: var(--user); } }', '.b { --y: var(--x); }');
+      const el = document.createElement('div');
+      el.className = 'b';
+      el.style.setProperty('--user', 'Alice');
+      expect(getCSSCustomProperties(el)['--y']).toBe(REDACTED_VALUE);
+    } finally {
+      delete (window as { matchMedia?: unknown }).matchMedia;
+    }
   });
 
   it('a px line-height inherited with the same ratio is not taken as a unitless factor', () => {
