@@ -231,10 +231,13 @@ export function* styleRules(
       if (!descend) continue;
       const kind = kindOf(rule);
       if (kind === 'nestedDeclarations') {
-        // Declarations after a nested rule apply with the parent's selector.
+        // Declarations after a nested rule apply with the parent's selector;
+        // bare declarations directly in an `@scope` apply to its root
+        // (`:scope`), which only an `everything` walk enters.
         const style = (rule as CSSRule & { style?: CSSStyleDeclaration }).style;
-        if (style && parentSelector !== null)
-          yield { rule: { style }, selector: parentSelector, topLevel: false };
+        if (style && (parentSelector !== null || everything)) {
+          yield { rule: { style }, selector: parentSelector ?? ':scope', topLevel: false };
+        }
         continue;
       }
       if (kind === 'import') {

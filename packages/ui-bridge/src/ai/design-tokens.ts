@@ -57,9 +57,11 @@ import { normalizeColor } from './css-color';
 import { emptyCoverage, type StylesheetCoverage } from './stylesheet-walk';
 import {
   cssUnescape,
+  graphFor,
   inlineNamesInScope,
   referencesAnyOf,
-  rootCustomRefs,
+  rootGraph,
+  type RedactionGraph,
   varNames,
 } from './redaction-graph';
 
@@ -267,7 +269,7 @@ export interface DesignTokenIndex {
    * only when a custom property is set inline somewhere — then kept for the
    * batch.
    */
-  redactionRefs(): ReadonlyMap<string, ReadonlySet<string>>;
+  redactionGraph(): RedactionGraph;
   /** Inherited property → selector → literal declarations of rules with that selector. */
   readonly literalSources: ReadonlyMap<
     TokenAttributedProperty,
@@ -286,6 +288,8 @@ export interface TokenBatchState {
   computed: Map<Element, CSSStyleDeclaration>;
   /** Per element, whether a literal declaration of an inherited property won. */
   literal: Map<Element, Map<TokenAttributedProperty, LiteralOutcome>>;
+  /** Shadow roots' redaction graphs read in this batch. */
+  rootGraphs: Map<Document | ShadowRoot, RedactionGraph>;
   /** Per element, which selectors it matches (literal lookup). */
   matches: Map<Element, Map<string, boolean>>;
   /** Per element, the custom properties set inline on it or an ancestor. */
@@ -910,13 +914,14 @@ export class TokenIndexBuilder {
       overrides: this.overrides,
       universalNames: this.universalNames,
       literalSources: this.literalSources,
-      redactionRefs: lazily(() => rootCustomRefs(doc)),
+      redactionGraph: lazily(() => rootGraph(doc)),
       references: this.references,
       coverage: this.coverage,
       batch: {
         computed: new Map(),
         literal: new Map(),
         matches: new Map(),
+        rootGraphs: new Map(),
         scriptNames: new Map(),
         inherited: new Map(),
         scopeIds: new Map(),
@@ -929,6 +934,14 @@ export class TokenIndexBuilder {
       },
     };
   }
+}
+
+/**
+ * The redaction graph for an element of this batch: the document's, merged
+ * with any shadow root its flat-tree ancestors live in (memoised per batch).
+ */
+export function redactionGraphFor(index: DesignTokenIndex, el: Element): RedactionGraph {
+  return graphFor(el, index.redactionGraph(), index.batch.rootGraphs);
 }
 
 /** A value computed on first call, then returned as is. */
@@ -985,7 +998,7 @@ export function reportedTokensOf(index: DesignTokenIndex): ReportedTokens {
     const fromScript =
       from === 'inline' ||
       (index.inlineRootNames.size > 0 &&
-        referencesAnyOf(name, index.redactionRefs(), index.inlineRootNames));
+        referencesAnyOf(name, index.redactionGraph(), index.inlineRootNames));
     const scrubbed = scrubContentRequired(fromScript ? scrubScriptValue(raw) : raw, verdict);
     const capped = capValue(scrubbed);
     if (capped.truncated) truncatedValues++;
@@ -1095,7 +1108,8 @@ function scopeIdOf(index: DesignTokenIndex, el: Element): string | null {
   for (const { name, inline } of changed.slice(0, MAX_SCOPE_OVERRIDES)) {
     const raw = resolvedToken(index, el, name);
     const fromScript =
-      inline || (scriptNames.size > 0 && referencesAnyOf(name, index.redactionRefs(), scriptNames));
+      inline ||
+      (scriptNames.size > 0 && referencesAnyOf(name, redactionGraphFor(index, el), scriptNames));
     const capped = capValue(
       scrubContentRequired(fromScript ? scrubScriptValue(raw) : raw, verdict)
     );

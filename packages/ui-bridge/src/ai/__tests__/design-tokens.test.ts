@@ -924,6 +924,106 @@ describe('design tokens', () => {
     expect(read(button, [button]).tokenMatches?.fontSize?.via).toBeUndefined();
   });
 
+  it('the redaction graph includes bare declarations directly inside an @scope', () => {
+    class FakeScopeRule {}
+    vi.stubGlobal('CSSScopeRule', FakeScopeRule);
+    sheet('.b { --y: var(--mid); }');
+    const holder = document.createElement('div');
+    holder.setAttribute('style', '--mid: var(--user)');
+    // `@scope (.card) { --mid: var(--user); }`: declarations with no selector.
+    const scope = Object.assign(new FakeScopeRule(), {
+      cssText: '@scope (.card) { --mid: var(--user); }',
+      cssRules: [{ style: holder.style }],
+    });
+    vi.spyOn(document, 'styleSheets', 'get').mockReturnValue([
+      style.sheet,
+      { cssRules: [scope] },
+    ] as never);
+    const el = document.createElement('div');
+    el.className = 'b';
+    el.style.setProperty('--user', 'Alice');
+    expect(getCSSCustomProperties(el)['--y']).toBe(REDACTED_VALUE);
+  });
+
+  it('the redaction graph cache sees a custom property edited in place through the CSSOM', () => {
+    sheet('.a { --x: var(--other); }', '.b { --y: var(--x); }');
+    const el = document.createElement('div');
+    el.className = 'b';
+    el.style.setProperty('--user', 'Alice');
+    expect(getCSSCustomProperties(el)['--y']).not.toBe(REDACTED_VALUE);
+    // What a CSS-in-JS library does: edit the rule's declaration in place.
+    (style.sheet!.cssRules[0] as CSSStyleRule).style.setProperty('--x', 'var(--user)');
+    expect(getCSSCustomProperties(el)['--y']).toBe(REDACTED_VALUE);
+  });
+
+  it('follows the flat tree: a slotted element inherits from the slot’s shadow ancestors', () => {
+    sheet('.child { --t: var(--user); }');
+    const shadowHost = add('div', 'host');
+    const shadow = shadowHost.attachShadow({ mode: 'open' });
+    const wrapper = document.createElement('div');
+    wrapper.style.setProperty('--user', 'Alice');
+    wrapper.appendChild(document.createElement('slot'));
+    shadow.appendChild(wrapper);
+    const child = add('span', 'child', shadowHost);
+    expect(child.assignedSlot).not.toBeNull();
+    const props = getCSSCustomProperties(child, indexCustomProperties(document, [child]));
+    expect(props['--t']).toBe(REDACTED_VALUE);
+  });
+
+  it('follows a two-level host chain, merging every shadow root’s graph', () => {
+    sheet('* { --y: var(--mid); }');
+    const hostA = add('div', 'a');
+    const shadowA = hostA.attachShadow({ mode: 'open' });
+    Object.defineProperty(shadowA, 'adoptedStyleSheets', {
+      configurable: true,
+      value: [{ cssRules: [fakeRule(':host', '--mid: var(--user)')] }],
+    });
+    const inner = document.createElement('div');
+    inner.style.setProperty('--user', 'Alice');
+    shadowA.appendChild(inner);
+    const hostB = document.createElement('div');
+    inner.appendChild(hostB);
+    const span = document.createElement('span');
+    hostB.attachShadow({ mode: 'open' }).appendChild(span);
+    expect(getCSSCustomProperties(span)['--y']).toBe(REDACTED_VALUE);
+  });
+
+  it('with an unreadable sheet, a chain to an undeclared name fails closed', () => {
+    sheet('.b { --y: var(--hidden); }');
+    const el = document.createElement('div');
+    el.className = 'b';
+    el.style.setProperty('--user', 'Alice');
+    // Every sheet readable: --hidden is declared nowhere, so --y is not script-derived.
+    expect(getCSSCustomProperties(el)['--y']).not.toBe(REDACTED_VALUE);
+    const crossOrigin = {
+      get cssRules(): CSSRuleList {
+        throw new DOMException('cross-origin stylesheet', 'SecurityError');
+      },
+    };
+    vi.spyOn(document, 'styleSheets', 'get').mockReturnValue([crossOrigin, style.sheet] as never);
+    // --hidden may be declared (from --user) in the sheet that could not be read.
+    expect(getCSSCustomProperties(el)['--y']).toBe(REDACTED_VALUE);
+  });
+
+  it('root tokens and scope overrides follow a hop in a @media that does not hold', () => {
+    window.matchMedia = ((query: string) => ({ matches: !query.includes('9999px') })) as never;
+    try {
+      sheet(
+        ':root { --bg: var(--mid); }',
+        '@media (min-width: 9999px) { :root { --mid: var(--avatar); } .theme { --m2: var(--user); } }',
+        '.theme { --t: var(--m2); }'
+      );
+      document.documentElement.style.setProperty('--avatar', 'url("https://cdn.test/a.png")');
+      const theme = add('div', 'theme');
+      theme.style.setProperty('--user', 'Alice');
+      const batch = collectDesignBatch([{ id: 'k', element: add('span', 'k', theme) }]);
+      expect(batch.tokens['--bg'].value).toBe(REDACTED_VALUE);
+      expect(Object.values(batch.scopes)[0].overrides['--t']).toBe(REDACTED_VALUE);
+    } finally {
+      delete (window as { matchMedia?: unknown }).matchMedia;
+    }
+  });
+
   it('a script value set on an ancestor between viewports is scrubbed at the later viewport', async () => {
     sheet('.t { --title: var(--user); }');
     const card = add('div', 'card');
