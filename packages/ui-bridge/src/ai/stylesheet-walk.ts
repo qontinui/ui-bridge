@@ -12,6 +12,7 @@
  *
  * Rules the walk cannot place are skipped and counted, never silently
  * dropped: `@container` (its condition depends on each element's container),
+ * a disabled sheet or one whose `media` does not match,
  * `@scope` (its bounds are not applied), `@starting-style` (not a steady
  * state), an `@media` / `@supports` whose condition is false, and an
  * `@import` or sheet whose rules cannot be read (cross-origin).
@@ -23,6 +24,8 @@ export interface StylesheetCoverage {
   sheetsRead: number;
   /** Sheets whose rules could not be read (cross-origin, or still loading). */
   sheetsUnreadable: number;
+  /** Sheets not applied, so not read: disabled (an alternate sheet), or a `media` that does not match. */
+  sheetsSkipped: { disabled: number; mediaNotMatching: number };
   /** Rules skipped, by why. */
   skippedRules: {
     container: number;
@@ -37,6 +40,7 @@ export function emptyCoverage(): StylesheetCoverage {
   return {
     sheetsRead: 0,
     sheetsUnreadable: 0,
+    sheetsSkipped: { disabled: 0, mediaNotMatching: 0 },
     skippedRules: {
       container: 0,
       scope: 0,
@@ -47,9 +51,17 @@ export function emptyCoverage(): StylesheetCoverage {
   };
 }
 
-/** One style rule the walk reached, with its selector resolved for nesting. */
+/**
+ * A declaration block the walk reached: a style rule, or the nested
+ * declarations (`CSSNestedDeclarations`) that follow a nested rule inside one.
+ */
+export interface StyleBlock {
+  readonly style: CSSStyleDeclaration;
+}
+
+/** One declaration block the walk reached, with its selector resolved for nesting. */
 export interface WalkedRule {
-  rule: CSSStyleRule;
+  rule: StyleBlock;
   /** The selector to match: `rule.selectorText`, or a nested rule's resolved against its parents. */
   selector: string;
   /** A top-level rule of `document.styleSheets`. */
@@ -83,7 +95,17 @@ export function resolveNestedSelector(parent: string, child: string): string {
     .join(', ');
 }
 
-function mediaMatches(mediaText: string): boolean {
+/** Evaluate a condition once per walk, by its text. */
+function cached(evaluate: (text: string) => boolean): (text: string) => boolean {
+  const seen = new Map<string, boolean>();
+  return (text) => {
+    let result = seen.get(text);
+    if (result === undefined) seen.set(text, (result = evaluate(text)));
+    return result;
+  };
+}
+
+function mediaMatchesNow(mediaText: string): boolean {
   if (!mediaText || mediaText === 'all') return true;
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return true;
   try {
@@ -93,7 +115,7 @@ function mediaMatches(mediaText: string): boolean {
   }
 }
 
-function supportsHolds(conditionText: string): boolean {
+function supportsHoldsNow(conditionText: string): boolean {
   if (typeof CSS === 'undefined' || typeof CSS.supports !== 'function') return true;
   try {
     return CSS.supports(conditionText);
@@ -109,12 +131,30 @@ type GroupKind =
   | 'scope'
   | 'startingStyle'
   | 'import'
+  | 'nestedDeclarations'
   | 'other';
 
+/** The CSSOM classes this engine defines, by kind; `undefined` where it has none. */
+const RULE_CLASSES: ReadonlyArray<[GroupKind, string]> = [
+  ['media', 'CSSMediaRule'],
+  ['supports', 'CSSSupportsRule'],
+  ['import', 'CSSImportRule'],
+  ['container', 'CSSContainerRule'],
+  ['scope', 'CSSScopeRule'],
+  ['startingStyle', 'CSSStartingStyleRule'],
+  ['nestedDeclarations', 'CSSNestedDeclarations'],
+  ['other', 'CSSLayerBlockRule'],
+];
+
 function kindOf(rule: CSSRule): GroupKind {
-  const at = (rule.cssText ?? '').trimStart().toLowerCase();
-  if (typeof CSSMediaRule !== 'undefined' && rule instanceof CSSMediaRule) return 'media';
-  if (typeof CSSImportRule !== 'undefined' && rule instanceof CSSImportRule) return 'import';
+  // Type checks first: serialising `cssText` costs the whole rule's text.
+  for (const [kind, name] of RULE_CLASSES) {
+    const ctor = (globalThis as unknown as Record<string, unknown>)[name];
+    if (typeof ctor === 'function' && rule instanceof (ctor as new () => CSSRule)) return kind;
+  }
+  // Nested declarations: a declaration block with no selector of its own.
+  if ('style' in rule && !('selectorText' in rule)) return 'nestedDeclarations';
+  const at = (rule.cssText ?? '').slice(0, 20).trimStart().toLowerCase();
   if (at.startsWith('@media')) return 'media';
   if (at.startsWith('@supports')) return 'supports';
   if (at.startsWith('@container')) return 'container';
@@ -133,6 +173,22 @@ export function* styleRules(
   options: { descend: boolean; coverage?: StylesheetCoverage }
 ): Generator<WalkedRule> {
   const { descend, coverage } = options;
+  const mediaMatches = cached(mediaMatchesNow);
+  const supportsHolds = cached(supportsHoldsNow);
+
+  /** A sheet the page does not apply (disabled, or its `media` does not match) is not read. */
+  function applies(sheet: CSSStyleSheet): boolean {
+    if (sheet.disabled) {
+      if (coverage) coverage.sheetsSkipped.disabled++;
+      return false;
+    }
+    const media = sheet.media?.mediaText ?? '';
+    if (media && !mediaMatches(media)) {
+      if (coverage) coverage.sheetsSkipped.mediaNotMatching++;
+      return false;
+    }
+    return true;
+  }
 
   function readRules(sheet: CSSStyleSheet): CSSRuleList | null {
     try {
@@ -163,6 +219,13 @@ export function* styleRules(
       }
       if (!descend) continue;
       const kind = kindOf(rule);
+      if (kind === 'nestedDeclarations') {
+        // Declarations after a nested rule apply with the parent's selector.
+        const style = (rule as CSSRule & { style?: CSSStyleDeclaration }).style;
+        if (style && parentSelector !== null)
+          yield { rule: { style }, selector: parentSelector, topLevel: false };
+        continue;
+      }
       if (kind === 'import') {
         const imported = rule as CSSImportRule;
         if (!mediaMatches(imported.media?.mediaText ?? '')) {
@@ -200,6 +263,7 @@ export function* styleRules(
     return;
   }
   for (const sheet of sheets) {
+    if (!applies(sheet)) continue;
     const rules = readRules(sheet);
     if (rules) yield* walk(rules, true, null);
   }
@@ -208,6 +272,7 @@ export function* styleRules(
     // rules of `document.styleSheets`.
     const adopted = (doc as Document & { adoptedStyleSheets?: CSSStyleSheet[] }).adoptedStyleSheets;
     for (const sheet of Array.isArray(adopted) ? adopted : []) {
+      if (!applies(sheet)) continue;
       const rules = readRules(sheet);
       if (rules) yield* walk(rules, false, null);
     }

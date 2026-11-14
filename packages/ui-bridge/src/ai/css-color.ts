@@ -102,10 +102,29 @@ function rgbColor(body: string): string | null {
   return serialize(r, g, b, alpha);
 }
 
+/** A hue in degrees: unitless or `deg`, `turn`, `rad`, `grad`; `null` otherwise. */
+function hueDegrees(text: string): number | null {
+  const m = /^(-?[\d.]+)(deg|turn|rad|grad)?$/.exec(text);
+  if (!m) return null;
+  const n = Number(m[1]);
+  switch (m[2]) {
+    case 'turn':
+      return n * 360;
+    case 'rad':
+      return (n * 180) / Math.PI;
+    case 'grad':
+      return n * 0.9;
+    default:
+      return n;
+  }
+}
+
 function hslColor(body: string): string | null {
   const args = colorArgs(body);
   if (!args) return null;
-  const h = (((parseFloat(args[0]) % 360) + 360) % 360) / 360;
+  const degrees = hueDegrees(args[0]);
+  if (degrees === null) return null;
+  const h = (((degrees % 360) + 360) % 360) / 360;
   const s = clamp(parseFloat(args[1]) / 100, 0, 1);
   const l = clamp(parseFloat(args[2]) / 100, 0, 1);
   const alpha = args[3] === undefined ? 1 : channel(args[3], 1);

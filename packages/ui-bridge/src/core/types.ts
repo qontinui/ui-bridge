@@ -3313,13 +3313,19 @@ export interface TokenAttribution {
   derived?: string[];
   /** `derived` through an ancestor's declaration of this inherited property. */
   via?: 'inherited';
-  /**
-   * `derived` through `calc()` or another function: the result cannot be
-   * compared with the token, so the cascade is not verified.
-   */
+  /** `derived` through `calc()`, another function, or a multi-value shorthand. */
   expression?: true;
-  /** Tokens such a declaration references whose value the computed value does NOT equal. */
+  /**
+   * Tokens such declarations reference when none of them computes to the
+   * element's value (and they are comparable): they lost the cascade.
+   */
   overridden?: string[];
+  /**
+   * Tokens such declarations reference when none could be compared with the
+   * element's value (a percentage without layout, a token that does not
+   * resolve). Neither derived nor overridden.
+   */
+  unverified?: string[];
   /**
    * Tokens of a compatible family whose root value equals this computed value
    * (at most 8). Can be coincidence.
