@@ -232,8 +232,11 @@ function describeRelayBusError(error: unknown): string {
  *  - anything else as its `name`.
  *
  * Credential spans are stripped from all three before the cut to 160 characters,
- * and so is every occurrence of `secrets` — the configured URL's password — so a
- * server or proxy reply that repeats a bare AUTH argument cannot carry it out.
+ * and so is every occurrence of `secrets` — the configured credentials: the URL's
+ * username and password, and `redisOptions` `username`/`password` — so a server or
+ * proxy reply that repeats a bare AUTH argument cannot carry it out. Secrets are
+ * replaced longest first, so a credential that contains another is never left
+ * half-printed.
  */
 function renderRelayBusError(error: unknown, secrets: readonly string[] = []): string {
   let described: string;
@@ -243,7 +246,9 @@ function renderRelayBusError(error: unknown, secrets: readonly string[] = []): s
     described = 'unreadable error'; // a throwing getter must not turn a handled failure into a thrown one
   }
   let rendered = described.replace(CREDENTIAL_SPAN, '$1');
-  for (const secret of secrets) rendered = rendered.split(secret).join('[redacted]');
+  for (const secret of [...secrets].sort((a, b) => b.length - a.length)) {
+    rendered = rendered.split(secret).join('[redacted]');
+  }
   return rendered.slice(0, LAST_ERROR_MAX_CHARS);
 }
 
@@ -261,18 +266,25 @@ function optionSecrets(redisOptions: Record<string, unknown> | undefined): strin
   return secrets;
 }
 
-/** The password a `redis://` / `rediss://` URL carries, decoded and raw, for {@link renderRelayBusError}. */
+/**
+ * The username and password a `redis://` / `rediss://` URL carries, each decoded
+ * and raw, for {@link renderRelayBusError}: ioredis sends both in AUTH.
+ */
 function urlSecrets(url: string): string[] {
   try {
-    const raw = new URL(url).password;
-    if (raw === '') return [];
-    let decoded = raw;
-    try {
-      decoded = decodeURIComponent(raw);
-    } catch {
-      /* a malformed escape: the raw form is still redacted */
+    const parsed = new URL(url);
+    const secrets: string[] = [];
+    for (const raw of [parsed.password, parsed.username]) {
+      if (raw === '') continue;
+      let decoded = raw;
+      try {
+        decoded = decodeURIComponent(raw);
+      } catch {
+        /* a malformed escape: the raw form is still redacted */
+      }
+      secrets.push(raw, decoded);
     }
-    return [...new Set([raw, decoded])].filter((secret) => secret !== '');
+    return [...new Set(secrets)].filter((secret) => secret !== '');
   } catch {
     return []; // not a WHATWG-parseable URL; the constructor reports that itself
   }
@@ -317,7 +329,7 @@ export class RedisRelayBus implements RelayBus {
   /** See {@link RelayBusReadiness.lastError}. */
   private lastError: string | null = null;
 
-  /** The configured URL's password, never rendered into {@link lastError} or a log line. */
+  /** The configured credentials (see {@link renderRelayBusError}), never rendered into {@link lastError} or a log line. */
   private readonly secrets: readonly string[];
 
   private constructor(pub: RedisLike, sub: RedisLike, secrets: readonly string[]) {

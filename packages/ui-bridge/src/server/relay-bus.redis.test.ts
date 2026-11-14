@@ -537,6 +537,26 @@ describe('RedisRelayBus — the review follow-ups', () => {
     }
   });
 
+  it('(7) redacts a credential that contains another whole, and a URL username repeated alone', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const { createRedisRelayBus } = await loadRelayBus();
+      const fake = fakeRedis();
+      const bus = await createRedisRelayBus('redis://urluser:abc@host:6379', {
+        Redis: fake.Redis,
+        redisOptions: { username: 'abcdef' },
+      });
+      if (!bus) throw new Error('expected a bus');
+
+      fake.clients[0].emit('error', new ReplyError('ERR auth abcdef refused'));
+      expect(bus.readiness().lastError).toBe('ERR auth [redacted] refused');
+      fake.clients[0].emit('error', new ReplyError('ERR user urluser unknown'));
+      expect(bus.readiness().lastError).toBe('ERR user [redacted] unknown');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('a duplicate() that throws leaves the publisher with an error listener before it quits', async () => {
     const { createRedisRelayBus } = await loadRelayBus();
     const fake = fakeRedis();
