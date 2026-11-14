@@ -737,7 +737,7 @@ export function getCSSCustomProperties(
   // The graph is read only when something is set from script at all.
   let graph: RedactionGraph | null = null;
   if (inScope.size > 0) {
-    // The batch's graphs when there is a batch (memoised), else read now.
+    // Every root re-validated on each read; a batch memoises only the merge.
     graph = index ? redactionGraphFor(index.tokens, el) : graphFor(el);
   }
   for (const prop of declared) {
@@ -747,7 +747,10 @@ export function getCSSCustomProperties(
     // A rule value built with var() from a custom property set inline here or
     // on an ancestor (`--title: var(--user-name)`) carries the script value.
     const value = read(prop);
-    result[prop] = graph && referencesAnyOf(prop, graph, inScope) ? scrubScriptValue(value) : value;
+    const fromScript =
+      graph !== null &&
+      referencesAnyOf(prop, graph, inScope, (ref) => computed.getPropertyValue(ref));
+    result[prop] = fromScript ? scrubScriptValue(value) : value;
   }
 
   return result;

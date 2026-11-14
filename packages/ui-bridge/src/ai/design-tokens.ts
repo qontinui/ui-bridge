@@ -60,7 +60,7 @@ import {
   graphFor,
   inlineNamesInScope,
   referencesAnyOf,
-  rootGraph,
+  type MergedGraphMemo,
   type RedactionGraph,
   varNames,
 } from './redaction-graph';
@@ -263,13 +263,6 @@ export interface DesignTokenIndex {
    * change on an ancestor never reaches its descendants: never a scope.
    */
   readonly universalNames: ReadonlySet<string>;
-  /**
-   * The redaction graph of the document (`ai/redaction-graph.ts`): every
-   * rule's `var()` references, whatever its conditions. Built on first use —
-   * only when a custom property is set inline somewhere — then kept for the
-   * batch.
-   */
-  redactionGraph(): RedactionGraph;
   /** Inherited property → selector → literal declarations of rules with that selector. */
   readonly literalSources: ReadonlyMap<
     TokenAttributedProperty,
@@ -288,8 +281,11 @@ export interface TokenBatchState {
   computed: Map<Element, CSSStyleDeclaration>;
   /** Per element, whether a literal declaration of an inherited property won. */
   literal: Map<Element, Map<TokenAttributedProperty, LiteralOutcome>>;
-  /** Shadow roots' redaction graphs read in this batch. */
-  rootGraphs: Map<Document | ShadowRoot, RedactionGraph>;
+  /**
+   * Redaction graphs merged in this batch (document + shadow roots). Only
+   * the merge is memoised: every root's graph is re-validated on each read.
+   */
+  mergedGraphs: MergedGraphMemo;
   /** Per element, which selectors it matches (literal lookup). */
   matches: Map<Element, Map<string, boolean>>;
   /** Per element, the custom properties set inline on it or an ancestor. */
@@ -914,14 +910,13 @@ export class TokenIndexBuilder {
       overrides: this.overrides,
       universalNames: this.universalNames,
       literalSources: this.literalSources,
-      redactionGraph: lazily(() => rootGraph(doc)),
       references: this.references,
       coverage: this.coverage,
       batch: {
         computed: new Map(),
         literal: new Map(),
         matches: new Map(),
-        rootGraphs: new Map(),
+        mergedGraphs: [],
         scriptNames: new Map(),
         inherited: new Map(),
         scopeIds: new Map(),
@@ -937,24 +932,14 @@ export class TokenIndexBuilder {
 }
 
 /**
- * The redaction graph for an element of this batch: the document's, merged
- * with any shadow root its flat-tree ancestors live in (memoised per batch).
+ * The redaction graph for an element of this batch: its own document's (not
+ * necessarily the indexed one), merged with any shadow root its flat-tree
+ * ancestors live in. Every root is re-validated on each call, so a CSSOM edit
+ * between two reads of one batch (a responsive capture's viewports) is seen;
+ * only the merge is memoised per batch.
  */
 export function redactionGraphFor(index: DesignTokenIndex, el: Element): RedactionGraph {
-  return graphFor(el, index.redactionGraph(), index.batch.rootGraphs);
-}
-
-/** A value computed on first call, then returned as is. */
-function lazily<T>(compute: () => T): () => T {
-  let done = false;
-  let value: T;
-  return () => {
-    if (!done) {
-      value = compute();
-      done = true;
-    }
-    return value;
-  };
+  return graphFor(el, index.batch.mergedGraphs);
 }
 
 /** Release what a batch holds in the document (its probe). Safe to call more than once. */
@@ -998,7 +983,12 @@ export function reportedTokensOf(index: DesignTokenIndex): ReportedTokens {
     const fromScript =
       from === 'inline' ||
       (index.inlineRootNames.size > 0 &&
-        referencesAnyOf(name, index.redactionGraph(), index.inlineRootNames));
+        referencesAnyOf(
+          name,
+          redactionGraphFor(index, index.document.documentElement),
+          index.inlineRootNames,
+          (ref) => computedOf(index, index.document.documentElement).getPropertyValue(ref)
+        ));
     const scrubbed = scrubContentRequired(fromScript ? scrubScriptValue(raw) : raw, verdict);
     const capped = capValue(scrubbed);
     if (capped.truncated) truncatedValues++;
@@ -1103,13 +1093,16 @@ function scopeIdOf(index: DesignTokenIndex, el: Element): string | null {
   }
   const verdict = verdictOf(el as HTMLElement);
   const scriptNames = scriptNamesOf(index, el);
+  // One graph for every override of this element (read only when something
+  // is set from script at all).
+  const graph = scriptNames.size > 0 ? redactionGraphFor(index, el) : null;
+  const valueOn = (ref: string): string => computedOf(index, el).getPropertyValue(ref);
   const overrides: Record<string, string> = {};
   let truncated = 0;
   for (const { name, inline } of changed.slice(0, MAX_SCOPE_OVERRIDES)) {
     const raw = resolvedToken(index, el, name);
     const fromScript =
-      inline ||
-      (scriptNames.size > 0 && referencesAnyOf(name, redactionGraphFor(index, el), scriptNames));
+      inline || (graph !== null && referencesAnyOf(name, graph, scriptNames, valueOn));
     const capped = capValue(
       scrubContentRequired(fromScript ? scrubScriptValue(raw) : raw, verdict)
     );
