@@ -107,7 +107,7 @@ _138 routes; regenerate via `npm run validate:ws-actions -- --emit-doc docs-site
 | `getControlSnapshot` | `GET /ui-bridge/sdk/components` — List components | `handle_components` |
 | `getControlSnapshot` | `GET /ui-bridge/sdk/states/snapshot` — Get state snapshot | `handle_state_snapshot` |
 | `getControlSnapshot` | `GET /ui-bridge/sdk/workflows` — List workflows | `handle_workflows` |
-| `getDesignSnapshot` | `POST /ui-bridge/sdk/design/snapshot` — Design data for all/filtered elements | `handle_design_snapshot` |
+| `getDesignSnapshot` | `POST /ui-bridge/sdk/design/snapshot` — Design data for all/filtered elements, bounded by `limit` (default 250) and reported (`totalElements`, `returned`, `truncated`) | `handle_design_snapshot` |
 | `getDiagnostics` | `GET /ui-bridge/sdk/diagnostics` — SDK diagnostic information | `handle_diagnostics` |
 | `getElement` | `GET /ui-bridge/sdk/element/:id` — Get a single element | `handle_element` |
 | `getElementHistory` | `GET /ui-bridge/sdk/control/element/:id/history` — Get element history | `handle_element_history` |
@@ -115,7 +115,7 @@ _138 routes; regenerate via `npm run validate:ws-actions -- --emit-doc docs-site
 | `getElementReactState` | `GET /ui-bridge/sdk/element/:id/state` — Get element state | `handle_element_state` |
 | `getElementState` | `GET /ui-bridge/sdk/control/element/:id/state-generic` — Get generic element state | `handle_element_state_generic` |
 | `getElementStateStyles` | `POST /ui-bridge/sdk/design/element/:id/state-styles` — Styles across interaction states | `handle_design_element_state_styles` |
-| `getElementStyles` | `GET /ui-bridge/sdk/design/element/:id/styles` — Extended computed styles for one element | `handle_design_element_styles` |
+| `getElementStyles` | `GET /ui-bridge/sdk/design/element/:id/styles` — `ElementDesignData` for one element: extended computed styles, custom properties, pseudo-elements | `handle_design_element_styles` |
 | `getElementTree` | `GET /ui-bridge/sdk/debug/element-tree` — Get element tree | `handle_element_tree` |
 | `getErrorReport` | `GET /ui-bridge/sdk/error-report` — Get error report | `handle_error_report` |
 | `getErrorSessions` | `GET /ui-bridge/sdk/console/error-sessions` — List all error session summaries | `handle_console_error_sessions_list` |
@@ -129,7 +129,7 @@ _138 routes; regenerate via `npm run validate:ws-actions -- --emit-doc docs-site
 | `getPerformanceEntries` | `GET /ui-bridge/sdk/performance-entries` — Get performance entries | `handle_performance_entries` |
 | `getQualityContexts` | `GET /ui-bridge/sdk/design/evaluate/contexts` — Get quality evaluation contexts | `handle_quality_contexts` |
 | `getRenderLog` | `GET /ui-bridge/sdk/render-log` — Get render log entries | `handle_render_log` |
-| `getResponsiveSnapshots` | `POST /ui-bridge/sdk/design/responsive` — Snapshots at multiple viewports | `handle_design_responsive` |
+| `getResponsiveSnapshots` | `POST /ui-bridge/sdk/design/responsive` — Snapshots at constrained root widths; `method: 'document-width-constraint'`, `mediaQueriesReevaluated: false` (`@media` width queries do not switch) | `handle_design_responsive` |
 | `getRoutes` | `GET /ui-bridge/sdk/page/routes` — List available routes | `handle_page_routes` |
 | `getScopedDiff` | `POST /ui-bridge/sdk/ai/scoped-diff` — Get scoped diff | `handle_ct_scoped_diff` |
 | `getSemanticDiff` | `GET /ui-bridge/sdk/ai/diff` — Get semantic diff | `handle_ai_diff` |
@@ -157,7 +157,7 @@ _138 routes; regenerate via `npm run validate:ws-actions -- --emit-doc docs-site
 | `pageScroll` | `POST /ui-bridge/sdk/control/page/scroll` — Scroll the page or a target element | `handle_page_scroll` |
 | `readValue` | `POST /ui-bridge/sdk/page/read-value` — Read a form element's value | `handle_read_value` |
 | `registerIntent` | `POST /ui-bridge/sdk/ai/intents/register` — Register an intent | `handle_register_intent` |
-| `runDesignAudit` | `POST /ui-bridge/sdk/design/audit` — Run style audit against style guide | `handle_design_audit` |
+| `runDesignAudit` | `POST /ui-bridge/sdk/design/audit` — Style audit against the provided or loaded guide (`mode: 'style-guide'`), else built-in heuristics (`mode: 'heuristic'`) | `handle_design_audit` |
 | `runWorkflow` | `POST /ui-bridge/sdk/workflow/:id/run` — Run a workflow | `handle_workflow_run` |
 | `saveBaseline` | `POST /ui-bridge/sdk/design/evaluate/baseline` — Save quality baseline | `handle_save_baseline` |
 | `saveBookmark` | `POST /ui-bridge/sdk/ai/bookmarks` — Save a bookmark | `handle_ct_save_bookmark` |

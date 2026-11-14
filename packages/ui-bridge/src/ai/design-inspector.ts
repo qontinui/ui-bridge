@@ -17,7 +17,7 @@ import type {
   ResponsiveSnapshot,
 } from '../core/types';
 import { classString } from '../core/class-name';
-import { scrubContent } from '../core/redaction';
+import { scrubContent, scrubContentRequired, verdictOf } from '../core/redaction';
 import {
   forcePseudoState,
   reapplyIfIdle,
@@ -298,13 +298,41 @@ export interface DesignRegistryLike {
 }
 
 /**
- * Capture design snapshots at multiple viewport widths.
+ * How `captureResponsiveSnapshots` narrows the page, as every response that
+ * carries its snapshots reports it (`method`).
  *
- * Constrains `document.documentElement.style.width` per viewport to trigger
- * CSS media queries using max-width. Forces reflow, captures all elements,
- * then restores.
+ * The root element's width is constrained; the browser window is not resized.
+ * `window.innerWidth` and the viewport the CSS `@media` width queries read are
+ * therefore UNCHANGED, so a `@media (max-width: …)` breakpoint does not switch,
+ * and neither does JS reading `window.innerWidth` or `matchMedia`. What does
+ * re-flow is everything sized against its container: percentage and flex/grid
+ * layout, wrapping text, and `@container` queries.
+ */
+export const RESPONSIVE_SNAPSHOT_METHOD = 'document-width-constraint' as const;
+
+/** The root inline-style longhands `captureResponsiveSnapshots` sets and restores. */
+const CONSTRAINED_ROOT_PROPERTIES = [
+  'width',
+  'min-width',
+  'max-width',
+  'overflow-x',
+  'overflow-y',
+] as const;
+
+/**
+ * Capture design snapshots at multiple root-element widths.
  *
- * Limitation: JS-based responsive logic reading window.innerWidth won't trigger.
+ * Constrains `document.documentElement`'s inline width per viewport, forces a
+ * reflow, reads every element, and restores the root's inline styles (value
+ * AND priority, per longhand, removing the `style` attribute again if the root
+ * had none) in a `finally`, so a throw mid-capture still restores the page.
+ *
+ * This is NOT a narrow viewport: see `RESPONSIVE_SNAPSHOT_METHOD`. `@media`
+ * width queries and JS reading `window.innerWidth` do not re-evaluate.
+ *
+ * Custom properties are indexed once for the batch (`indexCustomProperties`);
+ * which rules declare them does not depend on the width, only their computed
+ * values do, and those are read per viewport.
  */
 export async function captureResponsiveSnapshots(
   registry: DesignRegistryLike,
@@ -315,31 +343,41 @@ export async function captureResponsiveSnapshots(
     : Object.entries(viewports);
 
   const docEl = document.documentElement;
-  const originalWidth = docEl.style.width;
-  const originalMinWidth = docEl.style.minWidth;
-  const originalMaxWidth = docEl.style.maxWidth;
-  const originalOverflow = docEl.style.overflow;
+  const hadStyleAttribute = docEl.hasAttribute('style');
+  const original = CONSTRAINED_ROOT_PROPERTIES.map((prop) => ({
+    prop,
+    value: docEl.style.getPropertyValue(prop),
+    priority: docEl.style.getPropertyPriority(prop),
+  }));
   const snapshots: ResponsiveSnapshot[] = [];
 
   try {
+    const elements = registry.getAllElements();
+    const customProperties =
+      elements.length === 0
+        ? false
+        : indexCustomProperties(
+            document,
+            elements.map((regEl) => regEl.element)
+          );
     for (const [label, width] of viewportEntries) {
-      // Constrain the document width
-      docEl.style.width = `${width}px`;
-      docEl.style.minWidth = `${width}px`;
-      docEl.style.maxWidth = `${width}px`;
-      docEl.style.overflow = 'hidden';
+      // Constrain the root width
+      docEl.style.setProperty('width', `${width}px`);
+      docEl.style.setProperty('min-width', `${width}px`);
+      docEl.style.setProperty('max-width', `${width}px`);
+      docEl.style.setProperty('overflow-x', 'hidden');
+      docEl.style.setProperty('overflow-y', 'hidden');
 
       // Force reflow
       void docEl.offsetHeight;
       await waitFrame();
 
-      // Capture all elements at this viewport
-      const elements = registry.getAllElements();
       const elementData: ElementDesignData[] = elements.map((regEl) =>
         getElementDesignData(regEl.element, {
           elementId: regEl.id,
           label: regEl.label,
           type: regEl.type,
+          customProperties,
         })
       );
 
@@ -351,11 +389,14 @@ export async function captureResponsiveSnapshots(
       });
     }
   } finally {
-    // Always restore original styles
-    docEl.style.width = originalWidth;
-    docEl.style.minWidth = originalMinWidth;
-    docEl.style.maxWidth = originalMaxWidth;
-    docEl.style.overflow = originalOverflow;
+    // Always restore the root's own inline styles, exactly
+    for (const { prop, value, priority } of original) {
+      if (value) docEl.style.setProperty(prop, value, priority);
+      else docEl.style.removeProperty(prop);
+    }
+    if (!hadStyleAttribute && docEl.getAttribute('style') === '') {
+      docEl.removeAttribute('style');
+    }
   }
 
   return snapshots;
@@ -602,7 +643,9 @@ function getPseudoElementStyles(
     }
   }
 
-  return { selector, content, styles };
+  // §4.6 CONTENT axis: generated content can carry page text
+  // (`content: attr(data-…)`), so a `data-bridge-redact` element's collapses.
+  return { selector, content: scrubContentRequired(content, verdictOf(el)), styles };
 }
 
 /**

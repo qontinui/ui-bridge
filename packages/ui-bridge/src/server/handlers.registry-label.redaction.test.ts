@@ -207,9 +207,9 @@ describe('in-page dispatcher scrubs the registry label', () => {
     registerButton('pay', SECRET, true);
     registerButton('save', PUBLIC, false);
     const out = (await executeCommand('getDesignSnapshot', {}, emptyBridge)) as {
-      elements: Array<{ id: string; label?: string }>;
+      elements: Array<{ elementId: string; label?: string }>;
     };
-    const byId = new Map(out.elements.map((e) => [e.id, e.label]));
+    const byId = new Map(out.elements.map((e) => [e.elementId, e.label]));
     expect(byId.get('pay')).toBe(REDACTED_VALUE);
     expect(byId.get('save')).toBe(PUBLIC);
   });

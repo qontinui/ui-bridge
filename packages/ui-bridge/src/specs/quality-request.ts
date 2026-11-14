@@ -213,11 +213,12 @@ function requestedContext(
  * Custom properties are read rule-first, once for the whole batch
  * (`indexCustomProperties`). Pass `customProperties: false` when nothing
  * downstream reads them, and the stylesheets are not walked at all.
+ * `includePseudoElements` adds each element's `::before` / `::after`.
  */
 export function collectDesignData(
   elements: readonly QualityElementSource[],
   elementIds?: readonly string[],
-  options: { customProperties?: boolean } = {}
+  options: { customProperties?: boolean; includePseudoElements?: boolean } = {}
 ): ElementDesignData[] {
   const wanted = elementIds ? new Set(elementIds) : null;
   const live: Array<QualityElementSource & { element: HTMLElement }> = [];
@@ -239,6 +240,7 @@ export function collectDesignData(
       label: el.label,
       type: el.type,
       customProperties,
+      includePseudoElements: options.includePseudoElements,
     })
   );
 }

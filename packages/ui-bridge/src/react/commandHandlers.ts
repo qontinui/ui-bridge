@@ -167,6 +167,13 @@ import {
   qualityFailureCode,
 } from '../specs/quality-request';
 import type { SnapshotBaseline } from '../specs/quality-types';
+import {
+  designAuditOf,
+  designFailureCode,
+  designSnapshotOf,
+  elementStylesOf,
+  responsiveSnapshotsOf,
+} from '../specs/design-request';
 import type { StyleGuideConfig } from '../specs/style-types';
 import { sdkDispatch } from '../core/sdk-dispatch';
 import {
@@ -737,100 +744,6 @@ function elementToFindResult(e: RegisteredElement) {
   };
 }
 
-function getComputedStylesSafe(el: HTMLElement) {
-  const cs = getComputedStyle(el);
-  const keys = [
-    'color',
-    'backgroundColor',
-    'fontSize',
-    'fontFamily',
-    'fontWeight',
-    'padding',
-    'margin',
-    'border',
-    'borderRadius',
-    'display',
-    'position',
-    'width',
-    'height',
-    'opacity',
-    'overflow',
-    'textAlign',
-    'lineHeight',
-    'boxShadow',
-    'cursor',
-    'zIndex',
-    'colorScheme',
-    'appearance',
-  ];
-  const styles: Record<string, string> = {};
-  for (const k of keys)
-    styles[k] =
-      cs.getPropertyValue(k.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`)) ||
-      (cs as unknown as Record<string, string>)[k] ||
-      '';
-  return styles;
-}
-
-/**
- * Contrast ratio below this means foreground and background are nearly identical,
- * making text effectively invisible (WCAG contrast ratio scale starts at 1:1).
- */
-const NEARLY_INVISIBLE_CONTRAST_THRESHOLD = 1.15;
-
-/**
- * Linearize a single sRGB channel value (0–1) per WCAG 2.1 spec.
- */
-function srgbToLinear(c: number): number {
-  return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
-}
-
-/**
- * Parse an rgb/rgba or hex color string and return WCAG 2.1 relative luminance (0–1).
- * Supports: rgb(r,g,b), rgba(r,g,b,a), #rgb, #rgba, #rrggbb, #rrggbbaa.
- * Returns -1 if unparseable.
- */
-function parseLuminance(color: string): number {
-  let r: number, g: number, b: number;
-
-  const rgbMatch = color.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-  if (rgbMatch) {
-    r = parseInt(rgbMatch[1]) / 255;
-    g = parseInt(rgbMatch[2]) / 255;
-    b = parseInt(rgbMatch[3]) / 255;
-  } else {
-    const hexMatch = color.match(/^#([0-9a-fA-F]{3,8})$/);
-    if (!hexMatch) return -1;
-    const hex = hexMatch[1];
-    if (hex.length === 3 || hex.length === 4) {
-      // #rgb or #rgba — expand each digit
-      r = parseInt(hex[0] + hex[0], 16) / 255;
-      g = parseInt(hex[1] + hex[1], 16) / 255;
-      b = parseInt(hex[2] + hex[2], 16) / 255;
-    } else if (hex.length === 6 || hex.length === 8) {
-      // #rrggbb or #rrggbbaa
-      r = parseInt(hex.slice(0, 2), 16) / 255;
-      g = parseInt(hex.slice(2, 4), 16) / 255;
-      b = parseInt(hex.slice(4, 6), 16) / 255;
-    } else {
-      return -1;
-    }
-  }
-
-  // WCAG 2.1 relative luminance
-  return 0.2126 * srgbToLinear(r) + 0.7152 * srgbToLinear(g) + 0.0722 * srgbToLinear(b);
-}
-
-function isLikelyDarkColor(color: string): boolean {
-  const l = parseLuminance(color);
-  return l >= 0 && l < 0.4;
-}
-
-function isLikelyLightColor(color: string): boolean {
-  const l = parseLuminance(color);
-  return l >= 0 && l > 0.6;
-}
-
 /** A network event source: what the relay's idle detector and timeline subscribe to. */
 type RelayNetworkSource = Pick<NetworkRequestTracker, 'onEvent'>;
 
@@ -1215,12 +1128,14 @@ function loadedGuideConfig(): StyleGuideConfig | null {
 }
 
 /**
- * A `/design/evaluate*` failure, coded as the server handlers code it. Their
+ * A failure of a route both transports answer through a shared module
+ * (`/design/evaluate*` via `specs/quality-request.ts`, the design-inspection
+ * routes via `specs/design-request.ts`), coded as the server handlers code it. Their
  * `error()` maps the internal code onto the canonical `UB-*` vocabulary, while
  * the relay forwards a command's own `code` verbatim, so mapping it here keeps
  * one failure one code over either transport.
  */
-function qualityFailure(message: string, internalCode: string): Record<string, unknown> {
+function sharedRouteFailure(message: string, internalCode: string): Record<string, unknown> {
   return { success: false, error: message, code: mapInternalErrorCode(internalCode, message) };
 }
 
@@ -5306,16 +5221,18 @@ export async function executeCommand(
     // Design Review
     // ======================================================================
 
+    // The design-inspection routes run through specs/design-request.ts, which
+    // the server handlers call too — one model whichever transport answers,
+    // failures included (see `sharedRouteFailure`).
     case 'getElementStyles': {
-      const el = getElement(payload.id as string);
-      if (!el) return { error: `Element ${payload.id} not found` };
-      const dom = el.element as HTMLElement;
-      return {
-        id: payload.id,
-        styles: getComputedStylesSafe(dom),
-        rect: dom.getBoundingClientRect(),
-        timestamp: Date.now(),
-      };
+      try {
+        return elementStylesOf(payload.id as string, getElement(payload.id as string));
+      } catch (err) {
+        return sharedRouteFailure(
+          (err as Error).message,
+          designFailureCode(err, 'DESIGN_STYLES_ERROR')
+        );
+      }
     }
 
     case 'getElementStateStyles': {
@@ -5341,26 +5258,26 @@ export async function executeCommand(
     }
 
     case 'getDesignSnapshot': {
-      const { elementIds } = payload as { elementIds?: string[] };
-      const targetEls = elementIds
-        ? elements.filter((e) => elementIds.includes(e.id))
-        : elements.slice(0, 50);
-      const designs = targetEls.map((e) => ({
-        id: e.id,
-        // §4.6 CONTENT axis: the registry row's label is raw.
-        label: scrubContent(e.label, e.element as HTMLElement),
-        type: e.type,
-        styles: getComputedStylesSafe(e.element as HTMLElement),
-        rect: (e.element as HTMLElement).getBoundingClientRect(),
-      }));
-      return { elements: designs, timestamp: Date.now() };
+      try {
+        return designSnapshotOf(elements, payload);
+      } catch (err) {
+        return sharedRouteFailure(
+          (err as Error).message,
+          designFailureCode(err, 'DESIGN_SNAPSHOT_ERROR')
+        );
+      }
     }
 
-    case 'getResponsiveSnapshots':
-      return {
-        error: 'Responsive snapshots require server-side viewport manipulation',
-        timestamp: Date.now(),
-      };
+    case 'getResponsiveSnapshots': {
+      try {
+        return await responsiveSnapshotsOf(elements, payload);
+      } catch (err) {
+        return sharedRouteFailure(
+          (err as Error).message,
+          designFailureCode(err, 'RESPONSIVE_SNAPSHOT_ERROR')
+        );
+      }
+    }
 
     case 'setViewportConstraints': {
       const { width, restore } = payload as { width?: number; restore?: boolean };
@@ -5389,112 +5306,14 @@ export async function executeCommand(
     }
 
     case 'runDesignAudit': {
-      const issues: Array<{ element: string; issue: string; severity: string; fix?: string }> = [];
-      elements.slice(0, 100).forEach((e) => {
-        const dom = e.element as HTMLElement;
-        const cs = getComputedStyle(dom);
-        // Check contrast using WCAG 2.1 contrast ratio
-        const textColor = cs.color;
-        const bgColor = cs.backgroundColor;
-        if (
-          textColor &&
-          bgColor &&
-          textColor !== 'rgba(0, 0, 0, 0)' &&
-          bgColor !== 'rgba(0, 0, 0, 0)'
-        ) {
-          const fgLum = parseLuminance(textColor);
-          const bgLum = parseLuminance(bgColor);
-          if (fgLum >= 0 && bgLum >= 0) {
-            const lighter = Math.max(fgLum, bgLum);
-            const darker = Math.min(fgLum, bgLum);
-            // WCAG contrast ratio: (L1 + 0.05) / (L2 + 0.05)
-            const ratio = (lighter + 0.05) / (darker + 0.05);
-            if (ratio < NEARLY_INVISIBLE_CONTRAST_THRESHOLD) {
-              // Nearly identical colors — text is invisible
-              issues.push({
-                element: e.id,
-                issue: `Text nearly invisible: contrast ratio ${ratio.toFixed(2)}:1 (${textColor} on ${bgColor})`,
-                severity: 'error',
-                fix: `Add explicit text color with sufficient contrast against ${bgColor}`,
-              });
-            } else if (ratio < 3.0) {
-              // Below WCAG AA for large text
-              const fontSize = parseFloat(cs.fontSize);
-              issues.push({
-                element: e.id,
-                issue: `Low contrast: ${ratio.toFixed(2)}:1 (${textColor} on ${bgColor}) — fails WCAG AA${fontSize >= 18 ? ' for large text (3:1)' : ' (4.5:1)'}`,
-                severity: 'warning',
-                fix: `Increase contrast to at least ${fontSize >= 18 ? '3:1' : '4.5:1'} for WCAG AA compliance`,
-              });
-            } else if (ratio < 4.5) {
-              // Passes large text AA but fails normal text AA
-              const fontSize = parseFloat(cs.fontSize);
-              if (fontSize < 18) {
-                issues.push({
-                  element: e.id,
-                  issue: `Insufficient contrast for normal text: ${ratio.toFixed(2)}:1 (${textColor} on ${bgColor}) — WCAG AA requires 4.5:1`,
-                  severity: 'info',
-                  fix: `Increase contrast to 4.5:1, or increase font size to 18px+`,
-                });
-              }
-            }
-          }
-        }
-        // Check select elements for dark-mode dropdown visibility issues
-        if (dom.tagName === 'SELECT') {
-          const scheme = cs.colorScheme || '';
-          const isDarkBg = isLikelyDarkColor(bgColor);
-          const hasLightText = isLikelyLightColor(textColor);
-          if (isDarkBg && hasLightText && !scheme.includes('dark')) {
-            issues.push({
-              element: e.id,
-              issue: `Select has light text (${textColor}) on dark bg (${bgColor}) without color-scheme:dark — native <option> dropdowns may be invisible`,
-              severity: 'warning',
-              fix: `Add style={{ colorScheme: "dark" }} to the <select> element and set option colors explicitly: [&>option]:text-black [&>option]:bg-white`,
-            });
-          }
-          // Check if options explicitly have styling
-          const firstOption = dom.querySelector('option');
-          if (firstOption) {
-            const optCs = getComputedStyle(firstOption);
-            const optFgLum = parseLuminance(optCs.color || '');
-            const optBgLum = parseLuminance(optCs.backgroundColor || '');
-            if (optFgLum >= 0 && optBgLum >= 0) {
-              const optLighter = Math.max(optFgLum, optBgLum);
-              const optDarker = Math.min(optFgLum, optBgLum);
-              const optRatio = (optLighter + 0.05) / (optDarker + 0.05);
-              if (optRatio < 3.0) {
-                issues.push({
-                  element: e.id,
-                  issue: `Select option text has low contrast: ${optRatio.toFixed(2)}:1 (${optCs.color} on ${optCs.backgroundColor})`,
-                  severity: 'error',
-                  fix: `Add explicit option colors: select option { color: #000; background-color: #fff; } or use [&>option]:text-black [&>option]:bg-white`,
-                });
-              }
-            }
-          }
-        }
-        // Check font size
-        if (parseFloat(cs.fontSize) < 12) {
-          issues.push({
-            element: e.id,
-            issue: `Font size too small: ${cs.fontSize}`,
-            severity: 'info',
-          });
-        }
-        // Check interactive element size
-        if (e.type === 'button' || e.type === 'link') {
-          const rect = dom.getBoundingClientRect();
-          if (rect.width < 44 || rect.height < 44) {
-            issues.push({
-              element: e.id,
-              issue: `Touch target too small: ${Math.round(rect.width)}x${Math.round(rect.height)}px (min 44x44)`,
-              severity: 'warning',
-            });
-          }
-        }
-      });
-      return { issues, checkedElements: Math.min(elements.length, 100), timestamp: Date.now() };
+      try {
+        return designAuditOf(elements, payload, loadedGuideConfig());
+      } catch (err) {
+        return sharedRouteFailure(
+          (err as Error).message,
+          designFailureCode(err, 'DESIGN_AUDIT_ERROR')
+        );
+      }
     }
 
     case 'loadStyleGuide':
@@ -5514,12 +5333,12 @@ export async function executeCommand(
 
     // The same functions the server handlers call (specs/quality-request.ts),
     // so `/design/evaluate*` answers with one model over either transport,
-    // failures included (see `qualityFailure`).
+    // failures included (see `sharedRouteFailure`).
     case 'evaluateQuality': {
       try {
         return evaluateRegisteredQuality(elements, payload, loadedGuideConfig());
       } catch (err) {
-        return qualityFailure(
+        return sharedRouteFailure(
           (err as Error).message,
           qualityFailureCode(err, 'QUALITY_EVALUATION_ERROR')
         );
@@ -5534,7 +5353,7 @@ export async function executeCommand(
         qualityBaseline = captureQualityBaseline(elements, payload);
         return { saved: true, elementCount: qualityBaseline.elements.length };
       } catch (err) {
-        return qualityFailure(
+        return sharedRouteFailure(
           (err as Error).message,
           qualityFailureCode(err, 'SAVE_BASELINE_ERROR')
         );
@@ -5543,12 +5362,12 @@ export async function executeCommand(
 
     case 'diffBaseline': {
       if (!qualityBaseline) {
-        return qualityFailure('No baseline saved. Call saveBaseline first.', 'NO_BASELINE');
+        return sharedRouteFailure('No baseline saved. Call saveBaseline first.', 'NO_BASELINE');
       }
       try {
         return diffQualityBaseline(qualityBaseline, elements, payload);
       } catch (err) {
-        return qualityFailure(
+        return sharedRouteFailure(
           (err as Error).message,
           qualityFailureCode(err, 'DIFF_BASELINE_ERROR')
         );
