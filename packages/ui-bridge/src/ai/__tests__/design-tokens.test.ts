@@ -988,11 +988,12 @@ describe('design tokens', () => {
     expect(getCSSCustomProperties(span)['--y']).toBe(REDACTED_VALUE);
   });
 
-  it('with an unreadable sheet, a chain to an undeclared name fails closed', () => {
+  it('with an unreadable sheet, a chain to an undeclared name with a value fails closed', () => {
     sheet('.b { --y: var(--hidden); }');
-    const el = document.createElement('div');
-    el.className = 'b';
+    const el = add('div', 'b');
     el.style.setProperty('--user', 'Alice');
+    // --hidden has a value on the element: something declares it.
+    browserComputes(new Map([[el, { '--hidden': 'Alice' }]]));
     // Every sheet readable: --hidden is declared nowhere, so --y is not script-derived.
     expect(getCSSCustomProperties(el)['--y']).not.toBe(REDACTED_VALUE);
     const crossOrigin = {
@@ -1003,6 +1004,61 @@ describe('design tokens', () => {
     vi.spyOn(document, 'styleSheets', 'get').mockReturnValue([crossOrigin, style.sheet] as never);
     // --hidden may be declared (from --user) in the sheet that could not be read.
     expect(getCSSCustomProperties(el)['--y']).toBe(REDACTED_VALUE);
+  });
+
+  it('with an unreadable sheet, an optional hook that is empty on the element is not redacted', () => {
+    // Google Fonts without `crossorigin`: unreadable. The hook is optional.
+    sheet('.h { --font-heading: var(--font-display, Georgia, serif); }');
+    const el = add('h1', 'h');
+    el.style.setProperty('--accent', '#ff0000');
+    const crossOrigin = {
+      get cssRules(): CSSRuleList {
+        throw new DOMException('cross-origin stylesheet', 'SecurityError');
+      },
+    };
+    vi.spyOn(document, 'styleSheets', 'get').mockReturnValue([crossOrigin, style.sheet] as never);
+    // Nothing gives --font-display a value: nothing reaches the element through it.
+    browserComputes(new Map([[el, { '--font-display': '' }]]));
+    expect(getCSSCustomProperties(el)['--font-heading']).not.toBe(REDACTED_VALUE);
+    // The same chain with a value there may carry a script value: scrubbed.
+    vi.restoreAllMocks();
+    vi.spyOn(document, 'styleSheets', 'get').mockReturnValue([crossOrigin, style.sheet] as never);
+    browserComputes(new Map([[el, { '--font-display': 'Alice Smith' }]]));
+    expect(getCSSCustomProperties(el)['--font-heading']).toBe(REDACTED_VALUE);
+  });
+
+  it('with an unreadable sheet, an @property-registered name counts as declared', () => {
+    sheet('.h { --font-heading: var(--font-display, Georgia, serif); }');
+    const el = add('h1', 'h');
+    el.style.setProperty('--accent', '#ff0000');
+    const crossOrigin = {
+      get cssRules(): CSSRuleList {
+        throw new DOMException('cross-origin stylesheet', 'SecurityError');
+      },
+    };
+    // Its registered initial value gives it a value everywhere.
+    browserComputes(new Map([[el, { '--font-display': 'Inter' }]]));
+    const registered = {
+      cssRules: [
+        {
+          name: '--font-display',
+          syntax: '*',
+          inherits: true,
+          initialValue: 'Inter',
+          cssText:
+            '@property --font-display { syntax: "*"; inherits: true; initial-value: Inter; }',
+        },
+      ],
+    };
+    vi.spyOn(document, 'styleSheets', 'get').mockReturnValue([
+      crossOrigin,
+      style.sheet,
+      registered,
+    ] as never);
+    expect(getCSSCustomProperties(el)['--font-heading']).not.toBe(REDACTED_VALUE);
+    // Not vacuous: without the registration it fails closed.
+    vi.spyOn(document, 'styleSheets', 'get').mockReturnValue([crossOrigin, style.sheet] as never);
+    expect(getCSSCustomProperties(el)['--font-heading']).toBe(REDACTED_VALUE);
   });
 
   it('root tokens and scope overrides follow a hop in a @media that does not hold', () => {
@@ -1045,6 +1101,58 @@ describe('design tokens', () => {
     const title = capture.snapshots.map((snap) => snap.elements[0].customProperties?.['--title']);
     expect(title[0]).not.toBe(REDACTED_VALUE);
     expect(title[1]).toBe(REDACTED_VALUE);
+  });
+
+  it('an in-place CSSOM edit between viewports is seen by the same batch', async () => {
+    sheet('.t { --title: var(--x); }', '.a { --x: 1px; }');
+    const card = add('div', 'card');
+    card.style.setProperty('--user', 'Alice');
+    const el = add('h2', 't', card);
+    let frames = 0;
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      setTimeout(() => {
+        frames++;
+        // Between the first viewport's read and the second's: the rule that
+        // declares --x now builds it from the script value, edited in place.
+        if (frames === 2) {
+          (style.sheet!.cssRules[1] as CSSStyleRule).style.setProperty('--x', 'var(--user)');
+        }
+        cb(0);
+      }, 0);
+      return frames;
+    });
+    const capture = await captureResponsiveSnapshots(
+      { getAllElements: () => [{ id: 't', element: el, type: 'heading', label: 't' }] },
+      [320, 768]
+    );
+    const title = capture.snapshots.map((snap) => snap.elements[0].customProperties?.['--title']);
+    expect(title[0]).not.toBe(REDACTED_VALUE);
+    expect(title[1]).toBe(REDACTED_VALUE);
+    // Without a batch the same element reads the same.
+    expect(getCSSCustomProperties(el)['--title']).toBe(REDACTED_VALUE);
+  });
+
+  it('a token scope slotted into a shadow root follows that root’s graph', () => {
+    sheet('.theme { --t: var(--m2); }');
+    const shadowHost = add('div', 'host');
+    const shadow = shadowHost.attachShadow({ mode: 'open' });
+    const wrapper = document.createElement('div');
+    wrapper.style.setProperty('--user', 'Alice');
+    wrapper.appendChild(document.createElement('slot'));
+    shadow.appendChild(wrapper);
+    const theme = add('div', 'theme', shadowHost);
+    expect(theme.assignedSlot).not.toBeNull();
+    const leaf = { id: 'k', element: add('span', 'k', theme) };
+    // No hop from --m2 to the script value yet: the override is design data.
+    const before = collectDesignBatch([leaf]);
+    expect(Object.values(before.scopes)[0].overrides['--t']).not.toBe(REDACTED_VALUE);
+    // The hop lives only in the shadow root's own (adopted) sheet.
+    Object.defineProperty(shadow, 'adoptedStyleSheets', {
+      configurable: true,
+      value: [{ cssRules: [fakeRule('div', '--m2: var(--user)')] }],
+    });
+    const after = collectDesignBatch([leaf]);
+    expect(Object.values(after.scopes)[0].overrides['--t']).toBe(REDACTED_VALUE);
   });
 
   it('a literal that lost the cascade does not stop an inherited token (`color: inherit`)', () => {

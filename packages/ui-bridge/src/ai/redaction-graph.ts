@@ -10,10 +10,26 @@
  * root its custom properties inherit through, whatever the rules'
  * conditions (`@media`, `@supports`, `@container`, `@scope`,
  * `@starting-style`, a disabled sheet). Including a rule that does not apply
- * now only scrubs more; leaving one out can leak. When a sheet could not be
- * read, a chain reaching a name no readable rule declares is treated as
- * script-derived (fail closed). Attribution keeps its own condition-aware
- * walk.
+ * now only scrubs more; leaving one out can leak. Attribution keeps its own
+ * condition-aware walk.
+ *
+ * What an unreadable (cross-origin) sheet leaves uncovered, exactly: when a
+ * sheet could not be read, a chain reaching a name that no readable rule
+ * declares and no readable `@property` registers is treated as possibly
+ * script-derived (fail closed) — but only when that name has a value on the
+ * element: an empty one means nothing, script or sheet, reaches the element
+ * through it (an optional hook such as `var(--font-display, Georgia)`).
+ * NOT covered: an unreadable sheet that RE-declares a name a readable rule
+ * already declares (`--title: var(--user)` hidden behind a readable
+ * `--title: 1rem`). The graph cannot see that edge, and no value is compared
+ * to tell which declaration won.
+ *
+ * Known limit — closed shadow roots: `assignedSlot` is `null` for a slot in a
+ * closed shadow root, so an element slotted into one is followed to its light
+ * DOM parent (the host), not through the slot; the closed root's rules and the
+ * inline custom properties of its elements on that path are not seen. An
+ * element INSIDE a closed root (handed over by reference) is followed as in an
+ * open one.
  */
 
 import { emptyCoverage, styleRules } from './stylesheet-walk';
@@ -49,7 +65,7 @@ export function varNames(value: string): string[] {
 export interface RedactionGraph {
   /** Custom property → the custom properties its declarations reference with `var()`. */
   readonly refs: ReadonlyMap<string, ReadonlySet<string>>;
-  /** Every custom property a readable rule declares. */
+  /** Every custom property a readable rule declares or a readable `@property` registers. */
   readonly declared: ReadonlySet<string>;
   /** `false` when a sheet could not be read (cross-origin): unseen declarations may exist. */
   readonly complete: boolean;
@@ -77,13 +93,17 @@ function recordDeclarations(
  * Whether `name`'s declarations reference (through any chain of `var()`s) one
  * of `targets`. A rule value built from a custom property set from script
  * carries that script value. With an incomplete graph, reaching a name no
- * readable rule declares (and that is not itself a target) also counts: its
- * declaration may be in the sheet that could not be read.
+ * readable rule declares (and that is not itself a target) also counts, as
+ * its declaration may be in the sheet that could not be read, unless
+ * `valueOn` (the element's computed value of a name) says it is empty there:
+ * then nothing reaches the element through it. Without `valueOn` every such
+ * name counts.
  */
 export function referencesAnyOf(
   name: string,
   graph: RedactionGraph,
-  targets: ReadonlySet<string>
+  targets: ReadonlySet<string>,
+  valueOn?: (name: string) => string
 ): boolean {
   if (targets.size === 0) return false;
   const seen = new Set<string>();
@@ -92,7 +112,13 @@ export function referencesAnyOf(
     const next = stack.pop()!;
     for (const ref of graph.refs.get(next) ?? []) {
       if (targets.has(ref)) return true;
-      if (!graph.complete && !graph.declared.has(ref)) return true;
+      if (
+        !graph.complete &&
+        !graph.declared.has(ref) &&
+        (valueOn === undefined || valueOn(ref).trim() !== '')
+      ) {
+        return true;
+      }
       if (!seen.has(ref)) {
         seen.add(ref);
         stack.push(ref);
@@ -145,6 +171,64 @@ type Root = Document | ShadowRoot;
  */
 const graphCache = new WeakMap<Root, { key: unknown[]; graph: RedactionGraph }>();
 
+function declaresCustomProperty(style: CSSStyleDeclaration): boolean {
+  for (let i = 0; i < style.length; i++) if (style[i].startsWith('--')) return true;
+  return false;
+}
+
+/**
+ * The name an `@property` rule registers, or `null` for any other rule. Read
+ * from `CSSPropertyRule.name` where the engine has it, else from the text.
+ */
+function registeredName(rule: CSSRule): string | null {
+  const name = (rule as { name?: unknown }).name;
+  if (typeof name === 'string' && name.startsWith('--') && 'syntax' in rule) return name;
+  const text = typeof rule.cssText === 'string' ? rule.cssText : '';
+  const m = /^\s*@property\s+(--[^\s{]+)/i.exec(text);
+  return m ? cssUnescape(m[1]) : null;
+}
+
+/** Every name a readable `@property` of `root` registers (inside grouping rules and imports too). */
+function registeredNames(root: Root): Set<string> {
+  const names = new Set<string>();
+  const visit = (rules: CSSRuleList | undefined): void => {
+    if (!rules) return;
+    for (const rule of Array.from(rules)) {
+      const name = registeredName(rule);
+      if (name) names.add(name);
+      const sheet = (rule as Partial<CSSImportRule>).styleSheet;
+      if (sheet) {
+        try {
+          visit(sheet.cssRules);
+        } catch {
+          // Unreadable: counted by the walk's coverage.
+        }
+      }
+      visit((rule as Partial<CSSGroupingRule>).cssRules);
+    }
+  };
+  for (const sheet of sheetsOf(root)) {
+    try {
+      visit(sheet.cssRules);
+    } catch {
+      // Unreadable: counted by the walk's coverage.
+    }
+  }
+  return names;
+}
+
+/** The root's own sheets, then its adopted ones. */
+function sheetsOf(root: Root): CSSStyleSheet[] {
+  const adopted = (root as { adoptedStyleSheets?: CSSStyleSheet[] }).adoptedStyleSheets;
+  let own: CSSStyleSheet[];
+  try {
+    own = Array.from(root.styleSheets) as CSSStyleSheet[];
+  } catch {
+    own = [];
+  }
+  return [...own, ...(Array.isArray(adopted) ? adopted : [])];
+}
+
 function structuralKey(root: Root): unknown[] {
   const key: unknown[] = [];
   const visit = (rules: CSSRuleList | undefined): void => {
@@ -153,12 +237,7 @@ function structuralKey(root: Root): unknown[] {
     for (const rule of Array.from(rules)) {
       key.push(rule);
       const style = (rule as { style?: CSSStyleDeclaration }).style;
-      if (
-        style &&
-        Array.from({ length: style.length }, (_, i) => style[i]).some((p) => p.startsWith('--'))
-      ) {
-        key.push(style.cssText);
-      }
+      if (style && declaresCustomProperty(style)) key.push(style.cssText);
       const sheet = (rule as Partial<CSSImportRule>).styleSheet;
       if (sheet) {
         key.push(sheet);
@@ -171,15 +250,7 @@ function structuralKey(root: Root): unknown[] {
       visit((rule as Partial<CSSGroupingRule>).cssRules);
     }
   };
-  const adopted = (root as { adoptedStyleSheets?: CSSStyleSheet[] }).adoptedStyleSheets ?? [];
-  let own: CSSStyleSheet[];
-  try {
-    own = Array.from(root.styleSheets) as CSSStyleSheet[];
-  } catch {
-    own = [];
-  }
-  const sheets = [...own, ...adopted];
-  for (const sheet of sheets) {
+  for (const sheet of sheetsOf(root)) {
     key.push(sheet);
     try {
       visit(sheet.cssRules);
@@ -203,6 +274,7 @@ export function rootGraph(root: Root): RedactionGraph {
   for (const { rule } of styleRules(root, { descend: true, everything: true, coverage })) {
     recordDeclarations(rule.style, refs, declared);
   }
+  for (const name of registeredNames(root)) declared.add(name);
   const graph: RedactionGraph = { refs, declared, complete: coverage.sheetsUnreadable === 0 };
   graphCache.set(root, { key, graph });
   return graph;
@@ -225,29 +297,43 @@ function mergeGraphs(graphs: readonly RedactionGraph[]): RedactionGraph {
 }
 
 /**
- * The redaction graph for `el`: its document's (`documentGraph` when the
- * caller already has it), merged with that of every shadow root its flat-tree
- * ancestors live in. `memo` caches the shadow roots' graphs for a batch.
+ * The merged graphs of one batch: each entry's `parts` are the root graphs it
+ * was merged from, by identity. `rootGraph` returns the same object only
+ * while its root is unchanged, so a hit is current; an edit yields new parts
+ * and a fresh merge.
  */
-export function graphFor(
-  el: Element,
-  documentGraph?: RedactionGraph,
-  memo?: Map<Root, RedactionGraph>
-): RedactionGraph {
+export type MergedGraphMemo = Array<{
+  readonly parts: readonly RedactionGraph[];
+  readonly merged: RedactionGraph;
+}>;
+
+/** Merges a memo keeps; past this the oldest is dropped (each edit adds one). */
+const MAX_MEMOISED_MERGES = 32;
+
+/**
+ * The redaction graph for `el`: its own document's, merged with that of every
+ * shadow root its flat-tree ancestors live in. Every root's graph is asked
+ * for on every call (`rootGraph`'s structural key is the freshness test), so
+ * an in-place CSSOM edit between two reads is seen; `memo` keeps only the
+ * MERGED result per (roots, their current graphs).
+ */
+export function graphFor(el: Element, memo?: MergedGraphMemo): RedactionGraph {
   const roots = new Set<ShadowRoot>();
   for (let node: Element | null = el; node; node = flatParent(node)) {
     const root = node.getRootNode();
     if (typeof ShadowRoot !== 'undefined' && root instanceof ShadowRoot) roots.add(root);
   }
-  const graphOf = (root: Root): RedactionGraph => {
-    let graph = memo?.get(root);
-    if (!graph) {
-      graph = rootGraph(root);
-      memo?.set(root, graph);
-    }
-    return graph;
-  };
-  const base = documentGraph ?? graphOf(el.ownerDocument);
-  if (roots.size === 0) return base;
-  return mergeGraphs([base, ...[...roots].map(graphOf)]);
+  const parts = [rootGraph(el.ownerDocument), ...[...roots].map(rootGraph)];
+  if (parts.length === 1) return parts[0];
+  const hit = memo?.find(
+    (entry) =>
+      entry.parts.length === parts.length && entry.parts.every((graph, i) => graph === parts[i])
+  );
+  if (hit) return hit.merged;
+  const merged = mergeGraphs(parts);
+  if (memo) {
+    memo.push({ parts, merged });
+    if (memo.length > MAX_MEMOISED_MERGES) memo.shift();
+  }
+  return merged;
 }
