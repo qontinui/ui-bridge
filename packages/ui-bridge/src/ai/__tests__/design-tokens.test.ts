@@ -741,6 +741,189 @@ describe('design tokens', () => {
     expect(read(small, [small]).tokenMatches?.lineHeight?.derived).toBeUndefined();
   });
 
+  // ------------------------------------------------- redaction graph
+
+  /** A fake style rule the walk accepts (jsdom parses no nesting, @container or @import). */
+  function fakeRule(selector: string, cssText: string): CSSStyleRule {
+    const holder = document.createElement('div');
+    holder.setAttribute('style', cssText);
+    return Object.defineProperties(Object.create(CSSStyleRule.prototype), {
+      selectorText: { value: selector },
+      style: { value: holder.style },
+      cssRules: { value: [] },
+    }) as CSSStyleRule;
+  }
+
+  it('the indexed redaction graph follows a hop inside an @container rule', () => {
+    class FakeContainerRule {}
+    vi.stubGlobal('CSSContainerRule', FakeContainerRule);
+    sheet('.t { --title: var(--mid); }');
+    const container = Object.assign(new FakeContainerRule(), {
+      cssText: '@container (min-width: 1px) { .t { --mid: var(--user); } }',
+      cssRules: [fakeRule('.t', '--mid: var(--user)')],
+    });
+    vi.spyOn(document, 'styleSheets', 'get').mockReturnValue([
+      style.sheet,
+      { cssRules: [container] },
+    ] as never);
+    const card = add('div', 'card');
+    card.style.setProperty('--user', 'Alice');
+    const el = add('h2', 't', card);
+    const data = getElementDesignData(el, {
+      customProperties: indexCustomProperties(document, [el]),
+    });
+    expect(data.customProperties?.['--title']).toBe(REDACTED_VALUE);
+  });
+
+  it('follows script names and var() graphs across shadow boundaries', () => {
+    sheet('* { --y: var(--mid); }');
+    const outer = add('div', 'outer');
+    outer.style.setProperty('--user', 'Alice');
+    const shadowHost = add('div', 'host', outer);
+    const shadow = shadowHost.attachShadow({ mode: 'open' });
+    // The middle hop lives in the shadow root's own (adopted) sheet.
+    Object.defineProperty(shadow, 'adoptedStyleSheets', {
+      configurable: true,
+      value: [{ cssRules: [fakeRule(':host', '--mid: var(--user)')] }],
+    });
+    const span = document.createElement('span');
+    shadow.appendChild(span);
+    expect(getCSSCustomProperties(span)['--y']).toBe(REDACTED_VALUE);
+  });
+
+  it('the redaction graph cache sees a replaced rule, an adopted sheet and an @import change', () => {
+    sheet('.a { --x: var(--other); }', '.b { --y: var(--x); }');
+    const el = document.createElement('div');
+    el.className = 'b';
+    el.style.setProperty('--user', 'Alice');
+    expect(getCSSCustomProperties(el)['--y']).not.toBe(REDACTED_VALUE);
+    // Same rule count, different rule: delete + insert.
+    style.sheet!.deleteRule(0);
+    style.sheet!.insertRule('.a { --x: var(--user); }', 0);
+    expect(getCSSCustomProperties(el)['--y']).toBe(REDACTED_VALUE);
+
+    // An adopted sheet added later.
+    sheet('.b { --y: var(--x2); }');
+    expect(getCSSCustomProperties(el)['--y']).not.toBe(REDACTED_VALUE);
+    const adopted: unknown[] = [];
+    Object.defineProperty(document, 'adoptedStyleSheets', { configurable: true, value: adopted });
+    try {
+      getCSSCustomProperties(el);
+      adopted.push({ cssRules: [fakeRule('.a', '--x2: var(--user)')] });
+      expect(getCSSCustomProperties(el)['--y']).toBe(REDACTED_VALUE);
+    } finally {
+      delete (document as { adoptedStyleSheets?: unknown }).adoptedStyleSheets;
+    }
+
+    // A rule added to an @import-ed sheet.
+    const importedRules: CSSStyleRule[] = [];
+    const sheetWithImport = {
+      cssRules: [
+        {
+          cssText: '@import url(theme.css);',
+          media: { mediaText: '' },
+          styleSheet: { cssRules: importedRules },
+        },
+        fakeRule('.b', '--y: var(--x3)'),
+      ],
+    };
+    vi.spyOn(document, 'styleSheets', 'get').mockReturnValue([sheetWithImport] as never);
+    expect(getCSSCustomProperties(el)['--y']).not.toBe(REDACTED_VALUE);
+    importedRules.push(fakeRule('.a', '--x3: var(--user)'));
+    expect(getCSSCustomProperties(el)['--y']).toBe(REDACTED_VALUE);
+  });
+
+  it('never throws on an out-of-range escape in a var() name', () => {
+    expect(varNames('var(--x\\110000) var(--y\\0) var(--z\\d800)')).toEqual([
+      '--x�',
+      '--y�',
+      '--z�',
+    ]);
+  });
+
+  it('substitutes an upper-case VAR()', () => {
+    sheet(':root { --brand: rgb(31, 78, 140); }', '.u { color: VAR(--brand); }');
+    const el = add('span', 'u');
+    browserComputes(new Map([[el, { color: 'rgb(31, 78, 140)' }]]));
+    expect(read(el).tokenMatches?.color).toEqual({ derived: ['--brand'] });
+  });
+
+  it('revert, revert-layer and currentcolor defer to the inherited token', () => {
+    sheet(
+      ':root { --fg: rgb(31, 78, 140); }',
+      '.p { color: var(--fg); }',
+      '.r1 { color: revert; }',
+      '.r2 { color: revert-layer; }',
+      '.r3 { color: currentcolor; }'
+    );
+    const parent = add('div', 'p');
+    const kids = ['r1', 'r2', 'r3'].map((c) => add('span', c, parent));
+    const fg = { color: 'rgb(31, 78, 140)' };
+    browserComputes(
+      new Map<Element, Record<string, string>>([parent, ...kids].map((el) => [el, fg])),
+      // A browser computes `color: revert` on a span to the inherited colour
+      // (no user-agent rule sets it), so a literal check alone would see it win.
+      (inline, longhand, probe) =>
+        longhand === 'color' && /^revert/.test(inline.getPropertyValue('color'))
+          ? (probe.parentElement as HTMLElement).style.color
+          : undefined
+    );
+    const index = indexCustomProperties(document, kids);
+    for (const kid of kids) {
+      expect(getElementDesignData(kid, { customProperties: index }).tokenMatches?.color).toEqual({
+        derived: ['--fg'],
+        via: 'inherited',
+      });
+    }
+  });
+
+  it('a literal the probe cannot resolve gives an unknown origin, never initial', () => {
+    sheet('.p { color: rgb(9, 9, 9); }');
+    const parent = add('div', 'p');
+    const child = add('span', 'c', parent);
+    const nine = { color: 'rgb(9, 9, 9)' };
+    browserComputes(
+      new Map<Element, Record<string, string>>([
+        [parent, nine],
+        [child, nine],
+      ])
+    );
+    const proto = Element.prototype as unknown as { attachShadow?: unknown };
+    const original = proto.attachShadow;
+    proto.attachShadow = undefined;
+    try {
+      expect(read(child, [child]).tokenMatches?.color).toEqual({
+        inherited: true,
+        inheritedFrom: 'unknown',
+      });
+    } finally {
+      proto.attachShadow = original;
+    }
+  });
+
+  it('a relative value in a font shorthand is the element’s own choice, not a pass-through', () => {
+    sheet(
+      ':root { --fs: 16px; }',
+      '.wrap { font-size: var(--fs); }',
+      'button { font: 100% serif; }'
+    );
+    const wrap = add('div', 'wrap');
+    const button = add('button', 'b', wrap);
+    const sixteen = { 'font-size': '16px' };
+    browserComputes(
+      new Map<Element, Record<string, string>>([
+        [wrap, sixteen],
+        [button, sixteen],
+      ]),
+      (inline, longhand, probe) =>
+        longhand === 'font-size' && inline.getPropertyValue('font').startsWith('100%')
+          ? (probe.parentElement as HTMLElement).style.fontSize
+          : undefined
+    );
+    // The shorthand also sets the family: a choice made on the button.
+    expect(read(button, [button]).tokenMatches?.fontSize?.via).toBeUndefined();
+  });
+
   it('a script value set on an ancestor between viewports is scrubbed at the later viewport', async () => {
     sheet('.t { --title: var(--user); }');
     const card = add('div', 'card');

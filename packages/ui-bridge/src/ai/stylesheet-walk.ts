@@ -267,11 +267,12 @@ export function* styleRules(
     }
   }
 
-  let sheets: readonly CSSStyleSheet[];
+  let sheets: readonly CSSStyleSheet[] = [];
   try {
     sheets = Array.from(doc.styleSheets) as CSSStyleSheet[];
   } catch {
-    return;
+    // No readable `styleSheets` (an engine without them on a shadow root):
+    // adopted sheets are still walked.
   }
   for (const sheet of sheets) {
     if (!applies(sheet)) continue;
