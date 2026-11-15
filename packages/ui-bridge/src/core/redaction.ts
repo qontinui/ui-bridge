@@ -276,11 +276,42 @@ export function readScrubbedText(
   opts?: { normalizeWhitespace?: boolean; maxLen?: number }
 ): Scrubbed<string> | undefined {
   if (!el) return undefined;
-  let raw = el.textContent?.trim();
+  const v = verdict ?? verdictOf(el as HTMLElement);
+  let raw = (v.content ? el.textContent : textOutsideBoundaries(el))?.trim();
   if (!raw) return undefined;
   if (opts?.normalizeWhitespace) raw = raw.replace(/\s+/g, ' ');
   if (opts?.maxLen != null) raw = truncateCodePoints(raw, opts.maxLen);
-  return scrubContentByVerdict(raw, verdict ?? verdictOf(el as HTMLElement));
+  return scrubContentByVerdict(raw, v);
+}
+
+/**
+ * `textContent` of `el` with every `data-bridge-redact="true"` DESCENDANT
+ * subtree replaced by one `REDACTED_VALUE`.
+ *
+ * The element's own verdict only looks UP (`closestRedactionBoundary`), so an
+ * element that is not itself inside a boundary but CONTAINS one — `<body>`, a
+ * card wrapping a redacted token — used to read the boundary's text verbatim
+ * through its own `textContent`. Selecting an ancestor was a way around the
+ * redaction. When no boundary sits below `el` this is exactly `textContent`.
+ */
+function textOutsideBoundaries(el: Element): string | null {
+  if (!el.querySelector(`[${BRIDGE_REDACT_ATTR}="true"]`)) return el.textContent;
+  let out = '';
+  const walk = (node: Node): void => {
+    for (let child = node.firstChild; child; child = child.nextSibling) {
+      if (child.nodeType === 3 /* TEXT_NODE */ || child.nodeType === 4 /* CDATA */) {
+        out += child.nodeValue ?? '';
+      } else if (child.nodeType === 1 /* ELEMENT_NODE */) {
+        if ((child as Element).getAttribute(BRIDGE_REDACT_ATTR) === 'true') {
+          out += REDACTED_VALUE;
+        } else {
+          walk(child);
+        }
+      }
+    }
+  };
+  walk(el);
+  return out;
 }
 
 /**
