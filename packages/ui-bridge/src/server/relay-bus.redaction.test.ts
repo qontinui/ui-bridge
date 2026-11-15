@@ -78,12 +78,20 @@ afterEach(() => {
 
 describe('redactRedisUserinfo / summarizeRedisError', () => {
   it('redacts scheme userinfo and scheme-less user:pass@', () => {
-    expect(redactRedisUserinfo(`getaddrinfo ENOTFOUND redis://default:${SECRET}@h:6379`)).not.toContain(
+    expect(
+      redactRedisUserinfo(`getaddrinfo ENOTFOUND redis://default:${SECRET}@h:6379`)
+    ).not.toContain(SECRET);
+    expect(redactRedisUserinfo(`bad url default:${SECRET}@host:6379`)).not.toContain(SECRET);
+    // a password holding `@` is cut by the generic pattern unless known secrets go first
+    expect(
+      redactRedisUserinfo('connect ECONNREFUSED p@ss' + SECRET + '@h:6379', ['p@ss' + SECRET])
+    ).not.toContain(SECRET);
+    // a long message is bounded
+    expect(redactRedisUserinfo('=,'.repeat(40_000)).length).toBeLessThanOrEqual(600);
+    // ioredis' ENOENT message for a password holding `/`
+    expect(redactRedisUserinfo(`connect ENOENT /:SEC/RET${SECRET}@127.0.0.1:6379`)).not.toContain(
       SECRET
     );
-    expect(redactRedisUserinfo(`bad url default:${SECRET}@host:6379`)).not.toContain(SECRET);
-    // ioredis' ENOENT message for a password holding `/`
-    expect(redactRedisUserinfo(`connect ENOENT /:SEC/RET${SECRET}@127.0.0.1:6379`)).not.toContain(SECRET);
   });
 
   it('builds a summary from scalar fields only, never the command or input', () => {
@@ -150,7 +158,9 @@ describe('RedisRelayBus with a fake client', () => {
 async function captureOutput(fn: () => Promise<void>): Promise<string> {
   const chunks: string[] = [];
   const push = (...args: unknown[]) => {
-    chunks.push(args.map((a) => (typeof a === 'string' ? a : util.inspect(a, { depth: 10 }))).join(' '));
+    chunks.push(
+      args.map((a) => (typeof a === 'string' ? a : util.inspect(a, { depth: 10 }))).join(' ')
+    );
   };
   const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((m) =>
     vi.spyOn(console, m).mockImplementation(push)
@@ -205,7 +215,7 @@ describe('RedisRelayBus with the real ioredis (tripwire)', () => {
     }
   });
 
-  // ioredis does not reject these URLs the same way on every Node: a `/` in the password makes
+  // The bus refuses these before ioredis is built. Handed to ioredis they are not harmless: a `/` in the password makes
   // it connect to a unix socket path and echo the password in the ENOENT message on every
   // retry, a `#` or `?` can throw ERR_INVALID_URL with the URL on `input`. Whichever it does,
   // nothing it produces may reach output or an error the bus hands back.

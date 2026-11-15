@@ -244,7 +244,15 @@ function urlSecrets(url: string): string[] {
   const userinfo = m[1];
   const colon = userinfo.indexOf(':');
   const password = colon === -1 ? '' : userinfo.slice(colon + 1);
-  return [userinfo, password].filter((x) => x.length >= 3);
+  const secrets = [userinfo, password];
+  try {
+    // ioredis hands AUTH the percent-DECODED password, so that is what an error can echo.
+    secrets.push(decodeURIComponent(password));
+  } catch {
+    /* not valid percent-encoding: the raw forms above are all there is */
+  }
+  // Longest first, so a secret that contains another is replaced whole.
+  return secrets.filter((x) => x.length >= 3).sort((a, b) => b.length - a.length);
 }
 
 /**
@@ -261,13 +269,14 @@ function urlSecrets(url: string): string[] {
  */
 function assertParseableRedisUrl(url: string): void {
   const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(url) ? url : `redis://${url}`;
-  let parsed: URL | null = null;
+  let parsed = false;
   try {
-    parsed = new URL(candidate);
+    new URL(candidate);
+    parsed = true;
   } catch {
     /* handled below, without the underlying error */
   }
-  if (!parsed || !parsed.hostname) {
+  if (!parsed) {
     throw new Error(
       'Redis relay bus init failed: the URL is not parseable (a reserved character in the password probably needs percent-encoding)'
     );
@@ -280,13 +289,16 @@ function assertParseableRedisUrl(url: string): void {
  * the password does not break it), and every `secrets` entry verbatim.
  */
 export function redactRedisUserinfo(text: string, secrets: readonly string[] = []): string {
-  let out = text
-    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]*@/gi, '$1***@')
-    .replace(/(^|[\s'"(=,])[^\s@'"]*:[^\s@'"]*@/g, '$1***@');
+  // Known secrets first: a generic pattern cuts a password holding `@` at the wrong place and
+  // leaves its tail behind. Then bound the work of the patterns on a long message.
+  let out = text;
   for (const secret of secrets) {
     if (secret) out = out.split(secret).join('***');
   }
-  return out;
+  out = out.slice(0, MAX_ERROR_MESSAGE_CHARS * 2);
+  return out
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]*@/gi, '$1***@')
+    .replace(/(^|[\s'"(=,])[^\s@'"]*:[^\s@'"]*@/g, '$1***@');
 }
 
 /**
@@ -489,9 +501,13 @@ export class RedisRelayBus implements RelayBus {
     fireAndForget(
       this.pub
         .zrange(key, -1, -1, 'WITHSCORES')
-        .then((top) => this.pub.pexpireat(key, Math.max(expiresAt, Number(top[1] ?? 0))))
+        .then((top) => this.pub.pexpireat(key, Math.max(expiresAt, Number(top[1] ?? 0)))),
+      this.reportCommandError
     );
-    fireAndForget(this.pub.set(`${PREVIOUS_TAB_PRESENCE_PREFIX}${tabId}`, '1', 'EX', ttl), this.reportCommandError);
+    fireAndForget(
+      this.pub.set(`${PREVIOUS_TAB_PRESENCE_PREFIX}${tabId}`, '1', 'EX', ttl),
+      this.reportCommandError
+    );
   }
 
   unregisterTab(tabId: string): void {
@@ -503,7 +519,8 @@ export class RedisRelayBus implements RelayBus {
         `${PREVIOUS_TAB_PRESENCE_PREFIX}${tabId}`,
         this.holderId,
         `(${Date.now()}`
-      )
+      ),
+      this.reportCommandError
     );
   }
 
