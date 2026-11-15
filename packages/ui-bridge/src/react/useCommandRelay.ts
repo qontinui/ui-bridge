@@ -12,6 +12,7 @@
  */
 
 import { useEffect, useRef, useMemo, useState } from 'react';
+import { useIsomorphicLayoutEffect } from './useIsomorphicLayoutEffect';
 import { useUIBridge } from './useUIBridge';
 import { useUIBridgeOptional } from './UIBridgeProvider';
 import { executeCommand, type BridgeAccess } from './commandHandlers';
@@ -242,17 +243,14 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
   // Default mirrors `startRelayClient`'s own (10s); passed through explicitly
   // so the effect's dep array tracks an override.
   const heartbeatIntervalMs = options?.heartbeatInterval ?? 10_000;
-  // Capture the auth-header hook in a ref so the 3 transport call sites
-  // read the freshest token without re-running effects on every render.
-  // The hook is called per-request inside the helpers above.
+  // Hold the auth-header hook in a ref so the 3 transport call sites read the
+  // freshest token without re-running effects on every render. The hook is
+  // called per-request inside the helpers above. Refreshed at commit, below.
   const authHeaderRef = useRef<UseCommandRelayOptions['authHeader']>(undefined);
-  authHeaderRef.current = options?.authHeader;
   // Same ref pattern for registrationMetadata: every heartbeat reads the
   // current value so a sessionId rotation (re-login) is picked up without
   // remounting. See the option-type docblock for the strict-mode contract.
-  const registrationMetadataRef =
-    useRef<UseCommandRelayOptions['registrationMetadata']>(undefined);
-  registrationMetadataRef.current = options?.registrationMetadata;
+  const registrationMetadataRef = useRef<UseCommandRelayOptions['registrationMetadata']>(undefined);
 
   const uiBridge = useUIBridge();
   const context = useUIBridgeOptional();
@@ -299,8 +297,19 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
   // Keep the live BridgeAccess in a ref so the relay client's `execute`
   // closure always dispatches against the freshest registry wiring without
   // restarting the SSE/heartbeat loop on every render.
-  const bridgeRef = useRef<BridgeAccess>(bridge as unknown as BridgeAccess);
-  bridgeRef.current = bridge as unknown as BridgeAccess;
+  const bridgeRef = useRef<BridgeAccess>(bridge);
+
+  // Refresh the three refs at COMMIT. The relay client reads them on every
+  // request and heartbeat, so a write during render let a render that never
+  // commits (an abandoned transition) hand the relay its `authHeader` hook,
+  // its registration metadata and its bridge. Declared before the relay-start
+  // effect, so where this falls back to a passive effect (no DOM) the refs are
+  // still current before the client starts.
+  useIsomorphicLayoutEffect(() => {
+    authHeaderRef.current = options?.authHeader;
+    registrationMetadataRef.current = options?.registrationMetadata;
+    bridgeRef.current = bridge;
+  });
 
   // Heartbeat metadata fields — mirror the identity fields used by phone-home
   // registration so the server's "what's connected right now" view matches
@@ -317,7 +326,7 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
   //
   // Delegated to the framework-free `startRelayClient`, shared verbatim with
   // the injected runtime bundle. The hook owns only the React-specific
-  // wiring: the live `bridge` ref, the freshest `authHeader` /
+  // wiring: the live `bridge` ref, the latest committed `authHeader` /
   // `registrationMetadata` hooks (via refs), and effect lifecycle.
   // ========================================================================
   useEffect(() => {

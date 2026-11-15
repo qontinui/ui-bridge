@@ -43,23 +43,22 @@ export function useUIRelationship(
   options?: UseUIRelationshipOptions
 ): void {
   const context = useUIBridgeOptional();
-  const optionsRef = useRef(options);
-  optionsRef.current = options;
 
   // Serialize metadata to detect deep changes without re-running on
   // every render. bidirectional + this key are the re-fire triggers;
-  // the latest options object is read from optionsRef inside the effect.
+  // the effect reads the options of the committed render that fired it.
   const bidirectional = options?.bidirectional;
   const metadataKey = options?.metadata ? JSON.stringify(options.metadata) : '';
 
   useEffect(() => {
     if (!context?.relationshipTracker) return;
 
-    context.relationshipTracker.declare(sourceId, targetId, type, optionsRef.current);
+    context.relationshipTracker.declare(sourceId, targetId, type, options);
 
     return () => {
       context.relationshipTracker.undeclare(sourceId, targetId, type);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [context, sourceId, targetId, type, bidirectional, metadataKey]);
 }
 

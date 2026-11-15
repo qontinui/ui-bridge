@@ -15,7 +15,7 @@
  *   }
  */
 
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { useUIBridgeOptional } from './UIBridgeProvider';
 import type { DeveloperPageContext } from '../navigation/types';
 
@@ -27,12 +27,10 @@ import type { DeveloperPageContext } from '../navigation/types';
  */
 export function usePageContext(context: DeveloperPageContext): void {
   const bridge = useUIBridgeOptional();
-  const contextRef = useRef(context);
-  contextRef.current = context;
 
   // Serialize context for dependency comparison. These derived values
-  // are the effect re-fire triggers; the latest context object is read
-  // from contextRef inside the effect.
+  // are the effect re-fire triggers; the effect reads the context of the
+  // committed render that fired it.
   const name = context.name;
   const section = context.section;
   const breadcrumbKey = context.breadcrumb?.join(',');
@@ -41,10 +39,11 @@ export function usePageContext(context: DeveloperPageContext): void {
   useEffect(() => {
     if (!bridge) return;
 
-    bridge.navigationTracker.setPageContext(contextRef.current);
+    bridge.navigationTracker.setPageContext(context);
 
     return () => {
       bridge.navigationTracker.setPageContext(undefined);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bridge, name, section, breadcrumbKey, metaKey]);
 }

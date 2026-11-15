@@ -5,8 +5,9 @@
  * Every assertion is over EVERY setRouteInfo call, not only the last.
  */
 
-import React, { useState } from 'react';
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import React, { Suspense, startTransition, use, useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import { describe, it, expect, beforeEach, beforeAll, afterAll, vi } from 'vitest';
 import { act, render } from '@testing-library/react';
 import { useRouteAwareness } from '../useRouteAwareness';
 import { routePatternFromParams } from '../routePatternFromParams';
@@ -248,6 +249,42 @@ describe('useRouteAwareness with the not-found signal', () => {
     expectNoConcretePattern();
   });
 
+  it('a raise in the same commit as a navigation reports that navigation, not the last one', () => {
+    // Pins useInsertionEffect for the ref the subscription reads. A child's
+    // layout effect runs BEFORE its parent's, so a ref refreshed in the
+    // layout's own layout effect would still hold the previous route here.
+    // (A render-phase write was early enough too; that write is the defect the
+    // abandoned-render case below pins.)
+    function QueryLayout({ q, children }: { q: string; children: React.ReactNode }) {
+      const unmatched = useRouteUnmatchedSignal();
+      useRouteAwareness(
+        { pattern: '/search', patternSource: 'router', queryParams: { q } },
+        { unmatched }
+      );
+      return <RouteUnmatchedContext value={unmatched}>{children}</RouteUnmatchedContext>;
+    }
+    const { rerender } = render(
+      <QueryLayout q="before">
+        <Page />
+      </QueryLayout>
+    );
+    setRouteInfo.mockClear();
+    rerender(
+      <QueryLayout q="after">
+        <NotFound />
+      </QueryLayout>
+    );
+    // The raise reports first, from the boundary's layout effect.
+    expect(reported()[0]).toEqual({
+      pattern: null,
+      patternSource: 'router',
+      queryParams: { q: 'after' },
+    });
+    for (const info of reported()) {
+      if (info) expect(info.queryParams).toEqual({ q: 'after' });
+    }
+  });
+
   it('the signal counts raises and lowers each raise once', () => {
     const signal = createRouteUnmatchedSignal();
     const lowerA = signal.raise();
@@ -262,5 +299,114 @@ describe('useRouteAwareness with the not-found signal', () => {
 
   it('useMarkRouteUnmatched is a no-op with no signal', () => {
     expect(() => render(<NotFound />)).not.toThrow();
+  });
+});
+
+// A transition render that suspends runs the layout's render and never
+// commits. A raise that arrives afterwards, from an URGENT commit the layout
+// does not re-render in, must report the info the layout last COMMITTED.
+// `act` is off: it would drive the suspended transition and the urgent update
+// together. Every expectation is a literal.
+describe('useRouteAwareness after an abandoned transition render, outside act', () => {
+  const g = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
+  let savedAct: boolean | undefined;
+  beforeAll(() => {
+    savedAct = g.IS_REACT_ACT_ENVIRONMENT;
+    g.IS_REACT_ACT_ENVIRONMENT = false;
+  });
+  afterAll(() => {
+    g.IS_REACT_ACT_ENVIRONMENT = savedAct;
+  });
+  beforeEach(() => {
+    setRouteInfo.mockClear();
+  });
+
+  // A PRECONDITION wait: React renders and commits on its own schedule here.
+  // Never used for the property under test.
+  const until = (pred: () => boolean, what: string) =>
+    vi.waitFor(
+      () => {
+        if (!pred()) throw new Error(`timed out waiting for: ${what}`);
+      },
+      { timeout: 2000, interval: 10 }
+    );
+
+  it('a not-found raise from an urgent commit publishes the COMMITTED route info', async () => {
+    const never = new Promise<never>(() => {});
+    let suspends = 0;
+    function Never(): React.ReactNode {
+      suspends += 1;
+      return use(never);
+    }
+    const layoutRenders: string[] = [];
+    function QueryLayout({ q, children }: { q: string; children: React.ReactNode }) {
+      layoutRenders.push(q);
+      const unmatched = useRouteUnmatchedSignal();
+      useRouteAwareness(
+        { pattern: '/search', patternSource: 'router', queryParams: { q } },
+        { unmatched }
+      );
+      return (
+        <RouteUnmatchedContext value={unmatched}>
+          <span>{q}</span>
+          {children}
+        </RouteUnmatchedContext>
+      );
+    }
+    let show: (v: boolean) => void = () => {};
+    function Late() {
+      const [visible, setVisible] = useState(false);
+      show = setVisible;
+      return visible ? <NotFound /> : null;
+    }
+    function App({ q, suspend }: { q: string; suspend: boolean }) {
+      return (
+        <Suspense fallback={<i>fallback</i>}>
+          <QueryLayout q={q}>
+            <Late />
+            {suspend ? <Never /> : null}
+          </QueryLayout>
+        </Suspense>
+      );
+    }
+
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    root.render(<App q="committed" suspend={false} />);
+    await until(() => setRouteInfo.mock.calls.length > 0, 'the first report');
+    expect(reported()).toEqual([
+      { pattern: '/search', patternSource: 'router', queryParams: { q: 'committed' } },
+    ]);
+
+    // The transition renders the layout with a new query, then suspends.
+    setRouteInfo.mockClear();
+    const before = layoutRenders.length;
+    startTransition(() => {
+      root.render(<App q="abandoned" suspend />);
+    });
+    await until(() => suspends > 0, 'the transition render to suspend');
+    expect(layoutRenders.slice(before)).toContain('abandoned');
+    // It never committed: nothing was reported and the DOM is unchanged.
+    expect(setRouteInfo).not.toHaveBeenCalled();
+    expect(container.textContent).toBe('committed');
+
+    // The urgent commit: a not-found boundary mounts BELOW the layout, which
+    // does not re-render, and raises the signal from its layout effect.
+    const atRaise = layoutRenders.length;
+    show(true);
+    await until(() => setRouteInfo.mock.calls.length > 0, 'the raise to report');
+
+    expect(container.textContent).toBe('committedNot found');
+    // Precondition: the layout rendered only the abandoned query since (React
+    // retries the transition), never the committed one, so nothing but the
+    // committed ref can have supplied 'committed' below.
+    expect(layoutRenders.slice(atRaise).every((q) => q === 'abandoned')).toBe(true);
+    expect(reported()).toEqual([
+      { pattern: null, patternSource: 'router', queryParams: { q: 'committed' } },
+    ]);
+
+    root.unmount();
+    container.remove();
   });
 });

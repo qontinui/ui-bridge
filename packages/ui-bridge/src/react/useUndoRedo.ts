@@ -24,7 +24,7 @@
  * ```
  */
 
-import { useEffect, useRef } from 'react';
+import { useIsomorphicLayoutEffect } from './useIsomorphicLayoutEffect';
 import { useUIBridgeOptional } from './UIBridgeProvider';
 import type { DeclaredUndoState } from '../undo/types';
 
@@ -32,38 +32,34 @@ import type { DeclaredUndoState } from '../undo/types';
  * Declare undo/redo state to the UI Bridge.
  *
  * The declared state is authoritative and overrides all heuristic detection.
+ * The tracker holds the options of the latest COMMITTED render, so an agent's
+ * undo or redo runs that render's `onUndo` / `onRedo` and reads its stacks.
  * When the component unmounts, the declaration is cleared.
  */
 export function useUndoRedo(options: DeclaredUndoState): void {
   const bridge = useUIBridgeOptional();
-  const optionsRef = useRef(options);
-  optionsRef.current = options;
+  const tracker = bridge?.undoTracker;
 
-  useEffect(() => {
-    if (!bridge?.undoTracker) return;
+  // Hand the tracker this commit's options on EVERY commit. The tracker keeps
+  // the object by reference, and `executeUndo` / `executeRedo` (reached by
+  // `POST /control/undo|redo`) call its `onUndo` / `onRedo` at call time. So a
+  // declaration refreshed only when `canUndo`, `canRedo` or a description
+  // changed ran a stale closure and served stale stacks for as long as those
+  // held still. `setDeclaredState` is a pointer write that emits nothing, so
+  // it is cheap to run on every commit. It is a layout effect, not a passive
+  // one: a call that arrives after the commit and before the passive flush
+  // must not run the previous render's handler.
+  useIsomorphicLayoutEffect(() => {
+    tracker?.setDeclaredState(options);
+  });
 
-    bridge.undoTracker.setDeclaredState(optionsRef.current);
-
+  // Clear the declaration on unmount, and from the old tracker if the provider
+  // ever hands over a new one. This also runs at commit, so an unmounted
+  // component's handler is never run in the passive gap.
+  useIsomorphicLayoutEffect(() => {
+    if (!tracker) return;
     return () => {
-      bridge.undoTracker?.setDeclaredState(null);
+      tracker.setDeclaredState(null);
     };
-  }, [bridge]);
-
-  // Update declared state when options change. Read the latest options
-  // from the ref (not the closed-over `options`) so the effect body and
-  // its dependency array stay consistent: the primitive fields below are
-  // the re-fire triggers, while optionsRef.current carries the full,
-  // up-to-date object — including undoStack/redoStack/onUndo/onRedo,
-  // which are intentionally omitted from the deps to avoid excessive
-  // re-runs.
-  useEffect(() => {
-    if (!bridge?.undoTracker) return;
-    bridge.undoTracker.setDeclaredState(optionsRef.current);
-  }, [
-    bridge,
-    options.canUndo,
-    options.canRedo,
-    options.undoDescription,
-    options.redoDescription,
-  ]);
+  }, [tracker]);
 }

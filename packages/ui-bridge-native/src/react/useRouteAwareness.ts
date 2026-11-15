@@ -90,7 +90,7 @@
  * ```
  */
 
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { useUIBridgeNativeOptional } from './UIBridgeNativeProvider';
 import type { RouteInfo } from '../core/types';
 
@@ -119,11 +119,10 @@ function effectiveInfo(info: RouteInfo, unmatched: boolean): RouteInfo {
 export function useRouteAwareness(info: RouteInfo, options: UseRouteAwarenessOptions = {}): void {
   const bridge = useUIBridgeNativeOptional();
   const unmatched = options.unmatched === true;
-  const infoRef = useRef(info);
-  infoRef.current = info;
 
   // Serialized dependency keys — the same set as the web hook. They are the
-  // effect's re-fire triggers; the latest info object is read from infoRef.
+  // effect's re-fire triggers; the effect reads the info of the committed
+  // render that fired it.
   const pattern = info.pattern;
   const patternSource = info.patternSource;
   const paramsKey = info.params ? JSON.stringify(info.params) : '';
@@ -134,10 +133,11 @@ export function useRouteAwareness(info: RouteInfo, options: UseRouteAwarenessOpt
     if (!bridge) return;
     const registry = bridge.registry;
 
-    registry.setRouteInfo(effectiveInfo(infoRef.current, unmatched));
+    registry.setRouteInfo(effectiveInfo(info, unmatched));
 
     return () => {
       registry.setRouteInfo(undefined);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bridge, unmatched, pattern, patternSource, paramsKey, queryParamsKey, routeStackKey]);
 }

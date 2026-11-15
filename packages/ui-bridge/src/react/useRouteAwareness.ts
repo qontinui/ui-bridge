@@ -105,7 +105,7 @@
  *   }
  */
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useInsertionEffect, useRef } from 'react';
 import { useUIBridgeOptional } from './UIBridgeProvider';
 import type { RouteInfo } from '../navigation/types';
 import type { RouteUnmatchedSignal } from './routeUnmatched';
@@ -134,11 +134,22 @@ function effectiveInfo(
 export function useRouteAwareness(info: RouteInfo, options: UseRouteAwarenessOptions = {}): void {
   const bridge = useUIBridgeOptional();
   const unmatched = options.unmatched ?? null;
+
+  // The latest COMMITTED info. The not-found subscription below reads it when
+  // a boundary raises, and that can happen in a later commit this component
+  // does not re-render in. So it is written at commit, never during render: a
+  // render that never commits (an abandoned transition) must not leave its
+  // info here to be reported. An insertion effect, because those run in the
+  // commit's mutation phase, before every layout effect. A boundary that
+  // raises from its layout effect in the SAME commit therefore reads this
+  // commit's info, not the previous one.
   const infoRef = useRef(info);
-  infoRef.current = info;
+  useInsertionEffect(() => {
+    infoRef.current = info;
+  });
 
   // Serialize for dependency comparison. These derived values are the
-  // effect re-fire triggers; the latest info object is read from
+  // effect re-fire triggers; the committed info object is read from
   // infoRef inside the effect.
   const pattern = info.pattern;
   const patternSource = info.patternSource;

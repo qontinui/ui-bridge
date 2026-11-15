@@ -11,7 +11,8 @@
  *
  * The mechanism: the layout owns a signal (`useRouteUnmatchedSignal`) and
  * provides it through `RouteUnmatchedContext`; the not-found boundary calls
- * `useMarkRouteUnmatched()`, which raises it in `useLayoutEffect`. All layout
+ * `useMarkRouteUnmatched()`, which raises it in a layout effect
+ * (`useIsomorphicLayoutEffect`: `useLayoutEffect` in the browser). All layout
  * effects of a commit run before any passive effect, so when the layout's
  * `useRouteAwareness(info, { unmatched })` effect runs it already sees the
  * signal and reports `pattern: null` instead of whatever was computed.
@@ -35,7 +36,8 @@
  * been made.
  */
 
-import { createContext, use, useLayoutEffect, useState } from 'react';
+import { createContext, use, useState } from 'react';
+import { useIsomorphicLayoutEffect } from './useIsomorphicLayoutEffect';
 
 /** A provider-owned counter of mounted not-found boundaries. */
 export interface RouteUnmatchedSignal {
@@ -102,7 +104,7 @@ export const RouteUnmatchedContext = createContext<RouteUnmatchedSignal | null>(
 export function useMarkRouteUnmatched(signal?: RouteUnmatchedSignal | null): void {
   const fromContext = use(RouteUnmatchedContext);
   const target = signal ?? fromContext;
-  useLayoutEffect(() => {
+  useIsomorphicLayoutEffect(() => {
     if (!target) return;
     return target.raise();
   }, [target]);
