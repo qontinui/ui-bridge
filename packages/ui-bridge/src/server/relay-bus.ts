@@ -239,20 +239,35 @@ const MAX_ERROR_MESSAGE_CHARS = 300;
  * `connect ENOENT /:pw@host:6379` with the password in the MESSAGE, on every retry.
  */
 function urlSecrets(url: string): string[] {
-  const m = /^(?:[a-z][a-z0-9+.-]*:\/\/)?(.*)@[^@]*$/is.exec(url.trim());
-  if (!m || !m[1]) return [];
-  const userinfo = m[1];
-  const colon = userinfo.indexOf(':');
-  const password = colon === -1 ? '' : userinfo.slice(colon + 1);
-  const secrets = [userinfo, password];
+  const trimmed = url.trim();
+  const secrets: string[] = [];
+  const add = (x: string | undefined) => {
+    if (x && x.length >= 3) secrets.push(x);
+  };
   try {
+    const parsed = new URL(
+      /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `redis://${trimmed}`
+    );
     // ioredis hands AUTH the percent-DECODED password, so that is what an error can echo.
-    secrets.push(decodeURIComponent(password));
+    for (const raw of [parsed.password, parsed.username]) {
+      add(raw);
+      try {
+        add(decodeURIComponent(raw));
+      } catch {
+        /* not valid percent-encoding: the raw form above is all there is */
+      }
+    }
   } catch {
-    /* not valid percent-encoding: the raw forms above are all there is */
+    /* unparseable: the greedy split below still names the userinfo */
+  }
+  const m = /^(?:[a-z][a-z0-9+.-]*:\/\/)?(.*)@[^@]*$/is.exec(trimmed);
+  if (m?.[1]) {
+    add(m[1]);
+    const colon = m[1].indexOf(':');
+    if (colon !== -1) add(m[1].slice(colon + 1));
   }
   // Longest first, so a secret that contains another is replaced whole.
-  return secrets.filter((x) => x.length >= 3).sort((a, b) => b.length - a.length);
+  return [...new Set(secrets)].sort((x, y) => y.length - x.length);
 }
 
 /**
@@ -424,12 +439,21 @@ export class RedisRelayBus implements RelayBus {
       default: new (url: string) => RedisLike;
     };
     const Redis = mod.default;
-    let pub: RedisLike;
+    let pub: RedisLike | undefined;
     let sub: RedisLike;
     try {
       pub = new Redis(url);
+      // A client with no `error` listener makes ioredis print its own raw error line, so the
+      // listener goes on before anything else can fail.
+      pub.on('error', () => undefined);
       sub = pub.duplicate();
     } catch (err) {
+      // Do not leave a half-built client retrying in the background.
+      try {
+        (pub as unknown as { disconnect?: () => void } | undefined)?.disconnect?.();
+      } catch {
+        /* nothing more to do */
+      }
       // ioredis' `ERR_INVALID_URL` carries the whole URL, password included, on `input`.
       const { code } = summarizeRedisError(err, 'init', urlSecrets(url));
       // No `cause`: it would carry the error's `input`, the URL with the password.
