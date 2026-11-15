@@ -18,6 +18,7 @@ import type {
   SnapshotDragDropContext,
 } from './types';
 import { readAriaLabelAttr } from '../core/a11y';
+import { textExcludingBoundaries } from '../core/redaction';
 
 /** Priority order for deduplication: lower index = higher priority */
 const ORIGIN_PRIORITY: Record<DragDropOrigin, number> = {
@@ -372,7 +373,8 @@ export class DragDropDetector {
 
     // Short text content (skip if too long — likely a container)
     if (element instanceof HTMLElement) {
-      const text = element.textContent?.trim();
+      // A boundary inside (or around) the element reads as the sentinel.
+      const text = textExcludingBoundaries(element)?.trim();
       if (text && text.length <= 60 && text.length > 0) {
         return text;
       }
