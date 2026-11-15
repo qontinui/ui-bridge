@@ -13,8 +13,7 @@
  */
 
 import type { AnyCapturedEvent } from '../browser-capture-types';
-import { truncateCodePoints } from '../../core/text';
-import { textExcludingBoundaries } from '../../core/redaction';
+import { textExcludingBoundaries, truncateKeepingSentinel } from '../../core/redaction';
 
 type Emit = (event: AnyCapturedEvent) => void;
 
@@ -192,7 +191,7 @@ function textOf(el: Element | null | undefined): string | undefined {
 
 function truncate(s: string | undefined | null, max: number): string | undefined {
   if (!s) return undefined;
-  return s.length > max ? truncateCodePoints(s, max) + '...' : s;
+  return s.length > max ? truncateKeepingSentinel(s, max) + '...' : s;
 }
 
 // ---------------------------------------------------------------------------
@@ -248,7 +247,7 @@ export function installFrameworkOverlayCapture(emit: Emit): () => void {
           level: 'error',
           timestamp: Date.now(),
           url: typeof window !== 'undefined' ? window.location.href : '',
-          message: `[${overlay.framework} error overlay] ${overlay.title || 'Error'}${overlay.message ? ': ' + truncateCodePoints(overlay.message, 200) : ''}`,
+          message: `[${overlay.framework} error overlay] ${overlay.title || 'Error'}${overlay.message ? ': ' + truncateKeepingSentinel(overlay.message, 200) : ''}`,
           stack: overlay.file ? `at ${overlay.file}` : undefined,
         });
       }
