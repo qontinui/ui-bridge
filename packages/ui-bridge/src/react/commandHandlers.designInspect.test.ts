@@ -432,6 +432,56 @@ describe('design-inspection routes · the browser path answers the full model', 
     });
   });
 
+  // ------------------------------------------------------------ viewport constraints
+
+  it('setViewportConstraints narrows and restores the root identically on both transports', async () => {
+    const root = document.documentElement;
+    const longhands = ['width', 'min-width', 'max-width', 'overflow-x', 'overflow-y'];
+    const read = (): string[] => longhands.map((p) => root.style.getPropertyValue(p));
+
+    const server = await serverHandlers().setViewportConstraints({ width: 480 });
+    expect(server.success).toBe(true);
+    expect(server.data).toMatchObject({ success: true, restored: false });
+    const serverNarrowed = read();
+    expect(serverNarrowed).toEqual(['480px', '480px', '480px', 'hidden', 'hidden']);
+    expect(root.style.getPropertyValue('margin')).toBe('');
+
+    const serverRestored = await serverHandlers().setViewportConstraints({ restore: true });
+    expect(serverRestored).toMatchObject({ success: true, data: { restored: true } });
+    expect(read()).toEqual(['', '', '', '', '']);
+
+    const relay = await relayHandlers().setViewportConstraints({ width: 480 });
+    expect(relay).toMatchObject({ success: true, data: { success: true, restored: false } });
+    expect(read()).toEqual(serverNarrowed);
+
+    const restored = await relayHandlers().setViewportConstraints({ restore: true });
+    expect(restored).toMatchObject({ success: true, data: { restored: true } });
+    expect(read()).toEqual(['', '', '', '', '']);
+  });
+
+  it('setViewportConstraints refuses a bad or empty request with UB-VALIDATION-ERROR on both transports', async () => {
+    for (const request of [{}, { width: 0 }, { width: -5 }, { width: '480' }, { restore: 'yes' }]) {
+      const server = await serverHandlers().setViewportConstraints(request as never);
+      const relay = await relayHandlers().setViewportConstraints(request as never);
+      expect(server.success).toBe(false);
+      expect(server.code).toBe('UB-VALIDATION-ERROR');
+      expect({ success: relay.success, error: relay.error, code: relay.code }).toEqual({
+        success: server.success,
+        error: server.error,
+        code: server.code,
+      });
+    }
+    expect(document.documentElement.getAttribute('style') ?? '').toBe('');
+  });
+
+  it('setViewportConstraints lets restore win over a malformed width on both transports', async () => {
+    const request = { restore: true, width: -5 };
+    const server = await serverHandlers().setViewportConstraints(request);
+    const relay = await relayHandlers().setViewportConstraints(request);
+    expect(server).toMatchObject({ success: true, data: { restored: true } });
+    expect(relay).toMatchObject({ success: true, data: { restored: true } });
+  });
+
   it('getResponsiveSnapshots restores the root even when a capture throws', async () => {
     const root = document.documentElement;
     const save = document.getElementById('dom-save')!;

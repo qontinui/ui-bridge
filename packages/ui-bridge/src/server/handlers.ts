@@ -218,14 +218,13 @@ import type { RelationshipTracker } from '../relationships';
 import type { DragDropDetector } from '../drag-drop';
 import type { UndoTracker } from '../undo';
 import type { StyleGuideConfig } from '../specs/style-types';
-import { withRootWidthLock } from '../core/root-width-lock';
 import {
   designAuditOf,
   designFailureCode,
   designSnapshotOf,
   elementStylesOf,
   responsiveSnapshotsOf,
-  rootWidthBudgetOf,
+  viewportConstraintsOf,
   type DesignAuditRequest,
   type ElementStylesResponse,
   type DesignAuditResponse,
@@ -233,6 +232,7 @@ import {
   type DesignSnapshotResponse,
   type ResponsiveSnapshotsRequest,
   type ResponsiveSnapshotsResponse,
+  type ViewportConstraintsResponse,
 } from '../specs/design-request';
 import type {
   QualityEvaluationReport,
@@ -5093,42 +5093,11 @@ export function createHandlers(
       }
     },
 
-    setViewportConstraints: async (request: {
-      width?: number;
-      restore?: boolean;
-    }): Promise<
-      APIResponse<{
-        success: boolean;
-        viewportWidth: number;
-        constrainedWidth: number;
-        timestamp: number;
-      }>
-    > => {
+    setViewportConstraints: async (
+      request: Parameters<UIBridgeServerHandlers['setViewportConstraints']>[0]
+    ): Promise<APIResponse<ViewportConstraintsResponse>> => {
       try {
-        const budgetMs = rootWidthBudgetOf(request, '/control/viewport-constraints');
-        // Serialized with responsive captures (`core/root-width-lock`), which
-        // would otherwise restore over a constraint set mid-capture.
-        return await withRootWidthLock(
-          () => {
-            const root = document.documentElement;
-            if (request.restore) {
-              root.style.removeProperty('max-width');
-              root.style.removeProperty('margin');
-              root.style.removeProperty('overflow-x');
-            } else if (request.width && request.width > 0) {
-              root.style.maxWidth = `${request.width}px`;
-              root.style.margin = '0 auto';
-              root.style.overflowX = 'hidden';
-            }
-            return success({
-              success: true,
-              viewportWidth: window.innerWidth,
-              constrainedWidth: root.clientWidth,
-              timestamp: Date.now(),
-            });
-          },
-          { budgetMs }
-        );
+        return success(await viewportConstraintsOf(request));
       } catch (err) {
         return error((err as Error).message, designFailureCode(err, 'VIEWPORT_CONSTRAINTS_ERROR'));
       }

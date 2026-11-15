@@ -100,6 +100,7 @@ import type {
   DesignSnapshotResponse,
   ResponsiveSnapshotsRequest,
   ResponsiveSnapshotsResponse,
+  ViewportConstraintsResponse,
 } from '../specs/design-request';
 import type {
   QualityEvaluationReport,
@@ -1231,14 +1232,7 @@ export interface UIBridgeServerHandlers {
     /** `budgetMs`: how long to wait for the root-width lock (see `core/root-width-lock`). */
     request: { width?: number; restore?: boolean; budgetMs?: number },
     context?: HandlerContext
-  ) => Promise<
-    APIResponse<{
-      success: boolean;
-      viewportWidth: number;
-      constrainedWidth: number;
-      timestamp: number;
-    }>
-  >;
+  ) => Promise<APIResponse<ViewportConstraintsResponse>>;
   runDesignAudit: (
     request?: DesignAuditRequest,
     context?: HandlerContext

@@ -1,6 +1,7 @@
 /**
  * Design-inspection requests over registered elements — `/design/element/:id/styles`,
- * `/design/snapshot`, `/design/responsive` and `/design/audit`.
+ * `/design/snapshot`, `/design/responsive` and `/design/audit` — plus
+ * `/control/viewport-constraints`, the other root-width mutation.
  *
  * Two transports answer these routes: the direct server handlers
  * (`server/handlers.ts`) and the browser relay / in-page dispatcher
@@ -23,12 +24,13 @@
 
 import type { ElementDesignData, ResponsiveSnapshot } from '../core/types';
 import {
+  CONSTRAINED_ROOT_PROPERTIES,
   DEFAULT_VIEWPORTS,
   RESPONSIVE_SNAPSHOT_METHOD,
   captureResponsiveSnapshots,
   getElementDesignData,
 } from '../ai/design-inspector';
-import { RootWidthLockError } from '../core/root-width-lock';
+import { RootWidthLockError, withRootWidthLock } from '../core/root-width-lock';
 import {
   collectDesignBatch,
   collectDesignData,
@@ -821,4 +823,72 @@ function heuristicIssues(
   }
 
   return issues;
+}
+
+// ============================================================================
+// /control/viewport-constraints
+// ============================================================================
+
+/** The `/control/viewport-constraints` response. */
+export interface ViewportConstraintsResponse {
+  success: boolean;
+  /** `window.innerWidth`, which a root-width constraint does not change. */
+  viewportWidth: number;
+  /** The root element's laid-out width after the change, measured rather than echoed. */
+  constrainedWidth: number;
+  /** `true` when the request cleared the constraint (`restore`). */
+  restored: boolean;
+  timestamp: number;
+}
+
+/**
+ * Answer `/control/viewport-constraints`: constrain the root element to
+ * `width` CSS pixels, or clear the constraint with `restore: true` (which wins
+ * when both are given). It narrows the page exactly as `/design/responsive`
+ * does (`CONSTRAINED_ROOT_PROPERTIES`, the same `RESPONSIVE_SNAPSHOT_METHOD`),
+ * so a constraint set here and a responsive capture agree on what "the page at
+ * 480px" is, and it runs under the same root-width lock, so a capture's restore
+ * cannot undo it mid-flight. `budgetMs` bounds the wait for that lock.
+ *
+ * A request naming neither `width` nor `restore`, or (without `restore`) a
+ * `width` that is not a positive number, is refused with `DesignRequestError`
+ * rather than answered as a successful no-op. `restore: true` ignores `width`.
+ */
+export async function viewportConstraintsOf(
+  request: unknown
+): Promise<ViewportConstraintsResponse> {
+  const route = '/control/viewport-constraints';
+  const body = bodyOf(request, route);
+  const restore = booleanOf(body, 'restore', route) === true;
+  const width = body.width;
+  if (!restore && isGiven(width) && !isPositiveNumber(width)) {
+    throw new DesignRequestError(`${route}: width must be a finite number greater than 0`);
+  }
+  if (!restore && !isGiven(width)) {
+    throw new DesignRequestError(`${route}: give a width, or restore: true`);
+  }
+  const budgetMs = rootWidthBudgetOf(body, route);
+  return withRootWidthLock(
+    () => {
+      const docEl = document.documentElement;
+      for (const property of CONSTRAINED_ROOT_PROPERTIES) {
+        if (restore) docEl.style.removeProperty(property);
+        else
+          docEl.style.setProperty(
+            property,
+            property.startsWith('overflow') ? 'hidden' : `${width as number}px`
+          );
+      }
+      // Force reflow, so the measurement below and the next read see the new layout.
+      void docEl.offsetHeight;
+      return {
+        success: true,
+        viewportWidth: window.innerWidth,
+        constrainedWidth: docEl.getBoundingClientRect().width,
+        restored: restore,
+        timestamp: Date.now(),
+      };
+    },
+    { budgetMs }
+  );
 }
