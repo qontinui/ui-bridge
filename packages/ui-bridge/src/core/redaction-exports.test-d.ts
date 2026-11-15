@@ -47,3 +47,15 @@ export type {
   ControlReadValueHitIsTheModules,
   ControlPrimitiveResultIsTheModules,
 };
+
+// The text primitives' result types resolve from the control entry too.
+import type { FindByTextHit, ClickEcho } from '../server/page-primitives';
+import type {
+  FindByTextHit as ControlFindByTextHit,
+  ClickEcho as ControlClickEcho,
+} from '../control/index';
+
+type ControlFindByTextHitIsTheModules = Assert<Same<ControlFindByTextHit, FindByTextHit>>;
+type ControlClickEchoIsTheModules = Assert<Same<ControlClickEcho, ClickEcho>>;
+
+export type { ControlFindByTextHitIsTheModules, ControlClickEchoIsTheModules };

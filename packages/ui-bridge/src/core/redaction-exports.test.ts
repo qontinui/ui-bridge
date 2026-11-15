@@ -25,7 +25,12 @@ import * as root from '../index';
 import * as core from './index';
 import * as control from '../control/index';
 import { REDACTED_VALUE, verdictOf, isValueRedacted, isContentRedacted } from './redaction';
-import { readValuePrimitive } from '../server/page-primitives';
+import {
+  readValuePrimitive,
+  findByTextPrimitive,
+  clickByTextPrimitive,
+  clickBySelectorPrimitive,
+} from '../server/page-primitives';
 
 describe('§4.6 redaction predicates on the public entries', () => {
   it.each([
@@ -51,5 +56,16 @@ describe('the gated readValue primitive on the public entries', () => {
     ['@qontinui/ui-bridge/control', control],
   ])('%s exports readValuePrimitive itself, not a copy', (_entry, mod) => {
     expect(mod.readValuePrimitive).toBe(readValuePrimitive);
+  });
+});
+
+describe('the gated text primitives on the public entries', () => {
+  it.each([
+    ['@qontinui/ui-bridge', root],
+    ['@qontinui/ui-bridge/control', control],
+  ])('%s exports the find/click primitives themselves, not copies', (_entry, mod) => {
+    expect(mod.findByTextPrimitive).toBe(findByTextPrimitive);
+    expect(mod.clickByTextPrimitive).toBe(clickByTextPrimitive);
+    expect(mod.clickBySelectorPrimitive).toBe(clickBySelectorPrimitive);
   });
 });
