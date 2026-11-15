@@ -21,6 +21,7 @@ import {
   findByTextPrimitive,
 } from './page-primitives';
 import { REDACTED_VALUE, readScrubbedText } from '../core/redaction';
+import { computeElementFingerprint } from '../core/element-fingerprint';
 import {
   computeAccessibleNameSafe,
   computeVisibleText,
@@ -228,5 +229,26 @@ describe('accessible names read from labels exclude redaction boundaries', () =>
       name: 'Email address',
       source: 'label',
     });
+  });
+});
+
+describe('more than one label, and fingerprints', () => {
+  it('a boundary in the SECOND label[for] is excluded too', () => {
+    document.body.innerHTML =
+      '<label for="x">Card</label><label for="x"><span data-bridge-redact="true">4111</span></label><input id="x">';
+    const name = computeAccessibleNameSafe(document.getElementById('x')!) ?? '';
+    expect(name).not.toContain('4111');
+    expect(name).toBe(`Card ${REDACTED_VALUE}`);
+  });
+
+  it.each([
+    ['a button holding a boundary', '<button id="t">Reveal <span data-bridge-redact="true">tok-SECRET</span></button>'],
+    ['an input labelled into a boundary', '<p id="l">Code <b data-bridge-redact="true">tok-SECRET</b></p><input id="t" aria-labelledby="l">'],
+    ['an input with a label[for] holding a boundary', '<label for="t">Code <b data-bridge-redact="true">tok-SECRET</b></label><input id="t">'],
+    ['a button INSIDE a boundary', '<div data-bridge-redact="true"><button id="t">tok-SECRET</button></div>'],
+  ])('%s: the fingerprint carries no boundary text', (_c, html) => {
+    document.body.innerHTML = html;
+    const fp = computeElementFingerprint(document.getElementById('t')!);
+    expect(JSON.stringify(fp)).not.toContain('tok-SECRET');
   });
 });

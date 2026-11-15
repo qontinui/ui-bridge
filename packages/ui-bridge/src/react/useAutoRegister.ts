@@ -29,6 +29,7 @@ import {
   readAriaLabelledbyAttr,
   readTitleAttr,
   readInnerText,
+  computeVisibleText,
 } from '../core/a11y';
 import type { ElementLogLevel } from '../core/types';
 import { inferActions, inferElementType } from '../core/element-kind';
@@ -651,7 +652,8 @@ function slugifyForDetails(text: string, maxLen = 40): string {
 function generateDetailsId(element: HTMLElement): string {
   // Summary child first — it's the canonical "label" for a <details>.
   const summary = element.querySelector(':scope > summary');
-  const summaryText = summary?.textContent?.trim();
+  // §4.6: an id is emitted verbatim, so boundary text never reaches the slug.
+  const summaryText = summary ? textExcludingBoundaries(summary)?.trim() : undefined;
   if (summaryText) {
     const slug = slugifyForDetails(summaryText);
     if (slug) return `details-${slug}`;
@@ -667,7 +669,7 @@ function generateDetailsId(element: HTMLElement): string {
     // Only consider headings that actually precede the <details> element in
     // the tree — a later sibling heading labels a different section.
     if (heading && heading.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING) {
-      const text = heading.textContent?.trim();
+      const text = textExcludingBoundaries(heading)?.trim();
       if (text) {
         const slug = slugifyForDetails(text);
         if (slug) return `details-${slug}`;
@@ -1008,7 +1010,9 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       // introduced by JSX formatting) so assertions don't need to know
       // exactly how the template wrapped its spans.
       const deriveSemanticContent = (el: HTMLElement): string => {
-        const raw = isContentRedacted(el) ? '' : (readInnerText(el) ?? el.textContent ?? '').trim();
+        // computeVisibleText reads a card that WRAPS a boundary with the
+        // boundary replaced by the sentinel (§4.6 ancestor reads).
+        const raw = isContentRedacted(el) ? '' : (computeVisibleText(el) ?? '');
         return raw.replace(/\s+/g, ' ');
       };
       const content = deriveSemanticContent(element);
@@ -1022,7 +1026,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       // that don't render `content` yet.
       const deriveSemanticLabel = (el: HTMLElement): string | undefined => {
         if (isContentRedacted(el)) return undefined;
-        const text = (readInnerText(el) ?? el.textContent ?? '').trim().replace(/\s+/g, ' ');
+        const text = (computeVisibleText(el) ?? '').replace(/\s+/g, ' ');
         return text ? truncateCodePoints(text, 50) : undefined;
       };
       const label = content ? truncateCodePoints(content, 50) : undefined;
