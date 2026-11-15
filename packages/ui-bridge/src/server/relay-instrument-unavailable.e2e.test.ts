@@ -137,6 +137,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   tab.close();
+  relay.destroy();
   (globalThis as unknown as { __UI_BRIDGE__?: unknown }).__UI_BRIDGE__ = {};
 });
 

@@ -15,7 +15,7 @@
  * fault keeps its old cache / empty fallback.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { CommandRelay } from './command-relay';
 import { createRelayHandlers } from './relay-handlers';
 
@@ -24,10 +24,19 @@ const CAPTURE_MSG =
 const IDLE_MSG =
   'IDLE_DETECTOR_UNAVAILABLE: No idle detector is available in this page, so whether it is idle is UNKNOWN (not idle)';
 
+const relays: CommandRelay[] = [];
+
 function freshRelay(): CommandRelay {
   const prefix = `__uiBridgeTest_${Math.random().toString(36).slice(2, 10)}`;
-  return new CommandRelay({ globalPrefix: prefix, sseTimeoutMs: 200 });
+  const relay = new CommandRelay({ globalPrefix: prefix, sseTimeoutMs: 200 });
+  relays.push(relay);
+  return relay;
 }
+
+// Every relay a test built is torn down, so no subscription or timer outlives it.
+afterEach(() => {
+  for (const relay of relays.splice(0)) relay.destroy();
+});
 
 type TabAnswer = { ok: true; result: unknown } | { ok: false; error: string } | { silent: true };
 
