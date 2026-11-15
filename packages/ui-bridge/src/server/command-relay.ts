@@ -51,6 +51,12 @@ export interface QueuedCommand {
   action: string;
   payload: unknown;
   timestamp: number;
+  /**
+   * Set on a redelivery (D3): the id of the command this one re-sends down the
+   * tab's replacement stream. The client runs one dedupe key once, and the key
+   * of a redelivery is this id.
+   */
+  redeliveryOf?: string;
 }
 
 /**
@@ -58,6 +64,9 @@ export interface QueuedCommand {
  * be written; any other return counts as delivered.
  */
 export type CommandListener = (command: QueuedCommand) => boolean | void;
+
+/** The `caps` entry a client declares when it runs one dedupe key once (`relay/command-dedupe.ts`). */
+const DEDUPE_CAPABILITY = 'dedupe';
 
 export interface TabListener {
   tabId: string;
@@ -115,6 +124,8 @@ export interface TabListener {
 interface ListenerTombstone {
   removedAt: number;
   clientInstanceId?: string;
+  /** The stream that held the tab, so commands bound to it can be redelivered (D3). */
+  streamId?: string;
   /**
    * Set when the server closed the stream at its lease (`lease`,
    * `rotate_unanswered`): the tab keeps its tombstone, standing and owner for
@@ -151,6 +162,23 @@ export interface PendingCommand {
   streamUserId?: string;
   /** The caller the command was dispatched for (its `ownerCheck`), when scoped. */
   ownerUserId?: string;
+  /**
+   * What a redelivery re-sends (D3), set only on a command whose caller awaits
+   * its result. A fire-and-forget recorder carries none and is never redelivered.
+   */
+  redeliverable?: { action: string; payload: unknown };
+  /**
+   * Set on a redelivery's entry: the id of the original command it re-sends.
+   * The entry is bound to the replacement stream, and a result is taken from
+   * that stream only (`responseRefusal`).
+   */
+  redeliveryOf?: string;
+  /**
+   * Every id that shares this command's promise and timeout: the original and
+   * each alias a redelivery made. The first settle of any drops them all
+   * (`dropPending`), so the caller settles once.
+   */
+  aliasGroup?: Set<string>;
 }
 
 /**
@@ -1287,7 +1315,20 @@ export class CommandRelay {
     if (pending.graceTimeout) clearTimeout(pending.graceTimeout);
     if (pending.busUnsub) pending.busUnsub();
     pending.reject(error);
+    this.dropPending(id);
+  }
+
+  /**
+   * Forget a settled command and every id that shares its promise (D3): a
+   * redelivery's alias and the original are one command, so the first settle
+   * of either leaves no entry for the other, whose late result then finds no
+   * pending command.
+   */
+  private dropPending(id: string): void {
+    const group = this.pendingCommands.get(id)?.aliasGroup;
     this.pendingCommands.delete(id);
+    if (!group) return;
+    for (const peer of group) this.pendingCommands.delete(peer);
   }
 
   /**
@@ -1298,7 +1339,7 @@ export class CommandRelay {
     const pending = this.pendingCommands.get(id);
     if (!pending) return;
     if (pending.graceTimeout) clearTimeout(pending.graceTimeout);
-    this.pendingCommands.delete(id);
+    this.dropPending(id);
     pending.reject(
       new Error(
         `Command ${action} timed out after ${timeoutMs}ms (${transport}). ` +
@@ -1621,6 +1662,7 @@ export class CommandRelay {
         timeout,
         tabsNotified: sentViaWebSocket ? 1 : 0,
         errorResponseCount: 0,
+        ...(sentViaWebSocket ? {} : { redeliverable: { action, payload } }),
         ...this.deliveryBinding(targetTabId, senderUserId),
       };
       this.pendingCommands.set(commandId, pending);
@@ -1815,6 +1857,64 @@ export class CommandRelay {
           pending,
           this.sseTimeoutMs,
           'SSE'
+        );
+      }
+    }
+  }
+
+  /**
+   * Re-send, down `listener`, every awaited command still pending on the
+   * stream `priorStreamId` that this stream replaced (D3). Each goes under a
+   * fresh alias id naming the original in `redeliveryOf`, bound to this stream
+   * and sharing the original's promise and timeout (`aliasGroup`): the first
+   * result of either id settles the caller and the other finds no pending
+   * command. The original keeps its binding to the stream it went down, so each
+   * id is still answered only from its own stream. Commands sent over a
+   * WebSocket, bound to another user, or beyond the pending cap are skipped.
+   */
+  private redeliverPending(tabId: string, priorStreamId: string, listener: TabListener): void {
+    for (const [pendingId, pending] of Array.from(this.pendingCommands)) {
+      if (
+        !pending.redeliverable ||
+        pending.targetTabId !== tabId ||
+        pending.streamId !== priorStreamId ||
+        // Only the user the command was bound to (and dispatched for) may be
+        // sent it, and then answer it.
+        pending.streamUserId !== listener.userId ||
+        (pending.ownerUserId !== undefined && pending.ownerUserId !== listener.userId) ||
+        // An alias is a new pending entry: it respects the same cap.
+        this.pendingCommands.size >= this.maxPendingCommands
+      ) {
+        continue;
+      }
+      const original = pending.redeliveryOf ?? pendingId;
+      const aliasId = crypto.randomUUID();
+      const group = pending.aliasGroup ?? new Set<string>([pendingId]);
+      pending.aliasGroup = group;
+      const alias: PendingCommand = {
+        ...pending,
+        tabsNotified: 1,
+        errorResponseCount: 0,
+        redeliveryOf: original,
+        aliasGroup: group,
+        streamId: listener.streamId,
+        ...(listener.userId ? { streamUserId: listener.userId } : {}),
+      };
+      group.add(aliasId);
+      this.pendingCommands.set(aliasId, alias);
+      const command: QueuedCommand = {
+        commandId: aliasId,
+        action: pending.redeliverable.action,
+        payload: pending.redeliverable.payload,
+        timestamp: Date.now(),
+        redeliveryOf: original,
+      };
+      // A stream that refuses the write keeps the alias bound to it, so the
+      // tab's next replacement redelivers from that stream in turn.
+      if (this.deliver(listener, command)) {
+        console.log(
+          `[ui-bridge] redelivered ${pending.redeliverable.action} for ${tabId} ` +
+            `(${original} as ${aliasId}) down its replacement stream`
         );
       }
     }
@@ -2310,7 +2410,7 @@ export class CommandRelay {
     clearTimeout(pending.timeout);
     if (pending.graceTimeout) clearTimeout(pending.graceTimeout);
     if (pending.busUnsub) pending.busUnsub();
-    this.pendingCommands.delete(commandId);
+    this.dropPending(commandId);
     pending.resolve(result);
 
     // Track per-tab command success and remove from demoted set
@@ -2360,7 +2460,7 @@ export class CommandRelay {
     if (pending.errorResponseCount >= pending.tabsNotified) {
       clearTimeout(pending.timeout);
       if (pending.graceTimeout) clearTimeout(pending.graceTimeout);
-      this.pendingCommands.delete(commandId);
+      this.dropPending(commandId);
       pending.reject(pending.firstError!);
       return true;
     }
@@ -2371,7 +2471,7 @@ export class CommandRelay {
         const stillPending = this.pendingCommands.get(commandId);
         if (stillPending) {
           clearTimeout(stillPending.timeout);
-          this.pendingCommands.delete(commandId);
+          this.dropPending(commandId);
           stillPending.reject(stillPending.firstError || new Error(errorMessage));
         }
       }, this.multiTabGraceMs);
@@ -2605,6 +2705,22 @@ export class CommandRelay {
     // written before any warm-up, which goes out on its own timer.
     if (slot) this.flushParked(id, slot.drain(), tabListener);
 
+    // D3: a command still pending on the stream this one replaced may have
+    // been written to a consumer that is gone. When the SAME page instance
+    // that held that stream opened this one, and its client dedupes, the
+    // command goes down this stream under an alias id. A page that reloaded
+    // (another `cid`), or a client with no dedupe, is sent nothing: the
+    // command may have run, and it times out as it always did.
+    const priorStreamId = replaced ? replaced.streamId : tombstone?.streamId;
+    if (
+      priorStreamId !== undefined &&
+      priorPage !== undefined &&
+      stream?.clientInstanceId === priorPage &&
+      tabListener.caps.includes(DEDUPE_CAPABILITY)
+    ) {
+      this.redeliverPending(id, priorStreamId, tabListener);
+    }
+
     // Proactive snapshot capture. Both the capture and the retry ask whether
     // the registered listener is still THIS stream, not merely whether the
     // tab has one: a warm-up settled by `destroy()`, or by a newer stream
@@ -2788,6 +2904,7 @@ export class CommandRelay {
     const tombstone: ListenerTombstone = {
       removedAt: Date.now(),
       ...(listener.clientInstanceId ? { clientInstanceId: listener.clientInstanceId } : {}),
+      ...(listener.streamId ? { streamId: listener.streamId } : {}),
     };
     tombstone.leaseReturn = {
       reason,
@@ -2861,6 +2978,7 @@ export class CommandRelay {
     this.listenerTombstones.set(tabId, {
       removedAt: Date.now(),
       ...(listener.clientInstanceId ? { clientInstanceId: listener.clientInstanceId } : {}),
+      ...(listener.streamId ? { streamId: listener.streamId } : {}),
     });
     const slot = listener.deadSlot;
     if (!slot) return;
