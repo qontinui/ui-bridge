@@ -173,18 +173,18 @@ function cloneWithoutBoundaries(
   cloneOf: Map<Element, Element>
 ): Element {
   const shallow = (el: Element): Element => {
-    const clone = el.cloneNode(false) as Element;
+    // Imported into the inert document: no browsing context, so no custom
+    // element upgrade and no resource fetch (`<img src>`, `<video>`), and the
+    // live DOM is untouched. The clone steps carry an edited control's value,
+    // which the accname algorithm reads for an embedded textbox/combobox.
+    const clone = doc.importNode(el, false) as Element;
     clone.removeAttribute(BRIDGE_REDACT_ATTR);
     origin.set(clone, el);
     cloneOf.set(el, clone);
-    // A shallow clone drops the live value of an edited control, which the
-    // accname algorithm reads for an embedded textbox/combobox. A password is
-    // never carried over: its value is redacted unconditionally.
-    const tag = el.localName;
-    if (tag === 'input' && (el as HTMLInputElement).type !== 'password') {
-      (clone as HTMLInputElement).value = (el as HTMLInputElement).value;
-    } else if (tag === 'textarea') {
-      (clone as HTMLTextAreaElement).value = (el as HTMLTextAreaElement).value;
+    // A password is never carried over: its value is redacted unconditionally.
+    if (el.localName === 'input' && (el as HTMLInputElement).type === 'password') {
+      clone.removeAttribute('value');
+      (clone as HTMLInputElement).value = '';
     }
     return clone;
   };
@@ -233,10 +233,15 @@ function boundaryFreeName(
   const doc = node.ownerDocument;
   const view = doc?.defaultView;
   if (!doc || !view) return undefined;
-  // A fragment of the LIVE document: detached (nothing in the page changes),
-  // yet it has a window for the algorithm and is the root `aria-labelledby`
-  // and `<label for>` ids resolve in.
-  const sandbox = doc.createDocumentFragment();
+  // An INERT document (no browsing context): cloned custom elements are never
+  // upgraded (no constructor runs) and cloned media never fetches. The
+  // algorithm insists on a window (`safeWindow`), so the inert document is
+  // given the live one as its `defaultView`; styles are still answered from
+  // the live elements below. The fragment is the root `aria-labelledby` and
+  // `<label for>` ids resolve in.
+  const inert = doc.implementation.createHTMLDocument('');
+  Object.defineProperty(inert, 'defaultView', { value: view });
+  const sandbox = inert.createDocumentFragment();
   const origin = new Map<Element, Element>();
   const cloneOf = new Map<Element, Element>();
   const sources = Array.from(new Set<Element>([node, ...labelledBy, ...labels]));
@@ -245,7 +250,7 @@ function boundaryFreeName(
     if (root !== node && closestRedactionBoundary(root as HTMLElement) !== null) {
       // The whole source sits inside a boundary: it reads as the sentinel.
       if (root.contains(node)) return undefined;
-      const ph = doc.createElement('span');
+      const ph = inert.createElement('span');
       ph.textContent = REDACTED_VALUE;
       for (const attr of Array.from(root.attributes)) {
         if (attr.name === 'id') ph.setAttribute('id', attr.value);
@@ -253,7 +258,7 @@ function boundaryFreeName(
       origin.set(ph, root);
       sandbox.appendChild(ph);
     } else {
-      sandbox.appendChild(cloneWithoutBoundaries(root, doc, origin, cloneOf));
+      sandbox.appendChild(cloneWithoutBoundaries(root, inert, origin, cloneOf));
     }
   }
   const target = cloneOf.get(node);
@@ -263,9 +268,6 @@ function boundaryFreeName(
     getComputedStyle: liveStyle,
     computedStyleSupportsPseudoElements: false,
   });
-  // Fail closed: a boundary marker surviving the clone means the replacement
-  // missed something, so nothing is emitted.
-  if (sandbox.querySelector(`[${BRIDGE_REDACT_ATTR}="true"]`)) return undefined;
   return normalizeWhitespace(name) || undefined;
 }
 
