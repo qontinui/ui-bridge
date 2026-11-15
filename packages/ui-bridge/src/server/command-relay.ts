@@ -2883,12 +2883,15 @@ export class CommandRelay {
         console.error('[ui-bridge] publishing a bus not-delivered reply failed:', err);
       }
     };
+    // An unreadable holder registry stays silent: another instance may be
+    // delivering, and the sender's bus timeout still ends the wait.
+    const epoch = this.destroyEpoch;
     void bus
       .holdsElsewhere(tabId)
-      .catch(() => false)
       .then((elsewhere) => {
-        if (!elsewhere) publish();
-      });
+        if (!elsewhere && this.destroyEpoch === epoch) publish();
+      })
+      .catch(() => undefined);
   }
 
   /**

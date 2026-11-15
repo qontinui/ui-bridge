@@ -218,5 +218,26 @@ describe('CommandRelay cross-instance routing via RelayBus (P0a)', () => {
       await expect(pending).resolves.toEqual({ v: 2 });
       hub.clear();
     });
+
+    it('does not fail a broadcast when one holder cannot write it', async () => {
+      const hub = new InMemoryBusHub();
+      const sender = freshRelay('__instA_nd4', hub.bus('A'));
+      const failing = freshRelay('__instB_nd4', hub.bus('B'));
+      failing.subscribeToCommands(() => false, 'tab-1');
+      const replies: RelayResponseEnvelope[] = [];
+      const bus = hub.bus('probe');
+      const unsub = bus.subscribeResponse('bc-1', (e) => replies.push(e));
+      bus.publishCommand({
+        commandId: 'bc-1',
+        action: 'testAction',
+        payload: {},
+        timestamp: Date.now(),
+      });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(replies).toHaveLength(0);
+      unsub();
+      void sender;
+      hub.clear();
+    });
   });
 });
