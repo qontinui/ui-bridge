@@ -90,6 +90,20 @@ export {
 export { readValuePrimitive } from '../server/page-primitives';
 export type { PrimitiveResult, ReadValueResult, ReadValueHit } from '../server/page-primitives';
 
+// The §4.6-gated text primitives: `findByText` drops content-redacted elements
+// from its result set (so the hit count is no confirmation oracle), and the two
+// click primitives echo the clicked element's text through the CONTENT-axis
+// scrub. Exported for the same reason as `readValuePrimitive`: a host that
+// answers find-by-text / click-by-text / click-by-selector over its own
+// transport calls these instead of keeping a copy that echoes `textContent`
+// raw from inside a `data-bridge-redact` boundary.
+export {
+  findByTextPrimitive,
+  clickByTextPrimitive,
+  clickBySelectorPrimitive,
+} from '../server/page-primitives';
+export type { FindByTextHit, ClickEcho } from '../server/page-primitives';
+
 // Component capture — the structural wire shape the vision-core
 // `matches_isolated_render` assertion compares (plan
 // 2026-11-13-ui-bridge-matches-isolated-render-assertion). Served by
