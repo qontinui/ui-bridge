@@ -108,6 +108,30 @@ describe('relay client · result POST reads its answer', () => {
     await vi.advanceTimersByTimeAsync(20_000);
   }
 
+  it('(a) stop() during a 429 Retry-After: 2 wait -> one POST, no onError, no timers left', async () => {
+    script = [{ status: 429, retryAfter: '2', body: rateLimited }, { status: 200 }];
+    const client = startRelayClient({
+      basePath: '/api/ui-bridge',
+      execute: async () => ({ success: true, value: 1 }),
+      heartbeatIntervalMs: 10_000,
+      onError: (message) => errors.push(message),
+    });
+    stop = () => client.stop();
+    await vi.advanceTimersByTimeAsync(0);
+    stream.push(`data: ${JSON.stringify({ type: 'connected', streamId: 's-1' })}\n\n`);
+    stream.push(
+      `data: ${JSON.stringify({ commandId: 'cmd-1', action: 'getElement', payload: {} })}\n\n`
+    );
+    await vi.advanceTimersByTimeAsync(500);
+    expect(resultPosts).toHaveLength(1);
+    client.stop();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(resultPosts).toHaveLength(1);
+    expect(errors).toEqual([]);
+  });
+
   it('(1) 429 Retry-After: 1 then 200 -> two POSTs >= 1000 ms apart, no onError', async () => {
     await runOneCommand([{ status: 429, retryAfter: '1', body: rateLimited }, { status: 200 }]);
     expect(resultPosts).toHaveLength(2);

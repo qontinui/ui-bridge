@@ -397,6 +397,10 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
   });
 
   let stopped = false;
+  // Aborted by `stop()`: a result POST still retrying behind a 429/503 wait
+  // ends at once and silently, so a torn-down client never re-POSTs or
+  // reports into the client that replaced it.
+  const stopController = new AbortController();
   let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   // This page instance. Its id rides on every stream GET, and its memory of
   // the commands it ran is what lets a relay redeliver into it safely.
@@ -435,6 +439,7 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
       {
         method: 'POST',
         headers: postHeaders(),
+        signal: stopController.signal,
         body: safeJsonStringify({
           commandId,
           success: ok,
@@ -593,6 +598,7 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
     stop() {
       if (stopped) return;
       stopped = true;
+      stopController.abort();
       closeStreams();
       cancelReconnect();
       outcomes.releaseOutcomes();

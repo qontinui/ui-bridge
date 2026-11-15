@@ -28,6 +28,11 @@
  *   definite refusal, reported without a code.
  * - A result that is not delivered produces exactly ONE `onError` call, naming
  *   the HTTP status and the refusal body's `code` and `lane` when present.
+ * - The CALLER's `init.signal` is a stop, not a failure: once it aborts —
+ *   before an attempt, during one, or during a retry wait — `postResult`
+ *   returns at once with no further POST and NO `onError`. A stopped relay
+ *   client sends nothing more and says nothing more. Only the per-attempt
+ *   deadline's own abort is reported (as `delivery unconfirmed`).
  *
  * Never throws.
  */
@@ -57,8 +62,11 @@ export interface PostResultOptions {
   onError: (message: string, error?: unknown) => void;
   /** Clock in epoch ms. Defaults to `Date.now`. */
   now?: () => number;
-  /** Wait `ms`. Defaults to a `setTimeout` promise, so fake timers drive it. */
-  sleep?: (ms: number) => Promise<void>;
+  /**
+   * Wait `ms`, ending early when `signal` aborts. Defaults to a `setTimeout`
+   * promise (so fake timers drive it) that clears its timer on abort.
+   */
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   /** Names the result in the report, e.g. `command abc123`. */
   context?: string;
 }
@@ -83,9 +91,21 @@ export function parseRetryAfter(value: string | null | undefined, now: number): 
   return Math.max(0, at - now);
 }
 
-const defaultSleep = (ms: number): Promise<void> =>
+const defaultSleep = (ms: number, signal?: AbortSignal): Promise<void> =>
   new Promise((resolve) => {
-    setTimeout(resolve, ms);
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
   });
 
 /**
@@ -224,15 +244,20 @@ export async function postResult(
     }
   };
 
+  const callerSignal = init.signal ?? undefined;
+  // A caller abort is a stop: silent, no retry (see the module comment).
+  const stoppedByCaller = () => callerSignal?.aborted === true;
+
   let attempt = 0;
   try {
     const startedAt = now();
     for (attempt = 1; ; attempt++) {
+      if (stoppedByCaller()) return;
       let waitMs: number;
       let failure: { detail: string; error?: unknown; unconfirmed?: boolean };
       const deadline = attemptDeadline(
         RESULT_POST_TOTAL_BUDGET_MS - (now() - startedAt),
-        init.signal
+        callerSignal
       );
       try {
         const resp = await deadline.race(fetchImpl(url, { ...init, signal: deadline.signal }));
@@ -242,6 +267,7 @@ export async function postResult(
         const refusal = await deadline
           .race(readRefusal(resp, deadline.signal))
           .catch((): { code?: string; lane?: string } => ({}));
+        if (stoppedByCaller()) return;
         failure = { detail: describeRefusal(resp.status, refusal) };
         if (!RETRYABLE_STATUSES.has(resp.status)) {
           report(failure.detail, attempt);
@@ -250,6 +276,7 @@ export async function postResult(
         const retryAfter = parseRetryAfter(resp.headers?.get?.('Retry-After'), now());
         waitMs = retryAfter ?? RESULT_POST_BACKOFF_MS * 2 ** (attempt - 1);
       } catch (e) {
+        if (stoppedByCaller()) return;
         failure =
           e instanceof AttemptDeadlineError
             ? {
@@ -271,9 +298,10 @@ export async function postResult(
         report(failure.detail, attempt, failure.error, failure.unconfirmed);
         return;
       }
-      await sleep(waitMs);
+      await sleep(waitMs, callerSignal);
     }
   } catch (e) {
+    if (stoppedByCaller()) return;
     report(`unexpected error (${e instanceof Error ? e.message : String(e)})`, attempt, e);
   }
 }

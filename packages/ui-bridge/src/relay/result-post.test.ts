@@ -411,13 +411,15 @@ describe('postResult · every attempt is bounded by the budget remaining (fake t
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('a caller signal that aborts also aborts the attempt', async () => {
+  it('(c) a caller abort mid-attempt aborts it and stops silently: no retry, no onError', async () => {
     vi.useFakeTimers();
     const caller = new AbortController();
     const errors: string[] = [];
+    let posts = 0;
     let seen: AbortSignal | null | undefined;
     const done = postResult(
       ((_url: string, init: RequestInit) => {
+        posts++;
         seen = init.signal;
         return new Promise(() => {});
       }) as unknown as typeof fetch,
@@ -431,7 +433,92 @@ describe('postResult · every attempt is bounded by the budget remaining (fake t
     expect(seen?.aborted).toBe(true);
     await vi.advanceTimersByTimeAsync(10_000);
     await done;
-    expect(errors).toHaveLength(1);
+    expect(posts).toBe(1);
+    expect(errors).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a caller abort late in the budget (no retry possible) is still silent, not reported', async () => {
+    vi.useFakeTimers();
+    const caller = new AbortController();
+    const errors: string[] = [];
+    const done = postResult(
+      (() => new Promise(() => {})) as unknown as typeof fetch,
+      '/x',
+      { signal: caller.signal },
+      { onError: (m) => errors.push(m) }
+    );
+    await vi.advanceTimersByTimeAsync(5900);
+    caller.abort();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await done;
+    expect(errors).toEqual([]);
+  });
+
+  it('(b) a caller signal aborted before the first attempt -> zero POSTs, zero onError', async () => {
+    const caller = new AbortController();
+    caller.abort();
+    const errors: string[] = [];
+    let posts = 0;
+    await postResult(
+      (() => {
+        posts++;
+        return Promise.resolve(new Response('', { status: 200 }));
+      }) as unknown as typeof fetch,
+      '/x',
+      { signal: caller.signal },
+      { onError: (m) => errors.push(m), now: () => 0, sleep: () => Promise.resolve() }
+    );
+    expect(posts).toBe(0);
+    expect(errors).toEqual([]);
+  });
+
+  it('a caller abort during the retry wait ends the wait at once: one POST, no onError, no timers', async () => {
+    vi.useFakeTimers();
+    const caller = new AbortController();
+    const errors: string[] = [];
+    let posts = 0;
+    let settled = false;
+    void postResult(
+      (() => {
+        posts++;
+        return Promise.resolve(new Response('', { status: 503, headers: { 'Retry-After': '2' } }));
+      }) as unknown as typeof fetch,
+      '/x',
+      { signal: caller.signal },
+      { onError: (m) => errors.push(m) }
+    ).then(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(posts).toBe(1);
+    caller.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(posts).toBe(1);
+    expect(errors).toEqual([]);
+  });
+
+  it('a caller abort while a refusal body is read is silent too', async () => {
+    vi.useFakeTimers();
+    const caller = new AbortController();
+    const errors: string[] = [];
+    const done = postResult(
+      (() =>
+        Promise.resolve(
+          new Response(new ReadableStream({ start() {} }), { status: 403 })
+        )) as unknown as typeof fetch,
+      '/x',
+      { signal: caller.signal },
+      { onError: (m) => errors.push(m) }
+    );
+    await vi.advanceTimersByTimeAsync(10);
+    caller.abort();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await done;
+    expect(errors).toEqual([]);
   });
 
   it('a delivered result leaves no timer behind', async () => {
