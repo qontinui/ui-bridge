@@ -151,11 +151,29 @@ function readGatedValue(el: HTMLElement): { value: string | null; length: number
   // el is proven not value-redacted above (password/boundary already returned),
   // so the reader-minters pass the raw content through — routing the read
   // through the choke point instead of touching `.value`/`.textContent` raw.
-  const value =
-    'value' in el
-      ? (readScrubbedValue(el as HTMLInputElement) ?? null)
-      : (readScrubbedText(el) ?? null);
+  //
+  // Which property is "the value": a form field (`<input>`, `<textarea>`,
+  // `<select>`) reads `.value` and keeps an empty string as a meaningful state.
+  // Several non-form elements also carry a `.value` PROPERTY — `<li>` (a
+  // number, 0 by default), `<button>` / `<output>` / `<data>` / `<option>` (a
+  // string, often "") and `<meter>` / `<progress>` (numbers). Testing
+  // `'value' in el` read those as `0` or `""` instead of the element's text,
+  // and leaked a number into a `string | null` field. So a non-form element
+  // reads its `.value` only when that is a NON-EMPTY STRING (a `<button
+  // value="/cmd">` that deliberately carries one), and its text otherwise.
+  let value: string | null;
+  if (isFormField(el)) {
+    value = readScrubbedValue(el as HTMLInputElement) ?? null;
+  } else {
+    const own = 'value' in el ? readScrubbedValue(el as HTMLInputElement) : undefined;
+    value = typeof own === 'string' && own !== '' ? own : (readScrubbedText(el) ?? null);
+  }
   return { value, length: value?.length ?? 0 };
+}
+
+/** `<input>` / `<textarea>` / `<select>` — realm-safe (tagName, not instanceof). */
+function isFormField(el: HTMLElement): boolean {
+  return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT';
 }
 
 /**
