@@ -58,4 +58,19 @@ describe('framework error overlays — redaction boundaries', () => {
     const overlays = getActiveOverlays();
     expect(JSON.stringify(overlays)).not.toContain(SECRET);
   });
+
+  it('a cut through the sentinel drops it whole, in the overlay and in the emitted event', () => {
+    document.body.innerHTML = `<div data-react-error-boundary>${'a'.repeat(497)}<span data-bridge-redact="true">${SECRET}</span></div>`;
+    const overlays = getActiveOverlays();
+    expect(overlays[0].message).toBe(`${'a'.repeat(497)}...`);
+
+    document.body.innerHTML = `<div data-react-error-boundary>${'b'.repeat(195)}<span data-bridge-redact="true">${SECRET}</span></div>`;
+    const events: AnyCapturedEvent[] = [];
+    const stop = installFrameworkOverlayCapture((e) => events.push(e));
+    stop();
+    const message = (events[0] as { message: string }).message;
+    expect(message).not.toMatch(/\[R/);
+    expect(message.endsWith(': ' + 'b'.repeat(195))).toBe(true);
+    expect(JSON.stringify(events)).not.toContain(SECRET);
+  });
 });
