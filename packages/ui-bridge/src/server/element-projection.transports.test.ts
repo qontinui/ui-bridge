@@ -32,6 +32,7 @@ import { getGlobalRegistry, resetGlobalRegistry } from '../core/registry';
 import { createActionExecutor } from '../control/action-executor';
 import { MAX_PROJECTED_NAMES } from '../core/element-projection';
 import { REDACTED_VALUE } from '../core/redaction';
+import { AssertionExecutor } from '../ai/assertions';
 
 const BASE = 'http://bridge.test/api/ui-bridge';
 
@@ -85,7 +86,7 @@ async function get(path: string): Promise<Reply> {
  */
 const PAGE = `
   <main>
-    <button id="save" lang="de" dir="ltr" title="Bestellung speichern" aria-label="Save order"
+    <button id="save" class="btn btn-primary" lang="de" dir="ltr" title="Bestellung speichern" aria-label="Save order"
       aria-expanded="false" onclick="void 0"
       style="border-top-color: rgb(1, 2, 3); border-right-color: rgb(4, 5, 6);
              border-bottom-color: rgb(7, 8, 9); border-left-color: rgb(10, 11, 12);
@@ -409,6 +410,87 @@ describe.each(transports)('the $name transport', ({ mount }) => {
         passedCount: 5,
         failedCount: 0,
         unmeasuredCount: 0,
+      });
+    });
+
+    it('the batch passes the rest of each assertion through whole, and stopOnFailure', async () => {
+      await mount();
+      const assertBatch = vi.spyOn(AssertionExecutor.prototype, 'assertBatch');
+      const sent = [
+        {
+          target: 'save',
+          type: 'tokenCompliance',
+          propertyName: '--brand',
+          tokenPath: 'color.brand',
+          expected: '#00aaff',
+          timeout: 1234,
+          message: 'brand token drifted',
+          fuzzy: false,
+        },
+        {
+          target: { idPattern: 'sav*' },
+          type: 'minSpacing',
+          relatedTarget: 'pay',
+          minGap: 0,
+        },
+      ];
+      const reply = await post('/ai/assert/batch', {
+        skipSettle: true,
+        mode: 'all',
+        stopOnFailure: true,
+        assertions: [...sent, 'save is visible'],
+      });
+      expect(reply.success, reply.error).toBe(true);
+      expect(assertBatch).toHaveBeenCalledTimes(1);
+      const received = assertBatch.mock.calls[0]![0];
+      expect(received.stopOnFailure).toBe(true);
+      expect(received.assertions[0]).toMatchObject(sent[0]!);
+      expect(received.assertions[1]).toMatchObject(sent[1]!);
+      // A bare string is a natural-language entry, parsed — not dropped.
+      expect(received.assertions[2]).toMatchObject({
+        assertion: 'save is visible',
+        target: 'save',
+        type: 'visible',
+      });
+    });
+
+    it('an arm that compares nothing answers unmeasured, and the batch still answers the rest', async () => {
+      await mount();
+      const reply = await post('/ai/assert/batch', {
+        skipSettle: true,
+        mode: 'all',
+        assertions: [
+          { target: 'save', type: 'exists' },
+          // Read off the live node: measured both ways.
+          { target: 'save', type: 'hasClass', expected: 'btn-primary' },
+          { target: 'save', type: 'hasClass', expected: 'btn-danger' },
+          // A class list inside a redaction boundary is withheld by policy.
+          { target: 'pay', type: 'hasClass', expected: 'btn-primary' },
+          { target: 'save', type: 'noOverlap' },
+          { target: 'save', type: 'minSpacing', minGap: 4 },
+          { target: 'save', type: 'isPurple' },
+        ],
+      });
+      expect(reply.success, reply.error).toBe(true);
+      const results = reply.data!.results as Array<Record<string, unknown>>;
+      expect(results.map((r) => [r.outcome, r.failureCode])).toEqual([
+        ['passed', undefined],
+        ['passed', undefined],
+        ['failed', 'UB-ASSERT-LAYOUT'],
+        ['unmeasured', 'UB-OBS-NOT-ATTEMPTED-BY-POLICY'],
+        ['unmeasured', 'UB-VALIDATION-ERROR'],
+        ['unmeasured', 'UB-VALIDATION-ERROR'],
+        ['unmeasured', 'UB-VALIDATION-ERROR'],
+      ]);
+      expect((results[4]!.unmeasured as { detail: string }).detail).toContain('`relatedTarget`');
+      expect((results[5]!.unmeasured as { detail: string }).detail).toContain('`relatedTarget`');
+      expect((results[6]!.unmeasured as { detail: string }).detail).toContain('`type`');
+      for (const r of results.slice(3)) expect(r).not.toHaveProperty('actual');
+      expect(reply.data).toMatchObject({
+        passed: false,
+        passedCount: 2,
+        failedCount: 5,
+        unmeasuredCount: 4,
       });
     });
 

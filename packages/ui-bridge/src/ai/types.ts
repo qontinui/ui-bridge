@@ -522,11 +522,14 @@ export interface AssertionResult {
   /**
    * Stable machine-readable diagnostic code. Populated on every failure path
    * (`passed: false`) — optional at the type level only because passing
-   * results omit it. One of the `UB-ASSERT-*` codes for a failed check
-   * (enforced present on failure by the Phase 1 unit tests); for an
-   * `unmeasured` one, the `UB-OBS-*` code of its `unmeasured.code`, or
-   * `UB-VALIDATION-ERROR` when the assertion names something the projection
-   * refuses.
+   * results omit it. One of the `UB-ASSERT-*` codes for a failed check — one
+   * that compared a value (enforced present on failure by the Phase 1 unit
+   * tests). An `unmeasured` one never carries a `UB-ASSERT-*` code: it carries
+   * the `UB-OBS-*` code of its `unmeasured.code` (no live node to read, no
+   * layout rect, a §4.6 boundary), or `UB-VALIDATION-ERROR` when the assertion
+   * names nothing it could compare — a name the projection refuses, no class
+   * for `hasClass`, no `relatedTarget` for `noOverlap` / `minSpacing`, or a
+   * `type` the executor does not know.
    */
   failureCode?: UiBridgeErrorCode;
   /** Suggestion for fixing the failure */

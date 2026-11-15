@@ -32,15 +32,22 @@ import { resolvePageSentinel } from '../core/page-sentinel';
 import { trustDeveloperContent, verdictFromState, verdictOf } from '../core/redaction';
 
 /**
- * Stable `UB-ASSERT-*` diagnostic code for a failed assertion.
+ * Stable `UB-ASSERT-*` diagnostic code for a FAILED assertion — one that
+ * compared a value and found it wrong.
  *
- * Plan Phase 1 / §2.1: every failed `AssertionResult` carries a machine
- * code alongside its prose `failureReason`. The mapping is deterministic
- * from the assertion type and (for element-resolution / timeout failures)
- * the failure reason text:
+ * Plan Phase 1 / §2.1: every non-passing `AssertionResult` carries a machine
+ * code alongside its prose `failureReason`. A check that could not compare
+ * anything is not a failure of the page: it is `outcome: 'unmeasured'`, and
+ * its code is set where it is produced (`unmeasuredResult`), never here — the
+ * `UB-OBS-*` code of why the value could not be read (no live node, no layout
+ * rect, a §4.6 boundary), or `UB-VALIDATION-ERROR` for an assertion that names
+ * nothing to compare (no `relatedTarget` for a spatial check, no class, a
+ * `type` the executor does not know). For a failure, the mapping is
+ * deterministic from the assertion type and (for element-resolution / timeout
+ * failures) the failure reason text:
  *
  * - element could not be resolved / "not found" / "does not exist"
- *   / related target missing  → `UB-ASSERT-ELEMENT-MISSING`
+ *   / related target not found  → `UB-ASSERT-ELEMENT-MISSING`
  * - timeout / wait failures                                  → `UB-ASSERT-TIMEOUT`
  * - `visible` `hidden` `enabled` `disabled` `focused`
  *   `checked` `unchecked` (element-state predicates)          → `UB-ASSERT-VISIBILITY`
@@ -157,6 +164,95 @@ const PROJECTED_CHECKS: ReadonlySet<AssertionType> = new Set<AssertionType>([
   'tokenCompliance',
 ]);
 
+/**
+ * Every type the executor checks. A `Record` over the union, so a type added to
+ * `AssertionType` without a key here fails to compile. A request whose `type`
+ * is not a key compares nothing: it is refused before dispatch, unmeasured.
+ */
+const ASSERTION_TYPES: Readonly<Record<AssertionType, true>> = {
+  visible: true,
+  hidden: true,
+  enabled: true,
+  disabled: true,
+  focused: true,
+  checked: true,
+  unchecked: true,
+  hasText: true,
+  containsText: true,
+  hasValue: true,
+  hasClass: true,
+  exists: true,
+  notExists: true,
+  count: true,
+  attribute: true,
+  cssProperty: true,
+  cssPropertyInSet: true,
+  cssPropertyRange: true,
+  tokenCompliance: true,
+  noOverlap: true,
+  minSpacing: true,
+};
+
+/** The checks that compare the target with a second element, `relatedTarget`. */
+const SPATIAL_CHECKS: ReadonlySet<AssertionType> = new Set<AssertionType>([
+  'noOverlap',
+  'minSpacing',
+]);
+
+/**
+ * The `relatedTarget` a spatial check compares with, or `undefined` when the
+ * request names none: absent, blank, or not an element id, description or
+ * search criteria. Searching for `undefined` searches with empty criteria, so
+ * it compared the target with an arbitrary element, or with none.
+ */
+function namedRelatedTarget(request: AssertionRequest): string | SearchCriteria | undefined {
+  const related: unknown = request.relatedTarget;
+  if (typeof related === 'string') return related.trim() === '' ? undefined : related;
+  if (typeof related === 'object' && related !== null && !Array.isArray(related)) {
+    return related as SearchCriteria;
+  }
+  return undefined;
+}
+
+/**
+ * Why `request` names nothing a check could compare, or `null` when it is
+ * well-formed: a `type` the executor does not know, or a spatial check with no
+ * `relatedTarget`. Checked before dispatch, so the answer is the same whether
+ * or not the target resolves — the request itself is what is wrong.
+ */
+function invalidRequest(request: AssertionRequest): UnmeasuredRead | null {
+  const type: unknown = request.type;
+  if (typeof type !== 'string' || !Object.prototype.hasOwnProperty.call(ASSERTION_TYPES, type)) {
+    return {
+      code: 'no_expectation',
+      detail:
+        `the assertion's \`type\` ${JSON.stringify(type) ?? String(type)} is not one of ` +
+        Object.keys(ASSERTION_TYPES).join(', '),
+      failureCode: 'UB-VALIDATION-ERROR',
+    };
+  }
+  if (SPATIAL_CHECKS.has(type as AssertionType) && namedRelatedTarget(request) === undefined) {
+    return {
+      code: 'no_expectation',
+      detail: `the assertion names no \`relatedTarget\`: a ${type} check compares the target with it`,
+      failureCode: 'UB-VALIDATION-ERROR',
+    };
+  }
+  return null;
+}
+
+/**
+ * A spatial check whose operand has no layout rect: there is no geometry to
+ * compare, so the check is unmeasured, not a failure of the page.
+ */
+function rectMissing(which: string): UnmeasuredRead {
+  return {
+    code: 'input_missing',
+    detail: `no layout rect for ${which}, so there is no geometry to compare`,
+    failureCode: UNKNOWN_CODE_DIAGNOSTICS.input_missing,
+  };
+}
+
 /** `background-color` → `backgroundColor`: the key `ElementState.computedStyles` uses. */
 function computedStylesKey(cssName: string): string {
   return cssName.replace(/-([a-z])/g, (_m, c: string) => c.toUpperCase());
@@ -219,6 +315,11 @@ export class AssertionExecutor {
   async assert(request: AssertionRequest): Promise<AssertionResult> {
     const startTime = performance.now();
     const timeout = request.timeout ?? this.config.defaultTimeout;
+
+    // A request that names nothing to compare is refused before dispatch, the
+    // same whether or not its target resolves: unmeasured, never a failure.
+    const invalid = invalidRequest(request);
+    if (invalid) return this.invalidResult(request, invalid, startTime);
 
     // The `document` page sentinel names `<html>`, which has no registration:
     // a style or attribute check reads it through the projection.
@@ -689,7 +790,7 @@ export class AssertionExecutor {
       case 'hasClass':
         return this.assertHasClass(
           element!,
-          request.expected as string,
+          request.expected,
           elementDescription,
           request.message,
           startTime
@@ -737,10 +838,10 @@ export class AssertionExecutor {
         );
 
       case 'noOverlap': {
-        const relatedResult = this.findElementDetailed(
-          request.relatedTarget!,
-          request.fuzzy !== false
-        );
+        const related = namedRelatedTarget(request);
+        if (related === undefined)
+          return this.invalidResult(request, invalidRequest(request)!, startTime);
+        const relatedResult = this.findElementDetailed(related, request.fuzzy !== false);
         if (!relatedResult) {
           return this.createResult(
             false,
@@ -757,16 +858,14 @@ export class AssertionExecutor {
         const rectA = element!.state.rect;
         const rectB = relatedResult.element.state.rect;
         if (!rectA || !rectB) {
-          return this.createResult(
-            false,
-            targetStr,
+          return this.unmeasuredResult(
+            element!,
             elementDescription,
             'no overlap',
-            null,
-            'Rect data not available for one or both elements',
-            'Ensure elements have rect data in their state',
+            'no overlap',
+            rectMissing(!rectA ? 'the target' : 'the related target'),
             startTime,
-            element?.state
+            'Assert against elements that are laid out (a rendered element has a rect)'
           );
         }
         const overlaps =
@@ -791,10 +890,10 @@ export class AssertionExecutor {
       }
 
       case 'minSpacing': {
-        const relatedResult2 = this.findElementDetailed(
-          request.relatedTarget!,
-          request.fuzzy !== false
-        );
+        const related = namedRelatedTarget(request);
+        if (related === undefined)
+          return this.invalidResult(request, invalidRequest(request)!, startTime);
+        const relatedResult2 = this.findElementDetailed(related, request.fuzzy !== false);
         if (!relatedResult2) {
           return this.createResult(
             false,
@@ -811,16 +910,14 @@ export class AssertionExecutor {
         const rA = element!.state.rect;
         const rB = relatedResult2.element.state.rect;
         if (!rA || !rB) {
-          return this.createResult(
-            false,
-            targetStr,
+          return this.unmeasuredResult(
+            element!,
             elementDescription,
             `min gap ${request.minGap ?? 0}px`,
-            null,
-            'Rect data not available for one or both elements',
-            'Ensure elements have rect data in their state',
+            'min spacing',
+            rectMissing(!rA ? 'the target' : 'the related target'),
             startTime,
-            element?.state
+            'Assert against elements that are laid out (a rendered element has a rect)'
           );
         }
         const gapLeft = rB.left - rA.right;
@@ -846,14 +943,15 @@ export class AssertionExecutor {
       }
 
       default:
-        return this.createResult(
-          false,
-          targetStr,
-          elementDescription,
-          undefined,
-          undefined,
-          `Unknown assertion type: ${request.type}`,
-          undefined,
+        // Refused before dispatch (`invalidRequest`); kept so an unknown type
+        // can never fall through to a comparison.
+        return this.invalidResult(
+          request,
+          invalidRequest(request) ?? {
+            code: 'no_expectation',
+            detail: `the executor has no check for \`type\` ${String(request.type)}`,
+            failureCode: 'UB-VALIDATION-ERROR',
+          },
           startTime
         );
     }
@@ -1126,24 +1224,61 @@ export class AssertionExecutor {
   }
 
   /**
-   * Assert element has CSS class
+   * Assert element has CSS class (`expected`, one class token).
+   *
+   * The class list is read off the element's live node, by the rules
+   * {@link readLiveNode} applies: withheld by policy inside a redaction
+   * boundary (§4.6 — `class` is not one of the structural attributes the
+   * scrub keeps), unmeasured with no node to read (an element that crossed a
+   * wire) or a node out of the document. A request naming no class compares
+   * nothing: unmeasured, `UB-VALIDATION-ERROR`.
    */
   private assertHasClass(
     element: AIDiscoveredElement,
-    className: string,
+    className: unknown,
     description: string,
     message?: string,
     startTime: number = performance.now()
   ): AssertionResult {
-    // Note: Would need DOM access for actual class checking
+    const wanted = typeof className === 'string' ? className.trim() : '';
+    if (wanted === '' || /\s/.test(wanted)) {
+      return this.unmeasuredResult(
+        element,
+        description,
+        className,
+        'CSS class',
+        {
+          code: 'no_expectation',
+          detail: 'the assertion names no single class in `expected`',
+          failureCode: 'UB-VALIDATION-ERROR',
+        },
+        startTime,
+        'Name one class token in `expected` (e.g. "btn-primary")'
+      );
+    }
+    const read = this.readLiveNode(element, 'class list', (node) => node.getAttribute('class'));
+    if ('unmeasured' in read) {
+      return this.unmeasuredResult(
+        element,
+        description,
+        wanted,
+        `CSS class "${wanted}"`,
+        read.unmeasured,
+        startTime
+      );
+    }
+    const classAttr = read.value ?? '';
+    const passed = classAttr.split(/\s+/).includes(wanted);
     return this.createResult(
-      false,
+      passed,
       element.id,
       description,
-      className,
+      wanted,
+      classAttr,
+      passed
+        ? undefined
+        : message || `Element's classes are "${classAttr}" but expected class "${wanted}"`,
       undefined,
-      'Cannot check CSS classes without DOM access',
-      'Use the server API to check element classes',
       startTime,
       element.state
     );
@@ -1254,16 +1389,30 @@ export class AssertionExecutor {
   private readPlaceholder(
     element: AIDiscoveredElement
   ): { value: string | null } | { unmeasured: UnmeasuredRead } {
+    return this.readLiveNode(element, 'attribute `placeholder`', readPlaceholderAttr);
+  }
+
+  /**
+   * Read `what` off `element`'s live node with `read`, by the projection's
+   * rules for a value that can carry page content: withheld by policy inside a
+   * redaction boundary (§4.6), unmeasured with no node to read it from (an
+   * element that crossed a wire), and unmeasured off a node out of the
+   * document, which can no longer see the boundary it sat in.
+   */
+  private readLiveNode<T>(
+    element: AIDiscoveredElement,
+    what: string,
+    read: (node: Element) => T
+  ): { value: T } | { unmeasured: UnmeasuredRead } {
     if (this.contentRedacted(element)) {
-      return { unmeasured: withheldByRedaction('attribute `placeholder`') };
+      return { unmeasured: withheldByRedaction(what) };
     }
     const node = this.operandNodes.get(element) ?? this.liveNodes.get(element.id);
     if (!node) {
       return {
         unmeasured: {
           code: 'capability_unavailable_in_build',
-          detail:
-            'attribute `placeholder` not available: this element has no live DOM node to read it from',
+          detail: `${what} not available: this element has no live DOM node to read it from`,
           failureCode: UNKNOWN_CODE_DIAGNOSTICS.capability_unavailable_in_build,
         },
       };
@@ -1278,7 +1427,7 @@ export class AssertionExecutor {
         },
       };
     }
-    return { value: readPlaceholderAttr(node) };
+    return { value: read(node) };
   }
 
   /**
@@ -1298,12 +1447,13 @@ export class AssertionExecutor {
    * the code that says why — never a failure with `actual: ''`.
    */
   private unmeasuredResult(
-    element: AIDiscoveredElement,
+    element: { id: string; state?: ElementState },
     description: string,
     expected: unknown,
     what: string,
     unmeasured: UnmeasuredRead,
-    startTime: number
+    startTime: number,
+    suggestion?: string
   ): AssertionResult {
     const result = this.createResult(
       false,
@@ -1312,11 +1462,12 @@ export class AssertionExecutor {
       expected,
       undefined,
       `Cannot check ${what}: ${unmeasured.detail}`,
-      unmeasured.failureCode === 'UB-VALIDATION-ERROR'
-        ? 'Name a CSS property or an allow-listed attribute (lang, dir, id, role, title, alt, href, aria-*)'
-        : unmeasured.code === 'not_attempted_by_policy'
-          ? 'The page withholds this value (§4.6 data-bridge-redact): check a structural value — a colour, a length, an ARIA token — or an element outside the boundary'
-          : 'The value could not be read here: assert against an element with a live DOM node',
+      suggestion ??
+        (unmeasured.failureCode === 'UB-VALIDATION-ERROR'
+          ? 'Name a CSS property or an allow-listed attribute (lang, dir, id, role, title, alt, href, aria-*)'
+          : unmeasured.code === 'not_attempted_by_policy'
+            ? 'The page withholds this value (§4.6 data-bridge-redact): check a structural value — a colour, a length, an ARIA token — or an element outside the boundary'
+            : 'The value could not be read here: assert against an element with a live DOM node'),
       startTime,
       element.state
     );
@@ -1324,6 +1475,29 @@ export class AssertionExecutor {
     result.unmeasured = { code: unmeasured.code, detail: unmeasured.detail };
     result.failureCode = unmeasured.failureCode;
     return result;
+  }
+
+  /**
+   * The answer to a request {@link invalidRequest} refuses: unmeasured,
+   * `UB-VALIDATION-ERROR`, with no operand — nothing was compared, so no
+   * element was looked at. In a batch it is one result among the others.
+   */
+  private invalidResult(
+    request: AssertionRequest,
+    invalid: UnmeasuredRead,
+    startTime: number
+  ): AssertionResult {
+    const target =
+      typeof request.target === 'string' ? request.target : JSON.stringify(request.target);
+    return this.unmeasuredResult(
+      { id: target },
+      target,
+      request.expected,
+      `${JSON.stringify(request.type) ?? String(request.type)} assertion`,
+      invalid,
+      startTime,
+      `Send a \`type\` from: ${Object.keys(ASSERTION_TYPES).join(', ')}; noOverlap and minSpacing also need a \`relatedTarget\``
+    );
   }
 
   /**
