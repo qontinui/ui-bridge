@@ -14,6 +14,7 @@
 
 import type { AnyCapturedEvent } from '../browser-capture-types';
 import { truncateCodePoints } from '../../core/text';
+import { textExcludingBoundaries } from '../../core/redaction';
 
 type Emit = (event: AnyCapturedEvent) => void;
 
@@ -47,16 +48,16 @@ function detectNextjsOverlay(): DetectedErrorOverlay | null {
     const dialog = portal.shadowRoot.querySelector('[data-nextjs-dialog]');
     if (dialog) {
       const title =
-        portal.shadowRoot
-          .querySelector('[data-nextjs-dialog-header] h1, [data-nextjs-dialog-header] h2')
-          ?.textContent?.trim() || portal.shadowRoot.querySelector('h1, h2')?.textContent?.trim();
+        textOf(
+          portal.shadowRoot.querySelector(
+            '[data-nextjs-dialog-header] h1, [data-nextjs-dialog-header] h2'
+          )
+        ) || textOf(portal.shadowRoot.querySelector('h1, h2'));
       const body =
-        portal.shadowRoot.querySelector('[data-nextjs-dialog-body]')?.textContent?.trim() ||
-        portal.shadowRoot.querySelector('p')?.textContent?.trim();
+        textOf(portal.shadowRoot.querySelector('[data-nextjs-dialog-body]')) ||
+        textOf(portal.shadowRoot.querySelector('p'));
       // Try to find file reference
-      const fileRef = portal.shadowRoot
-        .querySelector('[data-nextjs-codeframe] div')
-        ?.textContent?.trim();
+      const fileRef = textOf(portal.shadowRoot.querySelector('[data-nextjs-codeframe] div'));
 
       return {
         framework: 'nextjs',
@@ -73,7 +74,7 @@ function detectNextjsOverlay(): DetectedErrorOverlay | null {
         framework: 'nextjs',
         visible: true,
         title: 'Next.js Error Toast',
-        message: truncate(toast.textContent?.trim(), 300),
+        message: truncate(textOf(toast), 300),
       };
     }
   }
@@ -85,7 +86,7 @@ function detectNextjsOverlay(): DetectedErrorOverlay | null {
       framework: 'nextjs',
       visible: true,
       title: 'Next.js Build Error',
-      message: truncate(buildError.textContent?.trim(), 500),
+      message: truncate(textOf(buildError), 500),
     };
   }
 
@@ -96,7 +97,7 @@ function detectNextjsOverlay(): DetectedErrorOverlay | null {
       framework: 'nextjs',
       visible: true,
       title: 'Next.js Error',
-      message: truncate(errorLabel.closest('div')?.textContent?.trim(), 500),
+      message: truncate(textOf(errorLabel.closest('div')), 500),
     };
   }
 
@@ -120,14 +121,14 @@ function detectViteOverlay(): DetectedErrorOverlay | null {
 
   if (shadow) {
     title =
-      shadow.querySelector('.message-body')?.textContent?.trim() ||
-      shadow.querySelector('h1, h2, .message')?.textContent?.trim();
-    message = shadow.querySelector('.stack, pre')?.textContent?.trim();
-    file = shadow.querySelector('.file, .tip code')?.textContent?.trim();
+      textOf(shadow.querySelector('.message-body')) ||
+      textOf(shadow.querySelector('h1, h2, .message'));
+    message = textOf(shadow.querySelector('.stack, pre'));
+    file = textOf(shadow.querySelector('.file, .tip code'));
   } else {
     // No shadow DOM — try direct children
-    title = overlay.querySelector('h1, h2, .message')?.textContent?.trim();
-    message = overlay.querySelector('pre, .stack')?.textContent?.trim();
+    title = textOf(overlay.querySelector('h1, h2, .message'));
+    message = textOf(overlay.querySelector('pre, .stack'));
   }
 
   return {
@@ -149,7 +150,7 @@ function detectReactErrorBoundary(): DetectedErrorOverlay | null {
         framework: 'react-error-boundary',
         visible: true,
         title: 'React Error Boundary',
-        message: truncate(explicit.textContent?.trim(), 500),
+        message: truncate(textOf(explicit), 500),
       };
     }
   }
@@ -158,7 +159,7 @@ function detectReactErrorBoundary(): DetectedErrorOverlay | null {
   // Many libraries use role="alert" with error-like content
   const alerts = document.querySelectorAll('[role="alert"]');
   for (const alert of alerts) {
-    const text = alert.textContent?.trim() || '';
+    const text = textOf(alert) || '';
     // Check if this looks like an error boundary fallback (not a regular toast/notification)
     // Error boundaries typically contain phrases like "Something went wrong" or "error"
     // and are larger elements (not small toasts)
@@ -177,6 +178,16 @@ function detectReactErrorBoundary(): DetectedErrorOverlay | null {
   }
 
   return null;
+}
+
+/**
+ * Trimmed text of an overlay element. Overlay text is emitted as a capture
+ * event and returned by `getActiveOverlays`, so a `data-bridge-redact` boundary
+ * inside (or around) the overlay must read as the sentinel, never its content.
+ */
+function textOf(el: Element | null | undefined): string | undefined {
+  if (!el) return undefined;
+  return textExcludingBoundaries(el)?.trim();
 }
 
 function truncate(s: string | undefined | null, max: number): string | undefined {
