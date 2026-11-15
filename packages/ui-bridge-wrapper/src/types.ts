@@ -39,7 +39,7 @@ export interface TransportConfig {
    *                     uiBridgeBase?: string; forwardConsole?: boolean }` — a requested
    *                  deviceScaleFactor / colorScheme is read back from the page after
    *                  launch, and a page reporting anything else fails `ready()` with
-   *                  `EMULATION_NOT_APPLIED`. Also `recordHar`, `serviceWorkers` and
+   *                  `EMULATION_NOT_APPLIED`. Also `recordHar`, `recordVideo`, `serviceWorkers` and
    *                  `initRouter`, passed to the launcher's browser context (a peer that
    *                  ignores them fails `ready()` with `CONTEXT_OPTIONS_NOT_APPLIED`)
    *   - `live`:      `{ handshakeTimeoutMs?: number; authToken?: string }`

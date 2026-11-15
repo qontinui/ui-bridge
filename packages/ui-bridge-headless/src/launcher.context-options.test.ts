@@ -91,8 +91,57 @@ describe('launchHeadlessTab — context passthrough options', () => {
     ]);
     const opts = recorded.contextOptions[0]!;
     expect('recordHar' in opts).toBe(false);
+    expect('recordVideo' in opts).toBe(false);
     expect('serviceWorkers' in opts).toBe(false);
   });
+
+  it('recordVideo without a size records at the viewport size', async () => {
+    const tab = await launchHeadlessTab({
+      url: 'http://app.local/',
+      headless: true,
+      forwardConsole: false,
+      viewportWidth: 390,
+      viewportHeight: 844,
+      recordVideo: { dir: '/tmp/videos' },
+    });
+    await tab.close();
+    expect(recorded.contextOptions[0]!.recordVideo).toEqual({
+      dir: '/tmp/videos',
+      size: { width: 390, height: 844 },
+    });
+  });
+
+  it('recordVideo with a size is passed unchanged', async () => {
+    const recordVideo = { dir: '/tmp/videos', size: { width: 640, height: 360 } };
+    const tab = await launchHeadlessTab({
+      url: 'http://app.local/',
+      headless: true,
+      forwardConsole: false,
+      recordVideo,
+    });
+    await tab.close();
+    expect(recorded.contextOptions[0]!.recordVideo).toBe(recordVideo);
+  });
+
+  it.each([
+    [{ dir: '' }, /non-empty string `dir`/],
+    [{} as { dir: string }, /non-empty string `dir`/],
+    [{ dir: '/tmp/v', size: { width: 0, height: 360 } }, /positive integer sides/],
+    [{ dir: '/tmp/v', size: { width: 640.5, height: 360 } }, /positive integer sides/],
+  ])(
+    'a malformed recordVideo %j rejects before Chromium launches',
+    async (recordVideo, message) => {
+      await expect(
+        launchHeadlessTab({
+          url: 'http://app.local/',
+          headless: true,
+          forwardConsole: false,
+          recordVideo,
+        })
+      ).rejects.toThrow(message);
+      expect(recorded.calls).toEqual([]);
+    }
+  );
 
   it('recordHar and serviceWorkers reach newContext unchanged', async () => {
     const recordHar = {

@@ -77,6 +77,14 @@ export interface HeadlessTransportOptions {
    */
   recordHar?: NonNullable<BrowserContextOptions['recordHar']>;
   /**
+   * Record a video of the tab: Playwright's `recordVideo` shape with a
+   * required `dir` (`{ dir, size?, … }`), passed to the launcher unchanged. The
+   * launcher defaults a missing `size` to the viewport. Like the HAR, the file
+   * is complete once this transport's `close()` resolves; the launcher's
+   * `page.video()?.path()` names it.
+   */
+  recordVideo?: NonNullable<BrowserContextOptions['recordVideo']> & { dir: string };
+  /**
    * `'block'` stops pages registering service workers. A service worker
    * answers requests itself, so they reach neither `recordHar` nor a route
    * installed by `initRouter`; block them when either must see every request.
@@ -123,6 +131,7 @@ interface LaunchHeadlessTabArgs {
   launchArgs?: string[];
   storageStatePath?: string;
   recordHar?: NonNullable<BrowserContextOptions['recordHar']>;
+  recordVideo?: NonNullable<BrowserContextOptions['recordVideo']> & { dir: string };
   serviceWorkers?: NonNullable<BrowserContextOptions['serviceWorkers']>;
   initRouter?: (context: BrowserContext) => void | Promise<void>;
 }
@@ -226,7 +235,7 @@ export class HeadlessTransport extends BaseTransport {
   }
 
   /**
-   * `recordHar`, `serviceWorkers` and `initRouter`. Unlike the display
+   * `recordHar`, `recordVideo`, `serviceWorkers` and `initRouter`. Unlike the display
    * options above, a malformed value is REFUSED rather than dropped: dropping
    * `recordHar` would leave a caller waiting for an archive that is never
    * written, and dropping `initRouter` would let requests it meant to answer
@@ -234,8 +243,11 @@ export class HeadlessTransport extends BaseTransport {
    */
   private parseContextOptions(
     raw: Record<string, unknown>
-  ): Pick<HeadlessTransportOptions, 'recordHar' | 'serviceWorkers' | 'initRouter'> {
-    const out: Pick<HeadlessTransportOptions, 'recordHar' | 'serviceWorkers' | 'initRouter'> = {};
+  ): Pick<HeadlessTransportOptions, 'recordHar' | 'recordVideo' | 'serviceWorkers' | 'initRouter'> {
+    const out: Pick<
+      HeadlessTransportOptions,
+      'recordHar' | 'recordVideo' | 'serviceWorkers' | 'initRouter'
+    > = {};
     const invalid = (what: string) =>
       new WrapperTransportError('INVALID_CONFIG', `Transport kind '${this.kind}': ${what}`);
     const har = raw['recordHar'];
@@ -249,6 +261,33 @@ export class HeadlessTransport extends BaseTransport {
         throw invalid('options.recordHar must be an object with a non-empty string `path`');
       }
       out.recordHar = har as NonNullable<HeadlessTransportOptions['recordHar']>;
+    }
+    const video = raw['recordVideo'];
+    if (video !== undefined) {
+      if (
+        typeof video !== 'object' ||
+        video === null ||
+        typeof (video as { dir?: unknown }).dir !== 'string' ||
+        (video as { dir: string }).dir.length === 0
+      ) {
+        throw invalid('options.recordVideo must be an object with a non-empty string `dir`');
+      }
+      const size = (video as { size?: unknown }).size;
+      if (size !== undefined) {
+        const positiveInt = (n: unknown) => typeof n === 'number' && Number.isInteger(n) && n > 0;
+        const s = size as { width?: unknown; height?: unknown } | null;
+        if (
+          typeof size !== 'object' ||
+          s === null ||
+          !positiveInt(s.width) ||
+          !positiveInt(s.height)
+        ) {
+          throw invalid(
+            'options.recordVideo.size must be { width, height } with positive integer sides'
+          );
+        }
+      }
+      out.recordVideo = video as NonNullable<HeadlessTransportOptions['recordVideo']>;
     }
     const sw = raw['serviceWorkers'];
     if (sw !== undefined) {
@@ -324,18 +363,21 @@ export class HeadlessTransport extends BaseTransport {
     // A pinned launch must find ITS tab, not whichever tab registered first.
     const pinnedTabId = this.pinnedTabId();
 
-    // recordHar / serviceWorkers / initRouter came to the launcher together
-    // (ui-bridge#381, headless 0.8.0). An older optional peer accepts the
-    // keys and ignores them: no HAR, service workers allowed, no routes. The
-    // launcher calls `initRouter` before its first page exists, so whenever
-    // any of the three is set the transport ALWAYS passes one, and (except
+    // recordHar / recordVideo / serviceWorkers / initRouter came to the launcher
+    // together in headless 0.8.0 (ui-bridge#381). An older optional peer accepts
+    // the keys and ignores them: no HAR, no video, service workers allowed, no
+    // routes. The launcher calls `initRouter` before its first page exists, so
+    // whenever any of the four is set the transport ALWAYS passes one, and (except
     // for `serviceWorkers: 'allow'` alone, below) treats "it was never
-    // called" as proof the peer dropped all three.
-    const { recordHar, serviceWorkers, initRouter: callerRouter } = this.options;
+    // called" as proof the peer dropped all four.
+    const { recordHar, recordVideo, serviceWorkers, initRouter: callerRouter } = this.options;
     // `serviceWorkers: 'allow'` is Playwright's default, so a peer that drops
     // it still behaves as asked: it alone does not demand the proof.
     const contextOptionsRequested =
-      recordHar !== undefined || serviceWorkers === 'block' || callerRouter !== undefined;
+      recordHar !== undefined ||
+      recordVideo !== undefined ||
+      serviceWorkers === 'block' ||
+      callerRouter !== undefined;
     let routerCalled = false;
     const initRouter =
       contextOptionsRequested || serviceWorkers !== undefined
@@ -372,6 +414,7 @@ export class HeadlessTransport extends BaseTransport {
         ...(relayAuth.callerUserId ? { callerUserId: relayAuth.callerUserId } : {}),
         ...(pinnedTabId ? { pinnedTabId } : {}),
         ...(recordHar !== undefined ? { recordHar } : {}),
+        ...(recordVideo !== undefined ? { recordVideo } : {}),
         ...(serviceWorkers !== undefined ? { serviceWorkers } : {}),
         ...(initRouter ? { initRouter } : {}),
       });
@@ -407,13 +450,14 @@ export class HeadlessTransport extends BaseTransport {
       throw new WrapperTransportError(
         'CONTEXT_OPTIONS_NOT_APPLIED',
         `The installed '@qontinui/ui-bridge-headless' peer launched the tab without calling ` +
-          `initRouter, so it predates the recordHar / serviceWorkers / initRouter passthrough ` +
-          `(0.8.0, ui-bridge#381) and ignored them: no HAR would be written and no route ` +
-          `installed. Upgrade it to 0.8.0 or later.`,
+          `initRouter, so it predates the recordHar / recordVideo / serviceWorkers / ` +
+          `initRouter passthrough (0.8.0, ui-bridge#381) and ignored them: no HAR or video ` +
+          `would be written and no route installed. Upgrade it to 0.8.0 or later.`,
         {
           details: {
             requested: {
               recordHar: recordHar !== undefined,
+              recordVideo: recordVideo !== undefined,
               serviceWorkers: serviceWorkers ?? null,
               initRouter: callerRouter !== undefined,
             },

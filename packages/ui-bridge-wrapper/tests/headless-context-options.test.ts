@@ -1,12 +1,12 @@
 /**
- * `recordHar`, `serviceWorkers` and `initRouter` reach the launcher, and a
+ * `recordHar`, `recordVideo`, `serviceWorkers` and `initRouter` reach the launcher, and a
  * launcher that ignores them is refused.
  *
  * `@qontinui/ui-bridge-headless` is an optional peer resolved at run time. One
- * that predates the context passthrough (ui-bridge#381) accepts the three keys and
+ * that predates the context passthrough (ui-bridge#381) accepts the four keys and
  * drops them: the caller would wait for a HAR that is never written and its
  * routes would never be installed. The transport always hands the launcher an
- * `initRouter` when any of the three is requested, and refuses with
+ * `initRouter` when any of the four is requested, and refuses with
  * CONTEXT_OPTIONS_NOT_APPLIED when the launch returns without calling it.
  */
 
@@ -86,13 +86,29 @@ describe('HeadlessTransport context options passthrough', () => {
     await t.close();
   });
 
+  it('passes recordVideo unchanged and demands the proof-of-application router for it', async () => {
+    const recordVideo = { dir: '/tmp/videos', size: { width: 640, height: 360 } };
+    const t = transport({ recordVideo });
+    await t.ready();
+    expect(fake.launchArgs[0]!['recordVideo']).toBe(recordVideo);
+    expect(typeof fake.launchArgs[0]!['initRouter']).toBe('function');
+    await t.close();
+
+    fake.callsInitRouter = false;
+    const err = await rejection(transport({ recordVideo: { dir: '/tmp/videos' } }).ready());
+    expect((err as WrapperTransportError).code).toBe('CONTEXT_OPTIONS_NOT_APPLIED');
+    expect((err as WrapperTransportError).details).toEqual({
+      requested: { recordHar: false, recordVideo: true, serviceWorkers: null, initRouter: false },
+    });
+  });
+
   it('refuses a launcher that never called initRouter, and closes the browser it opened', async () => {
     fake.callsInitRouter = false;
     const err = await rejection(transport({ recordHar: { path: '/tmp/x.zip' } }).ready());
     expect(err).toBeInstanceOf(WrapperTransportError);
     expect((err as WrapperTransportError).code).toBe('CONTEXT_OPTIONS_NOT_APPLIED');
     expect((err as WrapperTransportError).details).toEqual({
-      requested: { recordHar: true, serviceWorkers: null, initRouter: false },
+      requested: { recordHar: true, recordVideo: false, serviceWorkers: null, initRouter: false },
     });
     expect(fake.closed).toBe(1);
   });
@@ -125,10 +141,10 @@ describe('HeadlessTransport context options passthrough', () => {
     expect((err as Error).message).toBe('route install failed');
   });
 
-  it('sends none of the three keys when none was requested', async () => {
+  it('sends none of the four keys when none was requested', async () => {
     const t = transport({});
     await t.ready();
-    for (const key of ['recordHar', 'serviceWorkers', 'initRouter']) {
+    for (const key of ['recordHar', 'recordVideo', 'serviceWorkers', 'initRouter']) {
       expect(key in fake.launchArgs[0]!).toBe(false);
     }
     await t.close();
@@ -137,6 +153,10 @@ describe('HeadlessTransport context options passthrough', () => {
   it.each([
     [{ recordHar: 'x.zip' }, /recordHar must be an object/],
     [{ recordHar: { path: '' } }, /recordHar must be an object/],
+    [{ recordVideo: { size: { width: 1, height: 1 } } }, /recordVideo must be an object/],
+    [{ recordVideo: { dir: '' } }, /recordVideo must be an object/],
+    [{ recordVideo: { dir: '/v', size: { width: 0, height: 1 } } }, /recordVideo\.size/],
+    [{ recordVideo: { dir: '/v', size: 'big' } }, /recordVideo\.size/],
     [{ serviceWorkers: 'deny' }, /serviceWorkers must be 'allow' or 'block'/],
     [{ initRouter: 'not a function' }, /initRouter must be a function/],
   ])('refuses a malformed %j at construction', (options, message) => {
