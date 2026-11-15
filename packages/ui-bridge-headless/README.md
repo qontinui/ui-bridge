@@ -159,7 +159,8 @@ metrics emulation overrides the flag, so the page keeps reading
 ### HAR recording, service workers and routes (context passthrough)
 
 Three options reach the browser context for a caller that records what a page
-loads or serves it from somewhere else:
+loads or serves it from somewhere else (0.8.0 and later; an older launcher
+accepts the keys and ignores them):
 
 | Option           | Type                                                      | Passed to                                  |
 | ---------------- | --------------------------------------------------------- | ------------------------------------------ |
