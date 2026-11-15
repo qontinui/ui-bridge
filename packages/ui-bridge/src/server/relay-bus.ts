@@ -127,6 +127,7 @@ interface RedisLike {
   subscribe(...channels: string[]): unknown;
   unsubscribe(...channels: string[]): unknown;
   on(event: 'message', cb: (channel: string, message: string) => void): unknown;
+  on(event: 'error', cb: (err: unknown) => void): unknown;
   /** ZADD key score member. */
   zadd(key: string, score: number, member: string): Promise<unknown>;
   /** ZREM key member. */
@@ -197,9 +198,133 @@ const UNREGISTER_TAB_SCRIPT = [
   'return 1',
 ].join('\n');
 
-/** Send a write without awaiting it, and without leaving its rejection unhandled. */
-function fireAndForget(write: Promise<unknown>): void {
-  write.catch(() => undefined);
+/**
+ * Send a write without awaiting it, and without leaving its rejection unhandled.
+ * An unhandled rejection reaches the runtime's own printer, which inspects the
+ * error object whole: for an ioredis `ReplyError` that includes the failed
+ * command's arguments (an `AUTH` command's password). The failure is reported
+ * through the bus's sanitised `onError` instead.
+ */
+function fireAndForget(write: unknown, report?: (err: unknown) => void): void {
+  if (write && typeof (write as Promise<unknown>).catch === 'function') {
+    (write as Promise<unknown>).catch((err: unknown) => report?.(err));
+  }
+}
+
+/** What {@link RedisRelayBus} reports about a Redis failure. Never the raw error. */
+export interface RelayBusErrorSummary {
+  /** Which connection failed. */
+  role: 'pub' | 'sub' | 'init';
+  name: string;
+  code: string | null;
+  /** The error message with any `user:password@` userinfo replaced by `***@`. */
+  message: string;
+}
+
+export interface RedisRelayBusOptions {
+  /**
+   * Called with a sanitised summary of a Redis connection or command failure.
+   * Default: a `console.warn` of the summary, at most once per 30 s per role.
+   * The raw error, its `command` / `input` properties and its stack never reach it.
+   */
+  onError?: (summary: RelayBusErrorSummary) => void;
+}
+
+const MAX_ERROR_MESSAGE_CHARS = 300;
+
+/**
+ * The userinfo and password parts of a Redis URL, for redacting text that echoes
+ * them back. ioredis builds some errors from a mis-parsed URL: a password holding
+ * `/` is read as a unix socket path, and the failed connect then reports
+ * `connect ENOENT /:pw@host:6379` with the password in the MESSAGE, on every retry.
+ */
+function urlSecrets(url: string): string[] {
+  const m = /^(?:[a-z][a-z0-9+.-]*:\/\/)?(.*)@[^@]*$/is.exec(url.trim());
+  if (!m || !m[1]) return [];
+  const userinfo = m[1];
+  const colon = userinfo.indexOf(':');
+  const password = colon === -1 ? '' : userinfo.slice(colon + 1);
+  return [userinfo, password].filter((x) => x.length >= 3);
+}
+
+/**
+ * Throw a credential-free error when `url` is not a URL Node can parse.
+ *
+ * Handing ioredis a URL it cannot parse is not harmless: it falls back to the
+ * legacy `url.parse`, which makes Node itself print
+ * `DeprecationWarning: The URL //user:pw@host is invalid` (DEP0170) with the
+ * WHOLE URL, password included, on every construction, and a password holding
+ * `/` is then taken for a unix socket path whose failed connect repeats the
+ * password in the error message. A reserved character in a password needs
+ * percent-encoding, so a URL that fails here is a configuration error to report
+ * once, not a connection to retry.
+ */
+function assertParseableRedisUrl(url: string): void {
+  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(url) ? url : `redis://${url}`;
+  let parsed: URL | null = null;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    /* handled below, without the underlying error */
+  }
+  if (!parsed || !parsed.hostname) {
+    throw new Error(
+      'Redis relay bus init failed: the URL is not parseable (a reserved character in the password probably needs percent-encoding)'
+    );
+  }
+}
+
+/**
+ * Replace credentials in free text: `scheme://user:pw@host`, scheme-less
+ * `user:pw@host` (any run of non-space characters ending in `@`, so a `/` inside
+ * the password does not break it), and every `secrets` entry verbatim.
+ */
+export function redactRedisUserinfo(text: string, secrets: readonly string[] = []): string {
+  let out = text
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]*@/gi, '$1***@')
+    .replace(/(^|[\s'"(=,])[^\s@'"]*:[^\s@'"]*@/g, '$1***@');
+  for (const secret of secrets) {
+    if (secret) out = out.split(secret).join('***');
+  }
+  return out;
+}
+
+/**
+ * Reduce an ioredis/Node error to name, code and a redacted message. ioredis
+ * puts the secret on PROPERTIES (`ReplyError.command.args`, `ERR_INVALID_URL`'s
+ * `input`) and, for a mis-parsed URL, in `message` too, so a summary built only
+ * from these three scalar fields, each redacted, cannot carry it.
+ */
+export function summarizeRedisError(
+  err: unknown,
+  role: RelayBusErrorSummary['role'],
+  secrets: readonly string[] = []
+): RelayBusErrorSummary {
+  const e = (err ?? {}) as { name?: unknown; code?: unknown; message?: unknown };
+  const name = typeof e.name === 'string' ? e.name : 'Error';
+  const code = typeof e.code === 'string' ? e.code : null;
+  const raw = typeof e.message === 'string' ? e.message : '';
+  return {
+    role,
+    name: redactRedisUserinfo(name, secrets).slice(0, 80),
+    code: code === null ? null : redactRedisUserinfo(code, secrets).slice(0, 80),
+    message: redactRedisUserinfo(raw, secrets).slice(0, MAX_ERROR_MESSAGE_CHARS),
+  };
+}
+
+const ERROR_LOG_INTERVAL_MS = 30_000;
+
+function defaultOnError(): (summary: RelayBusErrorSummary) => void {
+  const lastLoggedAt = new Map<string, number>();
+  return (summary) => {
+    const now = Date.now();
+    const last = lastLoggedAt.get(summary.role);
+    if (last !== undefined && now - last < ERROR_LOG_INTERVAL_MS) return;
+    lastLoggedAt.set(summary.role, now);
+    console.warn(
+      `[ui-bridge relay] redis ${summary.role} error: ${summary.name}${summary.code ? ` (${summary.code})` : ''}: ${summary.message}`
+    );
+  };
 }
 
 /**
@@ -219,9 +344,39 @@ export class RedisRelayBus implements RelayBus {
   /** This instance's member in a tab's holder set (see {@link TAB_HOLDERS_PREFIX}). */
   private readonly holderId = crypto.randomUUID();
 
-  private constructor(pub: RedisLike, sub: RedisLike) {
+  private readonly onError: (summary: RelayBusErrorSummary) => void;
+  private readonly secrets: readonly string[];
+  /** Reports a rejected fire-and-forget command through the sanitised `onError`. */
+  private readonly reportCommandError = (err: unknown): void => {
+    try {
+      this.onError(summarizeRedisError(err, 'pub', this.secrets));
+    } catch {
+      /* a throwing reporter must not take the process down */
+    }
+  };
+
+  private constructor(
+    pub: RedisLike,
+    sub: RedisLike,
+    options: RedisRelayBusOptions = {},
+    secrets: readonly string[] = []
+  ) {
+    this.secrets = secrets;
     this.pub = pub;
     this.sub = sub;
+    const onError = options.onError ?? defaultOnError();
+    this.onError = onError;
+    // Without a listener ioredis prints its own `Unhandled error event` line, and an
+    // embedder's handler would see the raw error. Both clients report sanitised.
+    const report = (role: 'pub' | 'sub') => (err: unknown) => {
+      try {
+        onError(summarizeRedisError(err, role, secrets));
+      } catch {
+        /* a throwing reporter must not take the process down */
+      }
+    };
+    this.pub.on('error', report('pub'));
+    this.sub.on('error', report('sub'));
     this.sub.on('message', (channel, message) => {
       const set = this.handlers.get(channel);
       if (!set || set.size === 0) return;
@@ -243,21 +398,33 @@ export class RedisRelayBus implements RelayBus {
 
   /**
    * Construct a Redis-backed bus. `url` is a standard `redis://` /`rediss://`
-   * connection string. Throws if `ioredis` is not installed.
+   * connection string. Throws if `ioredis` is not installed, or a sanitised
+   * `Error` (no `cause`, `input` or `command`) when the URL cannot be used.
    */
-  static async create(url: string): Promise<RedisRelayBus> {
+  static async create(url: string, options: RedisRelayBusOptions = {}): Promise<RedisRelayBus> {
     // Dynamic import keeps ioredis an OPTIONAL dependency. The specifier is held
     // in a variable so TypeScript does not statically resolve it — the module is
     // only required at runtime when a Redis bus is actually constructed, and the
     // package typechecks/builds without `ioredis` present.
+    assertParseableRedisUrl(url);
     const specifier = 'ioredis';
     const mod = (await import(specifier)) as unknown as {
       default: new (url: string) => RedisLike;
     };
     const Redis = mod.default;
-    const pub = new Redis(url);
-    const sub = pub.duplicate();
-    return new RedisRelayBus(pub, sub);
+    let pub: RedisLike;
+    let sub: RedisLike;
+    try {
+      pub = new Redis(url);
+      sub = pub.duplicate();
+    } catch (err) {
+      // ioredis' `ERR_INVALID_URL` carries the whole URL, password included, on `input`.
+      const { code } = summarizeRedisError(err, 'init', urlSecrets(url));
+      // No `cause`: it would carry the error's `input`, the URL with the password.
+      // eslint-disable-next-line preserve-caught-error
+      throw new Error(`Redis relay bus init failed${code ? `: ${code}` : ''}`);
+    }
+    return new RedisRelayBus(pub, sub, options, urlSecrets(url));
   }
 
   private addHandler(channel: string, handler: (env: never) => void): () => void {
@@ -265,7 +432,7 @@ export class RedisRelayBus implements RelayBus {
     if (!set) {
       set = new Set();
       this.handlers.set(channel, set);
-      void this.sub.subscribe(channel);
+      fireAndForget(this.sub.subscribe(channel), this.reportCommandError);
     }
     set.add(handler);
     return () => {
@@ -274,14 +441,14 @@ export class RedisRelayBus implements RelayBus {
       s.delete(handler);
       if (s.size === 0) {
         this.handlers.delete(channel);
-        void this.sub.unsubscribe(channel);
+        fireAndForget(this.sub.unsubscribe(channel), this.reportCommandError);
       }
     };
   }
 
   publishCommand(env: RelayCommandEnvelope): void {
     const channel = env.targetTabId ? `${CMD_TAB_PREFIX}${env.targetTabId}` : CMD_BROADCAST;
-    void this.pub.publish(channel, JSON.stringify(env));
+    fireAndForget(this.pub.publish(channel, JSON.stringify(env)), this.reportCommandError);
   }
 
   subscribeCommands(tabId: string, handler: (env: RelayCommandEnvelope) => void): () => void {
@@ -294,7 +461,10 @@ export class RedisRelayBus implements RelayBus {
   }
 
   publishResponse(env: RelayResponseEnvelope): void {
-    void this.pub.publish(`${RESP_PREFIX}${env.commandId}`, JSON.stringify(env));
+    fireAndForget(
+      this.pub.publish(`${RESP_PREFIX}${env.commandId}`, JSON.stringify(env)),
+      this.reportCommandError
+    );
   }
 
   subscribeResponse(commandId: string, handler: (env: RelayResponseEnvelope) => void): () => void {
@@ -306,10 +476,10 @@ export class RedisRelayBus implements RelayBus {
     const ttl = Math.max(1, ttlSeconds);
     const now = Date.now();
     const expiresAt = now + ttl * 1000;
-    fireAndForget(this.pub.zadd(key, expiresAt, this.holderId));
+    fireAndForget(this.pub.zadd(key, expiresAt, this.holderId), this.reportCommandError);
     // A holder that lapsed without letting go (its instance was killed) is
     // dropped here.
-    fireAndForget(this.pub.zremrangebyscore(key, '-inf', now));
+    fireAndForget(this.pub.zremrangebyscore(key, '-inf', now), this.reportCommandError);
     // The key lives as long as its longest hold, read back after this one was
     // added: a holder refreshing with a shorter TTL cannot expire it early, and
     // a key whose every holder lapsed expires with them (review A7). Two
@@ -321,7 +491,7 @@ export class RedisRelayBus implements RelayBus {
         .zrange(key, -1, -1, 'WITHSCORES')
         .then((top) => this.pub.pexpireat(key, Math.max(expiresAt, Number(top[1] ?? 0))))
     );
-    fireAndForget(this.pub.set(`${PREVIOUS_TAB_PRESENCE_PREFIX}${tabId}`, '1', 'EX', ttl));
+    fireAndForget(this.pub.set(`${PREVIOUS_TAB_PRESENCE_PREFIX}${tabId}`, '1', 'EX', ttl), this.reportCommandError);
   }
 
   unregisterTab(tabId: string): void {
@@ -376,8 +546,9 @@ export class RedisRelayBus implements RelayBus {
  * import is dynamic.
  */
 export async function createRedisRelayBus(
-  url: string | undefined | null
+  url: string | undefined | null,
+  options?: RedisRelayBusOptions
 ): Promise<RelayBus | null> {
   if (!url || !url.trim()) return null;
-  return RedisRelayBus.create(url.trim());
+  return RedisRelayBus.create(url.trim(), options);
 }

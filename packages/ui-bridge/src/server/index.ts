@@ -80,6 +80,10 @@ export { type CommandStreamHandle, type CommandStreamOptions } from './stream-sl
 export {
   RedisRelayBus,
   createRedisRelayBus,
+  redactRedisUserinfo,
+  summarizeRedisError,
+  type RedisRelayBusOptions,
+  type RelayBusErrorSummary,
   type RelayBus,
   type RelayCommandEnvelope,
   type RelayResponseEnvelope,
