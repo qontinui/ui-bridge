@@ -536,17 +536,25 @@ export class DOMChangeObserver {
     const elementId = getBestIdentifier(target);
 
     if (mutation.type === 'attributes') {
+      const attributeName = mutation.attributeName;
+      // §4.6: an attribute change ships both the old and the new value, so each
+      // goes through the same record scrub the snapshot's `attributes` do —
+      // inside a boundary every value collapses, and a `value` attribute
+      // collapses under a value-only verdict (a password input).
+      const verdict = verdictOf(target);
+      const scrubbed = (raw: string | null): string | undefined =>
+        attributeName && raw
+          ? scrubRecord({ [attributeName]: raw }, verdict)[attributeName]
+          : undefined;
       return {
         timestamp: Date.now(),
         type: 'attribute',
         elementId,
         tagName: target.tagName.toLowerCase(),
         details: {
-          attributeName: mutation.attributeName || undefined,
-          oldValue: mutation.oldValue || undefined,
-          newValue: mutation.attributeName
-            ? target.getAttribute(mutation.attributeName) || undefined
-            : undefined,
+          attributeName: attributeName || undefined,
+          oldValue: scrubbed(mutation.oldValue),
+          newValue: attributeName ? scrubbed(target.getAttribute(attributeName)) : undefined,
         },
       };
     }
