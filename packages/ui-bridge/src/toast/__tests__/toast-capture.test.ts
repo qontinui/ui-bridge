@@ -763,4 +763,15 @@ describe('ToastCapture', () => {
     const messages = capture.getActive().map((t) => t.message);
     expect(messages.join(' ')).not.toContain('sk-LIVE-777');
   });
+
+  it('a toast action button holding a boundary reports the sentinel as actionText', async () => {
+    capture = new ToastCapture();
+    capture.install();
+    const el = addToast({ role: 'status' }, '');
+    el.innerHTML = 'Key issued <button>Copy <span data-bridge-redact="true">sk-LIVE-777</span></button>';
+    await flushAndScan();
+    const toast = capture.getActive()[0];
+    expect(JSON.stringify(toast)).not.toContain('sk-LIVE-777');
+    expect(toast?.actionText).toBe('Copy [REDACTED]');
+  });
 });

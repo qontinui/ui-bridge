@@ -229,7 +229,10 @@ function detectAction(el: Element): ActionInfo {
     ) {
       continue;
     }
-    return { hasAction: true, actionText: truncateCodePoints(text, 100) };
+    // §4.6: the emitted action text excludes any boundary in (or around) the
+    // button; the raw `text` above is only compared, never emitted.
+    const shown = (textExcludingBoundaries(btn) || '').trim();
+    return { hasAction: true, actionText: truncateCodePoints(shown, 100) };
   }
   return { hasAction: false };
 }

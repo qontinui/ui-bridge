@@ -146,8 +146,10 @@ export function discoverForms(elements: FormDiscoveryElement[]): FormsResponse {
 
 /**
  * Get label text for a form element by checking associated `<label>` elements.
+ * The one label reader for both `/control/forms` and the form-diff snapshot
+ * (`form-diff.ts`), so the §4.6 boundary exclusion cannot drift between them.
  */
-function getLabelText(element: HTMLElement): string | undefined {
+export function getLabelText(element: HTMLElement): string | undefined {
   if (typeof document === 'undefined') return undefined;
 
   // Check for <label for="id">

@@ -11,6 +11,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { discoverForms, type FormDiscoveryElement } from '../form-discovery';
+import { captureFormSnapshot } from '../form-diff';
 import type { ElementState } from '../../core/types';
 
 const SECRET = 'ACC-998877';
@@ -58,5 +59,17 @@ describe('discoverForms keeps label and error text outside redaction boundaries'
     const response = discoverForms([input('f', el)]);
     expect(JSON.stringify(response)).not.toContain(SECRET);
     expect(JSON.stringify(response)).toContain('[REDACTED]');
+  });
+});
+
+describe('captureFormSnapshot (form-diff) reads labels through the same door', () => {
+  it.each([
+    ['label[for]', `<form><label for="f">Account <span data-bridge-redact="true">${SECRET}</span></label><input id="f"></form>`],
+    ['wrapping label', `<form><label>Account <span data-bridge-redact="true">${SECRET}</span><input id="f"></label></form>`],
+  ])('a %s holding a boundary: the snapshot carries the sentinel', (_c, html) => {
+    document.body.innerHTML = html;
+    const snap = JSON.stringify(captureFormSnapshot());
+    expect(snap).not.toContain(SECRET);
+    expect(snap).toContain('[REDACTED]');
   });
 });

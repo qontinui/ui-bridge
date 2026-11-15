@@ -252,3 +252,13 @@ describe('more than one label, and fingerprints', () => {
     expect(JSON.stringify(fp)).not.toContain('tok-SECRET');
   });
 });
+
+describe('fingerprints of an element inside a boundary', () => {
+  it.each([
+    ['aria-label', '<div data-bridge-redact="true"><button id="t" aria-label="Copy tok-SECRET">c</button></div>'],
+    ['placeholder', '<div data-bridge-redact="true"><input id="t" placeholder="tok-SECRET"></div>'],
+  ])('its %s never reaches the fingerprint', (_c, html) => {
+    document.body.innerHTML = html;
+    expect(JSON.stringify(computeElementFingerprint(document.getElementById('t')!))).not.toContain('tok-SECRET');
+  });
+});
