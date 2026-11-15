@@ -65,8 +65,11 @@ export interface RelayResponseEnvelope {
    * Set by the instance holding the tab when it refuses the sender's identity
    * (per-user tab scoping, §4.2). The sender rejects with `OwnerMismatchError`,
    * which the HTTP layer answers exactly like a tab that does not exist.
+   * `NOT_DELIVERED`: the instance holding the tab could not write the command
+   * to its stream, so the sender fails at once instead of waiting out its
+   * bus timeout. `error` carries the relay's not-delivered message.
    */
-  code?: 'OWNER_MISMATCH';
+  code?: 'OWNER_MISMATCH' | 'NOT_DELIVERED';
 }
 
 export interface RelayBus {

@@ -1902,6 +1902,9 @@ export class CommandRelay {
         // not exist read the same to a scoped caller.
         pending.reject(new OwnerMismatchError(targetTabId, senderUserId ?? '', ''));
       } else {
+        // `NOT_DELIVERED` carries the relay's not-delivered message in `error`;
+        // a sender on an older version never sees the code and still rejects
+        // with that text.
         pending.reject(new Error(env.error || `Command ${action} failed`));
       }
     });
@@ -2100,6 +2103,8 @@ export class CommandRelay {
       if (this.refusesBusSender(tabId, env)) return;
       if (this.sendCommandViaWebSocket(env.commandId, env.action, env.payload, tabId)) {
         this.recordBusDelivery(env.commandId, tabId);
+      } else {
+        this.reportBusNotDelivered(tabId, env, 'Its WebSocket client did not accept the write.');
       }
     });
   }
@@ -2734,6 +2739,40 @@ export class CommandRelay {
     // Remember where it went, so a response that lands here is held to the
     // stream that received the command (see `resolveCommand`).
     if (this.deliver(listener, command)) this.recordBusDelivery(env.commandId, tabId, listener);
+    else this.reportBusNotDelivered(tabId, env, 'Its command stream did not accept the write.');
+  }
+
+  /**
+   * This instance holds `tabId` but could not write bus command `env` to it:
+   * tell the sender at once so it rejects with the relay's not-delivered
+   * message rather than waiting out its bus timeout. Silent when the command
+   * is a broadcast (another holder may still deliver it) or when another
+   * instance holds the tab too (it delivers or reports for itself). Only a
+   * command written to an open stream reaches here; one for a tab with no
+   * open stream is parked by its sender's instance, never published as a
+   * failure.
+   */
+  private reportBusNotDelivered(tabId: string, env: RelayCommandEnvelope, why: string): void {
+    const bus = this.bus;
+    if (!bus || env.targetTabId === undefined) return;
+    const publish = () => {
+      try {
+        bus.publishResponse({
+          commandId: env.commandId,
+          ok: false,
+          error: notDeliveredMessage(env.action, `Tab "${tabId}" is held here. ${why}`),
+          code: 'NOT_DELIVERED',
+        });
+      } catch (err) {
+        console.error('[ui-bridge] publishing a bus not-delivered reply failed:', err);
+      }
+    };
+    void bus
+      .holdsElsewhere(tabId)
+      .catch(() => false)
+      .then((elsewhere) => {
+        if (!elsewhere) publish();
+      });
   }
 
   /**
