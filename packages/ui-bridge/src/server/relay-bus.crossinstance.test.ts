@@ -154,4 +154,69 @@ describe('CommandRelay cross-instance routing via RelayBus (P0a)', () => {
 
     hub.clear();
   });
+  describe('bus delivery-failure fast-fail (NOT_DELIVERED)', () => {
+    it('rejects the sender at once when the holder cannot write the command', async () => {
+      const hub = new InMemoryBusHub();
+      const sender = freshRelay('__instA_nd1', hub.bus('A'));
+      const holder = freshRelay('__instB_nd1', hub.bus('B'));
+      holder.subscribeToCommands(() => false, 'tab-1'); // the stream write fails
+
+      const started = Date.now();
+      await expect(sender.queueCommand('testAction', {}, { targetTabId: 'tab-1' })).rejects.toThrow(
+        /No active UI Bridge SDK client received the testAction command/
+      );
+      // Far below the 8 s bus timeout.
+      expect(Date.now() - started).toBeLessThan(2000);
+      hub.clear();
+    });
+
+    it('does not fail a command the holder wrote', async () => {
+      const hub = new InMemoryBusHub();
+      const sender = freshRelay('__instA_nd2', hub.bus('A'));
+      const holder = freshRelay('__instB_nd2', hub.bus('B'));
+      const received: RelayCommandEnvelope[] = [];
+      holder.subscribeToCommands((cmd) => {
+        received.push(cmd as RelayCommandEnvelope);
+      }, 'tab-1');
+
+      const pending = sender.queueCommand<{ v: number }>(
+        'testAction',
+        {},
+        { targetTabId: 'tab-1' }
+      );
+      let settled = false;
+      pending.then(
+        () => (settled = true),
+        () => (settled = true)
+      );
+      await new Promise((r) => setTimeout(r, 50));
+      expect(settled).toBe(false);
+      holder.resolveCommand(received[0].commandId, { v: 1 }, 'tab-1');
+      await expect(pending).resolves.toEqual({ v: 1 });
+      hub.clear();
+    });
+
+    it('stays silent when another instance holds the tab too', async () => {
+      const hub = new InMemoryBusHub();
+      const sender = freshRelay('__instA_nd3', hub.bus('A'));
+      const failing = freshRelay('__instB_nd3', hub.bus('B'));
+      const working = freshRelay('__instC_nd3', hub.bus('C'));
+      failing.subscribeToCommands(() => false, 'tab-1');
+      const received: RelayCommandEnvelope[] = [];
+      working.subscribeToCommands((cmd) => {
+        received.push(cmd as RelayCommandEnvelope);
+      }, 'tab-1');
+
+      const pending = sender.queueCommand<{ v: number }>(
+        'testAction',
+        {},
+        { targetTabId: 'tab-1' }
+      );
+      await new Promise((r) => setTimeout(r, 50));
+      expect(received).toHaveLength(1);
+      working.resolveCommand(received[0].commandId, { v: 2 }, 'tab-1');
+      await expect(pending).resolves.toEqual({ v: 2 });
+      hub.clear();
+    });
+  });
 });
