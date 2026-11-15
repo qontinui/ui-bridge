@@ -39,6 +39,23 @@ export type LaunchColorScheme = 'light' | 'dark';
  */
 export type LaunchRecordHarOptions = NonNullable<BrowserContextOptions['recordHar']>;
 
+/**
+ * Video recording for the launch's browser context: Playwright's own
+ * `recordVideo` shape (`{ dir, size?, … }`), passed to `browser.newContext`
+ * with two differences. `dir` is required, because without it Playwright keeps
+ * the file in a temporary artifacts directory that is deleted when the browser
+ * closes. And a missing `size` defaults to the launch's viewport, so a frame is
+ * recorded at full CSS-pixel size instead of Playwright's default (the viewport
+ * scaled down to fit 800x800).
+ *
+ * Playwright writes one file per page when the page (or its context) closes;
+ * `tab.page.video()?.path()` names the tab's file, which is complete once
+ * `tab.close()` resolves.
+ */
+export type LaunchRecordVideoOptions = NonNullable<BrowserContextOptions['recordVideo']> & {
+  dir: string;
+};
+
 /** Whether the launch's context lets pages register service workers. */
 export type LaunchServiceWorkersPolicy = NonNullable<BrowserContextOptions['serviceWorkers']>;
 
@@ -248,6 +265,18 @@ export interface LaunchHeadlessTabOptions {
    * Backward-compatible: when unset, no HAR is recorded.
    */
   recordHar?: LaunchRecordHarOptions;
+
+  /**
+   * Record a video of every page the context opens (see
+   * {@link LaunchRecordVideoOptions}). `dir` must be a non-empty string; a
+   * missing `size` defaults to `{ width: viewportWidth, height: viewportHeight }`.
+   * Checked before Chromium launches, so a malformed value rejects the launch
+   * with no browser to clean up. The file is complete once the tab's `close()`
+   * resolves.
+   *
+   * Backward-compatible: when unset, no video is recorded.
+   */
+  recordVideo?: LaunchRecordVideoOptions;
 
   /**
    * `'block'` stops pages registering service workers, passed to
@@ -510,6 +539,40 @@ async function closeBrowserReportingFailure(browser: Browser, what: string): Pro
 }
 
 /**
+ * Check a {@link LaunchRecordVideoOptions} and fill in its default `size` (the
+ * viewport). Throws before Chromium launches on a missing or empty `dir`, or a
+ * `size` that is not two positive integers.
+ */
+function resolveRecordVideo(
+  recordVideo: LaunchRecordVideoOptions,
+  viewportWidth: number,
+  viewportHeight: number
+): LaunchRecordVideoOptions {
+  if (
+    typeof recordVideo !== 'object' ||
+    recordVideo === null ||
+    typeof recordVideo.dir !== 'string' ||
+    recordVideo.dir.length === 0
+  ) {
+    throw new Error('recordVideo must be an object with a non-empty string `dir`');
+  }
+  const { size } = recordVideo;
+  if (size !== undefined) {
+    const positiveInt = (n: unknown) => typeof n === 'number' && Number.isInteger(n) && n > 0;
+    if (
+      typeof size !== 'object' ||
+      size === null ||
+      !positiveInt(size.width) ||
+      !positiveInt(size.height)
+    ) {
+      throw new Error('recordVideo.size must be { width, height } with positive integer sides');
+    }
+    return recordVideo;
+  }
+  return { ...recordVideo, size: { width: viewportWidth, height: viewportHeight } };
+}
+
+/**
  * Close a tab's `context`, then its `browser`, reporting either failure on
  * stderr instead of throwing it.
  *
@@ -524,7 +587,7 @@ async function closeTabReportingFailure(context: BrowserContext, browser: Browse
   } catch (closeError) {
     const detail = closeError instanceof Error ? closeError.message : String(closeError);
     process.stderr.write(
-      `[ui-bridge] could not close the tab's browser context (a recordHar archive may be missing or incomplete): ${detail}\n`
+      `[ui-bridge] could not close the tab's browser context (a recordHar archive or recordVideo file may be missing or incomplete): ${detail}\n`
     );
   }
   await closeBrowserReportingFailure(browser, "the tab's browser");
@@ -587,6 +650,7 @@ export async function launchHeadlessTab(
     callerUserId,
     pinnedTabId,
     recordHar,
+    recordVideo,
     serviceWorkers,
     initRouter,
   } = options;
@@ -595,6 +659,10 @@ export async function launchHeadlessTab(
   if (colorScheme !== undefined && colorScheme !== 'light' && colorScheme !== 'dark') {
     throw new Error(`colorScheme must be 'light' or 'dark' (got ${String(colorScheme)})`);
   }
+  const videoOptions =
+    recordVideo !== undefined
+      ? resolveRecordVideo(recordVideo, viewportWidth, viewportHeight)
+      : undefined;
 
   // Resolve the storageState seed. When a path is given we READ the file here
   // (rather than handing the path to Playwright) so we can split off the custom
@@ -634,6 +702,7 @@ export async function launchHeadlessTab(
       userAgent,
       ...(storageStateSeed ? { storageState: storageStateSeed as never } : {}),
       ...(recordHar !== undefined ? { recordHar } : {}),
+      ...(videoOptions !== undefined ? { recordVideo: videoOptions } : {}),
       ...(serviceWorkers !== undefined ? { serviceWorkers } : {}),
     });
 
