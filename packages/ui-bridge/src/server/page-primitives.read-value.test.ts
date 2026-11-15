@@ -14,8 +14,14 @@
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { readValuePrimitive, clickBySelectorPrimitive } from './page-primitives';
+import {
+  readValuePrimitive,
+  clickBySelectorPrimitive,
+  clickByTextPrimitive,
+  findByTextPrimitive,
+} from './page-primitives';
 import { REDACTED_VALUE, readScrubbedText } from '../core/redaction';
+import { computeVisibleText, resolveAccessibleName } from '../core/a11y';
 
 afterEach(() => {
   document.body.innerHTML = '';
@@ -102,5 +108,82 @@ describe('ancestor selection does not read through a redaction boundary', () => 
   it('an element inside a boundary still reads the bare sentinel', () => {
     document.body.innerHTML = page;
     expect(readScrubbedText(document.querySelector('span'))).toBe(REDACTED_VALUE);
+  });
+});
+
+describe('the value of elements whose .value is not a value', () => {
+  it('an <output> reads its scrubbed text, not .value (which is its raw text)', () => {
+    document.body.innerHTML =
+      '<output id="o">x <span data-bridge-redact="true">SECRET-OUT</span></output>';
+    expect(read('#o').value).toBe(`x ${REDACTED_VALUE}`);
+  });
+
+  it('an <option value=""> reads "", agreeing with its <select>', () => {
+    document.body.innerHTML =
+      '<select id="s"><option id="ph" value="" selected>Choose one</option></select>';
+    expect(read('#ph').value).toBe('');
+    expect(read('#s').value).toBe('');
+  });
+
+  it('a <data value="..."> reads its attribute', () => {
+    document.body.innerHTML = '<data id="d" value="42">forty-two</data>';
+    expect(read('#d').value).toBe('42');
+  });
+});
+
+describe('text search is no confirmation oracle for redacted text', () => {
+  const page =
+    '<main id="app"><div id="card">Token: <span data-bridge-redact="true">tok-SECRET-123</span> (expires)</div></main>';
+
+  it('findByText for the secret finds nothing, not even an ancestor', () => {
+    document.body.innerHTML = page;
+    const right = findByTextPrimitive('tok-SECRET-123', {});
+    const wrong = findByTextPrimitive('tok-WRONG-999', {});
+    expect(right.ok && right.data).toEqual([]);
+    expect(wrong.ok && wrong.data).toEqual([]);
+  });
+
+  it('findByText still finds the non-redacted text of the container', () => {
+    document.body.innerHTML = page;
+    const r = findByTextPrimitive('(expires)', { exact: false });
+    expect(r.ok && r.data.map((h) => h.text)).toContain(`Token: ${REDACTED_VALUE} (expires)`);
+  });
+
+  it('clickByText for the secret answers not-found and clicks nothing', () => {
+    document.body.innerHTML = page;
+    let clicked = 0;
+    const r = clickByTextPrimitive('tok-SECRET-123', {}, () => {
+      clicked += 1;
+    });
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.code).toBe('ELEMENT_NOT_FOUND');
+    expect(clicked).toBe(0);
+  });
+
+  it('visible text and a content-derived accessible name exclude the boundary', () => {
+    document.body.innerHTML =
+      '<button id="b">Copy <span data-bridge-redact="true">tok-SECRET-123</span></button>';
+    const b = document.getElementById('b')!;
+    expect(computeVisibleText(b)).toBe(`Copy ${REDACTED_VALUE}`);
+    expect(resolveAccessibleName(b).name ?? '').not.toContain('tok-SECRET-123');
+  });
+
+  it('an aria-label name is the element\'s own and stays', () => {
+    document.body.innerHTML =
+      '<button id="b" aria-label="Copy token"><span data-bridge-redact="true">tok-SECRET-123</span></button>';
+    expect(resolveAccessibleName(document.getElementById('b')!)).toMatchObject({
+      name: 'Copy token',
+      source: 'aria-label',
+    });
+  });
+});
+
+describe('truncation never splits the sentinel', () => {
+  it('a cut inside the sentinel drops it whole', () => {
+    document.body.innerHTML = '<div id="t">ab<span data-bridge-redact="true">x</span>cd</div>';
+    expect(readScrubbedText(document.getElementById('t'), undefined, { maxLen: 5 })).toBe('ab');
+    expect(readScrubbedText(document.getElementById('t'), undefined, { maxLen: 12 })).toBe(
+      `ab${REDACTED_VALUE}`
+    );
   });
 });
