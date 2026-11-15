@@ -85,6 +85,9 @@ class InMemoryBus implements RelayBus {
   async isTabKnown(tabId: string): Promise<boolean> {
     return (this.hub.holders.get(tabId)?.size ?? 0) > 0;
   }
+  async holdsElsewhere(tabId: string): Promise<boolean> {
+    return [...(this.hub.holders.get(tabId) ?? [])].some((holder) => holder !== this.instance);
+  }
   async close(): Promise<void> {
     this.hub.clear();
   }

@@ -468,6 +468,11 @@ class InMemoryBus implements RelayBus {
   async isTabKnown(tabId: string): Promise<boolean> {
     return this.present.has(tabId);
   }
+  // One presence set shared by every instance: no holder is told apart from
+  // another, so none counts as "elsewhere".
+  async holdsElsewhere(): Promise<boolean> {
+    return false;
+  }
   async close(): Promise<void> {
     this.cmdByTab.clear();
     this.broadcast.clear();
