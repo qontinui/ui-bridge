@@ -294,7 +294,94 @@ const REDACTION_BOUNDARY_SELECTOR = `[${BRIDGE_REDACT_ATTR}="true"]`;
  * boundary's text. This is the predicate that says it has to.
  */
 export function hasRedactionBoundaryBelow(el: Element): boolean {
+  const index = activeBoundaryIndex;
+  if (index !== null && index.root.contains(el)) return index.above.has(el);
   return el.querySelector(REDACTION_BOUNDARY_SELECTOR) !== null;
+}
+
+/**
+ * What one {@link withBoundaryIndex} scope knows about a subtree: `above` is
+ * every element strictly ABOVE a boundary (itself, or an outer boundary, up to
+ * and including `root`) — exactly the elements for which
+ * `hasRedactionBoundaryBelow` is true — and `text` memoises each such
+ * element's boundary-excluded text.
+ */
+interface BoundaryIndex {
+  root: Element;
+  above: Set<Element>;
+  text: Map<Element, string>;
+}
+
+let activeBoundaryIndex: BoundaryIndex | null = null;
+
+/**
+ * Run `fn` with the boundaries under `root` indexed ONCE, so a reader that
+ * visits many elements of that subtree does not re-search and re-walk each
+ * one's subtree for a boundary. Inside `fn`, for any element within `root`,
+ * `hasRedactionBoundaryBelow` is a set lookup and `textOutsideBoundaries`
+ * composes an ancestor's text from its children's memoised text — so the cost
+ * of reading every element of a page is linear in its size, not size times
+ * depth. Results are identical to the unscoped readers; the index is only
+ * valid while the DOM is not mutated, so `fn` must be synchronous and read-only
+ * (a nested scope shadows the outer one and restores it).
+ */
+export function withBoundaryIndex<T>(root: Element, fn: () => T): T {
+  const above = new Set<Element>();
+  for (const boundary of Array.from(root.querySelectorAll(REDACTION_BOUNDARY_SELECTOR))) {
+    for (let p = boundary.parentElement; p !== null; p = p.parentElement) {
+      if (above.has(p)) break;
+      above.add(p);
+      if (p === root) break;
+    }
+  }
+  const outer = activeBoundaryIndex;
+  activeBoundaryIndex = { root, above, text: new Map() };
+  try {
+    return fn();
+  } finally {
+    activeBoundaryIndex = outer;
+  }
+}
+
+/**
+ * The boundary-excluded text of `el`, an element the active index knows has a
+ * boundary below it, composed from its children: a text node contributes its
+ * data, a boundary the sentinel, an element with a boundary below its own
+ * (memoised) text, and any other element its plain `textContent`. Iterative
+ * (an explicit stack), so a deep chain of ancestors does not recurse.
+ */
+function indexedTextOutsideBoundaries(index: BoundaryIndex, el: Element): string {
+  const stack: Element[] = [el];
+  while (stack.length > 0) {
+    const top = stack[stack.length - 1];
+    if (index.text.has(top)) {
+      stack.pop();
+      continue;
+    }
+    const pending = Array.from(top.children).find(
+      (c) =>
+        index.above.has(c) &&
+        !index.text.has(c) &&
+        c.getAttribute(BRIDGE_REDACT_ATTR) !== 'true'
+    );
+    if (pending !== undefined) {
+      stack.push(pending);
+      continue;
+    }
+    let out = '';
+    top.childNodes.forEach((node) => {
+      if (node.nodeType === ELEMENT_NODE) {
+        const child = node as Element;
+        if (child.getAttribute(BRIDGE_REDACT_ATTR) === 'true') out += REDACTED_VALUE;
+        else out += index.text.get(child) ?? child.textContent ?? '';
+      } else if (node.nodeType === TEXT_NODE || node.nodeType === CDATA_SECTION_NODE) {
+        out += node.nodeValue ?? '';
+      }
+    });
+    index.text.set(top, out);
+    stack.pop();
+  }
+  return index.text.get(el) ?? '';
 }
 
 // NodeFilter / Node constants, as literals so this works in any realm (a
@@ -306,6 +393,8 @@ const FILTER_ACCEPT = 1;
 const FILTER_REJECT = 2;
 const FILTER_SKIP = 3;
 const ELEMENT_NODE = 1;
+const TEXT_NODE = 3;
+const CDATA_SECTION_NODE = 4;
 
 /**
  * `textContent` of `el` with every `data-bridge-redact="true"` DESCENDANT
@@ -318,6 +407,8 @@ const ELEMENT_NODE = 1;
  */
 export function textOutsideBoundaries(el: Element): string | null {
   if (!hasRedactionBoundaryBelow(el)) return el.textContent;
+  const index = activeBoundaryIndex;
+  if (index !== null && index.root.contains(el)) return indexedTextOutsideBoundaries(index, el);
   const doc = el.ownerDocument;
   if (!doc) return null;
   let out = '';
@@ -365,7 +456,7 @@ export function touchesRedactionBoundary(el: Element): boolean {
  * `REDACTED_VALUE` (`"[RE"`) that a consumer matching the sentinel would not
  * recognise: a sentinel the cut would split is dropped whole.
  */
-function truncateKeepingSentinel(raw: string, maxLen: number): string {
+export function truncateKeepingSentinel(raw: string, maxLen: number): string {
   const cut = truncateCodePoints(raw, maxLen);
   if (cut.length === raw.length) return cut;
   for (let i = raw.indexOf(REDACTED_VALUE); i !== -1 && i < cut.length; ) {
