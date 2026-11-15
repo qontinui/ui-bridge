@@ -24,6 +24,7 @@
 // `moduleResolution: bundler` won't auto-resolve them. The ambient declaration
 // for our use is in `dom-accessibility-api.d.ts` next to this file.
 import { computeAccessibleName, getRole } from 'dom-accessibility-api';
+import { hasRedactionBoundaryBelow, textOutsideBoundaries } from './redaction';
 
 /**
  * Collapse runs of whitespace to a single space and trim. Matches the
@@ -194,6 +195,22 @@ export function resolveAccessibleName(node: Element): ResolvedAccessibleName {
   const name = computeAccessibleNameSafe(node);
 
   if (name) {
+    // §4.6: a name computed FROM CONTENT reads the whole subtree, boundaries
+    // included. When a boundary sits below, take the boundary-aware visible
+    // text instead. An attribute-sourced name (aria-label, title, …) is the
+    // element's own and stays.
+    if (hasRedactionBoundaryBelow(node)) {
+      let source: AccessibleNameSource;
+      try {
+        source = attributeNameSource(node, name);
+      } catch {
+        source = 'text';
+      }
+      if (source === 'text') {
+        const safe = computeVisibleText(node);
+        return safe ? { name: safe, source: 'text' } : { source: 'none' };
+      }
+    }
     // Attribution is a NICETY; the name is not. `CSS.escape`, a malformed
     // `label[for]` selector, or an exotic node must never take a snapshot read
     // down — degrade to the catch-all rung instead. `computeAccessibleNameSafe`
@@ -264,6 +281,14 @@ function attributeNameSource(node: Element, name: string): AccessibleNameSource 
  * the value after the same normalization on both sides.
  */
 export function computeVisibleText(node: Element): string | undefined {
+  // §4.6: a container of a `data-bridge-redact` subtree must not read that
+  // subtree's text (its own verdict only looks UP). `innerText` cannot exclude
+  // a subtree, so such a container reads its text with each boundary replaced
+  // by the sentinel. Every visible-text consumer — text matching, the registry
+  // snapshot, labels — inherits the exclusion from this one function.
+  if (hasRedactionBoundaryBelow(node)) {
+    return normalizeWhitespace(textOutsideBoundaries(node) ?? '') || undefined;
+  }
   const inner = (node as HTMLElement).innerText;
   const raw = typeof inner === 'string' && inner.length > 0 ? inner : (node.textContent ?? '');
   const normalized = normalizeWhitespace(raw);

@@ -90,10 +90,12 @@ export {
 export { readValuePrimitive } from '../server/page-primitives';
 export type { PrimitiveResult, ReadValueResult, ReadValueHit } from '../server/page-primitives';
 
-// The §4.6-gated text primitives: `findByText` drops content-redacted elements
-// from its result set (so the hit count is no confirmation oracle), and the two
-// click primitives echo the clicked element's text through the CONTENT-axis
-// scrub. Exported for the same reason as `readValuePrimitive`: a host that
+// The §4.6-gated text primitives. Their shared matcher (`findElementsByText`)
+// never matches an element inside a redaction boundary, and reads a container's
+// text with each boundary below it replaced by the sentinel — so neither the
+// find hit count nor the click's found/not-found answer confirms redacted text.
+// Both click primitives echo the clicked element's text through the same
+// boundary-aware CONTENT-axis scrub. Exported for the same reason as `readValuePrimitive`: a host that
 // answers find-by-text / click-by-text / click-by-selector over its own
 // transport calls these instead of keeping a copy that echoes `textContent`
 // raw from inside a `data-bridge-redact` boundary.

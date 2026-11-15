@@ -8,8 +8,9 @@
  */
 
 import {
+  isContentRedacted,
+  readScrubbedOwnValue,
   readScrubbedText,
-  readScrubbedValue,
   REDACTED_VALUE,
   verdictOf,
   type RedactionVerdict,
@@ -264,7 +265,7 @@ export function scanDOMForInteractiveElementsWithRefs(
       tagName: el.tagName.toLowerCase(),
       state: {
         textContent: readScrubbedText(el, verdict, { maxLen: 500 }) ?? '',
-        value: 'value' in el ? readScrubbedValue(el as HTMLInputElement, verdict) : undefined,
+        value: readScrubbedOwnValue(el, verdict),
         checked: 'checked' in el ? (el as HTMLInputElement).checked : undefined,
         visible: isVisible(el),
         enabled: !isInteractionBlocked(disabledSignals),
@@ -334,7 +335,11 @@ export function findElementsByText(
   const searchText = text.toLowerCase();
 
   candidates.forEach((el) => {
-    // Use direct text, not deeply nested text for non-leaf nodes
+    // §4.6: an element inside a redaction boundary is never a text match, and
+    // `computeVisibleText` replaces a boundary BELOW a candidate with the
+    // sentinel. Together they keep the match (and so the hit count, and a
+    // click-by-text's found/not-found answer) from confirming redacted text.
+    if (isContentRedacted(el)) return;
     const elText = computeVisibleText(el)?.toLowerCase() ?? '';
     if (options?.exact ? elText === searchText : elText.includes(searchText)) {
       results.push(el);

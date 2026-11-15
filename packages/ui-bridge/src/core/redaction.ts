@@ -280,38 +280,107 @@ export function readScrubbedText(
   let raw = (v.content ? el.textContent : textOutsideBoundaries(el))?.trim();
   if (!raw) return undefined;
   if (opts?.normalizeWhitespace) raw = raw.replace(/\s+/g, ' ');
-  if (opts?.maxLen != null) raw = truncateCodePoints(raw, opts.maxLen);
+  if (opts?.maxLen != null) raw = truncateKeepingSentinel(raw, opts.maxLen);
   return scrubContentByVerdict(raw, v);
 }
 
+const REDACTION_BOUNDARY_SELECTOR = `[${BRIDGE_REDACT_ATTR}="true"]`;
+
+/**
+ * `true` when a `data-bridge-redact="true"` boundary sits strictly BELOW `el`.
+ * The element's own verdict only looks UP (`closestRedactionBoundary`), so a
+ * container of a boundary — `<body>`, a card wrapping a redacted token — is not
+ * itself redacted; anything that reads its subtree text must exclude the
+ * boundary's text. This is the predicate that says it has to.
+ */
+export function hasRedactionBoundaryBelow(el: Element): boolean {
+  return el.querySelector(REDACTION_BOUNDARY_SELECTOR) !== null;
+}
+
+// NodeFilter / Node constants, as literals so this works in any realm (a
+// detached document, a test environment without a global `NodeFilter`).
+const SHOW_ELEMENT = 0x1;
+const SHOW_TEXT = 0x4;
+const SHOW_CDATA_SECTION = 0x8;
+const FILTER_ACCEPT = 1;
+const FILTER_REJECT = 2;
+const FILTER_SKIP = 3;
+const ELEMENT_NODE = 1;
+
 /**
  * `textContent` of `el` with every `data-bridge-redact="true"` DESCENDANT
- * subtree replaced by one `REDACTED_VALUE`.
+ * subtree replaced by one `REDACTED_VALUE` (the outermost boundary wins; its
+ * subtree is not entered). When no boundary sits below `el` this is exactly
+ * `textContent`. Iterative (a TreeWalker), so deep trees do not recurse.
  *
- * The element's own verdict only looks UP (`closestRedactionBoundary`), so an
- * element that is not itself inside a boundary but CONTAINS one — `<body>`, a
- * card wrapping a redacted token — used to read the boundary's text verbatim
- * through its own `textContent`. Selecting an ancestor was a way around the
- * redaction. When no boundary sits below `el` this is exactly `textContent`.
+ * Note an EMPTY boundary still reads as the sentinel: the reader reveals THAT a
+ * redacted region is there, never what it holds.
  */
-function textOutsideBoundaries(el: Element): string | null {
-  if (!el.querySelector(`[${BRIDGE_REDACT_ATTR}="true"]`)) return el.textContent;
+export function textOutsideBoundaries(el: Element): string | null {
+  if (!hasRedactionBoundaryBelow(el)) return el.textContent;
+  const doc = el.ownerDocument;
+  if (!doc) return null;
   let out = '';
-  const walk = (node: Node): void => {
-    for (let child = node.firstChild; child; child = child.nextSibling) {
-      if (child.nodeType === 3 /* TEXT_NODE */ || child.nodeType === 4 /* CDATA */) {
-        out += child.nodeValue ?? '';
-      } else if (child.nodeType === 1 /* ELEMENT_NODE */) {
-        if ((child as Element).getAttribute(BRIDGE_REDACT_ATTR) === 'true') {
+  const walker = doc.createTreeWalker(el, SHOW_ELEMENT | SHOW_TEXT | SHOW_CDATA_SECTION, {
+    acceptNode(node: Node): number {
+      if (node.nodeType === ELEMENT_NODE) {
+        if ((node as Element).getAttribute(BRIDGE_REDACT_ATTR) === 'true') {
           out += REDACTED_VALUE;
-        } else {
-          walk(child);
+          return FILTER_REJECT; // do not enter the boundary
         }
+        return FILTER_SKIP; // descend, emit nothing for the element itself
       }
-    }
-  };
-  walk(el);
+      out += node.nodeValue ?? '';
+      return FILTER_ACCEPT;
+    },
+  });
+  while (walker.nextNode()) {
+    // acceptNode accumulates `out` in document order.
+  }
   return out;
+}
+
+/**
+ * `truncateCodePoints`, except a cut never leaves a FRAGMENT of
+ * `REDACTED_VALUE` (`"[RE"`) that a consumer matching the sentinel would not
+ * recognise: a sentinel the cut would split is dropped whole.
+ */
+function truncateKeepingSentinel(raw: string, maxLen: number): string {
+  const cut = truncateCodePoints(raw, maxLen);
+  if (cut.length === raw.length) return cut;
+  for (let i = raw.indexOf(REDACTED_VALUE); i !== -1 && i < cut.length; ) {
+    if (i + REDACTED_VALUE.length > cut.length) return cut.slice(0, i);
+    i = raw.indexOf(REDACTED_VALUE, i + REDACTED_VALUE.length);
+  }
+  return cut;
+}
+
+/**
+ * An element's own VALUE, scrubbed (VALUE axis), or `undefined` when the
+ * element has no value of its own and its text is what a reader wants.
+ *
+ *   - `<input>` / `<textarea>` / `<select>`: `.value`; an empty string is a
+ *     meaningful state and is kept.
+ *   - `<button>` / `<option>` / `<data>` carrying an explicit `value`
+ *     ATTRIBUTE: that attribute, `""` included (a placeholder
+ *     `<option value="">` agrees with its `<select>`).
+ *   - anything else: `undefined`. Several elements expose a `.value` PROPERTY
+ *     that is not a value a reader asked for: `<li>` / `<meter>` / `<progress>`
+ *     are numbers, and `<output>.value` IS its own raw `textContent`, which
+ *     would read a redaction boundary below it verbatim.
+ */
+export function readScrubbedOwnValue(
+  el: HTMLElement,
+  verdict?: RedactionVerdict
+): Scrubbed<string> | undefined {
+  const tag = el.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+    return readScrubbedValue(el as HTMLInputElement, verdict);
+  }
+  if ((tag === 'BUTTON' || tag === 'OPTION' || tag === 'DATA') && el.hasAttribute('value')) {
+    return scrubValueByVerdict(el.getAttribute('value') ?? '', verdict ?? verdictOf(el));
+  }
+  return undefined;
 }
 
 /**
