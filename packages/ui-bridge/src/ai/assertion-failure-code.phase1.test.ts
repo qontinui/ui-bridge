@@ -66,7 +66,7 @@ describe('Phase 1 — AssertionResult.failureCode', () => {
     executor = new AssertionExecutor();
   });
 
-  it('every failed assertion carries a valid UB-ASSERT-* failureCode', async () => {
+  it('every failed assertion carries a valid failureCode: UB-ASSERT-* when measured', async () => {
     executor.updateElements([
       mockElement('vis', { textContent: 'Visible One', visible: true }),
       mockElement('hid', { textContent: 'Hidden One', visible: false }),
@@ -109,6 +109,10 @@ describe('Phase 1 — AssertionResult.failureCode', () => {
         req: { target: 'Visible One', type: 'exists', message: undefined } as never,
         code: 'UB-ASSERT-VISIBILITY',
       },
+      // Checks that compare nothing: unmeasured, coded UB-OBS-* / UB-VALIDATION-ERROR.
+      { req: { target: 'Visible One', type: 'hasClass', expected: 'x' }, code: 'UB-OBS-' },
+      { req: { target: 'Visible One', type: 'noOverlap' }, code: 'UB-VALIDATION-ERROR' },
+      { req: { target: 'Visible One', type: 'nope' as never }, code: 'UB-VALIDATION-ERROR' },
     ];
 
     for (const { req } of failingCases) {
@@ -119,7 +123,14 @@ describe('Phase 1 — AssertionResult.failureCode', () => {
         `failed assertion ${JSON.stringify(req)} must carry a failureCode`
       ).toBeDefined();
       expect(VALID_CODES.has(result.failureCode as string)).toBe(true);
-      expect(result.failureCode).toMatch(/^UB-ASSERT-/);
+      // A check that compared a value fails with a UB-ASSERT-* code; one that
+      // could not compare anything is unmeasured, coded by why (UB-OBS-*, or
+      // UB-VALIDATION-ERROR for an assertion that names nothing to compare).
+      if (result.outcome === 'unmeasured') {
+        expect(result.failureCode).toMatch(/^UB-(OBS-|VALIDATION-ERROR$)/);
+      } else {
+        expect(result.failureCode).toMatch(/^UB-ASSERT-/);
+      }
       // Prose retained alongside the code (dual-audience, goal #3).
       expect(typeof result.failureReason).toBe('string');
     }
@@ -174,8 +185,6 @@ describe('Phase 1 — AssertionResult.failureCode', () => {
     expect(resolveAssertionFailureCode('visible', 'Element could not be found')).toBe(
       'UB-ASSERT-ELEMENT-MISSING'
     );
-    expect(resolveAssertionFailureCode('hasText', 'assertion timed out')).toBe(
-      'UB-ASSERT-TIMEOUT'
-    );
+    expect(resolveAssertionFailureCode('hasText', 'assertion timed out')).toBe('UB-ASSERT-TIMEOUT');
   });
 });
