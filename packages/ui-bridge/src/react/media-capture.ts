@@ -20,6 +20,7 @@
  */
 
 import { readAltAttr, readAriaLabelAttr } from '../core/a11y';
+import { textExcludingBoundaries } from '../core/redaction';
 import type {
   MediaFacts,
   MediaFactsDimension,
@@ -416,10 +417,11 @@ function ingestLcp(t: PerfTracker, entries: PerformanceEntryList): void {
 function ingestShifts(t: PerfTracker, entries: PerformanceEntryList): void {
   for (const e of entries) {
     const s = e as LayoutShiftEntryLike;
+    const { value, startTime, hadRecentInput } = s;
     t.shifts.push({
-      value: s.value,
-      startTime: s.startTime,
-      hadRecentInput: s.hadRecentInput,
+      value,
+      startTime,
+      hadRecentInput,
       sources: (s.sources ?? []).map((src) => ({
         node: src.node ?? null,
         previousRect: rectOf(src.previousRect),
@@ -502,10 +504,11 @@ function measurePaintTiming(b: FactsBuilder, targets: ReadonlyArray<Element>): v
   for (const s of t.shifts) {
     const src = s.sources.find((x) => x.node !== null && targets.includes(x.node as Element));
     if (src) {
+      const { value, startTime, hadRecentInput } = s;
       shifts.push({
-        value: s.value,
-        startTime: s.startTime,
-        hadRecentInput: s.hadRecentInput,
+        value,
+        startTime,
+        hadRecentInput,
         previousRect: src.previousRect,
         currentRect: src.currentRect,
       });
@@ -743,7 +746,9 @@ function measureVideo(b: FactsBuilder, video: HTMLVideoElement, rect: DOMRect): 
 
 function measureCanvas(b: FactsBuilder, canvas: HTMLCanvasElement, rect: DOMRect): void {
   const cs = computedStyleOf(canvas);
-  b.facts.altText = readAriaLabelAttr(canvas) || canvas.textContent?.trim() || undefined;
+  // §4.6: the fallback content is a subtree read, so a boundary below reads as the sentinel.
+  b.facts.altText =
+    readAriaLabelAttr(canvas) || textExcludingBoundaries(canvas)?.trim() || undefined;
   b.facts.loadingState = 'loaded';
   measureReplacedStyle(b, cs);
   // The backing store IS the canvas's intrinsic size; a blurry canvas is one
@@ -754,7 +759,9 @@ function measureCanvas(b: FactsBuilder, canvas: HTMLCanvasElement, rect: DOMRect
 
 function measureSvg(b: FactsBuilder, svg: Element): void {
   b.facts.svgViewBox = svg.getAttribute('viewBox') || undefined;
-  b.facts.altText = readAriaLabelAttr(svg) || svg.querySelector('title')?.textContent || undefined;
+  const titleEl = svg.querySelector('title');
+  b.facts.altText =
+    readAriaLabelAttr(svg) || (titleEl ? textExcludingBoundaries(titleEl) : null) || undefined;
   b.facts.isDecorative =
     svg.getAttribute('aria-hidden') === 'true' || svg.getAttribute('role') === 'presentation';
   // Inline SVG is painted with the document: nothing is pending.
