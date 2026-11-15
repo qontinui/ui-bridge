@@ -45,6 +45,9 @@ import {
   scrubContentRequired,
   scrubValueRequired,
   scrubContentByVerdict,
+  closestRedactionBoundary,
+  textExcludingBoundaries,
+  REDACTED_VALUE,
 } from '../core/redaction';
 import { readAriaLabelAttr } from '../core/a11y';
 
@@ -419,17 +422,24 @@ export class ReactHookFormAdapter implements FormFrameworkAdapter {
       const id = domField.id;
       if (id) {
         const label = document.querySelector(`label[for="${CSS.escape(id)}"]`);
-        if (label?.textContent) return label.textContent.trim();
+        const labelText = label ? textExcludingBoundaries(label)?.trim() : undefined;
+        if (labelText) return labelText;
       }
 
       // Check for wrapping <label>
       const parentLabel = domField.closest('label');
-      if (parentLabel?.textContent) {
+      if (parentLabel) {
         // Remove the input's own text from the label
         const clone = parentLabel.cloneNode(true) as HTMLElement;
         const inputs = clone.querySelectorAll('input, select, textarea');
         inputs.forEach((el) => el.remove());
-        const text = clone.textContent?.trim();
+        // The clone is detached, so an ancestor boundary of the live label is
+        // checked on the label itself; a boundary below survives in the clone.
+        const text = (
+          closestRedactionBoundary(parentLabel) !== null
+            ? REDACTED_VALUE
+            : textExcludingBoundaries(clone)
+        )?.trim();
         if (text) return text;
       }
     }
