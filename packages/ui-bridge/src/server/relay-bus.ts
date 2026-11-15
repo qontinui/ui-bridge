@@ -96,6 +96,15 @@ export interface RelayBus {
   unregisterTab(tabId: string): void;
   /** True if any instance holds `tabId` unexpired. */
   isTabKnown(tabId: string): Promise<boolean>;
+  /**
+   * True if an instance OTHER than this one holds `tabId` unexpired. A stream
+   * sent its `rotate` frame asks it before delivering a bus command, so the
+   * instance its replacement landed on delivers it instead. Unlike
+   * `isTabKnown`, it reads only this version's per-holder presence (the holder
+   * set, in `RedisRelayBus`): an instance of the previous version, known only
+   * through that version's key, is not counted.
+   */
+  holdsElsewhere(tabId: string): Promise<boolean>;
 
   /** Release underlying connections. */
   close(): Promise<void>;
@@ -123,6 +132,10 @@ interface RedisLike {
   zremrangebyscore(key: string, min: number | string, max: number | string): Promise<unknown>;
   /** ZCOUNT key min max. */
   zcount(key: string, min: number | string, max: number | string): Promise<number>;
+  /** ZSCORE key member: the member's score, or null when it is not in the set. */
+  zscore(key: string, member: string): Promise<string | null>;
+  /** EVAL script numkeys key... arg...: runs `script` atomically. */
+  eval(script: string, numKeys: number, ...keysAndArgs: (string | number)[]): Promise<unknown>;
   /** ZRANGE key start stop WITHSCORES: each member, then its score. */
   zrange(key: string, start: number, stop: number, withScores: 'WITHSCORES'): Promise<string[]>;
   /** PEXPIREAT key unix-time-milliseconds. */
@@ -147,16 +160,39 @@ interface RedisLike {
 const TAB_HOLDERS_PREFIX = 'uibridge:tab-holders:';
 
 /**
- * The previous version's presence: one string key per tab, which an instance
- * of that version SETs while it holds the tab, DELs when it lets go, and reads
+ * The previous version's presence: one string key per tab, which an instance of
+ * that version SETs while it holds the tab, DELs when it lets go, and reads
  * with EXISTS. For one release, so a rolling deploy runs both versions side by
  * side, this version writes and reads that key beside its own holder set: each
- * version then sees the other's holders. A DEL here, like one there, can
- * erase another holder's mark on this key until that holder's next refresh;
- * the holder set, which this version reads first, is unaffected.
- * Delete with the release after this one (review A3).
+ * version then sees the other's holders through `isTabKnown`. `holdsElsewhere`
+ * reads only the holder set, so a previous-version holder is invisible to it.
+ * This version DELs it only when no live holder of its own version remains
+ * after its own ZREM ({@link UNREGISTER_TAB_SCRIPT}), so the instance a stream
+ * rotated away from leaves the mark of the instance it rotated to standing. A
+ * DEL can still erase another holder's mark until that holder's next refresh: a
+ * previous-version instance DELs it unconditionally, as it always did, and the
+ * last holder of this version to leave DELs it whether or not a
+ * previous-version instance still holds the tab. The holder set, which this
+ * version reads first, is unaffected. Delete with the release after this one
+ * (review A3).
  */
 const PREVIOUS_TAB_PRESENCE_PREFIX = 'uibridge:tab:';
+
+/**
+ * `unregisterTab`, in one step: withdraw this instance's hold (KEYS[1] the
+ * holder set, ARGV[1] this instance's member), then DEL the previous version's
+ * key (KEYS[2]) only when no hold expiring after ARGV[2] (an exclusive
+ * `(<now>` bound) is left. One script, so no holder can register between the
+ * count and the DEL. Both keys go to one standalone Redis (`RedisRelayBus.create`
+ * opens a plain client, not a cluster one), where a two-key script is allowed.
+ */
+const UNREGISTER_TAB_SCRIPT = [
+  "redis.call('ZREM', KEYS[1], ARGV[1])",
+  "if redis.call('ZCOUNT', KEYS[1], ARGV[2], '+inf') == 0 then",
+  "  redis.call('DEL', KEYS[2])",
+  'end',
+  'return 1',
+].join('\n');
 
 /** Send a write without awaiting it, and without leaving its rejection unhandled. */
 function fireAndForget(write: Promise<unknown>): void {
@@ -286,8 +322,16 @@ export class RedisRelayBus implements RelayBus {
   }
 
   unregisterTab(tabId: string): void {
-    fireAndForget(this.pub.zrem(`${TAB_HOLDERS_PREFIX}${tabId}`, this.holderId));
-    fireAndForget(this.pub.del(`${PREVIOUS_TAB_PRESENCE_PREFIX}${tabId}`));
+    fireAndForget(
+      this.pub.eval(
+        UNREGISTER_TAB_SCRIPT,
+        2,
+        `${TAB_HOLDERS_PREFIX}${tabId}`,
+        `${PREVIOUS_TAB_PRESENCE_PREFIX}${tabId}`,
+        this.holderId,
+        `(${Date.now()}`
+      )
+    );
   }
 
   async isTabKnown(tabId: string): Promise<boolean> {
@@ -297,6 +341,21 @@ export class RedisRelayBus implements RelayBus {
         this.pub.exists(`${PREVIOUS_TAB_PRESENCE_PREFIX}${tabId}`),
       ]);
       return holders > 0 || previous > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  async holdsElsewhere(tabId: string): Promise<boolean> {
+    const key = `${TAB_HOLDERS_PREFIX}${tabId}`;
+    const now = Date.now();
+    try {
+      const [live, own] = await Promise.all([
+        this.pub.zcount(key, `(${now}`, '+inf'),
+        this.pub.zscore(key, this.holderId),
+      ]);
+      const ownLive = own !== null && Number(own) > now ? 1 : 0;
+      return live - ownLive > 0;
     } catch {
       return false;
     }

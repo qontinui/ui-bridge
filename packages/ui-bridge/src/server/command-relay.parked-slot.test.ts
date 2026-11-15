@@ -312,6 +312,10 @@ class FakeRedisClient {
   }
 
   async del(key: string): Promise<number> {
+    return this.delNow(key);
+  }
+
+  private delNow(key: string): number {
     const existed = this.server.strings.delete(key) || this.server.sortedSets.delete(key);
     return existed ? 1 : 0;
   }
@@ -339,6 +343,10 @@ class FakeRedisClient {
   }
 
   async zrem(key: string, member: string): Promise<number> {
+    return this.zremNow(key, member);
+  }
+
+  private zremNow(key: string, member: string): number {
     return this.sortedSet(key, false)?.delete(member) ? 1 : 0;
   }
 
@@ -355,6 +363,10 @@ class FakeRedisClient {
   }
 
   async zcount(key: string, min: number | string, max: number | string): Promise<number> {
+    return this.zcountNow(key, min, max);
+  }
+
+  private zcountNow(key: string, min: number | string, max: number | string): number {
     let count = 0;
     for (const score of this.sortedSet(key, false)?.values() ?? []) {
       if (inRange(score, min, max)) count++;
@@ -365,6 +377,69 @@ class FakeRedisClient {
   async pexpire(key: string, ms: number): Promise<number> {
     this.server.keyExpiry.set(key, Date.now() + ms);
     return 1;
+  }
+
+  async zscore(key: string, member: string): Promise<string | null> {
+    const score = this.sortedSet(key, false)?.get(member);
+    return score === undefined ? null : String(score);
+  }
+
+  /**
+   * EVAL, for scripts in the one shape `RedisRelayBus` sends: lines of
+   * `redis.call('CMD', ...)`, one level of `if redis.call(...) <op> <n> then`
+   * ... `end`, and `return <n>`, with KEYS[i], ARGV[i] and quoted literals as
+   * operands. The script is RUN, line by line, so a change to it changes what
+   * the tests see; anything else in it throws rather than passing unrun. It
+   * runs in one go, with no other command between its lines, as Redis runs
+   * a script.
+   */
+  async eval(script: string, numKeys: number, ...rest: Array<string | number>): Promise<unknown> {
+    const keys = rest.slice(0, numKeys).map(String);
+    const argv = rest.slice(numKeys).map(String);
+    const operand = (token: string): string => {
+      const text = token.trim();
+      const key = /^KEYS\[(\d+)\]$/.exec(text);
+      if (key) return keys[Number(key[1]) - 1]!;
+      const arg = /^ARGV\[(\d+)\]$/.exec(text);
+      if (arg) return argv[Number(arg[1]) - 1]!;
+      const literal = /^'([^']*)'$/.exec(text);
+      if (literal) return literal[1]!;
+      throw new Error(`FakeRedis EVAL: unsupported operand ${text}`);
+    };
+    const call = (expression: string): number => {
+      const match = /^redis\.call\((.*)\)$/.exec(expression.trim());
+      if (!match) throw new Error(`FakeRedis EVAL: unsupported expression ${expression}`);
+      const [command, ...args] = match[1]!.split(',').map(operand);
+      if (command === 'ZREM') return this.zremNow(args[0]!, args[1]!);
+      if (command === 'ZCOUNT') return this.zcountNow(args[0]!, args[1]!, args[2]!);
+      if (command === 'DEL') return this.delNow(args[0]!);
+      throw new Error(`FakeRedis EVAL: unsupported command ${command}`);
+    };
+    const holds: Record<string, (a: number, b: number) => boolean> = {
+      '==': (a, b) => a === b,
+      '~=': (a, b) => a !== b,
+      '>': (a, b) => a > b,
+      '<': (a, b) => a < b,
+      '>=': (a, b) => a >= b,
+      '<=': (a, b) => a <= b,
+    };
+    let skipping = false;
+    for (const line of script
+      .split('\n')
+      .map((text) => text.trim())
+      .filter(Boolean)) {
+      const branch = /^if (.+) (==|~=|>=|<=|>|<) (-?\d+) then$/.exec(line);
+      if (branch) {
+        skipping = !holds[branch[2]!]!(call(branch[1]!), Number(branch[3]));
+      } else if (line === 'end') {
+        skipping = false;
+      } else if (!skipping) {
+        const done = /^return (-?\d+)$/.exec(line);
+        if (done) return Number(done[1]);
+        call(line);
+      }
+    }
+    return null;
   }
 
   async pexpireat(key: string, unixTimeMs: number): Promise<number> {
@@ -1086,6 +1161,21 @@ describe('relay lease close · the tab keeps its place for its return (review A1
     await vi.advanceTimersByTimeAsync(290_000);
     expect(relay.getOwnership('tab-a')).toBeNull();
   });
+
+  it('S5 · a lease close that leaves no transport makes an unpinned command wait for one, and the tab’s own reopen takes it', async () => {
+    const { relay, routes } = rig();
+    const answer = { getTabInfo: () => ({ title: 'tab-a' }) };
+    await openStream(routes, relay, 'tab-a', { answer }); // a legacy stream: closed at 270 s
+    await vi.advanceTimersByTimeAsync(270_000);
+
+    const unpinned = track(relay.queueCommand('getTabInfo', {}));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(unpinned.settled).toBe(false);
+
+    await openStream(routes, relay, 'tab-a', { answer }); // its client reopens
+    await vi.advanceTimersByTimeAsync(0);
+    expect(unpinned).toEqual({ settled: true, value: { title: 'tab-a' } });
+  });
 });
 
 describe('RedisRelayBus · tab presence is per holder', () => {
@@ -1134,6 +1224,23 @@ describe('RedisRelayBus · presence across a rolling deploy, and the key’s lif
     old.unregisterTab('tab-a');
     await vi.advanceTimersByTimeAsync(0);
     expect(await current.isTabKnown('tab-a')).toBe(false);
+  });
+
+  it('W1 · a holder leaving while another holder of this version stays leaves the previous version’s key standing; the last holder to leave removes it', async () => {
+    const server = new FakeRedisServer();
+    const [a, b] = [redisBus(server, 'A'), redisBus(server, 'B')];
+    const old = oldShapePresence(server.client('O'));
+
+    a.registerTab('tab-a', 60);
+    b.registerTab('tab-a', 60);
+    await vi.advanceTimersByTimeAsync(0);
+    a.unregisterTab('tab-a'); // the stream rotated from A to B
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await old.isTabKnown('tab-a')).toBe(true);
+
+    b.unregisterTab('tab-a');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await old.isTabKnown('tab-a')).toBe(false);
   });
 
   it('A7 · a holder refreshing with a shorter TTL cannot expire the key before another holder’s longer hold', async () => {
@@ -1209,7 +1316,7 @@ describe('relay parked slot · across instances, a dead slot gives up its bus me
     expect(ran).toEqual(['B', 'B']);
   });
 
-  it('11b · during a cross-instance rotation a command published from a third instance runs once, on the replacement: the rotated stream left the bus at its rotate frame (review A2)', async () => {
+  it('11b · during a cross-instance rotation a command published from a third instance runs once, on the replacement: the rotated stream defers to the instance holding the tab too (review A2, W2)', async () => {
     const server = new FakeRedisServer();
     const a = rig({ bus: redisBus(server, 'A') });
     const b = rig({ bus: redisBus(server, 'B') });
@@ -1228,12 +1335,13 @@ describe('relay parked slot · across instances, a dead slot gives up its bus me
       answer: answerOn('B', ran),
     });
 
-    // Inside the window: A's stream is draining, B's is up. C publishes.
+    // Inside the window: A's stream is draining, B's is up, and both are
+    // subscribed. C publishes; A sees B holding the tab and leaves it to B.
+    expect(server.subscribers('uibridge:cmd:tab:tab-a')).toEqual(['A.sub', 'B.sub']);
     const fromC = track(c.relay.queueCommand('getTabInfo', {}, { targetTabId: 'tab-a' }));
     await vi.advanceTimersByTimeAsync(0);
     expect(fromC).toEqual({ settled: true, value: { title: 'answered on B' } });
     expect(ran).toEqual(['B']);
-    expect(server.subscribers('uibridge:cmd:tab:tab-a')).toEqual(['B.sub']);
 
     // A keeps its own dispatch until its stream ends: a command dispatched on
     // A goes down its draining stream.
@@ -1267,6 +1375,59 @@ describe('relay parked slot · across instances, a dead slot gives up its bus me
     await vi.advanceTimersByTimeAsync(0);
     expect(fromA).toEqual({ settled: true, value: { title: 'answered on B' } });
     expect(ran).toEqual(['B']);
+  });
+
+  it('11d · a rotated stream whose replacement has not registered anywhere still takes a command published from another instance (review W2)', async () => {
+    const server = new FakeRedisServer();
+    const a = rig({ bus: redisBus(server, 'A') });
+    const c = rig({ bus: redisBus(server, 'C') });
+    const ran: string[] = [];
+
+    await openStream(a.routes, a.relay, 'tab-a', {
+      caps: 'rotate,dedupe',
+      cid: 'page-1',
+      answer: answerOn('A', ran),
+    });
+    await vi.advanceTimersByTimeAsync(50_000); // A sends its rotate frame; nothing replaces it yet
+
+    const fromC = track(c.relay.queueCommand('getTabInfo', {}, { targetTabId: 'tab-a' }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fromC).toEqual({ settled: true, value: { title: 'answered on A' } });
+    expect(ran).toEqual(['A']);
+  });
+
+  it('11e · a replacement that registers on the same instance while the rotated stream’s handler waits for holdsElsewhere gets the command, once (re-review)', async () => {
+    const server = new FakeRedisServer();
+    const busA = redisBus(server, 'A');
+    const a = rig({ bus: busA });
+    const c = rig({ bus: redisBus(server, 'C') });
+    const ran: string[] = [];
+    // A's answer to holdsElsewhere is held until the replacement has registered.
+    const holdsElsewhere = busA.holdsElsewhere.bind(busA);
+    let answer: () => void = () => undefined;
+    busA.holdsElsewhere = (tabId) =>
+      new Promise((resolve) => {
+        answer = () => resolve(holdsElsewhere(tabId));
+      });
+
+    await openStream(a.routes, a.relay, 'tab-a', {
+      caps: 'rotate,dedupe',
+      cid: 'page-1',
+      answer: answerOn('A, rotated', ran),
+    });
+    await vi.advanceTimersByTimeAsync(50_000); // A sends its rotate frame
+    const fromC = track(c.relay.queueCommand('getTabInfo', {}, { targetTabId: 'tab-a' }));
+    await vi.advanceTimersByTimeAsync(0); // A's rotated stream is waiting on holdsElsewhere
+    await openStream(a.routes, a.relay, 'tab-a', {
+      caps: 'rotate,dedupe',
+      cid: 'page-1',
+      answer: answerOn('A, replacement', ran),
+    });
+    answer();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fromC).toEqual({ settled: true, value: { title: 'answered on A, replacement' } });
+    expect(ran).toEqual(['A, replacement']);
   });
 
   it('A5 · at grace expiry a command parked on A goes over the bus once the page streams on B, instead of failing (review A5)', async () => {
@@ -1312,7 +1473,9 @@ describe('relay parked slot · review fixes S A8, S A9', () => {
     });
 
     await first.cancel();
-    expect(server.subscribers('uibridge:cmd:tab:tab-a')).toEqual([]);
+    // The dead slot dropped its own subscription; the one left is the
+    // WebSocket client's, through which the instance still holds the tab.
+    expect(server.subscribers('uibridge:cmd:tab:tab-a')).toEqual(['A.sub']);
     expect(await busB.isTabKnown('tab-a')).toBe(true);
 
     await vi.advanceTimersByTimeAsync(5_000); // the dead slot's grace ends
@@ -1342,5 +1505,121 @@ describe('relay parked slot · review fixes S A8, S A9', () => {
         'Command getTabInfo timed out after 8000ms (SSE). 1 client(s) were notified but none responded. ' +
         'The UI Bridge SDK may not be loaded or the page may be unresponsive.',
     });
+  });
+});
+
+describe('relay · a tab held through a WebSocket client on the bus (review W3, S4)', () => {
+  it('W3 · a command published for a tab another instance holds only through a WebSocket client reaches that client', async () => {
+    const server = new FakeRedisServer();
+    const a = rig({ bus: redisBus(server, 'A') });
+    const b = rig({ bus: redisBus(server, 'B') });
+    const onA = webSocketTab(a.relay, 'tab-w', {
+      getTabInfo: () => ({ title: 'over A’s WebSocket' }),
+    });
+
+    const fromB = track(b.relay.queueCommand('getTabInfo', {}, { targetTabId: 'tab-w' }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fromB).toEqual({ settled: true, value: { title: 'over A’s WebSocket' } });
+    expect(onA.actions).toEqual(['getTabInfo']);
+  });
+
+  it('W3 · a WebSocket client that disconnects withdraws its instance’s presence for the tab', async () => {
+    const server = new FakeRedisServer();
+    const busB = redisBus(server, 'B');
+    const a = rig({ bus: redisBus(server, 'A') });
+    webSocketTab(a.relay, 'tab-w', {});
+    await vi.advanceTimersByTimeAsync(10_000); // a sweep re-announces it
+    expect(await busB.isTabKnown('tab-w')).toBe(true);
+
+    a.relay.unregisterWebSocketClient('tab-w');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await busB.isTabKnown('tab-w')).toBe(false);
+  });
+
+  it('W3 · the presence a dead slot kept for a WebSocket client is withdrawn when that client disconnects', async () => {
+    const server = new FakeRedisServer();
+    const busB = redisBus(server, 'B');
+    const { relay, routes } = rig({ bus: redisBus(server, 'A') });
+    const first = await openStream(routes, relay, 'tab-a', { caps: 'rotate', cid: 'page-1' });
+    webSocketTab(relay, 'tab-a', {});
+    await first.cancel();
+    await vi.advanceTimersByTimeAsync(5_000); // the dead slot's grace ends
+    expect(await busB.isTabKnown('tab-a')).toBe(true);
+
+    relay.unregisterWebSocketClient('tab-a');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await busB.isTabKnown('tab-a')).toBe(false);
+  });
+
+  it('W3 · a tab held here through an SSE stream and a WebSocket client runs a published command once, down the stream (control)', async () => {
+    const server = new FakeRedisServer();
+    const a = rig({ bus: redisBus(server, 'A') });
+    const b = rig({ bus: redisBus(server, 'B') });
+    const ran: string[] = [];
+    await openStream(a.routes, a.relay, 'tab-a', {
+      answer: {
+        getTabInfo: () => {
+          ran.push('stream');
+          return { title: 'down the stream' };
+        },
+      },
+    });
+    webSocketTab(a.relay, 'tab-a', {
+      getTabInfo: () => {
+        ran.push('websocket');
+        return { title: 'over the WebSocket' };
+      },
+    });
+
+    const fromB = track(b.relay.queueCommand('getTabInfo', {}, { targetTabId: 'tab-a' }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fromB).toEqual({ settled: true, value: { title: 'down the stream' } });
+    expect(ran).toEqual(['stream']);
+  });
+
+  it('W3 · a zombie stream the prune drops withdraws its instance’s presence at once', async () => {
+    const server = new FakeRedisServer();
+    const busB = redisBus(server, 'B');
+    const { relay, routes } = rig({ bus: redisBus(server, 'A'), legacyStreamLeaseMs: 600_000 });
+    await openStream(routes, relay, 'tab-a');
+    relay.receiveHeartbeat('tab-a'); // its last: the prune drops it once that is over 300 s old
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(await busB.isTabKnown('tab-a')).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(10_000); // the sweep at 310 s prunes it
+    expect(relay.getTransportDiagnostics().connectedTabs).toEqual([]);
+    expect(await busB.isTabKnown('tab-a')).toBe(false);
+  });
+
+  it('S4 · at grace expiry a command parked on a dead slot goes to a WebSocket client of the tab that connected here meanwhile', async () => {
+    const { relay, routes } = rig();
+    const first = await openStream(routes, relay, 'tab-a', { caps: 'rotate', cid: 'page-1' });
+    await first.cancel();
+    const parked = track(relay.queueCommand('getTabInfo', {}, { targetTabId: 'tab-a' }));
+    await vi.advanceTimersByTimeAsync(1_000);
+    const ws = webSocketTab(relay, 'tab-a', {
+      getTabInfo: () => ({ title: 'over the WebSocket' }),
+    });
+    expect(parked.settled).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(4_000); // the dead slot's grace ends
+    expect(parked).toEqual({ settled: true, value: { title: 'over the WebSocket' } });
+    expect(ws.actions).toEqual(['getTabInfo']);
+  });
+
+  it('S4 · at grace expiry a tab known only through the previous version’s key is not held by another instance: the parked command fails at once', async () => {
+    const server = new FakeRedisServer();
+    const { relay, routes } = rig({ bus: redisBus(server, 'A') });
+    const first = await openStream(routes, relay, 'tab-a', { caps: 'rotate', cid: 'page-1' });
+    await first.cancel();
+    const parked = track(relay.queueCommand('getTabInfo', {}, { targetTabId: 'tab-a' }));
+    await vi.advanceTimersByTimeAsync(1_000);
+    oldShapePresence(server.client('O')).registerTab('tab-a', 60);
+
+    await vi.advanceTimersByTimeAsync(4_000); // the dead slot's grace ends
+    expect({
+      settled: parked.settled,
+      message: (parked.error as Error | undefined)?.message,
+    }).toEqual({ settled: true, message: NOT_DELIVERED_GET_TAB_INFO });
   });
 });

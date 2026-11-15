@@ -15,11 +15,7 @@
  */
 
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import {
-  CommandRelay,
-  OwnerMismatchError,
-  TabRoutingError,
-} from './command-relay';
+import { CommandRelay, OwnerMismatchError, TabRoutingError } from './command-relay';
 import type { RelayBus, RelayCommandEnvelope, RelayResponseEnvelope } from './relay-bus';
 import { createRelayHandlers } from './relay-handlers';
 
@@ -65,6 +61,11 @@ class InMemoryBus implements RelayBus {
   async isTabKnown(tabId: string): Promise<boolean> {
     return this.present.has(tabId);
   }
+  // One presence set shared by every instance: no holder is told apart from
+  // another, so none counts as "elsewhere".
+  async holdsElsewhere(): Promise<boolean> {
+    return false;
+  }
   async close(): Promise<void> {
     this.cmdByTab.clear();
     this.broadcast.clear();
@@ -85,7 +86,7 @@ afterEach(() => {
  * no warm-up snapshot, which would land at a time no request chose.
  */
 function freshRelay(
-  options?: Partial<ConstructorParameters<typeof CommandRelay>[0]>,
+  options?: Partial<ConstructorParameters<typeof CommandRelay>[0]>
 ): CommandRelay {
   const prefix = `__uiBridgeScopingTest_${Math.random().toString(36).slice(2, 10)}`;
   const relay = new CommandRelay({
@@ -108,7 +109,7 @@ function registerOwnedTab(
   relay: CommandRelay,
   tabId: string,
   userId: string,
-  sessionId = `${userId}-session`,
+  sessionId = `${userId}-session`
 ): {
   unsubscribe: () => void;
   dispatched: Array<{ commandId: string; action: string }>;
@@ -242,7 +243,7 @@ describe('§4.2 · recordRegistration ownership-transfer proof gate', () => {
     const claimed = relay.recordRegistration(
       'victim-tab',
       { userId: 'alice', sessionId: 'alice-s1' },
-      { callerUserId: 'alice' },
+      { callerUserId: 'alice' }
     );
     expect(claimed.ownershipAssigned).toBe(true);
     expect(relay.getOwnership('victim-tab')).toMatchObject({ userId: 'alice' });
@@ -255,7 +256,7 @@ describe('§4.2 · recordRegistration ownership-transfer proof gate', () => {
     const stolen = relay.recordRegistration(
       'victim-tab',
       { userId: 'mallory', sessionId: 'mallory-s1' },
-      { callerUserId: undefined },
+      { callerUserId: undefined }
     );
     expect(stolen.ownershipAssigned).toBe(false);
     expect(stolen.rejectedReason).toBe('OWNER_CHANGE_UNVERIFIED');
@@ -269,7 +270,7 @@ describe('§4.2 · recordRegistration ownership-transfer proof gate', () => {
     relay.recordRegistration(
       'victim-tab',
       { userId: 'alice', sessionId: 'alice-s1' },
-      { callerUserId: 'alice' },
+      { callerUserId: 'alice' }
     );
 
     // Classic exploit: attacker (proven `mallory`) POSTs a heartbeat that
@@ -277,7 +278,7 @@ describe('§4.2 · recordRegistration ownership-transfer proof gate', () => {
     const res = relay.recordRegistration(
       'victim-tab',
       { userId: 'alice', sessionId: 'attacker-session' },
-      { callerUserId: 'mallory' },
+      { callerUserId: 'mallory' }
     );
     expect(res.ownershipAssigned).toBe(false);
     expect(res.rejectedReason).toBe('OWNER_CHANGE_UNVERIFIED');
@@ -295,7 +296,7 @@ describe('§4.2 · recordRegistration ownership-transfer proof gate', () => {
       relay.recordRegistration(
         'shared-tab',
         { userId: 'alice', sessionId: 'alice-s1' },
-        { callerUserId: 'alice' },
+        { callerUserId: 'alice' }
       );
       expect(relay.getOwnership('shared-tab')).toMatchObject({ userId: 'alice' });
 
@@ -307,7 +308,7 @@ describe('§4.2 · recordRegistration ownership-transfer proof gate', () => {
       const early = relay.recordRegistration(
         'shared-tab',
         { userId: 'bob', sessionId: 'bob-s1' },
-        { callerUserId: 'bob' },
+        { callerUserId: 'bob' }
       );
       expect(early).toEqual({ ownershipAssigned: false, rejectedReason: 'OWNER_SESSION_LIVE' });
       expect(relay.getOwnership('shared-tab')).toMatchObject({ userId: 'alice' });
@@ -318,7 +319,7 @@ describe('§4.2 · recordRegistration ownership-transfer proof gate', () => {
       const relogin = relay.recordRegistration(
         'shared-tab',
         { userId: 'bob', sessionId: 'bob-s1' },
-        { callerUserId: 'bob' },
+        { callerUserId: 'bob' }
       );
       expect(relogin.ownershipAssigned).toBe(true);
       expect(relay.getOwnership('shared-tab')).toMatchObject({
@@ -336,7 +337,7 @@ describe('§4.2 · recordRegistration ownership-transfer proof gate', () => {
     relay.recordRegistration(
       'my-tab',
       { userId: 'alice', sessionId: 'alice-s1' },
-      { callerUserId: 'alice' },
+      { callerUserId: 'alice' }
     );
     const first = relay.getOwnership('my-tab');
 
@@ -345,7 +346,7 @@ describe('§4.2 · recordRegistration ownership-transfer proof gate', () => {
     const refresh = relay.recordRegistration(
       'my-tab',
       { userId: 'alice', sessionId: 'alice-s2' },
-      { callerUserId: 'alice' },
+      { callerUserId: 'alice' }
     );
     expect(refresh.ownershipAssigned).toBe(true);
     const after = relay.getOwnership('my-tab');
@@ -382,7 +383,7 @@ describe('§4.2 · targetTabId dispatch with ownerCheck', () => {
       .queueCommand(
         'getElement',
         { id: 'x' },
-        { targetTabId: 'tab-a', ownerCheck: { userId: 'alice' } },
+        { targetTabId: 'tab-a', ownerCheck: { userId: 'alice' } }
       )
       .catch(() => {
         /* command will time out — we only care about routing */
@@ -392,7 +393,7 @@ describe('§4.2 · targetTabId dispatch with ownerCheck', () => {
     expect(tab.dispatched).toHaveLength(1);
   });
 
-  it('dispatch on another user\'s tab redacts to TAB_NOT_FOUND (no enumeration leak)', async () => {
+  it("dispatch on another user's tab redacts to TAB_NOT_FOUND (no enumeration leak)", async () => {
     const relay = freshRelay();
     registerOwnedTab(relay, 'tab-a', 'alice');
     registerOwnedTab(relay, 'tab-b', 'bob');
@@ -402,7 +403,7 @@ describe('§4.2 · targetTabId dispatch with ownerCheck', () => {
       await relay.queueCommand(
         'getElement',
         { id: 'x' },
-        { targetTabId: 'tab-b', ownerCheck: { userId: 'eve' } },
+        { targetTabId: 'tab-b', ownerCheck: { userId: 'eve' } }
       );
       throw new Error('should have thrown');
     } catch (err) {
@@ -424,7 +425,7 @@ describe('§4.2 · targetTabId dispatch with ownerCheck', () => {
       await relay.queueCommand(
         'getElement',
         { id: 'x' },
-        { targetTabId: 'tab-zombie', ownerCheck: { userId: 'alice' } },
+        { targetTabId: 'tab-zombie', ownerCheck: { userId: 'alice' } }
       );
       throw new Error('should have thrown');
     } catch (err) {
@@ -440,18 +441,16 @@ describe('§4.2 · targetTabId dispatch with ownerCheck', () => {
     const relay = freshRelay();
     const tab = registerOwnedTab(relay, 'tab-a', 'alice');
 
-    void relay
-      .queueCommand('getElement', { id: 'x' }, { targetTabId: 'tab-a' })
-      .catch(() => {
-        /* timeout fine */
-      });
+    void relay.queueCommand('getElement', { id: 'x' }, { targetTabId: 'tab-a' }).catch(() => {
+      /* timeout fine */
+    });
     await new Promise((r) => setTimeout(r, 5));
     expect(tab.dispatched).toHaveLength(1);
   });
 });
 
 describe('§4.2 · unscoped fanout with ownerCheck', () => {
-  it('fans out only to the caller\'s own tabs (Bob\'s tab is never notified)', async () => {
+  it("fans out only to the caller's own tabs (Bob's tab is never notified)", async () => {
     const relay = freshRelay();
     const alice1 = registerOwnedTab(relay, 'tab-a', 'alice');
     const alice2 = registerOwnedTab(relay, 'tab-a2', 'alice');
@@ -475,7 +474,7 @@ describe('§4.2 · unscoped fanout with ownerCheck', () => {
     registerOwnedTab(relay, 'tab-b', 'bob');
     // Eve has no tabs — must NOT block waiting for Bob's tab.
     await expect(
-      relay.queueCommand('getElement', { id: 'x' }, { ownerCheck: { userId: 'eve' } }),
+      relay.queueCommand('getElement', { id: 'x' }, { ownerCheck: { userId: 'eve' } })
     ).rejects.toThrow(/SDK_DISCONNECTED|No browser connected/);
   });
 });
@@ -492,11 +491,7 @@ describe('§4.2 · cross-instance bus envelope ownership enforcement', () => {
     bus.registerTab('tab-a', 60);
 
     void sender
-      .queueCommand(
-        'doThing',
-        { p: 1 },
-        { targetTabId: 'tab-a', ownerCheck: { userId: 'alice' } },
-      )
+      .queueCommand('doThing', { p: 1 }, { targetTabId: 'tab-a', ownerCheck: { userId: 'alice' } })
       .catch(() => {
         /* response never comes — fine */
       });
@@ -522,13 +517,17 @@ describe('§4.2 · cross-instance bus envelope ownership enforcement', () => {
     // Attach a no-op rejection tracker first so the synchronous bus
     // rejection isn't flagged as "unhandled" before we await below.
     const pending = instA
-      .queueCommand('doThing', { p: 1 }, {
-        targetTabId: 'tab-1',
-        ownerCheck: { userId: 'eve' },
-      })
+      .queueCommand(
+        'doThing',
+        { p: 1 },
+        {
+          targetTabId: 'tab-1',
+          ownerCheck: { userId: 'eve' },
+        }
+      )
       .then(
         (v) => ({ ok: true, value: v }) as const,
-        (err) => ({ ok: false, err }) as const,
+        (err) => ({ ok: false, err }) as const
       );
 
     const settled = await pending;
@@ -577,11 +576,7 @@ describe('§4.2 · cross-instance bus envelope ownership enforcement', () => {
     instB.recordRegistration('tab-2', { userId: 'alice', sessionId: 's' });
 
     void instA
-      .queueCommand(
-        'doThing',
-        { p: 1 },
-        { targetTabId: 'tab-2', ownerCheck: { userId: 'alice' } },
-      )
+      .queueCommand('doThing', { p: 1 }, { targetTabId: 'tab-2', ownerCheck: { userId: 'alice' } })
       .catch(() => {
         /* command will time out; routing is what we're checking */
       });

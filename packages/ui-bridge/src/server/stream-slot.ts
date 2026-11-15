@@ -58,9 +58,10 @@ export interface CommandStreamHandle {
    */
   closedAtLease: (reason: StreamEndReason) => void;
   /**
-   * The stream was sent its `rotate` frame: it leaves the bus's command channel
-   * now, since its replacement may land on another instance, and a newer
-   * stream for the tab closes it whatever page it names.
+   * The stream was sent its `rotate` frame. Its replacement may land on
+   * another instance, so from now on it delivers a bus command only when no
+   * other instance holds the tab; a newer stream for the tab closes it
+   * whatever page it names.
    */
   rotated: () => void;
 }
