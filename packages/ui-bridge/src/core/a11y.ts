@@ -25,7 +25,10 @@
 // for our use is in `dom-accessibility-api.d.ts` next to this file.
 import { computeAccessibleName, getRole } from 'dom-accessibility-api';
 import {
+  BRIDGE_REDACT_ATTR,
+  closestRedactionBoundary,
   hasRedactionBoundaryBelow,
+  REDACTED_VALUE,
   textExcludingBoundaries,
   textOutsideBoundaries,
   touchesRedactionBoundary,
@@ -146,14 +149,135 @@ function nameSourceElements(node: Element): { labelledBy: Element[]; labels: Ele
   return { labelledBy, labels };
 }
 
+/** Elements that cannot hold a child, so a boundary placeholder is a `<span>`. */
+const VOID_ELEMENTS = new Set([
+  'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'track', 'wbr',
+]);
+
+type StyleReader = (el: Element, pseudo?: string | null) => CSSStyleDeclaration;
+
+/**
+ * Clone `root` (detached) with every `data-bridge-redact="true"` descendant
+ * replaced by an attribute-free placeholder holding `REDACTED_VALUE`, so the
+ * W3C algorithm sees the sentinel and none of the boundary's text, `alt`,
+ * `aria-label`, `title` or value. Every clone element is recorded in `origin`
+ * (clone to live element) so style lookups reach the live cascade, and in
+ * `cloneOf` (live to clone) so the named element can be found. The live DOM is
+ * only read. `root` itself is cloned even when it is a boundary (its own
+ * verdict is the caller's); the marker is stripped from the clone.
+ */
+function cloneWithoutBoundaries(
+  root: Element,
+  doc: Document,
+  origin: Map<Element, Element>,
+  cloneOf: Map<Element, Element>
+): Element {
+  const shallow = (el: Element): Element => {
+    const clone = el.cloneNode(false) as Element;
+    clone.removeAttribute(BRIDGE_REDACT_ATTR);
+    origin.set(clone, el);
+    cloneOf.set(el, clone);
+    // A shallow clone drops the live value of an edited control, which the
+    // accname algorithm reads for an embedded textbox/combobox. A password is
+    // never carried over: its value is redacted unconditionally.
+    const tag = el.localName;
+    if (tag === 'input' && (el as HTMLInputElement).type !== 'password') {
+      (clone as HTMLInputElement).value = (el as HTMLInputElement).value;
+    } else if (tag === 'textarea') {
+      (clone as HTMLTextAreaElement).value = (el as HTMLTextAreaElement).value;
+    }
+    return clone;
+  };
+  const placeholder = (el: Element): Element => {
+    const ph = doc.createElement(VOID_ELEMENTS.has(el.localName) ? 'span' : el.localName);
+    ph.textContent = REDACTED_VALUE;
+    origin.set(ph, el);
+    return ph;
+  };
+  const top = shallow(root);
+  const stack: Array<[Element, Element]> = [[root, top]];
+  while (stack.length > 0) {
+    const [live, copy] = stack.pop() as [Element, Element];
+    for (const child of Array.from(live.childNodes)) {
+      if (child.nodeType === 1) {
+        const el = child as Element;
+        if (el.getAttribute(BRIDGE_REDACT_ATTR) === 'true') {
+          copy.appendChild(placeholder(el));
+        } else {
+          const clone = shallow(el);
+          copy.appendChild(clone);
+          stack.push([el, clone]);
+        }
+      } else if (child.nodeType === 3 || child.nodeType === 4) {
+        copy.appendChild(child.cloneNode(false));
+      }
+    }
+  }
+  return top;
+}
+
+/**
+ * The W3C accessible name of `node` computed over a boundary-free CLONE of
+ * everything the algorithm may read (the element's subtree, its `<label>`s and
+ * its `aria-labelledby` targets): each redaction boundary is replaced by
+ * `REDACTED_VALUE`, so `aria-hidden`, descendant `<img alt>` and embedded
+ * control values follow the real algorithm. Styles are answered from the live
+ * element each clone element came from. Returns `undefined` when the name
+ * cannot be proven boundary-free.
+ */
+function boundaryFreeName(
+  node: Element,
+  labelledBy: Element[],
+  labels: Element[]
+): string | undefined {
+  const doc = node.ownerDocument;
+  const view = doc?.defaultView;
+  if (!doc || !view) return undefined;
+  // A fragment of the LIVE document: detached (nothing in the page changes),
+  // yet it has a window for the algorithm and is the root `aria-labelledby`
+  // and `<label for>` ids resolve in.
+  const sandbox = doc.createDocumentFragment();
+  const origin = new Map<Element, Element>();
+  const cloneOf = new Map<Element, Element>();
+  const sources = Array.from(new Set<Element>([node, ...labelledBy, ...labels]));
+  const roots = sources.filter((s) => !sources.some((o) => o !== s && o.contains(s)));
+  for (const root of roots) {
+    if (root !== node && closestRedactionBoundary(root as HTMLElement) !== null) {
+      // The whole source sits inside a boundary: it reads as the sentinel.
+      if (root.contains(node)) return undefined;
+      const ph = doc.createElement('span');
+      ph.textContent = REDACTED_VALUE;
+      for (const attr of Array.from(root.attributes)) {
+        if (attr.name === 'id') ph.setAttribute('id', attr.value);
+      }
+      origin.set(ph, root);
+      sandbox.appendChild(ph);
+    } else {
+      sandbox.appendChild(cloneWithoutBoundaries(root, doc, origin, cloneOf));
+    }
+  }
+  const target = cloneOf.get(node);
+  if (!target) return undefined;
+  const liveStyle: StyleReader = (el, pseudo) => view.getComputedStyle(origin.get(el) ?? el, pseudo);
+  const name = computeAccessibleName(target, {
+    getComputedStyle: liveStyle,
+    computedStyleSupportsPseudoElements: false,
+  });
+  // Fail closed: a boundary marker surviving the clone means the replacement
+  // missed something, so nothing is emitted.
+  if (sandbox.querySelector(`[${BRIDGE_REDACT_ATTR}="true"]`)) return undefined;
+  return normalizeWhitespace(name) || undefined;
+}
+
 /**
  * §4.6: the accname algorithm reads text from the element's subtree, its
  * `<label>`s and its `aria-labelledby` targets, boundaries included, while the
  * element's own verdict only looks UP. When any of those sources touches a
  * `data-bridge-redact` boundary, a name that did not come from the element's
- * own `aria-label` / `title` attribute is rebuilt from the same source with
- * every boundary replaced by `REDACTED_VALUE`. With no boundary in reach the
- * W3C answer is returned untouched.
+ * own `aria-label` / `title` attribute is recomputed by the same algorithm
+ * over a clone with every boundary replaced by `REDACTED_VALUE`
+ * ({@link boundaryFreeName}). With no boundary in reach the W3C answer is
+ * returned untouched.
  */
 function boundarySafeName(node: Element, name: string): string | undefined {
   const { labelledBy, labels } = nameSourceElements(node);
@@ -164,12 +288,7 @@ function boundarySafeName(node: Element, name: string): string | undefined {
   if (!touched) return name;
   const own = (v: string | null): boolean => !!v && normalizeWhitespace(v) === name;
   if (own(readAriaLabelAttr(node)) || own(readTitleAttr(node))) return name;
-  const safeJoin = (els: Element[]): string | undefined =>
-    normalizeWhitespace(els.map((el) => textExcludingBoundaries(el) ?? '').join(' ')) ||
-    undefined;
-  if (labelledBy.length > 0) return safeJoin(labelledBy);
-  if (labels.length > 0) return safeJoin(labels);
-  return computeVisibleText(node);
+  return boundaryFreeName(node, labelledBy, labels);
 }
 
 /**
