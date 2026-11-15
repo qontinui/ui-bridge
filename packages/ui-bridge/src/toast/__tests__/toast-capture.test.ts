@@ -7,6 +7,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { ToastCapture } from '../toast-capture';
+import { REDACTED_VALUE, truncateKeepingSentinel } from '../../core/redaction';
 
 // ============================================================================
 // Helpers
@@ -773,5 +774,93 @@ describe('ToastCapture', () => {
     const toast = capture.getActive()[0];
     expect(JSON.stringify(toast)).not.toContain('sk-LIVE-777');
     expect(toast?.actionText).toBe('Copy [REDACTED]');
+  });
+});
+
+// A cut must never leave a FRAGMENT of the sentinel ("[RE") in a captured toast.
+describe('ToastCapture truncation keeps the redaction sentinel whole', () => {
+  let capture: ToastCapture;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    capture?.uninstall();
+    document.body.innerHTML = '';
+    vi.useRealTimers();
+  });
+
+  /** Longest prefix of the sentinel that is NOT the whole sentinel, found at the end of `s`. */
+  function endsInSentinelFragment(s: string): boolean {
+    for (let n = 1; n < REDACTED_VALUE.length; n++) {
+      if (s.endsWith(REDACTED_VALUE.slice(0, n))) return true;
+    }
+    return false;
+  }
+
+  it('message: a boundary straddling the 500 limit yields the whole sentinel or none of it', async () => {
+    capture = new ToastCapture();
+    capture.install();
+    // Slide the boundary across every offset that puts the 500 cut inside the sentinel.
+    for (let offset = 1; offset < REDACTED_VALUE.length; offset++) {
+      const el = document.createElement('div');
+      el.setAttribute('role', 'status');
+      el.innerHTML = `${'a'.repeat(500 - offset)}<span data-bridge-redact="true">sk-LIVE-777</span> tail`;
+      document.body.appendChild(el);
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(50);
+      const message = capture.getActive().at(-1)?.message ?? '';
+      expect(message).not.toContain('sk-LIVE-777');
+      expect(endsInSentinelFragment(message)).toBe(false);
+      expect(message.length).toBeLessThanOrEqual(500);
+      el.remove();
+    }
+  });
+
+  it('actionText: a boundary straddling the 100 limit yields the whole sentinel or none of it', async () => {
+    capture = new ToastCapture();
+    capture.install();
+    for (let offset = 1; offset < REDACTED_VALUE.length; offset++) {
+      const el = document.createElement('div');
+      el.setAttribute('role', 'status');
+      el.innerHTML = `msg <button>${'b'.repeat(100 - offset)}<span data-bridge-redact="true">sk-LIVE-777</span> tail</button>`;
+      document.body.appendChild(el);
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(50);
+      const actionText = capture.getActive().at(-1)?.actionText ?? '';
+      expect(actionText).not.toContain('sk-LIVE-777');
+      expect(endsInSentinelFragment(actionText)).toBe(false);
+      expect(actionText.length).toBeLessThanOrEqual(100);
+      el.remove();
+    }
+  });
+});
+
+describe('truncateKeepingSentinel', () => {
+  const S = REDACTED_VALUE;
+
+  it('never leaves a sentinel fragment, for a cut at every offset inside it', () => {
+    for (let k = 1; k < S.length; k++) {
+      const raw = `${'a'.repeat(10)}${S} tail`;
+      const out = truncateKeepingSentinel(raw, 10 + k);
+      expect(out).toBe('a'.repeat(10));
+    }
+  });
+
+  it('keeps a sentinel that ends exactly at the cut', () => {
+    expect(truncateKeepingSentinel(`ab${S} tail`, 2 + S.length)).toBe(`ab${S}`);
+  });
+
+  it('handles a sentinel occurring more than once', () => {
+    const raw = `${S}${S}${S}`;
+    expect(truncateKeepingSentinel(raw, S.length * 2 + 3)).toBe(`${S}${S}`);
+    expect(truncateKeepingSentinel(raw, S.length * 2)).toBe(`${S}${S}`);
+  });
+
+  it('is surrogate-safe before a sentinel', () => {
+    const raw = `\u{1F600}${S}`;
+    expect(truncateKeepingSentinel(raw, 1)).toBe('\u{1F600}');
+    expect(truncateKeepingSentinel(raw, 4)).toBe('\u{1F600}');
   });
 });

@@ -17,8 +17,12 @@ import type {
 } from './types';
 import { classString } from '../core/class-name';
 import { readAriaLabelAttr } from '../core/a11y';
-import { truncateCodePoints } from '../core/text';
-import { isContentRedacted, REDACTED_VALUE, textExcludingBoundaries } from '../core/redaction';
+import {
+  isContentRedacted,
+  REDACTED_VALUE,
+  textExcludingBoundaries,
+  truncateKeepingSentinel,
+} from '../core/redaction';
 
 // ============================================================================
 // Built-in selectors for common toast/notification libraries
@@ -232,7 +236,7 @@ function detectAction(el: Element): ActionInfo {
     // §4.6: the emitted action text excludes any boundary in (or around) the
     // button; the raw `text` above is only compared, never emitted.
     const shown = (textExcludingBoundaries(btn) || '').trim();
-    return { hasAction: true, actionText: truncateCodePoints(shown, 100) };
+    return { hasAction: true, actionText: truncateKeepingSentinel(shown, 100) };
   }
   return { hasAction: false };
 }
@@ -269,7 +273,7 @@ function extractMessage(el: Element): string {
   const text = (textExcludingBoundaries(clone) || '').trim();
   // Collapse whitespace
   const collapsed = text.replace(/\s+/g, ' ');
-  return truncateCodePoints(collapsed, 500);
+  return truncateKeepingSentinel(collapsed, 500);
 }
 
 // ============================================================================
