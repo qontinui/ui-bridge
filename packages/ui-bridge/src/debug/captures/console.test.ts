@@ -203,4 +203,35 @@ describe('installConsoleCapture', () => {
 
     dispose();
   });
+  it('an ignore predicate drops a matching call from the capture but still forwards it', () => {
+    const emit = vi.fn();
+    const dispose = installConsoleCapture(emit, {
+      ignore: (args) => args[0] === 'skip me',
+    });
+
+    console.error('skip me');
+    console.error('keep me');
+
+    expect(emit).toHaveBeenCalledTimes(1);
+    expect(spies.error).toHaveBeenCalledWith('skip me');
+    expect(spies.error).toHaveBeenCalledWith('keep me');
+
+    dispose();
+  });
+
+  it('a throwing ignore predicate neither breaks the page console call nor drops the event', () => {
+    const emit = vi.fn();
+    const dispose = installConsoleCapture(emit, {
+      ignore: () => {
+        throw new Error('predicate exploded');
+      },
+    });
+
+    expect(() => console.error('page error')).not.toThrow();
+    // The page's real console still ran, and the call was recorded as not-ignored.
+    expect(spies.error).toHaveBeenCalledWith('page error');
+    expect(emittedLevels(emit)).toEqual(['error']);
+
+    dispose();
+  });
 });

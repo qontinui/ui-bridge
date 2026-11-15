@@ -67,7 +67,17 @@ export function installConsoleCapture(
     args: unknown[]
   ) => {
     if (!levels.has(level)) return;
-    if (ignore?.(args)) return;
+    if (ignore) {
+      // A throwing predicate must not break the page's console call (the real
+      // console still runs below): treat the call as not ignored.
+      let ignored: boolean;
+      try {
+        ignored = ignore(args) === true;
+      } catch {
+        ignored = false;
+      }
+      if (ignored) return;
+    }
     emit(makeEvent(level, argsToMessage(args), extractStack(args)));
   };
 

@@ -35,6 +35,18 @@ import type { InjectedRuntimeApi } from './types';
 
 declare const __SDK_VERSION__: string;
 
+/**
+ * The SDK's own console diagnostics: the relay client's `[UIBridge] …` errors
+ * and the registry / change-tracker / executor `[ui-bridge] …` warnings. Not
+ * the page's, so the injected capture does not record them. Case-sensitive.
+ */
+const SDK_DIAGNOSTIC_PREFIXES = ['[UIBridge]', '[ui-bridge]'] as const;
+
+function isSdkDiagnostic(args: unknown[]): boolean {
+  const first = args[0];
+  return typeof first === 'string' && SDK_DIAGNOSTIC_PREFIXES.some((p) => first.startsWith(p));
+}
+
 (function bootstrapInjectedRuntime() {
   // Idempotent: a re-injection (e.g. SPA soft-nav re-running init scripts)
   // must not clobber a live runtime or double-register the global registry.
@@ -73,13 +85,13 @@ declare const __SDK_VERSION__: string;
     // and heartbeats go to `uiBridgeBase` (often `127.0.0.1:9876`, which the
     // capture's default ignore list does not name), so a refused heartbeat
     // must not read as a page network error; and its diagnostics are
-    // `[UIBridge]`-prefixed `console.error` calls. The base is registered here
-    // (the relay client registers it again, idempotently) so the exact
-    // endpoint predicate holds from the capture's first request.
+    // `[UIBridge]`- / `[ui-bridge]`-prefixed console calls. The base is
+    // registered here (the relay client registers it again, idempotently) so
+    // the exact endpoint predicate holds from the capture's first request.
     if (typeof cfg?.uiBridgeBase === 'string') registerRelayTrafficBase(cfg.uiBridgeBase);
     const capture = new BrowserEventCapture({
       networkOptions: { ignore: isRelayOwnTraffic }, // on top of the default patterns
-      consoleIgnore: (args) => typeof args[0] === 'string' && args[0].startsWith('[UIBridge]'),
+      consoleIgnore: isSdkDiagnostic,
     });
     capture.install();
     realm.browserCapture = capture;
