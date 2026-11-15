@@ -348,6 +348,14 @@ export default tseslint.config(
           'packages/ui-bridge/src/ai/semantic-snapshot.ts',
           'packages/ui-bridge/src/control/action-executor.ts',
           'packages/ui-bridge/src/control/media-override.ts',
+          'packages/ui-bridge/src/adapters/formik.ts',
+          'packages/ui-bridge/src/adapters/react-hook-form.ts',
+          'packages/ui-bridge/src/core/find-filter.ts',
+          'packages/ui-bridge/src/debug/captures/framework-overlays.ts',
+          'packages/ui-bridge/src/drag-drop/drag-drop-detector.ts',
+          'packages/ui-bridge/src/react/media-capture.ts',
+          'packages/ui-bridge/src/shortcuts/shortcut-tracker.ts',
+          'packages/ui-bridge/src/undo/undo-detector.ts',
         ],
         // redaction-surface:projection-modules:end
         // redaction-surface:projection-module-ignores:start
