@@ -14,6 +14,7 @@ import {
   scrubContentByVerdict,
 } from '../core/redaction';
 import { readAriaLabelAttr, readPlaceholderAttr } from '../core/a11y';
+import { getLabelText } from './form-discovery';
 
 // ============================================================================
 // Types
@@ -438,7 +439,7 @@ function buildFieldStates(inputs: HTMLElement[]): FormFieldState[] {
     // Label resolution
     const label =
       readAriaLabelAttr(el) ||
-      getLabelTextForElement(el) ||
+      getLabelText(el) ||
       readPlaceholderAttr(el) ||
       el.id ||
       el.getAttribute('name') ||
@@ -466,30 +467,6 @@ function buildFieldStates(inputs: HTMLElement[]): FormFieldState[] {
       selectedOptions: selectedOptions?.map((o) => scrubValueRequired(o, verdict)),
     };
   });
-}
-
-/**
- * Get label text for a form element by checking associated <label> elements.
- */
-function getLabelTextForElement(element: HTMLElement): string | undefined {
-  if (typeof document === 'undefined') return undefined;
-
-  const id = element.id;
-  if (id) {
-    const label = document.querySelector(`label[for="${CSS.escape(id)}"]`);
-    if (label?.textContent?.trim()) return label.textContent.trim();
-  }
-
-  const parentLabel = element.closest('label');
-  if (parentLabel) {
-    const clone = parentLabel.cloneNode(true) as HTMLElement;
-    const inputs = clone.querySelectorAll('input, textarea, select');
-    inputs.forEach((inp) => inp.remove());
-    const text = clone.textContent?.trim();
-    if (text) return text;
-  }
-
-  return undefined;
 }
 
 /**

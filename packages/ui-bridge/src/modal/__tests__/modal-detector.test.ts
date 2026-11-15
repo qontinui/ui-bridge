@@ -498,4 +498,30 @@ describe('ModalDetector', () => {
     const stack = detector.detect();
     expect(stack.modals[0].escDismiss).toBe(false);
   });
+
+  // §4.6: dialog titles, aria labels and primary-action text reach every
+  // snapshot through modalStack; a boundary in (or around) them must not.
+  it('a dialog whose labelledby title holds a boundary reports the sentinel', () => {
+    const title = createElement('h2', { id: 'dlg-title' }, 'Your key <span data-bridge-redact="true">sk-LIVE-777</span>');
+    createElement(
+      'div',
+      { role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'dlg-title' },
+      '<p>Copy it now</p><footer><button>Copy <b data-bridge-redact="true">sk-LIVE-777</b></button></footer>'
+    );
+    void title;
+    const context = JSON.stringify(detector.getSnapshotModalContext());
+    expect(context).not.toContain('sk-LIVE-777');
+    expect(detector.detect().modals[0].title).toBe('Your key [REDACTED]');
+  });
+
+  it('a dialog inside a boundary reports no title text', () => {
+    const wrap = createElement('div', { 'data-bridge-redact': 'true' }, '');
+    const dlg = document.createElement('div');
+    dlg.setAttribute('role', 'dialog');
+    dlg.setAttribute('aria-modal', 'true');
+    dlg.setAttribute('aria-label', 'Recovery code R-5566');
+    dlg.innerHTML = '<h2>Recovery code R-5566</h2><button type="submit">Save R-5566</button>';
+    wrap.appendChild(dlg);
+    expect(JSON.stringify(detector.getSnapshotModalContext())).not.toContain('R-5566');
+  });
 });
