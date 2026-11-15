@@ -112,9 +112,32 @@ export {
   evaluateConstraint,
 } from './style-validator';
 
-// Design-inspection request models (shared by both transports; types only, so
-// this entry does not pull the DOM-reading module in)
+// Design-inspection requests: the one implementation both in-package transports
+// (server handlers, browser command handlers) answer `/design/element/:id/styles`,
+// `/design/snapshot`, `/design/responsive` and `/design/audit` with. Exported so
+// a host with its own dispatcher (the qontinui-runner webview's
+// `useDesignEvents`) answers with the same model instead of a third copy. The
+// root entry already exports the design inspector these functions call, so it
+// gains no DOM code. The `./specs` subpath does: it now bundles the inspector,
+// token and root-width modules. None of them touches `window` or `document` at
+// module load, so a Node consumer of `./specs` still imports it safely; the
+// cost is bundle size, accepted so the subpath and the root expose one model.
+export {
+  elementStylesOf,
+  designSnapshotOf,
+  responsiveSnapshotsOf,
+  designAuditOf,
+  DesignRequestError,
+  designFailureCode,
+  DEFAULT_DESIGN_RECORD_BUDGET,
+  DEFAULT_AUDIT_ELEMENT_LIMIT,
+  DEFAULT_AUDIT_MAX_RESULTS,
+  MAX_RESPONSIVE_VIEWPORTS,
+} from './design-request';
 export type {
+  DesignElementSource,
+  ElementStylesResponse,
+  AuditResultBounds,
   DesignSelectionReport,
   DesignSelectionBounds,
   DesignAuditBounds,
@@ -128,6 +151,23 @@ export type {
   HeuristicDesignAuditReport,
   HeuristicDesignAuditIssue,
 } from './design-request';
+
+// `/design/evaluate*` requests over registered elements — the same shared
+// implementation pattern, exported for the same reason.
+export {
+  evaluateRegisteredQuality,
+  captureQualityBaseline,
+  diffQualityBaseline,
+  collectDesignData as collectRegisteredDesignData,
+  QualityRequestError,
+  qualityFailureCode,
+} from './quality-request';
+export type {
+  QualityElementSource,
+  QualityBaselineRequest,
+  QualityDiffRequest,
+  DesignCollectOptions,
+} from './quality-request';
 
 // Quality evaluator types
 export type {
