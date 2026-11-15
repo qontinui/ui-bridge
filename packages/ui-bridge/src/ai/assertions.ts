@@ -117,6 +117,7 @@ export function resolveAssertionFailureCode(
 }
 import { SearchEngine } from './search-engine';
 import { find } from './find';
+import { SELECTING_CRITERIA } from './nl-assertion-parser';
 
 /**
  * Configuration for assertions
@@ -150,6 +151,8 @@ interface UnmeasuredRead {
   code: UnknownCode;
   detail: string;
   failureCode: UiBridgeErrorCode;
+  /** The fix to suggest, when it is specific to why the read was refused. */
+  suggestion?: string;
 }
 
 /**
@@ -202,14 +205,21 @@ const SPATIAL_CHECKS: ReadonlySet<AssertionType> = new Set<AssertionType>([
 /**
  * The `relatedTarget` a spatial check compares with, or `undefined` when the
  * request names none: absent, blank, or not an element id, description or
- * search criteria. Searching for `undefined` searches with empty criteria, so
- * it compared the target with an arbitrary element, or with none.
+ * search criteria that SELECTS — criteria carry a non-blank
+ * {@link SELECTING_CRITERIA} field, the same rule the request normaliser
+ * applies to a `target`. `{}` or `{ fuzzy: true }` selects nothing (a
+ * modifier only modifies a search), and searching with empty criteria
+ * compared the target with an arbitrary element, or with none.
  */
 function namedRelatedTarget(request: AssertionRequest): string | SearchCriteria | undefined {
   const related: unknown = request.relatedTarget;
   if (typeof related === 'string') return related.trim() === '' ? undefined : related;
   if (typeof related === 'object' && related !== null && !Array.isArray(related)) {
-    return related as SearchCriteria;
+    const selects = SELECTING_CRITERIA.some((field) => {
+      const value = (related as Record<string, unknown>)[field];
+      return typeof value === 'string' && value.trim() !== '';
+    });
+    return selects ? (related as SearchCriteria) : undefined;
   }
   return undefined;
 }
@@ -229,6 +239,7 @@ function invalidRequest(request: AssertionRequest): UnmeasuredRead | null {
         `the assertion's \`type\` ${JSON.stringify(type) ?? String(type)} is not one of ` +
         Object.keys(ASSERTION_TYPES).join(', '),
       failureCode: 'UB-VALIDATION-ERROR',
+      suggestion: `Send a \`type\` from: ${Object.keys(ASSERTION_TYPES).join(', ')}`,
     };
   }
   if (SPATIAL_CHECKS.has(type as AssertionType) && namedRelatedTarget(request) === undefined) {
@@ -236,6 +247,9 @@ function invalidRequest(request: AssertionRequest): UnmeasuredRead | null {
       code: 'no_expectation',
       detail: `the assertion names no \`relatedTarget\`: a ${type} check compares the target with it`,
       failureCode: 'UB-VALIDATION-ERROR',
+      suggestion:
+        `Name the element to compare with in \`relatedTarget\`: an element id or description, ` +
+        `or search criteria carrying one of ${SELECTING_CRITERIA.join(', ')}`,
     };
   }
   return null;
@@ -1496,7 +1510,7 @@ export class AssertionExecutor {
       `${JSON.stringify(request.type) ?? String(request.type)} assertion`,
       invalid,
       startTime,
-      `Send a \`type\` from: ${Object.keys(ASSERTION_TYPES).join(', ')}; noOverlap and minSpacing also need a \`relatedTarget\``
+      invalid.suggestion
     );
   }
 
