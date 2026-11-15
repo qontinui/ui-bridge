@@ -35,7 +35,7 @@ import { truncateCodePoints } from './text';
  * on the element itself OR on any ancestor, so a form can opt its whole
  * subtree in with one attribute.
  */
-const BRIDGE_REDACT_ATTR = 'data-bridge-redact';
+export const BRIDGE_REDACT_ATTR = 'data-bridge-redact';
 
 /**
  * Walk from `el` up through `parentElement` until we hit an ancestor (or `el`
