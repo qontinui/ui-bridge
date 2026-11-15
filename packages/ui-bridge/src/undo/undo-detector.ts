@@ -14,6 +14,7 @@
 
 import type { UndoElementInfo, UndoDetectorConfig } from './types';
 import { classString } from '../core/class-name';
+import { textExcludingBoundaries } from '../core/redaction';
 import {
   isInteractionBlocked,
   readAriaLabelAttr,
@@ -130,7 +131,8 @@ function extractLabel(el: Element): string | undefined {
   const title = readTitleAttr(el);
   if (title) return title.trim();
 
-  const text = el.textContent?.trim();
+  // A boundary inside (or around) the control reads as the sentinel.
+  const text = textExcludingBoundaries(el)?.trim();
   if (text && text.length < 100) return text;
 
   return undefined;
@@ -182,7 +184,7 @@ function findBestElement(selectors: string[], type: 'undo' | 'redo'): UndoElemen
     const buttons = document.querySelectorAll('button, [role="button"], [role="menuitem"]');
     for (const btn of Array.from(buttons)) {
       if (seen.has(btn)) continue;
-      const text = btn.textContent?.trim().toLowerCase() ?? '';
+      const text = textExcludingBoundaries(btn)?.trim().toLowerCase() ?? '';
       if (type === 'undo' && (text === 'undo' || text.startsWith('undo '))) {
         seen.add(btn);
         elements.push(btn);
