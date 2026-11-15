@@ -245,7 +245,7 @@ The HAR is complete once `transport.close()` resolves. A launch that fails
 inside the launcher writes none, but a `ready()` that fails after the launch
 (an emulation refusal, an injected-runtime wait) can still leave a complete
 archive, so a missing file is not how to tell that `ready()` failed. A malformed value fails construction with `INVALID_CONFIG`, and a
-headless peer that predates them (ui-bridge#381) ignores all three, so the
+headless peer older than 0.8.0 (ui-bridge#381) ignores all three, so the
 transport then fails `ready()` with `CONTEXT_OPTIONS_NOT_APPLIED` and closes the
 browser it opened. `serviceWorkers: 'allow'` alone is exempt, since it is
 Playwright's default.

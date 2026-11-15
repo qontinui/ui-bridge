@@ -325,7 +325,7 @@ export class HeadlessTransport extends BaseTransport {
     const pinnedTabId = this.pinnedTabId();
 
     // recordHar / serviceWorkers / initRouter came to the launcher together
-    // (ui-bridge#381). An older optional peer accepts the
+    // (ui-bridge#381, headless 0.8.0). An older optional peer accepts the
     // keys and ignores them: no HAR, service workers allowed, no routes. The
     // launcher calls `initRouter` before its first page exists, so whenever
     // any of the three is set the transport ALWAYS passes one, and (except
@@ -408,8 +408,8 @@ export class HeadlessTransport extends BaseTransport {
         'CONTEXT_OPTIONS_NOT_APPLIED',
         `The installed '@qontinui/ui-bridge-headless' peer launched the tab without calling ` +
           `initRouter, so it predates the recordHar / serviceWorkers / initRouter passthrough ` +
-          `(ui-bridge#381) and ignored them: no HAR would be written and no route ` +
-          `installed. Upgrade it.`,
+          `(0.8.0, ui-bridge#381) and ignored them: no HAR would be written and no route ` +
+          `installed. Upgrade it to 0.8.0 or later.`,
         {
           details: {
             requested: {
