@@ -408,6 +408,45 @@ export class NativeUIBridgeRegistry {
   }
 
   /**
+   * Replace an element's custom actions with exactly `customActions` — and
+   * `undefined` CLEARS them. `useUIElement` calls this at every commit with the
+   * object that commit rendered.
+   *
+   * Before this door existed, the field was written only by `registerElement`.
+   * The hook re-registered whenever the IDENTITY of `customActions` changed,
+   * and an inline object changes identity on every render. So every passive
+   * flush replaced the whole entry, wiping its captured props, and emitted
+   * `element:registered`. This setter instead swaps the one field in place.
+   * `undefined` means "none", so a dropped option withdraws every action.
+   *
+   * The object is stored by reference. That keeps the advertised set, each
+   * action's `effect` and the handler that runs coming from the same object.
+   * Nothing is emitted: the snapshot reads the field when it is built, and the
+   * executor reads it per call.
+   *
+   * `expectedRef` is the same ownership guard `unregisterElement` takes. When a
+   * different component holds the id now, a mismatch makes this a no-op.
+   *
+   * Returns `true` when the entry holds `customActions` afterwards, and `false`
+   * when there is no entry or another ref owns it.
+   *
+   * Scope: this replaces `customActions` only. It is deliberately not a general
+   * "re-publish my options" door.
+   */
+  setElementCustomActions(
+    id: string,
+    customActions: Record<string, NativeCustomAction> | undefined,
+    expectedRef?: React.RefObject<NativeElementRef>
+  ): boolean {
+    const element = this.elements.get(id);
+    if (!element) return false;
+    if (expectedRef && element.ref !== expectedRef) return false;
+    if (element.customActions === customActions) return true;
+    this.elements.set(id, { ...element, customActions });
+    return true;
+  }
+
+  /**
    * Update the live screen-absolute bounding box and visibility for a
    * registered element. Parity with the web registry's `updateElementBbox`.
    * Called by `useUIElement`'s `onLayout` handler.

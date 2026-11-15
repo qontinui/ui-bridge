@@ -1393,6 +1393,49 @@ export class NativeUIBridgeRegistry {
   }
 
   /**
+   * Replace an element's custom actions with exactly `customActions` — and
+   * `undefined` CLEARS them. `useUIElement` calls this at every commit with the
+   * object that commit rendered.
+   *
+   * Before this door existed, `registerElement` was the only writer of the
+   * field, and it ran once per registration. A handler whose closure changed
+   * therefore kept running the mount-time closure, an action a later render
+   * added was refused, and one it withdrew stayed advertised and callable.
+   * `registerElement`'s options cannot fix that: they treat an absent field as
+   * "nothing to register", not as "withdraw". Hence a setter where `undefined`
+   * means "none".
+   *
+   * The object is stored by reference. That keeps the advertised set, each
+   * action's `effect` and the handler that runs coming from the same object, so
+   * they never disagree. Nothing is emitted: the snapshot reads the field when
+   * it is built, and the executor reads it per call.
+   *
+   * `expectedRef` is an ownership guard. Ids are a shared key space and
+   * `registerElement` is last-write-wins. So when two hook instances hold the
+   * same id (slot-keyed ids such as `row-<index>`), a caller passes the ref it
+   * registered with, and a mismatch makes this a no-op. The second instance
+   * keeps its own actions.
+   *
+   * Returns `true` when the entry holds `customActions` afterwards, and `false`
+   * when there is no entry or another ref owns it.
+   *
+   * Scope: this replaces `customActions` only. It is deliberately not a general
+   * "re-publish my options" door.
+   */
+  setElementCustomActions(
+    id: string,
+    customActions: Record<string, NativeCustomAction> | undefined,
+    expectedRef?: React.RefObject<NativeElementRef>
+  ): boolean {
+    const element = this.elements.get(id);
+    if (!element) return false;
+    if (expectedRef && element.ref !== expectedRef) return false;
+    if (element.customActions === customActions) return true;
+    this.elements.set(id, { ...element, customActions });
+    return true;
+  }
+
+  /**
    * Update element style for design review
    */
   updateElementStyle(

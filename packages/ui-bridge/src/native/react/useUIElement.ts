@@ -235,7 +235,6 @@ export function useUIElement(options: UseUIElementOptionsBase): UseUIElementRetu
   // contract the web hook exposes.
   const registeredRef = useRef(false);
   const [_layout, setLayout] = useState<NativeLayout | null>(null);
-  const propsRef = useRef<Record<string, unknown>>({});
 
   const {
     id,
@@ -261,6 +260,19 @@ export function useUIElement(options: UseUIElementOptionsBase): UseUIElementRetu
     [id, label]
   );
 
+  // `actions` and `customActions` reach `register` WITHOUT their identity in its
+  // deps. A call site that writes either one inline hands a new object to
+  // every render. With the identity in the deps, every render minted a new
+  // `register`, and the auto-register effect below re-ran on every passive
+  // flush. Each run replaced the entry (`registerElement`), wiping its
+  // captured props, and emitted `element:registered`.
+  //
+  // `actions` is keyed by VALUE instead, so a real change still re-registers.
+  // `customActions` is read from the commit-time ref that the mirror below
+  // keeps, and that mirror swaps it on the entry at every commit.
+  const actionsKey = JSON.stringify(actions);
+  const customActionsRef = useRef(customActions);
+
   // Register the element. Writing to `registeredRef.current` is a synchronous
   // mutation, not a state setter, so the auto-register effect can call this
   // without triggering an extra render or violating
@@ -272,7 +284,7 @@ export function useUIElement(options: UseUIElementOptionsBase): UseUIElementRetu
       type,
       label,
       actions,
-      customActions,
+      customActions: customActionsRef.current,
       treePath,
       testId: id,
       accessibilityLabel: label,
@@ -286,7 +298,11 @@ export function useUIElement(options: UseUIElementOptionsBase): UseUIElementRetu
     // press-needing type is registered without `onPress` reaching the
     // registry. Phase 1, plan `2026-05-20-manual-test-remediation`.
     scheduleDeadButtonWarning(bridge, id, type);
-  }, [bridge, id, type, label, actions, customActions, treePath, accessibilityRole]);
+    // `actions` is covered by `actionsKey` (its value), and `customActions` by
+    // `customActionsRef` (see above). Listing either object would re-register on
+    // every render of an inline literal.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bridge, id, type, label, actionsKey, treePath, accessibilityRole]);
 
   // Unregister the element
   const unregister = useCallback(() => {
@@ -392,16 +408,25 @@ export function useUIElement(options: UseUIElementOptionsBase): UseUIElementRetu
     };
   }, []);
 
-  // Update props for action execution (allows accessing onPress, onChangeText, etc.)
-  const _updateProps = useCallback(
-    (props: Record<string, unknown>) => {
-      propsRef.current = { ...propsRef.current, ...props };
-      if (bridge && registeredRef.current) {
-        bridge.registry.updateElementProps(id, props);
-      }
-    },
-    [bridge, id]
-  );
+  // Publish the COMMITTED `customActions` at every commit.
+  //
+  // The executor reads `element.customActions[action].handler` per call, so
+  // swapping the one field in place is the whole publish. The advertised set,
+  // each action's `effect` and the handler that runs all come from this
+  // commit's object. A handler whose closure changed runs fresh, an added
+  // action is callable at commit, and a withdrawn one (or a dropped option,
+  // which CLEARS the field) is refused by the executor's own fallthrough.
+  //
+  // It also keeps `customActionsRef` current for `register`. The write is
+  // owner-guarded by `ref`, and no event is emitted. No deps: the option is
+  // usually an inline literal, and the setter skips an unchanged object. This
+  // is declared after the at-commit effect above, so a Suspense reveal
+  // re-registers first and this then re-applies the committed set.
+  useLayoutEffect(() => {
+    customActionsRef.current = customActions;
+    if (!bridge || !registeredRef.current) return;
+    bridge.registry.setElementCustomActions(id, customActions, ref);
+  });
 
   // Get state
   const getState = useCallback((): NativeElementState | null => {
@@ -486,8 +511,30 @@ export function useUIElement(options: UseUIElementOptionsBase): UseUIElementRetu
  * ```
  */
 export interface UseUIElementWithPropsReturn extends UseUIElementReturn {
-  /** Capture props for action execution */
+  /**
+   * Capture props for action execution. Call it from the render body. The
+   * props are published when that render commits, so a render React abandons
+   * never reaches the registry. A call made after the render committed (from
+   * an effect or a handler) publishes immediately.
+   *
+   * Keys merge across calls and renders. A key that a later render does not
+   * pass keeps its last published value. The function is created per render,
+   * because it writes into that render's stage, so its identity is not stable.
+   */
   captureProps: (props: Record<string, unknown>) => void;
+}
+
+/**
+ * What one render passed to `captureProps`. Each render gets its own stage, and
+ * only the render that COMMITS publishes it. A render React abandons (a
+ * `startTransition` render that suspends, an interrupted concurrent render, a
+ * StrictMode double render) takes its captures with it.
+ */
+interface CapturedPropsStage {
+  /** The merged props of every `captureProps` call this render made. */
+  props: Record<string, unknown> | undefined;
+  /** Set by this render's commit. After that, a call publishes immediately. */
+  committed: boolean;
 }
 
 /**
@@ -510,20 +557,55 @@ export function useUIElementWithProps<T extends NativeElementType = NativeElemen
   const elementReturn = useUIElement(options as unknown as UseUIElementOptions<'view'>);
   const bridge = useUIBridgeNativeOptional();
 
-  // `elementReturn.registered` is now a non-reactive ref snapshot (mirrors the
-  // web hook). Reading it inside the callback would capture the value at hook
-  // creation time, which is `false` on the first render. Querying the registry
-  // directly gives us the live truth without needing reactivity. The registry
-  // is the authoritative source — same pattern used by `getState` /
-  // `getIdentifier` above.
-  const captureProps = useCallback(
-    (props: Record<string, unknown>) => {
-      if (bridge && bridge.registry.getElement(options.id)) {
-        bridge.registry.updateElementProps(options.id, props);
-      }
-    },
-    [bridge, options.id]
-  );
+  // `captureProps` is called from the render body, and it used to write the
+  // registry right there. A render that React then abandoned still published
+  // its handlers, so a bridge `press` could run an `onPress` that never
+  // committed. Each render now stages its captures in its own object, and the
+  // layout effect of the render that COMMITS publishes exactly that stage.
+  //
+  // A single ref shared by every render would not be enough. Abandoned renders
+  // write it too, so their keys would ride into the next commit. A Suspense
+  // reveal re-runs this effect without a render, and with a shared ref it would
+  // re-publish whatever render ran last.
+  //
+  // `elementReturn.registered` is a non-reactive snapshot (it mirrors the web
+  // hook), so no guard reads it. `updateElementProps` is already a no-op for an
+  // id the registry does not hold, and the registry is the authoritative
+  // source.
+  const stage: CapturedPropsStage = { props: undefined, committed: false };
+  const captureProps = (props: Record<string, unknown>) => {
+    stage.props = { ...stage.props, ...props };
+    // Called after this render committed, from an effect or a handler. There
+    // is no commit left to wait for, so publish now, as this always did.
+    if (stage.committed && bridge) {
+      bridge.registry.updateElementProps(options.id, props);
+    }
+  };
+
+  // No deps: every commit publishes its own render's captures. A Suspense
+  // reveal re-runs layout effects without re-rendering, so this also puts the
+  // captures back on the entry that the reveal re-registered.
+  useLayoutEffect(() => {
+    stage.committed = true;
+    if (!bridge || !stage.props) return;
+    bridge.registry.updateElementProps(options.id, stage.props);
+  });
+
+  // The same stage once more, after the passive flush. `useUIElement`
+  // registers in a passive effect, which runs AFTER the layout effect above,
+  // and registering never re-renders this hook. So on mount, and after any
+  // re-registration (which replaces the entry, props included), nothing else
+  // would publish this commit's captures. The press-handler warning would also
+  // report a `button` that did capture its `onPress`.
+  //
+  // It runs after the auto-register effect, because `useUIElement` declared
+  // that one first. Re-applying this commit's own stage cannot publish anything
+  // stale: React flushes a commit's passive effects before it starts the next
+  // commit.
+  useEffect(() => {
+    if (!bridge || !stage.props) return;
+    bridge.registry.updateElementProps(options.id, stage.props);
+  });
 
   return {
     ...elementReturn,

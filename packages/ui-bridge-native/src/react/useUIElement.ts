@@ -4,7 +4,15 @@
  * Register a native element with UI Bridge for control and observation.
  */
 
-import { useRef, useEffect, useLayoutEffect, useCallback, useMemo, useState } from 'react';
+import {
+  useRef,
+  useEffect,
+  useInsertionEffect,
+  useLayoutEffect,
+  useCallback,
+  useMemo,
+  useState,
+} from 'react';
 import { StyleSheet } from 'react-native';
 import type {
   NativeElementType,
@@ -383,7 +391,6 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
   const bridge = useUIBridgeNativeOptional();
   const [registered, setRegistered] = useState(false);
   const [_layout, setLayout] = useState<NativeLayout | null>(null);
-  const propsRef = useRef<Record<string, unknown>>({});
   // Authoritative registration tracking. See the web `useUIElement` for
   // rationale: consumers commonly pass inline `style`/`stateStyles` objects,
   // and threading the `registered` state into the register useCallback's deps
@@ -397,11 +404,23 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
   // call site republishes the same string on its own".
   const autoPublishedLabelRef = useRef<string | undefined>(undefined);
 
-  // Latest bridge for the ref interceptor below. React attaches/detaches
-  // refs during the commit phase — outside any effect closure — so the
-  // interceptor reads the live bridge through this ref.
+  // The committed bridge, for the ref interceptor below. React attaches and
+  // detaches refs during the commit, outside any effect closure, so the
+  // interceptor reads the bridge through this ref.
+  //
+  // Refreshed in an INSERTION effect, not in the render body. A render-phase
+  // write let an abandoned render (a `startTransition` render that suspends)
+  // swap in a bridge that never committed. A later detach, from a child that
+  // re-rendered without this component, would then write `visible: false` into
+  // the wrong registry. Insertion effects run in the mutation phase, so they
+  // run before React attaches this commit's refs in the layout phase. The
+  // interceptor therefore always sees the bridge of the latest commit. A layout
+  // effect would run too late: a child's ref attaches before its parent's
+  // layout effects.
   const bridgeRef = useRef(bridge);
-  bridgeRef.current = bridge;
+  useInsertionEffect(() => {
+    bridgeRef.current = bridge;
+  }, [bridge]);
 
   // Element ref with attach/detach interception.
   //
@@ -760,9 +779,19 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
   // Auto-register handler props (onPress, onChangeText, etc.) when provided.
   // We use a ref to track which keys were last registered so we can clear
   // stale handlers on cleanup or when the handlers object changes.
+  //
+  // A LAYOUT effect, so the registry changes in the commit that rendered the
+  // handlers. A passive effect runs a whole task after a non-discrete commit.
+  // In that gap, a bridge `press` ran the PREVIOUS render's `onPress`, and a
+  // handler the commit had dropped was still called. Here the cleanup and the
+  // re-run land in the same commit, so a dropped `onPress` is gone at commit and
+  // a press fails "No press handler found on element", as it does in steady
+  // state. React Native has no server render, so no isomorphic helper is
+  // needed. The layout mount also re-runs on a Suspense reveal, which puts the
+  // handlers back on the entry the reveal re-registers.
   const registeredHandlerKeysRef = useRef<string[]>([]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!bridge || !registered || !handlersProp) return;
 
     // Filter to only function values
@@ -810,13 +839,48 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
   // the last bridge-driven `type`/`setValue`. Guarded on `registered` so the
   // write lands after registration; `updateElementState` is a no-op for
   // unknown ids anyway.
-  useEffect(() => {
+  //
+  // A LAYOUT effect, for the same reason as the handlers effect above: a
+  // passive sync left a bridge read between commit and passive flush
+  // returning the previous render's value. The write emits
+  // `element:stateChanged`, which is safe at layout time. Only the HTTP
+  // server's wait loop and the WS event bridge listen to it; no SDK React hook
+  // does.
+  useLayoutEffect(() => {
     if (!bridge || !registered) return;
     if (typeof valueProp !== 'string') return;
     const current = bridge.registry.getElement(id)?.getState().value;
     if (current === valueProp) return;
     bridge.registry.updateElementState(id, { value: valueProp });
   }, [bridge, registered, id, valueProp]);
+
+  // Publish the COMMITTED `customActions` at every commit.
+  //
+  // `register()` publishes them once, and its effect re-runs only on
+  // `[autoRegister, bridge, id]`. Until now the registry held the mount-time
+  // object for the life of the registration. A handler whose closure changed
+  // kept running stale, an action a later render added was refused, and one it
+  // withdrew stayed advertised and callable.
+  //
+  // The executor reads `element.customActions[action].handler` per call, and
+  // the snapshot reads the field when it is built. So one pointer write per
+  // commit is the whole fix, and the advertised set, each action's `effect` and
+  // the handler that runs all come from this commit's object. `undefined`
+  // CLEARS the field, so a dropped option withdraws every action; the
+  // executor's own fallthrough then refuses the action `UNKNOWN_ACTION`, as in
+  // steady state.
+  //
+  // The write goes to the id this instance REGISTERED, guarded by the ref it
+  // registered with, so a second instance holding the same id keeps its own
+  // actions. No deps: the option is usually an inline literal, and the setter
+  // skips an unchanged object. This is declared after the unregister-at-commit
+  // effect, so a Suspense reveal re-registers first and this then re-applies the
+  // committed set.
+  useLayoutEffect(() => {
+    const ownedId = registeredIdRef.current;
+    if (!bridge || ownedId === null) return;
+    bridge.registry.setElementCustomActions(ownedId, customActions, ref);
+  });
 
   // Keep the registry's label in sync with the `label` OPTION — automatically.
   //
@@ -859,17 +923,6 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
       testId: id,
     });
   }, [bridge, registered, id, label]);
-
-  // Update props for action execution (allows accessing onPress, onChangeText, etc.)
-  const _updateProps = useCallback(
-    (props: Record<string, unknown>) => {
-      propsRef.current = { ...propsRef.current, ...props };
-      if (bridge && registered) {
-        bridge.registry.updateElementProps(id, props);
-      }
-    },
-    [bridge, registered, id]
-  );
 
   // Get state
   const getState = useCallback((): NativeElementState | null => {
@@ -1009,8 +1062,30 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
  * ```
  */
 export interface UseUIElementWithPropsReturn extends UseUIElementReturn {
-  /** Capture props for action execution */
+  /**
+   * Capture props for action execution. Call it from the render body. The
+   * props are published when that render commits, so a render React abandons
+   * never reaches the registry. A call made after the render committed (from
+   * an effect or a handler) publishes immediately.
+   *
+   * Keys merge across calls and renders. A key that a later render does not
+   * pass keeps its last published value. The function is created per render,
+   * because it writes into that render's stage, so its identity is not stable.
+   */
   captureProps: (props: Record<string, unknown>) => void;
+}
+
+/**
+ * What one render passed to `captureProps`. Each render gets its own stage, and
+ * only the render that COMMITS publishes it. A render React abandons (a
+ * `startTransition` render that suspends, an interrupted concurrent render, a
+ * StrictMode double render) takes its captures with it.
+ */
+interface CapturedPropsStage {
+  /** The merged props of every `captureProps` call this render made. */
+  props: Record<string, unknown> | undefined;
+  /** Set by this render's commit. After that, a call publishes immediately. */
+  committed: boolean;
 }
 
 /**
@@ -1032,15 +1107,53 @@ export function useUIElementWithProps<T extends NativeElementType = NativeElemen
   // no onPress ever lands in the registry, regardless of the cast.
   const elementReturn = useUIElement(options as unknown as UseUIElementOptions<'view'>);
   const bridge = useUIBridgeNativeOptional();
+  const { registered } = elementReturn;
 
-  const captureProps = useCallback(
-    (props: Record<string, unknown>) => {
-      if (bridge && elementReturn.registered) {
-        bridge.registry.updateElementProps(options.id, props);
-      }
-    },
-    [bridge, elementReturn.registered, options.id]
-  );
+  // `captureProps` is called from the render body, and it used to write the
+  // registry right there. A render that React then abandoned still published
+  // its handlers, so a bridge `press` could run an `onPress` that never
+  // committed. Each render now stages its captures in its own object, and the
+  // layout effect of the render that COMMITS publishes exactly that stage.
+  //
+  // A single ref shared by every render would not be enough. Abandoned renders
+  // write it too, so their keys would ride into the next commit. A Suspense
+  // reveal re-runs this effect without a render, and with a shared ref it would
+  // re-publish whatever render ran last.
+  const stage: CapturedPropsStage = { props: undefined, committed: false };
+  const captureProps = (props: Record<string, unknown>) => {
+    stage.props = { ...stage.props, ...props };
+    // Called after this render committed, from an effect or a handler. There
+    // is no commit left to wait for, so publish now, as this always did.
+    if (stage.committed && bridge && registered) {
+      bridge.registry.updateElementProps(options.id, props);
+    }
+  };
+
+  // No deps: every commit publishes its own render's captures. A Suspense
+  // reveal re-runs layout effects without re-rendering, so this also puts the
+  // captures back on the entry that the reveal re-registered.
+  useLayoutEffect(() => {
+    stage.committed = true;
+    if (!bridge || !registered || !stage.props) return;
+    bridge.registry.updateElementProps(options.id, stage.props);
+  });
+
+  // The same stage once more, after the passive flush. `useUIElement`
+  // (re-)registers in a passive effect, which runs AFTER the layout effect
+  // above and replaces the entry: on an `id` change (a recycled list cell) or
+  // a `bridge` change. The render that follows such a swap bails out, because
+  // `registered` ends where it started, so its effects never commit and no
+  // later commit puts the captures back. The render-phase write used to cover
+  // that render; this covers it now.
+  //
+  // It runs after the auto-register effect, because `useUIElement` declared
+  // that one first. Re-applying this commit's own stage cannot publish anything
+  // stale: React flushes a commit's passive effects before it starts the next
+  // commit.
+  useEffect(() => {
+    if (!bridge || !registered || !stage.props) return;
+    bridge.registry.updateElementProps(options.id, stage.props);
+  });
 
   return {
     ...elementReturn,
