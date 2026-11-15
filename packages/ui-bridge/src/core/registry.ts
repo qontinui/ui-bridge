@@ -1336,6 +1336,50 @@ export class UIBridgeRegistry {
   }
 
   /**
+   * Point ONE element entry's `customActions` at `customActions` — and clear the
+   * field when it is `undefined`. `useUIElement` calls this at every commit, so
+   * the advertised custom actions, their `effect` classes and the handler a
+   * call runs all come from the latest committed render.
+   *
+   * It differs from {@link updateElement} in the three ways that job needs:
+   *
+   * - **Absent clears.** `updateElement` reads an absent option as "keep", so a
+   *   call site that dropped `customActions` went on advertising, and running,
+   *   every action it used to declare. Here `undefined` withdraws them all, and
+   *   the executor's unknown-verb gate then refuses a call to one with
+   *   `UB-UNSUPPORTED-ACTION` (a name that is also a built-in verb gets the
+   *   built-in, as for an element that never declared it).
+   * - **Owner-guarded.** Ids are a shared, last-write-wins key space (see
+   *   {@link unregisterElement}), so the write lands only when the entry still
+   *   holds `element`. An instance whose id another instance took over cannot
+   *   overwrite that instance's handlers.
+   * - **Window-exact.** The entry is read from `windowLabel`'s bucket alone
+   *   (`undefined` is the default `"main"` window, where `registerElement`
+   *   files it), never through `findElement`'s default-window-first search,
+   *   which could hand back another window's entry for the same id.
+   *
+   * A pointer write: it emits no event and does not bump the store version,
+   * exactly like `updateElement`. Returns `false` when no entry was written.
+   *
+   * Deliberately limited to `customActions`. `updateElement`'s "absent means
+   * keep" strands other dropped options too, but those are declarations rather
+   * than closures, and widening this setter would change them for every caller.
+   */
+  setElementCustomActions(
+    id: string,
+    element: HTMLElement,
+    customActions: Record<string, CustomAction> | undefined,
+    windowLabel?: string
+  ): boolean {
+    const entry = this.elementsByWindow
+      .get(windowLabel ?? UIBridgeRegistry.DEFAULT_WINDOW_LABEL)
+      ?.get(id);
+    if (!entry || entry.element !== element) return false;
+    entry.customActions = customActions;
+    return true;
+  }
+
+  /**
    * Re-derive every DOM-SCRAPED text field (`label` and `content`) from the
    * live DOM and write back the ones that changed. Returns how many FIELDS
    * moved.

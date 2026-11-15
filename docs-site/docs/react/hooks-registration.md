@@ -154,14 +154,28 @@ interface CustomAction<TParams = unknown, TResult = unknown> {
   id: string;
   label?: string;
   description?: string;
+  effect?: 'read' | 'write' | 'destructive'; // safety class; absent = unclassified
   handler: (params?: TParams) => TResult | Promise<TResult>;
 }
 ```
 
-`customActions` is deliberately excluded from the hook's internal change key —
-handler identity churns on every render, and re-registering per render would
-wake every registry subscriber. The registry is still updated in place with the
-latest handlers whenever another option changes.
+The hook mirrors `customActions` into its registry entry at every commit, in a
+layout effect. The actions an agent sees, each one's `effect`, and the handler a
+call runs therefore all come from the latest committed render: a handler that
+closes over state is always the current closure, including for a call that lands
+before the commit's passive effects have run. The mirror is a pointer write — it
+emits no event and wakes no registry subscriber — so passing the object inline
+costs nothing per render.
+
+Removing an action from the object withdraws it at that commit, and dropping the
+`customActions` option altogether withdraws them all. A call to a withdrawn name
+is then answered exactly as for a name the element never declared:
+`UB-UNSUPPORTED-ACTION`, or the built-in verb when the name is one (such as
+`sendKeys`). No withdrawn handler runs.
+
+The hook writes only the entry it registered. When another instance takes over
+the same `id` — a slot-keyed id across a re-layout — this instance's later
+renders do not overwrite that instance's handlers.
 
 ## useUIElementRef
 
