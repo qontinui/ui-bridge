@@ -737,4 +737,30 @@ describe('ToastCapture', () => {
     expect(capture.getActive()).toHaveLength(1);
     expect(capture.getActive()[0].message).toBe('Fresh toast');
   });
+
+  // §4.6: a toast inside a boundary, or holding one, never ships the boundary text.
+  it('a toast holding a redaction boundary reports the sentinel in its place', async () => {
+    capture = new ToastCapture();
+    capture.install();
+    const el = addToast({ role: 'status' }, '');
+    el.innerHTML = 'Your key: <span data-bridge-redact="true">sk-LIVE-777</span>';
+    await flushAndScan();
+    const message = capture.getActive()[0]?.message ?? '';
+    expect(message).not.toContain('sk-LIVE-777');
+    expect(message).toBe('Your key: [REDACTED]');
+  });
+
+  it('a toast inside a redaction boundary reports only the sentinel', async () => {
+    capture = new ToastCapture();
+    capture.install();
+    const wrap = document.createElement('div');
+    wrap.setAttribute('data-bridge-redact', 'true');
+    const toast = createToast({ role: 'alert' }, 'Token sk-LIVE-777 issued');
+    wrap.appendChild(toast);
+    createdElements.push(wrap);
+    document.body.appendChild(wrap);
+    await flushAndScan();
+    const messages = capture.getActive().map((t) => t.message);
+    expect(messages.join(' ')).not.toContain('sk-LIVE-777');
+  });
 });

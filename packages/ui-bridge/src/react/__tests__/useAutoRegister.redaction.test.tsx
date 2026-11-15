@@ -204,4 +204,14 @@ describe('useAutoRegister §4.6 F7 — no scrape inside a boundary', () => {
     expect(reg.content ?? '').toContain('[REDACTED]');
     expect(JSON.stringify(registry.createSnapshot()).toLowerCase()).not.toContain(lowered);
   });
+
+  it('a live region holding a boundary does not leak its prefix in contentMetadata', () => {
+    const fixture = document.createElement('div');
+    fixture.innerHTML = `<div id="t" role="status"><span data-bridge-redact="true">${SECRET}</span> refreshed just now</div>`;
+    document.body.appendChild(fixture);
+    const id = registerContentInRegistry(registry, fixture.querySelector<HTMLElement>('#t')!);
+    expect(id).not.toBeNull();
+    const snap = JSON.stringify(registry.createSnapshot());
+    expect(snap).not.toContain(SECRET.slice(0, 6));
+  });
 });

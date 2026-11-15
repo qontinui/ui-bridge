@@ -15,7 +15,7 @@ import type { RegisteredElement } from './types';
 import { classString, classList } from './class-name';
 import { readAriaLabelAttr, readAriaLabelledbyAttr, readPlaceholderAttr } from './a11y';
 import { truncateCodePoints } from './text';
-import { textExcludingBoundaries } from './redaction';
+import { isContentRedacted, REDACTED_VALUE, textExcludingBoundaries } from './redaction';
 
 // ============================================================================
 // Types
@@ -202,6 +202,8 @@ function computeRole(element: HTMLElement): string {
  * Dynamic patterns (numbers, dates, UUIDs) are replaced with {…}.
  */
 function computeAccessibleName(element: HTMLElement): string | undefined {
+  // §4.6: inside a boundary no attribute or text of the element is read.
+  if (isContentRedacted(element)) return REDACTED_VALUE;
   // aria-label
   const ariaLabel = readAriaLabelAttr(element);
   if (ariaLabel) return normalizeName(ariaLabel);

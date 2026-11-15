@@ -400,7 +400,9 @@ export function inferContentMetadata(element: HTMLElement): ContentMetadata {
 
   // Stable text prefix for dynamic content
   if (metadata.dynamic && !isContentRedacted(element)) {
-    const text = element.textContent?.trim() || '';
+    // A boundary BELOW the element must not leak its first characters here:
+    // `contentMetadata` is emitted as-is.
+    const text = textExcludingBoundaries(element)?.trim() || '';
     if (text.length > 10) {
       metadata.stableTextPrefix = truncateCodePoints(text, 10);
     }
