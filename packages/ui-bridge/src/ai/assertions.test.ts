@@ -551,6 +551,42 @@ describe('AssertionExecutor', () => {
       expect(result.passed).toBe(false);
     });
 
+    it('counts an unmeasured check in failedCount, and again in the unmeasuredCount subset', async () => {
+      // No live node and no computed style for `color`: the check cannot read
+      // its value, so it is unmeasured — it did not pass.
+      const unmeasured = {
+        target: 'Submit',
+        type: 'cssProperty' as const,
+        propertyName: 'color',
+        expected: 'red',
+      };
+      const failed = { target: 'Submit', type: 'hidden' as const };
+      const all = await executor.assertBatch({
+        assertions: [{ target: 'Submit', type: 'visible' }, unmeasured, failed],
+        mode: 'all',
+      });
+      expect(all.results.map((r) => r.outcome)).toEqual(['passed', 'unmeasured', 'failed']);
+      expect(all).toMatchObject({
+        passed: false,
+        passedCount: 1,
+        failedCount: 2,
+        unmeasuredCount: 1,
+      });
+
+      const any = await executor.assertBatch({
+        assertions: [unmeasured, { target: 'Submit', type: 'visible' }],
+        mode: 'any',
+      });
+      expect(any).toMatchObject({ passed: true, failedCount: 1, unmeasuredCount: 1 });
+
+      // An 'all' batch whose only non-passing check is unmeasured does not pass.
+      const onlyUnmeasured = await executor.assertBatch({
+        assertions: [{ target: 'Submit', type: 'visible' }, unmeasured],
+        mode: 'all',
+      });
+      expect(onlyUnmeasured).toMatchObject({ passed: false, failedCount: 1, unmeasuredCount: 1 });
+    });
+
     it('should stop on first failure when stopOnFailure is true', async () => {
       const result = await executor.assertBatch({
         assertions: [
@@ -671,6 +707,97 @@ describe('AssertionExecutor', () => {
       // The result should be defined
       expect(result).toBeDefined();
       expect(result.target).toBeDefined();
+    });
+
+    it('inside a redaction boundary, placeholder and title are UNMEASURED by policy, not failed', async () => {
+      // An element that crossed a wire: no live node, its state stamped with the
+      // §4.6 verdict. The search projection drops its placeholder and title, so
+      // a comparison would read the page as failing with nothing to show.
+      const redacted = createMockAIElement('card-input', { type: 'input' });
+      redacted.state = { ...redacted.state, redaction: { content: true, value: true } };
+      executor.updateElements([redacted]);
+
+      for (const attributeName of ['placeholder', 'title']) {
+        const result = await executor.assert({
+          target: 'card-input',
+          type: 'attribute',
+          attributeName,
+          expected: 'Card number',
+        });
+        expect(result, attributeName).toMatchObject({
+          outcome: 'unmeasured',
+          passed: false,
+          failureCode: 'UB-OBS-NOT-ATTEMPTED-BY-POLICY',
+          unmeasured: { code: 'not_attempted_by_policy' },
+        });
+        // No value at all (the wire then carries no `actual` key).
+        expect(result.actual, attributeName).toBeUndefined();
+      }
+    });
+
+    it('placeholder is read off the live node; with no node, or a detached one, it is UNMEASURED', async () => {
+      const named = document.createElement('input');
+      named.setAttribute('placeholder', 'Order name');
+      const bare = document.createElement('input');
+      const detached = document.createElement('input');
+      detached.setAttribute('placeholder', 'Card 4111');
+      const boundary = document.createElement('div');
+      boundary.setAttribute('data-bridge-redact', 'true');
+      const secret = document.createElement('input');
+      secret.setAttribute('placeholder', 'Card 4111');
+      boundary.appendChild(secret);
+      document.body.append(named, bare, boundary);
+      try {
+        executor.updateElements([
+          { ...createMockAIElement('name-input', { type: 'input' }), element: named },
+          { ...createMockAIElement('bare-input', { type: 'input' }), element: bare },
+          { ...createMockAIElement('gone-input', { type: 'input' }), element: detached },
+          { ...createMockAIElement('card-input', { type: 'input' }), element: secret },
+          // Crossed a wire: no node. The placeholder handed in here is not what
+          // the search projection carries for a DOM-less element.
+          createMockAIElement('wire-input', { type: 'input', placeholder: 'Order name' }),
+        ] as AIDiscoveredElement[]);
+        const check = (target: string) =>
+          executor.assert({
+            target,
+            type: 'attribute',
+            attributeName: 'placeholder',
+            expected: 'Order name',
+          });
+
+        expect(await check('name-input')).toMatchObject({
+          outcome: 'passed',
+          actual: 'Order name',
+        });
+        expect(await check('bare-input')).toMatchObject({
+          outcome: 'failed',
+          actual: null,
+          failureReason: 'Attribute "placeholder" is absent but expected "Order name"',
+        });
+        // A detached node can no longer see a boundary it sat in: not read.
+        expect(await check('gone-input')).toMatchObject({
+          outcome: 'unmeasured',
+          failureCode: 'UB-OBS-INPUT-MISSING',
+          unmeasured: { code: 'input_missing' },
+        });
+        expect(await check('card-input')).toMatchObject({
+          outcome: 'unmeasured',
+          failureCode: 'UB-OBS-NOT-ATTEMPTED-BY-POLICY',
+        });
+        const wire = await check('wire-input');
+        expect(wire).toMatchObject({
+          outcome: 'unmeasured',
+          passed: false,
+          failureCode: 'UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD',
+          unmeasured: { code: 'capability_unavailable_in_build' },
+        });
+        // Never a failure against `undefined`: no value at all.
+        expect(wire.actual).toBeUndefined();
+      } finally {
+        named.remove();
+        bare.remove();
+        boundary.remove();
+      }
     });
 
     it('should fail for unsupported attributes', async () => {

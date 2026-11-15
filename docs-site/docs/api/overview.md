@@ -59,8 +59,10 @@ Error responses:
 | GET    | `/control/element/:id`                | Get element details      |
 | GET    | `/control/element/:id/state`          | Get element state        |
 | POST   | `/control/element/:id/action`         | Execute action           |
+| GET    | `/control/element/:id/capture`        | Structural element capture |
 | GET    | `/control/components`                 | List components          |
 | GET    | `/control/component/:id`              | Get component details    |
+| GET    | `/control/component/:id/capture`      | Structural component capture |
 | POST   | `/control/component/:id/action/:actionId` | Execute component action |
 | POST   | `/control/discover`                   | Discover elements        |
 | GET    | `/control/snapshot`                   | Get full snapshot        |

@@ -12,11 +12,35 @@
  * Both consumers share one implementation, so a relay-protocol change lands
  * in exactly one place.
  *
- * Wire contract (unchanged from the hook):
- *   1. SSE  GET  `{basePath}/commands/stream?tabId=` (fetch-streaming)
- *   2. exec      `execute(action, payload)`
- *   3. POST      `{basePath}/commands`   — result envelope
+ * Wire contract:
+ *   1. SSE  GET  `{basePath}/commands/stream?tabId=&caps=rotate,dedupe&cid=`
+ *                (fetch-streaming)
+ *   2. exec      `execute(action, payload)` — once per dedupe key
+ *   3. POST      `{basePath}/commands`   — result envelope, naming the stream
+ *                the command arrived on; a repeat delivery is answered too
+ *                while the command's outcome is kept (`command-dedupe.ts`)
  *   4. POST      `{basePath}/heartbeat`  — every `heartbeatIntervalMs`
+ *
+ * Stream lifecycle (plan
+ * `2026-11-09-a-dead-relay-tab-stays-the-operators-primary-and-a-command-sent-during-a-stream-reopen-is-lost`,
+ * D4). `caps` declares that this client follows a relay's `rotate` frame and
+ * dedupes a redelivered command; `cid` names this page instance (see
+ * `command-dedupe.ts`). A relay that predates them ignores both.
+ *
+ * - A stream that received `connected` and lived {@link HEALTHY_STREAM_MIN_MS}
+ *   is reopened at once when it ends; one that failed sooner waits
+ *   `SSE_RECONNECT_DELAY_MS`. The exception is a stream its relay asked to
+ *   rotate and then ended: it reopens at the open floor (see
+ *   {@link HEALTHY_STREAM_MIN_MS}), even if it never connected.
+ * - A `rotate` frame opens the next stream before the current one ends
+ *   (make-before-break), once the current one has been connected
+ *   {@link HEALTHY_STREAM_MIN_MS}. The replaced stream drains: it is read to
+ *   its EOF, or, if its relay never ends it, aborted once its replacement
+ *   has connected and the frame's `graceMs` (counted from the frame, at most
+ *   60 s) has run out. At most one stream drains at a time, so a relay can
+ *   hold at most two open.
+ * - A replacement that fails before its `connected` hands the tab back to the
+ *   stream it was replacing, which its relay still holds.
  *
  * `X-UI-Bridge-Tab-Key` rides on all three when an injector published a tab
  * key AND `basePath` is loopback; none of them is sent from an opaque-origin
@@ -30,10 +54,14 @@
  */
 
 import { registerRelayTrafficBase } from './relay-traffic';
+import { createCommandDedupe, dedupeKeyOf } from './command-dedupe';
+import { randomUuid } from './random-uuid';
 import { safeJsonStringify } from '../core/wire-json';
+import { STREAM_CAPABILITIES, createStreamLifecycle, type QueuedCommand } from './stream-lifecycle';
 
-// SSE reconnection delay (10s to avoid Next.js route recompilation cascades)
-const SSE_RECONNECT_DELAY_MS = 10_000;
+// The stream lifecycle lives in `stream-lifecycle.ts`; these keep the public
+// surface of this module as it was.
+export { HEALTHY_STREAM_MIN_MS, parseSSEDataBlock } from './stream-lifecycle';
 
 // Heartbeat interval.
 //
@@ -85,26 +113,6 @@ export function transportHeaders(
     headers.Authorization = `Bearer ${token}`;
   }
   return headers;
-}
-
-/**
- * Parse the `data:` payload out of a single SSE event block — the text
- * between `\n\n` delimiters. Returns the concatenated data string, or `null`
- * for blocks with no data field (e.g. `: heartbeat` keep-alive comments).
- * Mirrors the WhatWG SSE semantics for the fields the command stream uses:
- * `data:` lines are kept (one optional leading space stripped); `:` comment
- * lines and `event:`/`id:`/`retry:` lines are ignored.
- */
-export function parseSSEDataBlock(block: string): string | null {
-  const dataLines: string[] = [];
-  for (const line of block.split('\n')) {
-    if (line.startsWith(':')) continue;
-    if (!line.startsWith('data:')) continue;
-    let value = line.slice(5);
-    if (value.startsWith(' ')) value = value.slice(1);
-    dataLines.push(value);
-  }
-  return dataLines.length > 0 ? dataLines.join('\n') : null;
 }
 
 /**
@@ -248,7 +256,8 @@ function isOpaqueOrigin(): boolean {
  *      id the caller had been handed and was addressing the tab by.
  *   2. The `sessionStorage` entry (per-origin, per-tab) — so an embedded app
  *      and a relay client in the same document agree on the id.
- *   3. A fresh `crypto.randomUUID()`, persisted for (2).
+ *   3. A fresh v4 uuid ({@link randomUuid}, which also works on a non-secure
+ *      page), persisted for (2).
  *
  * The resolved id is written back to `sessionStorage` in all three cases, so
  * everything in the document converges on it. Falls back to a non-persisted
@@ -272,17 +281,15 @@ export function resolveTabId(): string {
     /* access denied */
   }
   if (stored) return stored;
-  const fresh = crypto.randomUUID();
+  const fresh = randomUuid();
   persistTabId(fresh);
   return fresh;
 }
 
-/** Command frame as delivered over the SSE stream. */
-interface QueuedCommand {
-  commandId: string;
-  action: string;
-  payload: unknown;
-  timestamp?: number;
+/** What one execution of a command produced: every delivery of it is answered with this. */
+interface CommandOutcome {
+  ok: boolean;
+  result: unknown;
 }
 
 /** Configuration for {@link startRelayClient}. */
@@ -332,9 +339,15 @@ export interface RelayClientConfig {
 export interface RelayClientHandle {
   /** The tab id this client registered under. */
   readonly tabId: string;
-  /** Force the SSE stream to close and immediately reconnect. */
+  /**
+   * The id of the CURRENT command stream, from its own `connected` event, or
+   * `undefined` until that arrives. While a replaced stream is still being
+   * read, this is its replacement's id.
+   */
+  readonly streamId: string | undefined;
+  /** Force every open SSE stream to close and immediately reconnect. */
   forceReconnect(): void;
-  /** Tear down the SSE stream + heartbeat loop. Idempotent. */
+  /** Tear down every SSE stream + the heartbeat loop. Idempotent. */
   stop(): void;
 }
 
@@ -381,13 +394,26 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
   });
 
   let stopped = false;
-  // The id of the command stream currently open, from its `connected` event.
-  // Every command result carries it, so the relay can hold the result to the
-  // stream the command was delivered on.
-  let streamId: string | undefined;
-  let abortController: AbortController | null = null;
-  let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
   let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+  // This page instance. Its id rides on every stream GET, and its memory of
+  // the commands it ran is what lets a relay redeliver into it safely.
+  const outcomes = createCommandDedupe<CommandOutcome>();
+  const clientInstanceId = randomUuid();
+  const streamUrl =
+    `${basePath}/commands/stream?` +
+    (tabId ? `tabId=${encodeURIComponent(tabId)}&` : '') +
+    `caps=${STREAM_CAPABILITIES}&cid=${encodeURIComponent(clientInstanceId)}`;
+  const lifecycle = createStreamLifecycle({
+    streamUrl,
+    tabKeyHeader,
+    resolveToken: () => resolveAuthToken(authHeader),
+    onError,
+    isStopped: () => stopped,
+    isOpaqueOrigin,
+    onCommand: (command, fromStream) => void processCommand(command, fromStream),
+    onPing: () => maybeSendHeartbeat(),
+  });
+  const { connect, closeStreams, cancelReconnect } = lifecycle;
 
   // ----- Response sender -----
   const sendResponse = async (
@@ -416,145 +442,62 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
   };
 
   // ----- Command processor -----
-  // `fromStream` is the stream the command arrived on; its result names that
-  // stream even if the connection has been reopened since.
-  const processCommand = async (command: QueuedCommand, fromStream: string | undefined) => {
+  // Run one command, and turn whatever it produced (a thrown error included)
+  // into the envelope every delivery of it is answered with.
+  const runCommand = async (command: QueuedCommand): Promise<CommandOutcome> => {
     try {
       const result = await execute(command.action, command.payload as Record<string, unknown>);
       const resultObj = result as { success?: boolean };
-      if (resultObj && resultObj.success === false) {
-        await sendResponse(command.commandId, false, result, fromStream);
-        return;
-      }
-      await sendResponse(command.commandId, true, result, fromStream);
+      return { ok: !(resultObj && resultObj.success === false), result };
     } catch (e: unknown) {
       const errorMessage = e instanceof Error ? e.message : String(e);
       let errorCode = 'UNKNOWN_ERROR';
       if (errorMessage.includes('not found')) errorCode = 'ELEMENT_NOT_FOUND';
       else if (errorMessage.includes('timeout')) errorCode = 'ACTION_TIMEOUT';
       else if (errorMessage.includes('Unknown command')) errorCode = 'UNKNOWN_COMMAND';
-
-      await sendResponse(
-        command.commandId,
-        false,
-        {
+      return {
+        ok: false,
+        result: {
           success: false,
           error: errorMessage,
           failureDetails: { errorCode, message: errorMessage, timestamp: Date.now() },
           durationMs: 0,
           timestamp: Date.now(),
         },
-        fromStream
-      );
+      };
     }
+  };
+
+  // `fromStream` is the stream the command arrived on; its result names that
+  // stream even if the connection has been reopened or rotated since.
+  const processCommand = async (command: QueuedCommand, fromStream: string | undefined) => {
+    // A command read after `stop()` (its bytes were already on the wire) is
+    // not run: the client is being torn down.
+    if (stopped) return;
+    // One page instance runs one command once, however many streams carried
+    // it. A repeat delivery is answered, under its own id and stream, with
+    // that run's outcome while the outcome is kept. After that it is neither
+    // run nor answered (see `command-dedupe.ts`).
+    const outcome = outcomes.outcomeOf(dedupeKeyOf(command), () => runCommand(command));
+    if (!outcome) return;
+    const { ok, result } = await outcome;
+    // The client stopped while the command ran: it sends nothing more.
+    if (stopped) return;
+    await sendResponse(command.commandId, ok, result, fromStream);
   };
 
   // ----- SSE connection -----
-  const closeStream = () => {
-    if (abortController) {
-      abortController.abort();
-      abortController = null;
-    }
-  };
-
-  const scheduleReconnect = () => {
-    if (stopped) return;
-    if (reconnectTimeout) return; // already scheduled
-    reconnectTimeout = setTimeout(() => {
-      reconnectTimeout = null;
-      if (!stopped) connect();
-    }, SSE_RECONNECT_DELAY_MS);
-  };
-
-  const connect = () => {
-    if (stopped) return;
-    // An opaque-origin document is refused by the runner and is about to be
-    // replaced by the navigation; the real document starts its own client.
-    if (isOpaqueOrigin()) return;
-    closeStream();
-    const controller = new AbortController();
-    abortController = controller;
-
-    const url = `${basePath}/commands/stream${tabId ? `?tabId=${encodeURIComponent(tabId)}` : ''}`;
-    const headers: Record<string, string> = { Accept: 'text/event-stream', ...tabKeyHeader };
-    const token = resolveAuthToken(authHeader);
-    if (token) headers.Authorization = `Bearer ${token}`;
-
-    fetch(url, { method: 'GET', headers, signal: controller.signal, cache: 'no-store' })
-      .then(async (resp) => {
-        if (!resp.ok || !resp.body) {
-          if (abortController === controller) abortController = null;
-          scheduleReconnect();
-          return;
-        }
-        const reader = resp.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        try {
-          for (;;) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            let sep: number;
-            while ((sep = buffer.indexOf('\n\n')) !== -1) {
-              const block = buffer.slice(0, sep);
-              buffer = buffer.slice(sep + 2);
-              const data = parseSSEDataBlock(block);
-              if (data == null) continue;
-              try {
-                const parsed = JSON.parse(data);
-                if (parsed.type === 'connected') {
-                  streamId = typeof parsed.streamId === 'string' ? parsed.streamId : undefined;
-                  continue;
-                }
-                // Throttle-immune heartbeat clock: arriving bytes are not
-                // subject to the background-tab timer clamp, so a hidden tab
-                // stays registered on the strength of these alone.
-                if (parsed.type === 'ping') {
-                  maybeSendHeartbeat();
-                  continue;
-                }
-                if (parsed.commandId && parsed.action) {
-                  void processCommand(parsed as QueuedCommand, streamId);
-                }
-              } catch (e) {
-                onError('[UIBridge] Failed to parse SSE message:', e);
-              }
-            }
-          }
-        } catch {
-          /* stream read aborted or network drop — fall through to reconnect */
-        }
-        if (abortController === controller) abortController = null;
-        if (!stopped && !controller.signal.aborted) scheduleReconnect();
-      })
-      .catch(() => {
-        if (abortController === controller) abortController = null;
-        if (!stopped && !controller.signal.aborted) scheduleReconnect();
-      });
-  };
-
   const forceReconnect = () => {
     if (stopped) return;
-    closeStream();
-    if (reconnectTimeout) {
-      clearTimeout(reconnectTimeout);
-      reconnectTimeout = null;
-    }
-    connect();
+    closeStreams();
+    connect('replace');
   };
 
   const handleVisibility = () => {
     if (typeof document === 'undefined') return;
     if (document.visibilityState === 'visible') {
       // Reconnect immediately if the stream was dropped while hidden.
-      if (!abortController) {
-        if (reconnectTimeout) {
-          clearTimeout(reconnectTimeout);
-          reconnectTimeout = null;
-        }
-        connect();
-      }
+      if (!lifecycle.hasCurrent()) connect('replace');
     }
     // Do NOT disconnect on hide — automation tools need background access
   };
@@ -627,7 +570,7 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
   };
 
   // ----- Boot -----
-  connect();
+  connect('replace');
   if (typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', handleVisibility);
   }
@@ -636,15 +579,16 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
 
   return {
     tabId,
+    get streamId() {
+      return lifecycle.currentStreamId();
+    },
     forceReconnect,
     stop() {
       if (stopped) return;
       stopped = true;
-      closeStream();
-      if (reconnectTimeout) {
-        clearTimeout(reconnectTimeout);
-        reconnectTimeout = null;
-      }
+      closeStreams();
+      cancelReconnect();
+      outcomes.releaseOutcomes();
       if (heartbeatInterval) {
         clearInterval(heartbeatInterval);
         heartbeatInterval = null;

@@ -135,7 +135,7 @@ describe('Phase 6 — predict a component action without invoking it', () => {
     expect(getGlobalEffectStore().size).toBe(0);
     // No settle window was opened for this request id, so a concurrent
     // background observation cannot be attributed to a call that did nothing.
-    expect(getGlobalActionWindowRegistry().hadConcurrentObservation('req-predict')).toBe(false);
+    expect(getGlobalActionWindowRegistry().hadConcurrentObservationForRequest('req-predict')).toBe(false);
   });
 
   it('predicting twice is idempotent — same answer, still no invocation', async () => {

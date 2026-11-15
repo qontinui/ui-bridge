@@ -72,13 +72,17 @@ export class NetworkIdleDetector implements IdleSignal<NetworkSignalStatus> {
 
   install(): void {
     if (this.installed) return;
+    // Without a shared tracker this patches the global fetch; in a server
+    // runtime (no page) that would observe the server's own calls. Stay
+    // uninstalled there, as the DOM signals do.
+    if (!this.tracker && typeof document === 'undefined') return;
     this.installed = true;
 
     if (this.tracker) {
       this.installTrackerSubscription();
     } else {
       this.installFetchInterceptor();
-      if (this.trackXHR) {
+      if (this.trackXHR && typeof XMLHttpRequest !== 'undefined') {
         this.installXHRInterceptor();
       }
     }

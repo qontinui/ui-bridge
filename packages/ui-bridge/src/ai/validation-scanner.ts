@@ -9,6 +9,7 @@
  *
  * Each strategy returns a confidence score. The highest-confidence match wins.
  */
+import { textExcludingBoundaries } from '../core/redaction';
 
 export interface DetectedValidationError {
   /** Associated form field element ID or DOM selector */
@@ -151,9 +152,8 @@ function getAriaErrorMessage(element: HTMLElement): string | null {
   const errorMsgId = element.getAttribute('aria-errormessage');
   if (errorMsgId) {
     const errorEl = document.getElementById(errorMsgId);
-    if (errorEl?.textContent?.trim()) {
-      return errorEl.textContent.trim();
-    }
+    const errorText = errorEl ? textExcludingBoundaries(errorEl)?.trim() : undefined;
+    if (errorText) return errorText;
   }
 
   // aria-describedby may also reference error text
@@ -163,9 +163,10 @@ function getAriaErrorMessage(element: HTMLElement): string | null {
     const ids = describedById.split(/\s+/);
     for (const id of ids) {
       const el = document.getElementById(id);
-      if (el?.textContent?.trim()) {
+      // §4.6: the referenced element's verdict is not the field's.
+      const text = el ? textExcludingBoundaries(el)?.trim() : undefined;
+      if (el && text) {
         // Check if it looks like an error (not just a description)
-        const text = el.textContent.trim();
         if (
           el.getAttribute('role') === 'alert' ||
           hasErrorClass(el) ||
@@ -199,7 +200,7 @@ function findAdjacentError(element: HTMLElement): string | null {
     try {
       const errorEl = container.querySelector(selector);
       if (errorEl && errorEl !== element) {
-        const text = errorEl.textContent?.trim();
+        const text = textExcludingBoundaries(errorEl)?.trim();
         if (text) return text;
       }
     } catch {
@@ -210,7 +211,7 @@ function findAdjacentError(element: HTMLElement): string | null {
   // Also check the immediate next sibling
   const next = element.nextElementSibling;
   if (next && hasErrorClass(next as HTMLElement)) {
-    const text = next.textContent?.trim();
+    const text = textExcludingBoundaries(next)?.trim();
     if (text) return text;
   }
 

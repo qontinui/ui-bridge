@@ -10,6 +10,7 @@
  */
 
 import { pageScrollContainer } from './page-scroll-container';
+import { projectComputedStyles } from '../core/computed-styles';
 import type { UIBridgeRegistry } from '../core/registry';
 import { serializeRegisteredElement, serializeRegisteredComponent } from '../core/registry';
 import { serializeElementCustomActions } from '../core/element-actions';
@@ -93,10 +94,22 @@ import {
   isContentRedacted,
   readScrubbedValue,
   readScrubbedText,
+  isValueRedacted,
+  verdictFailClosed,
+  type RedactionVerdict,
 } from '../core/redaction';
+import {
+  currentFiber,
+  typeName,
+  hostFiberOf,
+  hostElementsUnder,
+  owningComponentFiber,
+  type FiberLike,
+} from './react-fiber';
 import { getGlobalCtr } from '../ctr/registry';
 import { buildActionFailureDetails } from '../diagnostics';
 import { EffectVerifier } from './effect-verifier';
+import type { EffectVerifierDeps } from './effect-verifier';
 import { getGlobalEffectStore } from './effect-store';
 import {
   createDefaultSignatureRegistry,
@@ -160,6 +173,8 @@ import type {
   ControlBatchResponse,
 } from './types';
 import { applyCanonicalFindFilter, type CanonicalFindContext } from '../core/find-filter';
+import { projectElement } from '../core/element-projection';
+import { resolvePageSentinel } from '../core/page-sentinel';
 import { mediaFactsOf } from '../core/media-observation';
 import {
   forcePseudoState,
@@ -326,29 +341,7 @@ function getElementState(element: HTMLElement): ElementState {
       bottom: rect.bottom,
       left: rect.left,
     },
-    computedStyles: {
-      display: style.display,
-      visibility: style.visibility,
-      opacity: style.opacity,
-      pointerEvents: style.pointerEvents,
-      cursor: style.cursor,
-      color: style.color,
-      backgroundColor: style.backgroundColor,
-      colorScheme: style.colorScheme,
-      fontSize: style.fontSize,
-      fontWeight: style.fontWeight,
-      lineHeight: style.lineHeight,
-      overflow: style.overflow,
-      textOverflow: style.textOverflow,
-      whiteSpace: style.whiteSpace,
-      position: style.position,
-      zIndex: style.zIndex,
-      padding: style.padding,
-      margin: style.margin,
-      borderColor: style.borderColor,
-      borderWidth: style.borderWidth,
-      borderRadius: style.borderRadius,
-    },
+    computedStyles: projectComputedStyles(style),
   };
 
   // Normalized 0–1 viewport coordinates for resolution-independent targeting
@@ -1175,6 +1168,8 @@ export class DefaultActionExecutor implements ActionExecutor {
   private signatureRegistry: SignatureLookup;
   /** Lazily built — only constructed when verification first runs. */
   private effectVerifier?: EffectVerifier;
+  /** The verifier's clock and settle, when injected (tests); else real time. */
+  private effectTiming?: Pick<EffectVerifierDeps, 'now' | 'settle'>;
   /** Lazily built — converts a ControlSnapshot into a SemanticSnapshot. */
   private snapshotManager?: SemanticSnapshotManager;
 
@@ -1187,8 +1182,18 @@ export class DefaultActionExecutor implements ActionExecutor {
       enableEffectVerification?: boolean;
       /** Override the signature registry (default: the Phase 1 defaults). */
       signatureRegistry?: SignatureLookup;
+      /**
+       * Override the effect verifier's clock and settle (default: `Date.now`
+       * and a real `sleep`). A seam so a test can drive a slow action through
+       * `executeAction` on a pinned clock; the snapshot capture stays the
+       * executor's own.
+       *
+       * @internal Test seam only — not part of the public API.
+       */
+      effectTiming?: Pick<EffectVerifierDeps, 'now' | 'settle'>;
     }
   ) {
+    this.effectTiming = options?.effectTiming;
     this.maxDiscoveryCacheSize = options?.maxDiscoveryCacheSize ?? 500;
     this.effectVerificationEnabled = options?.enableEffectVerification ?? false;
     this.signatureRegistry =
@@ -1229,7 +1234,8 @@ export class DefaultActionExecutor implements ActionExecutor {
     if (!this.effectVerifier) {
       this.effectVerifier = new EffectVerifier({
         captureSnapshot: (scope: ObservabilityScope) => this.captureSemanticSnapshot(scope),
-        settle: (ms: number) => sleep(ms),
+        settle: this.effectTiming?.settle ?? ((ms: number) => sleep(ms)),
+        now: this.effectTiming?.now,
       });
     }
     return this.effectVerifier;
@@ -1537,13 +1543,14 @@ export class DefaultActionExecutor implements ActionExecutor {
         this.discoveryCache.delete(elementId);
       }
 
-      // Resolve page-level sentinel IDs for scroll actions.
-      // "document", "body", and "window" are virtual element IDs that target
-      // the page scroll container directly, without requiring a registered element.
+      // Resolve page-level sentinel IDs for scroll actions: "document", "body"
+      // and "window" name the page scroll container directly, without a
+      // registered element — only when nothing above resolved the id, the
+      // precedence every sentinel site applies (core/page-sentinel.ts).
       if (!element && request.action === 'scroll') {
-        const sentinel = elementId.toLowerCase();
-        if (sentinel === 'document' || sentinel === 'body' || sentinel === 'window') {
-          element = document.documentElement;
+        const page = resolvePageSentinel(elementId, 'scroll');
+        if (page) {
+          element = page;
           recordHit('page-sentinel');
         }
       }
@@ -2375,7 +2382,9 @@ export class DefaultActionExecutor implements ActionExecutor {
           effectParams,
           signature,
           runHandler,
-          otherArm ? { alsoPredict: otherArm } : undefined
+          // The action's own timeout sizes the window's un-anchored bound, so a
+          // legitimately long action keeps its window for as long as it runs.
+          { alsoPredict: otherArm, timeoutMs }
         );
         outcome = verified.result;
         effectVerification = verified.verification;
@@ -2578,11 +2587,17 @@ export class DefaultActionExecutor implements ActionExecutor {
       transport: 'executor',
       registrySize: this.registry.getAllElements().length,
     };
+    // The request-scoped projection (`properties` / `attributes`) is read off
+    // each RETURNED row's live node before the node is dropped from the row.
     const elements: DiscoveredElement[] = applyCanonicalFindFilter(
       candidates,
       criteria,
       filterCtx
-    ).map(({ element: _element, ...row }) => row);
+    ).map(({ element, ...row }) =>
+      filterCtx.projection
+        ? { ...row, projection: projectElement(element, filterCtx.projection) }
+        : row
+    );
 
     return {
       elements,
@@ -3990,13 +4005,30 @@ function computeActionErrorDiff(
  */
 const SAFE_SERIALIZE_MAX_DEPTH = 6;
 
-function safeSerialize(value: unknown, seen = new WeakSet<object>(), depth = 0): unknown {
+function safeSerialize(
+  value: unknown,
+  seen = new WeakSet<object>(),
+  depth = 0,
+  compactElements = false
+): unknown {
   if (depth > SAFE_SERIALIZE_MAX_DEPTH) return '[MaxDepth]';
   if (value === null || value === undefined) return value;
   if (typeof value === 'function') return '[Function]';
   if (typeof value !== 'object') return value;
 
   const obj = value as object;
+
+  // With `compactElements`, React-owned objects never get walked: a React
+  // element (`children`, render props) carries the dev-mode `_owner` fiber
+  // graph and `_store`, so it collapses to `<Type>`; a memo / forwardRef
+  // component TYPE passed as a prop collapses to `[memo Foo]`-style labels,
+  // distinct from elements. Checked before the seen-set, so the same element
+  // reused in two props prints `<Type>` both times, not `[Circular]`.
+  if (compactElements) {
+    const compact = compactReactObject(obj);
+    if (compact !== undefined) return compact;
+  }
+
   if (seen.has(obj)) return '[Circular]';
   seen.add(obj);
 
@@ -4017,18 +4049,51 @@ function safeSerialize(value: unknown, seen = new WeakSet<object>(), depth = 0):
   }
 
   if (Array.isArray(obj)) {
-    return obj.map((item) => safeSerialize(item, seen, depth + 1));
+    return obj.map((item) => safeSerialize(item, seen, depth + 1, compactElements));
   }
 
   const result: Record<string, unknown> = {};
   for (const key of Object.keys(obj)) {
     try {
-      result[key] = safeSerialize((obj as Record<string, unknown>)[key], seen, depth + 1);
+      result[key] = safeSerialize(
+        (obj as Record<string, unknown>)[key],
+        seen,
+        depth + 1,
+        compactElements
+      );
     } catch {
       result[key] = '[Error reading property]';
     }
   }
   return result;
+}
+
+const REACT_ELEMENT_TYPES: ReadonlySet<symbol> = new Set([
+  Symbol.for('react.element'),
+  Symbol.for('react.transitional.element'),
+]);
+const REACT_FRAGMENT_TYPE = Symbol.for('react.fragment');
+const REACT_TYPE_LABELS: ReadonlyMap<symbol, string> = new Map([
+  [Symbol.for('react.memo'), 'memo'],
+  [Symbol.for('react.forward_ref'), 'forwardRef'],
+]);
+
+/**
+ * `<Type>` for a real React element, `[memo Foo]` / `[forwardRef Foo]` for a
+ * memo / forwardRef component type, else `undefined` (serialize normally).
+ */
+function compactReactObject(obj: object): string | undefined {
+  const tag = (obj as { $$typeof?: unknown }).$$typeof;
+  if (typeof tag !== 'symbol') return undefined;
+  if (REACT_ELEMENT_TYPES.has(tag)) {
+    const type = (obj as { type?: unknown }).type;
+    if (type === REACT_FRAGMENT_TYPE) return '<Fragment>';
+    if (typeof type === 'string') return `<${type}>`;
+    if (typeof type === 'symbol') return `<${type.description ?? 'Unknown'}>`;
+    return `<${typeName(type) ?? 'Unknown'}>`;
+  }
+  const label = REACT_TYPE_LABELS.get(tag);
+  return label ? `[${label} ${typeName(obj) ?? 'Anonymous'}]` : undefined;
 }
 
 /**
@@ -4101,6 +4166,87 @@ export function extractReactState(element: HTMLElement): ReactStateInfo | null {
     fiberState: reactVerdict.value ? [] : fiberState,
     componentName: reactVerdict.value ? undefined : componentName,
   };
+}
+
+/**
+ * The props of the nearest React component (function / class / forwardRef /
+ * memo) that OWNS this DOM element — the component's own props, not the host
+ * element's DOM props that `extractReactState` reports. `null` when the
+ * element is not React-managed or no component fiber owns it. Used by the
+ * component capture (`control/component-capture.ts`).
+ *
+ * §4.6, fail closed: a component's props can carry the cleartext of ANY input
+ * it renders (`<SecretField secret="…">` wrapping a password input), so the
+ * verdict is taken over the owning component's whole host subtree, not the
+ * element asked about. Every prop VALUE collapses to the sentinel unless the
+ * subtree was enumerated completely and no node in it — nor any DOM below
+ * those nodes — is value-redacted (a password input or a `data-bridge-redact`
+ * boundary).
+ */
+export function extractOwnerComponentProps(element: Element): Record<string, unknown> | null {
+  const host = hostFiberOf(element);
+  if (!host) return null;
+  const owner = owningComponentFiber(host);
+  return owner ? extractComponentFiberProps(owner, element) : null;
+}
+
+/**
+ * The props of a given component fiber (normalised to its current half),
+ * scrubbed under the fail-closed verdict over THAT fiber's host subtree —
+ * the same rule as {@link extractOwnerComponentProps}. `anchor` is the DOM
+ * node whose own verdict applies when the subtree is clear. The component
+ * capture uses it for a registered component's own fiber.
+ */
+export function extractComponentFiberProps(
+  fiber: FiberLike,
+  anchor: Element
+): Record<string, unknown> {
+  const owner = currentFiber(fiber) ?? fiber;
+  const raw = (owner as { memoizedProps?: unknown }).memoizedProps;
+  const props = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  return scrubReactProps(
+    safeSerialize(props, new WeakSet<object>(), 0, true) as Record<string, unknown>,
+    ownerSubtreeVerdict(owner, anchor)
+  );
+}
+
+/** Max fibers visited when enumerating an owner's host subtree. */
+const OWNER_SUBTREE_FIBER_BUDGET = 5000;
+
+/** Max DOM elements scanned below the owner's hosts (non-React DOM included). */
+export const OWNER_SUBTREE_DOM_BUDGET = 20000;
+
+/**
+ * The fail-closed VALUE verdict over a component's host subtree: redacted
+ * when the enumeration is incomplete (fiber or DOM budget spent), or any host
+ * — or any DOM element below one, React-managed or not — is a password
+ * input, sits in or holds a `data-bridge-redact` boundary, hosts an OPEN
+ * shadow root, or is a custom element (a tag with `-`, which may hold a
+ * CLOSED shadow root — `element.shadowRoot` is `null` for those, so this scan
+ * cannot see inside).
+ */
+function ownerSubtreeVerdict(owner: FiberLike, anchor: Element): RedactionVerdict {
+  const { elements, exhausted } = hostElementsUnder(owner, OWNER_SUBTREE_FIBER_BUDGET);
+  if (exhausted || elements.length === 0) return verdictFailClosed();
+  const opaque = (el: Element): boolean =>
+    isValueRedacted(el as HTMLElement) || el.shadowRoot !== null || el.tagName.includes('-');
+  // Hosts come in pre-order, so a nested host was already scanned as a DOM
+  // descendant of its ancestor host: `seen` keeps the scan linear, and the
+  // TreeWalker stops the moment the budget is spent (no full NodeList).
+  const seen = new Set<Element>();
+  for (const node of elements) {
+    if (opaque(node)) return verdictFailClosed();
+    if (seen.has(node)) continue;
+    const doc = node.ownerDocument;
+    if (!doc?.createTreeWalker) return verdictFailClosed();
+    const walker = doc.createTreeWalker(node, 1 /* NodeFilter.SHOW_ELEMENT */);
+    for (let below = walker.nextNode(); below; below = walker.nextNode()) {
+      if (seen.size >= OWNER_SUBTREE_DOM_BUDGET) return verdictFailClosed();
+      seen.add(below as Element);
+      if (opaque(below as Element)) return verdictFailClosed();
+    }
+  }
+  return verdictOf(anchor as HTMLElement);
 }
 
 /**

@@ -6,7 +6,8 @@
  * The spellings: a repeated key, a percent-encoded key, and, under Express's
  * extended query parser, the bracket forms `request[__callerUserId]` (a
  * nested object) and `__callerUserId[]` (an array). The routes come from the
- * route table, so a new query route is covered when it is added.
+ * route table, so a new query route is covered when it is added — and a
+ * `queryAfterContext` route is held to its own order, context first.
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
@@ -52,26 +53,30 @@ function problemsIn(): string[] {
   for (const route of QUERY_ROUTES) {
     const args = received.get(route.handler);
     const at = route.params?.length ?? 0;
+    const [queryAt, contextAt] = route.queryAfterContext ? [at + 1, at] : [at, at + 1];
     const where = `GET ${route.path} -> ${route.handler}`;
     if (!args) {
       problems.push(`${where}: never called`);
       continue;
     }
-    const query = JSON.stringify(args[at]);
-    if (reservedKeys(args[at]) > 0 || /user-[acd]/.test(query)) {
+    const query = JSON.stringify(args[queryAt]);
+    if (reservedKeys(args[queryAt]) > 0 || /user-[acd]/.test(query)) {
       problems.push(`${where}: query ${query}`);
     }
-    if ((args[at] as { keep?: unknown })?.keep !== '1')
+    if ((args[queryAt] as { keep?: unknown })?.keep !== '1')
       problems.push(`${where}: lost a plain parameter`);
-    if (JSON.stringify(args[at + 1]) !== JSON.stringify({ callerUserId: 'user-b' })) {
-      problems.push(`${where}: context ${JSON.stringify(args[at + 1])}`);
+    if (JSON.stringify(args[contextAt]) !== JSON.stringify({ callerUserId: 'user-b' })) {
+      problems.push(`${where}: context ${JSON.stringify(args[contextAt])}`);
     }
   }
   return problems;
 }
 
-it('checks a real set of query routes', () => {
+it('checks a real set of query routes, a context-first one among them', () => {
   expect(QUERY_ROUTES.length).toBeGreaterThan(20);
+  expect(QUERY_ROUTES.filter((route) => route.queryAfterContext).map((r) => r.handler)).toEqual([
+    'getElementState',
+  ]);
 });
 
 describe('a query cannot carry the reserved key to any query route', () => {

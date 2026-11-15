@@ -32,6 +32,7 @@ export type {
   AssertionType,
   AssertionRequest,
   AssertionResult,
+  AssertionOutcome,
   BatchAssertionRequest,
   BatchAssertionResult,
 
@@ -217,7 +218,13 @@ export { discoverForms } from './form-discovery';
 export type { FormDiscoveryElement } from './form-discovery';
 
 // NL Assertion Parser
-export { parseNLAssertion } from './nl-assertion-parser';
+export {
+  AssertionRequestError,
+  isAssertionRequestError,
+  normalizeAssertion,
+  normalizeAssertionBatch,
+  parseNLAssertion,
+} from './nl-assertion-parser';
 export type { NLAssertionInput, NLAssertionOutput } from './nl-assertion-parser';
 
 // NL Action Parser
@@ -387,8 +394,13 @@ export {
   computeContrastRatio,
   checkContrastCompliance,
   DEFAULT_VIEWPORTS,
+  RESPONSIVE_SNAPSHOT_METHOD,
 } from './design-inspector';
-export type { CustomPropertyIndex, DesignRegistryLike } from './design-inspector';
+export type {
+  CustomPropertyIndex,
+  DesignRegistryLike,
+  ResponsiveCapture,
+} from './design-inspector';
 
 // Form Diff Tracking
 export { captureFormSnapshot, diffFormSnapshots, summarizeFormDiff } from './form-diff';

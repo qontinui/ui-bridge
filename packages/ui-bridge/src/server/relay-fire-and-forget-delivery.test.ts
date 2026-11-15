@@ -26,11 +26,21 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { CommandRelay } from './command-relay';
 
+/** Every relay `freshRelay()` built, destroyed after each test. */
+const relays: CommandRelay[] = [];
+
 function freshRelay(
   options?: Partial<ConstructorParameters<typeof CommandRelay>[0]>
 ): CommandRelay {
+  // No warm-up snapshot: it would land at a time no request chose.
   const prefix = `__uiBridgeTest_${Math.random().toString(36).slice(2, 10)}`;
-  return new CommandRelay({ globalPrefix: prefix, ...(options ?? {}) });
+  const relay = new CommandRelay({
+    globalPrefix: prefix,
+    proactiveSnapshot: false,
+    ...(options ?? {}),
+  });
+  relays.push(relay);
+  return relay;
 }
 
 /** Register a "tab" by subscribing a listener that records delivered frames. */
@@ -46,6 +56,10 @@ function registerTab(
 }
 
 afterEach(() => {
+  // Real timers here: destroy() clears each relay's cleanup interval. Each
+  // subscription's proactive timeout stays armed and later fires inert (the
+  // warm-up is off, and destroy() leaves no listener to send to).
+  for (const relay of relays.splice(0)) relay.destroy();
   vi.useRealTimers();
 });
 

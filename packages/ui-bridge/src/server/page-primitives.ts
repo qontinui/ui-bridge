@@ -40,7 +40,7 @@ import {
   REDACTED_VALUE,
   isValueRedacted,
   isContentRedacted,
-  readScrubbedValue,
+  readScrubbedOwnValue,
   readScrubbedText,
 } from '../core/redaction';
 import { readDisabledSignals } from '../core/a11y';
@@ -151,10 +151,12 @@ function readGatedValue(el: HTMLElement): { value: string | null; length: number
   // el is proven not value-redacted above (password/boundary already returned),
   // so the reader-minters pass the raw content through — routing the read
   // through the choke point instead of touching `.value`/`.textContent` raw.
-  const value =
-    'value' in el
-      ? (readScrubbedValue(el as HTMLInputElement) ?? null)
-      : (readScrubbedText(el) ?? null);
+  // Which property is "the value" is `readScrubbedOwnValue`'s to say: a form
+  // field's `.value`, or a button/option/data's explicit `value` attribute. Any
+  // other element — an `<li>` (numeric `.value`), an `<output>` (whose `.value`
+  // is its raw text) — reads its boundary-scrubbed text instead.
+  const own = readScrubbedOwnValue(el);
+  const value = own !== undefined ? own : (readScrubbedText(el) ?? null);
   return { value, length: value?.length ?? 0 };
 }
 
@@ -410,11 +412,7 @@ export function typeIntoPrimitive(
       typed: true,
       element: {
         tag: el.tagName.toLowerCase(),
-        value: isValueRedacted(el)
-          ? REDACTED_VALUE
-          : 'value' in el
-            ? (readScrubbedValue(el as HTMLInputElement) ?? null)
-            : (readScrubbedText(el) ?? null),
+        value: readGatedValue(el).value,
       },
     },
   };

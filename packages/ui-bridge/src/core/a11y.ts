@@ -24,6 +24,12 @@
 // `moduleResolution: bundler` won't auto-resolve them. The ambient declaration
 // for our use is in `dom-accessibility-api.d.ts` next to this file.
 import { computeAccessibleName, getRole } from 'dom-accessibility-api';
+import {
+  hasRedactionBoundaryBelow,
+  textExcludingBoundaries,
+  textOutsideBoundaries,
+  touchesRedactionBoundary,
+} from './redaction';
 
 /**
  * Collapse runs of whitespace to a single space and trim. Matches the
@@ -78,7 +84,10 @@ export function computeAriaLabel(node: Element): string | undefined {
   const parts: string[] = [];
   for (const id of ids) {
     const referenced = ownerDocument.getElementById(id);
-    const text = referenced?.textContent?.trim();
+    // §4.6: the referenced element's text, with any boundary it holds (or sits
+    // in) replaced by the sentinel — the labelled node's verdict says nothing
+    // about the label's.
+    const text = referenced ? textExcludingBoundaries(referenced)?.trim() : undefined;
     if (text) parts.push(text);
   }
   if (parts.length === 0) return undefined;
@@ -92,14 +101,75 @@ export function computeAriaLabel(node: Element): string | undefined {
  * field is omitted rather than serialized as `""`.
  */
 export function computeAccessibleNameSafe(node: Element): string | undefined {
+  let normalized: string | undefined;
   try {
     const name = computeAccessibleName(node);
     if (!name) return undefined;
-    const normalized = normalizeWhitespace(name);
-    return normalized || undefined;
+    normalized = normalizeWhitespace(name) || undefined;
   } catch {
     return undefined;
   }
+  if (!normalized) return undefined;
+  try {
+    return boundarySafeName(node, normalized);
+  } catch {
+    // Fail closed: a name we could not prove boundary-free is not emitted.
+    return undefined;
+  }
+}
+
+/** The `aria-labelledby` targets and associated `<label>`s a name may come from. */
+function nameSourceElements(node: Element): { labelledBy: Element[]; labels: Element[] } {
+  const doc = node.ownerDocument;
+  const labelledBy = (readAriaLabelledbyAttr(node) ?? '')
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((id) => doc?.getElementById(id))
+    .filter((el): el is HTMLElement => !!el);
+  const labels: Element[] = [];
+  const id = (node as HTMLElement).id;
+  if (id && doc) {
+    // Every associated label: accname joins them all, so one holding a
+    // boundary must be seen even when it is not the first.
+    labels.push(...Array.from(doc.querySelectorAll(`label[for="${CSS.escape(id)}"]`)));
+  }
+  // A node whose `closest` fails is treated as having no wrapping label, the
+  // same degradation `attributeNameSource` applies; the subtree and the other
+  // sources are still checked.
+  let wrapping: Element | null;
+  try {
+    wrapping = node.closest?.('label') ?? null;
+  } catch {
+    wrapping = null;
+  }
+  if (wrapping && !labels.includes(wrapping)) labels.push(wrapping);
+  return { labelledBy, labels };
+}
+
+/**
+ * §4.6: the accname algorithm reads text from the element's subtree, its
+ * `<label>`s and its `aria-labelledby` targets, boundaries included, while the
+ * element's own verdict only looks UP. When any of those sources touches a
+ * `data-bridge-redact` boundary, a name that did not come from the element's
+ * own `aria-label` / `title` attribute is rebuilt from the same source with
+ * every boundary replaced by `REDACTED_VALUE`. With no boundary in reach the
+ * W3C answer is returned untouched.
+ */
+function boundarySafeName(node: Element, name: string): string | undefined {
+  const { labelledBy, labels } = nameSourceElements(node);
+  const touched =
+    hasRedactionBoundaryBelow(node) ||
+    labelledBy.some(touchesRedactionBoundary) ||
+    labels.some(touchesRedactionBoundary);
+  if (!touched) return name;
+  const own = (v: string | null): boolean => !!v && normalizeWhitespace(v) === name;
+  if (own(readAriaLabelAttr(node)) || own(readTitleAttr(node))) return name;
+  const safeJoin = (els: Element[]): string | undefined =>
+    normalizeWhitespace(els.map((el) => textExcludingBoundaries(el) ?? '').join(' ')) ||
+    undefined;
+  if (labelledBy.length > 0) return safeJoin(labelledBy);
+  if (labels.length > 0) return safeJoin(labels);
+  return computeVisibleText(node);
 }
 
 /**
@@ -230,7 +300,10 @@ function attributeNameSource(node: Element, name: string): AccessibleNameSource 
   if (labelledBy) {
     const parts = labelledBy
       .split(/\s+/)
-      .map((id) => node.ownerDocument?.getElementById(id)?.textContent ?? '')
+      .map((id) => {
+        const target = node.ownerDocument?.getElementById(id);
+        return target ? (textExcludingBoundaries(target) ?? '') : '';
+      })
       .filter((t) => t.trim().length > 0);
     if (parts.length > 0 && matches(parts.join(' '))) {
       return 'aria-labelledby';
@@ -240,10 +313,10 @@ function attributeNameSource(node: Element, name: string): AccessibleNameSource 
   const id = (node as HTMLElement).id;
   if (id) {
     const labelEl = node.ownerDocument?.querySelector(`label[for="${CSS.escape(id)}"]`);
-    if (matches(labelEl?.textContent)) return 'label';
+    if (labelEl && matches(textExcludingBoundaries(labelEl))) return 'label';
   }
   const wrappingLabel = node.closest?.('label');
-  if (wrappingLabel && matches(wrappingLabel.textContent)) {
+  if (wrappingLabel && matches(textExcludingBoundaries(wrappingLabel))) {
     return 'label';
   }
 
@@ -264,6 +337,14 @@ function attributeNameSource(node: Element, name: string): AccessibleNameSource 
  * the value after the same normalization on both sides.
  */
 export function computeVisibleText(node: Element): string | undefined {
+  // §4.6: a container of a `data-bridge-redact` subtree must not read that
+  // subtree's text (its own verdict only looks UP). `innerText` cannot exclude
+  // a subtree, so such a container reads its text with each boundary replaced
+  // by the sentinel. Every visible-text consumer — text matching, the registry
+  // snapshot, labels — inherits the exclusion from this one function.
+  if (hasRedactionBoundaryBelow(node)) {
+    return normalizeWhitespace(textOutsideBoundaries(node) ?? '') || undefined;
+  }
   const inner = (node as HTMLElement).innerText;
   const raw = typeof inner === 'string' && inner.length > 0 ? inner : (node.textContent ?? '');
   const normalized = normalizeWhitespace(raw);

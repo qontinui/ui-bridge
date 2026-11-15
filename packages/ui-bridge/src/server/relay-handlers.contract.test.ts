@@ -77,7 +77,7 @@ const KNOWN_UNSERVED_RELAY_ACTIONS: readonly string[] = [
  * only together with the relay call sites it counts: a drop with no relay
  * route removed means the extraction lost sight of a call shape.
  */
-const RELAYED_ACTION_COUNT = 152;
+const RELAYED_ACTION_COUNT = 154;
 
 /** The relay wrappers in the SDK — functions that forward their first parameter to `queueCommand`. */
 const RELAY_WRAPPERS = [

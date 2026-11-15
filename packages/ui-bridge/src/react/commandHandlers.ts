@@ -25,6 +25,13 @@ import {
   type CanonicalFindContext,
   type CanonicalFindCriteria,
 } from '../core/find-filter';
+import {
+  isProjectionRequestError,
+  parseProjectionRequest,
+  projectElement,
+  type ElementProjectionRequest,
+} from '../core/element-projection';
+import { pageSentinelState, resolvePageSentinel } from '../core/page-sentinel';
 import { truncateCodePoints } from '../core/text';
 import {
   buildKeyboardEventInit,
@@ -37,7 +44,11 @@ import {
   supersededSnapshotMessage,
   type SnapshotFreshness,
 } from '../core/snapshot-signature';
-import { parseNLAssertion } from '../ai/nl-assertion-parser';
+import {
+  isAssertionRequestError,
+  normalizeAssertion,
+  normalizeAssertionBatch,
+} from '../ai/nl-assertion-parser';
 import { getGlobalStubRegistry, validateStubRequest, type StubRequestSpec } from '../network/stubs';
 import { NetworkRequestTracker } from '../network/tracker';
 import { isRelayOwnTraffic, __clearRelayTrafficForTest } from '../relay/relay-traffic';
@@ -147,6 +158,7 @@ import {
   restoreMediaOverrides,
 } from '../control/media-override';
 import { setTextVisibility } from '../control/text-visibility';
+import { captureComponent, componentCaptureCommandResult } from '../control/component-capture';
 import { listContexts } from '../specs/quality-contexts';
 import {
   captureQualityBaseline,
@@ -155,6 +167,14 @@ import {
   qualityFailureCode,
 } from '../specs/quality-request';
 import type { SnapshotBaseline } from '../specs/quality-types';
+import {
+  designAuditOf,
+  designFailureCode,
+  designSnapshotOf,
+  elementStylesOf,
+  responsiveSnapshotsOf,
+  viewportConstraintsOf,
+} from '../specs/design-request';
 import type { StyleGuideConfig } from '../specs/style-types';
 import { sdkDispatch } from '../core/sdk-dispatch';
 import {
@@ -573,7 +593,16 @@ function resolveElementWithFallback(id: string): RegisteredElement | undefined {
 
 function elementToSnapshot(e: RegisteredElement) {
   const state = e.getState();
-  return { id: e.id, type: e.type, label: e.label, actions: e.actions, state };
+  // §4.6 CONTENT axis: `RegisteredElement.label` is stored raw (the registry
+  // scrubs it only when it serializes), and this projection is stored by
+  // `saveBookmark` and handed back verbatim by `getBookmark`.
+  return {
+    id: e.id,
+    type: e.type,
+    label: scrubContent(e.label, e.element),
+    actions: e.actions,
+    state,
+  };
 }
 
 /**
@@ -714,100 +743,6 @@ function elementToFindResult(e: RegisteredElement) {
     // find over the relay carried its facts only inside `state`.
     mediaMetadata: scrubMediaMetadata(e.mediaMetadata, verdictOf(e.element)),
   };
-}
-
-function getComputedStylesSafe(el: HTMLElement) {
-  const cs = getComputedStyle(el);
-  const keys = [
-    'color',
-    'backgroundColor',
-    'fontSize',
-    'fontFamily',
-    'fontWeight',
-    'padding',
-    'margin',
-    'border',
-    'borderRadius',
-    'display',
-    'position',
-    'width',
-    'height',
-    'opacity',
-    'overflow',
-    'textAlign',
-    'lineHeight',
-    'boxShadow',
-    'cursor',
-    'zIndex',
-    'colorScheme',
-    'appearance',
-  ];
-  const styles: Record<string, string> = {};
-  for (const k of keys)
-    styles[k] =
-      cs.getPropertyValue(k.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`)) ||
-      (cs as unknown as Record<string, string>)[k] ||
-      '';
-  return styles;
-}
-
-/**
- * Contrast ratio below this means foreground and background are nearly identical,
- * making text effectively invisible (WCAG contrast ratio scale starts at 1:1).
- */
-const NEARLY_INVISIBLE_CONTRAST_THRESHOLD = 1.15;
-
-/**
- * Linearize a single sRGB channel value (0–1) per WCAG 2.1 spec.
- */
-function srgbToLinear(c: number): number {
-  return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
-}
-
-/**
- * Parse an rgb/rgba or hex color string and return WCAG 2.1 relative luminance (0–1).
- * Supports: rgb(r,g,b), rgba(r,g,b,a), #rgb, #rgba, #rrggbb, #rrggbbaa.
- * Returns -1 if unparseable.
- */
-function parseLuminance(color: string): number {
-  let r: number, g: number, b: number;
-
-  const rgbMatch = color.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-  if (rgbMatch) {
-    r = parseInt(rgbMatch[1]) / 255;
-    g = parseInt(rgbMatch[2]) / 255;
-    b = parseInt(rgbMatch[3]) / 255;
-  } else {
-    const hexMatch = color.match(/^#([0-9a-fA-F]{3,8})$/);
-    if (!hexMatch) return -1;
-    const hex = hexMatch[1];
-    if (hex.length === 3 || hex.length === 4) {
-      // #rgb or #rgba — expand each digit
-      r = parseInt(hex[0] + hex[0], 16) / 255;
-      g = parseInt(hex[1] + hex[1], 16) / 255;
-      b = parseInt(hex[2] + hex[2], 16) / 255;
-    } else if (hex.length === 6 || hex.length === 8) {
-      // #rrggbb or #rrggbbaa
-      r = parseInt(hex.slice(0, 2), 16) / 255;
-      g = parseInt(hex.slice(2, 4), 16) / 255;
-      b = parseInt(hex.slice(4, 6), 16) / 255;
-    } else {
-      return -1;
-    }
-  }
-
-  // WCAG 2.1 relative luminance
-  return 0.2126 * srgbToLinear(r) + 0.7152 * srgbToLinear(g) + 0.0722 * srgbToLinear(b);
-}
-
-function isLikelyDarkColor(color: string): boolean {
-  const l = parseLuminance(color);
-  return l >= 0 && l < 0.4;
-}
-
-function isLikelyLightColor(color: string): boolean {
-  const l = parseLuminance(color);
-  return l >= 0 && l > 0.6;
 }
 
 /** A network event source: what the relay's idle detector and timeline subscribe to. */
@@ -1194,12 +1129,14 @@ function loadedGuideConfig(): StyleGuideConfig | null {
 }
 
 /**
- * A `/design/evaluate*` failure, coded as the server handlers code it. Their
+ * A failure of a route both transports answer through a shared module
+ * (`/design/evaluate*` via `specs/quality-request.ts`, the design-inspection
+ * routes via `specs/design-request.ts`), coded as the server handlers code it. Their
  * `error()` maps the internal code onto the canonical `UB-*` vocabulary, while
  * the relay forwards a command's own `code` verbatim, so mapping it here keeps
  * one failure one code over either transport.
  */
-function qualityFailure(message: string, internalCode: string): Record<string, unknown> {
+function sharedRouteFailure(message: string, internalCode: string): Record<string, unknown> {
   return { success: false, error: message, code: mapInternalErrorCode(internalCode, message) };
 }
 
@@ -1748,8 +1685,24 @@ export async function executeCommand(
     }
 
     case 'getElementState': {
+      // The request-scoped projection (`properties` / `attributes`) is
+      // validated before anything is read: a malformed list is refused whole,
+      // typed, never half-answered. See `core/element-projection.ts`.
+      let projection: ElementProjectionRequest | undefined;
+      try {
+        projection = parseProjectionRequest(payload, 'query');
+      } catch (err) {
+        if (!isProjectionRequestError(err)) throw err;
+        return { success: false, error: `element state ${err.message}`, code: err.code };
+      }
       const el = getElement(payload.id as string);
-      if (!el) throw new Error(`Element ${payload.id} not found`);
+      if (!el) {
+        // The `document` sentinel names `<html>`, which has no registration:
+        // its read answers the projection off it (core/page-sentinel.ts).
+        const page = resolvePageSentinel(payload.id, 'read');
+        if (page) return pageSentinelState(payload.id as string, page, projection);
+        throw new Error(`Element ${payload.id} not found`);
+      }
       const state = el.getState();
       // Spread the full canonical `ElementState` so callers see every field
       // the SDK populates (role, accessibleName, normalizedRect,
@@ -1765,6 +1718,7 @@ export async function executeCommand(
         isVisible: state.visible,
         isEnabled: state.enabled,
         text: state.textContent,
+        ...(projection ? { projection: projectElement(el.element, projection) } : {}),
       };
     }
 
@@ -1874,18 +1828,20 @@ export async function executeCommand(
         }
       }
 
-      // Page-level sentinel IDs ("document", "body", "window") resolve to
-      // document.documentElement for scroll actions, bypassing the element registry.
-      const isPageScrollSentinel =
-        request.action === 'scroll' && (id === 'document' || id === 'body' || id === 'window');
+      // A page sentinel ("document", "body", "window") scrolls the page: the
+      // shared resolver names `<html>` for it, bypassing the element registry
+      // — for an id the registry does not hold, the precedence every sentinel
+      // site applies (core/page-sentinel.ts).
+      const pageScrollTarget =
+        request.action === 'scroll' && !getElement(id) ? resolvePageSentinel(id, 'scroll') : null;
 
       let dom: HTMLElement;
       // The element's own registration, kept so the custom-action lookup below
       // can consult it. A page sentinel has no registration and therefore no
       // custom actions.
       let registered: RegisteredElement | undefined;
-      if (isPageScrollSentinel) {
-        dom = document.documentElement;
+      if (pageScrollTarget) {
+        dom = pageScrollTarget;
       } else {
         const el = getElement(id);
         if (!el)
@@ -2714,7 +2670,14 @@ export async function executeCommand(
       } catch {
         // Fall back to the conservative default above.
       }
-      const findElements = filtered.map(elementToFindResult);
+      // The request-scoped projection (`properties` / `attributes`), read off
+      // each RETURNED row's live node. See `core/element-projection.ts`.
+      const projection = filterCtx.projection;
+      const findElements = filtered.map((e) =>
+        projection
+          ? { ...elementToFindResult(e), projection: projectElement(e.element, projection) }
+          : elementToFindResult(e)
+      );
       return {
         elements: findElements,
         total: filtered.length,
@@ -2879,6 +2842,20 @@ export async function executeCommand(
         timestamp: Date.now(),
       };
     }
+
+    // `GET /control/{component,element}/:id/capture` (matches_isolated_render).
+    case 'getComponentCapture':
+    case 'getElementCapture':
+      return componentCaptureCommandResult(
+        captureComponent(
+          registry,
+          {
+            kind: action === 'getComponentCapture' ? 'component' : 'element',
+            id: payload.id as string,
+          },
+          { props: payload.props === true }
+        )
+      );
 
     case 'executeComponentAction': {
       // The relay forwards the whole `ComponentActionRequest`, and this arm
@@ -3273,46 +3250,42 @@ export async function executeCommand(
     }
 
     case 'aiAssert': {
+      // Support NL assertions: {assertion: "a button exists"} → {target, type}.
+      // The parsed request is passed WHOLE: `attributeName`, `propertyName`,
+      // `allowedValues`, `range`, `tokenPath`, `relatedTarget`, `minGap`, … are
+      // what the attribute, style and spatial checks read, and the in-process
+      // handlers have always forwarded them. A request that names nothing to
+      // check is refused, typed — the relay refuses it before it is queued, so
+      // this answer is for a caller that reaches the dispatcher directly.
+      let parsed: import('../ai').AssertionRequest;
+      try {
+        parsed = normalizeAssertion(payload);
+      } catch (err) {
+        if (!isAssertionRequestError(err)) throw err;
+        return { success: false, error: err.message, code: err.code };
+      }
       const { createAssertionExecutor } = await import('../ai');
-      type AT = import('../ai').AssertionType;
       const exec = createAssertionExecutor({});
       exec.updateElements(elements as unknown as Parameters<typeof exec.updateElements>[0]);
-      const r = payload as {
-        target?: string;
-        type?: string;
-        expected?: unknown;
-        assertion?: string;
-      };
-      // Support NL assertions: {assertion: "a button exists"} → {target, type}
-      const parsed = parseNLAssertion(r);
-      return exec.assert({
-        target: parsed.target,
-        type: parsed.type as AT,
-        expected: parsed.expected,
-      });
+      return exec.assert(parsed);
     }
 
     case 'aiAssertBatch': {
+      // The batch normalisation the in-process handlers use, so a batch means
+      // the same thing on both transports: bare strings are NL assertions,
+      // every entry passes through whole, `stopOnFailure` is honoured, and a
+      // malformed batch is refused, typed (see `aiAssert`).
+      let batch: import('../ai').BatchAssertionRequest;
+      try {
+        batch = normalizeAssertionBatch(payload as Parameters<typeof normalizeAssertionBatch>[0]);
+      } catch (err) {
+        if (!isAssertionRequestError(err)) throw err;
+        return { success: false, error: err.message, code: err.code };
+      }
       const { createAssertionExecutor } = await import('../ai');
-      type AT = import('../ai').AssertionType;
       const exec = createAssertionExecutor({});
       exec.updateElements(elements as unknown as Parameters<typeof exec.updateElements>[0]);
-      const r = payload as {
-        assertions: Array<{
-          target?: string;
-          type?: string;
-          expected?: unknown;
-          assertion?: string;
-        }>;
-        mode?: 'all' | 'any';
-      };
-      return exec.assertBatch({
-        assertions: r.assertions.map((a) => {
-          const parsed = parseNLAssertion(a);
-          return { target: parsed.target, type: parsed.type as AT, expected: parsed.expected };
-        }),
-        mode: r.mode || 'all',
-      });
+      return exec.assertBatch(batch);
     }
 
     case 'getSemanticSnapshot': {
@@ -5249,16 +5222,18 @@ export async function executeCommand(
     // Design Review
     // ======================================================================
 
+    // The design-inspection routes run through specs/design-request.ts, which
+    // the server handlers call too — one model whichever transport answers,
+    // failures included (see `sharedRouteFailure`).
     case 'getElementStyles': {
-      const el = getElement(payload.id as string);
-      if (!el) return { error: `Element ${payload.id} not found` };
-      const dom = el.element as HTMLElement;
-      return {
-        id: payload.id,
-        styles: getComputedStylesSafe(dom),
-        rect: dom.getBoundingClientRect(),
-        timestamp: Date.now(),
-      };
+      try {
+        return elementStylesOf(payload.id as string, getElement(payload.id as string));
+      } catch (err) {
+        return sharedRouteFailure(
+          (err as Error).message,
+          designFailureCode(err, 'DESIGN_STYLES_ERROR')
+        );
+      }
     }
 
     case 'getElementStateStyles': {
@@ -5284,159 +5259,50 @@ export async function executeCommand(
     }
 
     case 'getDesignSnapshot': {
-      const { elementIds } = payload as { elementIds?: string[] };
-      const targetEls = elementIds
-        ? elements.filter((e) => elementIds.includes(e.id))
-        : elements.slice(0, 50);
-      const designs = targetEls.map((e) => ({
-        id: e.id,
-        label: e.label,
-        type: e.type,
-        styles: getComputedStylesSafe(e.element as HTMLElement),
-        rect: (e.element as HTMLElement).getBoundingClientRect(),
-      }));
-      return { elements: designs, timestamp: Date.now() };
+      try {
+        return designSnapshotOf(elements, payload);
+      } catch (err) {
+        return sharedRouteFailure(
+          (err as Error).message,
+          designFailureCode(err, 'DESIGN_SNAPSHOT_ERROR')
+        );
+      }
     }
 
-    case 'getResponsiveSnapshots':
-      return {
-        error: 'Responsive snapshots require server-side viewport manipulation',
-        timestamp: Date.now(),
-      };
+    case 'getResponsiveSnapshots': {
+      try {
+        // Read inside the root-width lock, once the capture's turn comes.
+        return await responsiveSnapshotsOf(() => registry.getAllElements(), payload);
+      } catch (err) {
+        return sharedRouteFailure(
+          (err as Error).message,
+          designFailureCode(err, 'RESPONSIVE_SNAPSHOT_ERROR')
+        );
+      }
+    }
 
     case 'setViewportConstraints': {
-      const { width, restore } = payload as { width?: number; restore?: boolean };
-      const docEl = document.documentElement;
-
-      if (restore) {
-        docEl.style.removeProperty('width');
-        docEl.style.removeProperty('min-width');
-        docEl.style.removeProperty('max-width');
-        docEl.style.removeProperty('overflow');
-      } else if (width) {
-        docEl.style.width = `${width}px`;
-        docEl.style.minWidth = `${width}px`;
-        docEl.style.maxWidth = `${width}px`;
-        docEl.style.overflow = 'hidden';
+      try {
+        // Serialized with responsive captures (`core/root-width-lock`), and
+        // narrows the root exactly as they do (`specs/design-request`).
+        return await viewportConstraintsOf(payload);
+      } catch (err) {
+        return sharedRouteFailure(
+          (err as Error).message,
+          designFailureCode(err, 'VIEWPORT_CONSTRAINTS_ERROR')
+        );
       }
-      // Force reflow so subsequent getControlSnapshot sees updated layout
-      void docEl.offsetHeight;
-
-      return {
-        success: true,
-        viewportWidth: window.innerWidth,
-        constrainedWidth: width ?? window.innerWidth,
-        timestamp: Date.now(),
-      };
     }
 
     case 'runDesignAudit': {
-      const issues: Array<{ element: string; issue: string; severity: string; fix?: string }> = [];
-      elements.slice(0, 100).forEach((e) => {
-        const dom = e.element as HTMLElement;
-        const cs = getComputedStyle(dom);
-        // Check contrast using WCAG 2.1 contrast ratio
-        const textColor = cs.color;
-        const bgColor = cs.backgroundColor;
-        if (
-          textColor &&
-          bgColor &&
-          textColor !== 'rgba(0, 0, 0, 0)' &&
-          bgColor !== 'rgba(0, 0, 0, 0)'
-        ) {
-          const fgLum = parseLuminance(textColor);
-          const bgLum = parseLuminance(bgColor);
-          if (fgLum >= 0 && bgLum >= 0) {
-            const lighter = Math.max(fgLum, bgLum);
-            const darker = Math.min(fgLum, bgLum);
-            // WCAG contrast ratio: (L1 + 0.05) / (L2 + 0.05)
-            const ratio = (lighter + 0.05) / (darker + 0.05);
-            if (ratio < NEARLY_INVISIBLE_CONTRAST_THRESHOLD) {
-              // Nearly identical colors — text is invisible
-              issues.push({
-                element: e.id,
-                issue: `Text nearly invisible: contrast ratio ${ratio.toFixed(2)}:1 (${textColor} on ${bgColor})`,
-                severity: 'error',
-                fix: `Add explicit text color with sufficient contrast against ${bgColor}`,
-              });
-            } else if (ratio < 3.0) {
-              // Below WCAG AA for large text
-              const fontSize = parseFloat(cs.fontSize);
-              issues.push({
-                element: e.id,
-                issue: `Low contrast: ${ratio.toFixed(2)}:1 (${textColor} on ${bgColor}) — fails WCAG AA${fontSize >= 18 ? ' for large text (3:1)' : ' (4.5:1)'}`,
-                severity: 'warning',
-                fix: `Increase contrast to at least ${fontSize >= 18 ? '3:1' : '4.5:1'} for WCAG AA compliance`,
-              });
-            } else if (ratio < 4.5) {
-              // Passes large text AA but fails normal text AA
-              const fontSize = parseFloat(cs.fontSize);
-              if (fontSize < 18) {
-                issues.push({
-                  element: e.id,
-                  issue: `Insufficient contrast for normal text: ${ratio.toFixed(2)}:1 (${textColor} on ${bgColor}) — WCAG AA requires 4.5:1`,
-                  severity: 'info',
-                  fix: `Increase contrast to 4.5:1, or increase font size to 18px+`,
-                });
-              }
-            }
-          }
-        }
-        // Check select elements for dark-mode dropdown visibility issues
-        if (dom.tagName === 'SELECT') {
-          const scheme = cs.colorScheme || '';
-          const isDarkBg = isLikelyDarkColor(bgColor);
-          const hasLightText = isLikelyLightColor(textColor);
-          if (isDarkBg && hasLightText && !scheme.includes('dark')) {
-            issues.push({
-              element: e.id,
-              issue: `Select has light text (${textColor}) on dark bg (${bgColor}) without color-scheme:dark — native <option> dropdowns may be invisible`,
-              severity: 'warning',
-              fix: `Add style={{ colorScheme: "dark" }} to the <select> element and set option colors explicitly: [&>option]:text-black [&>option]:bg-white`,
-            });
-          }
-          // Check if options explicitly have styling
-          const firstOption = dom.querySelector('option');
-          if (firstOption) {
-            const optCs = getComputedStyle(firstOption);
-            const optFgLum = parseLuminance(optCs.color || '');
-            const optBgLum = parseLuminance(optCs.backgroundColor || '');
-            if (optFgLum >= 0 && optBgLum >= 0) {
-              const optLighter = Math.max(optFgLum, optBgLum);
-              const optDarker = Math.min(optFgLum, optBgLum);
-              const optRatio = (optLighter + 0.05) / (optDarker + 0.05);
-              if (optRatio < 3.0) {
-                issues.push({
-                  element: e.id,
-                  issue: `Select option text has low contrast: ${optRatio.toFixed(2)}:1 (${optCs.color} on ${optCs.backgroundColor})`,
-                  severity: 'error',
-                  fix: `Add explicit option colors: select option { color: #000; background-color: #fff; } or use [&>option]:text-black [&>option]:bg-white`,
-                });
-              }
-            }
-          }
-        }
-        // Check font size
-        if (parseFloat(cs.fontSize) < 12) {
-          issues.push({
-            element: e.id,
-            issue: `Font size too small: ${cs.fontSize}`,
-            severity: 'info',
-          });
-        }
-        // Check interactive element size
-        if (e.type === 'button' || e.type === 'link') {
-          const rect = dom.getBoundingClientRect();
-          if (rect.width < 44 || rect.height < 44) {
-            issues.push({
-              element: e.id,
-              issue: `Touch target too small: ${Math.round(rect.width)}x${Math.round(rect.height)}px (min 44x44)`,
-              severity: 'warning',
-            });
-          }
-        }
-      });
-      return { issues, checkedElements: Math.min(elements.length, 100), timestamp: Date.now() };
+      try {
+        return designAuditOf(elements, payload, loadedGuideConfig());
+      } catch (err) {
+        return sharedRouteFailure(
+          (err as Error).message,
+          designFailureCode(err, 'DESIGN_AUDIT_ERROR')
+        );
+      }
     }
 
     case 'loadStyleGuide':
@@ -5456,12 +5322,12 @@ export async function executeCommand(
 
     // The same functions the server handlers call (specs/quality-request.ts),
     // so `/design/evaluate*` answers with one model over either transport,
-    // failures included (see `qualityFailure`).
+    // failures included (see `sharedRouteFailure`).
     case 'evaluateQuality': {
       try {
         return evaluateRegisteredQuality(elements, payload, loadedGuideConfig());
       } catch (err) {
-        return qualityFailure(
+        return sharedRouteFailure(
           (err as Error).message,
           qualityFailureCode(err, 'QUALITY_EVALUATION_ERROR')
         );
@@ -5476,7 +5342,7 @@ export async function executeCommand(
         qualityBaseline = captureQualityBaseline(elements, payload);
         return { saved: true, elementCount: qualityBaseline.elements.length };
       } catch (err) {
-        return qualityFailure(
+        return sharedRouteFailure(
           (err as Error).message,
           qualityFailureCode(err, 'SAVE_BASELINE_ERROR')
         );
@@ -5485,12 +5351,12 @@ export async function executeCommand(
 
     case 'diffBaseline': {
       if (!qualityBaseline) {
-        return qualityFailure('No baseline saved. Call saveBaseline first.', 'NO_BASELINE');
+        return sharedRouteFailure('No baseline saved. Call saveBaseline first.', 'NO_BASELINE');
       }
       try {
         return diffQualityBaseline(qualityBaseline, elements, payload);
       } catch (err) {
-        return qualityFailure(
+        return sharedRouteFailure(
           (err as Error).message,
           qualityFailureCode(err, 'DIFF_BASELINE_ERROR')
         );

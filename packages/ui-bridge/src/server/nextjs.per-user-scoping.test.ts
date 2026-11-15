@@ -431,22 +431,62 @@ describe('Next.js · GET /health is scoped per-user (§4.2 · U2 regression)', (
     expect(serialized).not.toContain('tab-bob');
   });
 
-  it('primaryTabId is nulled for a caller who does not own the primary', async () => {
-    // Whichever tab the relay elected primary, only its OWNER may see its id —
-    // `primaryTabId` is a tab id like any other.
-    const primary = relay.getTransportDiagnostics().primaryTabId;
-    expect(primary).not.toBeNull();
-    const owner = relay.getOwnership(primary!)!.userId;
-    const other = owner === 'alice' ? 'bob' : 'alice';
+  it("a scoped primaryTabId is the caller's own tab, never the global primary's id", async () => {
+    // The relay elected bob's tab primary (it registered last), so only bob
+    // may see that id: `primaryTabId` is a tab id like any other. A scoped
+    // view names the tab the caller's OWN unpinned command reaches (the
+    // owner-scoped dispatch arm), so alice sees her own tab, and a caller
+    // with no tab sees none.
+    expect(relay.getTransportDiagnostics().primaryTabId).toBe('tab-bob');
 
-    expect((await getHealth('health', owner)).primaryTabId).toBe(primary);
-    expect((await getHealth('health', other)).primaryTabId).toBeNull();
+    expect((await getHealth('health', 'bob')).primaryTabId).toBe('tab-bob');
+    expect((await getHealth('health', 'alice')).primaryTabId).toBe('tab-alice');
     expect((await getHealth('health', 'eve')).primaryTabId).toBeNull();
+  });
+
+  it("/tabs, /tabs?detailed=true and /tabs/wait mark as primary the tab the caller's own command reaches, as /health does", async () => {
+    // Streams that answer getTabInfo, so the detailed listing does not wait
+    // out its per-tab probe. Each replaces its tab's stream, which resumes
+    // the tab, so the global primary stays bob's.
+    for (const tabId of ['tab-alice', 'tab-bob']) {
+      relay.subscribeToCommands(
+        (command) =>
+          relay.resolveCommand(command.commandId, { url: `https://app.local/${tabId}` }, tabId),
+        tabId
+      );
+    }
+    expect(relay.getTransportDiagnostics().primaryTabId).toBe('tab-bob');
+
+    /** `{tabId: isPrimary}` for each tab one listing returns. */
+    async function primaryFlags(
+      route: 'tabs' | 'tabs/wait',
+      userId?: string,
+      query?: string
+    ): Promise<Record<string, boolean>> {
+      const req = makeRequest('GET', `/${route}`, {
+        ...(userId ? { headers: { 'X-Caller-User-Id': userId } } : {}),
+        ...(query ? { query } : {}),
+      });
+      const res = await routes.GET(req, { params: { path: route.split('/') } });
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as {
+        data: { tabs: Array<{ tabId: string; isPrimary: boolean }> };
+      };
+      return Object.fromEntries(json.data.tabs.map((tab) => [tab.tabId, tab.isPrimary]));
+    }
+
+    expect(await primaryFlags('tabs', 'alice')).toEqual({ 'tab-alice': true });
+    expect(await primaryFlags('tabs', 'alice', 'detailed=true')).toEqual({ 'tab-alice': true });
+    expect(await primaryFlags('tabs/wait', 'alice')).toEqual({ 'tab-alice': true });
+    expect(await primaryFlags('tabs', 'bob')).toEqual({ 'tab-bob': true });
+    // The unscoped (admin) view still marks the global primary.
+    expect(await primaryFlags('tabs')).toEqual({ 'tab-alice': false, 'tab-bob': true });
   });
 
   it('pendingCommandIds are withheld from a scoped view (POST /commands settles by id)', async () => {
     // In-flight command, never resolved — a pending entry exists.
-    void relay.queueCommand('snapshot', {}, { targetTabId: 'tab-bob' });
+    // `afterEach`'s destroy() rejects it with RelayDestroyedError; caught here.
+    void relay.queueCommand('snapshot', {}, { targetTabId: 'tab-bob' }).catch(() => {});
     await new Promise((r) => setTimeout(r, 0));
     expect(relay.getTransportDiagnostics().pendingCommandIds.length).toBeGreaterThan(0);
 

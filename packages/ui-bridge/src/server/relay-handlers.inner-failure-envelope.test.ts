@@ -21,15 +21,25 @@
  * fix scoped to one verb would leave the same lie in place for the rest.
  */
 
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect } from 'vitest';
 import { CommandRelay } from './command-relay';
 import { createRelayHandlers } from './relay-handlers';
+
+/** Every relay `freshRelay()` built, destroyed after each test. */
+const relays: CommandRelay[] = [];
+
+afterEach(() => {
+  for (const relay of relays.splice(0)) relay.destroy();
+});
 
 function freshRelay(): CommandRelay {
   // Each test gets its own globalThis-key prefix — CommandRelay persists state
   // on globalThis for HMR survival, which would otherwise leak between tests.
+  // No warm-up snapshot: it would land at a time no request chose.
   const prefix = `__uiBridgeTest_${Math.random().toString(36).slice(2, 10)}`;
-  return new CommandRelay({ globalPrefix: prefix });
+  const relay = new CommandRelay({ globalPrefix: prefix, proactiveSnapshot: false });
+  relays.push(relay);
+  return relay;
 }
 
 /**

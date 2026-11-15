@@ -39,6 +39,7 @@ import type {
 } from './types';
 import type { EffectSignature } from '../control/effect-types';
 import type { SnapshotModalContext } from '../modal/types';
+import { projectComputedStyles } from './computed-styles';
 import type { ElementEventLog } from '../debug/element-event-log';
 import { createElementIdentifier } from './element-identifier';
 import { computeElementFingerprint } from './element-fingerprint';
@@ -67,6 +68,7 @@ import { fuzzyMatch } from '../ai/fuzzy-matcher';
 import {
   verdictOf,
   elementRedaction,
+  readScrubbedText,
   scrubContentByVerdict,
   scrubValueByVerdict,
   scrubContentRequired,
@@ -530,30 +532,8 @@ function getElementState(element: HTMLElement): ElementState {
       bottom: rect.bottom,
       left: rect.left,
     },
-    textContent: scrubContentByVerdict(element.textContent?.trim() || undefined, verdict),
-    computedStyles: {
-      display: computedStyle.display,
-      visibility: computedStyle.visibility,
-      opacity: computedStyle.opacity,
-      pointerEvents: computedStyle.pointerEvents,
-      cursor: computedStyle.cursor,
-      color: computedStyle.color,
-      backgroundColor: computedStyle.backgroundColor,
-      colorScheme: computedStyle.colorScheme,
-      fontSize: computedStyle.fontSize,
-      fontWeight: computedStyle.fontWeight,
-      lineHeight: computedStyle.lineHeight,
-      overflow: computedStyle.overflow,
-      textOverflow: computedStyle.textOverflow,
-      whiteSpace: computedStyle.whiteSpace,
-      position: computedStyle.position,
-      zIndex: computedStyle.zIndex,
-      padding: computedStyle.padding,
-      margin: computedStyle.margin,
-      borderColor: computedStyle.borderColor,
-      borderWidth: computedStyle.borderWidth,
-      borderRadius: computedStyle.borderRadius,
-    },
+    textContent: readScrubbedText(element, verdict),
+    computedStyles: projectComputedStyles(computedStyle),
     inViewport,
   };
 
@@ -1784,7 +1764,16 @@ export class UIBridgeRegistry {
     // F3: sticky latch + per-window/per-route tally
     this.everHadRegistrationsFlag = true;
     this.incrementRouteCount(windowLabel, route, actualId);
-    this.emit('element:registered', { id: actualId, type, label: options.label });
+    // §4.6 CONTENT axis: the stored row keeps the raw label (scrubbed only on
+    // serialization), but this payload leaves the registry — listeners, the
+    // per-element event log behind the `getElementHistory` route, and the
+    // `verbose` console line all receive it — so a `data-bridge-redact`
+    // element's label collapses here.
+    this.emit('element:registered', {
+      id: actualId,
+      type,
+      label: scrubContentByVerdict(options.label, verdictOf(element)),
+    });
 
     return registered;
   }

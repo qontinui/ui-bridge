@@ -18,6 +18,7 @@ import type {
 import { classString } from '../core/class-name';
 import { readAriaLabelAttr } from '../core/a11y';
 import { truncateCodePoints } from '../core/text';
+import { isContentRedacted, REDACTED_VALUE, textExcludingBoundaries } from '../core/redaction';
 
 // ============================================================================
 // Built-in selectors for common toast/notification libraries
@@ -228,7 +229,10 @@ function detectAction(el: Element): ActionInfo {
     ) {
       continue;
     }
-    return { hasAction: true, actionText: truncateCodePoints(text, 100) };
+    // §4.6: the emitted action text excludes any boundary in (or around) the
+    // button; the raw `text` above is only compared, never emitted.
+    const shown = (textExcludingBoundaries(btn) || '').trim();
+    return { hasAction: true, actionText: truncateCodePoints(shown, 100) };
   }
   return { hasAction: false };
 }
@@ -238,6 +242,8 @@ function detectAction(el: Element): ActionInfo {
 // ============================================================================
 
 function extractMessage(el: Element): string {
+  // §4.6: a toast inside a redaction boundary reports only the sentinel.
+  if (isContentRedacted(el as HTMLElement)) return REDACTED_VALUE;
   // Clone the element to strip action buttons for clean text
   const clone = el.cloneNode(true) as Element;
 
@@ -259,7 +265,8 @@ function extractMessage(el: Element): string {
     }
   });
 
-  const text = (clone.textContent || '').trim();
+  // A boundary inside the toast reads as the sentinel.
+  const text = (textExcludingBoundaries(clone) || '').trim();
   // Collapse whitespace
   const collapsed = text.replace(/\s+/g, ' ');
   return truncateCodePoints(collapsed, 500);

@@ -95,9 +95,13 @@ describe('indexCustomProperties', () => {
     const matches = vi.spyOn(Element.prototype, 'matches');
 
     const index = indexCustomProperties(document, elements);
+    const readsByIndex = sheets.mock.calls.length;
     const found = elements.map((el) => getCSSCustomProperties(el, index));
 
-    expect(sheets).toHaveBeenCalledTimes(1);
+    // The stylesheets are read per batch — by the walk and by the redaction
+    // graph (every rule, whatever its conditions) — and never per element.
+    expect(readsByIndex).toBeLessThanOrEqual(3);
+    expect(sheets).toHaveBeenCalledTimes(readsByIndex);
     // `.plain` declares no custom property, so it is never queried.
     expect(query.mock.calls.map(([selector]) => selector)).toEqual([
       ':root',

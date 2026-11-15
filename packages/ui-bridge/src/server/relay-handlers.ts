@@ -16,13 +16,21 @@ import { scopedCallerRefusal } from './scoped-refusal';
 import { buildComponentNotFoundError } from './handlers';
 import { describeInnerFailure } from './inner-failure';
 import { fitMediaOverrideBudget } from '../control/media-override-budget';
+import {
+  componentCaptureRefusalEnvelope,
+  parseComponentCaptureRefusal,
+  wantsCaptureProps,
+} from '../control/component-capture';
 import type {
   UIBridgeServerHandlers,
   APIResponse,
   CapabilitiesResponse,
   DOMChangeEvent,
+  ElementStateQuery,
   HandlerContext,
   StateSummary,
+  ComponentCaptureResponse,
+  ComponentCaptureQuery,
 } from './types';
 import type { RenderLogEntry } from '../render-log';
 import type {
@@ -35,10 +43,20 @@ import { matchesElementSelector, type MatchableElement } from './selector-match'
 import { diagnosePageHealth, pageHealthInputFromSnapshot, pageHealthUnknown } from './page-health';
 import { buildVisibilityReport } from './visibility-report';
 import type { SemanticSnapshot } from '../ai';
+import {
+  isAssertionRequestError,
+  normalizeAssertion,
+  normalizeAssertionBatch,
+} from '../ai/nl-assertion-parser';
 import type { Recency as RecencyType } from '../core/recency';
 import { Recency, isSatisfiedBy, parseRecency } from '../core/recency';
 import { findElements } from '../core/find';
 import { computeSnapshotSignature } from '../core/snapshot-signature';
+import {
+  isProjectionRequestError,
+  parseProjectionRequest,
+  type ElementProjectionRequest,
+} from '../core/element-projection';
 import type { ElementQuery } from '../core/find';
 import {
   applyCanonicalFindFilter,
@@ -142,6 +160,41 @@ function relayInnerFailureResponse<T>(
 }
 
 /**
+ * The relayed capture command's payload: the id, the normalised `props`
+ * opt-in, and the query's tab routing (which `relayCommand` lifts out).
+ */
+function capturePayload(id: string, query: ComponentCaptureQuery | undefined) {
+  const routing = query as { tabId?: unknown; targetTabId?: unknown } | undefined;
+  return {
+    id,
+    props: wantsCaptureProps(query?.props),
+    ...(routing?.tabId !== undefined ? { tabId: routing.tabId } : {}),
+    ...(routing?.targetTabId !== undefined ? { targetTabId: routing.targetTabId } : {}),
+  };
+}
+
+/**
+ * A relayed component capture's answer, with its typed refusal restored.
+ *
+ * A refusal crosses the relay as a MESSAGE only: the in-page relay client
+ * posts the dispatcher's `success: false`, `nextjs.ts` settles it through
+ * `rejectCommand(commandId, message)` and the cross-instance bus re-raises
+ * `new Error(message)`, so `reason`, `code` and status are gone by the time
+ * `relayCommand` answers. The dispatcher therefore encodes the reason in the
+ * message (`componentCaptureRefusalMessage`); this recognises it, wherever it
+ * landed (`error`, or `data.error` on the resolved path), and answers the
+ * same envelope as the direct handler. Every other answer passes through.
+ */
+function captureRelayAnswer(response: APIResponse<unknown>): ComponentCaptureResponse {
+  if (response.success) return response as ComponentCaptureResponse;
+  const refusal =
+    parseComponentCaptureRefusal(response.error) ??
+    parseComponentCaptureRefusal((response.data as { error?: unknown } | undefined)?.error);
+  if (!refusal) return response as ComponentCaptureResponse;
+  return componentCaptureRefusalEnvelope(refusal.reason, refusal.message);
+}
+
+/**
  * Why a relayed command got NO live answer, or `undefined` when a tab did
  * answer it.
  *
@@ -207,8 +260,59 @@ function isRelayFindRefusal(result: unknown): boolean {
   return typeof refusal === 'object' && refusal !== null && !Array.isArray(refusal);
 }
 
+/** The projection options a request named, quoted for a refusal's message. */
+function projectionOptionsOf(projection: ElementProjectionRequest): string {
+  return [
+    ...(projection.properties ? ['`properties`'] : []),
+    ...(projection.attributes ? ['`attributes`'] : []),
+  ].join(' / ');
+}
+
+/** Does `answer` (a state, or one find row) carry a `projection` object? */
+function carriesProjection(answer: unknown): boolean {
+  if (answer === null || typeof answer !== 'object') return false;
+  const projection = (answer as { projection?: unknown }).projection;
+  return typeof projection === 'object' && projection !== null && !Array.isArray(projection);
+}
+
+/** Does any row a find answered lack the projection the request asked for? */
+function anyRowLacksProjection(answer: unknown): boolean {
+  const rows =
+    answer !== null && typeof answer === 'object'
+      ? (answer as { elements?: unknown }).elements
+      : undefined;
+  return Array.isArray(rows) && rows.some((row) => !carriesProjection(row));
+}
+
+/**
+ * The refusal for a LIVE answer that lacks the projection its request asked
+ * for. The relay validated the request and the tab answered it, but without a
+ * `projection`: the page runs a UI Bridge SDK that predates the request-scoped
+ * projection (`core/element-projection.ts`), so its dispatcher ignored
+ * `properties` / `attributes`. Passing that answer on as a success would hand
+ * the caller a state, or rows, that silently lack every value asked for — the
+ * answer the cache arm is refused for too. Typed, as that one is.
+ */
+function projectionMissingFromLiveAnswer(
+  what: string,
+  projection: ElementProjectionRequest
+): APIResponse<never> {
+  return error(
+    `${what}: the tab answered without the requested ${projectionOptionsOf(projection)}: ` +
+      'its UI Bridge SDK predates the request-scoped projection and ignores them. Load an SDK ' +
+      'build that serves the projection in the page, or ask without those options.',
+    'UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD'
+  );
+}
+
 /** Maximum allowed response size for fallback screenshots (10 MB) */
 const MAX_SCREENSHOT_RESPONSE_BYTES = 10 * 1024 * 1024;
+
+/**
+ * What a root-width command's page-side deadline leaves of the relay's command
+ * timeout: the command's trip to the page and the answer's trip back.
+ */
+const ROOT_WIDTH_RELAY_MARGIN_MS = 1_000;
 
 /**
  * Fetch a fallback screenshot from an external screenshot service.
@@ -367,6 +471,25 @@ export function createRelayHandlers(
   const relayCommandBudgetMs = (): number => {
     const budget = (relay as Partial<Pick<CommandRelay, 'commandBudgetMs'>>).commandBudgetMs;
     return typeof budget === 'number' && budget > 0 ? budget : 8_000;
+  };
+
+  /**
+   * A root-width request with its `budgetMs` fitted under the relay's command
+   * timeout, leaving `ROOT_WIDTH_RELAY_MARGIN_MS` for the round trip. A
+   * caller's smaller budget is kept; a malformed one is passed through for the
+   * page to refuse.
+   */
+  const fitRootWidthBudget = (request: unknown): unknown => {
+    if (request !== undefined && request !== null && typeof request !== 'object') return request;
+    if (Array.isArray(request)) return request;
+    const body = (request ?? {}) as Record<string, unknown>;
+    const cap = Math.max(1, relayCommandBudgetMs() - ROOT_WIDTH_RELAY_MARGIN_MS);
+    const asked = body.budgetMs;
+    if (asked === undefined || asked === null) return { ...body, budgetMs: cap };
+    if (typeof asked === 'number' && Number.isFinite(asked) && asked > 0) {
+      return { ...body, budgetMs: Math.min(asked, cap) };
+    }
+    return body;
   };
 
   // Server-side render log, fed by `__addRenderLogEntry`. Its entries name no
@@ -1137,15 +1260,46 @@ export function createRelayHandlers(
       return success(element, fallbackMeta);
     },
 
-    async getElementState(id, context) {
+    async getElementState(id, context?: HandlerContext, query?: ElementStateQuery) {
+      // The request-scoped projection (`properties` / `attributes`) is
+      // validated HERE, before anything is queued: a malformed list never
+      // reaches a tab. What travels is the normalised request (arrays).
+      let projection: ElementProjectionRequest | undefined;
+      try {
+        projection = parseProjectionRequest(query, 'query');
+      } catch (err) {
+        if (isProjectionRequestError(err)) return error(`element state ${err.message}`, err.code);
+        throw err;
+      }
+      const payload = { id, ...(projection ?? {}) };
       // Per-user tab scoping (§4.2): the adapter threads the
       // authenticated caller's userId via the `context` final argument so
       // the dispatch is gated on the caller's tabs, NEVER on whichever
       // tab happens to be `primaryTabId` (which could belong to a
-      // different user).
-      const liveOpts = context?.callerUserId
-        ? { ownerCheck: { userId: context.callerUserId } }
-        : undefined;
+      // different user). The query follows the context
+      // (`RouteDefinition.queryAfterContext`), so an `(id, context)` caller
+      // keeps its scoping; `?tabId=` pins the read too, as it does for
+      // `getElement`.
+      const { targetTabId, callerUserId } = extractTabRouting(query ?? {});
+      const effectiveUserId = scopedCaller(callerUserId, context);
+      const ownerCheck = effectiveUserId ? { userId: effectiveUserId } : undefined;
+      const liveOpts = ownerCheck ? { ownerCheck } : undefined;
+
+      // P0 (plan 2026-06-12 item 1): a PINNED read must never fall back to
+      // the shared cross-tab cache — propagate the routing/timeout error.
+      if (targetTabId !== undefined) {
+        const pinned = await relayCommand('getElementState', payload, {
+          targetTabId,
+          ...liveOpts,
+        });
+        // A live answer that lacks the projection asked for came from a tab
+        // whose SDK predates it — see `projectionMissingFromLiveAnswer`.
+        if (projection && pinned.success && !carriesProjection(pinned.data)) {
+          return projectionMissingFromLiveAnswer(`Element state for ${id}`, projection);
+        }
+        return pinned;
+      }
+
       // Live first, and a LIVE answer is the answer, under the rule
       // `getElement`'s unpinned read follows: the tab's state is a success,
       // and a failure the tab reported is a failure envelope — the
@@ -1159,18 +1313,31 @@ export function createRelayHandlers(
       // `_meta.fallback` with the cause.
       let noLiveAnswer: string;
       try {
-        const result = await relay.queueCommand('getElementState', { id }, liveOpts);
+        const result = await relay.queueCommand('getElementState', payload, liveOpts);
         const innerFailure = readRelayInnerFailure(result);
         if (innerFailure) return relayInnerFailureResponse(innerFailure, result);
+        if (projection && !carriesProjection(result)) {
+          return projectionMissingFromLiveAnswer(`Element state for ${id}`, projection);
+        }
         return success(result);
       } catch (e) {
         const cause = noLiveAnswerCause('getElementState', e);
-        if (cause === undefined) return relayErrorResponse(e, liveOpts?.ownerCheck);
+        if (cause === undefined) return relayErrorResponse(e, ownerCheck);
         noLiveAnswer = cause;
+      }
+      // The cached snapshot is serialized JSON: no node behind it to read a
+      // projection from. Refused, typed — never answered with a state that
+      // silently lacks the values asked for.
+      if (projection) {
+        return error(
+          `Element state for ${id}: the relay's cached snapshot carries no DOM node, so it ` +
+            `cannot read the requested ${projectionOptionsOf(projection)} (no live answer: ${noLiveAnswer})`,
+          'UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD'
+        );
       }
       // Every answer from here on is the cache's, the not-found included.
       const fallbackMeta = cacheFallbackMeta('getElementState', noLiveAnswer);
-      const scope = scopeOf(context?.callerUserId);
+      const scope = scopeOf(effectiveUserId);
       const element = scope.cache.controlSnapshot.elements.find((e) => e.id === id);
       if (element && 'state' in element) {
         return success((element as { state: unknown }).state, fallbackMeta);
@@ -1186,6 +1353,12 @@ export function createRelayHandlers(
 
     async getElementReactState(id, context) {
       return relayCommand('getElementReactState', { id }, ctxOpts(context));
+    },
+
+    async getElementCapture(id, query?: ComponentCaptureQuery, context?: HandlerContext) {
+      return captureRelayAnswer(
+        await relayCommand('getElementCapture', capturePayload(id, query), ctxOpts(context))
+      );
     },
 
     async executeElementAction(id, request, context) {
@@ -1328,6 +1501,12 @@ export function createRelayHandlers(
       return relayCommand('getComponentState', { id }, ctxOpts(context));
     },
 
+    async getComponentCapture(id, query?: ComponentCaptureQuery, context?: HandlerContext) {
+      return captureRelayAnswer(
+        await relayCommand('getComponentCapture', capturePayload(id, query), ctxOpts(context))
+      );
+    },
+
     async executeComponentAction(id, request, context) {
       return relayCommand('executeComponentAction', { id, request }, ctxOpts(context));
     },
@@ -1387,8 +1566,25 @@ export function createRelayHandlers(
         (typeof (payload as { tabId?: unknown }).tabId === 'string'
           ? ((payload as { tabId: string }).tabId as string)
           : undefined);
+      // A malformed projection (`properties` / `attributes`) is refused HERE,
+      // before anything is queued. The tab's canonical filter would refuse it
+      // too, but a request that can only be refused never has to reach a tab.
+      let projection: ElementProjectionRequest | undefined;
+      try {
+        projection = parseProjectionRequest(payload, 'body');
+      } catch (err) {
+        if (isProjectionRequestError(err)) return error(`find ${err.message}`, err.code);
+        throw err;
+      }
       const result = await relayCommand<FindResponse>('find', payload, { targetTabId, context });
-      if (result.success) return result;
+      if (result.success) {
+        // A live answer whose rows lack the projection asked for came from a
+        // tab whose SDK predates it — see `projectionMissingFromLiveAnswer`.
+        if (projection && anyRowLacksProjection(result.data)) {
+          return projectionMissingFromLiveAnswer('find', projection);
+        }
+        return result;
+      }
       // The browser ANSWERED with a typed refusal (a request the canonical
       // filter will not honour, carrying `refusal`): it would refuse it over
       // the cache too, so that is the answer, and falling back would replace a
@@ -1418,7 +1614,15 @@ export function createRelayHandlers(
           payload
         ));
       } catch (err) {
-        if (isFindRefusalError(err)) return error(err.message, err.code);
+        // The cache was consulted because the live find failed: a refusal the
+        // cache raises (a projection, `root` or `selector` over rows with no
+        // DOM node, …) names that cause too, as `getElementState`'s does.
+        if (isFindRefusalError(err)) {
+          return error(
+            `${err.message} (no live answer: ${result.error ?? 'the live find failed'})`,
+            err.code
+          );
+        }
         throw err;
       }
       const _meta = staleMeta(scope);
@@ -1750,11 +1954,27 @@ export function createRelayHandlers(
       return relayCommand('aiExecute', request, ctxOpts(context));
     },
 
+    // A malformed assertion request is refused HERE, typed
+    // (UB-VALIDATION-ERROR), before anything is queued: the tab would refuse
+    // it too, but its failure crosses the relay as a message alone, so its
+    // code would arrive as a generic command failure.
     async aiAssert(request, context) {
+      try {
+        normalizeAssertion(request);
+      } catch (err) {
+        if (isAssertionRequestError(err)) return error(err.message, err.code);
+        throw err;
+      }
       return relayCommand('aiAssert', request, ctxOpts(context));
     },
 
     async aiAssertBatch(request, context) {
+      try {
+        normalizeAssertionBatch(request);
+      } catch (err) {
+        if (isAssertionRequestError(err)) return error(err.message, err.code);
+        throw err;
+      }
       return relayCommand('aiAssertBatch', request, ctxOpts(context));
     },
 
@@ -2236,12 +2456,16 @@ export function createRelayHandlers(
       return relayCommand('getDesignSnapshot', request ?? {}, ctxOpts(context));
     },
 
+    // Both mutate the root width under the page's root-width lock, whose
+    // deadline is fitted under this relay's command timeout: a capture stops
+    // (and restores the page) before the caller is told "timeout", and a
+    // queued constraint is refused rather than landing after it.
     async getResponsiveSnapshots(request, context) {
-      return relayCommand('getResponsiveSnapshots', request, ctxOpts(context));
+      return relayCommand('getResponsiveSnapshots', fitRootWidthBudget(request), ctxOpts(context));
     },
 
     async setViewportConstraints(request, context) {
-      return relayCommand('setViewportConstraints', request, ctxOpts(context));
+      return relayCommand('setViewportConstraints', fitRootWidthBudget(request), ctxOpts(context));
     },
 
     async runDesignAudit(request, context) {

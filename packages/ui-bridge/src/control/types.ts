@@ -36,6 +36,7 @@ import type { SnapshotSignature } from '../core/snapshot-signature';
 // Phase 2 (plan 2026-08-20-ui-bridge-action-declaration-shape).
 import type { ParamValidationMode } from '../core/param-schema';
 import type { FindUnevaluated } from '../core/find-filter';
+import type { ElementProjection } from '../core/element-projection';
 
 /**
  * Extended action request with additional options
@@ -500,6 +501,14 @@ export interface DiscoveredElement {
    * against the element's own verdict. Absent on non-media rows.
    */
   mediaMetadata?: Scrubbed<MediaObservation>;
+  /**
+   * The request-scoped projection the find asked for (`properties` /
+   * `attributes` on {@link FindRequest}): the computed values and allow-listed
+   * attributes read off this row's live node, plus every name that could not
+   * be read, with its code. Present only when the request asked for one. See
+   * `core/element-projection.ts`.
+   */
+  projection?: ElementProjection;
 }
 
 /**
@@ -599,6 +608,27 @@ export interface FindRequest {
    * loaded) is KEPT, its observation saying so; a vector SVG is not.
    */
   oversizeThreshold?: number;
+  /**
+   * Not a filter: CSS property names whose COMPUTED values each returned row
+   * carries in `projection.properties` (`var()` already resolved). Standard
+   * names (`border-top-color`, `outline-offset`, `hyphens`, or the camel-cased
+   * `borderTopColor`) and custom properties (`--color-accent`). At most 32
+   * names, each a CSS ident; a malformed list is refused
+   * (`UB-VALIDATION-ERROR`). A name the read cannot answer is listed in
+   * `projection.unmeasured` with its code, never reported as `''`. Needs a live
+   * DOM: the relay's cached snapshot refuses it
+   * (`UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD`). See
+   * `core/element-projection.ts`.
+   */
+  properties?: string[];
+  /**
+   * Not a filter: attribute names each returned row carries in
+   * `projection.attributes` — `lang`, `dir`, `id`, `role`, `title`, `alt`,
+   * `href` or any `aria-*` name, each answered with its value or `null` when
+   * absent. Any other name is refused (`UB-VALIDATION-ERROR`). Values that can
+   * carry page content are §4.6-scrubbed. See {@link FindRequest.properties}.
+   */
+  attributes?: string[];
 }
 
 /**

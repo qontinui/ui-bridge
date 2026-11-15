@@ -48,6 +48,10 @@ export class FormMutationDetector implements IdleSignal<FormMutationSignalStatus
 
   install(): void {
     if (this.installed) return;
+    // No DOM to observe in a server runtime (Node, a Next.js route handler):
+    // stay uninstalled rather than throw. `createHandlers` builds no idle
+    // detector there at all, so no route reports this unobserved reading.
+    if (typeof document === 'undefined') return;
     this.installed = true;
 
     // Use event delegation on document for all form events

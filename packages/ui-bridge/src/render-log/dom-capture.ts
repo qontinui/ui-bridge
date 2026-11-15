@@ -24,6 +24,7 @@ import {
 } from '../core/a11y';
 import { createElementIdentifier, getBestIdentifier } from '../core/element-identifier';
 import { truncateCodePoints } from '../core/text';
+import { projectComputedStyles } from '../core/computed-styles';
 import { pageViewportContext } from '../control/page-scroll-container';
 
 /**
@@ -47,8 +48,9 @@ export interface CapturedElement {
   /**
    * Attributes relevant for automation. §4.6: `CAPTURE_ATTRIBUTES` literally
    * enumerates `value` / `alt` / `title` / `placeholder` / `aria-label`, so
-   * inside a boundary every attribute VALUE must collapse. Branded as a whole
-   * via `scrubRecord` (per-field branding is impossible on a `Record`).
+   * inside a boundary every attribute VALUE must collapse, and on a bare
+   * password input the `value` attribute collapses (VALUE axis). Branded as a
+   * whole via `scrubRecord` (per-field branding is impossible on a `Record`).
    */
   attributes: Scrubbed<Record<string, string>>;
   /** Child element count */
@@ -249,29 +251,7 @@ function getElementState(element: HTMLElement): ElementState {
       bottom: rect.bottom,
       left: rect.left,
     },
-    computedStyles: {
-      display: style.display,
-      visibility: style.visibility,
-      opacity: style.opacity,
-      pointerEvents: style.pointerEvents,
-      cursor: style.cursor,
-      color: style.color,
-      backgroundColor: style.backgroundColor,
-      colorScheme: style.colorScheme,
-      fontSize: style.fontSize,
-      fontWeight: style.fontWeight,
-      lineHeight: style.lineHeight,
-      overflow: style.overflow,
-      textOverflow: style.textOverflow,
-      whiteSpace: style.whiteSpace,
-      position: style.position,
-      zIndex: style.zIndex,
-      padding: style.padding,
-      margin: style.margin,
-      borderColor: style.borderColor,
-      borderWidth: style.borderWidth,
-      borderRadius: style.borderRadius,
-    },
+    computedStyles: projectComputedStyles(style),
   };
 
   // Normalized 0–1 viewport coordinates for resolution-independent targeting

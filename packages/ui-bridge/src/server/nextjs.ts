@@ -45,10 +45,13 @@ import type { ControlActionRequest, FindRequest, WorkflowRunRequest } from '../c
 import { createHandlers, type RegistryLike, type ActionExecutorLike } from './handlers';
 import { SSEManager } from './sse-handler';
 import type { CommandRelay } from './command-relay';
+import { CommandStreamLease, readStreamClient, STREAM_HIGH_WATER_MARK } from './stream-lease';
+import { slotActionForEnd, type CommandStreamHandle } from './stream-slot';
 import { CDPTabDiscovery } from './cdp-tabs';
-import { withoutReservedCaller } from './reserved-caller';
+import { queryAndContextArgs, withoutReservedCaller } from './reserved-caller';
 import { scopedCallerRefusal } from './scoped-refusal';
 import { readJsonBody } from './request-body';
+import { routeQueryOf } from './request-query';
 
 /**
  * Next.js specific configuration
@@ -271,18 +274,19 @@ export function createNextRouteHandlers(
         }
       }
 
-      // Add the query object when the route's handler takes one — EMPTY
-      // included, so the trailing context below always lands in the
-      // context slot. A route whose handler takes no query never gets one:
-      // it would land in that slot, and a query string could then name the
-      // caller identity. Per-user tab scoping (§4.2): `__callerUserId` is
-      // delivered via the trailing `context` arg (below), never spliced
-      // into the searchParams bag. The `tabId` splice stays (it's a payload
-      // field many handlers read via `extractTabRouting`).
+      // The query object, when the route's handler takes one — EMPTY
+      // included, so the context below always lands in the context slot. A
+      // route whose handler takes no query never gets one: it would land in
+      // that slot, and a query string could then name the caller identity.
+      // Per-user tab scoping (§4.2): `__callerUserId` is delivered via the
+      // `context` arg (below), never spliced into the searchParams bag. The
+      // `tabId` splice stays (it's a payload field many handlers read via
+      // `extractTabRouting`). A repeated list-valued key
+      // (`?properties=a&properties=b`) arrives as the whole list, not its
+      // last value (`request-query.ts`).
+      let query: unknown;
       if (route.queryRequired) {
-        const searchParams = withoutReservedCaller(
-          Object.fromEntries(request.nextUrl.searchParams)
-        );
+        const searchParams = withoutReservedCaller(routeQueryOf(request.nextUrl.searchParams));
         if (
           externalTabId &&
           searchParams.tabId === undefined &&
@@ -290,18 +294,19 @@ export function createNextRouteHandlers(
         ) {
           searchParams.tabId = externalTabId;
         }
-        args.push(searchParams);
+        query = searchParams;
       }
 
-      // Per-user tab scoping (§4.2) — trailing context arg. The adapter
-      // ALWAYS supplies this final positional argument so zero-arg /
-      // id-only handlers (captureSnapshot, clearRenderLog,
-      // getElementState(id)) — whose signatures don't carry
+      // Per-user tab scoping (§4.2) — the context arg. The adapter ALWAYS
+      // supplies it so zero-arg / id-only handlers (captureSnapshot,
+      // clearRenderLog, getElementState(id)) — whose signatures don't carry
       // __callerUserId in the body/query — still enforce ownership when
       // X-Caller-User-Id is present. Adds NO overhead when the header is
       // absent (context.callerUserId undefined → relay falls back to
-      // primary-tab dispatch).
-      args.push({ callerUserId });
+      // primary-tab dispatch). It is the last argument, except on a
+      // `queryAfterContext` route, where the query follows it
+      // (`queryAndContextArgs`).
+      args.push(...queryAndContextArgs(route, query, { callerUserId }));
 
       // Call handler
       const result = await (handler as (...args: unknown[]) => Promise<APIResponse<unknown>>)(
@@ -1019,13 +1024,23 @@ function handleRelayRoute(
       const deadline = startedAt + timeoutMs;
       while (Date.now() < deadline) {
         const diag = relay.getTransportDiagnostics();
-        const visibleIds = callerUserId ? relay.listOwnedTabs(callerUserId) : diag.connectedTabs;
+        // A caller's own tabs that hold an open transport: `listOwnedTabs`
+        // also lists a dead slot, which dispatch parks on (stream-slot.ts).
+        const open = new Set([...diag.connectedTabs, ...diag.wsClientIds]);
+        const visibleIds = callerUserId
+          ? relay.listOwnedTabs(callerUserId).filter((id) => open.has(id))
+          : diag.connectedTabs;
         if (visibleIds.length > 0) {
+          // A scoped caller's primary is the tab its own unpinned command
+          // reaches, as its `/health` reports, not the global primary.
+          const primaryTabId = callerUserId
+            ? relay.ownedPrimaryTabId(callerUserId)
+            : diag.primaryTabId;
           const tabs = visibleIds.map((tabId) => ({
             tabId,
             ...(diag.tabMetadata[tabId] || {}),
             lastHeartbeat: diag.tabHeartbeats[tabId] ?? null,
-            isPrimary: tabId === diag.primaryTabId,
+            isPrimary: tabId === primaryTabId,
             isDemoted: diag.demotedTabs.includes(tabId),
           }));
           return jsonResponse({
@@ -1070,6 +1085,9 @@ function handleRelayRoute(
     const callerUserId =
       request.headers.get('x-caller-user-id') ?? request.headers.get('X-Caller-User-Id') ?? null;
     const diag = relay.getTransportDiagnostics();
+    // A scoped caller's primary is the tab its own unpinned command reaches,
+    // as its `/health` reports, not the global primary.
+    const primaryTabId = callerUserId ? relay.ownedPrimaryTabId(callerUserId) : diag.primaryTabId;
     const ownedSet = callerUserId ? new Set(relay.listOwnedTabs(callerUserId)) : null;
     const baseIds = activeOnly ? diag.activeTabs : diag.connectedTabs;
     const tabIds = ownedSet ? baseIds.filter((id) => ownedSet.has(id)) : baseIds;
@@ -1087,7 +1105,7 @@ function handleRelayRoute(
           ...info,
           ...(diag.tabMetadata[info.tabId] || {}),
           lastHeartbeat: diag.tabHeartbeats[info.tabId] ?? null,
-          isPrimary: info.tabId === diag.primaryTabId,
+          isPrimary: info.tabId === primaryTabId,
           isDemoted: diag.demotedTabs.includes(info.tabId),
           isActive: activeSet.has(info.tabId),
         }));
@@ -1102,7 +1120,7 @@ function handleRelayRoute(
       tabId,
       ...(diag.tabMetadata[tabId] || {}),
       lastHeartbeat: diag.tabHeartbeats[tabId] ?? null,
-      isPrimary: tabId === diag.primaryTabId,
+      isPrimary: tabId === primaryTabId,
       isDemoted: diag.demotedTabs.includes(tabId),
       isActive: activeSet.has(tabId),
     }));
@@ -1157,11 +1175,15 @@ function handleRelayRoute(
 }
 
 /**
- * SSE stream that delivers commands from the relay to browser tabs.
+ * SSE stream that delivers commands from the relay to browser tabs. The
+ * server owns its end (stream-lease.ts): it rotates a stream whose client
+ * declared `rotate`, closes any other at the legacy lease, and tells the relay
+ * of every end it hears, so a tab's listener never outlives its stream unseen.
  */
 function createCommandStreamResponse(request: NextRequest, relay: CommandRelay): Response {
   const url = new URL(request.url);
   const tabId = url.searchParams.get('tabId') ?? undefined;
+  const client = readStreamClient(url.searchParams);
   const encoder = new TextEncoder();
   const callerUserId = relayCallerUserId(request);
 
@@ -1180,100 +1202,86 @@ function createCommandStreamResponse(request: NextRequest, relay: CommandRelay):
     );
   }
   let controllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
-  let closed = false;
+  // Frames written before the stream starts (a flush of commands parked for
+  // this tab happens while it opens); they follow the `connected` event.
   const early: Uint8Array[] = [];
-  const send = (bytes: Uint8Array): boolean => {
-    if (!controllerRef) {
-      early.push(bytes);
-      return true;
-    }
-    try {
-      controllerRef.enqueue(bytes);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-  let opened: { streamId: string; unsubscribe: () => void };
+  let opened: CommandStreamHandle | null = null;
+  const lease = new CommandStreamLease({
+    tabId,
+    rotate: client.caps.includes('rotate'),
+    timings: relay.streamLeaseTimings,
+    // Keep-alive, and the client's throttle-immune heartbeat clock: a NAMED
+    // `ping` event with a `data:` payload, because the client cannot keep its
+    // own clock (browsers clamp a hidden tab's `setInterval` to ~1/min) and
+    // beats in response to it instead (see `relay-client.ts`). An older
+    // `fetch`-based client parses the payload, matches neither `connected`
+    // nor `commandId && action`, and ignores it; an `EventSource` client's
+    // `onmessage` never sees a named event.
+    pingIntervalMs: RELAY_COMMAND_STREAM_HEARTBEAT_MS,
+    sink: {
+      enqueue: (frame) => {
+        const bytes = encoder.encode(frame);
+        if (controllerRef) controllerRef.enqueue(bytes);
+        else early.push(bytes);
+      },
+      desiredSize: () => controllerRef?.desiredSize ?? null,
+      close: () => controllerRef?.close(),
+    },
+    // A death mid-life parks the tab's slot for its next stream; a lease
+    // close awaits the tab's return; a replacement leaves nothing to hold
+    // (stream-slot.ts).
+    onEnd: (reason) => {
+      if (!opened) return;
+      const action = slotActionForEnd(reason);
+      if (action === 'park') opened.park(reason);
+      else if (action === 'await-return') opened.closedAtLease(reason);
+      else opened.unsubscribe();
+    },
+    onRotate: () => opened?.rotated(),
+  });
   try {
     opened = relay.openCommandStream(
-      (command) => {
-        if (closed) return;
-        if (!send(encoder.encode(`data: ${JSON.stringify(command)}\n\n`))) cleanup();
-      },
+      // `false` when the write failed: the relay then counts no delivery.
+      (command) => lease.write(`data: ${JSON.stringify(command)}\n\n`),
       tabId,
-      callerUserId
+      callerUserId,
+      {
+        close: () => lease.end('replaced'),
+        caps: client.caps,
+        ...(client.clientInstanceId ? { clientInstanceId: client.clientInstanceId } : {}),
+      }
     );
   } catch (err) {
     if ((err as { name?: unknown })?.name === 'OwnerMismatchError') return tabNotFoundResponse();
     throw err;
   }
-  const { streamId, unsubscribe } = opened;
-  let heartbeat: ReturnType<typeof setInterval> | null = null;
-  function cleanup() {
-    if (closed) return;
-    closed = true;
-    if (heartbeat) {
-      clearInterval(heartbeat);
-      heartbeat = null;
-    }
-    unsubscribe();
-  }
+  const { streamId } = opened;
+  lease.streamId = streamId;
 
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      controllerRef = controller;
-
-      // Initial connection event. `streamId` names this stream: the client
-      // presents it with every command result it posts back.
-      const connected = {
-        type: 'connected',
-        buildId: relay.buildId,
-        streamId,
-        timestamp: Date.now(),
-      };
-      send(encoder.encode(`data: ${JSON.stringify(connected)}\n\n`));
-      for (const bytes of early.splice(0)) send(bytes);
-
-      // Keep-alive, and the client's throttle-immune heartbeat clock.
-      //
-      // This used to be an SSE comment (`: heartbeat`). It is now a NAMED
-      // `ping` event carrying a `data:` payload, because the client cannot
-      // keep its own reliable clock: its heartbeat is a `setInterval`, and
-      // browsers clamp timers in hidden tabs to ~1 firing per minute. Arriving
-      // bytes are not throttled, so the client beats in response to this ping
-      // instead of waiting on its timer (see `relay-client.ts`).
-      //
-      // Safe in both directions. An older `fetch`-based client parses the
-      // payload, matches neither `type === 'connected'` nor
-      // `commandId && action`, and ignores it. An `EventSource`-based client
-      // dispatches it as a `ping`-typed event, so its `onmessage` — which
-      // handles only unnamed `message` events — never sees it. Either way the
-      // bytes still serve the original keep-alive/dead-connection purpose.
-      heartbeat = setInterval(() => {
-        if (closed) return;
-        try {
-          controller.enqueue(
-            encoder.encode(
-              `event: ping\ndata: ${JSON.stringify({ type: 'ping', timestamp: Date.now() })}\n\n`
-            )
-          );
-        } catch {
-          cleanup();
-        }
-      }, RELAY_COMMAND_STREAM_HEARTBEAT_MS);
-
-      // Clean up on disconnect
-      request.signal.addEventListener('abort', () => {
-        cleanup();
-        try {
-          controller.close();
-        } catch {
-          /* already closed */
-        }
-      });
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      start(controller) {
+        controllerRef = controller;
+        // Initial connection event. `streamId` names this stream: the client
+        // presents it with every command result it posts back.
+        const connected = {
+          type: 'connected',
+          buildId: relay.buildId,
+          streamId,
+          timestamp: Date.now(),
+        };
+        lease.write(`data: ${JSON.stringify(connected)}\n\n`);
+        for (const bytes of early.splice(0)) controller.enqueue(bytes);
+        lease.start();
+        request.signal.addEventListener('abort', () => lease.end('abort'));
+      },
+      // The consumer cancelled: heard now, not at the next enqueue.
+      cancel() {
+        lease.end('cancel');
+      },
     },
-  });
+    { highWaterMark: STREAM_HIGH_WATER_MARK }
+  );
 
   return new Response(stream, {
     headers: {

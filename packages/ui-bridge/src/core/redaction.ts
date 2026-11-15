@@ -2,12 +2,11 @@
  * §4.6 redaction predicates — the minimal, self-contained split that the
  * structural-enforcement plan adopts wholesale.
  *
- * This module is the Phase-0 seed of the eventual `core/redaction.ts` choke
- * point (plan `2026-07-20-ui-bridge-structural-redaction-enforcement.md`). It
- * carries ONLY what the arbitrary-selector-bypass fix needs so it can land
- * standalone, ahead of the large structural refactor: two predicates plus a
- * re-export of the existing `REDACTED_VALUE` sentinel. When the structural
- * work lands, the predicates below are the ones it moves here verbatim.
+ * This module began as the Phase-0 seed of the `core/redaction.ts` choke point
+ * (plan `2026-07-20-ui-bridge-structural-redaction-enforcement.md`): two
+ * predicates plus the `REDACTED_VALUE` sentinel, which is defined here. The
+ * structural-enforcement machinery below (the verdict, the `Scrubbed` brand,
+ * the scrub and read minters) now lives here too.
  *
  * The two-predicate split is load-bearing for capability, not decoration:
  *   - `isValueRedacted`  — `<input type="password">` OR a `data-bridge-redact`
@@ -24,8 +23,9 @@
 // module, rather than in `core/registry.ts`, so this module is a true leaf:
 // `registry.ts` imports the predicates/minters from here, so the sentinel
 // must not import back from `registry.ts` (that was a cycle). Consumers that
-// assert on the sentinel import it from here (or the package root, which
-// surfaces it via this module).
+// assert on the sentinel import it from here. Outside the package it is
+// public through `@qontinui/ui-bridge/core` and the package root, which
+// re-export it from this module (`core/index.ts`).
 export const REDACTED_VALUE = '[REDACTED]';
 import type { ElementState, MediaFacts, MediaObservation } from './types';
 import { truncateCodePoints } from './text';
@@ -276,11 +276,131 @@ export function readScrubbedText(
   opts?: { normalizeWhitespace?: boolean; maxLen?: number }
 ): Scrubbed<string> | undefined {
   if (!el) return undefined;
-  let raw = el.textContent?.trim();
+  const v = verdict ?? verdictOf(el as HTMLElement);
+  let raw = (v.content ? el.textContent : textOutsideBoundaries(el))?.trim();
   if (!raw) return undefined;
   if (opts?.normalizeWhitespace) raw = raw.replace(/\s+/g, ' ');
-  if (opts?.maxLen != null) raw = truncateCodePoints(raw, opts.maxLen);
-  return scrubContentByVerdict(raw, verdict ?? verdictOf(el as HTMLElement));
+  if (opts?.maxLen != null) raw = truncateKeepingSentinel(raw, opts.maxLen);
+  return scrubContentByVerdict(raw, v);
+}
+
+const REDACTION_BOUNDARY_SELECTOR = `[${BRIDGE_REDACT_ATTR}="true"]`;
+
+/**
+ * `true` when a `data-bridge-redact="true"` boundary sits strictly BELOW `el`.
+ * The element's own verdict only looks UP (`closestRedactionBoundary`), so a
+ * container of a boundary — `<body>`, a card wrapping a redacted token — is not
+ * itself redacted; anything that reads its subtree text must exclude the
+ * boundary's text. This is the predicate that says it has to.
+ */
+export function hasRedactionBoundaryBelow(el: Element): boolean {
+  return el.querySelector(REDACTION_BOUNDARY_SELECTOR) !== null;
+}
+
+// NodeFilter / Node constants, as literals so this works in any realm (a
+// detached document, a test environment without a global `NodeFilter`).
+const SHOW_ELEMENT = 0x1;
+const SHOW_TEXT = 0x4;
+const SHOW_CDATA_SECTION = 0x8;
+const FILTER_ACCEPT = 1;
+const FILTER_REJECT = 2;
+const FILTER_SKIP = 3;
+const ELEMENT_NODE = 1;
+
+/**
+ * `textContent` of `el` with every `data-bridge-redact="true"` DESCENDANT
+ * subtree replaced by one `REDACTED_VALUE` (the outermost boundary wins; its
+ * subtree is not entered). When no boundary sits below `el` this is exactly
+ * `textContent`. Iterative (a TreeWalker), so deep trees do not recurse.
+ *
+ * Note an EMPTY boundary still reads as the sentinel: the reader reveals THAT a
+ * redacted region is there, never what it holds.
+ */
+export function textOutsideBoundaries(el: Element): string | null {
+  if (!hasRedactionBoundaryBelow(el)) return el.textContent;
+  const doc = el.ownerDocument;
+  if (!doc) return null;
+  let out = '';
+  const walker = doc.createTreeWalker(el, SHOW_ELEMENT | SHOW_TEXT | SHOW_CDATA_SECTION, {
+    acceptNode(node: Node): number {
+      if (node.nodeType === ELEMENT_NODE) {
+        if ((node as Element).getAttribute(BRIDGE_REDACT_ATTR) === 'true') {
+          out += REDACTED_VALUE;
+          return FILTER_REJECT; // do not enter the boundary
+        }
+        return FILTER_SKIP; // descend, emit nothing for the element itself
+      }
+      out += node.nodeValue ?? '';
+      return FILTER_ACCEPT;
+    },
+  });
+  while (walker.nextNode()) {
+    // acceptNode accumulates `out` in document order.
+  }
+  return out;
+}
+
+/**
+ * The text of `el` as any reader that echoes a NAME or LABEL must see it:
+ * `REDACTED_VALUE` when `el` sits inside a boundary, otherwise its text with
+ * every boundary below replaced by the sentinel (`textOutsideBoundaries`).
+ * Used for the text of a `<label>` or an `aria-labelledby` target, which the
+ * NAMED element's own verdict says nothing about.
+ */
+export function textExcludingBoundaries(el: Element): string | null {
+  if (closestRedactionBoundary(el as HTMLElement) !== null) return REDACTED_VALUE;
+  return textOutsideBoundaries(el);
+}
+
+/**
+ * `true` when `el` is inside a boundary or has one below it — any read of its
+ * subtree text has to go through `textExcludingBoundaries`.
+ */
+export function touchesRedactionBoundary(el: Element): boolean {
+  return closestRedactionBoundary(el as HTMLElement) !== null || hasRedactionBoundaryBelow(el);
+}
+
+/**
+ * `truncateCodePoints`, except a cut never leaves a FRAGMENT of
+ * `REDACTED_VALUE` (`"[RE"`) that a consumer matching the sentinel would not
+ * recognise: a sentinel the cut would split is dropped whole.
+ */
+function truncateKeepingSentinel(raw: string, maxLen: number): string {
+  const cut = truncateCodePoints(raw, maxLen);
+  if (cut.length === raw.length) return cut;
+  for (let i = raw.indexOf(REDACTED_VALUE); i !== -1 && i < cut.length; ) {
+    if (i + REDACTED_VALUE.length > cut.length) return cut.slice(0, i);
+    i = raw.indexOf(REDACTED_VALUE, i + REDACTED_VALUE.length);
+  }
+  return cut;
+}
+
+/**
+ * An element's own VALUE, scrubbed (VALUE axis), or `undefined` when the
+ * element has no value of its own and its text is what a reader wants.
+ *
+ *   - `<input>` / `<textarea>` / `<select>`: `.value`; an empty string is a
+ *     meaningful state and is kept.
+ *   - `<button>` / `<option>` / `<data>` carrying an explicit `value`
+ *     ATTRIBUTE: that attribute, `""` included (a placeholder
+ *     `<option value="">` agrees with its `<select>`).
+ *   - anything else: `undefined`. Several elements expose a `.value` PROPERTY
+ *     that is not a value a reader asked for: `<li>` / `<meter>` / `<progress>`
+ *     are numbers, and `<output>.value` IS its own raw `textContent`, which
+ *     would read a redaction boundary below it verbatim.
+ */
+export function readScrubbedOwnValue(
+  el: HTMLElement,
+  verdict?: RedactionVerdict
+): Scrubbed<string> | undefined {
+  const tag = el.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+    return readScrubbedValue(el as HTMLInputElement, verdict);
+  }
+  if ((tag === 'BUTTON' || tag === 'OPTION' || tag === 'DATA') && el.hasAttribute('value')) {
+    return scrubValueByVerdict(el.getAttribute('value') ?? '', verdict ?? verdictOf(el));
+  }
+  return undefined;
 }
 
 /**
@@ -342,15 +462,30 @@ export function trustDeveloperContent(
  * made constructible only through this factory). CONTENT axis: inside a
  * content-redaction boundary every attribute VALUE collapses to the sentinel
  * while KEYS survive (attribute names are developer-authored, not secrets).
+ *
+ * VALUE axis: the `value` attribute IS the element's value (react-dom mirrors
+ * a controlled input's live value into it), so under a VALUE-only verdict — a
+ * bare `<input type="password">` — that one entry collapses too, while every
+ * other attribute stays raw and the field stays addressable. Without this arm
+ * a password input's `state.value` was scrubbed and its `attributes.value`
+ * shipped the cleartext beside it. Identifier attributes (`data-testid`,
+ * `data-awas-element`) stay raw under a VALUE-only verdict, matching
+ * `createElementIdentifier`, which ships them for addressability anyway.
  */
 export function scrubRecord(
   rec: Record<string, string>,
   v: RedactionVerdict
 ): Scrubbed<Record<string, string>> {
-  if (!v.content) return rec as Scrubbed<Record<string, string>>;
-  const out: Record<string, string> = {};
-  for (const key of Object.keys(rec)) out[key] = REDACTED_VALUE;
-  return out as Scrubbed<Record<string, string>>;
+  if (v.content) {
+    const out: Record<string, string> = {};
+    for (const key of Object.keys(rec)) out[key] = REDACTED_VALUE;
+    return out as Scrubbed<Record<string, string>>;
+  }
+  if (v.value && Object.prototype.hasOwnProperty.call(rec, 'value')) {
+    const out: Record<string, string> = { ...rec, value: REDACTED_VALUE };
+    return out as Scrubbed<Record<string, string>>;
+  }
+  return rec as Scrubbed<Record<string, string>>;
 }
 
 /**

@@ -25,6 +25,10 @@ import type {
   SpawnHeadlessRequest,
   SpawnHeadlessResponse,
   RunnerWindowsList,
+  ElementStateQuery,
+  HandlerContext,
+  ComponentCaptureResponse,
+  ComponentCaptureQuery,
 } from './types';
 import type {
   ActionExecutor,
@@ -56,6 +60,14 @@ import {
   type CanonicalFindContext,
   type FindFilterableElement,
 } from '../core/find-filter';
+import {
+  isProjectionRequestError,
+  liveElementOf,
+  parseProjectionRequest,
+  projectElement,
+  type ElementProjectionRequest,
+} from '../core/element-projection';
+import { isPageSentinelId, pageSentinelState, resolvePageSentinel } from '../core/page-sentinel';
 import { diagnoseSnapshotPageHealth } from './page-health';
 import { buildVisibilityReport } from './visibility-report';
 import {
@@ -85,6 +97,12 @@ import type { NavigationAdapter } from '../navigation/navigation-adapter';
 import { WindowLocationAdapter } from '../navigation/navigation-adapter';
 import { extractReactState } from '../control/action-executor';
 import {
+  captureComponent,
+  componentCaptureRefusalEnvelope,
+  wantsCaptureProps,
+  type ComponentCaptureResult,
+} from '../control/component-capture';
+import {
   computeAriaLabel,
   computeAccessibleNameSafe,
   computeRoleSafe,
@@ -100,6 +118,7 @@ import {
   scrubContent,
   scrubContentByVerdict,
   scrubMediaMetadata,
+  scrubRecord,
   verdictOf,
   verdictFromState,
   readScrubbedValue,
@@ -119,7 +138,6 @@ import type {
   NLActionResponse,
   AssertionRequest,
   AssertionResult,
-  AssertionType,
   BatchAssertionRequest,
   BatchAssertionResult,
   SemanticSnapshot,
@@ -152,7 +170,11 @@ import type {
   FindResult,
   FindContext,
 } from '../ai';
-import { parseNLAssertion as parseNLAssertionShared } from '../ai/nl-assertion-parser';
+import {
+  isAssertionRequestError,
+  normalizeAssertion,
+  normalizeAssertionBatch,
+} from '../ai/nl-assertion-parser';
 import { find } from '../ai/find';
 import { stateSourceFromRegistry, type StateRegistryLike } from '../ai/timeline-recorder';
 import { captureFormSnapshot, diffFormSnapshots } from '../ai/form-diff';
@@ -183,18 +205,10 @@ import {
   segmentPageRegions,
   extractStructuredData,
   generateComparisonReport,
-  getElementDesignData,
   captureStateVariations,
-  captureResponsiveSnapshots,
-  DEFAULT_VIEWPORTS,
   analyzeStructuredChanges,
 } from '../ai';
-import type {
-  InteractionStateName,
-  ElementDesignData,
-  StateStyles,
-  ResponsiveSnapshot,
-} from '../core/types';
+import type { InteractionStateName, StateStyles } from '../core/types';
 import type { NavigationTracker } from '../navigation';
 import type { ShortcutTracker } from '../shortcuts';
 import type { ModalDetector } from '../modal';
@@ -203,8 +217,23 @@ import type { ToastCapture } from '../toast';
 import type { RelationshipTracker } from '../relationships';
 import type { DragDropDetector } from '../drag-drop';
 import type { UndoTracker } from '../undo';
-import type { StyleGuideConfig, StyleAuditReport } from '../specs/style-types';
-import { runStyleAudit } from '../specs/style-validator';
+import type { StyleGuideConfig } from '../specs/style-types';
+import {
+  designAuditOf,
+  designFailureCode,
+  designSnapshotOf,
+  elementStylesOf,
+  responsiveSnapshotsOf,
+  viewportConstraintsOf,
+  type DesignAuditRequest,
+  type ElementStylesResponse,
+  type DesignAuditResponse,
+  type DesignSnapshotRequest,
+  type DesignSnapshotResponse,
+  type ResponsiveSnapshotsRequest,
+  type ResponsiveSnapshotsResponse,
+  type ViewportConstraintsResponse,
+} from '../specs/design-request';
 import type {
   QualityEvaluationReport,
   SnapshotDiffReport,
@@ -295,40 +324,6 @@ interface HeadlessLauncherModule {
 }
 
 /**
- * Parse a natural language assertion into a structured AssertionRequest.
- * Delegates to the shared NL assertion parser and merges result back into the request.
- */
-function parseNLAssertion(request: AssertionRequest & { assertion?: string }): AssertionRequest {
-  // If already structured with target and type, pass through
-  if (request.target && request.type) return request;
-
-  const parsed = parseNLAssertionShared(request);
-  return {
-    ...request,
-    target: parsed.target,
-    type: parsed.type as AssertionType,
-    expected: parsed.expected,
-  };
-}
-
-/**
- * Normalize a batch assertion request: parse NL strings and ensure mode is set.
- */
-function normalizeBatchAssertions(
-  request: BatchAssertionRequest & { assertions?: (AssertionRequest | string)[] }
-): BatchAssertionRequest {
-  return {
-    ...request,
-    mode: request.mode || 'all',
-    assertions: (request.assertions || []).map((a: AssertionRequest | string) =>
-      typeof a === 'string'
-        ? parseNLAssertion({ assertion: a } as AssertionRequest & { assertion: string })
-        : parseNLAssertion(a as AssertionRequest & { assertion?: string })
-    ),
-  };
-}
-
-/**
  * Map raw registry elements to snapshot-format elements with computed state
  * (rect, visibility, text content, computed styles). Raw RegisteredElement
  * objects from registry.getAllElements() have a getState() method that must
@@ -391,6 +386,9 @@ export function materializeElements(rawElements: unknown[]): ControlSnapshot['el
     const titleAttr = scrubContent((liveEl ? readTitleAttr(liveEl) : null) ?? undefined, liveEl);
     const ariaRole = liveEl ? computeRoleSafe(liveEl) : undefined;
     const ariaLabel = scrubContent(liveEl ? computeAriaLabel(liveEl) : undefined, liveEl);
+    // `computeAccessibleNameSafe` is boundary-safe (§4.6): a name read from a
+    // subtree, label or labelledby target holding a redaction boundary carries
+    // the sentinel in its place; `scrubContent` then applies the row's own verdict.
     const accessibleName = scrubContent(
       liveEl ? computeAccessibleNameSafe(liveEl) : undefined,
       liveEl
@@ -803,6 +801,22 @@ function error<T = unknown>(message: string, code?: string): APIResponse<T> {
 }
 
 /**
+ * A component capture as the HTTP envelope: the capture under `data`, or the
+ * typed refusal (`componentCaptureRefusalEnvelope`: top-level `error` +
+ * `reason`, the refusal body repeated under `data`, 404 / 422). A throw is a
+ * `COMPONENT_CAPTURE_ERROR`, like every sibling read.
+ */
+function componentCaptureResponse(capture: () => ComponentCaptureResult): ComponentCaptureResponse {
+  try {
+    const result = capture();
+    if (result.ok) return success(result.capture);
+    return componentCaptureRefusalEnvelope(result.refusal.reason, result.message);
+  } catch (err) {
+    return error((err as Error).message, 'COMPONENT_CAPTURE_ERROR');
+  }
+}
+
+/**
  * The answer every dev-control route (the media override, text visibility)
  * gives on a transport with no browser context:
  * `capability_unavailable_in_build`, typed, so a caller never reads a 2xx as
@@ -814,6 +828,23 @@ function devControlUnavailable(command: string): APIResponse<unknown> {
     error:
       `${command} rewrites the live DOM, which these direct (Node-side) handlers cannot ` +
       `reach. Use the relay handlers or the injected runtime (inject-cli).`,
+    code: 'UB-CAPABILITY-UNAVAILABLE',
+    data: { code: 'capability_unavailable_in_build', reason: 'no_browser_context' },
+    timestamp: Date.now(),
+  };
+}
+
+/**
+ * The answer a page-only route (`PAGE_ONLY_HANDLERS`) gives from handlers
+ * built in a runtime with no page — the same typed shape as
+ * {@link devControlUnavailable}: nothing was attempted.
+ */
+function noPageRuntime(handler: string): APIResponse<unknown> {
+  return {
+    success: false,
+    error:
+      `${handler} reads or drives the live page, and these handlers were built in a ` +
+      'runtime with none (server-side). Use the relay handlers or the in-tab bridge.',
     code: 'UB-CAPABILITY-UNAVAILABLE',
     data: { code: 'capability_unavailable_in_build', reason: 'no_browser_context' },
     timestamp: Date.now(),
@@ -978,6 +1009,23 @@ export async function closeAllSpawnedHeadlessTabs(): Promise<void> {
   await Promise.allSettled(allTabs.map((t) => t.close()));
 }
 
+/**
+ * Handlers that read or drive the live page and have no meaning without one;
+ * in a server runtime `createHandlers` refuses them `UB-CAPABILITY-UNAVAILABLE`
+ * (`no_browser_context`). `nextjs.node-construct.test.ts` sweeps every
+ * route in a Node environment, so a page-only handler missing here fails it.
+ */
+const PAGE_ONLY_HANDLERS = [
+  'pageRefresh',
+  'pageGoBack',
+  'pageGoForward',
+  'getResponsiveSnapshots',
+  'setViewportConstraints',
+  'evaluateQuality',
+  'saveBaseline',
+  'getRoutes',
+] as const satisfies readonly (keyof UIBridgeServerHandlers)[];
+
 export function createHandlers(
   registry: RegistryLike,
   actionExecutor: ActionExecutorLike,
@@ -1018,8 +1066,15 @@ export function createHandlers(
 
   // Network request monitoring — create early so idle detector and chain tracker
   // can subscribe to events instead of independently patching fetch/XHR.
+  // A server runtime (Node, a Next.js route handler — `createUIBridgeHandler`)
+  // has no page to watch. Network monitoring and idle detection are then not
+  // built at all, so their routes answer the typed *_DISABLED refusal naming
+  // why, rather than an idle/empty reading that nothing observed — and the
+  // server's own outbound fetches are never recorded.
+  const pageRuntime = typeof document !== 'undefined';
+  const noPageReason = pageRuntime ? '' : ': no page in this runtime (server-side handlers)';
   const networkTracker =
-    config.networkMonitoring !== false
+    pageRuntime && config.networkMonitoring !== false
       ? new NetworkRequestTracker(
           typeof config.networkMonitoring === 'object' ? config.networkMonitoring : undefined
         )
@@ -1149,7 +1204,7 @@ export function createHandlers(
   // Idle detection — pass the shared network tracker so the idle detector
   // subscribes to events instead of independently patching fetch/XHR.
   const idleDetector =
-    config.idleDetection !== false
+    pageRuntime && config.idleDetection !== false
       ? CompositeIdleDetector.create(
           (() => {
             const idleConfig =
@@ -1481,6 +1536,10 @@ export function createHandlers(
         findRequest,
         filterCtx
       );
+      // The live node behind each returned row, for the request-scoped
+      // projection (`properties` / `attributes`) read below.
+      let nodes: unknown[] = elements.map((el) => (el as FindFilterableElement).element);
+      let projection: ElementProjectionRequest | undefined = filterCtx.projection;
 
       // DOM fallback: when registry returns 0 elements, scan the DOM directly.
       // The scan keeps each node until filtering is done, so `root`,
@@ -1488,13 +1547,20 @@ export function createHandlers(
       if (elements.length === 0) {
         const domElements = scanDOMForInteractiveElementsWithRefs();
         if (domElements.length > 0) {
-          elements = applyCanonicalFindFilter(domElements, findRequest, {
-            transport: 'server',
-          }).map(({ element: _element, ...data }) => data);
+          const fallbackCtx: CanonicalFindContext = { transport: 'server' };
+          const kept = applyCanonicalFindFilter(domElements, findRequest, fallbackCtx);
+          nodes = kept.map((row) => row.element);
+          elements = kept.map(({ element: _element, ...data }) => data);
+          projection = fallbackCtx.projection;
         }
       }
 
-      const materialized = materializeElements(elements);
+      const materialized = projection
+        ? materializeElements(elements).map((row, i) => ({
+            ...row,
+            projection: projectElement(liveElementOf(nodes[i]), projection),
+          }))
+        : materializeElements(elements);
       return success({
         elements: materialized,
         // Folded over exactly the array being returned — see
@@ -1516,7 +1582,7 @@ export function createHandlers(
     }
   };
 
-  return {
+  const handlers: UIBridgeServerHandlers = {
     // =========================================================================
     // Render Log Handlers
     // =========================================================================
@@ -1670,13 +1736,57 @@ export function createHandlers(
       }
     },
 
-    getElementState: async (id: string): Promise<APIResponse<unknown>> => {
+    /**
+     * `GET /control/element/:id/state` — the element's canonical state, in the
+     * shape the relay's `getElementState` command answers (`{ id, ...state }`
+     * plus the legacy `isVisible` / `isEnabled` / `text` aliases), and — when
+     * the query asks — the request-scoped projection (`properties` /
+     * `attributes`, comma-separated). A malformed projection is refused
+     * (`UB-VALIDATION-ERROR`) before anything is read.
+     *
+     * A registry entry exposes its state through `getState()`; a DOM-fallback
+     * entry carries a built `state`. This handler used to read `.state` only,
+     * so on a registry element it answered `success` with no data at all.
+     *
+     * The query follows the context (`RouteDefinition.queryAfterContext`),
+     * which has nothing to scope in process.
+     */
+    getElementState: async (
+      id: string,
+      _context?: HandlerContext,
+      query?: ElementStateQuery
+    ): Promise<APIResponse<unknown>> => {
       try {
-        const element = registry.getElement(id) as { state?: unknown } | undefined;
+        let projection: ElementProjectionRequest | undefined;
+        try {
+          projection = parseProjectionRequest(query, 'query');
+        } catch (err) {
+          if (isProjectionRequestError(err)) {
+            return error(`element state ${err.message}`, err.code);
+          }
+          throw err;
+        }
+        const element = registry.getElement(id) as
+          | { state?: ElementState; getState?: () => ElementState; element?: unknown }
+          | undefined;
         if (!element) {
+          // The `document` sentinel names `<html>`, which has no registration:
+          // its read answers the projection off it (core/page-sentinel.ts).
+          const page = resolvePageSentinel(id, 'read');
+          if (page) return success(pageSentinelState(id, page, projection));
           return error(`Element not found: ${id}`, 'NOT_FOUND');
         }
-        return success(element.state);
+        const state = element.getState?.() ?? element.state;
+        return success({
+          id,
+          ...state,
+          isVisible: state?.visible,
+          isEnabled: state?.enabled,
+          text: state?.textContent,
+          ...(projection
+            ? { projection: projectElement(liveElementOf(element.element), projection) }
+            : {}),
+        });
       } catch (err) {
         return error((err as Error).message, 'ELEMENT_STATE_ERROR');
       }
@@ -1706,6 +1816,15 @@ export function createHandlers(
       }
     },
 
+    getElementCapture: async (id: string, query?: ComponentCaptureQuery) =>
+      componentCaptureResponse(() =>
+        captureComponent(
+          registry,
+          { kind: 'element', id },
+          { props: wantsCaptureProps(query?.props) }
+        )
+      ),
+
     /**
      * `POST /control/element/:id/action` — the ONE exported action seam every
      * transport lands on (HTTP adapters, the WebSocket handler, the window
@@ -1732,10 +1851,10 @@ export function createHandlers(
         // though the DOM node exists.
         await awaitDOMSettled();
         // Pre-flight registry check.
-        // Page-level sentinel IDs ("document", "body", "window") bypass the registry
-        // check — the action executor resolves them to document.documentElement directly.
-        const isPageScrollSentinel =
-          request.action === 'scroll' && (id === 'document' || id === 'body' || id === 'window');
+        // A page sentinel ("document", "body", "window") on a scroll bypasses it:
+        // the action executor resolves the sentinel through the same shared
+        // resolver (core/page-sentinel.ts).
+        const isPageScrollSentinel = request.action === 'scroll' && isPageSentinelId(id, 'scroll');
         let element = isPageScrollSentinel ? true : registry.getElement(id);
 
         // Auto-rediscover: if the element isn't in the registry, refresh the
@@ -2141,6 +2260,15 @@ export function createHandlers(
         return error((err as Error).message, 'COMPONENT_STATE_ERROR');
       }
     },
+
+    getComponentCapture: async (id: string, query?: ComponentCaptureQuery) =>
+      componentCaptureResponse(() =>
+        captureComponent(
+          registry,
+          { kind: 'component', id },
+          { props: wantsCaptureProps(query?.props) }
+        )
+      ),
 
     executeComponentAction: async (id: string, request: ComponentActionRequest) => {
       try {
@@ -3092,6 +3220,10 @@ export function createHandlers(
       request: AssertionRequest & { assertion?: string }
     ): Promise<APIResponse<AssertionResult>> => {
       try {
+        // Support natural language assertions: {assertion: "a button exists"} →
+        // {target, type}. A request that names nothing to check is refused
+        // (UB-VALIDATION-ERROR) before anything waits or reads.
+        const normalized = normalizeAssertion(request);
         // Same settle-then-read pattern as aiFind/aiExecute so mid-navigation
         // assertions don't observe a stale registry.
         const reqAny = request as unknown as { skipSettle?: boolean; settleTimeout?: number };
@@ -3100,11 +3232,10 @@ export function createHandlers(
         }
         // Refresh elements before assertion
         refreshElements();
-        // Support natural language assertions: {assertion: "a button exists"} → {target, type}
-        const normalized = parseNLAssertion(request);
         const result = await assertionExecutor.assert(normalized);
         return success(result);
       } catch (err) {
+        if (isAssertionRequestError(err)) return error(err.message, err.code);
         return error((err as Error).message, 'AI_ASSERT_ERROR');
       }
     },
@@ -3113,16 +3244,19 @@ export function createHandlers(
       request: BatchAssertionRequest & { assertions?: (AssertionRequest | string)[] }
     ): Promise<APIResponse<BatchAssertionResult>> => {
       try {
+        // A malformed batch is refused (UB-VALIDATION-ERROR) before anything
+        // waits or reads.
+        const normalized = normalizeAssertionBatch(request);
         const reqAny = request as unknown as { skipSettle?: boolean; settleTimeout?: number };
         if (!reqAny.skipSettle) {
           await awaitDOMSettled(reqAny.settleTimeout);
         }
         // Refresh elements before batch assertion
         refreshElements();
-        const normalized = normalizeBatchAssertions(request);
         const result = await assertionExecutor.assertBatch(normalized);
         return success(result);
       } catch (err) {
+        if (isAssertionRequestError(err)) return error(err.message, err.code);
         return error((err as Error).message, 'AI_ASSERT_BATCH_ERROR');
       }
     },
@@ -3912,10 +4046,20 @@ export function createHandlers(
             // Prioritize description and accessible name for semantic matching
             const state = 'getState' in el && el.getState ? el.getState() : el.state;
             const textContent = state?.textContent || '';
-            const label = el.label || '';
-            const accessibleName = el.accessibleName || '';
-            const placeholder = el.placeholder || '';
-            const title = el.title || '';
+            // §4.6 CONTENT axis: `getAllElements()` hands back the registry's
+            // RAW row — the registry scrubs `label` only when it serializes —
+            // so a `data-bridge-redact` element's label (and any other
+            // descriptive field a row carries) is scrubbed here, before it can
+            // reach `element.label` / `description` / `embeddedText` or score a
+            // match. `getState()` is already scrubbed at its source.
+            // `Element`, not `HTMLElement`: a registered `<svg>` is an
+            // SVGElement, and a null element finds no boundary (as in
+            // `materializeElements`).
+            const domEl = el.element instanceof Element ? (el.element as HTMLElement) : null;
+            const label = scrubContent(el.label, domEl) || '';
+            const accessibleName = scrubContent(el.accessibleName, domEl) || '';
+            const placeholder = scrubContent(el.placeholder, domEl) || '';
+            const title = scrubContent(el.title, domEl) || '';
 
             if (label) textParts.push(label);
             if (accessibleName && accessibleName !== label) textParts.push(accessibleName);
@@ -3931,10 +4075,11 @@ export function createHandlers(
               element: {
                 id: el.id,
                 type: el.type,
-                label: el.label,
+                // The scrubbed reads above — never the raw row (§4.6).
+                label: label || undefined,
                 tagName: el.tagName || el.type,
                 role: el.role,
-                accessibleName: el.accessibleName,
+                accessibleName: accessibleName || undefined,
                 actions: el.actions || [],
                 state: state || {},
                 registered: true,
@@ -4897,25 +5042,14 @@ export function createHandlers(
     // Design Review Handlers
     // =========================================================================
 
-    getElementStyles: async (id: string): Promise<APIResponse<ElementDesignData>> => {
+    // The design-inspection routes run through specs/design-request.ts, which
+    // the browser relay calls too — one model whichever transport answers.
+    getElementStyles: async (id: string): Promise<APIResponse<ElementStylesResponse>> => {
       try {
-        const rawElement = registry.getElement(id);
-        if (!rawElement) {
-          return error(`Element not found: ${id}`, 'ELEMENT_NOT_FOUND');
-        }
-        const el = rawElement as unknown as RegistryElementView;
-        if (!el.element || !(el.element instanceof HTMLElement)) {
-          return error('Element does not have a DOM reference', 'NO_DOM_REFERENCE');
-        }
-        const data = getElementDesignData(el.element, {
-          elementId: el.id,
-          label: el.label,
-          type: el.type,
-          includePseudoElements: true,
-        });
-        return success(data);
+        const source = registry.getElement(id) as unknown as RegistryElementView | undefined;
+        return success(elementStylesOf(id, source ?? undefined));
       } catch (err) {
-        return error((err as Error).message, 'DESIGN_STYLES_ERROR');
+        return error((err as Error).message, designFailureCode(err, 'DESIGN_STYLES_ERROR'));
       }
     },
 
@@ -4939,133 +5073,47 @@ export function createHandlers(
       }
     },
 
-    getDesignSnapshot: async (request?: {
-      elementIds?: string[];
-      includePseudoElements?: boolean;
-    }): Promise<APIResponse<{ elements: ElementDesignData[]; timestamp: number }>> => {
+    getDesignSnapshot: async (
+      request?: DesignSnapshotRequest
+    ): Promise<APIResponse<DesignSnapshotResponse>> => {
       try {
-        const allElements = registry.getAllElements() as unknown as RegistryElementView[];
-        const elements = request?.elementIds
-          ? allElements.filter((el) => request.elementIds!.includes(el.id))
-          : allElements;
-
-        const designData: ElementDesignData[] = [];
-        for (const el of elements) {
-          if (el.element && el.element instanceof HTMLElement) {
-            designData.push(
-              getElementDesignData(el.element, {
-                elementId: el.id,
-                label: el.label,
-                type: el.type,
-                includePseudoElements: request?.includePseudoElements,
-              })
-            );
-          }
-        }
-
-        return success({ elements: designData, timestamp: Date.now() });
+        const elements = registry.getAllElements() as unknown as RegistryElementView[];
+        return success(designSnapshotOf(elements, request));
       } catch (err) {
-        return error((err as Error).message, 'DESIGN_SNAPSHOT_ERROR');
+        return error((err as Error).message, designFailureCode(err, 'DESIGN_SNAPSHOT_ERROR'));
       }
     },
 
-    getResponsiveSnapshots: async (request: {
-      viewports?: Record<string, number>;
-      elementIds?: string[];
-    }): Promise<APIResponse<ResponsiveSnapshot[]>> => {
+    getResponsiveSnapshots: async (
+      request: ResponsiveSnapshotsRequest
+    ): Promise<APIResponse<ResponsiveSnapshotsResponse>> => {
       try {
-        const viewports = request.viewports || DEFAULT_VIEWPORTS;
-
-        // Create a minimal registry adapter that filters by elementIds if specified
-        const allElements = registry.getAllElements() as unknown as RegistryElementView[];
-        const filteredElements = request.elementIds
-          ? allElements.filter((el) => request.elementIds!.includes(el.id))
-          : allElements;
-
-        const registryAdapter = {
-          getAllElements: () =>
-            filteredElements
-              .filter((el) => el.element instanceof HTMLElement)
-              .map((el) => ({
-                id: el.id,
-                element: el.element as HTMLElement,
-                type: el.type as string,
-                label: el.label,
-              })),
-        };
-
-        const snapshots = await captureResponsiveSnapshots(registryAdapter, viewports);
-        return success(snapshots);
+        // Read inside the root-width lock, once the capture's turn comes.
+        const elements = () => registry.getAllElements() as unknown as RegistryElementView[];
+        return success(await responsiveSnapshotsOf(elements, request));
       } catch (err) {
-        return error((err as Error).message, 'RESPONSIVE_SNAPSHOT_ERROR');
+        return error((err as Error).message, designFailureCode(err, 'RESPONSIVE_SNAPSHOT_ERROR'));
       }
     },
 
-    setViewportConstraints: async (request: {
-      width?: number;
-      restore?: boolean;
-    }): Promise<
-      APIResponse<{
-        success: boolean;
-        viewportWidth: number;
-        constrainedWidth: number;
-        timestamp: number;
-      }>
-    > => {
+    setViewportConstraints: async (
+      request: Parameters<UIBridgeServerHandlers['setViewportConstraints']>[0]
+    ): Promise<APIResponse<ViewportConstraintsResponse>> => {
       try {
-        const root = document.documentElement;
-        if (request.restore) {
-          root.style.removeProperty('max-width');
-          root.style.removeProperty('margin');
-          root.style.removeProperty('overflow-x');
-        } else if (request.width && request.width > 0) {
-          root.style.maxWidth = `${request.width}px`;
-          root.style.margin = '0 auto';
-          root.style.overflowX = 'hidden';
-        }
-        return success({
-          success: true,
-          viewportWidth: window.innerWidth,
-          constrainedWidth: root.clientWidth,
-          timestamp: Date.now(),
-        });
+        return success(await viewportConstraintsOf(request));
       } catch (err) {
-        return error((err as Error).message, 'VIEWPORT_CONSTRAINTS_ERROR');
+        return error((err as Error).message, designFailureCode(err, 'VIEWPORT_CONSTRAINTS_ERROR'));
       }
     },
 
-    runDesignAudit: async (request?: {
-      guide?: StyleGuideConfig;
-      elementIds?: string[];
-    }): Promise<APIResponse<StyleAuditReport>> => {
+    runDesignAudit: async (
+      request?: DesignAuditRequest
+    ): Promise<APIResponse<DesignAuditResponse>> => {
       try {
-        const guide = request?.guide || loadedStyleGuide;
-        if (!guide) {
-          return error('No style guide loaded or provided', 'NO_STYLE_GUIDE');
-        }
-
-        const allElements = registry.getAllElements() as unknown as RegistryElementView[];
-        const elements = request?.elementIds
-          ? allElements.filter((el) => request.elementIds!.includes(el.id))
-          : allElements;
-
-        const designData: ElementDesignData[] = [];
-        for (const el of elements) {
-          if (el.element && el.element instanceof HTMLElement) {
-            designData.push(
-              getElementDesignData(el.element, {
-                elementId: el.id,
-                label: el.label,
-                type: el.type,
-              })
-            );
-          }
-        }
-
-        const report = runStyleAudit(designData, guide);
-        return success(report);
+        const elements = registry.getAllElements() as unknown as RegistryElementView[];
+        return success(designAuditOf(elements, request, loadedStyleGuide));
       } catch (err) {
-        return error((err as Error).message, 'DESIGN_AUDIT_ERROR');
+        return error((err as Error).message, designFailureCode(err, 'DESIGN_AUDIT_ERROR'));
       }
     },
 
@@ -5260,7 +5308,10 @@ export function createHandlers(
 
     getNetworkRequests: async (params) => {
       if (!networkTracker) {
-        return error('Network monitoring is disabled', 'NETWORK_MONITORING_DISABLED');
+        return error(
+          `Network monitoring is disabled${noPageReason}`,
+          'NETWORK_MONITORING_DISABLED'
+        );
       }
       const filter: NetworkRequestFilter = {};
       if (params?.status) filter.status = params.status as NetworkRequestStatus;
@@ -5281,7 +5332,10 @@ export function createHandlers(
 
     getNetworkRequestsInFlight: async () => {
       if (!networkTracker) {
-        return error('Network monitoring is disabled', 'NETWORK_MONITORING_DISABLED');
+        return error(
+          `Network monitoring is disabled${noPageReason}`,
+          'NETWORK_MONITORING_DISABLED'
+        );
       }
       const requests = networkTracker.getInFlight();
       return {
@@ -5293,7 +5347,10 @@ export function createHandlers(
 
     waitForNetworkRequest: async (request) => {
       if (!networkTracker) {
-        return error('Network monitoring is disabled', 'NETWORK_MONITORING_DISABLED');
+        return error(
+          `Network monitoring is disabled${noPageReason}`,
+          'NETWORK_MONITORING_DISABLED'
+        );
       }
       try {
         const result = await networkTracker.waitForRequest(request);
@@ -5309,7 +5366,10 @@ export function createHandlers(
 
     getNetworkRequest: async (id) => {
       if (!networkTracker) {
-        return error('Network monitoring is disabled', 'NETWORK_MONITORING_DISABLED');
+        return error(
+          `Network monitoring is disabled${noPageReason}`,
+          'NETWORK_MONITORING_DISABLED'
+        );
       }
       const entry = networkTracker.getById(id);
       if (!entry) {
@@ -5333,14 +5393,14 @@ export function createHandlers(
 
     getIdleStatus: async () => {
       if (!idleDetector) {
-        return error('Idle detection is disabled', 'IDLE_DISABLED');
+        return error(`Idle detection is disabled${noPageReason}`, 'IDLE_DISABLED');
       }
       return success(idleDetector.getStatus());
     },
 
     getIdleSignalStatus: async (signal: string) => {
       if (!idleDetector) {
-        return error('Idle detection is disabled', 'IDLE_DISABLED');
+        return error(`Idle detection is disabled${noPageReason}`, 'IDLE_DISABLED');
       }
       const status = idleDetector.getSignalStatus(signal);
       if (!status) {
@@ -5358,7 +5418,7 @@ export function createHandlers(
       exclude?: string[];
     }) => {
       if (!idleDetector) {
-        return error('Idle detection is disabled', 'IDLE_DISABLED');
+        return error(`Idle detection is disabled${noPageReason}`, 'IDLE_DISABLED');
       }
       try {
         const status = await idleDetector.waitForIdle({
@@ -5377,7 +5437,7 @@ export function createHandlers(
       request?: { timeout?: number; minStableMs?: number }
     ) => {
       if (!idleDetector) {
-        return error('Idle detection is disabled', 'IDLE_DISABLED');
+        return error(`Idle detection is disabled${noPageReason}`, 'IDLE_DISABLED');
       }
       try {
         const status = await idleDetector.waitForSignal(signal, {
@@ -5396,7 +5456,7 @@ export function createHandlers(
       minStableMs?: number;
     }) => {
       if (!idleDetector) {
-        return error('Idle detection is disabled', 'IDLE_DISABLED');
+        return error(`Idle detection is disabled${noPageReason}`, 'IDLE_DISABLED');
       }
       try {
         const results = await idleDetector.waitFor(request.targets, {
@@ -5540,6 +5600,7 @@ export function createHandlers(
         const all = registry.getAllElements() as Array<{
           id: string;
           label?: string;
+          element?: unknown;
           getState: () => {
             occludedBy?: string;
             occludedPct?: number;
@@ -5553,7 +5614,12 @@ export function createHandlers(
               const state = el.getState();
               return {
                 id: el.id,
-                label: el.label,
+                // §4.6: the registry row's label is raw (scrubbed only on
+                // serialization) and the report echoes it in `occlusions[]`.
+                label: scrubContent(
+                  el.label,
+                  el.element instanceof Element ? (el.element as HTMLElement) : null
+                ),
                 occludedBy: state?.occludedBy,
                 occludedPct: state?.occludedPct,
                 textContent: state?.textContent,
@@ -5603,6 +5669,11 @@ export function createHandlers(
                   description: 'Get React props and fiber state for element',
                 },
                 {
+                  method: 'GET',
+                  path: '/control/element/:id/capture',
+                  description: 'Structural capture (matches_isolated_render) rooted at the element',
+                },
+                {
                   method: 'POST',
                   path: '/control/element/:id/action',
                   description: 'Execute action on element',
@@ -5631,6 +5702,11 @@ export function createHandlers(
                   method: 'GET',
                   path: '/control/component/:id/state',
                   description: 'Get component state',
+                },
+                {
+                  method: 'GET',
+                  path: '/control/component/:id/capture',
+                  description: 'Structural capture (matches_isolated_render) of the component',
                 },
                 {
                   method: 'POST',
@@ -5891,9 +5967,17 @@ export function createHandlers(
                 {
                   method: 'POST',
                   path: '/design/responsive',
-                  description: 'Capture responsive snapshots at viewports',
+                  description:
+                    'Capture design snapshots at constrained root widths (method ' +
+                    "'document-width-constraint': @media width queries do not re-evaluate)",
                 },
-                { method: 'POST', path: '/design/audit', description: 'Run design style audit' },
+                {
+                  method: 'POST',
+                  path: '/design/audit',
+                  description:
+                    "Audit against the provided or loaded style guide (mode 'style-guide'), " +
+                    "else built-in heuristics (mode 'heuristic')",
+                },
                 {
                   method: 'POST',
                   path: '/design/style-guide/load',
@@ -6384,7 +6468,8 @@ export function createHandlers(
             if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
               // §4.6 VALUE axis: password/boundary inputs must not ship cleartext.
               info.value = readScrubbedValue(el) ?? '';
-              info.placeholder = el.placeholder;
+              // §4.6 CONTENT axis: hint text inside a boundary is content.
+              info.placeholder = scrubContent(el.placeholder, el) ?? '';
               info.disabled = el.disabled;
             }
             if (el instanceof HTMLSelectElement) {
@@ -6400,18 +6485,21 @@ export function createHandlers(
                   }));
             }
             if (el instanceof HTMLButtonElement) info.disabled = el.disabled;
-            const attrs: Record<string, string> = {};
-            for (const a of [
-              'data-tutorial-id',
-              'title',
-              'aria-label',
-              'role',
-              'href',
-              'placeholder',
-            ]) {
+            // §4.6: `title` / `aria-label` / `placeholder` / `href` are content —
+            // inside a boundary their values collapse and the keys survive.
+            // `role` and `data-tutorial-id` are addressing and stay raw, so a
+            // redacted element stays findable by structural means.
+            const addressAttrs: Record<string, string> = {};
+            for (const a of ['data-tutorial-id', 'role']) {
               const v = el.getAttribute(a);
-              if (v) attrs[a] = v;
+              if (v) addressAttrs[a] = v;
             }
+            const contentAttrs: Record<string, string> = {};
+            for (const a of ['title', 'aria-label', 'href', 'placeholder']) {
+              const v = el.getAttribute(a);
+              if (v) contentAttrs[a] = v;
+            }
+            const attrs = { ...addressAttrs, ...scrubRecord(contentAttrs, verdictOf(el)) };
             if (Object.keys(attrs).length > 0) info.attributes = attrs;
           }
           results.push(info);
@@ -7169,6 +7257,17 @@ export function createHandlers(
       });
     },
   };
+
+  if (!pageRuntime) {
+    // These read or drive the live page itself (history, viewport, layout,
+    // computed styles, the router's links) and have nothing to fall back on
+    // without one. Refuse them typed — nothing was attempted — instead of a
+    // `ReferenceError` surfacing as UB-UNKNOWN-ERROR.
+    for (const name of PAGE_ONLY_HANDLERS) {
+      (handlers as unknown as Record<string, unknown>)[name] = async () => noPageRuntime(name);
+    }
+  }
+  return handlers;
 }
 
 /**
@@ -7285,15 +7384,18 @@ export function createAIHandlers(
       request: AssertionRequest & { assertion?: string }
     ): Promise<APIResponse<AssertionResult>> => {
       try {
+        const normalized = normalizeAssertion(request);
         refreshElements();
-        const normalized = parseNLAssertion(request);
         const result = await assertionExecutor.assert(normalized);
         return { success: true, data: result, timestamp: Date.now() };
       } catch (err) {
         return {
           success: false,
           error: (err as Error).message,
-          code: mapInternalErrorCode('AI_ASSERT_ERROR', (err as Error).message),
+          code: mapInternalErrorCode(
+            isAssertionRequestError(err) ? err.code : 'AI_ASSERT_ERROR',
+            (err as Error).message
+          ),
           timestamp: Date.now(),
         };
       }
@@ -7303,15 +7405,18 @@ export function createAIHandlers(
       request: BatchAssertionRequest & { assertions?: (AssertionRequest | string)[] }
     ): Promise<APIResponse<BatchAssertionResult>> => {
       try {
+        const normalized = normalizeAssertionBatch(request);
         refreshElements();
-        const normalized = normalizeBatchAssertions(request);
         const result = await assertionExecutor.assertBatch(normalized);
         return { success: true, data: result, timestamp: Date.now() };
       } catch (err) {
         return {
           success: false,
           error: (err as Error).message,
-          code: mapInternalErrorCode('AI_ASSERT_BATCH_ERROR', (err as Error).message),
+          code: mapInternalErrorCode(
+            isAssertionRequestError(err) ? err.code : 'AI_ASSERT_BATCH_ERROR',
+            (err as Error).message
+          ),
           timestamp: Date.now(),
         };
       }

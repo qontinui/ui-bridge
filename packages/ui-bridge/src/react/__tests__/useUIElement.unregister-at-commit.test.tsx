@@ -33,7 +33,19 @@ afterAll(() => {
   g.IS_REACT_ACT_ENVIRONMENT = savedAct;
 });
 
-const tick = () => new Promise<void>((r) => setTimeout(r, 50));
+// A PRECONDITION wait: `act` is off, so passive effects (registration) and the
+// non-discrete re-render flush on React's own schedule, which a fixed sleep
+// cannot bound on a loaded box. Poll until the precondition holds; time out
+// loudly if it never does. Never used for the property under test.
+const until = (pred: () => boolean, what: string) =>
+  vi.waitFor(
+    () => {
+      if (!pred()) throw new Error(`timed out waiting for: ${what}`);
+    },
+    // Under vitest's 5 s test timeout, so a precondition that never holds
+    // fails with its own name rather than a generic test timeout.
+    { timeout: 2000, interval: 10 }
+  );
 
 function Btn({ id }: { id: string }) {
   const { ref } = useUIElement({ id, type: 'button', label: 'Go' });
@@ -53,7 +65,10 @@ describe('useUIElement unregister-at-commit', () => {
     const samples: boolean[] = [];
 
     root.render(<Parent show id="gap-btn" />);
-    await tick();
+    await until(
+      () => registry.getAllElements().some((e) => e.id === 'gap-btn'),
+      'gap-btn registered'
+    );
     expect(registry.getAllElements().some((e) => e.id === 'gap-btn')).toBe(true);
 
     const observer = new MutationObserver(() =>
@@ -63,10 +78,9 @@ describe('useUIElement unregister-at-commit', () => {
 
     await Promise.resolve();
     root.render(<Parent show={false} id="gap-btn" />);
-    await tick();
+    await until(() => samples.length > 0, 'the DOM removal to be observed');
     observer.disconnect();
 
-    expect(samples.length > 0).toBe(true);
     expect(samples[0]).toBe(false);
     root.unmount();
     container.remove();

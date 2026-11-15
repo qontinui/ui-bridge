@@ -13,7 +13,7 @@
  * transport. Headless and headed differ only in the `headless` flag.
  */
 
-import type { Browser, BrowserContext, Page } from 'playwright';
+import type { Browser, BrowserContext, BrowserContextOptions, Page } from 'playwright';
 import { BaseTransport } from '../base-transport.js';
 import { HandlerRegistry } from '../handler-registry.js';
 import type { TransportConfig, WrapperTransportKind } from '../types.js';
@@ -63,6 +63,33 @@ export interface HeadlessTransportOptions {
    * `storageStatePath`.
    */
   storageStatePath?: string;
+  /**
+   * Record a HAR of every request the browser context makes: Playwright's own
+   * `recordHar` shape (`{ path, content?, mode?, urlFilter?, omitContent? }`),
+   * passed to the launcher's `newContext` unchanged. Playwright writes the
+   * archive when the context closes, which this transport's `close()` does
+   * (the launcher closes the context before the browser), so the file is
+   * complete once `close()` resolves. A launch that fails inside the launcher
+   * writes no HAR. A `ready()` that fails AFTER the launch (an emulation
+   * refusal, an injected-runtime wait) may still leave a
+   * complete archive, because the tab is closed through the context, so a
+   * missing file is not how to tell that `ready()` failed.
+   */
+  recordHar?: NonNullable<BrowserContextOptions['recordHar']>;
+  /**
+   * `'block'` stops pages registering service workers. A service worker
+   * answers requests itself, so they reach neither `recordHar` nor a route
+   * installed by `initRouter`; block them when either must see every request.
+   * Unset: Playwright's default (`'allow'`).
+   */
+  serviceWorkers?: NonNullable<BrowserContextOptions['serviceWorkers']>;
+  /**
+   * Called with the browser context after it is created and before its first
+   * page exists, so a `context.route('**\/*', …)` it installs intercepts the
+   * first navigation's own document request. If it throws, `ready()` fails
+   * and the browser is closed.
+   */
+  initRouter?: (context: BrowserContext) => void | Promise<void>;
 }
 
 /**
@@ -95,6 +122,9 @@ interface LaunchHeadlessTabArgs {
   initScripts?: string[];
   launchArgs?: string[];
   storageStatePath?: string;
+  recordHar?: NonNullable<BrowserContextOptions['recordHar']>;
+  serviceWorkers?: NonNullable<BrowserContextOptions['serviceWorkers']>;
+  initRouter?: (context: BrowserContext) => void | Promise<void>;
 }
 
 interface LaunchedHeadlessTab {
@@ -191,7 +221,50 @@ export class HeadlessTransport extends BaseTransport {
         typeof raw['storageStatePath'] === 'string'
           ? (raw['storageStatePath'] as string)
           : undefined,
+      ...this.parseContextOptions(raw),
     };
+  }
+
+  /**
+   * `recordHar`, `serviceWorkers` and `initRouter`. Unlike the display
+   * options above, a malformed value is REFUSED rather than dropped: dropping
+   * `recordHar` would leave a caller waiting for an archive that is never
+   * written, and dropping `initRouter` would let requests it meant to answer
+   * reach the network.
+   */
+  private parseContextOptions(
+    raw: Record<string, unknown>
+  ): Pick<HeadlessTransportOptions, 'recordHar' | 'serviceWorkers' | 'initRouter'> {
+    const out: Pick<HeadlessTransportOptions, 'recordHar' | 'serviceWorkers' | 'initRouter'> = {};
+    const invalid = (what: string) =>
+      new WrapperTransportError('INVALID_CONFIG', `Transport kind '${this.kind}': ${what}`);
+    const har = raw['recordHar'];
+    if (har !== undefined) {
+      if (
+        typeof har !== 'object' ||
+        har === null ||
+        typeof (har as { path?: unknown }).path !== 'string' ||
+        (har as { path: string }).path.length === 0
+      ) {
+        throw invalid('options.recordHar must be an object with a non-empty string `path`');
+      }
+      out.recordHar = har as NonNullable<HeadlessTransportOptions['recordHar']>;
+    }
+    const sw = raw['serviceWorkers'];
+    if (sw !== undefined) {
+      if (sw !== 'allow' && sw !== 'block') {
+        throw invalid(`options.serviceWorkers must be 'allow' or 'block' (got ${String(sw)})`);
+      }
+      out.serviceWorkers = sw;
+    }
+    const router = raw['initRouter'];
+    if (router !== undefined) {
+      if (typeof router !== 'function') {
+        throw invalid('options.initRouter must be a function (context) => void | Promise<void>');
+      }
+      out.initRouter = router as NonNullable<HeadlessTransportOptions['initRouter']>;
+    }
+    return out;
   }
 
   protected async onReady(): Promise<void> {
@@ -251,6 +324,27 @@ export class HeadlessTransport extends BaseTransport {
     // A pinned launch must find ITS tab, not whichever tab registered first.
     const pinnedTabId = this.pinnedTabId();
 
+    // recordHar / serviceWorkers / initRouter came to the launcher together
+    // (ui-bridge#381). An older optional peer accepts the
+    // keys and ignores them: no HAR, service workers allowed, no routes. The
+    // launcher calls `initRouter` before its first page exists, so whenever
+    // any of the three is set the transport ALWAYS passes one, and (except
+    // for `serviceWorkers: 'allow'` alone, below) treats "it was never
+    // called" as proof the peer dropped all three.
+    const { recordHar, serviceWorkers, initRouter: callerRouter } = this.options;
+    // `serviceWorkers: 'allow'` is Playwright's default, so a peer that drops
+    // it still behaves as asked: it alone does not demand the proof.
+    const contextOptionsRequested =
+      recordHar !== undefined || serviceWorkers === 'block' || callerRouter !== undefined;
+    let routerCalled = false;
+    const initRouter =
+      contextOptionsRequested || serviceWorkers !== undefined
+        ? async (context: BrowserContext): Promise<void> => {
+            routerCalled = true;
+            if (callerRouter) await callerRouter(context);
+          }
+        : undefined;
+
     let tab: Awaited<ReturnType<typeof launchHeadlessTab>>;
     try {
       tab = await launchHeadlessTab({
@@ -277,6 +371,9 @@ export class HeadlessTransport extends BaseTransport {
         ...(relayAuth.authToken ? { authToken: relayAuth.authToken } : {}),
         ...(relayAuth.callerUserId ? { callerUserId: relayAuth.callerUserId } : {}),
         ...(pinnedTabId ? { pinnedTabId } : {}),
+        ...(recordHar !== undefined ? { recordHar } : {}),
+        ...(serviceWorkers !== undefined ? { serviceWorkers } : {}),
+        ...(initRouter ? { initRouter } : {}),
       });
     } catch (err) {
       const cause = err instanceof Error ? err.message : String(err);
@@ -304,6 +401,26 @@ export class HeadlessTransport extends BaseTransport {
       tabId: tab.tabId,
       close: tab.close,
     };
+
+    if (contextOptionsRequested && !routerCalled) {
+      await this.onClose().catch(() => {});
+      throw new WrapperTransportError(
+        'CONTEXT_OPTIONS_NOT_APPLIED',
+        `The installed '@qontinui/ui-bridge-headless' peer launched the tab without calling ` +
+          `initRouter, so it predates the recordHar / serviceWorkers / initRouter passthrough ` +
+          `(ui-bridge#381) and ignored them: no HAR would be written and no route ` +
+          `installed. Upgrade it.`,
+        {
+          details: {
+            requested: {
+              recordHar: recordHar !== undefined,
+              serviceWorkers: serviceWorkers ?? null,
+              initRouter: callerRouter !== undefined,
+            },
+          },
+        }
+      );
+    }
 
     // A requested emulation is VERIFIED on the page before anything is driven
     // through it. The launcher is an optional peer resolved at run time, and a

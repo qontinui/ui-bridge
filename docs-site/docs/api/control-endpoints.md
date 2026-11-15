@@ -90,9 +90,38 @@ Get details for a specific element.
 
 ```http
 GET /control/element/:id/state
+GET /control/element/:id/state?properties=border-top-color,--color-accent&attributes=lang,aria-label
 ```
 
 Get current state of an element.
+
+`properties` and `attributes` ask for a request-scoped projection: the computed
+values of the named CSS properties (`var()` resolved) and the allow-listed
+attributes (`lang`, `dir`, `id`, `role`, `title`, `alt`, `href`, `aria-*`),
+answered in `projection` beside the state. Each is a comma-separated list, a
+repeated key (`?properties=hyphens&properties=outline-offset`), or both. The
+names, bounds, redaction and the `unmeasured` and `redacted` lists are those of
+[`POST /control/find`](./discovery-endpoints.md#style-and-attribute-projection);
+a malformed list is refused with `UB-VALIDATION-ERROR`. Through the relay, a
+tab whose UI Bridge SDK predates the projection answers without one, and that
+answer is refused with `UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD` rather than
+passed on as a state that lacks the values asked for.
+
+The projection is served by the `@qontinui/ui-bridge/server` adapters
+(`createHandlers`, `createRelayHandlers`). **`@qontinui/ui-bridge-server` does
+not serve it on this route**: that package routes
+`GET /control/element/:id/state` with no query, so it ignores `properties` and
+`attributes` and answers the state alone — no `projection`, and no refusal
+either. Read a projection there through `POST /control/find`, which that
+package forwards to the `@qontinui/ui-bridge` action executor it is given: its
+rows carry `projection` when that executor's build serves one.
+
+The id `document` names `<html>` itself, which has no registration: its state
+read answers `{ id, sentinel: "document", tagName: "html" }` plus the
+projection asked for (`?attributes=lang,dir&properties=--color-accent`). A
+registered element with that id wins over the sentinel. As an `ai/assert`
+target, `document` is first resolved like any other target, by id, label or
+text: it names `<html>` only when no element matches.
 
 **Response:**
 
@@ -330,6 +359,132 @@ POST /control/component/:id/action/:actionId
   }
 }
 ```
+
+### Capture Component / Element
+
+```http
+GET /control/component/:id/capture
+GET /control/element/:id/capture
+```
+
+Return a `ComponentCapture`, a structural record of how a component or element
+is rendered. The `matches_isolated_render` vision assertion compares two of
+them: one taken in isolation (a Storybook story wrapped in `UIBridgeProvider`)
+and one taken in situ on the real page. It compares structure, not pixels.
+
+- **Element target:** the root is that element.
+- **Component target:** the root is the nearest common DOM ancestor of the
+  component's mounted, non-portalled `elementIds`. Portalled elements are
+  recorded as portal nodes. If every mounted element is portalled, the root
+  is their common DOM ancestor, and a note says so.
+
+**Query parameters:**
+
+| Name    | Description                                                                                                                                                                                                                                                                                                                                       |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `props` | `true` (or `1`) reads the owning component's props and scrubs them. Any other value, or no value, answers `props: null` without reading them. Redaction fails closed: if the owner's subtree holds a redacted element, a password input, an open shadow root, a custom element, or more nodes than the scan budget, every prop value is redacted. |
+| `tabId` | Per-tab routing, as on every queried route.                                                                                                                                                                                                                                                                                                       |
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "data": {
+    "schemaVersion": 1,
+    "target": { "kind": "component", "id": "date-range-picker" },
+    "snapshotId": "ubs2_1k_1k_9a2c41e07b3d5f68_00000000000000a4",
+    "route": "/bookings",
+    "sourceSha": "7e8794d2",
+    "viewport": { "width": 1280, "height": 800 },
+    "dpr": 1,
+    "root": {
+      "bbox": { "x": 120, "y": 340, "width": 320, "height": 40 },
+      "parentContentBox": { "x": 100, "y": 320, "width": 640, "height": 400 }
+    },
+    "nodes": [
+      {
+        "path": "",
+        "tag": "div",
+        "role": null,
+        "registeredId": "date-range-picker",
+        "componentName": "DateRangePicker",
+        "bbox": { "x": 0, "y": 0, "width": 320, "height": 40 },
+        "styles": { "display": "flex", "overflow": "visible", "fontSize": "14px", "...": "..." },
+        "portal": null
+      }
+    ],
+    "clipAncestors": [],
+    "state": { "open": false },
+    "props": null,
+    "unknownChecks": [
+      "componentName/props: the component fiber is resolved heuristically as the deepest component owning all its elementIds, and may name a wrapper (e.g. Layout)"
+    ]
+  }
+}
+```
+
+- `nodes` is depth-first pre-order, and `nodes[0]` is the root. Each node's
+  `bbox` is relative to the root's origin. `root.bbox`, `parentContentBox` and
+  every clip ancestor's `rect` are in page coordinates.
+- `path` is the node's element-child index path from the root, separated by
+  `/` (`"0/2"`). A
+  portalled node is numbered under its React parent, after that parent's DOM
+  children. Its `portal` gives the actual `mountTarget` and the
+  `reactParentPath`.
+- `componentName` is the registered `useUIComponent` id that owns the node if
+  there is one, otherwise the name of the nearest owning React component. It is
+  `null` when the name cannot be read (minified, redacted, or not managed by
+  React). On a component target, the root's `componentName` is the React name
+  of the component's resolved owner fiber (e.g. `DateRangePicker`) when one
+  resolves and is readable; otherwise the root follows the per-node rule
+  above. That owner is resolved heuristically, as the deepest component owning
+  all of the component's `elementIds`. A note always says so, or says that no
+  owner resolved.
+- `styles` holds a fixed set of 27 computed styles (the example shows three):
+  display, position, sizing and min/max sizing, flex, box-sizing, overflow,
+  font, color, background color, visibility, opacity, z-index, text overflow
+  and white-space.
+- `clipAncestors` lists, nearest first, every ancestor outside the root (up to
+  but excluding `<html>`) whose `overflowX` or `overflowY` clips. Each entry
+  is `{ descriptor, overflowX, overflowY, rect }`.
+- `snapshotId` names the registry snapshot the capture was taken against, or
+  is `null` when there is none.
+- `props` can still be `null` with `props=true`, when no React owner can be
+  resolved for the target.
+- `state` is the component's `state()` for a component target. It is `null`
+  for an element target.
+- `sourceSha` is read from `window.__QONTINUI_SOURCE_SHA__`, or else from
+  `<meta name="qontinui-source-sha" content="…">`. It is `null` when the app
+  exposes neither. The assertion uses it to report a baseline captured from a
+  different build as stale.
+- `unknownChecks` lists the checks the capture could not support. Examples are
+  an exceeded node cap (2000 nodes), an unreadable `componentName` with its
+  cause, portals that could not be enumerated, and the heuristic used to find
+  a component's owning fiber. The list is bounded, and any notes past the
+  bound are counted in one final note.
+
+**Refusals** carry `error` and `reason` at the top level:
+
+| `reason`              | Status | When                                            |
+| --------------------- | ------ | ----------------------------------------------- |
+| `not_found`           | 404    | No registered component or element has this id. |
+| `no_mounted_elements` | 422    | The element is not mounted, or the component has no mounted element (or none sharing a common DOM ancestor). |
+
+```json
+{
+  "success": false,
+  "error": "component_capture_refused",
+  "reason": "no_mounted_elements",
+  "code": "UB-OBS-INPUT-MISSING",
+  "data": { "error": "component_capture_refused", "reason": "no_mounted_elements" },
+  "suggestions": ["Component date-range-picker has no mounted elementIds to root a capture on"],
+  "timestamp": 1234567890
+}
+```
+
+The refusal looks the same whether the request is served directly or through
+the relay.
 
 ## Snapshot
 

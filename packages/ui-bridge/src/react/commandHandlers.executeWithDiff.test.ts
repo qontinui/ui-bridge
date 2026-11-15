@@ -54,10 +54,19 @@ function makeVisible(el: HTMLElement): void {
   });
 }
 
+/** Every relay `relayRunningTheDispatcher()` built, destroyed after each test. */
+const relays: CommandRelay[] = [];
+
+afterEach(() => {
+  for (const relay of relays.splice(0)) relay.destroy();
+});
+
 /** A relay whose tab answers every command by running the real dispatcher. */
 function relayRunningTheDispatcher(): CommandRelay {
+  // No warm-up snapshot: it would land at a time no request chose.
   const prefix = `__uiBridgeTest_${Math.random().toString(36).slice(2, 10)}`;
-  const relay = new CommandRelay({ globalPrefix: prefix });
+  const relay = new CommandRelay({ globalPrefix: prefix, proactiveSnapshot: false });
+  relays.push(relay);
   relay.subscribeToCommands((cmd) => {
     void executeCommand(cmd.action, cmd.payload as Record<string, unknown>, emptyBridge).then(
       (result) => relay.resolveCommand(cmd.commandId, result, 'tab-a')

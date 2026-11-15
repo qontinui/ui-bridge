@@ -15,6 +15,7 @@ import type { RegisteredElement } from './types';
 import { classString, classList } from './class-name';
 import { readAriaLabelAttr, readAriaLabelledbyAttr, readPlaceholderAttr } from './a11y';
 import { truncateCodePoints } from './text';
+import { isContentRedacted, REDACTED_VALUE, textExcludingBoundaries } from './redaction';
 
 // ============================================================================
 // Types
@@ -201,6 +202,8 @@ function computeRole(element: HTMLElement): string {
  * Dynamic patterns (numbers, dates, UUIDs) are replaced with {…}.
  */
 function computeAccessibleName(element: HTMLElement): string | undefined {
+  // §4.6: inside a boundary no attribute or text of the element is read.
+  if (isContentRedacted(element)) return REDACTED_VALUE;
   // aria-label
   const ariaLabel = readAriaLabelAttr(element);
   if (ariaLabel) return normalizeName(ariaLabel);
@@ -210,7 +213,10 @@ function computeAccessibleName(element: HTMLElement): string | undefined {
   if (labelledBy) {
     const parts = labelledBy
       .split(/\s+/)
-      .map((id) => document.getElementById(id)?.textContent?.trim())
+      .map((id) => {
+        const target = document.getElementById(id);
+        return target ? textExcludingBoundaries(target)?.trim() : undefined;
+      })
       .filter(Boolean);
     if (parts.length > 0) return normalizeName(parts.join(' '));
   }
@@ -226,7 +232,8 @@ function computeAccessibleName(element: HTMLElement): string | undefined {
     element.getAttribute('role') === 'link' ||
     element.getAttribute('role') === 'tab'
   ) {
-    const text = element.textContent?.trim();
+    // §4.6: boundary text (inside or below) reads as the sentinel.
+    const text = textExcludingBoundaries(element)?.trim();
     if (text) return normalizeName(text);
   }
 
@@ -239,11 +246,13 @@ function computeAccessibleName(element: HTMLElement): string | undefined {
     // Check for label[for]
     if (element.id) {
       const label = document.querySelector(`label[for="${CSS.escape(element.id)}"]`);
-      if (label?.textContent?.trim()) return normalizeName(label.textContent.trim());
+      const labelText = label ? textExcludingBoundaries(label)?.trim() : undefined;
+      if (labelText) return normalizeName(labelText);
     }
     // Check for wrapping label
     const wrappingLabel = element.closest('label');
-    if (wrappingLabel?.textContent?.trim()) return normalizeName(wrappingLabel.textContent.trim());
+    const wrappingText = wrappingLabel ? textExcludingBoundaries(wrappingLabel)?.trim() : undefined;
+    if (wrappingText) return normalizeName(wrappingText);
     // Placeholder as last resort
     const placeholder = readPlaceholderAttr(element);
     if (placeholder) return normalizeName(placeholder);

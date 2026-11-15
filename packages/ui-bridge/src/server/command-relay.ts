@@ -18,7 +18,29 @@
 
 import type { ControlSnapshot } from '../control';
 import type { DOMChangeEvent } from './types';
-import type { RelayBus } from './relay-bus';
+import type { RelayBus, RelayCommandEnvelope } from './relay-bus';
+import {
+  compareByLiveness,
+  heartbeatAgeMs,
+  keepsPrimary,
+  takeFreshnessSnapshot,
+  type FreshnessSnapshot,
+} from './tab-liveness';
+import {
+  LEASE_RETURN_GRACE_MS,
+  streamLeaseTimings,
+  type StreamEndReason,
+  type StreamLeaseTimings,
+} from './stream-lease';
+import {
+  DeadSlot,
+  isOpenListener,
+  notDeliveredMessage,
+  type CommandStreamHandle,
+  type CommandStreamOptions,
+  type ListenerState,
+  type ParkedCommand,
+} from './stream-slot';
 
 // ============================================================================
 // Types
@@ -29,9 +51,22 @@ export interface QueuedCommand {
   action: string;
   payload: unknown;
   timestamp: number;
+  /**
+   * Set on a redelivery (D3): the id of the command this one re-sends down the
+   * tab's replacement stream. The client runs one dedupe key once, and the key
+   * of a redelivery is this id.
+   */
+  redeliveryOf?: string;
 }
 
-export type CommandListener = (command: QueuedCommand) => void;
+/**
+ * Receives a command for a tab. Returning `false` says the command could not
+ * be written; any other return counts as delivered.
+ */
+export type CommandListener = (command: QueuedCommand) => boolean | void;
+
+/** The `caps` entry a client declares when it runs one dedupe key once (`relay/command-dedupe.ts`). */
+const DEDUPE_CAPABILITY = 'dedupe';
 
 export interface TabListener {
   tabId: string;
@@ -44,6 +79,64 @@ export interface TabListener {
   streamId?: string;
   /** The verified identity that opened this stream, when one was present. */
   userId?: string;
+  /**
+   * When this stream registered. Bounds the warm-up of a tab that has never
+   * sent this instance a heartbeat (`isTabLive` in tab-liveness.ts).
+   */
+  openedAt: number;
+  /**
+   * Set when a cross-instance bus is configured: drops this stream's bus
+   * command subscription and removes its tab from the shared presence
+   * registry. Idempotent. Run by `destroy()`, which forgets the listener
+   * without going through its unsubscribe, and with `keepPresence` by a newer
+   * stream for the same tab that replaces this one: the presence is the
+   * newer stream's from then on, but this stream's subscription would
+   * deliver every bus command a second time.
+   */
+  releaseBus?: (options?: { keepPresence?: boolean }) => void;
+  /** Ends the stream from the relay's side; called when a newer stream for the tab replaces it. */
+  close?: () => void;
+  /** The page instance that opened the stream (the client's `cid`), when it named one. */
+  clientInstanceId?: string;
+  /** The capabilities the stream's client declared (`caps`); empty for a legacy client. */
+  caps: readonly string[];
+  /**
+   * `dead` once the relay heard the stream end (stream-slot.ts): no connected
+   * transport to any reader, but dispatch still finds it and parks on it.
+   */
+  state: ListenerState;
+  /** While `dead`: the commands held for the tab's next stream, and the expiry. */
+  deadSlot?: DeadSlot;
+  /**
+   * When the stream was sent its `rotate` frame (stream-lease.ts), if it was.
+   * A rotated stream delivers a bus command only when no other instance holds
+   * the tab, and the tab's next stream closes it whatever page that stream
+   * names (`addCommandListener`).
+   */
+  rotatedAt?: number;
+}
+
+/**
+ * What the relay remembers of a tab's last SSE listener once it is gone: when,
+ * and the page instance that held it, so a stream that reopens soon after
+ * returns the tab (`addCommandListener`).
+ */
+interface ListenerTombstone {
+  removedAt: number;
+  clientInstanceId?: string;
+  /** The stream that held the tab, so commands bound to it can be redelivered (D3). */
+  streamId?: string;
+  /**
+   * Set when the server closed the stream at its lease (`lease`,
+   * `rotate_unanswered`): the tab keeps its tombstone, standing and owner for
+   * `graceMs` (`leaseReturnGraceMs`), awaiting its return, and `expiry` ends
+   * the wait (`endLeaseReturn`).
+   */
+  leaseReturn?: {
+    reason: StreamEndReason;
+    graceMs: number;
+    expiry: ReturnType<typeof setTimeout>;
+  };
 }
 
 export interface PendingCommand {
@@ -69,6 +162,23 @@ export interface PendingCommand {
   streamUserId?: string;
   /** The caller the command was dispatched for (its `ownerCheck`), when scoped. */
   ownerUserId?: string;
+  /**
+   * What a redelivery re-sends (D3), set only on a command whose caller awaits
+   * its result. A fire-and-forget recorder carries none and is never redelivered.
+   */
+  redeliverable?: { action: string; payload: unknown };
+  /**
+   * Set on a redelivery's entry: the id of the original command it re-sends.
+   * The entry is bound to the replacement stream, and a result is taken from
+   * that stream only (`responseRefusal`).
+   */
+  redeliveryOf?: string;
+  /**
+   * Every id that shares this command's promise and timeout: the original and
+   * each alias a redelivery made. The first settle of any drops them all
+   * (`dropPending`), so the caller settles once.
+   */
+  aliasGroup?: Set<string>;
 }
 
 /**
@@ -99,6 +209,23 @@ interface WebSocketClientEntry {
   client: WebSocketClient;
   connectedAt: number;
   lastActivity: number;
+  /**
+   * The 500 ms warm-up snapshot timer armed at registration, while it is
+   * armed. Cleared by `unregisterWebSocketClient`, by a re-registration of
+   * the same client id, and by `destroy()`.
+   */
+  snapshotTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * Drops the client's bus command subscription (`subscribeWebSocketTab`),
+   * while it holds one. Released with the entry (`dropWebSocketEntry`).
+   */
+  busUnsub?: () => void;
+}
+
+/** A caller waiting for a transport to connect, and the timer that gives up on it. */
+interface ConnectionWaiter {
+  timer: ReturnType<typeof setTimeout>;
+  fail: (error: Error) => void;
 }
 
 export interface TabInfo {
@@ -132,6 +259,20 @@ export interface TransportDiagnostics {
   connectedTabs: string[];
   /** Item #15 — subset of `connectedTabs` whose heartbeat is fresh. */
   activeTabs: string[];
+  /**
+   * Tabs whose SSE listener is a dead slot (stream-slot.ts): the relay heard
+   * the stream end, and holds the tab's commands for its next stream for
+   * `reconnectGraceMs`. A parked tab is in neither `connectedTabs` nor
+   * `activeTabs`, and `commandListenerCount` does not count it.
+   */
+  parkedTabs: string[];
+  /**
+   * The tab an unpinned command goes to first. Unscoped, the relay's primary
+   * (`getPrimaryTabId`). Scoped (`ownerCheck`), `ownedPrimaryTabId`: the first
+   * of the caller's own tabs that holds an open transport, under
+   * `compareByLiveness` (tab-liveness.ts) as the owner-scoped dispatch arm
+   * ranks them, or `null` when the caller has none. Never a parked tab.
+   */
   primaryTabId: string | null;
   demotedTabs: string[];
   buildId: string;
@@ -180,10 +321,13 @@ export interface CommandRelayOptions {
    * How recently a tab must have sent a heartbeat to count as ACTIVE.
    *
    * This is the relay's one non-destructive freshness window. It answers
-   * "did this tab beat recently?" and nothing else, for all four callers:
+   * "did this tab beat recently?" and nothing else, for all five callers:
    * `getActiveTabs()`, `isTabActive()`, `isAppResponsive()` (the `/health`
-   * `responsive` bit), and the re-promotion of a demoted tab in
-   * `getPrimaryTabId()`. Nothing is disconnected on the strength of it.
+   * `responsive` bit), the re-promotion of a demoted tab in
+   * `getPrimaryTabId()`, and the liveness every selector ranks candidate tabs
+   * by (`isTabLive` in tab-liveness.ts), which also bounds the warm-up of a
+   * tab that never beat. Nothing is disconnected on the strength of it, and
+   * no tab is refused: selection ranks a stale tab last, never out.
    *
    * Defaults to 30_000 ms (3 missed heartbeats at the SDK's 10s cadence —
    * see `HEARTBEAT_INTERVAL_MS` in `relay/relay-client.ts`). Override via
@@ -199,10 +343,57 @@ export interface CommandRelayOptions {
    */
   tabActiveWindowMs?: number;
   /**
+   * How long after a tab's last SSE listener was removed a new stream for the
+   * same tab still RESUMES it rather than introducing a new tab. A resumed
+   * stream keeps the tab's standing (it does not take the primary) and, when
+   * its tab's warm-up was already answered, is sent no warm-up snapshot; a
+   * stream that opens while the tab still holds one is a resume too. See
+   * `addCommandListener`.
+   *
+   * Defaults to 5_000 ms. Override via `UI_BRIDGE_RECONNECT_GRACE_MS`, with
+   * the precedence `tabActiveWindowMs` has.
+   *
+   * It is also how long a dead slot holds the tab's commands for its next
+   * stream before it is removed and they are failed (stream-slot.ts).
+   */
+  reconnectGraceMs?: number;
+  /**
+   * When a stream whose client declared `rotate` is sent its `rotate` frame
+   * (stream-lease.ts). Floored at 15 000 ms (`STREAM_LEASE_FLOOR_MS`), above
+   * the 10 s a client's stream must live to count as healthy.
+   * Defaults to `STREAM_LEASE_MS` (50 000); override via
+   * `UI_BRIDGE_STREAM_LEASE_MS`, with the precedence `tabActiveWindowMs` has.
+   */
+  streamLeaseMs?: number;
+  /**
+   * When a stream whose client declared no `rotate` is closed, and its listener
+   * removed. Floored as `streamLeaseMs`. Defaults to 270 000 (the platform's
+   * 300 s function limit, less 30 s); override via
+   * `UI_BRIDGE_LEGACY_STREAM_LEASE_MS`.
+   */
+  legacyStreamLeaseMs?: number;
+  /**
+   * How long a stream sent its `rotate` frame waits for the tab's next stream
+   * before it closes as `rotate_unanswered`. Defaults to 10 000; override via
+   * `UI_BRIDGE_ROTATE_GRACE_MS`.
+   */
+  rotateGraceMs?: number;
+  /**
+   * How long a tab whose stream the server closed at its lease (a legacy
+   * close, or a rotate nobody answered) keeps its place for its return: its
+   * tombstone, its standing and its owner. A stream that reopens within it
+   * returns the tab rather than introducing it, and a command for the tab
+   * meanwhile is refused at once as not delivered, never parked. Defaults to
+   * `LEASE_RETURN_GRACE_MS` (15 000: the client's 10 s reconnect delay plus
+   * 5 s); override via `UI_BRIDGE_LEASE_RETURN_GRACE_MS`.
+   */
+  leaseReturnGraceMs?: number;
+  /**
    * Whether a newly connected tab is sent one `getControlSnapshot` of its own
-   * shortly after it connects (default true). Tests that count which tab each
-   * command reached turn it off, since that warm-up command lands at a time no
-   * request chose.
+   * shortly after it connects (default true). A stream that resumes a tab
+   * (see `reconnectGraceMs`) whose warm-up was already answered is not. Tests
+   * that count which tab each command reached turn it off, since that warm-up
+   * command lands at a time no request chose.
    */
   proactiveSnapshot?: boolean;
   /**
@@ -215,11 +406,12 @@ export interface CommandRelayOptions {
    * in backgrounded tabs — Chrome's intensive throttling clamps them to
    * roughly ONE FIRING PER MINUTE. A hidden-but-perfectly-healthy tab
    * therefore beats every ~60s, so any destructive threshold at or below
-   * that is guaranteed to tear down working transports. The transport layer
-   * already reports true liveness directly (the SSE stream self-cleans on
-   * `request.signal` abort and on a failed `controller.enqueue`), so the
-   * heartbeat is only needed to catch the residual case the transport layer
-   * cannot see: a tab whose stream is still open but whose page is frozen.
+   * that is guaranteed to tear down working transports. A stream's end is
+   * the transport's to report: an abort, a consumer cancel and a failed
+   * enqueue mark its listener dead at once, and the server-owned stream lease
+   * (stream-lease.ts) ends a stream whose end nothing reported — on the
+   * deployed platform, measured, nothing did. So the heartbeat is only needed
+   * for a tab whose stream is open but whose page is frozen.
    *
    * Defaults to 300_000 ms (5 minutes) — unambiguously beyond any browser
    * throttling clamp. Override via `UI_BRIDGE_ZOMBIE_TRANSPORT_MS`.
@@ -277,6 +469,20 @@ export class TabRoutingError extends Error {
     this.code = code;
     this.tabId = tabId;
     this.connectedTabs = connectedTabs;
+  }
+}
+
+/**
+ * Error a command, or a wait for a transport, settles with when its relay is
+ * destroyed before it completes. Distinct from a timeout, so a caller can tell
+ * "the relay went away" from "the page never answered".
+ */
+export class RelayDestroyedError extends Error {
+  readonly code = 'RELAY_DESTROYED' as const;
+
+  constructor(message = 'CommandRelay was destroyed before the command completed.') {
+    super(message);
+    this.name = 'RelayDestroyedError';
   }
 }
 
@@ -339,6 +545,10 @@ export class CommandRelay {
   private readonly maxPendingCommands: number;
   private readonly tabDemotionTtlMs: number;
   private readonly tabActiveWindowMs: number;
+  private readonly reconnectGraceMs: number;
+  private readonly leaseReturnGraceMs: number;
+  /** The command stream lease in force (stream-lease.ts), read for every stream the HTTP adapter opens. */
+  readonly streamLeaseTimings: StreamLeaseTimings;
   private readonly zombieTransportMs: number;
   private readonly proactiveSnapshot: boolean;
   private readonly pruneSweepIntervalMs: number;
@@ -356,6 +566,38 @@ export class CommandRelay {
   >;
   private readonly tabLastSuccess: Map<string, number>;
   /**
+   * When each tab's last SSE listener was removed (its stream ended, or the
+   * zombie prune dropped it), and the page instance that held it, kept for
+   * `reconnectGraceMs`, or `leaseReturnGraceMs` after a lease close, so a
+   * stream that reopens within it returns the tab (`addCommandListener`).
+   */
+  private readonly listenerTombstones: Map<string, ListenerTombstone>;
+  /**
+   * Tabs whose SSE warm-up `getControlSnapshot` was answered with a snapshot.
+   * Only a resume of one of these skips its own warm-up, so a stream that
+   * ends or is replaced before its warm-up ran does not cost its tab the only
+   * one it would get. A mark lasts while its tab holds a listener or a
+   * tombstone (`cleanupStaleTabs`).
+   */
+  private readonly warmedUpTabs: Set<string>;
+  /**
+   * Each tab's generation: a fresh value from `tabGenerationSeq` on a FRESH
+   * open of the tab id (one that resumes nothing), kept by a resume. A
+   * warm-up marks its tab only if the tab is still in the generation the
+   * warm-up was armed in, so a late reply to an earlier generation's warm-up
+   * cannot mark a generation that never had one. Bounded like the marks
+   * (`cleanupStaleTabs`, `destroy()`).
+   */
+  private readonly tabGenerations: Map<string, number>;
+  /**
+   * The one source of generation values, shared by every relay on the prefix
+   * and never reset, not even by `destroy()`. Entries in `tabGenerations` are
+   * dropped by the sweep and by `destroy()`; a per-tab counter would then
+   * restart and hand a reopened tab a value an earlier generation's warm-up
+   * still holds.
+   */
+  private readonly tabGenerationSeq: { n: number };
+  /**
    * Per-user tab-scoping registry. Tracks which authenticated user a tab
    * was registered under via the strict heartbeat protocol. A tab is
    * "registered" — and therefore addressable by authenticated dispatch —
@@ -365,6 +607,14 @@ export class CommandRelay {
   private readonly tabOwnership: Map<string, TabOwnership>;
   /** Commands this instance delivered for another instance, by command id. */
   private readonly busDeliveries: Map<string, BusDelivery>;
+  /**
+   * One-shot timers armed outside a pending command and a WebSocket entry
+   * (the SSE warm-up snapshot and its retry, the tab-info probe bound), so
+   * `destroy()` can clear them. Each removes itself when it fires.
+   */
+  private readonly relayTimers: Set<ReturnType<typeof setTimeout>>;
+  /** Callers waiting for a transport to connect; `destroy()` fails them. */
+  private readonly connectionWaiters: Set<ConnectionWaiter>;
 
   // Simple value state
   private primaryTabId: string | null;
@@ -376,12 +626,49 @@ export class CommandRelay {
    */
   private readonly bus: RelayBus | null;
 
-  // Cleanup interval handle
-  private cleanupInterval: ReturnType<typeof setInterval> | null = null;
+  /**
+   * Connection readiness gate. Both halves live on `globalThis` under the
+   * prefix and are read there every time, never cached on the instance: a
+   * sibling relay on the same prefix opens and resets the same gate, and a
+   * cached copy would go stale the moment it did.
+   */
+  private get connectionReady(): Promise<void> {
+    return this.prefixGlobal('ConnectionReady') as Promise<void>;
+  }
 
-  // Connection readiness gate
-  private connectionReadyResolve: (() => void) | null;
-  private connectionReady: Promise<void>;
+  /** The resolver of an unopened gate; `null` once a transport opened it. */
+  private get connectionReadyResolve(): (() => void) | null {
+    return (this.prefixGlobal('ConnectionReadyResolve') as (() => void) | null) ?? null;
+  }
+
+  /**
+   * How many times `destroy()` has run on this prefix. Captured before an
+   * `await` in the dispatch path and compared after it, so a command whose
+   * relay was destroyed while it was suspended settles with
+   * {@link RelayDestroyedError} instead of dispatching on the torn-down relay.
+   * Prefix-wide, because `destroy()` is.
+   */
+  private get destroyEpoch(): number {
+    return (this.prefixGlobal('DestroyEpoch') as number | undefined) ?? 0;
+  }
+
+  /** The prefix-shared global `${prefix}${suffix}`. */
+  private prefixGlobal(suffix: string): unknown {
+    return (globalThis as Record<string, unknown>)[`${this.prefix}${suffix}`];
+  }
+
+  /** Open the connection gate, if it is not open already. */
+  private openConnectionGate(): void {
+    const resolve = this.connectionReadyResolve;
+    if (!resolve) return;
+    resolve();
+    (globalThis as Record<string, unknown>)[`${this.prefix}ConnectionReadyResolve`] = null;
+  }
+
+  /** Throw {@link RelayDestroyedError} when `destroy()` ran since `epoch` was read. */
+  private throwIfDestroyedSince(epoch: number): void {
+    if (this.destroyEpoch !== epoch) throw new RelayDestroyedError();
+  }
 
   /**
    * The command timeout a command can rely on whichever path delivers it: the
@@ -405,6 +692,14 @@ export class CommandRelay {
     // heartbeats at the SDK's 10s cadence.
     this.tabActiveWindowMs =
       options?.tabActiveWindowMs ?? envInt('UI_BRIDGE_TAB_ACTIVE_WINDOW_MS', 30_000);
+    // How long a tab's ended stream can be resumed by its next one; same
+    // precedence as the window above.
+    this.reconnectGraceMs =
+      options?.reconnectGraceMs ?? envInt('UI_BRIDGE_RECONNECT_GRACE_MS', 5_000);
+    this.leaseReturnGraceMs =
+      options?.leaseReturnGraceMs ??
+      envInt('UI_BRIDGE_LEASE_RETURN_GRACE_MS', LEASE_RETURN_GRACE_MS);
+    this.streamLeaseTimings = streamLeaseTimings(options ?? {}, envInt);
     this.proactiveSnapshot = options?.proactiveSnapshot ?? true;
     // Destructive prune threshold — must stay above the browser's background
     // timer clamp (~60s) or every hidden tab loses its working transport.
@@ -426,8 +721,14 @@ export class CommandRelay {
     if (!g[key('TabHeartbeats')]) g[key('TabHeartbeats')] = new Map();
     if (!g[key('TabMetadata')]) g[key('TabMetadata')] = new Map();
     if (!g[key('TabLastSuccess')]) g[key('TabLastSuccess')] = new Map();
+    if (!g[key('ListenerTombstones')]) g[key('ListenerTombstones')] = new Map();
+    if (!g[key('WarmedUpTabs')]) g[key('WarmedUpTabs')] = new Set();
+    if (!g[key('TabGenerations')]) g[key('TabGenerations')] = new Map();
+    if (!g[key('TabGenerationSeq')]) g[key('TabGenerationSeq')] = { n: 0 };
     if (!g[key('TabOwnership')]) g[key('TabOwnership')] = new Map();
     if (!g[key('BusDeliveries')]) g[key('BusDeliveries')] = new Map();
+    if (!g[key('RelayTimers')]) g[key('RelayTimers')] = new Set();
+    if (!g[key('ConnectionWaiters')]) g[key('ConnectionWaiters')] = new Set();
     if (!g[key('BuildId')]) g[key('BuildId')] = Date.now().toString();
 
     if (!g[key('ConnectionReady')]) {
@@ -438,8 +739,6 @@ export class CommandRelay {
       g[key('ConnectionReady')] = promise;
       g[key('ConnectionReadyResolve')] = resolve;
     }
-    this.connectionReady = g[key('ConnectionReady')];
-    this.connectionReadyResolve = g[key('ConnectionReadyResolve')];
 
     this.pendingCommands = g[key('PendingCommands')];
     this.tabListeners = g[key('TabListeners')];
@@ -450,17 +749,51 @@ export class CommandRelay {
     this.tabHeartbeats = g[key('TabHeartbeats')];
     this.tabMetadata = g[key('TabMetadata')];
     this.tabLastSuccess = g[key('TabLastSuccess')];
+    this.listenerTombstones = g[key('ListenerTombstones')];
+    this.warmedUpTabs = g[key('WarmedUpTabs')];
+    this.tabGenerations = g[key('TabGenerations')];
+    this.tabGenerationSeq = g[key('TabGenerationSeq')];
     this.tabOwnership = g[key('TabOwnership')];
     this.busDeliveries = g[key('BusDeliveries')];
+    this.relayTimers = g[key('RelayTimers')];
+    this.connectionWaiters = g[key('ConnectionWaiters')];
     this.buildId = g[key('BuildId')];
 
-    // Periodic cleanup. Runs at `pruneSweepIntervalMs` cadence and performs
-    // two passes: (a) the legacy metadata GC for tabs that already lost their
-    // transport, and (b) Item #15 — active prune of zombie tabs whose
-    // heartbeat has gone stale despite the transport still appearing
-    // connected. Bundled into one interval to avoid two competing timers.
-    if (!g[key('CleanupInterval')]) {
-      g[key('CleanupInterval')] = setInterval(() => {
+    this.ensureCleanupSweep();
+  }
+
+  /**
+   * Arm the prefix's periodic cleanup sweep, unless one is armed already.
+   * Runs at `pruneSweepIntervalMs` cadence and performs three passes: (a) the
+   * legacy metadata GC for tabs that already lost their transport, (b) Item
+   * #15 — active prune of zombie tabs whose heartbeat has gone stale despite
+   * the transport still appearing connected, and (c) the bus presence
+   * refresh. Bundled into one interval to avoid competing timers.
+   *
+   * Called at construction and whenever a transport registers: `destroy()`
+   * clears the sweep, and a relay used again after it (or a sibling relay on
+   * the prefix) must not run its transports with no prune and no presence
+   * refresh until some other relay happens to be constructed.
+   *
+   * Limitation: the sweep is prefix-wide but runs as the relay that armed it.
+   * Its cadence is that relay's `pruneSweepIntervalMs`, its prune thresholds
+   * are that relay's, and the bus presence refresh goes to that relay's bus
+   * only (none, when it has none). Sibling relays on one prefix are expected
+   * to share their options and their bus; one that does not still has its
+   * tabs pruned (the registries are prefix state) but its bus presence is
+   * not refreshed. Under Next.js HMR, which re-builds the relay on every
+   * reload without destroying the old one, the arming relay can be a
+   * superseded one. A prefix-global set of live relays would lift the
+   * sibling case but not that one: nothing removes a relay from the set short
+   * of `destroy()`, so the set would grow by one relay per reload and the
+   * sweep would call every superseded relay's bus.
+   */
+  private ensureCleanupSweep(): void {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const g = globalThis as any;
+    const intervalKey = `${this.prefix}CleanupInterval`;
+    if (!g[intervalKey]) {
+      g[intervalKey] = setInterval(() => {
         try {
           this.pruneStaleTabs();
         } catch (err) {
@@ -480,7 +813,6 @@ export class CommandRelay {
         }
       }, this.pruneSweepIntervalMs);
     }
-    this.cleanupInterval = g[key('CleanupInterval')];
   }
 
   // --------------------------------------------------------------------------
@@ -527,13 +859,12 @@ export class CommandRelay {
       // down the stream. `tabActiveWindowMs` still expresses staleness — but
       // non-destructively, via `getActiveTabs()` / `isTabActive()`.
       //
-      // Transport liveness is reported directly and more reliably by the
-      // transport layer itself: the command stream calls `cleanup()` (which
-      // unsubscribes this listener) both on `request.signal` abort and on a
-      // failed `controller.enqueue`. So a listener that is still registered
-      // here has an open stream. The only case that signal cannot see is a
-      // tab whose stream is open but whose page is frozen — which is exactly
-      // what the much larger `zombieTransportMs` window is for.
+      // Transport liveness is the stream's to report (stream-lease.ts): an
+      // abort, a consumer cancel or a failed enqueue marks the listener dead
+      // at once, and the stream lease ends a stream whose end nothing
+      // reported. The only case neither can see is a tab whose stream is open
+      // and read but whose page is frozen — which is exactly what the much
+      // larger `zombieTransportMs` window is for.
       if (ageMs <= this.zombieTransportMs) continue;
 
       // Drop the transport entries. Listeners that were registered via
@@ -541,8 +872,11 @@ export class CommandRelay {
       // stream closure; dropping the entry here means the callback is
       // never invoked again — the stream itself will tear down on the
       // next heartbeat-timeout from the client side, which is acceptable
-      // since the tab is a genuine zombie at this point.
-      this.tabListeners.delete(tabId);
+      // since the tab is a genuine zombie at this point. Its hold on the bus
+      // goes with it: its command subscription and this instance's presence.
+      const zombie = this.tabListeners.get(tabId);
+      if (zombie) this.releaseListenerBus(zombie, 'a pruned listener');
+      this.dropTabListener(tabId);
       const wsEntry = this.wsClients.get(tabId);
       if (wsEntry) {
         try {
@@ -550,7 +884,7 @@ export class CommandRelay {
         } catch {
           /* connection may already be torn down */
         }
-        this.wsClients.delete(tabId);
+        this.dropWebSocketEntry(tabId);
       }
       this.tabHeartbeats.delete(tabId);
       this.tabMetadata.delete(tabId);
@@ -582,9 +916,8 @@ export class CommandRelay {
       );
     }
 
-    // If we dropped the primary, recompute. Picks the alternative with the
-    // most recent heartbeat (falls back to insertion order via
-    // `getPrimaryTabId`'s tabLastSuccess sort).
+    // If we dropped the primary, recompute: the best remaining tab under
+    // `compareByLiveness` (see `selectPrimarySuccessor`).
     if (pruned.length > 0 && this.primaryTabId === null) {
       const successor = this.selectPrimarySuccessor();
       if (successor) {
@@ -600,25 +933,14 @@ export class CommandRelay {
   }
 
   /**
-   * Pick the most-recently-heartbeated connected tab as the new primary.
-   * Returns `null` if no candidate is connected.
+   * Pick a new primary: the best candidate under `compareByLiveness`
+   * (tab-liveness.ts), so a live tab before a stale one. Returns `null` if no
+   * candidate is connected.
    */
   private selectPrimarySuccessor(): string | null {
-    const candidates: string[] = [];
-    for (const id of this.tabListeners.keys()) {
-      if (!this.demotedTabs.has(id)) candidates.push(id);
-    }
-    for (const [id, entry] of this.wsClients.entries()) {
-      if (entry.client.isConnected() && !this.demotedTabs.has(id) && !candidates.includes(id)) {
-        candidates.push(id);
-      }
-    }
+    const candidates = this.primaryCandidates();
     if (candidates.length === 0) return null;
-    candidates.sort((a, b) => {
-      const ah = this.tabHeartbeats.get(a) ?? 0;
-      const bh = this.tabHeartbeats.get(b) ?? 0;
-      return bh - ah;
-    });
+    candidates.sort(compareByLiveness(this.freshness(candidates)));
     return candidates[0]!;
   }
 
@@ -646,7 +968,7 @@ export class CommandRelay {
         active.push(id);
       }
     };
-    for (const id of this.tabListeners.keys()) consider(id);
+    for (const id of this.openListenerIds()) consider(id);
     for (const [id, entry] of this.wsClients.entries()) {
       if (entry.client.isConnected()) consider(id);
     }
@@ -659,7 +981,9 @@ export class CommandRelay {
    * stale-tab targets fast.
    */
   isTabActive(tabId: string): boolean {
-    const hasTransport = this.tabListeners.has(tabId) || this.wsClients.has(tabId);
+    const listener = this.tabListeners.get(tabId);
+    const hasTransport =
+      (listener !== undefined && isOpenListener(listener)) || this.wsClients.has(tabId);
     if (!hasTransport) return false;
     const lastBeat = this.tabHeartbeats.get(tabId);
     if (lastBeat === undefined) return true; // pre-heartbeat warmup
@@ -667,14 +991,37 @@ export class CommandRelay {
   }
 
   /**
-   * Remove entries from tabHeartbeats and demotedTabs for tabs no longer connected.
+   * Remove entries from tabHeartbeats and demotedTabs for tabs no longer
+   * connected (not those awaiting their return after a lease close), listener
+   * tombstones too old to resume a tab (a lease close's ends on its own
+   * timer), and the warm-up marks and generations of tabs left with neither a
+   * listener nor a tombstone.
    */
   private cleanupStaleTabs(): void {
     const now = Date.now();
+    for (const [tabId, tombstone] of this.listenerTombstones) {
+      // A lease close's tombstone is ended by its own timer, which also
+      // forgets the tab (`endLeaseReturn`); dropping it here first would
+      // leave the tab's owner behind.
+      if (tombstone.leaseReturn) continue;
+      if (!this.recentTombstone(tabId, now)) this.listenerTombstones.delete(tabId);
+    }
+    for (const tabId of this.warmedUpTabs) {
+      if (!this.tabListeners.has(tabId) && !this.listenerTombstones.has(tabId)) {
+        this.warmedUpTabs.delete(tabId);
+      }
+    }
+    for (const tabId of this.tabGenerations.keys()) {
+      if (!this.tabListeners.has(tabId) && !this.listenerTombstones.has(tabId)) {
+        this.tabGenerations.delete(tabId);
+      }
+    }
     for (const [tabId, lastBeat] of this.tabHeartbeats.entries()) {
       const hasListener = this.tabListeners.has(tabId);
       const hasWs = this.wsClients.has(tabId);
-      if (!hasListener && !hasWs) {
+      // A tab awaiting its return after a lease close keeps its place
+      // (`awaitReturn`); `endLeaseReturn` forgets it if it does not return.
+      if (!hasListener && !hasWs && !this.leaseReturnOf(tabId)) {
         // Tab is no longer connected — remove if heartbeat is stale
         if (now - lastBeat > this.tabDemotionTtlMs) {
           this.tabHeartbeats.delete(tabId);
@@ -715,8 +1062,6 @@ export class CommandRelay {
       });
       g[key('ConnectionReady')] = promise;
       g[key('ConnectionReadyResolve')] = resolve;
-      this.connectionReady = promise;
-      this.connectionReadyResolve = resolve;
     }
   }
 
@@ -737,42 +1082,75 @@ export class CommandRelay {
       }
     }
 
-    if (this.primaryTabId && !this.demotedTabs.has(this.primaryTabId)) {
-      if (this.tabListeners.has(this.primaryTabId) || this.wsClients.has(this.primaryTabId)) {
-        return this.primaryTabId;
-      }
-      this.primaryTabId = null;
-      this.persistPrimaryTab();
-    }
-
-    // Collect all candidate tabs (non-demoted, connected)
-    const candidates: string[] = [];
-    for (const tab of this.tabListeners.keys()) {
-      if (!this.demotedTabs.has(tab)) {
-        candidates.push(tab);
-      }
-    }
-    for (const [clientId, entry] of this.wsClients.entries()) {
-      if (
-        entry.client.isConnected() &&
-        !this.demotedTabs.has(clientId) &&
-        !candidates.includes(clientId)
-      ) {
-        candidates.push(clientId);
+    const candidates = this.primaryCandidates();
+    const freshness = this.freshness(candidates);
+    const current = this.primaryTabId;
+    if (current && !this.demotedTabs.has(current)) {
+      if (this.tabListeners.has(current) || this.wsClients.has(current)) {
+        if (keepsPrimary(freshness, current, candidates)) return current;
+        const age = heartbeatAgeMs(freshness, current);
+        console.log(
+          `[ui-bridge] Primary tab ${current} is not live ` +
+            `(${age === undefined ? 'no heartbeat here' : `last heartbeat ${age}ms ago`}); re-selecting`
+        );
+      } else if (this.leaseReturnOf(current)) {
+        // The primary's stream closed at its lease and has not reopened yet:
+        // it keeps its standing for its return (`awaitReturn`). Meanwhile an
+        // unpinned command goes to the best other tab, which is not made
+        // primary for it.
+        if (candidates.length === 0) return null;
+        return candidates.sort(compareByLiveness(freshness))[0]!;
+      } else {
+        this.primaryTabId = null;
+        this.persistPrimaryTab();
       }
     }
 
     if (candidates.length === 0) return null;
-
-    // Sort candidates by tabLastSuccess (most recent first), then by insertion order
-    candidates.sort((a, b) => {
-      const aSuccess = this.tabLastSuccess.get(a) ?? 0;
-      const bSuccess = this.tabLastSuccess.get(b) ?? 0;
-      return bSuccess - aSuccess;
-    });
-
+    candidates.sort(compareByLiveness(freshness));
     this.setPrimaryTab(candidates[0]!);
     return this.primaryTabId;
+  }
+
+  /**
+   * The tabs the primary is chosen from: each non-demoted tab holding an SSE
+   * listener or a connected WebSocket client, once, in registration order.
+   */
+  private primaryCandidates(): string[] {
+    const candidates: string[] = [];
+    for (const id of this.tabListeners.keys()) {
+      if (!this.demotedTabs.has(id)) candidates.push(id);
+    }
+    for (const [id, entry] of this.wsClients.entries()) {
+      if (entry.client.isConnected() && !this.demotedTabs.has(id) && !candidates.includes(id)) {
+        candidates.push(id);
+      }
+    }
+    return candidates;
+  }
+
+  /** The freshness of `tabIds`, read once for one selection (tab-liveness.ts). */
+  private freshness(tabIds: Iterable<string>): FreshnessSnapshot {
+    return takeFreshnessSnapshot(
+      tabIds,
+      {
+        listeners: this.tabListeners,
+        wsClients: this.wsClients,
+        heartbeats: this.tabHeartbeats,
+        lastSuccess: this.tabLastSuccess,
+      },
+      { now: Date.now(), activeWindowMs: this.tabActiveWindowMs }
+    );
+  }
+
+  /**
+   * `userId`'s own connected tabs, best first under `compareByLiveness`: the
+   * order the owner-scoped dispatch arm tries them in, and so the tab a scoped
+   * `getTransportDiagnostics` reports as `primaryTabId`.
+   */
+  private rankOwnedTabs(userId: string): string[] {
+    const owned = this.listOwnedTabs(userId);
+    return owned.sort(compareByLiveness(this.freshness(owned)));
   }
 
   private setPrimaryTab(tabId: string): void {
@@ -828,39 +1206,36 @@ export class CommandRelay {
     // else's tab to connect.
     const ownerCheck = options?.ownerCheck;
     const hasOwnerCheck = !!ownerCheck;
+    // Every `await` below is followed by a check against this: a `destroy()`
+    // that lands while the command is suspended must not let it dispatch.
+    const epoch = this.destroyEpoch;
     const ownedCount = hasOwnerCheck
       ? this.listOwnedTabs(ownerCheck!.userId).length
       : this.tabListeners.size + this.wsClients.size;
 
     // Wait for at least one transport if none available
     if (!options?.targetTabId && ownedCount === 0) {
-      await Promise.race([
-        this.connectionReady,
-        new Promise<void>((_, reject) =>
-          setTimeout(
-            () =>
-              reject(
-                new Error(
-                  'SDK_DISCONNECTED: No browser connected — no WebSocket clients and no SSE listeners. ' +
-                    'Open the web app in a browser tab, or launch a headless one with ' +
-                    '`npx @qontinui/ui-bridge-headless --url <your-app-url>`. ' +
-                    'Use `GET /tabs/wait?timeoutMs=<ms>` to block until the tab registers.'
-                )
-              ),
-            // Owner-scoped fallback: a same-user reconnect within ~3s is
-            // plausible, but the cross-user "leak guard" cares about a
-            // FAST `NO_BROWSER_CONNECTED` shape so the caller doesn't
-            // infer "other users have tabs" from a 3s hang. Short-circuit
-            // ownership-scoped misses immediately.
-            hasOwnerCheck ? 0 : 3000
+      await this.waitForConnection(
+        // Owner-scoped fallback: a same-user reconnect within ~3s is
+        // plausible, but the cross-user "leak guard" cares about a
+        // FAST `NO_BROWSER_CONNECTED` shape so the caller doesn't
+        // infer "other users have tabs" from a 3s hang. Short-circuit
+        // ownership-scoped misses immediately.
+        hasOwnerCheck ? 0 : 3000,
+        () =>
+          new Error(
+            'SDK_DISCONNECTED: No browser connected — no WebSocket clients and no SSE listeners. ' +
+              'Open the web app in a browser tab, or launch a headless one with ' +
+              '`npx @qontinui/ui-bridge-headless --url <your-app-url>`. ' +
+              'Use `GET /tabs/wait?timeoutMs=<ms>` to block until the tab registers.'
           )
-        ),
-      ]);
+      );
+      this.throwIfDestroyedSince(epoch);
     }
 
     // Attempt the command — if SDK_DISCONNECTED, wait for reconnection and retry once
     try {
-      return await this.queueCommandInner<T>(action, payload, options);
+      return await this.queueCommandInner<T>(action, payload, options, epoch);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // Ownership mismatch surfaces as TAB_NOT_FOUND at the HTTP layer.
@@ -874,16 +1249,14 @@ export class CommandRelay {
         if (hasOwnerCheck) throw err;
         console.log(`[ui-bridge] ${action} failed (disconnected), waiting for reconnection...`);
         try {
-          await Promise.race([
-            this.connectionReady,
-            new Promise<void>((_, reject) =>
-              setTimeout(() => reject(new Error('Reconnection timeout')), 2000)
-            ),
-          ]);
+          await this.waitForConnection(2000, () => new Error('Reconnection timeout'));
+          this.throwIfDestroyedSince(epoch);
           console.log(`[ui-bridge] Reconnected, retrying ${action}`);
-          return await this.queueCommandInner<T>(action, payload, options);
-        } catch {
-          // Retry failed — throw original error
+          return await this.queueCommandInner<T>(action, payload, options, epoch);
+        } catch (retryErr) {
+          // A relay destroyed mid-wait says so; any other retry failure
+          // throws the original error.
+          if (retryErr instanceof RelayDestroyedError) throw retryErr;
           throw err;
         }
       }
@@ -892,13 +1265,102 @@ export class CommandRelay {
   }
 
   /**
-   * Inner command queue implementation (no retry logic).
+   * Wait until a transport is connected, or fail with `makeError()` after
+   * `ms`. `destroy()` fails the wait with a {@link RelayDestroyedError} and
+   * clears its timer. The timer is cleared however the wait ends, so a
+   * connection that arrives in time leaves nothing armed.
+   */
+  private async waitForConnection(ms: number, makeError: () => Error): Promise<void> {
+    let fail!: (error: Error) => void;
+    const timedOut = new Promise<never>((_, reject) => {
+      fail = reject;
+    });
+    const waiter: ConnectionWaiter = { fail, timer: setTimeout(() => fail(makeError()), ms) };
+    this.connectionWaiters.add(waiter);
+    try {
+      await Promise.race([this.connectionReady, timedOut]);
+    } finally {
+      clearTimeout(waiter.timer);
+      this.connectionWaiters.delete(waiter);
+    }
+  }
+
+  /**
+   * Arm a one-shot timer `destroy()` clears. It forgets itself when it fires.
+   */
+  private armTimer(fn: () => void, ms: number): ReturnType<typeof setTimeout> {
+    const handle = setTimeout(() => {
+      this.relayTimers.delete(handle);
+      fn();
+    }, ms);
+    this.relayTimers.add(handle);
+    return handle;
+  }
+
+  /** Clear a timer armed by {@link armTimer}. */
+  private disarmTimer(handle: ReturnType<typeof setTimeout> | null | undefined): void {
+    if (!handle) return;
+    clearTimeout(handle);
+    this.relayTimers.delete(handle);
+  }
+
+  /**
+   * Settle a pending command with `error`: clear its timers, drop its bus
+   * response subscription, reject it, and forget it.
+   */
+  private settlePending(id: string, error: Error): void {
+    const pending = this.pendingCommands.get(id);
+    if (!pending) return;
+    clearTimeout(pending.timeout);
+    if (pending.graceTimeout) clearTimeout(pending.graceTimeout);
+    if (pending.busUnsub) pending.busUnsub();
+    pending.reject(error);
+    this.dropPending(id);
+  }
+
+  /**
+   * Forget a settled command and every id that shares its promise (D3): a
+   * redelivery's alias and the original are one command, so the first settle
+   * of either leaves no entry for the other, whose late result then finds no
+   * pending command.
+   */
+  private dropPending(id: string): void {
+    const group = this.pendingCommands.get(id)?.aliasGroup;
+    this.pendingCommands.delete(id);
+    if (!group) return;
+    for (const peer of group) this.pendingCommands.delete(peer);
+  }
+
+  /**
+   * A pending command's timer fired: forget it and reject it as timed out,
+   * naming how many clients it reached and over which `transport`.
+   */
+  private timeOutPending(id: string, action: string, timeoutMs: number, transport: string): void {
+    const pending = this.pendingCommands.get(id);
+    if (!pending) return;
+    if (pending.graceTimeout) clearTimeout(pending.graceTimeout);
+    this.dropPending(id);
+    pending.reject(
+      new Error(
+        `Command ${action} timed out after ${timeoutMs}ms (${transport}). ` +
+          `${pending.tabsNotified} client(s) were notified but none responded. ` +
+          'The UI Bridge SDK may not be loaded or the page may be unresponsive.'
+      )
+    );
+  }
+
+  /**
+   * Inner command queue implementation (no retry logic). `epoch` is the
+   * {@link destroyEpoch} the caller read before its first `await`; a dispatch
+   * reached after a `destroy()` throws {@link RelayDestroyedError} instead.
    */
   private async queueCommandInner<T>(
     action: string,
     payload: unknown,
-    options?: { targetTabId?: string; ownerCheck?: { userId: string } }
+    options: { targetTabId?: string; ownerCheck?: { userId: string } } | undefined,
+    epoch: number
   ): Promise<T> {
+    this.throwIfDestroyedSince(epoch);
     const targetTabId = options?.targetTabId;
     const ownerCheck = options?.ownerCheck;
 
@@ -925,8 +1387,24 @@ export class CommandRelay {
         // instance (Vercel serverless fan-out). Consult the shared presence
         // registry; if the tab is known elsewhere, dispatch via the bus (which
         // routes the command to the holding instance and the response back).
-        if (this.bus && (await this.bus.isTabKnown(targetTabId))) {
-          return this.sendCommand<T>(action, payload, options);
+        if (this.bus) {
+          const known = await this.bus.isTabKnown(targetTabId);
+          this.throwIfDestroyedSince(epoch);
+          if (known) return this.sendCommand<T>(action, payload, options);
+        }
+        // Its stream closed at its lease and has not reopened: the tab is
+        // awaited, not gone, and nothing can carry the command until it
+        // returns. Refused at once, never held: a legacy client waits 10 s
+        // before it reopens (stream-slot.ts, `slotActionForEnd`).
+        const awaited = this.leaseReturnOf(targetTabId);
+        if (awaited) {
+          throw new Error(
+            notDeliveredMessage(
+              action,
+              `Tab "${targetTabId}"'s command stream closed at its lease (${awaited.reason}) ` +
+                'and has not reopened yet.'
+            )
+          );
         }
         // Owner-scoped TAB_NOT_FOUND: redact the connectedTabs list to the
         // caller's own tabs so the response doesn't reveal that other users
@@ -953,7 +1431,9 @@ export class CommandRelay {
           this.tabListeners.get(targetTabId)?.userId ?? ''
         );
       }
-      if (!this.isTabActive(targetTabId)) {
+      // A dead slot holds the tab's commands for its next stream (D2): no
+      // staleness verdict on it. `sendCommand` parks the command there.
+      if (!this.deadSlotOf(targetTabId) && !this.isTabActive(targetTabId)) {
         const lastBeat = this.tabHeartbeats.get(targetTabId);
         const ageMs = lastBeat ? Date.now() - lastBeat : -1;
         const active = ownerCheck
@@ -975,12 +1455,13 @@ export class CommandRelay {
       return this.sendCommand<T>(action, payload, options);
     }
 
-    // Owner-scoped unscoped fanout: pick the caller's primary tab (the
-    // most-recently-heartbeated of their own tabs), or fan out across
-    // their tabs only. Never touches another user's tabs. If the user
-    // has zero tabs, surface SDK_DISCONNECTED — the no-leak fallback.
+    // Owner-scoped unscoped fanout: the caller's own tabs, best first under
+    // `compareByLiveness` (a live tab before a stale one, then the most
+    // recently successful), with one failover to the best of the others at
+    // retry time. Never touches another user's tabs. If the user has zero
+    // tabs, surface SDK_DISCONNECTED — the no-leak fallback.
     if (ownerCheck) {
-      const owned = this.listOwnedTabs(ownerCheck.userId);
+      const owned = this.rankOwnedTabs(ownerCheck.userId);
       if (owned.length === 0) {
         throw new Error(
           `SDK_DISCONNECTED: No browser connected to receive ${action} command. ` +
@@ -990,17 +1471,19 @@ export class CommandRelay {
             'Use `GET /tabs/wait?timeoutMs=<ms>` to block until the tab registers.'
         );
       }
-      // Prefer the user's most-recently-successful tab to stay sticky.
-      owned.sort((a, b) => (this.tabLastSuccess.get(b) ?? 0) - (this.tabLastSuccess.get(a) ?? 0));
       const ownedPrimary = owned[0]!;
       return this.sendCommand<T>(action, payload, {
         targetTabId: ownedPrimary,
         ownerCheck,
       }).catch((firstError: Error) => {
-        if (owned.length <= 1) throw firstError;
-        // One automatic failover across the user's other tabs. Mirrors
-        // the global primary-tab failover behavior, bounded to this user.
-        const fallback = owned[1]!;
+        // A command settled by `destroy()` fails over to nothing.
+        this.throwIfDestroyedSince(epoch);
+        // One automatic failover across the user's other tabs, ranked again
+        // now: the first attempt can have waited out its whole timeout, and a
+        // tab the earlier ranking named may since have closed or gone stale.
+        // Mirrors the global primary-tab failover, bounded to this user.
+        const fallback = this.rankOwnedTabs(ownerCheck.userId).find((id) => id !== ownedPrimary);
+        if (!fallback) throw firstError;
         console.log(
           `[ui-bridge] Owned tab ${ownedPrimary} failed for ${action}, retrying on ${fallback}`
         );
@@ -1013,6 +1496,8 @@ export class CommandRelay {
     if (primaryId) {
       return this.sendCommand<T>(action, payload, { targetTabId: primaryId }).catch(
         (firstError: Error) => {
+          // A command settled by `destroy()` fails over to nothing.
+          this.throwIfDestroyedSince(epoch);
           this.demotePrimaryTab(primaryId);
           const newPrimaryId = this.getPrimaryTabId();
           if (newPrimaryId) {
@@ -1040,9 +1525,14 @@ export class CommandRelay {
   private sendCommand<T>(
     action: string,
     payload: unknown,
-    options?: { targetTabId?: string; ownerCheck?: { userId: string } }
+    options?: { targetTabId?: string; ownerCheck?: { userId: string }; busChecked?: boolean }
   ): Promise<T> {
     const targetTabId = options?.targetTabId;
+    // D2: a tab whose stream died here may stream on another instance; ask
+    // the bus before parking (`sendToDeadSlot`).
+    if (targetTabId && this.bus && !options?.busChecked && this.deadSlotOf(targetTabId)) {
+      return this.sendToDeadSlot<T>(action, payload, { ...options, targetTabId });
+    }
     const senderUserId = options?.ownerCheck?.userId;
     const commandId = this.generateCommandId();
     const fireAndForget = DEFAULT_FIRE_AND_FORGET.has(action);
@@ -1075,41 +1565,15 @@ export class CommandRelay {
         sentViaWebSocket ||
         (targetTabId ? this.tabListeners.has(targetTabId) : this.tabListeners.size > 0);
       if (!deliverableLocally && this.bus) {
-        if (fireAndForget) {
-          this.bus.publishCommand({
-            commandId,
-            action,
-            payload,
-            timestamp: Date.now(),
-            targetTabId,
-            senderUserId,
-          });
-          // Cross-instance fire-and-forget: the command is published to the bus
-          // for the holding instance to deliver; we cannot observe its execution
-          // from here, so report `delivered` without claiming `executed` — same
-          // envelope shape the local path returns so the audit's execution-status
-          // field stays consistent across single- and multi-instance topologies.
-          resolve({
-            success: true,
-            fireAndForget: true,
-            delivered: true,
-            executed: false,
-            action,
-            timestamp: Date.now(),
-          } as T);
-        } else {
-          this.dispatchViaBus<T>(
-            commandId,
-            action,
-            payload,
-            targetTabId,
-            senderUserId,
-            resolve,
-            reject
-          );
-        }
+        this.routeViaBus<T>(commandId, action, payload, targetTabId, senderUserId, resolve, reject);
         return;
       }
+
+      // D2: the target's stream died here, and no other instance holds it.
+      // The command is parked on the slot below, never written: fire-and-
+      // forget included, which then resolves when its parked command is
+      // delivered (`flushParked`).
+      const slot = !sentViaWebSocket && targetTabId ? this.deadSlotOf(targetTabId) : undefined;
 
       // Fail fast if no transport available
       if (!sentViaWebSocket && this.tabListeners.size === 0) {
@@ -1150,7 +1614,7 @@ export class CommandRelay {
       //       silently dropped. We register a short-lived recorder entry so the
       //       outcome is accepted — updating per-tab success health and (when a
       //       bus is configured) forwarded — instead of discarded.
-      if (fireAndForget) {
+      if (fireAndForget && !slot) {
         let notified = sentViaWebSocket ? 1 : 0;
         if (!sentViaWebSocket && this.tabListeners.size > 0) {
           const command: QueuedCommand = { commandId, action, payload, timestamp: Date.now() };
@@ -1173,69 +1637,22 @@ export class CommandRelay {
           return;
         }
 
-        // Non-dropping result sink: register a brief recorder so the browser's
-        // execution POST (resolveCommand/rejectCommand) is accepted rather than
-        // dropped. The recorder does NOT settle the caller's promise (already
-        // resolved on delivery below) — it only lets the relay observe the
-        // real outcome (per-tab success tracking / bus forwarding). Auto-evicts
-        // after a short window since a hard navigation never reports back.
-        const recorderTtlMs = Math.min(this.sseTimeoutMs, 2000);
-        const recorderTimeout = setTimeout(() => {
-          this.pendingCommands.delete(commandId);
-        }, recorderTtlMs);
-        this.pendingCommands.set(commandId, {
-          resolve: () => {
-            /* execution outcome recorded by resolveCommand bookkeeping; the
-               fire-and-forget caller was already resolved on delivery */
-          },
-          reject: () => {
-            /* execution failure surfaces on the browser side + the audit's
-               execution-status field; nothing to settle here */
-          },
-          timeout: recorderTimeout,
-          tabsNotified: notified,
-          errorResponseCount: 0,
-          ...this.deliveryBinding(targetTabId, senderUserId),
-        });
-
-        resolve({
-          success: true,
-          fireAndForget: true,
-          delivered: true,
-          executed: false,
-          tabsNotified: notified,
-          action,
-          timestamp: Date.now(),
-        } as T);
+        resolve(
+          this.recordFireAndForget(commandId, action, notified, targetTabId, senderUserId) as T
+        );
         return;
       }
 
-      const timeout = setTimeout(() => {
-        const pending = this.pendingCommands.get(commandId);
-        if (pending?.graceTimeout) clearTimeout(pending.graceTimeout);
-        const notified = pending?.tabsNotified ?? 0;
-        this.pendingCommands.delete(commandId);
-        reject(
-          new Error(
-            `Command ${action} timed out after ${timeoutMs}ms (${transport}). ` +
-              `${notified} client(s) were notified but none responded. ` +
-              'The UI Bridge SDK may not be loaded or the page may be unresponsive.'
-          )
-        );
-      }, timeoutMs);
+      const timeout = setTimeout(
+        () => this.timeOutPending(commandId, action, timeoutMs, transport),
+        timeoutMs
+      );
 
       // Evict oldest if at capacity
       if (this.pendingCommands.size >= this.maxPendingCommands) {
         const oldestKey = this.pendingCommands.keys().next().value;
         if (oldestKey) {
-          const oldest = this.pendingCommands.get(oldestKey);
-          if (oldest) {
-            clearTimeout(oldest.timeout);
-            if (oldest.graceTimeout) clearTimeout(oldest.graceTimeout);
-            if (oldest.busUnsub) oldest.busUnsub();
-            oldest.reject(new Error('Command evicted: too many pending commands'));
-          }
-          this.pendingCommands.delete(oldestKey);
+          this.settlePending(oldestKey, new Error('Command evicted: too many pending commands'));
         }
       }
 
@@ -1245,6 +1662,7 @@ export class CommandRelay {
         timeout,
         tabsNotified: sentViaWebSocket ? 1 : 0,
         errorResponseCount: 0,
+        ...(sentViaWebSocket ? {} : { redeliverable: { action, payload } }),
         ...this.deliveryBinding(targetTabId, senderUserId),
       };
       this.pendingCommands.set(commandId, pending);
@@ -1255,6 +1673,10 @@ export class CommandRelay {
 
         if (this.tabListeners.size > 0) {
           transport = 'SSE';
+          if (slot) {
+            slot.park({ command, fireAndForget, ...(senderUserId ? { senderUserId } : {}) });
+            return;
+          }
           pending.tabsNotified = this.broadcastToListeners(command, targetTabId);
 
           // If broadcast reached no listeners, fail immediately
@@ -1287,6 +1709,243 @@ export class CommandRelay {
         }
       }
     });
+  }
+
+  /**
+   * Cross-instance (P0a): hand the command to whichever instance holds
+   * `targetTabId`. A fire-and-forget command is published and resolved as
+   * delivered — this instance cannot observe its execution, so `executed` is
+   * not claimed, the envelope the local path returns; any other awaits its
+   * response over the bus (`dispatchViaBus`).
+   */
+  private routeViaBus<T>(
+    commandId: string,
+    action: string,
+    payload: unknown,
+    targetTabId: string | undefined,
+    senderUserId: string | undefined,
+    resolve: (value: T) => void,
+    reject: (error: Error) => void
+  ): void {
+    if (!DEFAULT_FIRE_AND_FORGET.has(action)) {
+      this.dispatchViaBus<T>(
+        commandId,
+        action,
+        payload,
+        targetTabId,
+        senderUserId,
+        resolve,
+        reject
+      );
+      return;
+    }
+    const timestamp = Date.now();
+    this.bus!.publishCommand({ commandId, action, payload, timestamp, targetTabId, senderUserId });
+    resolve({
+      success: true,
+      fireAndForget: true,
+      delivered: true,
+      executed: false,
+      action,
+      timestamp,
+    } as T);
+  }
+
+  /**
+   * D2: a command for a tab whose stream died here goes over the bus when
+   * another instance holds the tab — its newer stream may have opened there —
+   * and is otherwise parked on the dead slot by `sendCommand`.
+   */
+  private async sendToDeadSlot<T>(
+    action: string,
+    payload: unknown,
+    options: { targetTabId: string; ownerCheck?: { userId: string } }
+  ): Promise<T> {
+    const epoch = this.destroyEpoch;
+    const elsewhere = await this.bus!.isTabKnown(options.targetTabId);
+    this.throwIfDestroyedSince(epoch);
+    if (elsewhere && this.deadSlotOf(options.targetTabId)) {
+      return new Promise<T>((resolve, reject) =>
+        this.routeViaBus<T>(
+          this.generateCommandId(),
+          action,
+          payload,
+          options.targetTabId,
+          options.ownerCheck?.userId,
+          resolve,
+          reject
+        )
+      );
+    }
+    return this.sendCommand<T>(action, payload, { ...options, busChecked: true });
+  }
+
+  /**
+   * A fire-and-forget command reached `notified` tabs: register a brief
+   * recorder so the browser's execution POST (resolveCommand/rejectCommand) is
+   * accepted rather than dropped, and return the caller's delivery envelope.
+   * The recorder does NOT settle the caller (it is resolved on delivery); it
+   * only lets the relay observe the real outcome (per-tab success tracking,
+   * bus forwarding), and evicts itself after a short window, since a hard
+   * navigation never reports back.
+   */
+  private recordFireAndForget(
+    commandId: string,
+    action: string,
+    notified: number,
+    targetTabId: string | undefined,
+    senderUserId: string | undefined
+  ): unknown {
+    const recorderTtlMs = Math.min(this.sseTimeoutMs, 2000);
+    const recorderTimeout = setTimeout(() => {
+      this.pendingCommands.delete(commandId);
+    }, recorderTtlMs);
+    this.pendingCommands.set(commandId, {
+      resolve: () => {
+        /* execution outcome recorded by resolveCommand bookkeeping; the
+           fire-and-forget caller was already resolved on delivery */
+      },
+      reject: () => {
+        /* execution failure surfaces on the browser side + the audit's
+           execution-status field; nothing to settle here */
+      },
+      timeout: recorderTimeout,
+      tabsNotified: notified,
+      errorResponseCount: 0,
+      ...this.deliveryBinding(targetTabId, senderUserId),
+    });
+    return {
+      success: true,
+      fireAndForget: true,
+      delivered: true,
+      executed: false,
+      tabsNotified: notified,
+      action,
+      timestamp: Date.now(),
+    };
+  }
+
+  /**
+   * The dead slot `tabId`'s commands are parked on, when its SSE listener is
+   * one (stream-slot.ts) and no connected WebSocket client can carry them.
+   */
+  private deadSlotOf(tabId: string): DeadSlot | undefined {
+    if (this.wsClients.get(tabId)?.client.isConnected()) return undefined;
+    return this.tabListeners.get(tabId)?.deadSlot;
+  }
+
+  /**
+   * The tab's next stream registered: write every command parked on its dead
+   * slot down it (D2), each bound to that stream, which is the one it went
+   * down. A parked fire-and-forget command resolves now, on delivery; any
+   * other gets the whole SSE timeout from its delivery, since the page could
+   * not answer it before.
+   */
+  private flushParked(tabId: string, parked: ParkedCommand[], listener: TabListener): void {
+    for (const { command, fireAndForget, senderUserId } of parked) {
+      const pending = this.pendingCommands.get(command.commandId);
+      if (!pending) continue; // settled meanwhile: timed out, evicted, or destroyed
+      pending.streamId = listener.streamId;
+      pending.streamUserId = listener.userId;
+      if (!this.deliver(listener, command)) {
+        const why = `Tab "${tabId}"'s new command stream did not accept it.`;
+        this.settlePending(command.commandId, new Error(notDeliveredMessage(command.action, why)));
+      } else {
+        this.settleParkedDelivery(
+          tabId,
+          { command, fireAndForget, ...(senderUserId ? { senderUserId } : {}) },
+          pending,
+          this.sseTimeoutMs,
+          'SSE'
+        );
+      }
+    }
+  }
+
+  /**
+   * Re-send, down `listener`, every awaited command still pending on the
+   * stream `priorStreamId` that this stream replaced (D3). Each goes under a
+   * fresh alias id naming the original in `redeliveryOf`, bound to this stream
+   * and sharing the original's promise and timeout (`aliasGroup`): the first
+   * result of either id settles the caller and the other finds no pending
+   * command. The original keeps its binding to the stream it went down, so each
+   * id is still answered only from its own stream. Commands sent over a
+   * WebSocket, bound to another user, or beyond the pending cap are skipped.
+   */
+  private redeliverPending(tabId: string, priorStreamId: string, listener: TabListener): void {
+    for (const [pendingId, pending] of Array.from(this.pendingCommands)) {
+      if (
+        !pending.redeliverable ||
+        pending.targetTabId !== tabId ||
+        pending.streamId !== priorStreamId ||
+        // Only the user the command was bound to (and dispatched for) may be
+        // sent it, and then answer it.
+        pending.streamUserId !== listener.userId ||
+        (pending.ownerUserId !== undefined && pending.ownerUserId !== listener.userId) ||
+        // An alias is a new pending entry: it respects the same cap.
+        this.pendingCommands.size >= this.maxPendingCommands
+      ) {
+        continue;
+      }
+      const original = pending.redeliveryOf ?? pendingId;
+      const aliasId = crypto.randomUUID();
+      const group = pending.aliasGroup ?? new Set<string>([pendingId]);
+      pending.aliasGroup = group;
+      const alias: PendingCommand = {
+        ...pending,
+        tabsNotified: 1,
+        errorResponseCount: 0,
+        redeliveryOf: original,
+        aliasGroup: group,
+        streamId: listener.streamId,
+        ...(listener.userId ? { streamUserId: listener.userId } : {}),
+      };
+      group.add(aliasId);
+      this.pendingCommands.set(aliasId, alias);
+      const command: QueuedCommand = {
+        commandId: aliasId,
+        action: pending.redeliverable.action,
+        payload: pending.redeliverable.payload,
+        timestamp: Date.now(),
+        redeliveryOf: original,
+      };
+      // A stream that refuses the write keeps the alias bound to it, so the
+      // tab's next replacement redelivers from that stream in turn.
+      if (this.deliver(listener, command)) {
+        console.log(
+          `[ui-bridge] redelivered ${pending.redeliverable.action} for ${tabId} ` +
+            `(${original} as ${aliasId}) down its replacement stream`
+        );
+      }
+    }
+  }
+
+  /**
+   * A parked command reached its tab over `transport`: a fire-and-forget one
+   * resolves now, on delivery; any other gets the whole `timeoutMs` from now,
+   * since the page could not answer it before.
+   */
+  private settleParkedDelivery(
+    tabId: string,
+    parked: ParkedCommand,
+    pending: PendingCommand,
+    timeoutMs: number,
+    transport: string
+  ): void {
+    const { command, fireAndForget, senderUserId } = parked;
+    clearTimeout(pending.timeout);
+    if (fireAndForget) {
+      this.pendingCommands.delete(command.commandId);
+      pending.resolve(
+        this.recordFireAndForget(command.commandId, command.action, 1, tabId, senderUserId)
+      );
+      return;
+    }
+    pending.tabsNotified = 1;
+    pending.timeout = setTimeout(
+      () => this.timeOutPending(command.commandId, command.action, timeoutMs, transport),
+      timeoutMs
+    );
   }
 
   /**
@@ -1343,6 +2002,9 @@ export class CommandRelay {
         // not exist read the same to a scoped caller.
         pending.reject(new OwnerMismatchError(targetTabId, senderUserId ?? '', ''));
       } else {
+        // `NOT_DELIVERED` carries the relay's not-delivered message in `error`;
+        // a sender on an older version never sees the code and still rejects
+        // with that text.
         pending.reject(new Error(env.error || `Command ${action} failed`));
       }
     });
@@ -1378,40 +2040,42 @@ export class CommandRelay {
 
   /**
    * Re-announce every tab connected to THIS instance in the shared presence
-   * registry so its TTL doesn't lapse. Called from the periodic sweep.
+   * registry so its TTL doesn't lapse. Called from the periodic sweep. A dead
+   * slot is never re-announced: it gave up its presence at death (D2).
    */
   private refreshBusTabPresence(): void {
     if (!this.bus) return;
     const ttl = this.busTabTtlSeconds();
-    const ids = new Set<string>([...this.tabListeners.keys(), ...this.wsClients.keys()]);
+    const ids = new Set<string>([...this.openListenerIds(), ...this.wsClients.keys()]);
     for (const id of ids) {
       this.bus.registerTab(id, ttl);
     }
   }
 
+  /**
+   * Write `command` to each open listener (to `targetTabId`'s only, when
+   * given) and count the deliveries. A listener whose callback returns `false`
+   * — its stream could not take the write — is not counted (D2).
+   */
   private broadcastToListeners(command: QueuedCommand, targetTabId?: string): number {
     if (targetTabId) {
       const listener = this.tabListeners.get(targetTabId);
-      if (listener) {
-        try {
-          listener.callback(command);
-          return 1;
-        } catch {
-          /* self-cleaning */
-        }
-      }
-      return 0;
+      return listener && isOpenListener(listener) && this.deliver(listener, command) ? 1 : 0;
     }
     let notified = 0;
     for (const listener of this.tabListeners.values()) {
-      try {
-        listener.callback(command);
-        notified++;
-      } catch {
-        /* self-cleaning */
-      }
+      if (isOpenListener(listener) && this.deliver(listener, command)) notified++;
     }
     return notified;
+  }
+
+  /** Write `command` down `listener`'s stream: false when its callback reported, or threw, a failed write. */
+  private deliver(listener: TabListener, command: QueuedCommand): boolean {
+    try {
+      return listener.callback(command) !== false;
+    } catch {
+      return false;
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -1450,13 +2114,13 @@ export class CommandRelay {
       const entry = this.wsClients.get(targetTabId);
       if (entry) {
         if (entry.client.isConnected()) return entry;
-        this.wsClients.delete(targetTabId);
+        this.dropWebSocketEntry(targetTabId);
       }
       return null;
     }
     for (const [clientId, entry] of this.wsClients.entries()) {
       if (entry.client.isConnected()) return entry;
-      this.wsClients.delete(clientId);
+      this.dropWebSocketEntry(clientId);
     }
     return null;
   }
@@ -1466,19 +2130,33 @@ export class CommandRelay {
    */
   registerWebSocketClient(client: WebSocketClient): void {
     const now = Date.now();
-    this.wsClients.set(client.clientId, { client, connectedAt: now, lastActivity: now });
+    // A re-registration replaces the entry, so the old entry's warm-up timer
+    // would otherwise be left armed with no handle to clear it.
+    const previous = this.wsClients.get(client.clientId);
+    if (previous?.snapshotTimer) clearTimeout(previous.snapshotTimer);
+    // The replaced entry's bus subscription goes; this entry makes its own.
+    previous?.busUnsub?.();
+    const entry: WebSocketClientEntry = { client, connectedAt: now, lastActivity: now };
+    this.wsClients.set(client.clientId, entry);
+    this.ensureCleanupSweep();
+    // Cross-instance: this instance now holds the tab through this client.
+    // Announce it at once (the sweep keeps it fresh), and take the commands
+    // other instances publish for it.
+    if (this.bus) {
+      this.bus.registerTab(client.clientId, this.busTabTtlSeconds());
+      entry.busUnsub = this.subscribeWebSocketTab(client.clientId, entry);
+    }
 
     // Signal that a transport is ready
-    if (this.connectionReadyResolve) {
-      this.connectionReadyResolve();
-      this.connectionReadyResolve = null;
-    }
+    this.openConnectionGate();
 
     console.log(`[UIBridge] WebSocket client registered: ${client.clientId}`);
 
-    // Proactive snapshot capture
-    setTimeout(async () => {
-      if (!this.proactiveSnapshot || !this.wsClients.has(client.clientId)) return;
+    // Proactive snapshot capture. The handle lives on the entry so
+    // unregistering the client, or destroying the relay, clears it.
+    entry.snapshotTimer = setTimeout(async () => {
+      entry.snapshotTimer = undefined;
+      if (!this.proactiveSnapshot || this.wsClients.get(client.clientId) !== entry) return;
       try {
         const result = await this.queueCommand<ControlSnapshot>(
           'getControlSnapshot',
@@ -1500,12 +2178,64 @@ export class CommandRelay {
    * Unregister a WebSocket client.
    */
   unregisterWebSocketClient(clientId: string): void {
-    this.wsClients.delete(clientId);
+    this.dropWebSocketEntry(clientId);
     // Same rationale as the SSE unsubscribe path: ownership rides on the
     // transport, so a closed transport invalidates the owner record.
     this.tabOwnership.delete(clientId);
     console.log(`[UIBridge] WebSocket client unregistered: ${clientId}`);
     this.resetConnectionGateIfEmpty();
+  }
+
+  /**
+   * The bus commands other instances publish for `tabId`, a tab this instance
+   * holds through `entry`'s WebSocket client, delivered to that client. While
+   * an open SSE stream of the tab is registered here, that stream's own
+   * subscription takes them instead, so each is delivered once by this
+   * instance. Across instances it can run twice: a tab held through a
+   * WebSocket client here and through an SSE stream on another instance is
+   * subscribed on both, and each delivers it.
+   */
+  private subscribeWebSocketTab(tabId: string, entry: WebSocketClientEntry): () => void {
+    return this.bus!.subscribeCommands(tabId, (env) => {
+      if (this.wsClients.get(tabId) !== entry || !entry.client.isConnected()) return;
+      const listener = this.tabListeners.get(tabId);
+      if (listener && isOpenListener(listener)) return;
+      if (this.refusesBusSender(tabId, env)) return;
+      if (this.sendCommandViaWebSocket(env.commandId, env.action, env.payload, tabId)) {
+        this.recordBusDelivery(env.commandId, tabId);
+      } else {
+        this.reportBusNotDelivered(tabId, env, 'Its WebSocket client did not accept the write.');
+      }
+    });
+  }
+
+  /**
+   * Forget `clientId`'s WebSocket entry: clear its warm-up timer, drop its bus
+   * subscription, and withdraw this instance's presence for the tab unless an
+   * open SSE stream of the tab here still holds it. Every path that removes
+   * an entry goes through here.
+   */
+  private dropWebSocketEntry(clientId: string): void {
+    const entry = this.wsClients.get(clientId);
+    if (!entry) return;
+    this.wsClients.delete(clientId);
+    if (entry.snapshotTimer) clearTimeout(entry.snapshotTimer);
+    const unsub = entry.busUnsub;
+    entry.busUnsub = undefined;
+    // A failing bus is logged; it must not stop the removal (`destroy()` included).
+    try {
+      unsub?.();
+    } catch (err) {
+      console.error('[ui-bridge] releasing a WebSocket client from the bus failed:', err);
+    }
+    if (!this.bus) return;
+    const listener = this.tabListeners.get(clientId);
+    if (listener && isOpenListener(listener)) return;
+    try {
+      this.bus.unregisterTab(clientId);
+    } catch (err) {
+      console.error('[ui-bridge] withdrawing a WebSocket tab from the bus failed:', err);
+    }
   }
 
   /**
@@ -1521,7 +2251,7 @@ export class CommandRelay {
    */
   getWebSocketClientCount(): number {
     for (const [clientId, entry] of this.wsClients.entries()) {
-      if (!entry.client.isConnected()) this.wsClients.delete(clientId);
+      if (!entry.client.isConnected()) this.dropWebSocketEntry(clientId);
     }
     return this.wsClients.size;
   }
@@ -1537,10 +2267,10 @@ export class CommandRelay {
           entry.client.send(message);
           entry.lastActivity = Date.now();
         } catch {
-          this.wsClients.delete(clientId);
+          this.dropWebSocketEntry(clientId);
         }
       } else {
-        this.wsClients.delete(clientId);
+        this.dropWebSocketEntry(clientId);
       }
     }
   }
@@ -1558,7 +2288,11 @@ export class CommandRelay {
     targetTabId: string | undefined,
     ownerUserId: string | undefined
   ): Pick<PendingCommand, 'targetTabId' | 'streamId' | 'streamUserId' | 'ownerUserId'> {
-    const listener = targetTabId ? this.tabListeners.get(targetTabId) : undefined;
+    // A dead slot's stream takes no command (stream-slot.ts): a command
+    // parked on it is bound when it is flushed, and one routed over the bus
+    // goes down another instance's stream.
+    const found = targetTabId ? this.tabListeners.get(targetTabId) : undefined;
+    const listener = found && isOpenListener(found) ? found : undefined;
     return {
       ...(targetTabId ? { targetTabId } : {}),
       ...(listener?.streamId ? { streamId: listener.streamId } : {}),
@@ -1681,7 +2415,7 @@ export class CommandRelay {
     clearTimeout(pending.timeout);
     if (pending.graceTimeout) clearTimeout(pending.graceTimeout);
     if (pending.busUnsub) pending.busUnsub();
-    this.pendingCommands.delete(commandId);
+    this.dropPending(commandId);
     pending.resolve(result);
 
     // Track per-tab command success and remove from demoted set
@@ -1731,7 +2465,7 @@ export class CommandRelay {
     if (pending.errorResponseCount >= pending.tabsNotified) {
       clearTimeout(pending.timeout);
       if (pending.graceTimeout) clearTimeout(pending.graceTimeout);
-      this.pendingCommands.delete(commandId);
+      this.dropPending(commandId);
       pending.reject(pending.firstError!);
       return true;
     }
@@ -1742,7 +2476,7 @@ export class CommandRelay {
         const stillPending = this.pendingCommands.get(commandId);
         if (stillPending) {
           clearTimeout(stillPending.timeout);
-          this.pendingCommands.delete(commandId);
+          this.dropPending(commandId);
           stillPending.reject(stillPending.firstError || new Error(errorMessage));
         }
       }, this.multiTabGraceMs);
@@ -1771,13 +2505,16 @@ export class CommandRelay {
    * another user, nor (before it registers) already be streaming to another
    * user. A refusal throws `OwnerMismatchError`, which the HTTP layer answers
    * as TAB_NOT_FOUND. The returned `streamId` is fresh per stream; see
-   * `resolveCommand` for what it binds.
+   * `resolveCommand` for what it binds. `stream` is what the stream behind
+   * the listener declared (stream-lease.ts), and the returned `park` is how
+   * it reports an end the relay should hold the tab's commands across.
    */
   openCommandStream(
     listener: CommandListener,
     tabId: string | undefined,
-    callerUserId?: string | null
-  ): { streamId: string; unsubscribe: () => void } {
+    callerUserId?: string | null,
+    stream?: CommandStreamOptions
+  ): CommandStreamHandle {
     const userId = callerUserId || undefined;
     if (userId) {
       if (!tabId) {
@@ -1792,32 +2529,102 @@ export class CommandRelay {
         throw new OwnerMismatchError(tabId, userId, live.userId);
       }
     }
-    return this.addCommandListener(listener, tabId, userId);
+    return this.addCommandListener(listener, tabId, userId, stream);
   }
 
   private addCommandListener(
     listener: CommandListener,
     tabId: string | undefined,
-    userId: string | undefined
-  ): { streamId: string; unsubscribe: () => void } {
+    userId: string | undefined,
+    stream?: CommandStreamOptions
+  ): CommandStreamHandle {
     const id = tabId || `anon_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     const streamId = crypto.randomUUID();
-    this.tabListeners.set(id, {
+    const openedAt = Date.now();
+    const tabListener: TabListener = {
       tabId: id,
       callback: listener,
       streamId,
+      openedAt,
+      caps: stream?.caps ?? [],
+      state: 'open',
       ...(userId ? { userId } : {}),
-    });
+      ...(stream?.clientInstanceId ? { clientInstanceId: stream.clientInstanceId } : {}),
+      ...(stream?.close ? { close: stream.close } : {}),
+    };
+    const replaced = this.tabListeners.get(id);
+    const tombstone = replaced ? undefined : this.recentTombstone(id, openedAt);
+    // A stream for a tab that still holds a listener here (open or dead), or
+    // lost its last one under `reconnectGraceMs` ago (`leaseReturnGraceMs`
+    // after a lease close), RETURNS the tab (a rotation, a reconnect, a
+    // reload) rather than introducing it.
+    const returning = replaced !== undefined || tombstone !== undefined;
+    // It RESUMES the same page when both it and the stream before it name the
+    // page instance (`cid`) and the two agree; when either names none, by
+    // returning alone.
+    const priorPage = replaced ? replaced.clientInstanceId : tombstone?.clientInstanceId;
+    const resumed =
+      stream?.clientInstanceId !== undefined && priorPage !== undefined
+        ? stream.clientInstanceId === priorPage
+        : returning;
+    this.tabListeners.set(id, tabListener);
+    this.disarmTimer(this.listenerTombstones.get(id)?.leaseReturn?.expiry);
+    this.listenerTombstones.delete(id);
+    // A stream replaced before it unsubscribed leaves its bus subscription
+    // behind, and `destroy()` reaches only the listener in the map. Drop it
+    // here, at the source; the tab's presence now belongs to this stream.
+    try {
+      replaced?.releaseBus?.({ keepPresence: true });
+    } catch (err) {
+      console.error('[ui-bridge] releasing a replaced listener from the bus failed:', err);
+    }
+    // D1/D2: a replaced dead slot stops expiring, and its held commands go
+    // down this stream once the stream is registered (below). A replaced open
+    // stream is closed (its `end` frame tells its client) when this stream is
+    // its page's next one: the same page instance (`cid`), or any stream after
+    // a `rotate`. Otherwise another page holds the tab id too, a duplicated
+    // browser tab or an unnamed legacy client, and its stream is left open,
+    // unheard: closing it would make that page reopen and close this one in
+    // turn, without end. This, the newer stream, holds the tab.
+    const slot = replaced?.deadSlot;
+    if (slot) {
+      this.disarmTimer(slot.expiry);
+    } else if (
+      replaced &&
+      (replaced.rotatedAt !== undefined ||
+        (stream?.clientInstanceId !== undefined &&
+          stream.clientInstanceId === replaced.clientInstanceId))
+    ) {
+      try {
+        replaced.close?.();
+      } catch (err) {
+        console.error('[ui-bridge] closing a replaced stream failed:', err);
+      }
+    }
 
-    // New tab becomes primary
+    this.ensureCleanupSweep();
+
+    // A new tab becomes primary: the most-recently-registered rule the
+    // nextjs.ts header documents. A returning tab keeps whatever standing it
+    // had, so a reconnect or a rotation cannot take the primary from a live tab.
     this.demotedTabs.delete(id);
-    this.setPrimaryTab(id);
+    if (!returning) this.setPrimaryTab(id);
+    // A stream that does not resume the same page — a new tab, or a reload of
+    // one under another `cid` — starts the tab's next generation, a value no
+    // generation of any tab has had (`tabGenerationSeq`), without a warm-up
+    // mark: neither a mark an earlier generation left (its tombstone past the
+    // grace but not yet swept) nor a late reply to its warm-up may let a
+    // resume of this generation skip a warm-up it never had. A resume of the
+    // same page stays in its own generation, a dead slot's included: a dead
+    // slot is a pause of its page, not a fresh open.
+    if (!resumed) {
+      this.warmedUpTabs.delete(id);
+      this.tabGenerations.set(id, ++this.tabGenerationSeq.n);
+    }
+    const generation = this.tabGenerations.get(id) ?? 0;
 
     // Signal that a transport is ready
-    if (this.connectionReadyResolve) {
-      this.connectionReadyResolve();
-      this.connectionReadyResolve = null;
-    }
+    this.openConnectionGate();
 
     console.log(`[ui-bridge] SSE listener connected: ${id} (total: ${this.tabListeners.size})`);
 
@@ -1825,56 +2632,109 @@ export class CommandRelay {
     // Subscribe to the bus so commands dispatched from OTHER instances (which
     // have no local listener for this tab) are delivered down this stream.
     let busUnsubCmd: (() => void) | null = null;
+    // Drops the bus command subscription at most once, whichever of
+    // `unsubscribe` and `destroy()` reaches it first.
+    const releaseBusCommands = () => {
+      const unsub = busUnsubCmd;
+      busUnsubCmd = null;
+      if (unsub) unsub();
+    };
     if (this.bus) {
       // Announce this tab in the shared presence registry so OTHER instances'
       // routing guard knows it exists here. TTL > sweep interval; refreshed by
       // the periodic cleanup sweep. Removed on unsubscribe.
       this.bus.registerTab(id, this.busTabTtlSeconds());
-      busUnsubCmd = this.bus.subscribeCommands(id, (env) => {
-        // Deliver only if this tab's listener is still registered here.
+      const bus = this.bus;
+      busUnsubCmd = bus.subscribeCommands(id, (env) => {
+        // Deliver only if this tab's listener is still registered here, open.
         const current = this.tabListeners.get(id);
-        if (!current) return;
-        // Per-user tab scoping (§4.2): the sending instance MAY hold stale
-        // ownership metadata, so we don't trust its assertion alone. Re-
-        // verify against the LOCAL ownership registry before forwarding.
-        // Mismatch → reject the command back over the bus with the same
-        // generic prose `OwnerMismatchError` uses; do NOT deliver. When
-        // the envelope carries no `senderUserId` (e.g. admin dispatch,
-        // legacy path, fire-and-forget broadcast), the check is skipped.
-        if (env.senderUserId !== undefined) {
-          const owner = this.tabOwnership.get(id);
-          if (!owner || owner.userId !== env.senderUserId) {
-            if (this.bus) {
-              this.bus.publishResponse({
-                commandId: env.commandId,
-                ok: false,
-                error: `tabId "${id}" is not addressable by the authenticated caller`,
-                code: 'OWNER_MISMATCH',
-              });
+        if (!current || !isOpenListener(current)) return;
+        if (current.rotatedAt === undefined) {
+          this.deliverBusCommand(id, env, current);
+          return;
+        }
+        // Sent its `rotate` frame: the client's next stream may hold the tab
+        // on another instance, which then delivers the command. This stream
+        // delivers it only when no other instance holds the tab, so a command
+        // is neither run twice nor left with no deliverer while no
+        // replacement has registered. Three races remain. The replacement
+        // registers its hold (ZADD) and subscribes (SUBSCRIBE) over separate
+        // connections, so a command published between the two runs twice
+        // (subscribed, its hold not yet seen) or reaches nobody (its hold
+        // seen, not yet subscribed). `holdsElsewhere` reads only this
+        // version's holder set, so a replacement on an instance of the
+        // previous version is not seen, and both deliver. And on one
+        // instance, registering a replacement releases this handler first,
+        // which can UNSUBSCRIBE the channel before the replacement's
+        // SUBSCRIBE goes out, so a command published between the two reaches
+        // no handler here; that gap predates Phase 2.
+        void bus
+          .holdsElsewhere(id)
+          .catch(() => false)
+          .then((elsewhere) => {
+            if (elsewhere) return;
+            const holder = this.tabListeners.get(id);
+            if (!holder || !isOpenListener(holder)) return;
+            if (holder === current) {
+              this.deliverBusCommand(id, env, current);
+            } else if (holder.rotatedAt === undefined) {
+              // The replacement registered here while this handler waited: it
+              // subscribed after the publish, so it never saw the command. A
+              // replacement that has itself rotated by the time the answer
+              // comes is deliberately not handed it: that takes a rotation
+              // inside one round trip, which the lease makes near-unreachable.
+              this.deliverBusCommand(id, env, holder);
             }
-            return;
+          });
+      });
+      // The two halves are released independently, each at most once: a
+      // release that keeps the presence (a replacement, or a WebSocket client
+      // of the tab still connected here) leaves it to a later one.
+      let presenceReleased = false;
+      tabListener.releaseBus = (options) => {
+        // Both halves run even when one throws: `destroy()` must finish.
+        try {
+          releaseBusCommands();
+        } finally {
+          if (!options?.keepPresence && !presenceReleased) {
+            presenceReleased = true;
+            bus.unregisterTab(id);
           }
         }
-        try {
-          current.callback({
-            commandId: env.commandId,
-            action: env.action,
-            payload: env.payload,
-            timestamp: env.timestamp,
-          });
-          // Remember where it went, so a response that lands here is held to
-          // the stream that received the command (see `resolveCommand`).
-          this.recordBusDelivery(env.commandId, id, current);
-        } catch {
-          /* self-cleaning */
-        }
-      });
+      };
     }
 
-    // Proactive snapshot capture
+    // D2: the commands a replaced dead slot held go down this stream now that
+    // it is fully registered — its standing, generation and presence settled
+    // — so one answered at once finds the tab as it will stay. They are
+    // written before any warm-up, which goes out on its own timer.
+    if (slot) this.flushParked(id, slot.drain(), tabListener);
+
+    // D3: a command still pending on the stream this one replaced may have
+    // been written to a consumer that is gone. When the SAME page instance
+    // that held that stream opened this one, and its client dedupes, the
+    // command goes down this stream under an alias id. A page that reloaded
+    // (another `cid`), or a client with no dedupe, is sent nothing: the
+    // command may have run, and it times out as it always did.
+    const priorStreamId = replaced ? replaced.streamId : tombstone?.streamId;
+    if (
+      priorStreamId !== undefined &&
+      priorPage !== undefined &&
+      stream?.clientInstanceId === priorPage &&
+      tabListener.caps.includes(DEDUPE_CAPABILITY)
+    ) {
+      this.redeliverPending(id, priorStreamId, tabListener);
+    }
+
+    // Proactive snapshot capture. Both the capture and the retry ask whether
+    // the registered listener is still THIS stream, not merely whether the
+    // tab has one: a warm-up settled by `destroy()`, or by a newer stream
+    // replacing this one, must not send a duplicate `getControlSnapshot` down
+    // the newer stream for the same tab.
+    const isOwnStream = (): boolean => this.tabListeners.get(id)?.streamId === streamId;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     const captureSnapshot = async (): Promise<boolean> => {
-      if (!this.tabListeners.has(id)) return false;
+      if (!isOwnStream()) return false;
       try {
         const result = await this.queueCommand<ControlSnapshot>(
           'getControlSnapshot',
@@ -1885,6 +2745,13 @@ export class CommandRelay {
           console.log(
             `[ui-bridge] Proactive snapshot captured: ${result.elements.length} elements`
           );
+          // Marked only while the tab is still in the generation this warm-up
+          // was armed in. A later fresh open, `destroy()`, or the sweep
+          // dropping the tab's tombstone all end that generation; a resume of
+          // it does not, so a reply that lands after one still counts.
+          if (this.tabGenerations.get(id) === generation) {
+            this.warmedUpTabs.add(id);
+          }
           return true;
         }
       } catch {
@@ -1893,38 +2760,377 @@ export class CommandRelay {
       return false;
     };
 
-    const proactiveTimer = setTimeout(async () => {
-      if (!this.proactiveSnapshot) return;
-      const captured = await captureSnapshot();
-      if (!captured && this.tabListeners.has(id)) {
-        retryTimer = setTimeout(() => captureSnapshot(), 1500);
-      }
-    }, 500);
+    // Both warm-up timers are armed through `armTimer`, so `destroy()` clears
+    // them along with the listener they look for. A stream that resumes the
+    // same page, and whose tab's warm-up was already answered in this
+    // generation, is sent none; any other stream is, including a resume whose
+    // predecessor ended, died or was replaced before its own warm-up was
+    // answered.
+    const proactiveTimer =
+      resumed && this.warmedUpTabs.has(id)
+        ? null
+        : this.armTimer(async () => {
+            if (!this.proactiveSnapshot) return;
+            const captured = await captureSnapshot();
+            if (!captured && isOwnStream()) {
+              retryTimer = this.armTimer(() => void captureSnapshot(), 1500);
+            }
+          }, 500);
 
     const unsubscribe = () => {
-      clearTimeout(proactiveTimer);
-      if (retryTimer) clearTimeout(retryTimer);
-      if (busUnsubCmd) busUnsubCmd();
-      // A newer stream for the same tab replaced this one: its state is not
-      // this stream's to remove.
-      if (this.tabListeners.get(id)?.streamId !== streamId) return;
-      if (this.bus) this.bus.unregisterTab(id);
-      this.tabListeners.delete(id);
-      this.demotedTabs.delete(id);
-      this.tabMetadata.delete(id);
-      // Drop ownership when the transport closes. A future tab with the
-      // SAME id must re-register before authenticated dispatch sees it.
-      this.tabOwnership.delete(id);
-      console.log(
-        `[ui-bridge] SSE listener disconnected: ${id} (total: ${this.tabListeners.size})`
-      );
-      this.resetConnectionGateIfEmpty();
+      this.disarmTimer(proactiveTimer);
+      this.disarmTimer(retryTimer);
+      // A newer stream for the same tab replaced this one: its state, and the
+      // tab's presence in the shared registry, are not this stream's to
+      // remove — only its own bus command subscription is.
+      if (this.tabListeners.get(id)?.streamId !== streamId) {
+        releaseBusCommands();
+        return;
+      }
+      this.releaseListenerBus(tabListener, 'an unsubscribed listener');
+      this.forgetTab(id);
     };
-    return { streamId, unsubscribe };
+    const park = (reason: StreamEndReason) => {
+      this.disarmTimer(proactiveTimer);
+      this.disarmTimer(retryTimer);
+      if (this.tabListeners.get(id) !== tabListener) {
+        releaseBusCommands();
+        return;
+      }
+      if (!isOpenListener(tabListener)) return;
+      // D2: give up the bus membership at death, not at expiry: this
+      // instance's command subscription and its own presence (kept only while
+      // a WebSocket client of the tab is connected here). A holder of the
+      // tab's newer stream elsewhere is then the only one the fleet routes
+      // to, and this slot's expiry cannot touch that holder's presence.
+      this.releaseListenerBus(tabListener, 'a dead listener');
+      tabListener.state = 'dead';
+      tabListener.deadSlot = new DeadSlot(
+        reason,
+        this.armTimer(() => {
+          if (this.tabListeners.get(id) !== tabListener) return;
+          this.releaseListenerBus(tabListener, 'an expired dead listener');
+          this.forgetTab(id);
+        }, this.reconnectGraceMs)
+      );
+      console.log(
+        `[ui-bridge] SSE listener dead: ${id} (${reason}); its commands are held ` +
+          `${this.reconnectGraceMs}ms for its next stream`
+      );
+    };
+    const closedAtLease = (reason: StreamEndReason) => {
+      this.disarmTimer(proactiveTimer);
+      this.disarmTimer(retryTimer);
+      if (this.tabListeners.get(id) !== tabListener) {
+        releaseBusCommands();
+        return;
+      }
+      if (!isOpenListener(tabListener)) return;
+      this.releaseListenerBus(tabListener, 'a listener closed at its lease');
+      this.awaitReturn(id, reason);
+    };
+    // The client is opening its next stream, which may land on another
+    // instance. This stream keeps its presence, its bus subscription and the
+    // commands this instance dispatches to it until it ends; from now on its
+    // bus handler defers to an instance that holds the tab too (above).
+    const rotated = () => {
+      tabListener.rotatedAt = Date.now();
+    };
+    return { streamId, unsubscribe, park, closedAtLease, rotated };
   }
 
-  /** Record a bus-dispatched command this instance delivered down a local stream. */
-  private recordBusDelivery(commandId: string, tabId: string, listener: TabListener): void {
+  /**
+   * Deliver a command another instance published for `tabId` down `listener`,
+   * this instance's SSE stream for the tab, once its sender is re-verified
+   * (`refusesBusSender`).
+   */
+  private deliverBusCommand(tabId: string, env: RelayCommandEnvelope, listener: TabListener): void {
+    if (this.refusesBusSender(tabId, env)) return;
+    const command: QueuedCommand = {
+      commandId: env.commandId,
+      action: env.action,
+      payload: env.payload,
+      timestamp: env.timestamp,
+    };
+    // Remember where it went, so a response that lands here is held to the
+    // stream that received the command (see `resolveCommand`).
+    if (this.deliver(listener, command)) this.recordBusDelivery(env.commandId, tabId, listener);
+    else this.reportBusNotDelivered(tabId, env, 'Its command stream did not accept the write.');
+  }
+
+  /**
+   * This instance holds `tabId` but could not write bus command `env` to it:
+   * tell the sender at once so it rejects with the relay's not-delivered
+   * message rather than waiting out its bus timeout. Silent when the command
+   * is a broadcast (another holder may still deliver it) or when another
+   * instance holds the tab too (it delivers or reports for itself). Only a
+   * command written to an open stream reaches here; one for a tab with no
+   * open stream is parked by its sender's instance, never published as a
+   * failure.
+   */
+  private reportBusNotDelivered(tabId: string, env: RelayCommandEnvelope, why: string): void {
+    const bus = this.bus;
+    if (!bus || env.targetTabId === undefined) return;
+    const publish = () => {
+      try {
+        bus.publishResponse({
+          commandId: env.commandId,
+          ok: false,
+          error: notDeliveredMessage(env.action, `Tab "${tabId}" is held here. ${why}`),
+          code: 'NOT_DELIVERED',
+        });
+      } catch (err) {
+        console.error('[ui-bridge] publishing a bus not-delivered reply failed:', err);
+      }
+    };
+    // An unreadable holder registry stays silent: another instance may be
+    // delivering, and the sender's bus timeout still ends the wait.
+    const epoch = this.destroyEpoch;
+    void bus
+      .holdsElsewhere(tabId)
+      .then((elsewhere) => {
+        if (!elsewhere && this.destroyEpoch === epoch) publish();
+      })
+      .catch(() => undefined);
+  }
+
+  /**
+   * Per-user tab scoping (§4.2): the sending instance MAY hold stale
+   * ownership metadata, so its assertion is not trusted alone. A bus command
+   * whose `senderUserId` is not `tabId`'s owner in the LOCAL registry is
+   * refused back over the bus, with the generic prose `OwnerMismatchError`
+   * uses, and not delivered. An envelope with no `senderUserId` (an admin
+   * dispatch, the legacy path, a fire-and-forget broadcast) is not checked.
+   */
+  private refusesBusSender(tabId: string, env: RelayCommandEnvelope): boolean {
+    if (env.senderUserId === undefined) return false;
+    const owner = this.tabOwnership.get(tabId);
+    if (owner && owner.userId === env.senderUserId) return false;
+    this.bus?.publishResponse({
+      commandId: env.commandId,
+      ok: false,
+      error: `tabId "${tabId}" is not addressable by the authenticated caller`,
+      code: 'OWNER_MISMATCH',
+    });
+    return true;
+  }
+
+  /**
+   * Release `listener`'s hold on the bus: its command subscription, and this
+   * instance's presence for the tab unless a WebSocket client of the tab is
+   * still connected here, through which this instance still holds the tab.
+   * A failing bus is logged; it must not stop the transition.
+   */
+  private releaseListenerBus(listener: TabListener, what: string): void {
+    try {
+      listener.releaseBus?.({
+        keepPresence: this.wsClients.get(listener.tabId)?.client.isConnected() === true,
+      });
+    } catch (err) {
+      console.error(`[ui-bridge] releasing ${what} from the bus failed:`, err);
+    }
+  }
+
+  /**
+   * The server closed `tabId`'s stream at its lease (`lease`,
+   * `rotate_unanswered`): forget the listener now, and keep the tab's place
+   * for `leaseReturnGraceMs`. Its tombstone, standing, owner and metadata
+   * stay, so the stream its client opens next returns the tab, and a command
+   * for it meanwhile is refused at once (`queueCommandInner`).
+   */
+  private awaitReturn(tabId: string, reason: StreamEndReason): void {
+    const listener = this.tabListeners.get(tabId);
+    if (!listener) return;
+    this.tabListeners.delete(tabId);
+    const graceMs = this.leaseReturnGraceMs;
+    const tombstone: ListenerTombstone = {
+      removedAt: Date.now(),
+      ...(listener.clientInstanceId ? { clientInstanceId: listener.clientInstanceId } : {}),
+      ...(listener.streamId ? { streamId: listener.streamId } : {}),
+    };
+    tombstone.leaseReturn = {
+      reason,
+      graceMs,
+      expiry: this.armTimer(() => this.endLeaseReturn(tabId, tombstone), graceMs),
+    };
+    this.listenerTombstones.set(tabId, tombstone);
+    console.log(
+      `[ui-bridge] SSE listener closed at its lease: ${tabId} (${reason}); ` +
+        `the tab keeps its place ${graceMs}ms for its next stream`
+    );
+    // With no transport left, an unpinned command waits for one to connect
+    // (`queueCommand`), as it does after any other last transport goes: the
+    // tab's own reopen may be that one. A command pinned to the tab is still
+    // refused at once.
+    this.resetConnectionGateIfEmpty();
+  }
+
+  /**
+   * `tabId` did not return within `leaseReturnGraceMs` of its lease close:
+   * it is gone, unless a transport for it is held here by now.
+   */
+  private endLeaseReturn(tabId: string, tombstone: ListenerTombstone): void {
+    if (this.listenerTombstones.get(tabId) !== tombstone) return;
+    this.listenerTombstones.delete(tabId);
+    if (this.tabListeners.has(tabId) || this.wsClients.has(tabId)) return;
+    this.forgetTabState(tabId);
+  }
+
+  /**
+   * `tabId`'s lease close, while the tab awaits its return: no SSE listener
+   * here, and a lease-close tombstone younger than its grace.
+   */
+  private leaseReturnOf(tabId: string): ListenerTombstone['leaseReturn'] {
+    if (this.tabListeners.has(tabId)) return undefined;
+    return this.recentTombstone(tabId, Date.now())?.leaseReturn;
+  }
+
+  /**
+   * The tab's SSE listener is gone for good (its stream ended, or its dead
+   * slot expired): forget it and the tab state it carried.
+   */
+  private forgetTab(tabId: string): void {
+    this.dropTabListener(tabId);
+    this.forgetTabState(tabId);
+  }
+
+  /** Forget the tab state an SSE listener carried: its demotion, metadata and owner. */
+  private forgetTabState(tabId: string): void {
+    this.demotedTabs.delete(tabId);
+    this.tabMetadata.delete(tabId);
+    // Drop ownership when the transport closes. A future tab with the
+    // SAME id must re-register before authenticated dispatch sees it.
+    this.tabOwnership.delete(tabId);
+    console.log(
+      `[ui-bridge] SSE listener disconnected: ${tabId} (total: ${this.tabListeners.size})`
+    );
+    this.resetConnectionGateIfEmpty();
+  }
+
+  /**
+   * Forget `tabId`'s SSE listener, remembering when, and its page instance,
+   * for `reconnectGraceMs`: a stream that reopens within it resumes the tab
+   * (`addCommandListener`). A dead slot's held commands fail now, with the
+   * not-delivered message (D2).
+   */
+  private dropTabListener(tabId: string): void {
+    const listener = this.tabListeners.get(tabId);
+    if (!listener) return;
+    this.tabListeners.delete(tabId);
+    this.listenerTombstones.set(tabId, {
+      removedAt: Date.now(),
+      ...(listener.clientInstanceId ? { clientInstanceId: listener.clientInstanceId } : {}),
+      ...(listener.streamId ? { streamId: listener.streamId } : {}),
+    });
+    const slot = listener.deadSlot;
+    if (!slot) return;
+    this.disarmTimer(slot.expiry);
+    const parked = slot.drain();
+    if (parked.length === 0) return;
+    // A WebSocket client of the tab that connected here meanwhile carries them.
+    const rest = this.sendParkedViaWebSocket(tabId, parked);
+    if (rest.length === 0) return;
+    if (this.bus) void this.settleExpiredParked(tabId, slot.reason, rest);
+    else this.failParked(tabId, slot.reason, rest);
+  }
+
+  /**
+   * Send each of `parked` to `tabId`'s WebSocket client, when one is
+   * connected here, and return those it did not take.
+   */
+  private sendParkedViaWebSocket(tabId: string, parked: ParkedCommand[]): ParkedCommand[] {
+    if (this.wsClients.get(tabId)?.client.isConnected() !== true) return parked;
+    const rest: ParkedCommand[] = [];
+    for (const item of parked) {
+      const { command } = item;
+      const pending = this.pendingCommands.get(command.commandId);
+      if (!pending) continue; // settled meanwhile: timed out, evicted, or destroyed
+      if (this.sendCommandViaWebSocket(command.commandId, command.action, command.payload, tabId)) {
+        this.settleParkedDelivery(tabId, item, pending, this.wsTimeoutMs, 'WebSocket');
+      } else {
+        rest.push(item);
+      }
+    }
+    return rest;
+  }
+
+  /**
+   * A dead slot went with commands still held. The tab's next stream may
+   * have opened on another instance meanwhile: when another instance holds
+   * the tab, they go over the bus; otherwise they fail as not delivered.
+   * Only another instance counts (`holdsElsewhere`): this instance's own
+   * presence, when it still has one, has nothing here to carry them.
+   */
+  private async settleExpiredParked(
+    tabId: string,
+    reason: StreamEndReason,
+    parked: ParkedCommand[]
+  ): Promise<void> {
+    const epoch = this.destroyEpoch;
+    let elsewhere: boolean;
+    try {
+      elsewhere = await this.bus!.holdsElsewhere(tabId);
+    } catch {
+      elsewhere = false;
+    }
+    // `destroy()` settled them meanwhile.
+    if (this.destroyEpoch !== epoch) return;
+    if (!elsewhere) {
+      this.failParked(tabId, reason, parked);
+      return;
+    }
+    for (const { command, senderUserId } of parked) {
+      const pending = this.pendingCommands.get(command.commandId);
+      if (!pending) continue; // settled meanwhile: timed out or evicted
+      clearTimeout(pending.timeout);
+      if (pending.graceTimeout) clearTimeout(pending.graceTimeout);
+      this.pendingCommands.delete(command.commandId);
+      this.routeViaBus(
+        command.commandId,
+        command.action,
+        command.payload,
+        tabId,
+        senderUserId,
+        pending.resolve,
+        pending.reject
+      );
+    }
+  }
+
+  /** Fail `parked`, held on `tabId`'s dead slot, with the not-delivered message. */
+  private failParked(tabId: string, reason: StreamEndReason, parked: ParkedCommand[]): void {
+    const why =
+      `Tab "${tabId}"'s command stream ended (${reason}) and no new stream opened ` +
+      `within ${this.reconnectGraceMs}ms.`;
+    for (const { command } of parked) {
+      this.settlePending(command.commandId, new Error(notDeliveredMessage(command.action, why)));
+    }
+  }
+
+  /**
+   * `tabId`'s tombstone, when it lost its last SSE listener less than
+   * `reconnectGraceMs` before `now`, or less than its `leaseReturn` grace when
+   * it lost it to a lease close.
+   */
+  private recentTombstone(tabId: string, now: number): ListenerTombstone | undefined {
+    const tombstone = this.listenerTombstones.get(tabId);
+    if (tombstone === undefined) return undefined;
+    const graceMs = tombstone.leaseReturn?.graceMs ?? this.reconnectGraceMs;
+    return now - tombstone.removedAt < graceMs ? tombstone : undefined;
+  }
+
+  /** Tab ids holding an open SSE listener here (`isOpenListener`), in registration order. */
+  private openListenerIds(): string[] {
+    const ids: string[] = [];
+    for (const [id, listener] of this.tabListeners) if (isOpenListener(listener)) ids.push(id);
+    return ids;
+  }
+
+  /**
+   * Record a bus-dispatched command this instance delivered down a local SSE
+   * stream (`listener`), or to a local WebSocket client (no listener).
+   */
+  private recordBusDelivery(commandId: string, tabId: string, listener?: TabListener): void {
     const now = Date.now();
     if (this.busDeliveries.size > this.maxPendingCommands) {
       for (const [id, delivery] of this.busDeliveries) {
@@ -1933,24 +3139,24 @@ export class CommandRelay {
     }
     this.busDeliveries.set(commandId, {
       targetTabId: tabId,
-      ...(listener.streamId ? { streamId: listener.streamId } : {}),
-      ...(listener.userId ? { streamUserId: listener.userId } : {}),
+      ...(listener?.streamId ? { streamId: listener.streamId } : {}),
+      ...(listener?.userId ? { streamUserId: listener.userId } : {}),
       expiresAt: now + this.sseTimeoutMs + this.multiTabGraceMs,
     });
   }
 
   /**
-   * Check if any SSE listeners are connected.
+   * Check if any SSE listeners are connected. A dead slot is not one.
    */
   hasCommandListeners(): boolean {
-    return this.tabListeners.size > 0;
+    return this.openListenerIds().length > 0;
   }
 
   /**
-   * Get list of connected tab IDs.
+   * Get list of connected tab IDs: those with an open SSE listener.
    */
   getConnectedTabs(): string[] {
-    return Array.from(this.tabListeners.keys());
+    return this.openListenerIds();
   }
 
   /**
@@ -1962,6 +3168,7 @@ export class CommandRelay {
     const tabIds = this.getConnectedTabs().filter((id) => !only || only.has(id));
     return Promise.all(
       tabIds.map(async (tabId): Promise<TabInfo> => {
+        let bound: ReturnType<typeof setTimeout> | undefined;
         try {
           const info = await Promise.race([
             this.queueCommand<{ url?: string; pathname?: string; title?: string }>(
@@ -1969,11 +3176,15 @@ export class CommandRelay {
               {},
               { targetTabId: tabId }
             ),
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
+            new Promise<null>((resolve) => {
+              bound = this.armTimer(() => resolve(null), 3000);
+            }),
           ]);
           return { tabId, url: info?.url, pathname: info?.pathname, title: info?.title };
         } catch {
           return { tabId };
+        } finally {
+          this.disarmTimer(bound);
         }
       })
     );
@@ -2186,8 +3397,11 @@ export class CommandRelay {
    * makes "unregistered" the same as "not yours". Used by `/tabs` and
    * `/tabs/wait` to scope the response to the authenticated caller.
    *
-   * Includes both SSE and WebSocket transports. Result order tracks
-   * `getConnectedTabs` (insertion order) for stability.
+   * Includes both SSE and WebSocket transports, and a dead SSE slot
+   * (stream-slot.ts): the owner-scoped dispatch arm draws from this list and
+   * parks a command on the slot, ranked behind every live tab. A reader that
+   * answers "connected" intersects it with `connectedTabs`. Result order
+   * tracks the listener map (insertion order) for stability.
    */
   listOwnedTabs(userId: string): string[] {
     const owned: string[] = [];
@@ -2205,6 +3419,27 @@ export class CommandRelay {
   }
 
   /**
+   * The tab `userId`'s unpinned command reaches: the first of their own tabs
+   * that holds an open transport, in the order the owner-scoped dispatch arm
+   * ranks them (`compareByLiveness`, tab-liveness.ts), or `null` when none
+   * does. A dead slot (stream-slot.ts) is never the primary: its stream is
+   * gone. A command the arm parks on one ranked first reaches this tab unless
+   * the slot's own tab reconnects within the grace. The one source of a scoped
+   * caller's primary: the scoped `getTransportDiagnostics` `primaryTabId`, and
+   * `isPrimary` in `/tabs` and `/tabs/wait` (nextjs.ts).
+   */
+  ownedPrimaryTabId(userId: string): string | null {
+    return this.rankOwnedTabs(userId).find((id) => this.holdsOpenTransport(id)) ?? null;
+  }
+
+  /** Whether `tabId` holds an open command transport here: an open SSE listener, or a connected WebSocket client. */
+  private holdsOpenTransport(tabId: string): boolean {
+    const listener = this.tabListeners.get(tabId);
+    if (listener !== undefined && isOpenListener(listener)) return true;
+    return this.wsClients.get(tabId)?.client.isConnected() === true;
+  }
+
+  /**
    * Admin / trusted-caller bypass: return ALL connected tab ids
    * regardless of ownership. Intended for server-side callers that
    * don't know a userId (internal admin tooling, runner introspection).
@@ -2217,7 +3452,7 @@ export class CommandRelay {
   adminListAllTabs(): string[] {
     const all: string[] = [];
     const seen = new Set<string>();
-    for (const id of this.tabListeners.keys()) {
+    for (const id of this.openListenerIds()) {
       if (!seen.has(id)) {
         seen.add(id);
         all.push(id);
@@ -2278,14 +3513,18 @@ export class CommandRelay {
    * pre-filter base list) keep calling it with no argument.
    */
   getTransportDiagnostics(options?: { ownerCheck?: { userId: string } }): TransportDiagnostics {
+    const open = this.openListenerIds();
     const full: TransportDiagnostics = {
       pendingCommandCount: this.pendingCommands.size,
       pendingCommandIds: Array.from(this.pendingCommands.keys()),
       // Union of both command transports — see `TransportDiagnostics`.
-      // A tab reachable over BOTH SSE and WS counts once.
-      commandListenerCount: new Set([...this.tabListeners.keys(), ...this.wsClients.keys()]).size,
-      connectedTabs: Array.from(this.tabListeners.keys()),
+      // A tab reachable over BOTH SSE and WS counts once; a dead slot not at all.
+      commandListenerCount: new Set([...open, ...this.wsClients.keys()]).size,
+      connectedTabs: open,
       activeTabs: this.getActiveTabs(),
+      parkedTabs: Array.from(this.tabListeners.values())
+        .filter((listener) => !isOpenListener(listener))
+        .map((listener) => listener.tabId),
       primaryTabId: this.getPrimaryTabId(),
       demotedTabs: Array.from(this.demotedTabs),
       buildId: this.buildId,
@@ -2328,6 +3567,7 @@ export class CommandRelay {
       // Per-user view: tab-identifying fields, filtered through isOwnedBy.
       connectedTabs,
       activeTabs: full.activeTabs.filter(owns),
+      parkedTabs: full.parkedTabs.filter(owns),
       demotedTabs: full.demotedTabs.filter(owns),
       wsClientIds,
       // Same union as the unfiltered view, restricted to this caller's tabs.
@@ -2336,7 +3576,10 @@ export class CommandRelay {
       // that promises a transport count.
       commandListenerCount: new Set([...connectedTabs, ...wsClientIds]).size,
       wsClientCount: wsClientIds.length,
-      primaryTabId: full.primaryTabId && owns(full.primaryTabId) ? full.primaryTabId : null,
+      // Where this caller's unpinned command goes (the owner-scoped arm), not
+      // the global primary: that one is chosen over every user's tabs, and a
+      // scoped caller's command never reads it.
+      primaryTabId: this.ownedPrimaryTabId(userId),
       tabHeartbeats: pickOwned(full.tabHeartbeats),
       tabMetadata: pickOwned(full.tabMetadata),
       tabOwnership: pickOwned(full.tabOwnership),
@@ -2393,19 +3636,94 @@ export class CommandRelay {
     return this.changeEventBuffer.filter((e) => e.timestamp > since).slice(-limit);
   }
 
+  /**
+   * Tear the relay down. Relay state is shared by every relay on the same
+   * `globalPrefix`, so this acts prefix-wide, as it always has for the tab
+   * maps. After it returns:
+   *
+   * - The prefix's cleanup sweep is cleared and its `globalThis` handle
+   *   deleted, whichever relay armed it, so no interval is left running. The
+   *   next relay built on the prefix, or the next transport registered on any
+   *   relay of it (this one included), re-arms it.
+   * - Every WebSocket client's warm-up timer is cleared and the clients are
+   *   forgotten. With a cross-instance bus, each one's bus command
+   *   subscription is dropped and its tab withdrawn from the shared presence
+   *   registry. The sockets are NOT closed: the transport owner (the
+   *   standalone server's connection set, a host's WS handler) owns them.
+   * - Every SSE listener is forgotten. With a cross-instance bus, each one's
+   *   bus command subscription is dropped and its tab removed from the shared
+   *   presence registry. The streams themselves belong to their HTTP handlers.
+   * - Every pending command (fire-and-forget recorders included) is settled
+   *   with a {@link RelayDestroyedError}: its timeout and grace timers are
+   *   cleared and its bus response subscription dropped. Every caller waiting
+   *   for a transport fails the same way, and so does a command suspended at
+   *   an `await` in `queueCommand` (a bus presence lookup, a connection wait)
+   *   when it resumes, instead of dispatching. A command that fails over
+   *   after being settled here does not fail over.
+   * - The SSE warm-up timers and the tab-info probe bounds are cleared, and
+   *   the bus deliveries, HTTP-poll queue, tab registries and change-event
+   *   buffer are emptied.
+   * - The connection gate is closed, so the next command waits for a
+   *   transport to connect.
+   *
+   * A transport registered on the relay afterwards is live, and its timers
+   * belong to it. The bus itself is not closed: its owner passed it in.
+   */
   destroy(): void {
-    if (this.cleanupInterval) {
-      clearInterval(this.cleanupInterval);
-      this.cleanupInterval = null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const g = globalThis as any;
+    // First, so a dispatch resuming from any `await` below sees it.
+    g[`${this.prefix}DestroyEpoch`] = this.destroyEpoch + 1;
+    // Whatever sweep the prefix holds now, not the handle this relay last
+    // saw: the teardown below is prefix-wide, and a sweep re-armed by a later
+    // registration (on this relay or a sibling) would otherwise outlive it.
+    const intervalKey = `${this.prefix}CleanupInterval`;
+    const sweep = g[intervalKey] as ReturnType<typeof setInterval> | undefined;
+    if (sweep) clearInterval(sweep);
+    delete g[intervalKey];
+
+    for (const clientId of Array.from(this.wsClients.keys())) this.dropWebSocketEntry(clientId);
+
+    for (const id of Array.from(this.pendingCommands.keys())) {
+      this.settlePending(id, new RelayDestroyedError());
     }
+    this.busDeliveries.clear();
+
+    for (const waiter of Array.from(this.connectionWaiters)) {
+      clearTimeout(waiter.timer);
+      waiter.fail(
+        new RelayDestroyedError(
+          'CommandRelay was destroyed while waiting for a browser to connect.'
+        )
+      );
+    }
+    this.connectionWaiters.clear();
+
+    for (const timer of this.relayTimers) clearTimeout(timer);
+    this.relayTimers.clear();
+
     this.tabHeartbeats.clear();
     this.tabMetadata.clear();
     this.tabLastSuccess.clear();
     this.tabOwnership.clear();
     this.demotedTabs.clear();
+    for (const listener of this.tabListeners.values()) {
+      // A failing bus must not stop the teardown.
+      try {
+        listener.releaseBus?.();
+      } catch (err) {
+        console.error('[ui-bridge] releasing a listener from the bus failed:', err);
+      }
+    }
     this.tabListeners.clear();
+    this.listenerTombstones.clear();
+    this.warmedUpTabs.clear();
+    // `tabGenerationSeq` is deliberately left as it is: see its field.
+    this.tabGenerations.clear();
     this.commandQueue.length = 0;
     this.changeEventBuffer.length = 0;
     this.changeEventSubscribers.clear();
+    // Every transport is gone, so the next command waits for one to connect.
+    this.resetConnectionGateIfEmpty();
   }
 }

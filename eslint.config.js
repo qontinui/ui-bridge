@@ -340,6 +340,7 @@ export default tseslint.config(
           'packages/ui-bridge/src/server/handlers.ts',
           'packages/ui-bridge/src/server/dom-fallback.ts',
           'packages/ui-bridge/src/server/page-primitives.ts',
+          'packages/ui-bridge/src/core/element-projection.ts',
           'packages/ui-bridge/src/react/commandHandlers.ts',
           'packages/ui-bridge/src/render-log/dom-capture.ts',
           'packages/ui-bridge/src/recording/**/*.ts',

@@ -11,11 +11,18 @@ coord's `merge-candidate*/**` pushes, and by hand (`workflow_dispatch`).
 
 ### Where the Linux jobs run — the self-hosted pool and its hosted floor
 
-On a **push** (`main` and coord's `merge-candidate*/**` refs) or a
-**`workflow_dispatch`**, the jobs of `ci.yml`, `qontinui-ci.yml`,
-`smoke-test.yml` and `ci-integrity-selftest.yml` can run on the self-hosted
-pool `[self-hosted, Linux, X64, ram-16g]` instead of GitHub's hosted
-`ubuntu-latest`. Each of those workflows has a `route` job that decides, using
+On a **push** (`main` and coord's `merge-candidate*/**` refs), a
+**`workflow_dispatch`**, or a **same-repo `pull_request`**, the jobs of `ci.yml`,
+`qontinui-ci.yml`, `smoke-test.yml` and `ci-integrity-selftest.yml` can run on
+the self-hosted pool `[self-hosted, Linux, X64, ram-16g]` instead of the hosted
+floor `ubuntu-24.04` (a fork PR or a re-run always takes the floor). The floor
+is pinned, not `ubuntu-latest`: `ubuntu-latest` became Ubuntu 26.04, on which
+Playwright refuses to install chromium, and `scripts/check-ci-routing.py`
+requires one floor label for every routed job, so it is spelled `ubuntu-24.04`
+in each `route` step's `UIBRIDGE_CI_LINUX_HOSTED_LABEL`, its mismatch fallback,
+each routed `runs-on` and the checker's `HOSTED` constant. The router's own
+`DEFAULT_HOSTED_LABEL` stays `ubuntu-latest` (it is a verbatim copy) and is
+always overridden by that env var. Each of those workflows has a `route` job that decides, using
 the fleet's router `.github/scripts/route-ci-lane.py` (a verbatim copy of
 qontinui-claude-config `scripts/route-ci-lane.py`; re-sync by copying it and
 updating the blob pin in each `route` step, never by editing it — under
@@ -63,8 +70,11 @@ explanation.
 
 The pool label set and the router's blob pin are spelled by hand at every site:
 `--self-hosted-labels` in each `route` step, the forced-lane literal in each
-routed `runs-on`, the `# coord-pools:` line directly above it, and the `want=`
-pin. `scripts/check-ci-routing.py` (run by `ci-integrity-selftest.yml`'s
+routed `runs-on`, the `# coord-pools:` line directly above it, the `want=`
+pin, and the variable's `pool` in `.qontinui/ci-pool-variables.toml` (the
+declaration coord's pool-variable controller reads to decide the lane, in
+shadow only for now; plan `2026-11-11-coord-owns-ci-lane-variables`).
+`scripts/check-ci-routing.py` (run by `ci-integrity-selftest.yml`'s
 `guard-tests` job) fails on any disagreement among them or between a pin and the
 committed router, so after a re-sync or a label change run
 `python3 scripts/check-ci-routing.py` before pushing.

@@ -78,6 +78,67 @@ export {
   type ComponentActionInvocation,
 } from '../server/component-action-invocation';
 
+// The §4.6-gated `readValue` page primitive: the one implementation both the
+// standalone server and the React relay dispatch to, gating every element with
+// `isValueRedacted`. Exported so a host that answers read-value over its own
+// transport (the runner's webview) calls it instead of keeping an ungated copy.
+// `server/page-primitives.ts` imports only DOM helpers and `core/` modules.
+// `control-entry.browser-safe.test.ts` enforces only that no Node builtin is
+// reachable from this entry through relative imports; keeping
+// `server/handlers.ts` and npm-only server packages out of this graph is
+// still a review responsibility.
+export { readValuePrimitive } from '../server/page-primitives';
+export type { PrimitiveResult, ReadValueResult, ReadValueHit } from '../server/page-primitives';
+
+// The §4.6-gated text primitives. Their shared matcher (`findElementsByText`)
+// never matches an element inside a redaction boundary, and reads a container's
+// text with each boundary below it replaced by the sentinel — so neither the
+// find hit count nor the click's found/not-found answer confirms redacted text.
+// Both click primitives echo the clicked element's text through the same
+// boundary-aware CONTENT-axis scrub. Exported for the same reason as `readValuePrimitive`: a host that
+// answers find-by-text / click-by-text / click-by-selector over its own
+// transport calls these instead of keeping a copy that echoes `textContent`
+// raw from inside a `data-bridge-redact` boundary.
+export {
+  findByTextPrimitive,
+  clickByTextPrimitive,
+  clickBySelectorPrimitive,
+} from '../server/page-primitives';
+export type { FindByTextHit, ClickEcho } from '../server/page-primitives';
+
+// Component capture — the structural wire shape the vision-core
+// `matches_isolated_render` assertion compares (plan
+// 2026-11-13-ui-bridge-matches-isolated-render-assertion). Served by
+// `GET /control/{component,element}/:id/capture`.
+export {
+  captureComponent,
+  componentCaptureCommandResult,
+  componentCaptureRefusalCode,
+  componentCaptureRefusalStatus,
+  componentCaptureRefusalEnvelope,
+  componentCaptureRefusalMessage,
+  parseComponentCaptureRefusal,
+  wantsCaptureProps,
+  CAPTURE_STYLE_KEYS,
+  MAX_CAPTURE_NODES,
+  MAX_PORTAL_WALK_FIBERS,
+} from './component-capture';
+export type {
+  CaptureRect,
+  ComponentCapture,
+  ComponentCaptureTarget,
+  ComponentCaptureNode,
+  ComponentCapturePortal,
+  ComponentCaptureClipAncestor,
+  ComponentCaptureRefusal,
+  ComponentCaptureRefusalReason,
+  ComponentCaptureResult,
+  ComponentCaptureRegistry,
+  ComponentCaptureRefusalEnvelope,
+  ComponentCaptureOptions,
+} from './component-capture';
+export { extractOwnerComponentProps } from './action-executor';
+
 // Form fill utility
 export { fillFormFields } from './fill-form';
 
@@ -139,8 +200,11 @@ export {
   getGlobalActionWindowRegistry,
   setGlobalActionWindowRegistry,
   resetGlobalActionWindowRegistry,
+  MAX_UNANCHORED_WINDOW_MS,
+  UNANCHORED_WINDOW_TIMEOUT_MARGIN_MS,
+  unanchoredBoundForTimeout,
 } from './action-window-registry';
-export type { ActionWindow } from './action-window-registry';
+export type { ActionWindow, ActionWindowHandle } from './action-window-registry';
 export {
   EffectStore,
   getGlobalEffectStore,

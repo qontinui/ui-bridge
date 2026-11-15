@@ -43,6 +43,7 @@ vi.mock('playwright', () => ({
     launch: vi.fn(async () => ({
       newContext: vi.fn(async () => ({
         addInitScript: vi.fn(async () => undefined),
+        close: vi.fn(async () => undefined),
         newPage: vi.fn(async () => fake.page),
       })),
       close: vi.fn(async () => undefined),

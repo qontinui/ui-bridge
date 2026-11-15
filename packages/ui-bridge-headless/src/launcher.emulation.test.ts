@@ -26,6 +26,7 @@ vi.mock('playwright', () => ({
           recorded.contextOptions.push(opts);
           return {
             addInitScript: vi.fn(async () => undefined),
+            close: vi.fn(async () => undefined),
             newPage: vi.fn(async () => ({
               on: vi.fn(),
               goto: vi.fn(async () => null),

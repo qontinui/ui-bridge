@@ -29,7 +29,10 @@ import type {
  * The five terminal classifications of a predict-then-verify cycle.
  *
  * - `Confirmed`     — prediction exactly matched observation (P ⊆ O ∧ O ⊆ P).
- * - `Surprise`      — prediction held but extra unpredicted changes occurred.
+ * - `Surprise`      — prediction held but extra unpredicted changes occurred, OR
+ *                   it matched exactly but the cycle's cause is `mixed` or
+ *                   `unknown`, so the match cannot be credited to the action.
+ *                   `containment.observedSubsetPredicted` tells the two apart.
  * - `Failure`       — a predicted change simply did not happen (no active negation).
  * - `Contradiction` — a predicted change was met by its opposite (active negation).
  * - `Partial`       — part of the predicted scope was unobservable (coverage < 1).
@@ -53,8 +56,14 @@ export type ReversibilityKind = 'idempotent' | 'reversible' | 'one-way';
  * - `causal`        — the change was caused by this action.
  * - `observational` — the change happened concurrently (not caused by us).
  * - `mixed`         — both causal and concurrent changes occurred in the window.
+ * - `unknown`       — attribution could not be established: the action's
+ *                     window expired (it outlived its un-anchored bound)
+ *                     before its settle began, so concurrent observations
+ *                     after the expiry were not attributed. Never reported as
+ *                     a clean `causal`, and like `mixed` it downgrades a
+ *                     `Confirmed` outcome to `Surprise`.
  */
-export type EffectCause = 'causal' | 'observational' | 'mixed';
+export type EffectCause = 'causal' | 'observational' | 'mixed' | 'unknown';
 
 // ---------------------------------------------------------------------------
 // Predicted delta — what a signature predicts will change

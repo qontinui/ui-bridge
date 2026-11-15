@@ -11,7 +11,27 @@
  * strip still cannot let a request name the caller.
  */
 
+import type { HandlerContext, RouteDefinition } from './types';
+
 export const RESERVED_CALLER_KEY = '__callerUserId';
+
+/**
+ * The handler arguments every adapter passes after the URL params and the
+ * body: the query object, only when `route` declares `queryRequired`, and the
+ * verified context. The query comes first, except on a `queryAfterContext`
+ * route, whose handler held the context slot before it took a query
+ * (`getElementState(id, context, query)`). One function for every adapter,
+ * because a context that lands in the query slot, or a query in the context
+ * slot, is a request that names its own caller.
+ */
+export function queryAndContextArgs(
+  route: Pick<RouteDefinition, 'queryRequired' | 'queryAfterContext'>,
+  query: unknown,
+  context: HandlerContext
+): unknown[] {
+  if (!route.queryRequired) return [context];
+  return route.queryAfterContext ? [context, query] : [query, context];
+}
 
 /**
  * Nesting deeper than this is returned as it is. The relay reads a payload

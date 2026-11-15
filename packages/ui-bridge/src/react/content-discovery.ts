@@ -11,7 +11,7 @@
 import type { ContentType, ContentRole, ContentMetadata } from '../core/types';
 import { classString } from '../core/class-name';
 import { truncateCodePoints } from '../core/text';
-import { isContentRedacted } from '../core/redaction';
+import { isContentRedacted, textExcludingBoundaries } from '../core/redaction';
 import type { UIBridgeRegistry } from '../core/registry';
 
 // ============================================================================
@@ -400,7 +400,9 @@ export function inferContentMetadata(element: HTMLElement): ContentMetadata {
 
   // Stable text prefix for dynamic content
   if (metadata.dynamic && !isContentRedacted(element)) {
-    const text = element.textContent?.trim() || '';
+    // A boundary BELOW the element must not leak its first characters here:
+    // `contentMetadata` is emitted as-is.
+    const text = textExcludingBoundaries(element)?.trim() || '';
     if (text.length > 10) {
       metadata.stableTextPrefix = truncateCodePoints(text, 10);
     }
@@ -441,7 +443,8 @@ export function generateContentId(element: HTMLElement): string {
   // (`registerContentInRegistry`).
   const redacted = isContentRedacted(element);
   const contentLabel = redacted ? null : element.getAttribute('data-content-label');
-  const scrapedText = redacted ? '' : element.textContent?.trim() || '';
+  // A boundary BELOW the element reads as the sentinel, never its text.
+  const scrapedText = redacted ? '' : textExcludingBoundaries(element)?.trim() || '';
 
   // Headings: heading-{level}-{textSlug}
   if (contentType === 'heading') {
@@ -529,7 +532,8 @@ export function registerContentInRegistry(
   // scrape and the `refreshScrapedText()` re-derivation cannot drift.
   const deriveContentLabel = (el: HTMLElement): string | undefined => {
     if (isContentRedacted(el)) return undefined;
-    const raw = el.textContent?.trim();
+    // A boundary BELOW `el` reads as the sentinel (§4.6, ancestor reads).
+    const raw = textExcludingBoundaries(el)?.trim();
     const normalized = raw ? raw.replace(/\s+/g, ' ') : undefined;
     return (
       el.getAttribute('data-content-label') ||
@@ -542,7 +546,7 @@ export function registerContentInRegistry(
   // `deriveContentLabel` above uses, for the same reason.
   const deriveContent = (el: HTMLElement): string | undefined => {
     if (isContentRedacted(el)) return undefined;
-    const raw = el.textContent?.trim();
+    const raw = textExcludingBoundaries(el)?.trim();
     return raw ? raw.replace(/\s+/g, ' ') : undefined;
   };
 

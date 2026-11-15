@@ -127,7 +127,7 @@ A registration wait that runs out is not a failure: the launch resolves with
 `uiBridgeRegistered: false`, and the tab is still yours to close.
 
 `tab.close()` resolves even when closing the browser fails, and reports that
-failure on stderr the same way. Calling it again is a no-op.
+failure on stderr the same way. Calling it again returns the same promise.
 
 Up to 0.7.0, a launch whose first navigation failed (or any earlier step after
 the browser started) rejected with Chromium still running and no handle to
@@ -155,6 +155,53 @@ Do not reach for Chromium's `--force-device-scale-factor` through
 `launchArgs` instead: the launcher always sets a viewport, and Playwright's
 metrics emulation overrides the flag, so the page keeps reading
 `devicePixelRatio` 1.
+
+### HAR recording, service workers and routes (context passthrough)
+
+Three options reach the browser context for a caller that records what a page
+loads or serves it from somewhere else:
+
+| Option           | Type                                                      | Passed to                                  |
+| ---------------- | --------------------------------------------------------- | ------------------------------------------ |
+| `recordHar`      | `LaunchRecordHarOptions` (Playwright's `recordHar` shape) | `newContext({ recordHar })`, unchanged     |
+| `serviceWorkers` | `'allow' \| 'block'`                                      | `newContext({ serviceWorkers })`           |
+| `initRouter`     | `(context: BrowserContext) => void \| Promise<void>`      | called with the context before `newPage()` |
+
+```ts
+const tab = await launchHeadlessTab({
+  url: 'https://example.com/',
+  headless: true,
+  recordHar: { path: './capture.zip', content: 'attach', mode: 'minimal' },
+  serviceWorkers: 'block',
+  initRouter: async (context) => {
+    await context.route('**/*', (route) => route.continue());
+    await context.routeWebSocket(/.*/, (ws) => ws.close());
+  },
+});
+// …
+await tab.close(); // the HAR is complete once this resolves
+```
+
+- **The HAR is written when the context closes.** `tab.close()` closes the
+  context first and the browser second, so the archive exists once `close()`
+  resolves. Closing only `tab.browser` yourself leaves no HAR. A context close
+  that fails (a HAR that could not be written, say) is reported on stderr, and
+  the browser is still closed. Calling `close()` again, even concurrently,
+  returns the same promise, so every caller waits for the archive.
+- **A failed launch writes no HAR.** If the first navigation or the UI Bridge
+  wait fails, only the browser is closed and the error rethrown; do not expect
+  an archive of a launch that threw.
+- **Block service workers when every request must be seen.** A service worker
+  answers requests itself, so they reach neither the HAR nor your routes.
+- **`initRouter` runs before the first page exists**, after the context and
+  any init scripts are set up, so a `context.route('**/*', …)` it installs
+  intercepts the first navigation's own document request. If it throws, the
+  launch fails like any other post-launch step: the browser is closed and the
+  error rethrown.
+
+With none of the three set, the context is created exactly as before. The
+close sequence did change for every tab: `tab.close()` now closes the context
+before the browser, whether or not `recordHar` is set.
 
 ## Flags
 

@@ -178,7 +178,7 @@ ui-bridge-inject --url http://127.0.0.1:3000/ \
   payload with an unknown verb is refused with `UNSUPPORTED_ACTION`, naming the
   accepted verbs.
 
-These need `@qontinui/ui-bridge` 0.46.0 or later, the first injected runtime
+These need `@qontinui/ui-bridge` 0.47.0 or later, the first injected runtime
 that serves `getElement` and the payload grammar. Against an older one,
 `getElement` fails with `Unknown command action: getElement`, a flat
 `executeElementAction` throws a `TypeError`, and an `elementId` one answers
@@ -233,6 +233,37 @@ browser default and says so in the cell id (`390x844_dpr-default_dark`). The
 directory must be empty or not exist yet: a non-empty one is refused before any
 browser launches, and is never cleared. `--viewport` sides are at most 8192 CSS
 pixels.
+
+### HAR recording, service workers and routes (`createTransport` headless/injected)
+
+The `headless`, `headed` and `injected` transports pass three options to
+`@qontinui/ui-bridge-headless`'s browser context: `recordHar` (Playwright's
+`recordHar` shape, unchanged), `serviceWorkers: 'allow' | 'block'`, and
+`initRouter(context)`, which runs before the first page exists so a
+`context.route('**/*', …)` it installs catches the first document request.
+The HAR is complete once `transport.close()` resolves. A launch that fails
+inside the launcher writes none, but a `ready()` that fails after the launch
+(an emulation refusal, an injected-runtime wait) can still leave a complete
+archive, so a missing file is not how to tell that `ready()` failed. A malformed value fails construction with `INVALID_CONFIG`, and a
+headless peer that predates them (ui-bridge#381) ignores all three, so the
+transport then fails `ready()` with `CONTEXT_OPTIONS_NOT_APPLIED` and closes the
+browser it opened. `serviceWorkers: 'allow'` alone is exempt, since it is
+Playwright's default.
+They have no CLI flags: `initRouter` is a function.
+
+```ts
+const transport = createTransport({
+  kind: 'injected',
+  options: {
+    targetUrl: 'https://example.com/',
+    recordHar: { path: './capture.zip', content: 'attach', mode: 'minimal' },
+    serviceWorkers: 'block',
+  },
+});
+await transport.ready();
+// …
+await transport.close(); // the HAR is written
+```
 
 ### Candidates in situ: the media override, a slow network and a timeline
 

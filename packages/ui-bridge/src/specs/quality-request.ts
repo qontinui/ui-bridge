@@ -27,6 +27,12 @@
 
 import type { ElementDesignData } from '../core/types';
 import { getElementDesignData, indexCustomProperties } from '../ai/design-inspector';
+import {
+  disposeTokenIndex,
+  noReportedTokens,
+  reportedTokensOf,
+  type ReportedTokens,
+} from '../ai/design-tokens';
 import { evaluateQuality, isMetricEnabled } from './quality-evaluator';
 import { BUILT_IN_CONTEXTS, getContext } from './quality-contexts';
 import { CUSTOM_PROPERTY_METRICS } from './quality-metrics';
@@ -206,6 +212,16 @@ function requestedContext(
 // The /design/evaluate family
 // ============================================================================
 
+/** What `collectDesignData` reads besides the computed styles. */
+export interface DesignCollectOptions {
+  /** Read custom properties (and the token index); default `true`. */
+  customProperties?: boolean;
+  /** Add each element's `::before` / `::after`. */
+  includePseudoElements?: boolean;
+  /** Attribute design properties to tokens (probes the page); default `true`. */
+  attributeTokens?: boolean;
+}
+
 /**
  * Read live design data for the selected elements (all of them when
  * `elementIds` is absent).
@@ -213,12 +229,26 @@ function requestedContext(
  * Custom properties are read rule-first, once for the whole batch
  * (`indexCustomProperties`). Pass `customProperties: false` when nothing
  * downstream reads them, and the stylesheets are not walked at all.
+ * `includePseudoElements` adds each element's `::before` / `::after`.
  */
 export function collectDesignData(
   elements: readonly QualityElementSource[],
   elementIds?: readonly string[],
-  options: { customProperties?: boolean } = {}
+  options: DesignCollectOptions = {}
 ): ElementDesignData[] {
+  return collectDesignBatch(elements, elementIds, options).elements;
+}
+
+/**
+ * `collectDesignData`, plus the page's root design tokens, reported once for
+ * the batch rather than per element (`ai/design-tokens.ts`). The tokens are
+ * empty when custom properties are not read, or there is no document.
+ */
+export function collectDesignBatch(
+  elements: readonly QualityElementSource[],
+  elementIds?: readonly string[],
+  options: DesignCollectOptions = {}
+): { elements: ElementDesignData[] } & ReportedTokens {
   const wanted = elementIds ? new Set(elementIds) : null;
   const live: Array<QualityElementSource & { element: HTMLElement }> = [];
   for (const el of elements) {
@@ -227,20 +257,31 @@ export function collectDesignData(
     }
   }
   const customProperties =
-    options.customProperties === false || live.length === 0
+    options.customProperties === false || typeof document === 'undefined'
       ? false
       : indexCustomProperties(
           document,
           live.map((el) => el.element)
         );
-  return live.map((el) =>
-    getElementDesignData(el.element, {
-      elementId: el.id,
-      label: el.label,
-      type: el.type,
-      customProperties,
-    })
-  );
+  try {
+    const designData = live.map((el) =>
+      getElementDesignData(el.element, {
+        elementId: el.id,
+        label: el.label,
+        type: el.type,
+        customProperties,
+        includePseudoElements: options.includePseudoElements,
+        attributeTokens: options.attributeTokens,
+      })
+    );
+    return {
+      elements: designData,
+      // After the elements: the scopes they sit in are registered as they are read.
+      ...(customProperties ? reportedTokensOf(customProperties.tokens) : noReportedTokens()),
+    };
+  } finally {
+    if (customProperties) disposeTokenIndex(customProperties.tokens);
+  }
 }
 
 function windowViewport(): ViewportDimensions {

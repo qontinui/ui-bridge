@@ -173,6 +173,28 @@ describe('computeVerification — outcome table', () => {
     expect(v.cause).toBe('mixed');
   });
 
+  it('unknown cause downgrades Confirmed → Surprise', () => {
+    const predicted: PredictedDelta = { elementsAppear: [{ id: 'modal-1' }] };
+    const observed = emptyObserved({ appeared: [appeared('modal-1')] });
+    const pre = makeSnapshot(['btn']);
+
+    const v = computeVerification(predicted, observed, pre, WHOLE_PAGE, 'unknown', 5);
+
+    expect(v.outcome).toBe('Surprise');
+    expect(v.cause).toBe('unknown');
+    expect(v.containment.observedSubsetPredicted).toBe(true);
+  });
+
+  it('unknown cause does NOT change a Failure', () => {
+    const predicted: PredictedDelta = { elementsAppear: [{ id: 'modal-1' }] };
+    const observed = emptyObserved();
+    const pre = makeSnapshot(['btn']);
+
+    const v = computeVerification(predicted, observed, pre, WHOLE_PAGE, 'unknown', 5);
+
+    expect(v.outcome).toBe('Failure');
+  });
+
   it('mixed cause does NOT upgrade a Failure', () => {
     const predicted: PredictedDelta = { elementsAppear: [{ id: 'modal-1' }] };
     const observed = emptyObserved();

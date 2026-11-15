@@ -80,6 +80,7 @@ vi.mock('playwright', () => {
             rejectIfFailingAt('newPage');
             return page;
           }),
+          close: vi.fn(async () => undefined),
         };
         const browser: FakeBrowser = {
           newContext: vi.fn(async () => {

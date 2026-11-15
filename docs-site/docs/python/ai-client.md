@@ -229,9 +229,10 @@ result = client.ai.assert_batch([
     ("email input", "enabled"),
 ])
 
-print(result.passed)         # True if all passed
-print(result.passed_count)   # Number that passed
-print(result.failed_count)   # Number that failed
+print(result.passed)            # True if all passed
+print(result.passed_count)      # Number that passed
+print(result.failed_count)      # Number that did not pass, unmeasured ones included
+print(result.unmeasured_count)  # How many of those could not read their value (None: an older SDK)
 
 # Stop on first failure
 result = client.ai.assert_batch(
@@ -245,6 +246,15 @@ result = client.ai.assert_batch(
     mode="any"
 )
 ```
+
+A check that could not read the value it judges — a style or attribute check
+on an element with no live DOM node, or on a value a `data-bridge-redact`
+boundary withholds — has `outcome == "unmeasured"`, no `actual`, and the reason
+in `unmeasured` (`code`, `detail`). It is not a pass, so it keeps an `all`
+batch from passing: `failed_count` counts it with every other check that did
+not pass, and `unmeasured_count` counts it again as the subset that could not
+read a value, so `failed_count - unmeasured_count` checks read a value that
+failed.
 
 ### Verify Page State
 

@@ -33,6 +33,9 @@ export {
   type LaunchColorScheme,
   type LaunchHeadlessTabOptions,
   type LaunchHeadlessTabResult,
+  type LaunchInitRouter,
+  type LaunchRecordHarOptions,
+  type LaunchServiceWorkersPolicy,
 } from './launcher.js';
 
 export {

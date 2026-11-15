@@ -13,6 +13,17 @@
 import type { ModalInfo, ModalStack, SnapshotModalContext, ModalDetectorConfig } from './types';
 import { classString } from '../core/class-name';
 import { readAriaLabelAttr, readAriaLabelledbyAttr } from '../core/a11y';
+import { isContentRedacted, REDACTED_VALUE, textExcludingBoundaries } from '../core/redaction';
+
+/**
+ * §4.6: text of a node inside the modal (or its labelledby target), with any
+ * boundary it holds — or sits in — replaced by the sentinel. Every modal field
+ * that reaches `snapshot.modalStack` reads text through this.
+ */
+function safeText(node: Element | null | undefined): string | undefined {
+  if (!node) return undefined;
+  return textExcludingBoundaries(node)?.trim() || undefined;
+}
 
 // ---------------------------------------------------------------------------
 // Default selectors for common modal patterns
@@ -109,6 +120,9 @@ function buildSelector(el: Element): string {
  * Checks aria-label, aria-labelledby, and heading elements inside.
  */
 function extractTitle(el: Element): string | undefined {
+  // §4.6: a modal inside a redaction boundary reports no title text at all.
+  if (isContentRedacted(el as HTMLElement)) return REDACTED_VALUE;
+
   // aria-label
   const ariaLabel = readAriaLabelAttr(el);
   if (ariaLabel) return ariaLabel;
@@ -116,35 +130,25 @@ function extractTitle(el: Element): string | undefined {
   // aria-labelledby → resolve to element text
   const labelledBy = readAriaLabelledbyAttr(el);
   if (labelledBy) {
-    const labelEl = document.getElementById(labelledBy);
-    if (labelEl?.textContent) {
-      return labelEl.textContent.trim();
-    }
+    const text = safeText(document.getElementById(labelledBy));
+    if (text) return text;
   }
 
   // First heading inside the modal
   const heading = el.querySelector('h1, h2, h3, [class*="title"], [class*="header"]');
-  if (heading?.textContent) {
-    return heading.textContent.trim();
-  }
-
-  return undefined;
+  return safeText(heading);
 }
 
 /**
  * Resolve aria-label text: direct attribute or via aria-labelledby.
  */
 function resolveAriaLabel(el: Element): string | undefined {
+  if (isContentRedacted(el as HTMLElement)) return REDACTED_VALUE;
   const direct = readAriaLabelAttr(el);
   if (direct) return direct;
 
   const labelledBy = readAriaLabelledbyAttr(el);
-  if (labelledBy) {
-    const labelEl = document.getElementById(labelledBy);
-    if (labelEl?.textContent) {
-      return labelEl.textContent.trim();
-    }
-  }
+  if (labelledBy) return safeText(document.getElementById(labelledBy));
 
   return undefined;
 }
@@ -256,7 +260,7 @@ function findPrimaryAction(el: Element): string | undefined {
   // submit button
   const submit = el.querySelector('button[type="submit"]');
   if (submit?.textContent) {
-    return submit.textContent.trim();
+    return safeText(submit);
   }
 
   // Button with primary class
@@ -264,7 +268,7 @@ function findPrimaryAction(el: Element): string | undefined {
     'button.primary, button.btn-primary, button[class*="primary" i]'
   );
   if (primary?.textContent) {
-    return primary.textContent.trim();
+    return safeText(primary);
   }
 
   // Last button in a footer-like element
@@ -276,7 +280,7 @@ function findPrimaryAction(el: Element): string | undefined {
     if (footerButtons.length > 0) {
       const lastBtn = footerButtons[footerButtons.length - 1];
       if (lastBtn.textContent) {
-        return lastBtn.textContent.trim();
+        return safeText(lastBtn);
       }
     }
   }

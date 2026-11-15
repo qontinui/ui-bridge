@@ -20,7 +20,10 @@ import { computeDiff } from '../ai/semantic-diff';
 import type { SemanticSnapshot, ElementChange } from '../ai/types';
 import { computeVerification } from './effect-containment';
 import { settleMsForAction } from './settle-windows';
-import { getGlobalActionWindowRegistry } from './action-window-registry';
+import {
+  getGlobalActionWindowRegistry,
+  unanchoredBoundForTimeout,
+} from './action-window-registry';
 import type {
   ActionParams,
   EffectCause,
@@ -42,6 +45,12 @@ export interface EffectVerifierDeps {
   captureSnapshot: (scope: ObservabilityScope) => Promise<SemanticSnapshot>;
   /** Resolve after `settleMs` milliseconds. */
   settle: (settleMs: number) => Promise<void>;
+  /**
+   * Clock injection, so a test can pin the settle window's anchors without
+   * faking `Date`. Every time `verifyAction` reads goes through it. Defaults
+   * to `Date.now`.
+   */
+  now?: () => number;
 }
 
 /** An appeared element is "error-like" by the same heuristic the diff uses. */
@@ -64,7 +73,11 @@ function deriveNavigatedTo(
 }
 
 export class EffectVerifier {
-  constructor(private deps: EffectVerifierDeps) {}
+  private readonly now: () => number;
+
+  constructor(private deps: EffectVerifierDeps) {
+    this.now = deps.now ?? Date.now;
+  }
 
   /**
    * Run `executeFn` inside a predict-then-verify cycle. Returns both the
@@ -79,21 +92,28 @@ export class EffectVerifier {
    * disagreeing. It costs one extra `predicts()` call and no extra capture.
    * Its failure is contained — a throwing second `predicts` must not sink the
    * action or the real verification, so it is caught and dropped.
+   *
+   * `options.timeoutMs` is the action's own timeout, when it has one. It sizes
+   * the window's un-anchored bound ({@link unanchoredBoundForTimeout}) so a
+   * legitimately long action keeps its window for as long as it may run. If the
+   * window expires anyway before the settle starts, the cause is reported as
+   * `'unknown'` (unless a concurrent observation was already seen: `'mixed'`).
    */
   async verifyAction<T>(
     params: ActionParams,
     signature: EffectSignature,
     executeFn: () => Promise<T>,
-    options?: { alsoPredict?: EffectSignature },
+    options?: { alsoPredict?: EffectSignature; timeoutMs?: number },
   ): Promise<{
     result: T;
     verification: EffectVerification;
     alsoPredicted?: PredictedDelta;
   }> {
-    const startTime = Date.now();
+    const startTime = this.now();
 
-    // Settle window length (override → per-action band → fallback). Resolved up
-    // front so the window's `endMs` matches the actual settle we await.
+    // Settle window length (override → per-action band → fallback). It sizes
+    // the settle we await in step 5, and the window's end is anchored to that
+    // same settle (start of settle + settleMs), never to when the window opened.
     const settleMs = settleMsForAction(params.action, signature.settleMs);
 
     // 1. Scoped pre-snapshot.
@@ -117,9 +137,16 @@ export class EffectVerifier {
     // 3. Open the settle window so concurrent background observations (flagged
     //    by the BackgroundObserver) can be attributed to this action. The
     //    window opens just before execution and closes after the post-snapshot.
+    //    It opens with NO end: the settle does not start until the action
+    //    returns, so its end is only knowable at step 5.
     const registry = getGlobalActionWindowRegistry();
-    const windowId = params.requestId ?? `effect-${Date.now()}-${synthSeq++}`;
-    registry.begin(windowId, params.action, Date.now(), settleMs);
+    const requestId = params.requestId ?? `effect-${this.now()}-${synthSeq++}`;
+    const windowHandle = registry.beginAction(
+      requestId,
+      params.action,
+      this.now(),
+      unanchoredBoundForTimeout(options?.timeoutMs),
+    );
 
     try {
       // 4. Execute the real action (errors propagate by design — but we still
@@ -127,7 +154,15 @@ export class EffectVerifier {
       //    perpetually-open window into the registry).
       const result = await executeFn();
 
-      // 5. Settle window.
+      // 5. Settle window. Anchor the window's end to the REAL settle start, so
+      //    it covers [action start, settleStart + settleMs]. Anchoring it at
+      //    open time instead (`open + settleMs`) expired it during any action
+      //    slower than `settleMs`, dropping every observation from then on —
+      //    the rest of the action and the whole settle (finding 736a7c2c). The
+      //    settle duration itself is unchanged. `false` means the window
+      //    outlived its un-anchored bound and was closed before the settle, so
+      //    observations after the bound were not attributed (step 7).
+      const anchored = registry.anchorSettle(windowHandle, this.now(), settleMs);
       await this.deps.settle(settleMs);
 
       // 6. Post-snapshot.
@@ -135,11 +170,15 @@ export class EffectVerifier {
 
       // 7. Attribution: if a significant background change landed in this
       //    window, the cause is 'mixed' (concurrent observational change
-      //    alongside the causal one); otherwise it is 'causal'. Read the flag
-      //    BEFORE ending the window.
-      const cause: EffectCause = registry.hadConcurrentObservation(windowId)
+      //    alongside the causal one). If the window expired before the settle
+      //    with no observation seen, attribution is 'unknown' — later
+      //    observations were dropped, so a clean 'causal' would be a guess.
+      //    Otherwise it is 'causal'. Read the flag BEFORE ending the window.
+      const cause: EffectCause = registry.hadConcurrentObservation(windowHandle)
         ? 'mixed'
-        : 'causal';
+        : anchored
+          ? 'causal'
+          : 'unknown';
 
       // 8. Observed delta via the existing diff engine (reused, not reimplemented).
       const diff = computeDiff(pre, post);
@@ -151,9 +190,9 @@ export class EffectVerifier {
         errorsAppeared: diff.changes.appeared.filter(isErrorChange).length,
       };
 
-      // 9. Classify. `cause === 'mixed'` downgrades a clean Confirmed → Surprise
-      //    inside computeVerification.
-      const durationMs = Date.now() - startTime;
+      // 9. Classify. A `'mixed'` or `'unknown'` cause downgrades a clean
+      //    Confirmed → Surprise inside computeVerification.
+      const durationMs = this.now() - startTime;
       const verification = computeVerification(
         predicted,
         observed,
@@ -165,7 +204,7 @@ export class EffectVerifier {
 
       return { result, verification, alsoPredicted };
     } finally {
-      registry.end(windowId);
+      registry.end(windowHandle);
     }
   }
 }

@@ -25,7 +25,13 @@ import type {
   ComponentActionPredictRequest,
   ComponentActionPredictResponse,
 } from '../control';
-import type { FillResult } from '../core/types';
+import type { ElementState, FillResult } from '../core/types';
+import type { ElementProjection } from '../core/element-projection';
+import type {
+  ComponentCapture,
+  ComponentCaptureRefusal,
+  ComponentCaptureRefusalReason,
+} from '../control/component-capture';
 import type { PageHealthObservation } from './page-health';
 import type {
   VisionAnalyzeResponse,
@@ -83,11 +89,19 @@ import type {
 } from '../ai';
 import type {
   InteractionStateName,
-  ElementDesignData,
   StateStyles,
-  ResponsiveSnapshot,
 } from '../core/types';
-import type { StyleGuideConfig, StyleAuditReport } from '../specs/style-types';
+import type { StyleGuideConfig } from '../specs/style-types';
+import type {
+  DesignAuditRequest,
+  DesignAuditResponse,
+  DesignSnapshotRequest,
+  ElementStylesResponse,
+  DesignSnapshotResponse,
+  ResponsiveSnapshotsRequest,
+  ResponsiveSnapshotsResponse,
+  ViewportConstraintsResponse,
+} from '../specs/design-request';
 import type {
   QualityEvaluationReport,
   SnapshotDiffReport,
@@ -392,6 +406,64 @@ export interface SpawnHeadlessResponse {
 }
 
 /**
+ * Query of `GET /control/element/:id/state`: the request-scoped projection.
+ *
+ * Over HTTP each list is a comma-separated string
+ * (`?properties=border-top-color,--color-accent&attributes=lang,aria-label`); a
+ * repeated key and an in-process caller's array are read the same way. The
+ * names, the allow-list, the bounds and what each read answers are those of
+ * `POST /control/find`'s `properties` / `attributes` — see
+ * `core/element-projection.ts`. A malformed list is refused
+ * (`UB-VALIDATION-ERROR`) before anything is read.
+ */
+export interface ElementStateQuery {
+  /** CSS property names (standard, camel-cased, or custom `--name`) whose computed values to read. */
+  properties?: string | string[];
+  /** Attribute names to read: `lang`, `dir`, `id`, `role`, `title`, `alt`, `href`, `aria-*`. */
+  attributes?: string | string[];
+  /** Per-tab routing, as on every queried route. */
+  tabId?: string;
+}
+
+/**
+ * Response of `GET /control/element/:id/state`: the element's canonical
+ * {@link ElementState} with its id, the legacy `isVisible` / `isEnabled` /
+ * `text` aliases, and the projection when the query asked for one.
+ */
+export type ElementStateResponse = Partial<ElementState> & {
+  id: string;
+  /** @deprecated read `visible`. */
+  isVisible?: boolean;
+  /** @deprecated read `enabled`. */
+  isEnabled?: boolean;
+  /** @deprecated read `textContent`. */
+  text?: string;
+  /** The requested `properties` / `attributes`, read off the live element. */
+  projection?: ElementProjection;
+};
+
+/**
+ * Query of `GET /control/{component,element}/:id/capture`. `props=true`
+ * opts in to reading the owning component's (fail-closed scrubbed) props;
+ * absent or anything else answers `props: null` without reading them.
+ */
+export interface ComponentCaptureQuery {
+  props?: string | boolean;
+  /** Per-tab routing, as on every queried route. */
+  tabId?: string;
+}
+
+/**
+ * The answer of `GET /control/{component,element}/:id/capture`: the capture
+ * under `data`, or a typed refusal carrying `reason` at the top level beside
+ * `error: 'component_capture_refused'` (contract body
+ * `{ error: "component_capture_refused", reason }`).
+ */
+export type ComponentCaptureResponse = APIResponse<ComponentCapture | ComponentCaptureRefusal> & {
+  reason?: ComponentCaptureRefusalReason;
+};
+
+/**
  * Per-user tab scoping context (§4.2) — threaded as the final positional
  * argument of every relay-dispatching handler.
  *
@@ -404,7 +476,7 @@ export interface SpawnHeadlessResponse {
  *
  * The reason this is a dedicated final-arg `context` object instead of a
  * field in the request body / query: many handlers (e.g. `captureSnapshot`,
- * `clearRenderLog`, `getElementState(id)`) have zero-arg or args-without-bag
+ * `clearRenderLog`, `getElementReactState(id)`) have zero-arg or args-without-bag
  * signatures, so there is no body/query for the adapter to splice
  * `__callerUserId` into. Without this explicit channel, those handlers
  * would bypass per-user scoping entirely and silently dispatch to whichever
@@ -488,11 +560,43 @@ export interface UIBridgeServerHandlers {
     options?: { recency?: string },
     context?: HandlerContext
   ) => Promise<APIResponse<ControlSnapshot['elements'][0]>>;
-  getElementState: (id: string, context?: HandlerContext) => Promise<APIResponse<unknown>>;
+  /**
+   * `GET /control/element/:id/state`. `query` carries the request-scoped
+   * projection ({@link ElementStateQuery}); the answer is an
+   * {@link ElementStateResponse}. The query comes AFTER the context, which
+   * held the second slot first: an `(id, context)` caller keeps its per-user
+   * scoping (`RouteDefinition.queryAfterContext`).
+   *
+   * 0.47.0 shipped this as `(id, query?, context?)`. A JavaScript caller
+   * written against 0.47.0 that passes its query second now has the two read
+   * the other way round, and nothing fails: the projection it asked for is
+   * not read, the query's `tabId` no longer pins the tab, and its
+   * `callerUserId` no longer scopes the call, which a relay then dispatches
+   * as a trusted caller's (§4.2). Swap the two arguments. A TypeScript caller
+   * gets a compile error instead: the two types share no key
+   * (`server/element-state-argument-order.test-d.ts`).
+   */
+  getElementState: (
+    id: string,
+    context?: HandlerContext,
+    query?: ElementStateQuery
+  ) => Promise<APIResponse<unknown>>;
   getElementReactState: (
     id: string,
     context?: HandlerContext
   ) => Promise<APIResponse<unknown>>;
+  /**
+   * `GET /control/element/:id/capture` — the element's structural
+   * {@link ComponentCapture}. Refusal: `success:false`,
+   * `error: 'component_capture_refused'` and `reason` at the top level, the
+   * refusal body repeated under `data` (404 `not_found`, 422
+   * `no_mounted_elements`).
+   */
+  getElementCapture: (
+    id: string,
+    query?: ComponentCaptureQuery,
+    context?: HandlerContext
+  ) => Promise<ComponentCaptureResponse>;
   executeElementAction: (
     id: string,
     request: ControlActionRequest,
@@ -562,6 +666,16 @@ export interface UIBridgeServerHandlers {
       timestamp: number;
     }>
   >;
+  /**
+   * `GET /control/component/:id/capture` — the component's structural
+   * {@link ComponentCapture}, rooted at the nearest common DOM ancestor of its
+   * mounted `elementIds`. Refusals as {@link UIBridgeServerHandlers.getElementCapture}.
+   */
+  getComponentCapture: (
+    id: string,
+    query?: ComponentCaptureQuery,
+    context?: HandlerContext
+  ) => Promise<ComponentCaptureResponse>;
   executeComponentAction: (
     id: string,
     request: ComponentActionRequest,
@@ -1100,44 +1214,29 @@ export interface UIBridgeServerHandlers {
   getElementStyles: (
     id: string,
     context?: HandlerContext
-  ) => Promise<APIResponse<ElementDesignData>>;
+  ) => Promise<APIResponse<ElementStylesResponse>>;
   getElementStateStyles: (
     id: string,
     request: { states?: InteractionStateName[] },
     context?: HandlerContext
   ) => Promise<APIResponse<{ elementId: string; stateStyles: StateStyles[] }>>;
   getDesignSnapshot: (
-    request?: {
-      elementIds?: string[];
-      includePseudoElements?: boolean;
-    },
+    request?: DesignSnapshotRequest,
     context?: HandlerContext
-  ) => Promise<APIResponse<{ elements: ElementDesignData[]; timestamp: number }>>;
+  ) => Promise<APIResponse<DesignSnapshotResponse>>;
   getResponsiveSnapshots: (
-    request: {
-      viewports?: Record<string, number>;
-      elementIds?: string[];
-    },
+    request: ResponsiveSnapshotsRequest,
     context?: HandlerContext
-  ) => Promise<APIResponse<ResponsiveSnapshot[]>>;
+  ) => Promise<APIResponse<ResponsiveSnapshotsResponse>>;
   setViewportConstraints: (
-    request: { width?: number; restore?: boolean },
+    /** `budgetMs`: how long to wait for the root-width lock (see `core/root-width-lock`). */
+    request: { width?: number; restore?: boolean; budgetMs?: number },
     context?: HandlerContext
-  ) => Promise<
-    APIResponse<{
-      success: boolean;
-      viewportWidth: number;
-      constrainedWidth: number;
-      timestamp: number;
-    }>
-  >;
+  ) => Promise<APIResponse<ViewportConstraintsResponse>>;
   runDesignAudit: (
-    request?: {
-      guide?: StyleGuideConfig;
-      elementIds?: string[];
-    },
+    request?: DesignAuditRequest,
     context?: HandlerContext
-  ) => Promise<APIResponse<StyleAuditReport>>;
+  ) => Promise<APIResponse<DesignAuditResponse>>;
   loadStyleGuide: (
     request: {
       guide: StyleGuideConfig;
@@ -1794,6 +1893,13 @@ export interface RouteDefinition {
    * all, so a query string can never reach the context slot.
    */
   queryRequired?: boolean;
+  /**
+   * With `queryRequired`: the handler takes the context BEFORE the query,
+   * `(...urlParams, context, query)`. For a handler whose context slot
+   * predates its query, so that an existing `(id, context)` caller keeps its
+   * meaning: `getElementState(id, context?, query?)`.
+   */
+  queryAfterContext?: boolean;
 }
 
 /**
@@ -1826,12 +1932,29 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     params: ['id'],
     queryRequired: true,
   },
-  { method: 'GET', path: '/control/element/:id/state', handler: 'getElementState', params: ['id'] },
+  {
+    method: 'GET',
+    path: '/control/element/:id/state',
+    handler: 'getElementState',
+    params: ['id'],
+    queryRequired: true,
+    queryAfterContext: true,
+  },
   {
     method: 'GET',
     path: '/control/element/:id/react-state',
     handler: 'getElementReactState',
     params: ['id'],
+  },
+  // Structural capture for the `matches_isolated_render` vision assertion
+  // (plan 2026-11-13-ui-bridge-matches-isolated-render-assertion, Phase 2).
+  // Answers a `ComponentCapture` (control/component-capture.ts).
+  {
+    method: 'GET',
+    path: '/control/element/:id/capture',
+    handler: 'getElementCapture',
+    params: ['id'],
+    queryRequired: true,
   },
   {
     method: 'POST',
@@ -1886,6 +2009,16 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     path: '/control/component/:id/state',
     handler: 'getComponentState',
     params: ['id'],
+  },
+  // Structural capture for `matches_isolated_render`: rooted at the nearest
+  // common DOM ancestor of the component's mounted `elementIds`. A component
+  // with none mounted is a typed `component_capture_refused` refusal.
+  {
+    method: 'GET',
+    path: '/control/component/:id/capture',
+    handler: 'getComponentCapture',
+    params: ['id'],
+    queryRequired: true,
   },
   {
     method: 'POST',

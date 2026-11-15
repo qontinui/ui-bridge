@@ -28,7 +28,11 @@ value, visible text, `aria-label`, accessible name, `title`, `placeholder`,
 search aliases, the label-derived id slug, and media `alt`/`src`/`srcset`/
 `poster` — across **all** element projections: snapshots (`/control/snapshot`,
 `/control/elements`), search (`/ai/search`, the internal registry search),
-discovery (`/control/find`, `/control/discover`), forms (`/control/forms`,
+discovery (`/control/find`, `/control/discover`) and its request-scoped
+`properties` / `attributes` projection (free-text and URL attributes, custom
+properties, `url()`/`paint()`/string values, `content`, and the properties that
+name author data such as `font-family`, `list-style-type`, `grid-area` or
+`view-transition-name`; colours and lengths pass), forms (`/control/forms`,
 `getForms`), the page-analysis family (`/ai/analyze/*`, `/ai/summary`),
 render-log capture, session recording, and the framework-store adapters
 (Formik / React Hook Form) — **and** the arbitrary-selector reads
@@ -51,6 +55,31 @@ it stays findable and clickable by structural means. A bare password field
 keeps its "Password" label and stays addressable — only its value hides. Match
 redacted elements by `role` / `data-testid` / structural id, not by their
 (now-scrubbed) text.
+
+**Hosts that read the DOM over their own transport.** A host app that serves
+its own element or DOM reads (outside the SDK's `/control/*` handlers) must
+apply the same verdict rather than re-derive the boundary walk:
+
+```ts
+import { verdictOf, REDACTED_VALUE } from '@qontinui/ui-bridge/core';
+import { readValuePrimitive } from '@qontinui/ui-bridge/control';
+
+const v = verdictOf(el); // { content, value }
+// CONTENT (boundary only): title, aria-label, text, accessible name.
+// VALUE (boundary OR password input): the value, and the data-* values the
+// SDK's `state.dataset` omits. Identifier attributes (`data-testid`,
+// `data-ui-bridge-test-id`, `data-awas-element`) stay raw so the element stays
+// addressable.
+const title = v.content ? REDACTED_VALUE : el.getAttribute('title');
+
+// read-value with the SDK's gate on every matched element
+// (selector, index?, { all? }); returns { ok, data } or { ok: false, error, code }:
+const result = readValuePrimitive('#password');
+```
+
+`isValueRedacted(el)` and `isContentRedacted(el)` are the single-axis forms,
+and the package root re-exports all of these. `REDACTED_VALUE` is only for
+producing the sentinel. Do not use it to detect redaction (see below).
 
 **What §4.6 does NOT cover** (state these to anyone relying on it):
 - **Shadow DOM / React portals.** The boundary walk follows `parentElement`
@@ -467,3 +496,107 @@ interacting at all. It now returns the HTTP handler's shape,
 `{ elementId, stateStyles: StateStyles[], timestamp }`, with each state really
 applied: `hover`/`active` forced as above, `focus` through `el.focus()`. A held
 agent hover is suspended for the read and re-applied afterwards.
+
+## 9. Read the styles and attributes a check needs
+
+`computedStyles` on an element's state is a fixed, light set — it rides in
+every snapshot. A check that needs `border-inline-start-color`, the `outline-*`
+longhands, `hyphens`, a design token, or an attribute such as `lang` asks for
+exactly those names on the request that needs them:
+
+```bash
+# On every row a find returns
+curl -s -X POST "$BASE/control/find" -H 'Content-Type: application/json' \
+  -d '{"text":"Save","properties":["border-top-color","outline-offset","--color-accent"],"attributes":["lang","aria-label"]}' \
+  | jq '.data.elements[] | {id, projection}'
+
+# On one element
+curl -s "$BASE/control/element/save-btn/state?properties=hyphens,--color-accent&attributes=lang" \
+  | jq '.data.projection'
+```
+
+Values are COMPUTED (`var()` arrives resolved). An absent attribute reads
+`null`. A name that could not be read — a custom property the element does not
+set, a property the engine does not compute — is listed in
+`projection.unmeasured` with its code instead of reading as `""`. Inside a
+`data-bridge-redact` boundary a value that can carry page content reads
+`[REDACTED]`, and its name is listed in `projection.redacted`. Only `lang`,
+`dir`, `id`, `role`, `title`, `alt`, `href` and `aria-*` attributes are
+readable; any other name, an invalid property name, a name over 128
+characters, or more than 32 names is refused with `UB-VALIDATION-ERROR`. On the state route each list may also be a
+repeated key (`?properties=hyphens&properties=outline-offset`). The 32 are
+counted as sent: 33 array entries, or 33 values of a repeated key, are
+refused even when they all name one property, and so is a query list longer
+than 4160 characters, a repeated key's values together.
+
+The same read backs the `ai/assert` style and attribute checks
+(`cssProperty`, `cssPropertyInSet`, `cssPropertyRange`, `tokenCompliance`,
+`attribute`), on both transports. A check that cannot read its value answers
+`outcome: "unmeasured"` with the reason in `unmeasured` — `passed` is `false`,
+so it never passes a gate. A batch counts it in `failedCount`, which counts
+every assertion that did not pass, and again in `unmeasuredCount`, the subset
+of those that could not read their value. A value a redaction boundary
+withholds is one of those (`not_attempted_by_policy`): `[REDACTED]` is never
+compared as the page's value. An `attribute` check of `placeholder` (not on the
+projection's allow-list) reads the element's live node, so an absent
+placeholder is a measured `null`; an element with no live node, or one no
+longer in the document, is unmeasured, never judged against nothing.
+
+## 10. Address the elements a page hides from the registry
+
+Auto-registration (`AutoRegisterProvider` / `useAutoRegister`) registers
+interactive elements that look visible right now. Three kinds of element a
+check still needs to name fall outside that, and each has an existing,
+declarative way in — no new registration path:
+
+**Text that is not a control — `data-ui-bridge-content`.** A span, card,
+badge or pill is not interactive, so nothing registers it. Mark it and it
+appears as a `kind: "content"` row whose id is the attribute's value:
+
+```html
+<span data-ui-bridge-content="order-total">€ 1.204,00</span>
+```
+
+**A skip link hidden until it is focused — `data-ui-bridge-persist="true"`.**
+A skip link is built not to look visible until a keyboard user tabs to it
+(`sr-only`, `opacity-0 focus:opacity-100`, `-translate-y-full
+focus:translate-y-0`), so the visibility gate skips it. The persist attribute
+bypasses that gate for the one element that carries it; the exclude selectors
+and the interactive-selector match still apply:
+
+```html
+<a href="#main" class="sr-only focus:not-sr-only" data-ui-bridge-persist="true">
+  Skip to content
+</a>
+```
+
+It then registers like any link — `data-ui-bridge-id` is stamped on it — and
+is addressable by that id, as an element-state read or an `ai/assert` target
+(`{"target": {"idPattern": "<id>"}, …}`). The hook-wide `persistWhileMounted: true` does the
+same for every element, which is rarely what you want.
+
+**The page itself — the `document` sentinel.** `<html>` gets no registry
+entry: a box that contains everything would sit in every snapshot and every
+hit-test. The id `document` names it instead, for reads and assertion
+operands, on every transport:
+
+```bash
+# <html lang>, <html dir> and a :root design token
+curl -s "$BASE/control/element/document/state?attributes=lang,dir&properties=--color-accent" \
+  | jq '.data'
+# → { "id": "document", "sentinel": "document", "tagName": "html",
+#     "projection": { "properties": { "--color-accent": "#00aaff" },
+#                     "attributes": { "lang": "de", "dir": "ltr" }, "unmeasured": [] } }
+
+curl -s -X POST "$BASE/ai/assert" -H 'Content-Type: application/json' \
+  -d '{"target":"document","type":"attribute","attributeName":"lang","expected":"de"}' \
+  | jq '.data | {outcome, actual}'
+```
+
+Only `document` names an element for a read. `body` and `window` remain what
+they always were — page sentinels for a `scroll` action, where all three
+scroll the page. An element an app registers under one of these ids wins over
+the sentinel on a read and a scroll. An `ai/assert` target is a search, not an
+id: any element it resolves wins, by id, label or text and a near match
+included (`Document` finds a link labelled "Documents"), and `document` names
+`<html>` only when the search finds no element at all.

@@ -356,9 +356,14 @@ function detectActiveNegation(
  *   - else ¬P⊆O ∧ activeNegation → `Contradiction`.
  *   - else (¬P⊆O ∧ ¬activeNegation) → `Failure`.
  *
- * Mixed-cause downgrade: if `cause === 'mixed'` and the outcome would be
- * `Confirmed`, it is downgraded to `Surprise` (a concurrent observational
- * change happened alongside the causal one).
+ * Attribution downgrade: if `cause` is `'mixed'` or `'unknown'` and the
+ * outcome would be `Confirmed`, it is downgraded to `Surprise`. `'mixed'`: a
+ * concurrent observational change happened alongside the causal one.
+ * `'unknown'`: the action's window expired before the settle, so a later
+ * concurrent change could not have been seen and a clean confirmation cannot
+ * be claimed. Consumers that read `outcome` alone (the runner's effect_check
+ * step) must not see `Confirmed` for a cycle whose attribution is not
+ * established.
  */
 export function computeVerification(
   predicted: PredictedDelta,
@@ -386,9 +391,10 @@ export function computeVerification(
     outcome = 'Failure';
   }
 
-  // Mixed-cause downgrade: a concurrent observational change muddies a clean
-  // confirmation.
-  if (cause === 'mixed' && outcome === 'Confirmed') {
+  // Attribution downgrade: a concurrent observational change ('mixed') or an
+  // attribution that could not be established ('unknown') both rule out a
+  // clean confirmation.
+  if ((cause === 'mixed' || cause === 'unknown') && outcome === 'Confirmed') {
     outcome = 'Surprise';
   }
 

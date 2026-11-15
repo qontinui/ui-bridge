@@ -17,6 +17,9 @@ import {
   scrubContentRequired,
   scrubValueRequired,
   scrubContentByVerdict,
+  isContentRedacted,
+  textExcludingBoundaries,
+  REDACTED_VALUE,
 } from '../core/redaction';
 import { readAriaLabelAttr, readPlaceholderAttr } from '../core/a11y';
 
@@ -143,15 +146,20 @@ export function discoverForms(elements: FormDiscoveryElement[]): FormsResponse {
 
 /**
  * Get label text for a form element by checking associated `<label>` elements.
+ * The one label reader for both `/control/forms` and the form-diff snapshot
+ * (`form-diff.ts`), so the §4.6 boundary exclusion cannot drift between them.
  */
-function getLabelText(element: HTMLElement): string | undefined {
+export function getLabelText(element: HTMLElement): string | undefined {
   if (typeof document === 'undefined') return undefined;
 
   // Check for <label for="id">
   const id = element.id;
   if (id) {
+    // §4.6: a label's verdict is not the field's — read it with any boundary
+    // it holds (or sits in) replaced by the sentinel.
     const label = document.querySelector(`label[for="${CSS.escape(id)}"]`);
-    if (label?.textContent?.trim()) return label.textContent.trim();
+    const labelText = label ? textExcludingBoundaries(label)?.trim() : undefined;
+    if (labelText) return labelText;
   }
 
   // Check for wrapping <label>
@@ -160,7 +168,11 @@ function getLabelText(element: HTMLElement): string | undefined {
     const clone = parentLabel.cloneNode(true) as HTMLElement;
     const inputs = clone.querySelectorAll('input, textarea, select');
     inputs.forEach((inp) => inp.remove());
-    const text = clone.textContent?.trim();
+    // The clone is detached, so a boundary AROUND the label is checked on the
+    // live node; a boundary inside it is excluded from the clone's text.
+    const text = isContentRedacted(parentLabel)
+      ? REDACTED_VALUE
+      : textExcludingBoundaries(clone)?.trim();
     if (text) return text;
   }
 

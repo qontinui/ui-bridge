@@ -89,14 +89,19 @@ function walkImports(entry: string): {
 describe('@qontinui/ui-bridge/control is browser-safe', () => {
   const graph = walkImports(controlEntry);
 
-  it('reaches the server-side component-action split it re-exports', () => {
+  it('reaches the server-side modules it re-exports and the server files they import', () => {
     // Proves the walk actually crosses into `server/`; a walk that stopped at
-    // the entry would pass the builtin check vacuously.
+    // the entry would pass the builtin check vacuously. The entry re-exports
+    // two server files: the component-action split (#348) and the gated
+    // `readValuePrimitive` from `page-primitives.ts`, which pulls in
+    // `dom-fallback.ts`.
     const reached = [...graph.files].map(label);
     expect(reached).toContain('server/component-action-invocation.ts');
     expect(reached).toContain('server/reserved-caller.ts');
-    // The graph was 109 files when this was written. The floor catches a walk
-    // that silently stops early (a parser or resolver regression).
+    expect(reached).toContain('server/page-primitives.ts');
+    expect(reached).toContain('server/dom-fallback.ts');
+    // The floor catches a walk that silently stops early (a parser or
+    // resolver regression).
     expect(graph.files.size).toBeGreaterThan(50);
   });
 

@@ -1,5 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { captureDOMSnapshot } from './dom-capture';
+import { REDACTED_VALUE } from '../core/redaction';
+
+function capturedById(root: HTMLElement, id: string) {
+  const snap = captureDOMSnapshot({ root, includeHidden: true });
+  return snap.elements.find(
+    (e) => (e as { identifier?: { htmlId?: string } }).identifier?.htmlId === id
+  );
+}
 
 /**
  * §4.6 Gap B — the render-log `getElementState` is the third parallel
@@ -32,11 +40,7 @@ describe('render-log capture stamps §4.6 redaction provenance', () => {
   });
 
   function stateOf(id: string) {
-    const snap = captureDOMSnapshot({ root, includeHidden: true });
-    const el = snap.elements.find(
-      (e) => (e as { identifier?: { htmlId?: string } }).identifier?.htmlId === id
-    );
-    return el?.state;
+    return capturedById(root, id)?.state;
   }
 
   it('stamps content+value for an element inside a data-bridge-redact boundary', () => {
@@ -53,5 +57,57 @@ describe('render-log capture stamps §4.6 redaction provenance', () => {
   it('omits the provenance field entirely for a non-redacted element', () => {
     const state = stateOf('plain');
     expect(state?.redaction).toBeUndefined();
+  });
+});
+
+/**
+ * §4.6 VALUE axis on the captured attribute record. `CAPTURE_ATTRIBUTES` lists
+ * `value`, and react-dom mirrors a controlled input's live value into that
+ * attribute, so a bare password input (VALUE-redacted, not CONTENT-redacted)
+ * must not ship it. `scrubRecord` used to read only the CONTENT verdict, so
+ * `attributes.value` carried the cleartext password while `state.value` was
+ * scrubbed one field over.
+ */
+describe('render-log capture scrubs the value attribute on the VALUE axis', () => {
+  let root: HTMLDivElement;
+
+  beforeEach(() => {
+    root = document.createElement('div');
+    root.innerHTML = `
+      <div data-bridge-redact="true">
+        <input id="boxed" type="text" value="4111-1111" title="Card" />
+      </div>
+      <input id="pw" type="password" value="hunter2" name="password" aria-label="Password" />
+      <input id="plain-input" type="text" value="order-42" />
+    `;
+    document.body.appendChild(root);
+  });
+
+  afterEach(() => {
+    root.remove();
+  });
+
+  function attrsOf(id: string) {
+    return capturedById(root, id)?.attributes;
+  }
+
+  it('collapses a bare password input value attribute and keeps its other attributes', () => {
+    const attrs = attrsOf('pw');
+    expect(attrs?.value).toBe(REDACTED_VALUE);
+    // CONTENT is not redacted on a bare password field: it stays addressable.
+    expect(attrs?.name).toBe('password');
+    expect(attrs?.['aria-label']).toBe('Password');
+    expect(attrs?.type).toBe('password');
+  });
+
+  it('collapses every attribute value inside a boundary, keeping the keys', () => {
+    const attrs = attrsOf('boxed');
+    expect(attrs?.value).toBe(REDACTED_VALUE);
+    expect(attrs?.title).toBe(REDACTED_VALUE);
+    expect(Object.keys(attrs ?? {})).toEqual(expect.arrayContaining(['value', 'title', 'type']));
+  });
+
+  it('leaves a plain input value attribute raw', () => {
+    expect(attrsOf('plain-input')?.value).toBe('order-42');
   });
 });

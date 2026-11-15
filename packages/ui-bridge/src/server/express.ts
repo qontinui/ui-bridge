@@ -13,7 +13,7 @@ import type {
   CORSOptions,
 } from './types';
 import { UI_BRIDGE_ROUTES } from './types';
-import { withoutReservedCaller } from './reserved-caller';
+import { queryAndContextArgs, withoutReservedCaller } from './reserved-caller';
 import { scopedCallerRefusal } from './scoped-refusal';
 import { mapInternalErrorCode } from '../diagnostics';
 import type { SSEManager } from './sse-handler';
@@ -372,25 +372,26 @@ function createRouteHandler(
         args.push(body);
       }
 
-      // Add the query object when the route's handler takes one, EMPTY
+      // The query object when the route's handler takes one, EMPTY
       // included, and never otherwise. See nextjs.ts for why (and for why
       // `__callerUserId` is NOT spliced into the query).
+      let query: Record<string, unknown> | undefined;
       if (route.queryRequired) {
-        const query = withoutReservedCaller({ ...req.query }) as Record<string, unknown>;
+        query = withoutReservedCaller({ ...req.query }) as Record<string, unknown>;
         if (externalTabId && query.tabId === undefined && query.targetTabId === undefined) {
           query.tabId = externalTabId;
         }
-        args.push(query);
       }
 
-      // Per-user tab scoping (§4.2) — trailing context arg. The adapter
-      // ALWAYS supplies this so zero-arg / id-only handlers
-      // (captureSnapshot, clearRenderLog, getElementState(id)) — whose
-      // signatures can't carry __callerUserId in the body/query — still
-      // enforce ownership when X-Caller-User-Id is present. Adds NO
-      // overhead when the header is absent (context.callerUserId
-      // undefined → relay falls back to primary-tab dispatch).
-      args.push({ callerUserId: headerCallerUserId });
+      // Per-user tab scoping (§4.2) — the context arg. The adapter ALWAYS
+      // supplies it so zero-arg / id-only handlers (captureSnapshot,
+      // clearRenderLog, getElementState(id)) — whose signatures can't carry
+      // __callerUserId in the body/query — still enforce ownership when
+      // X-Caller-User-Id is present. Adds NO overhead when the header is
+      // absent (context.callerUserId undefined → relay falls back to
+      // primary-tab dispatch). It follows the query, except on a
+      // `queryAfterContext` route (`queryAndContextArgs`).
+      args.push(...queryAndContextArgs(route, query, { callerUserId: headerCallerUserId }));
 
       const result = await handler(...args);
       // Honor APIResponse.httpStatus for endpoints that need 4xx semantics

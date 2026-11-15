@@ -59,6 +59,37 @@ describe('relay executeElementAction · scroll target', () => {
     expect(scroll.mock.contexts[0]).toBe(document.scrollingElement ?? document.documentElement);
   });
 
+  it('resolves the page sentinel in any case, as the executor always has (one shared resolver)', async () => {
+    overflowing(document.body);
+    const scroll = spyScroll();
+    const result = await relayScroll('Window');
+    expect(result.success, String(result.error)).toBe(true);
+    expect(scroll.mock.contexts[0]).toBe(document.scrollingElement ?? document.documentElement);
+  });
+
+  it('a registered element named like a sentinel wins over it', async () => {
+    overflowing(document.body);
+    const pane = document.createElement('div');
+    pane.style.overflowY = 'auto';
+    overflowing(pane);
+    Object.defineProperty(pane, 'offsetParent', { configurable: true, get: () => document.body });
+    document.body.appendChild(pane);
+    const registry = getGlobalRegistry();
+    registry.registerElement('document', pane, {
+      type: 'generic',
+      label: 'Document pane',
+      actions: ['scroll'],
+    });
+    const scroll = spyScroll();
+    const result = (await executeCommand(
+      'executeElementAction',
+      { id: 'document', request: { action: 'scroll', params: { direction: 'down' } } },
+      { ...emptyBridge, getElement: (id: string) => registry.getElement(id) }
+    )) as Record<string, unknown>;
+    expect(result.success, String(result.error)).toBe(true);
+    expect(scroll.mock.contexts[0]).toBe(pane);
+  });
+
   it('scrolls a registered scroll container itself, even on an overflowing page', async () => {
     overflowing(document.body);
     const list = document.createElement('div');

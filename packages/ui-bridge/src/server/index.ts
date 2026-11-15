@@ -61,6 +61,7 @@ export { SSEManager } from './sse-handler';
 export {
   CommandRelay,
   TabRoutingError,
+  RelayDestroyedError,
   type QueuedCommand,
   type CommandListener,
   type TabListener,
@@ -71,10 +72,18 @@ export {
   type CommandRelayOptions,
 } from './command-relay';
 
+// Command stream lease and listener slots: the relay owns a stream's end
+export { STREAM_LEASE_MS, type StreamEndReason, type StreamLeaseTimings } from './stream-lease';
+export { type CommandStreamHandle, type CommandStreamOptions } from './stream-slot';
+
 // Cross-instance relay bus (P0a) — optional shared-state for serverless scale-out
 export {
   RedisRelayBus,
   createRedisRelayBus,
+  redactRedisUserinfo,
+  summarizeRedisError,
+  type RedisRelayBusOptions,
+  type RelayBusErrorSummary,
   type RelayBus,
   type RelayCommandEnvelope,
   type RelayResponseEnvelope,

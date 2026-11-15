@@ -258,8 +258,15 @@ const relayConfig: RelayClientConfig = {
 };
 
 const handle: RelayClientHandle = startRelayClient(relayConfig);
-// handle.tabId, handle.forceReconnect(), handle.stop()
+// handle.tabId, handle.streamId, handle.forceReconnect(), handle.stop()
 ```
+
+Every stream it opens declares `caps=rotate,dedupe` and a `cid` naming this
+client instance, so a relay that knows them can replace the stream
+make-before-break and redeliver into the replacement; a relay that does not
+ignores both. `handle.streamId` is the current stream's id. Whether an ended
+stream is reopened at once or after a delay is decided by
+`HEALTHY_STREAM_MIN_MS` in `relay/relay-client.ts`.
 
 `resolveTabId()` returns a stable per-tab id, reusing the one persisted in
 `sessionStorage` when there is one so a reconnect keeps its identity.

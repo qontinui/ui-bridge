@@ -20,6 +20,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/react';
 import { UIBridgeRegistry } from '../../core/registry';
 import { useAutoRegister } from '../useAutoRegister';
+import { registerContentInRegistry } from '../content-discovery';
 import type { UIBridgeContextValue } from '../UIBridgeProvider';
 
 const SECRET = 'SECRET123';
@@ -137,5 +138,80 @@ describe('useAutoRegister §4.6 F7 — no scrape inside a boundary', () => {
     const reg = regFor(registry, input);
     expect(reg).toBeDefined();
     expect(reg!.label).toBe('Password');
+  });
+
+  // A container is not INSIDE a boundary, so its own verdict is clean — but its
+  // label, accessible name and visible text used to be read from a subtree, a
+  // <label> or an aria-labelledby target that holds one, verbatim.
+  it.each([
+    ['a button wrapping a boundary', `<button type="button">Reveal <span data-bridge-redact="true">${SECRET}</span></button>`],
+    ['an input named by <label for> holding a boundary', `<label for="card">Card <span data-bridge-redact="true">${SECRET}</span></label><input id="card">`],
+    ['an input inside a wrapping <label> holding a boundary', `<label>PIN <b data-bridge-redact="true">${SECRET}</b><input></label>`],
+    ['an input named by aria-labelledby pointing into a boundary', `<p id="lbl">Code <b data-bridge-redact="true">${SECRET}</b></p><input aria-labelledby="lbl">`],
+  ])('%s: no snapshot field carries the boundary text', async (_case, html) => {
+    const fixture = document.createElement('div');
+    fixture.innerHTML = html;
+    document.body.appendChild(fixture);
+
+    render(<Harness />);
+    await new Promise((r) => setTimeout(r, 5));
+
+    expect(registry.getAllElements().length).toBeGreaterThan(0);
+    for (const e of registry.getAllElements()) {
+      expect(e.label ?? '').not.toContain(SECRET);
+    }
+    expect(JSON.stringify(registry.createSnapshot())).not.toContain(SECRET);
+  });
+
+  // Content discovery, semantic cards and <details> ids: a content row that
+  // WRAPS a boundary used to scrape its text into label, content and the id.
+  it.each([
+    ['a semantic card wrapping a boundary', `<div data-ui-bridge-content="card">Token <span data-bridge-redact="true">${SECRET}</span></div>`],
+    ['a <details> whose summary holds a boundary', `<details><summary>Key <span data-bridge-redact="true">${SECRET}</span></summary>x</details>`],
+  ])('%s: no snapshot field or id carries the boundary text', async (_case, html) => {
+    const fixture = document.createElement('div');
+    fixture.innerHTML = html;
+    document.body.appendChild(fixture);
+
+    render(<Harness content />);
+    // Content registration has its own debounce (~250ms).
+    await new Promise((r) => setTimeout(r, 300));
+
+    expect(registry.getAllElements().length).toBeGreaterThan(0);
+    const lowered = SECRET.toLowerCase();
+    for (const e of registry.getAllElements()) {
+      expect(e.id.toLowerCase()).not.toContain(lowered);
+      expect(e.label ?? '').not.toContain(SECRET);
+    }
+    expect(JSON.stringify(registry.createSnapshot()).toLowerCase()).not.toContain(lowered);
+  });
+
+  it.each([
+    ['a heading', `<h2 id="t">Key <span data-bridge-redact="true">${SECRET}</span></h2>`],
+    ['a paragraph', `<p id="t">Your code is <b data-bridge-redact="true">${SECRET}</b> today</p>`],
+  ])('content discovery of %s holding a boundary: no label, content or id carries it', (_c, html) => {
+    const fixture = document.createElement('div');
+    fixture.innerHTML = html;
+    document.body.appendChild(fixture);
+
+    const id = registerContentInRegistry(registry, fixture.querySelector<HTMLElement>('#t')!);
+    expect(id).not.toBeNull();
+    const lowered = SECRET.toLowerCase();
+    expect(id!.toLowerCase()).not.toContain(lowered);
+    const reg = registry.getElement(id!)!;
+    expect(reg.label ?? '').not.toContain(SECRET);
+    expect(reg.content ?? '').not.toContain(SECRET);
+    expect(reg.content ?? '').toContain('[REDACTED]');
+    expect(JSON.stringify(registry.createSnapshot()).toLowerCase()).not.toContain(lowered);
+  });
+
+  it('a live region holding a boundary does not leak its prefix in contentMetadata', () => {
+    const fixture = document.createElement('div');
+    fixture.innerHTML = `<div id="t" role="status"><span data-bridge-redact="true">${SECRET}</span> refreshed just now</div>`;
+    document.body.appendChild(fixture);
+    const id = registerContentInRegistry(registry, fixture.querySelector<HTMLElement>('#t')!);
+    expect(id).not.toBeNull();
+    const snap = JSON.stringify(registry.createSnapshot());
+    expect(snap).not.toContain(SECRET.slice(0, 6));
   });
 });

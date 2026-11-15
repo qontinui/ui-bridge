@@ -66,6 +66,19 @@ export {
   DEFAULT_REMOUNT_CACHE_WINDOW_MS,
 } from './registry';
 
+// §4.6 redaction predicates and the sentinel that replaces a redacted string.
+// `verdictOf` carries both axes: VALUE (password input OR `data-bridge-redact`
+// boundary) and CONTENT (boundary only). Exported so a host that reads the live
+// DOM over its own transport, such as the runner's `/tree` subtree read, applies
+// the SDK's own verdict instead of re-deriving the boundary walk.
+export { REDACTED_VALUE, verdictOf, isValueRedacted, isContentRedacted } from './redaction';
+export type { RedactionVerdict } from './redaction';
+
+// The one computed-style projection (ElementState.computedStyles and the
+// component capture's styles map).
+export { projectComputedStyles, projectExtendedComputedStyles } from './computed-styles';
+export type { ProjectedComputedStyles } from './computed-styles';
+
 // Element fingerprinting for state discovery
 export {
   computeElementFingerprint,
@@ -144,6 +157,41 @@ export type {
   FindTransport,
   FindUnevaluated,
 } from './find-filter';
+
+// Request-scoped style / attribute projection — the ONE read behind
+// `properties` / `attributes` on find, discover and element state, and behind
+// the `ai/assert` style and attribute checks.
+export {
+  MAX_PROJECTED_NAMES,
+  MAX_PROJECTION_NAME_LENGTH,
+  MAX_PROJECTION_QUERY_LENGTH,
+  PROJECTABLE_ATTRIBUTES,
+  PROJECTION_OPTIONS,
+  ProjectionRequestError,
+  cssPropertyName,
+  isProjectableAttribute,
+  isProjectablePropertyName,
+  isProjectionRequestError,
+  parseProjectionRequest,
+  projectElement,
+} from './element-projection';
+export type {
+  ElementProjection,
+  ElementProjectionRequest,
+  ProjectionRedacted,
+  ProjectionUnmeasured,
+} from './element-projection';
+
+// Page-level sentinel ids (`document`, `body`, `window`) — the ONE resolver
+// every sentinel site asks: a scroll of the page, and a read of `<html>`
+// (`document` only), which has no registry entry.
+export {
+  PAGE_SENTINEL_IDS,
+  isPageSentinelId,
+  pageSentinelState,
+  resolvePageSentinel,
+} from './page-sentinel';
+export type { PageSentinelId, PageSentinelState, PageSentinelUse } from './page-sentinel';
 
 // Readers for a media row's observation envelope (`mediaMetadata`).
 export { isMediaObservation, mediaFactsOf, unmeasuredMediaDimension } from './media-observation';
