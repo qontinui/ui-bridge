@@ -21,7 +21,11 @@ import {
   findByTextPrimitive,
 } from './page-primitives';
 import { REDACTED_VALUE, readScrubbedText } from '../core/redaction';
-import { computeVisibleText, resolveAccessibleName } from '../core/a11y';
+import {
+  computeAccessibleNameSafe,
+  computeVisibleText,
+  resolveAccessibleName,
+} from '../core/a11y';
 
 afterEach(() => {
   document.body.innerHTML = '';
@@ -185,5 +189,44 @@ describe('truncation never splits the sentinel', () => {
     expect(readScrubbedText(document.getElementById('t'), undefined, { maxLen: 12 })).toBe(
       `ab${REDACTED_VALUE}`
     );
+  });
+});
+
+describe('accessible names read from labels exclude redaction boundaries', () => {
+  it.each([
+    [
+      '<label for>',
+      '<label for="x">Card <span data-bridge-redact="true">4111</span></label><input id="x">',
+      'label',
+    ],
+    [
+      'a wrapping <label>',
+      '<label>Card <span data-bridge-redact="true">4111</span><input id="x"></label>',
+      'label',
+    ],
+    [
+      'aria-labelledby',
+      '<p id="l">Card <b data-bridge-redact="true">4111</b></p><input id="x" aria-labelledby="l">',
+      'aria-labelledby',
+    ],
+  ])('%s: the name carries the sentinel, not the boundary text', (_c, html, source) => {
+    document.body.innerHTML = html;
+    const input = document.getElementById('x')!;
+    expect(computeAccessibleNameSafe(input)).toBe(`Card ${REDACTED_VALUE}`);
+    expect(resolveAccessibleName(input)).toEqual({ name: `Card ${REDACTED_VALUE}`, source });
+  });
+
+  it('a labelledby target INSIDE a boundary reads as the bare sentinel', () => {
+    document.body.innerHTML =
+      '<div data-bridge-redact="true"><p id="l">PIN 9876</p></div><input id="x" aria-labelledby="l">';
+    expect(computeAccessibleNameSafe(document.getElementById('x')!)).toBe(REDACTED_VALUE);
+  });
+
+  it('with no boundary in reach the W3C name is untouched', () => {
+    document.body.innerHTML = '<label for="x">Email address</label><input id="x">';
+    expect(resolveAccessibleName(document.getElementById('x')!)).toEqual({
+      name: 'Email address',
+      source: 'label',
+    });
   });
 });

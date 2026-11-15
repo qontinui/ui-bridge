@@ -386,6 +386,9 @@ export function materializeElements(rawElements: unknown[]): ControlSnapshot['el
     const titleAttr = scrubContent((liveEl ? readTitleAttr(liveEl) : null) ?? undefined, liveEl);
     const ariaRole = liveEl ? computeRoleSafe(liveEl) : undefined;
     const ariaLabel = scrubContent(liveEl ? computeAriaLabel(liveEl) : undefined, liveEl);
+    // `computeAccessibleNameSafe` is boundary-safe (§4.6): a name read from a
+    // subtree, label or labelledby target holding a redaction boundary carries
+    // the sentinel in its place; `scrubContent` then applies the row's own verdict.
     const accessibleName = scrubContent(
       liveEl ? computeAccessibleNameSafe(liveEl) : undefined,
       liveEl

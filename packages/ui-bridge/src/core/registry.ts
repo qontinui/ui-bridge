@@ -68,6 +68,7 @@ import { fuzzyMatch } from '../ai/fuzzy-matcher';
 import {
   verdictOf,
   elementRedaction,
+  readScrubbedText,
   scrubContentByVerdict,
   scrubValueByVerdict,
   scrubContentRequired,
@@ -531,7 +532,7 @@ function getElementState(element: HTMLElement): ElementState {
       bottom: rect.bottom,
       left: rect.left,
     },
-    textContent: scrubContentByVerdict(element.textContent?.trim() || undefined, verdict),
+    textContent: readScrubbedText(element, verdict),
     computedStyles: projectComputedStyles(computedStyle),
     inViewport,
   };
