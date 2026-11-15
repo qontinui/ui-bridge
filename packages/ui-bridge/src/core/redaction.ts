@@ -360,9 +360,7 @@ function indexedTextOutsideBoundaries(index: BoundaryIndex, el: Element): string
     }
     const pending = Array.from(top.children).find(
       (c) =>
-        index.above.has(c) &&
-        !index.text.has(c) &&
-        c.getAttribute(BRIDGE_REDACT_ATTR) !== 'true'
+        index.above.has(c) && !index.text.has(c) && c.getAttribute(BRIDGE_REDACT_ATTR) !== 'true'
     );
     if (pending !== undefined) {
       stack.push(pending);
@@ -541,9 +539,7 @@ export function scrubAliases(aliases: string[], v: RedactionVerdict): Scrubbed<s
  */
 export function trustDeveloperContent(raw: string): Scrubbed<string>;
 export function trustDeveloperContent(raw: string | undefined): Scrubbed<string> | undefined;
-export function trustDeveloperContent(
-  raw: string | undefined
-): Scrubbed<string> | undefined {
+export function trustDeveloperContent(raw: string | undefined): Scrubbed<string> | undefined {
   return raw as Scrubbed<string> | undefined;
 }
 

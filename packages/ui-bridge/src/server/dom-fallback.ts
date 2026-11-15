@@ -13,6 +13,7 @@ import {
   readScrubbedText,
   REDACTED_VALUE,
   verdictOf,
+  withBoundaryIndex,
   type RedactionVerdict,
 } from '../core/redaction';
 import { truncateCodePoints } from '../core/text';
@@ -334,16 +335,21 @@ export function findElementsByText(
   const results: HTMLElement[] = [];
   const searchText = text.toLowerCase();
 
-  candidates.forEach((el) => {
-    // §4.6: an element inside a redaction boundary is never a text match, and
-    // `computeVisibleText` replaces a boundary BELOW a candidate with the
-    // sentinel. Together they keep the match (and so the hit count, and a
-    // click-by-text's found/not-found answer) from confirming redacted text.
-    if (isContentRedacted(el)) return;
-    const elText = computeVisibleText(el)?.toLowerCase() ?? '';
-    if (options?.exact ? elText === searchText : elText.includes(searchText)) {
-      results.push(el);
-    }
+  // The boundaries under the container are indexed once for the whole scan, so
+  // each candidate's boundary-excluded text costs its own children, not a
+  // search and a walk of its entire subtree (candidates x ancestor-subtree).
+  withBoundaryIndex(container, () => {
+    candidates.forEach((el) => {
+      // §4.6: an element inside a redaction boundary is never a text match, and
+      // `computeVisibleText` replaces a boundary BELOW a candidate with the
+      // sentinel. Together they keep the match (and so the hit count, and a
+      // click-by-text's found/not-found answer) from confirming redacted text.
+      if (isContentRedacted(el)) return;
+      const elText = computeVisibleText(el)?.toLowerCase() ?? '';
+      if (options?.exact ? elText === searchText : elText.includes(searchText)) {
+        results.push(el);
+      }
+    });
   });
 
   return results;
