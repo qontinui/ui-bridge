@@ -129,8 +129,9 @@ function nameSourceElements(node: Element): { labelledBy: Element[]; labels: Ele
   const labels: Element[] = [];
   const id = (node as HTMLElement).id;
   if (id && doc) {
-    const forLabel = doc.querySelector(`label[for="${CSS.escape(id)}"]`);
-    if (forLabel) labels.push(forLabel);
+    // Every associated label: accname joins them all, so one holding a
+    // boundary must be seen even when it is not the first.
+    labels.push(...Array.from(doc.querySelectorAll(`label[for="${CSS.escape(id)}"]`)));
   }
   // A node whose `closest` fails is treated as having no wrapping label, the
   // same degradation `attributeNameSource` applies; the subtree and the other
@@ -167,7 +168,7 @@ function boundarySafeName(node: Element, name: string): string | undefined {
     normalizeWhitespace(els.map((el) => textExcludingBoundaries(el) ?? '').join(' ')) ||
     undefined;
   if (labelledBy.length > 0) return safeJoin(labelledBy);
-  if (labels.length > 0) return safeJoin(labels.slice(0, 1));
+  if (labels.length > 0) return safeJoin(labels);
   return computeVisibleText(node);
 }
 
