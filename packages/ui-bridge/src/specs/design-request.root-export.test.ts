@@ -72,6 +72,17 @@ describe('root entry: design-request runtime', () => {
     expect(Array.isArray(res.snapshots)).toBe(true);
   });
 
+  it('answers /control/viewport-constraints with the responsive capture’s constraint', async () => {
+    const root_ = document.documentElement;
+    const narrowed = await root.viewportConstraintsOf({ width: 480 });
+    expect(narrowed).toMatchObject({ success: true, restored: false });
+    expect(root_.style.getPropertyValue('min-width')).toBe('480px');
+    const restored = await root.viewportConstraintsOf({ restore: true });
+    expect(restored.restored).toBe(true);
+    expect(root_.style.getPropertyValue('min-width')).toBe('');
+    await expect(root.viewportConstraintsOf({})).rejects.toBeInstanceOf(root.DesignRequestError);
+  });
+
   it('exports the bounds a host reports against', () => {
     expect(root.MAX_RESPONSIVE_VIEWPORTS).toBe(16);
     expect(root.DEFAULT_AUDIT_ELEMENT_LIMIT).toBeGreaterThan(0);

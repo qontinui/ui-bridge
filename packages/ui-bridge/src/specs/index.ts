@@ -114,7 +114,8 @@ export {
 
 // Design-inspection requests: the one implementation both in-package transports
 // (server handlers, browser command handlers) answer `/design/element/:id/styles`,
-// `/design/snapshot`, `/design/responsive` and `/design/audit` with. Exported so
+// `/design/snapshot`, `/design/responsive`, `/design/audit` and
+// `/control/viewport-constraints` with. Exported so
 // a host with its own dispatcher (the qontinui-runner webview's
 // `useDesignEvents`) answers with the same model instead of a third copy. The
 // root entry already exports the design inspector these functions call, so it
@@ -127,6 +128,7 @@ export {
   designSnapshotOf,
   responsiveSnapshotsOf,
   designAuditOf,
+  viewportConstraintsOf,
   DesignRequestError,
   designFailureCode,
   DEFAULT_DESIGN_RECORD_BUDGET,
@@ -136,6 +138,7 @@ export {
 } from './design-request';
 export type {
   DesignElementSource,
+  ViewportConstraintsResponse,
   ElementStylesResponse,
   AuditResultBounds,
   DesignSelectionReport,

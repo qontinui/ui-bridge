@@ -377,8 +377,13 @@ export interface DesignRegistryLike {
  */
 export const RESPONSIVE_SNAPSHOT_METHOD = 'document-width-constraint' as const;
 
-/** The root inline-style longhands `captureResponsiveSnapshots` sets and restores. */
-const CONSTRAINED_ROOT_PROPERTIES = [
+/**
+ * The root inline-style longhands a root-width constraint sets:
+ * `captureResponsiveSnapshots` sets and restores them per capture, and
+ * `/control/viewport-constraints` (`specs/design-request.ts`) sets and clears
+ * them on request, so both narrow the page the same way.
+ */
+export const CONSTRAINED_ROOT_PROPERTIES = [
   'width',
   'min-width',
   'max-width',
