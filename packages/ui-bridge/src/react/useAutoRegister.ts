@@ -18,7 +18,11 @@ import { useUIBridgeOptional } from './UIBridgeProvider';
 import { trackElementBbox } from './bbox-tracker';
 import { classString } from '../core/class-name';
 import { isBridgeInvisible } from '../core/registry';
-import { isContentRedacted } from '../core/redaction';
+import {
+  hasRedactionBoundaryBelow,
+  isContentRedacted,
+  textExcludingBoundaries,
+} from '../core/redaction';
 import { truncateCodePoints } from '../core/text';
 import {
   readAriaLabelAttr,
@@ -212,13 +216,13 @@ function getAccessibleLabel(element: HTMLElement): string | undefined {
   const labelledBy = readAriaLabelledbyAttr(element);
   if (labelledBy) {
     const labelEl = document.getElementById(labelledBy);
-    if (labelEl) return labelEl.textContent?.trim();
+    if (labelEl) return textExcludingBoundaries(labelEl)?.trim();
   }
 
   // Associated label (for inputs)
   if (element.id) {
     const label = document.querySelector(`label[for="${element.id}"]`);
-    if (label) return label.textContent?.trim();
+    if (label) return textExcludingBoundaries(label)?.trim();
   }
 
   // Title attribute
@@ -229,7 +233,13 @@ function getAccessibleLabel(element: HTMLElement): string | undefined {
   // between block elements and hidden content is excluded), falling back to
   // textContent for elements not in the DOM or where innerText is unavailable.
   // Collapse runs of whitespace so adjacent inline spans get proper separation.
-  const rawText = (readInnerText(element) ?? element.textContent)?.trim();
+  // §4.6: a container of a redaction boundary reads its text with the boundary
+  // replaced by the sentinel (innerText cannot exclude a subtree).
+  const rawText = (
+    hasRedactionBoundaryBelow(element)
+      ? textExcludingBoundaries(element)
+      : (readInnerText(element) ?? element.textContent)
+  )?.trim();
   const text = rawText ? rawText.replace(/\s+/g, ' ') : undefined;
   if (text) {
     // For short labels, return as-is

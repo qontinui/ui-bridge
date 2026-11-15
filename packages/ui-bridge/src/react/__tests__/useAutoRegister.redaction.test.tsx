@@ -138,4 +138,27 @@ describe('useAutoRegister §4.6 F7 — no scrape inside a boundary', () => {
     expect(reg).toBeDefined();
     expect(reg!.label).toBe('Password');
   });
+
+  // A container is not INSIDE a boundary, so its own verdict is clean — but its
+  // label, accessible name and visible text used to be read from a subtree, a
+  // <label> or an aria-labelledby target that holds one, verbatim.
+  it.each([
+    ['a button wrapping a boundary', `<button type="button">Reveal <span data-bridge-redact="true">${SECRET}</span></button>`],
+    ['an input named by <label for> holding a boundary', `<label for="card">Card <span data-bridge-redact="true">${SECRET}</span></label><input id="card">`],
+    ['an input inside a wrapping <label> holding a boundary', `<label>PIN <b data-bridge-redact="true">${SECRET}</b><input></label>`],
+    ['an input named by aria-labelledby pointing into a boundary', `<p id="lbl">Code <b data-bridge-redact="true">${SECRET}</b></p><input aria-labelledby="lbl">`],
+  ])('%s: no snapshot field carries the boundary text', async (_case, html) => {
+    const fixture = document.createElement('div');
+    fixture.innerHTML = html;
+    document.body.appendChild(fixture);
+
+    render(<Harness />);
+    await new Promise((r) => setTimeout(r, 5));
+
+    expect(registry.getAllElements().length).toBeGreaterThan(0);
+    for (const e of registry.getAllElements()) {
+      expect(e.label ?? '').not.toContain(SECRET);
+    }
+    expect(JSON.stringify(registry.createSnapshot())).not.toContain(SECRET);
+  });
 });

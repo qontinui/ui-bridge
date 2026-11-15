@@ -341,6 +341,26 @@ export function textOutsideBoundaries(el: Element): string | null {
 }
 
 /**
+ * The text of `el` as any reader that echoes a NAME or LABEL must see it:
+ * `REDACTED_VALUE` when `el` sits inside a boundary, otherwise its text with
+ * every boundary below replaced by the sentinel (`textOutsideBoundaries`).
+ * Used for the text of a `<label>` or an `aria-labelledby` target, which the
+ * NAMED element's own verdict says nothing about.
+ */
+export function textExcludingBoundaries(el: Element): string | null {
+  if (closestRedactionBoundary(el as HTMLElement) !== null) return REDACTED_VALUE;
+  return textOutsideBoundaries(el);
+}
+
+/**
+ * `true` when `el` is inside a boundary or has one below it — any read of its
+ * subtree text has to go through `textExcludingBoundaries`.
+ */
+export function touchesRedactionBoundary(el: Element): boolean {
+  return closestRedactionBoundary(el as HTMLElement) !== null || hasRedactionBoundaryBelow(el);
+}
+
+/**
  * `truncateCodePoints`, except a cut never leaves a FRAGMENT of
  * `REDACTED_VALUE` (`"[RE"`) that a consumer matching the sentinel would not
  * recognise: a sentinel the cut would split is dropped whole.
