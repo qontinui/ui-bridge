@@ -866,6 +866,9 @@ describe('AssertionExecutor', () => {
       failureCode: string;
       code: string;
       detail?: string;
+      /** What the suggestion must say, and what it must not (the other refusal's hint). */
+      suggests?: string;
+      notSuggests?: string;
     }> = [
       {
         arm: 'hasClass on an element with no live node',
@@ -891,18 +894,46 @@ describe('AssertionExecutor', () => {
         request: { target: 'Submit', type: 'noOverlap', relatedTarget: 'Footer' },
         failureCode: 'UB-OBS-INPUT-MISSING',
         code: 'input_missing',
-        detail: 'rect',
+        detail: 'no layout rect for the related target',
+      },
+      {
+        arm: 'noOverlap whose target has no rect',
+        request: { target: 'Footer', type: 'noOverlap', relatedTarget: 'Submit' },
+        failureCode: 'UB-OBS-INPUT-MISSING',
+        code: 'input_missing',
+        detail: 'no layout rect for the target',
       },
       {
         arm: 'minSpacing with a rect missing',
         request: { target: 'Submit', type: 'minSpacing', relatedTarget: 'Footer', minGap: 8 },
         failureCode: 'UB-OBS-INPUT-MISSING',
         code: 'input_missing',
-        detail: 'rect',
+        detail: 'no layout rect for the related target',
       },
       {
         arm: 'noOverlap naming no relatedTarget',
         request: { target: 'Submit', type: 'noOverlap' },
+        failureCode: 'UB-VALIDATION-ERROR',
+        code: 'no_expectation',
+        detail: '`relatedTarget`',
+        suggests: '`relatedTarget`',
+        notSuggests: 'hasClass',
+      },
+      {
+        arm: 'noOverlap whose relatedTarget is empty criteria',
+        request: { target: 'Submit', type: 'noOverlap', relatedTarget: {} },
+        failureCode: 'UB-VALIDATION-ERROR',
+        code: 'no_expectation',
+        detail: '`relatedTarget`',
+      },
+      {
+        arm: 'minSpacing whose relatedTarget only modifies a search',
+        request: {
+          target: 'Submit',
+          type: 'minSpacing',
+          relatedTarget: { fuzzy: true },
+          minGap: 8,
+        },
         failureCode: 'UB-VALIDATION-ERROR',
         code: 'no_expectation',
         detail: '`relatedTarget`',
@@ -920,6 +951,8 @@ describe('AssertionExecutor', () => {
         failureCode: 'UB-VALIDATION-ERROR',
         code: 'no_expectation',
         detail: '`type`',
+        suggests: 'hasClass',
+        notSuggests: '`relatedTarget`',
       },
       {
         arm: 'an unknown type on a target that resolves nothing',
@@ -938,7 +971,7 @@ describe('AssertionExecutor', () => {
       ] as AIDiscoveredElement[]);
     });
 
-    it.each(rows)('$arm', async ({ request, failureCode, code, detail }) => {
+    it.each(rows)('$arm', async ({ request, failureCode, code, detail, suggests, notSuggests }) => {
       const result = await executor.assert(request);
       expect(result).toMatchObject({
         outcome: 'unmeasured',
@@ -948,6 +981,8 @@ describe('AssertionExecutor', () => {
       });
       expect(result.actual).toBeUndefined();
       if (detail) expect(result.unmeasured!.detail).toContain(detail);
+      if (suggests) expect(result.suggestion).toContain(suggests);
+      if (notSuggests) expect(result.suggestion).not.toContain(notSuggests);
     });
 
     it('a batch holding them all still returns the others, and none passes mode "all"', async () => {
