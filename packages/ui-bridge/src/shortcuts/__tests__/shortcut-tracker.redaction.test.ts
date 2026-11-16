@@ -5,7 +5,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { ShortcutTracker } from '../shortcut-tracker';
 import { REDACTED_VALUE } from '../../core/redaction';
 
-const SECRET = 'SECRET-keys-7714';
+const SECRET = 'test-secret-keys-7714';
 
 afterEach(() => {
   document.body.innerHTML = '';
