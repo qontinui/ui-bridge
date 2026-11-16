@@ -53,3 +53,30 @@ describe('DOMChangeObserver attribute mutations — redaction', () => {
     expect(attr?.details?.newValue).toBe('after');
   });
 });
+
+/**
+ * Records are delivered after the fact: a value written inside a boundary that
+ * the same batch then un-marks or detaches must not be recorded in the clear.
+ */
+describe('DOMChangeObserver batches that move a boundary — redaction', () => {
+  it('a value written inside a boundary that is un-marked in the same batch is scrubbed', async () => {
+    document.body.innerHTML = `<div id="g" data-bridge-redact="true"><button id="b" aria-label="old ${SECRET}">x</button></div>`;
+    const changes = await observe(() => {
+      document.getElementById('b')!.setAttribute('aria-label', `new ${SECRET}`);
+      document.getElementById('g')!.removeAttribute('data-bridge-redact');
+    });
+    expect(JSON.stringify(changes)).not.toContain(SECRET);
+    const label = changes.find((c) => c.details?.attributeName === 'aria-label');
+    expect(label?.details?.oldValue).toBe(REDACTED_VALUE);
+    expect(label?.details?.newValue).toBe(REDACTED_VALUE);
+  });
+
+  it('a value written inside a boundary that is detached in the same batch is scrubbed', async () => {
+    document.body.innerHTML = `<div id="g" data-bridge-redact="true"><button id="b" aria-label="old ${SECRET}">x</button></div>`;
+    const changes = await observe(() => {
+      document.getElementById('b')!.setAttribute('aria-label', `new ${SECRET}`);
+      document.getElementById('g')!.remove();
+    });
+    expect(JSON.stringify(changes)).not.toContain(SECRET);
+  });
+});
