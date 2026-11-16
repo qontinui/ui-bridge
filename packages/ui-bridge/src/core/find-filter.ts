@@ -344,9 +344,9 @@ function liveElement(el: FindFilterableElement): Element | undefined {
 
 /** Best-available text content across the element shapes. */
 function elementText(el: FindFilterableElement): string {
-  if (el.state?.textContent !== undefined) return el.state.textContent;
+  if (el.state?.textContent != null) return el.state.textContent;
   const { textContent: rowText } = el;
-  if (rowText !== undefined) return rowText;
+  if (rowText != null) return rowText;
   // §4.6: a live-DOM row carries no scrubbed text, and a text predicate over
   // raw `textContent` is an oracle for a boundary's content — match against the
   // boundary-excluded read instead.
