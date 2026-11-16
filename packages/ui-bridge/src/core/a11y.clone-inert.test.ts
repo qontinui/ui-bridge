@@ -44,11 +44,13 @@ describe('inputs in the name chain', () => {
     expect(name).toContain(REDACTED_VALUE);
   });
 
-  it('never carries a password value into the clone', () => {
+  it('never carries a password value into the clone, even one given a textbox role', () => {
+    // role="textbox" makes the algorithm read the embedded control's value.
     document.body.innerHTML =
-      '<div role="button" id="x">Pin <input id="p" type="password" value="hunter2"><span data-bridge-redact="true">t</span></div>';
+      '<div id="w">Pin <input id="p" type="password" role="textbox"> <span data-bridge-redact="true">t</span></div><input id="x" aria-labelledby="w">';
     (document.getElementById('p') as HTMLInputElement).value = 'hunter2';
     const name = computeAccessibleNameSafe(document.getElementById('x')!) ?? '';
+    expect(name).toBe(`Pin ${REDACTED_VALUE}`);
     expect(name).not.toContain('hunter2');
   });
 });
