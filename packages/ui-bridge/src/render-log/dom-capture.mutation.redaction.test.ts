@@ -79,4 +79,14 @@ describe('DOMChangeObserver batches that move a boundary — redaction', () => {
     });
     expect(JSON.stringify(changes)).not.toContain(SECRET);
   });
+
+  it('a value written while type=password and un-passworded in the same batch is scrubbed', async () => {
+    document.body.innerHTML = `<input id="pw" type="password" value="${SECRET}-old" />`;
+    const pw = document.getElementById('pw')!;
+    const changes = await observe(() => {
+      pw.setAttribute('value', `${SECRET}-new`);
+      pw.setAttribute('type', 'text');
+    });
+    expect(JSON.stringify(changes)).not.toContain(SECRET);
+  });
 });
