@@ -351,23 +351,40 @@ export function withBoundaryIndex<T>(root: Element, fn: () => T): T {
  * (an explicit stack), so a deep chain of ancestors does not recurse.
  */
 function indexedTextOutsideBoundaries(index: BoundaryIndex, el: Element): string {
-  const stack: Element[] = [el];
+  // One frame per element being composed: its children are snapshotted once and
+  // a cursor advances past each child already settled, so a wide parent costs
+  // one pass over its children, not one rescan per child.
+  interface Frame {
+    el: Element;
+    children: Element[];
+    next: number;
+  }
+  const open = (e: Element): Frame => ({ el: e, children: Array.from(e.children), next: 0 });
+  const stack: Frame[] = [open(el)];
   while (stack.length > 0) {
     const top = stack[stack.length - 1];
-    if (index.text.has(top)) {
+    if (index.text.has(top.el)) {
       stack.pop();
       continue;
     }
-    const pending = Array.from(top.children).find(
-      (c) =>
-        index.above.has(c) && !index.text.has(c) && c.getAttribute(BRIDGE_REDACT_ATTR) !== 'true'
-    );
+    let pending: Element | undefined;
+    while (top.next < top.children.length) {
+      const c = top.children[top.next++];
+      if (
+        index.above.has(c) &&
+        !index.text.has(c) &&
+        c.getAttribute(BRIDGE_REDACT_ATTR) !== 'true'
+      ) {
+        pending = c;
+        break;
+      }
+    }
     if (pending !== undefined) {
-      stack.push(pending);
+      stack.push(open(pending));
       continue;
     }
     let out = '';
-    top.childNodes.forEach((node) => {
+    top.el.childNodes.forEach((node) => {
       if (node.nodeType === ELEMENT_NODE) {
         const child = node as Element;
         if (child.getAttribute(BRIDGE_REDACT_ATTR) === 'true') out += REDACTED_VALUE;
@@ -376,7 +393,7 @@ function indexedTextOutsideBoundaries(index: BoundaryIndex, el: Element): string
         out += node.nodeValue ?? '';
       }
     });
-    index.text.set(top, out);
+    index.text.set(top.el, out);
     stack.pop();
   }
   return index.text.get(el) ?? '';

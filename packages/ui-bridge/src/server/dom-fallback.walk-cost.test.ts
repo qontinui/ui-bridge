@@ -16,20 +16,28 @@ import { findByTextPrimitive } from './page-primitives';
  * are not deterministic. Run:
  *   UIB_MEASURE_WALK_COST=1 npx vitest run src/server/dom-fallback.walk-cost.test.ts
  *
- * Recorded 2026-11-15 (jsdom, node 24, median of 7 runs after a warm-up, ms;
- * 10k = 8.5k elements, every element a candidate, 700 matches). `legacy` is the
- * pre-#395 reader, `#395` is findElementsByText as landed in 6e5c1964 (a
- * querySelector + TreeWalker per candidate), `indexed` is now (one
- * `withBoundaryIndex` scan):
- *   case                 legacy  #395   indexed
- *   10k, boundary none     41     245     102
- *   10k, boundary top      43     267      98
- *   10k, boundary middle   41     260     105
- *   10k, boundary bottom   41     257     103
- *   5k  top                48     142      49
- *   20k top               112     591     211
- *   40k top               197    1056     436
- * Growth is linear in nodes under both readers; #395 was ~6x legacy, indexed ~2.4x.
+ * Recorded 2026-11-16 (jsdom, node 24, median of 7 runs after a warm-up, ms,
+ * on a loaded shared box, so compare columns within a row, not across rows).
+ * `legacy` is the pre-#395 reader; `before` is findElementsByText over one
+ * `withBoundaryIndex` scan with a per-visit `Array.from(children).find` (the
+ * previous revision); `after` is the same scan with a per-frame child cursor
+ * (now). Every element is a candidate. Optional `UIB_WALK_CASES=<regex>` runs
+ * only the matching cases.
+ *   case                          nodes  legacy  before  after
+ *   10k, boundary none             8500    32      89      87
+ *   10k, boundary top              8501    33      93      98
+ *   10k, boundary middle           8501    33      90      99
+ *   10k, boundary bottom           8501    34      88      89
+ *   5k  top                        4251    16      42      46
+ *   20k top                       17001    75     197     197
+ *   40k top                       34001   181     420     428
+ *   10k top, 1 section             8006    33     141     188
+ *   10k top, 1 section, deep 200   8202   443     954    1035
+ *   wide parent, 1k rows           4001    12   11020      66
+ * Growth is linear in nodes everywhere except the wide parent, where the old
+ * rescan was super-linear (1k rows: 11 s; 5k rows did not finish in 10 min) and
+ * is now a single pass over the parent's children. The other rows are within
+ * run-to-run noise of each other.
  */
 const MEASURE = process.env.UIB_MEASURE_WALK_COST === '1';
 const RUNS = 7;
@@ -107,6 +115,30 @@ function buildPage(sections: number, rows: number, depth: number, at: BoundaryAt
   return root;
 }
 
+/**
+ * One parent with `rows` direct children, each a row holding a label span, a
+ * value span and a redacted `<p data-bridge-redact>` cell: every child is an
+ * ancestor of a boundary, so the parent's text composes `rows` pending children.
+ */
+function buildWideParent(rows: number): HTMLElement {
+  const root = document.createElement('div');
+  const parent = document.createElement('section');
+  for (let r = 0; r < rows; r++) {
+    const row = document.createElement('div');
+    const a = document.createElement('span');
+    a.textContent = `label ${r}`;
+    const b = document.createElement('span');
+    b.textContent = r % 50 === 0 ? 'needle value' : `value ${r}`;
+    const cell = document.createElement('p');
+    cell.setAttribute('data-bridge-redact', 'true');
+    cell.textContent = 'secret-123-45-6789';
+    row.append(a, b, cell);
+    parent.appendChild(row);
+  }
+  root.appendChild(parent);
+  return root;
+}
+
 function median(ms: number[]): number {
   const s = [...ms].sort((x, y) => x - y);
   return s[Math.floor(s.length / 2)];
@@ -128,8 +160,14 @@ describe.skipIf(!MEASURE)('find-by-text boundary walk cost (measurement)', () =>
     document.body.replaceChildren();
   });
 
-  const cases: { label: string; sections: number; rows: number; depth: number; at: BoundaryAt }[] =
-    [];
+  const cases: {
+    label: string;
+    sections: number;
+    rows: number;
+    depth: number;
+    at: BoundaryAt;
+    wide?: boolean;
+  }[] = [];
   for (const at of ['none', 'top', 'middle', 'bottom'] as BoundaryAt[]) {
     cases.push({ label: `10k ${at}`, sections: 100, rows: 20, depth: 4, at });
   }
@@ -147,11 +185,22 @@ describe.skipIf(!MEASURE)('find-by-text boundary walk cost (measurement)', () =>
     at: 'top',
   });
 
-  it('prints the table', { timeout: 600_000 }, () => {
+  cases.push({
+    label: 'wide parent 1k rows',
+    sections: 1,
+    rows: 1000,
+    depth: 0,
+    at: 'top',
+    wide: true,
+  });
+
+  it('prints the table', { timeout: 3_600_000 }, () => {
     const lines: string[] = [];
     lines.push('case | nodes | candidates | matches | legacy ms | after ms | ratio | primitive ms');
+    const only = process.env.UIB_WALK_CASES ? new RegExp(process.env.UIB_WALK_CASES) : null;
     for (const c of cases) {
-      const root = buildPage(c.sections, c.rows, c.depth, c.at);
+      if (only && !only.test(c.label)) continue;
+      const root = c.wide ? buildWideParent(c.rows) : buildPage(c.sections, c.rows, c.depth, c.at);
       document.body.appendChild(root);
       const nodes = root.querySelectorAll('*').length;
       const legacy = time(() => legacyFindElementsByText(root, 'needle', false));
@@ -165,8 +214,8 @@ describe.skipIf(!MEASURE)('find-by-text boundary walk cost (measurement)', () =>
       lines.push(
         `${c.label} | ${nodes} | ${nodes} | ${matches} | ${legacy.toFixed(1)} | ${after.toFixed(1)} | ${(after / legacy).toFixed(2)}x | ${prim.toFixed(1)}`
       );
+      process.stdout.write(lines[lines.length - 1] + '\n');
       root.remove();
     }
-    process.stdout.write('\n' + lines.join('\n') + '\n');
   });
 });
