@@ -18,7 +18,7 @@
 
 import { computeDiff } from '../ai/semantic-diff';
 import type { SemanticSnapshot, ElementChange } from '../ai/types';
-import { computeVerification } from './effect-containment';
+import { attributeConcurrentChanges, computeVerification } from './effect-containment';
 import { settleMsForAction } from './settle-windows';
 import {
   getGlobalActionWindowRegistry,
@@ -97,13 +97,24 @@ export class EffectVerifier {
    * the window's un-anchored bound ({@link unanchoredBoundForTimeout}) so a
    * legitimately long action keeps its window for as long as it may run. If the
    * window expires anyway before the settle starts, the cause is reported as
-   * `'unknown'` (unless a concurrent observation was already seen: `'mixed'`).
+   * `'unknown'` (unless a foreign concurrent change was already seen: `'mixed'`).
+   *
+   * `options.ownedElementIds` names the ids (exact or glob) the action may
+   * change itself beyond `params.elementId` — for a component action, the
+   * component id and its registered element ids. It is read at attribution
+   * time (step 7). A concurrent observation that touches only owned ids,
+   * predicted elements or `signature.incidental` UI does not make the cause
+   * `'mixed'`.
    */
   async verifyAction<T>(
     params: ActionParams,
     signature: EffectSignature,
     executeFn: () => Promise<T>,
-    options?: { alsoPredict?: EffectSignature; timeoutMs?: number },
+    options?: {
+      alsoPredict?: EffectSignature;
+      timeoutMs?: number;
+      ownedElementIds?: () => readonly string[];
+    },
   ): Promise<{
     result: T;
     verification: EffectVerification;
@@ -168,17 +179,25 @@ export class EffectVerifier {
       // 6. Post-snapshot.
       const post = await this.deps.captureSnapshot(signature.scope);
 
-      // 7. Attribution: if a significant background change landed in this
-      //    window, the cause is 'mixed' (concurrent observational change
-      //    alongside the causal one). If the window expired before the settle
-      //    with no observation seen, attribution is 'unknown' — later
-      //    observations were dropped, so a clean 'causal' would be a guess.
-      //    Otherwise it is 'causal'. Read the flag BEFORE ending the window.
-      const cause: EffectCause = registry.hadConcurrentObservation(windowHandle)
-        ? 'mixed'
-        : anchored
-          ? 'causal'
-          : 'unknown';
+      // 7. Attribution: if a background change recorded in this window
+      //    touched an element the action does not own, the cause is 'mixed'
+      //    (concurrent observational change alongside the causal one). The
+      //    action's own UI — the acting element, owned ids, predicted
+      //    elements, declared `incidental` criteria — is not foreign. If the
+      //    window expired before the settle with no foreign change seen,
+      //    attribution is 'unknown' — later observations were dropped, so a
+      //    clean 'causal' would be a guess. Otherwise it is 'causal'. Read the
+      //    observations BEFORE ending the window.
+      const ownedIds = [params.elementId, ...(options?.ownedElementIds?.() ?? [])].filter(
+        (id): id is string => typeof id === 'string' && id.length > 0,
+      );
+      const foreign = attributeConcurrentChanges(
+        registry.concurrentObservations(windowHandle),
+        predicted,
+        { elementIds: ownedIds, incidental: signature.incidental ?? [] },
+        pre,
+      );
+      const cause: EffectCause = foreign ? 'mixed' : anchored ? 'causal' : 'unknown';
 
       // 8. Observed delta via the existing diff engine (reused, not reimplemented).
       const diff = computeDiff(pre, post);
