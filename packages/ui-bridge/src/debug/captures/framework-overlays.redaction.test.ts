@@ -83,4 +83,20 @@ describe('framework error overlays — redaction boundaries', () => {
     expect(overlays[0].message).toBe(REDACTED_VALUE);
     expect(JSON.stringify(overlays)).not.toContain(SECRET);
   });
+
+  it("the host walk needs no ShadowRoot global (absent, or another realm's class)", () => {
+    document.body.innerHTML = `<div data-bridge-redact="true"><nextjs-portal id="p"></nextjs-portal></div>`;
+    const shadow = document.getElementById('p')!.attachShadow({ mode: 'open' });
+    shadow.innerHTML = `<div data-nextjs-dialog><div data-nextjs-dialog-body>${SECRET}-body</div></div>`;
+    const g = globalThis as { ShadowRoot?: unknown };
+    const saved = g.ShadowRoot;
+    g.ShadowRoot = undefined;
+    try {
+      const overlays = getActiveOverlays();
+      expect(overlays[0].message).toBe(REDACTED_VALUE);
+      expect(JSON.stringify(overlays)).not.toContain(SECRET);
+    } finally {
+      g.ShadowRoot = saved;
+    }
+  });
 });
