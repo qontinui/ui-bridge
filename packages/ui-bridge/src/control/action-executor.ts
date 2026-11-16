@@ -2384,7 +2384,17 @@ export class DefaultActionExecutor implements ActionExecutor {
           runHandler,
           // The action's own timeout sizes the window's un-anchored bound, so a
           // legitimately long action keeps its window for as long as it runs.
-          { alsoPredict: otherArm, timeoutMs }
+          // The component and its registered elements are the action's own:
+          // a concurrent observation of its progress UI is not foreign. Read
+          // at attribution time, so elements registered mid-action count.
+          {
+            alsoPredict: otherArm,
+            timeoutMs,
+            ownedElementIds: () => [
+              componentId,
+              ...(this.registry.getComponent(componentId)?.elementIds ?? []),
+            ],
+          }
         );
         outcome = verified.result;
         effectVerification = verified.verification;

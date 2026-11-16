@@ -21,6 +21,7 @@ import {
 import {
   getGlobalActionWindowRegistry,
   resetGlobalActionWindowRegistry,
+  type ConcurrentChange,
 } from './action-window-registry';
 import { resetGlobalEffectStore, getGlobalEffectStore } from './effect-store';
 import type { EffectSignature, PredictedDelta } from './effect-types';
@@ -347,7 +348,7 @@ describe('Phase 5 — component-action effect verification', () => {
 
     expect(res.success).toBe(false);
     expect(res.error).toContain('boom');
-    expect(getGlobalActionWindowRegistry().hadConcurrentObservationForRequest('req-throw')).toBe(false);
+    expect(getGlobalActionWindowRegistry().openCount).toBe(0);
   });
 
   /**
@@ -356,13 +357,21 @@ describe('Phase 5 — component-action effect verification', () => {
    * returns; `observeAtMs` instead lands one that many ms after the action
    * starts. The default un-anchored bound is 30 s, so a 60 s action outlives
    * it unless its own timeout sizes the window.
+   *
+   * Each observation records `observed` (default: an unrelated toast, which
+   * the action does not own). `elementIds` and `incidental` declare what the
+   * component action owns.
    */
   async function runLongComponentAction(opts: {
     actionMs: number;
     timeoutMs?: number;
     observeLate: boolean;
     observeAtMs?: number;
+    observed?: ConcurrentChange[];
+    elementIds?: string[];
+    incidental?: EffectSignature['incidental'];
   }) {
+    const observed = opts.observed ?? [{ kind: 'appeared', elementId: 'toast-1', type: 'div' }];
     let clock = 100_000;
     const executor = new DefaultActionExecutor(registry, undefined, {
       effectTiming: {
@@ -374,17 +383,21 @@ describe('Phase 5 — component-action effect verification', () => {
     });
     registry.registerComponent('drawer', {
       name: 'Drawer',
+      ...(opts.elementIds !== undefined ? { elementIds: opts.elementIds } : {}),
       actions: [
         {
           id: 'open',
-          signature: appearSignature('panel-long'),
+          signature: appearSignature('panel-long', { incidental: opts.incidental }),
           handler: () => {
             if (opts.observeAtMs !== undefined) {
-              getGlobalActionWindowRegistry().recordConcurrentObservation(clock + opts.observeAtMs);
+              getGlobalActionWindowRegistry().recordConcurrentObservation(
+                clock + opts.observeAtMs,
+                observed
+              );
             }
             clock += opts.actionMs;
             if (opts.observeLate) {
-              getGlobalActionWindowRegistry().recordConcurrentObservation(clock - 1);
+              getGlobalActionWindowRegistry().recordConcurrentObservation(clock - 1, observed);
             }
             return reveal('panel-long')();
           },
@@ -403,6 +416,59 @@ describe('Phase 5 — component-action effect verification', () => {
       actionMs: 60_000,
       timeoutMs: 120_000,
       observeLate: true,
+    });
+
+    expect(res.success).toBe(true);
+    expect(res.effectVerification?.cause).toBe('mixed');
+    expect(res.effectVerification?.outcome).toBe('Surprise');
+  });
+
+  // Arming gate (plan 2026-11-13-ui-bridge-effect-verifier-counts-an-actions-own-dom-changes-as-concurrent):
+  // the action's OWN progress UI appearing inside its window is not
+  // concurrent background activity.
+  it("arming gate: a slow component action whose own progress element appears mid-window reads 'causal' / Confirmed", async () => {
+    const res = await runLongComponentAction({
+      actionMs: 20_000,
+      observeLate: false,
+      observeAtMs: 10_000,
+      // The component registered its progress bar as one of its elements.
+      elementIds: ['drawer-progress'],
+      observed: [{ kind: 'appeared', elementId: 'drawer-progress', type: 'progressbar' }],
+    });
+
+    expect(res.success).toBe(true);
+    expect(res.effectVerification?.cause).toBe('causal');
+    expect(res.effectVerification?.outcome).toBe('Confirmed');
+  });
+
+  it("a slow component action whose declared incidental spinner appears mid-window reads 'causal' / Confirmed", async () => {
+    const res = await runLongComponentAction({
+      actionMs: 20_000,
+      observeLate: false,
+      observeAtMs: 10_000,
+      // Not a registered element of the component — owned by declaration.
+      incidental: [{ id: 'busy-*' }],
+      observed: [
+        { kind: 'appeared', elementId: 'busy-spinner', type: 'div' },
+        { kind: 'disappeared', elementId: 'busy-placeholder', type: 'div' },
+      ],
+    });
+
+    expect(res.success).toBe(true);
+    expect(res.effectVerification?.cause).toBe('causal');
+    expect(res.effectVerification?.outcome).toBe('Confirmed');
+  });
+
+  it("the same slow action reads 'mixed' when an element it does not own changes mid-window", async () => {
+    const res = await runLongComponentAction({
+      actionMs: 20_000,
+      observeLate: false,
+      observeAtMs: 10_000,
+      elementIds: ['drawer-progress'],
+      observed: [
+        { kind: 'appeared', elementId: 'drawer-progress', type: 'progressbar' },
+        { kind: 'appeared', elementId: 'toast-1', type: 'div' },
+      ],
     });
 
     expect(res.success).toBe(true);

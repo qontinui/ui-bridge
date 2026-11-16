@@ -11,11 +11,15 @@
  * starts, and closes it with {@link ActionWindowRegistry.end} right after the
  * post-snapshot. While a window is open, the BackgroundObserver calls {@link
  * ActionWindowRegistry.recordConcurrentObservation} whenever it detects a
- * significant change — flagging every currently-open window. The verifier then
- * reads {@link ActionWindowRegistry.hadConcurrentObservation} to decide whether
- * the cause is `'causal'` (clean) or `'mixed'` (concurrent background activity
- * muddied the window) — or `'unknown'`, when the window expired un-anchored
- * and later observations could not be attributed at all.
+ * significant change, passing the changes it saw — recording them into every
+ * currently-open window. The verifier then reads {@link
+ * ActionWindowRegistry.concurrentObservations} and attributes the recorded
+ * changes ({@link ./effect-containment#attributeConcurrentChanges}): `'mixed'`
+ * when one touches an element the action does not own, `'causal'` when every
+ * one is the action's own UI — or `'unknown'`, when the window expired
+ * un-anchored and later observations could not be attributed at all.
+ *
+ * The registry only records; it never judges which changes are the action's.
  *
  * Pure bookkeeping: no DOM access, no timers. Fully unit-testable.
  */
@@ -26,16 +30,45 @@ declare const actionWindowHandleBrand: unique symbol;
  * Opaque handle for one opened window, returned by {@link
  * ActionWindowRegistry.beginAction} and passed back to {@link
  * ActionWindowRegistry.anchorSettle}, {@link ActionWindowRegistry.end} and
- * {@link ActionWindowRegistry.hadConcurrentObservation}. Unique per registry,
+ * {@link ActionWindowRegistry.concurrentObservations}. Unique per registry,
  * so two overlapping actions that share a client requestId keep separate
  * windows. NOT meaningful across registries: every registry numbers its
  * handles from 1, so a handle issued by another registry may address one of
  * this registry's windows. The brand stops a plain number or a request id
  * being passed by accident at compile time; it is not a runtime proof of
- * origin. A request-id lookup is a separate method, {@link
- * ActionWindowRegistry.hadConcurrentObservationForRequest}.
+ * origin.
  */
 export type ActionWindowHandle = number & { readonly [actionWindowHandleBrand]: true };
+
+/**
+ * One change a concurrent observation saw, as the BackgroundObserver reports
+ * it. `elementId` names the element the change touched; it is absent for a
+ * `'page'` change (URL) and for any change the observer could not tie to one
+ * element — the verifier treats the latter as unattributable (foreign).
+ */
+export interface ConcurrentChange {
+  kind: 'appeared' | 'disappeared' | 'modified' | 'content' | 'page';
+  elementId?: string;
+  description?: string;
+  type?: string;
+  semanticType?: string;
+}
+
+/**
+ * What one window's concurrent observations recorded, as read by the
+ * verifier. `saw` is true when at least one observation landed inside the
+ * window (even one with an empty change list); `overflow` is true when more
+ * than {@link MAX_CONCURRENT_CHANGES_PER_WINDOW} changes were recorded and the
+ * rest were dropped, so `changes` is incomplete.
+ */
+export interface ConcurrentObservations {
+  saw: boolean;
+  changes: ConcurrentChange[];
+  overflow: boolean;
+}
+
+/** Most changes one window retains; past it the window is marked overflowed. */
+export const MAX_CONCURRENT_CHANGES_PER_WINDOW = 256;
 
 /**
  * A single in-flight action settle window.
@@ -65,6 +98,10 @@ export interface ActionWindow {
   unanchoredDeadlineMs: number;
   /** Set true the first time a concurrent observation lands inside this window. */
   sawConcurrentObservation: boolean;
+  /** Every change recorded by observations inside this window, capped. */
+  concurrentChanges: ConcurrentChange[];
+  /** True once more changes arrived than {@link MAX_CONCURRENT_CHANGES_PER_WINDOW}. */
+  concurrentOverflow: boolean;
 }
 
 /** How many recently-ended windows to retain so the flag survives `end()`. */
@@ -103,17 +140,18 @@ export function unanchoredBoundForTimeout(timeoutMs: number | undefined): number
 }
 
 interface EndedWindow {
-  requestId: string;
   saw: boolean;
+  changes: ConcurrentChange[];
+  overflow: boolean;
 }
 
 export class ActionWindowRegistry {
   /** Currently-open windows, keyed by their unique handle. */
   private readonly open = new Map<ActionWindowHandle, ActionWindow>();
   /**
-   * Bounded snapshot of the `sawConcurrentObservation` flag for the last
-   * {@link RECENTLY_ENDED_CAP} ended windows, so the verifier can read the
-   * flag a moment after calling {@link end}. Insertion-ordered (oldest first)
+   * Bounded snapshot of the concurrent observations of the last {@link
+   * RECENTLY_ENDED_CAP} ended windows, so the verifier can read them a moment
+   * after calling {@link end}. Insertion-ordered (oldest first)
    * so eviction is a cheap shift of the first key.
    */
   private readonly recentlyEnded = new Map<ActionWindowHandle, EndedWindow>();
@@ -152,6 +190,8 @@ export class ActionWindowRegistry {
       endMs: Number.POSITIVE_INFINITY,
       unanchoredDeadlineMs: nowMs + maxOpenMs,
       sawConcurrentObservation: false,
+      concurrentChanges: [],
+      concurrentOverflow: false,
     });
     return handle;
   }
@@ -182,10 +222,9 @@ export class ActionWindowRegistry {
   }
 
   /**
-   * Close a window. Captures the window's `sawConcurrentObservation` flag into
-   * a small bounded recently-ended map so a later
-   * {@link hadConcurrentObservation} still returns the right value briefly
-   * after the window closed. No-op for an unknown (or already pruned) handle.
+   * Close a window. Captures the window's concurrent observations into a small
+   * bounded recently-ended map so a later {@link concurrentObservations} still
+   * returns them briefly after the window closed. No-op for an unknown (or already pruned) handle.
    */
   end(handle: ActionWindowHandle): void {
     const window = this.open.get(handle);
@@ -203,42 +242,46 @@ export class ActionWindowRegistry {
   }
 
   /**
-   * Flag every currently-open window whose interval contains `atMs` as having
-   * seen a concurrent observation. Called by the BackgroundObserver on each
-   * concurrent background activity.
+   * Record a concurrent observation into every currently-open window whose
+   * interval contains `atMs`: the window is flagged as having seen one, and
+   * `changes` are appended to its list (capped at {@link
+   * MAX_CONCURRENT_CHANGES_PER_WINDOW}; past it the window is marked
+   * overflowed). Called by the BackgroundObserver on each significant
+   * background diff, with the changes that diff contained. The list is
+   * required: the verifier can attribute only what the caller names.
    */
-  recordConcurrentObservation(atMs: number): void {
+  recordConcurrentObservation(atMs: number, changes: readonly ConcurrentChange[]): void {
     this.pruneExpired(atMs);
     for (const w of this.open.values()) {
-      if (contains(w, atMs)) {
-        w.sawConcurrentObservation = true;
+      if (!contains(w, atMs)) continue;
+      w.sawConcurrentObservation = true;
+      for (const change of changes) {
+        if (w.concurrentChanges.length >= MAX_CONCURRENT_CHANGES_PER_WINDOW) {
+          w.concurrentOverflow = true;
+          break;
+        }
+        w.concurrentChanges.push({ ...change });
       }
     }
   }
 
   /**
-   * Did exactly this (possibly already-ended) window see a concurrent
-   * observation? Reads the open window, else the bounded recently-ended map.
-   * Returns `false` for an unknown handle.
+   * What exactly this (possibly already-ended) window's concurrent
+   * observations recorded. Reads the open window, else the bounded
+   * recently-ended map. An unknown handle reads as nothing seen.
    */
-  hadConcurrentObservation(handle: ActionWindowHandle): boolean {
+  concurrentObservations(handle: ActionWindowHandle): ConcurrentObservations {
     const open = this.open.get(handle);
-    if (open) return open.sawConcurrentObservation;
-    return this.recentlyEnded.get(handle)?.saw ?? false;
-  }
-
-  /**
-   * Convenience lookup by request id: the newest open window with that
-   * requestId, else the newest recently-ended one. Returns `false` for an
-   * unknown requestId.
-   */
-  hadConcurrentObservationForRequest(requestId: string): boolean {
-    const openMatch = newest([...this.open.values()].filter((w) => w.requestId === requestId));
-    if (openMatch) return openMatch.sawConcurrentObservation;
-    const endedMatch = newest(
-      [...this.recentlyEnded.values()].filter((w) => w.requestId === requestId)
-    );
-    return endedMatch?.saw ?? false;
+    if (open) {
+      return {
+        saw: open.sawConcurrentObservation,
+        changes: [...open.concurrentChanges],
+        overflow: open.concurrentOverflow,
+      };
+    }
+    const ended = this.recentlyEnded.get(handle);
+    if (!ended) return { saw: false, changes: [], overflow: false };
+    return { saw: ended.saw, changes: [...ended.changes], overflow: ended.overflow };
   }
 
   /** Number of currently-open windows (test/diagnostic aid). */
@@ -256,8 +299,9 @@ export class ActionWindowRegistry {
   private close(window: ActionWindow): void {
     this.open.delete(window.handle);
     this.recentlyEnded.set(window.handle, {
-      requestId: window.requestId,
       saw: window.sawConcurrentObservation,
+      changes: window.concurrentChanges,
+      overflow: window.concurrentOverflow,
     });
     while (this.recentlyEnded.size > RECENTLY_ENDED_CAP) {
       const oldest = this.recentlyEnded.keys().next().value;
@@ -270,11 +314,6 @@ export class ActionWindowRegistry {
 /** Does window `w` contain `atMs` (inclusive), honouring the un-anchored bound? */
 function contains(w: ActionWindow, atMs: number): boolean {
   return atMs >= w.startMs && atMs <= w.endMs && atMs <= w.unanchoredDeadlineMs;
-}
-
-/** The last element (insertion order = newest last), or undefined. */
-function newest<T>(items: T[]): T | undefined {
-  return items[items.length - 1];
 }
 
 // ---------------------------------------------------------------------------

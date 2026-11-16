@@ -133,9 +133,13 @@ describe('Phase 6 — predict a component action without invoking it', () => {
 
     // A store entry records a predict-then-VERIFY cycle. Nothing was verified.
     expect(getGlobalEffectStore().size).toBe(0);
-    // No settle window was opened for this request id, so a concurrent
-    // background observation cannot be attributed to a call that did nothing.
-    expect(getGlobalActionWindowRegistry().hadConcurrentObservationForRequest('req-predict')).toBe(false);
+    // No settle window was opened at all, so a concurrent background
+    // observation cannot be attributed to a call that did nothing. The
+    // registry was reset in beforeEach, so had predict opened (and closed) a
+    // window, the next handle issued would not be the first.
+    const windows = getGlobalActionWindowRegistry();
+    expect(windows.openCount).toBe(0);
+    expect(windows.beginAction('probe', 'click', 0)).toBe(1);
   });
 
   it('predicting twice is idempotent — same answer, still no invocation', async () => {

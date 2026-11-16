@@ -1,11 +1,13 @@
 /**
  * Tests for the D3 Effect Calculus pure containment core
  * ({@link computeVerification}). Covers every outcome in the §3.4 table plus
- * the §6.3 active-negation edge case and the mixed-cause downgrade.
+ * the §6.3 active-negation edge case and the mixed-cause downgrade, and the
+ * concurrent-change attribution ({@link attributeConcurrentChanges}).
  */
 
 import { describe, it, expect } from 'vitest';
-import { computeVerification } from '../effect-containment';
+import { attributeConcurrentChanges, computeVerification } from '../effect-containment';
+import type { ConcurrentChange, ConcurrentObservations } from '../action-window-registry';
 import type {
   PredictedDelta,
   ObservedDelta,
@@ -328,5 +330,128 @@ describe('computeVerification — elementsModify', () => {
     // predicted value-mod not satisfied (property mismatch) AND observed
     // focused-mod not predicted → P⊄O, no active negation → Failure.
     expect(v.outcome).toBe('Failure');
+  });
+});
+
+describe('attributeConcurrentChanges — is a recorded concurrent change foreign?', () => {
+  function obs(changes: ConcurrentChange[], overflow = false): ConcurrentObservations {
+    return { saw: true, changes, overflow };
+  }
+  const NOTHING_OWNED = { elementIds: [], incidental: [] };
+  const PRE = makeSnapshot(['menu-btn', 'existing-banner']);
+
+  it('nothing recorded is not foreign', () => {
+    expect(attributeConcurrentChanges({ saw: false, changes: [], overflow: false }, {}, NOTHING_OWNED, PRE)).toBe(
+      false
+    );
+  });
+
+  it('an owned id (exact or glob) is not foreign', () => {
+    const owned = { elementIds: ['drawer', 'drawer-progress-*'], incidental: [] };
+    expect(
+      attributeConcurrentChanges(
+        obs([
+          { kind: 'modified', elementId: 'drawer' },
+          { kind: 'appeared', elementId: 'drawer-progress-bar', type: 'div' },
+        ]),
+        {},
+        owned,
+        PRE
+      )
+    ).toBe(false);
+  });
+
+  it('an incidental-criterion match is not foreign', () => {
+    const owned = { elementIds: [], incidental: [{ role: 'progressbar' }] };
+    expect(
+      attributeConcurrentChanges(
+        obs([{ kind: 'appeared', elementId: 'anon-42', type: 'progressbar' }]),
+        {},
+        owned,
+        PRE
+      )
+    ).toBe(false);
+  });
+
+  it('a predicted element is not foreign', () => {
+    const predicted: PredictedDelta = {
+      elementsAppear: [{ id: 'user-menu' }],
+      elementsModify: [{ criteria: { id: 'menu-btn' }, expect: {} }],
+    };
+    expect(
+      attributeConcurrentChanges(
+        obs([
+          { kind: 'appeared', elementId: 'user-menu', type: 'menu' },
+          { kind: 'modified', elementId: 'menu-btn' },
+        ]),
+        predicted,
+        NOTHING_OWNED,
+        PRE
+      )
+    ).toBe(false);
+  });
+
+  it('a change on an id the action does not own is foreign (mixed)', () => {
+    const owned = { elementIds: ['drawer'], incidental: [{ id: 'spinner' }] };
+    expect(
+      attributeConcurrentChanges(
+        obs([
+          { kind: 'modified', elementId: 'drawer' },
+          { kind: 'appeared', elementId: 'toast-1', type: 'div' },
+        ]),
+        { elementsAppear: [{ id: 'user-menu' }] },
+        owned,
+        PRE
+      )
+    ).toBe(true);
+  });
+
+  it('a change pre already reflects is dropped (the tick diffed across the window start)', () => {
+    // 'existing-banner' is in pre: its "appeared" happened before the action.
+    expect(
+      attributeConcurrentChanges(
+        obs([{ kind: 'appeared', elementId: 'existing-banner', type: 'div' }]),
+        {},
+        NOTHING_OWNED,
+        PRE
+      )
+    ).toBe(false);
+    // 'gone-toast' is already absent from pre: its "disappeared" did too.
+    expect(
+      attributeConcurrentChanges(
+        obs([{ kind: 'disappeared', elementId: 'gone-toast', type: 'div' }]),
+        {},
+        NOTHING_OWNED,
+        PRE
+      )
+    ).toBe(false);
+    // An element that was in pre and then disappeared is NOT dropped.
+    expect(
+      attributeConcurrentChanges(
+        obs([{ kind: 'disappeared', elementId: 'existing-banner', type: 'div' }]),
+        {},
+        NOTHING_OWNED,
+        PRE
+      )
+    ).toBe(true);
+  });
+
+  it('an overflowed change list is foreign, even when every kept change is owned', () => {
+    const owned = { elementIds: ['drawer'], incidental: [] };
+    expect(
+      attributeConcurrentChanges(obs([{ kind: 'modified', elementId: 'drawer' }], true), {}, owned, PRE)
+    ).toBe(true);
+  });
+
+  it('a non-page change naming no element is foreign', () => {
+    expect(attributeConcurrentChanges(obs([{ kind: 'content' }]), {}, NOTHING_OWNED, PRE)).toBe(true);
+  });
+
+  it('a page change is owned only when the prediction carries navigationTo', () => {
+    const page: ConcurrentChange[] = [{ kind: 'page' }];
+    expect(attributeConcurrentChanges(obs(page), {}, NOTHING_OWNED, PRE)).toBe(true);
+    expect(attributeConcurrentChanges(obs(page), { navigationTo: '/next' }, NOTHING_OWNED, PRE)).toBe(
+      false
+    );
   });
 });

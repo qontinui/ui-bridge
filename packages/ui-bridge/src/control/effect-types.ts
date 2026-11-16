@@ -191,6 +191,15 @@ export interface EffectSignature {
   provenance?: 'declared' | 'inferred';
   /** For inferred signatures: mean measured confidence across kept consequences, 0..1. */
   confidence?: number;
+  /**
+   * This action's own transient UI (progress, spinner, busy state). A
+   * concurrent background observation that touches an element matching one of
+   * these criteria is attributed to the action, not counted as foreign
+   * activity. It is excluded from concurrent attribution ONLY — never from
+   * O ⊆ P, so a declared spinner left behind after the settle is still an
+   * unpredicted change.
+   */
+  incidental?: IRElementCriteria[];
 }
 
 // ---------------------------------------------------------------------------

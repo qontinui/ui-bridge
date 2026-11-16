@@ -547,7 +547,9 @@ describe('captureComponent — truncation', () => {
     expect(result.capture.unknownChecks).toContain(
       `nodes: truncated at ${MAX_CAPTURE_NODES}; deeper nodes not captured`
     );
-  });
+    // Captures MAX_CAPTURE_NODES+ jsdom nodes (computed style per node): CPU-bound
+    // and exceeded the 5s default on a loaded CI runner. Not a hang.
+  }, 30_000);
 });
 
 describe('capture refusal envelope', () => {
