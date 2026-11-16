@@ -18,6 +18,7 @@
 import type { IRElementCriteria } from '../react/ir-types';
 import { impliedAriaRole } from '../core/element-kind';
 import type { SemanticSnapshot, ElementChange, ElementModification } from '../ai/types';
+import type { ConcurrentChange, ConcurrentObservations } from './action-window-registry';
 import type {
   PredictedDelta,
   ObservedDelta,
@@ -411,4 +412,81 @@ export function computeVerification(
     cause,
     durationMs,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Concurrent attribution — is a recorded background change the action's own?
+// ---------------------------------------------------------------------------
+
+/**
+ * The elements an action owns for concurrent attribution: ids (exact or glob)
+ * it may change itself — the acting element, a component's id and registered
+ * element ids — and its declared {@link ./effect-types#EffectSignature}
+ * `incidental` UI criteria (progress, spinner, busy state).
+ */
+export interface OwnedElements {
+  elementIds: readonly string[];
+  incidental: readonly IRElementCriteria[];
+}
+
+/** Does `pre` already reflect this change (the observer diffed across the window start)? */
+function preReflects(change: ConcurrentChange, pre: SemanticSnapshot): boolean {
+  if (change.elementId === undefined) return false;
+  const id = change.elementId;
+  const inPre = pre.elements.some((el) => el.id === id);
+  if (change.kind === 'appeared') return inPre;
+  if (change.kind === 'disappeared') return !inPre;
+  return false;
+}
+
+/**
+ * Decide whether a window's recorded concurrent observations include a change
+ * the action did NOT cause. Returns `true` when a foreign change exists (the
+ * verifier then reports `'mixed'`), `false` when every recorded change is the
+ * action's own (or nothing was recorded).
+ *
+ * Rules, in order — each failing toward the honest `'mixed'`:
+ *   1. an overflowed change list is foreign (what was dropped is unknown);
+ *   2. a non-`page` change naming no element is foreign (unattributable);
+ *   3. a `page` (URL) change is owned only when the prediction carries
+ *      `navigationTo`;
+ *   4. a change `pre` already reflects is dropped — the observer diffs tick to
+ *      tick, so a tick inside the window can report a change made before the
+ *      action started;
+ *   5. a change is owned when its id matches an owned id, or it satisfies a
+ *      predicted criterion or an `incidental` criterion;
+ *   6. anything else is foreign.
+ *
+ * Deliberately NOT owned: ids in the post-vs-pre net delta. A transient
+ * spinner is in neither snapshot, and a persistent concurrent change already
+ * breaks O ⊆ P, so excluding the net delta would only relabel a real
+ * concurrent change as `'causal'`.
+ */
+export function attributeConcurrentChanges(
+  obs: ConcurrentObservations,
+  predicted: PredictedDelta,
+  owned: OwnedElements,
+  pre: SemanticSnapshot
+): boolean {
+  if (obs.overflow) return true;
+  const criteria = [...predictedCriteria(predicted), ...owned.incidental];
+  for (const change of obs.changes) {
+    if (change.kind === 'page') {
+      if (predicted.navigationTo === undefined) return true;
+      continue;
+    }
+    if (change.elementId === undefined) return true;
+    if (preReflects(change, pre)) continue;
+    const id = change.elementId;
+    if (owned.elementIds.some((pattern) => idMatches(pattern, id))) continue;
+    const asChange: ElementChange = {
+      elementId: id,
+      description: change.description ?? '',
+      type: change.type ?? '',
+      semanticType: change.semanticType,
+    };
+    if (criteria.some((c) => criteriaMatchesChange(c, asChange))) continue;
+    return true;
+  }
+  return false;
 }

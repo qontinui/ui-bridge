@@ -2,8 +2,8 @@
  * Tests for the D3 Effect Calculus Action Window Registry (Phase 2).
  *
  * Covers beginAction / anchorSettle / end / isWithinAnyWindow /
- * recordConcurrentObservation / hadConcurrentObservation(ForRequest) —
- * including the "read the flag right after end()" case that the bounded
+ * recordConcurrentObservation / concurrentObservations —
+ * including the "read the observations right after end()" case that the bounded
  * recently-ended map exists to support, the un-anchored bound and its
  * expiry, plus the global singleton accessor.
  */
@@ -14,10 +14,16 @@ import {
   MAX_UNANCHORED_WINDOW_MS,
   UNANCHORED_WINDOW_TIMEOUT_MARGIN_MS,
   unanchoredBoundForTimeout,
+  MAX_CONCURRENT_CHANGES_PER_WINDOW,
   getGlobalActionWindowRegistry,
   setGlobalActionWindowRegistry,
   resetGlobalActionWindowRegistry,
+  type ActionWindowHandle,
+  type ConcurrentChange,
 } from '../action-window-registry';
+
+/** A representative recorded change (the registry does not judge it). */
+const TOAST: ConcurrentChange = { kind: 'appeared', elementId: 'toast-1', type: 'div' };
 
 describe('ActionWindowRegistry', () => {
   let reg: ActionWindowRegistry;
@@ -25,6 +31,11 @@ describe('ActionWindowRegistry', () => {
   beforeEach(() => {
     reg = new ActionWindowRegistry();
   });
+
+  /** Did window `h` see at least one concurrent observation? */
+  function saw(h: ActionWindowHandle): boolean {
+    return reg.concurrentObservations(h).saw;
+  }
 
   /** Open a window at `startMs` and anchor its settle at once: [startMs, startMs + settleMs]. */
   function settled(requestId: string, startMs: number, settleMs: number) {
@@ -47,9 +58,8 @@ describe('ActionWindowRegistry', () => {
     expect(reg.isWithinAnyWindow(999)).toBe(false);
     expect(reg.isWithinAnyWindow(1000)).toBe(true);
     expect(reg.isWithinAnyWindow(20_000)).toBe(true); // action still running
-    reg.recordConcurrentObservation(1400); // past start + a click band, mid-action
-    expect(reg.hadConcurrentObservation(h)).toBe(true);
-    expect(reg.hadConcurrentObservationForRequest('r1')).toBe(true);
+    reg.recordConcurrentObservation(1400, [TOAST]); // past start + a click band, mid-action
+    expect(saw(h)).toBe(true);
   });
 
   it('an un-anchored window is bounded: it matches up to the bound and is pruned after it', () => {
@@ -59,20 +69,20 @@ describe('ActionWindowRegistry', () => {
     const bound = 1000 + MAX_UNANCHORED_WINDOW_MS;
     expect(reg.isWithinAnyWindow(bound - 1)).toBe(true);
     expect(reg.isWithinAnyWindow(bound)).toBe(true); // inclusive
-    reg.recordConcurrentObservation(bound - 1);
+    reg.recordConcurrentObservation(bound - 1, [TOAST]);
     expect(reg.isWithinAnyWindow(bound + 1)).toBe(false);
     expect(reg.openCount).toBe(0); // pruned, not just masked
     expect(reg.isWithinAnyWindow(bound + 1_000_000)).toBe(false);
     // The pruned window's flag is still readable, and a late end() is a no-op.
-    expect(reg.hadConcurrentObservation(h)).toBe(true);
+    expect(saw(h)).toBe(true);
     expect(() => reg.end(h)).not.toThrow();
   });
 
   it('beginAction honours an explicit maxOpenMs', () => {
-    reg.beginAction('r1', 'click', 1000, 500);
+    const h = reg.beginAction('r1', 'click', 1000, 500);
     expect(reg.isWithinAnyWindow(1500)).toBe(true);
-    reg.recordConcurrentObservation(1501);
-    expect(reg.hadConcurrentObservationForRequest('r1')).toBe(false);
+    reg.recordConcurrentObservation(1501, [TOAST]);
+    expect(saw(h)).toBe(false);
     expect(reg.openCount).toBe(0);
   });
 
@@ -87,19 +97,19 @@ describe('ActionWindowRegistry', () => {
     // Nothing touched the registry between the bound and the anchor, so the
     // window was not pruned yet — the anchor itself must still refuse it.
     const h = reg.beginAction('r1', 'click', 1000, 500);
-    reg.recordConcurrentObservation(1200); // seen before the bound
+    reg.recordConcurrentObservation(1200, [TOAST]); // seen before the bound
     expect(reg.anchorSettle(h, 1501, 150)).toBe(false);
     expect(reg.openCount).toBe(0);
     expect(reg.isWithinAnyWindow(1550)).toBe(false); // the bound was not lifted
-    expect(reg.hadConcurrentObservation(h)).toBe(true); // the flag survives
+    expect(saw(h)).toBe(true); // the flag survives
   });
 
   it('anchorSettle on an already-pruned handle reports the expiry', () => {
     const h = reg.beginAction('r1', 'click', 1000, 500);
-    reg.recordConcurrentObservation(2000); // prunes it
+    reg.recordConcurrentObservation(2000, [TOAST]); // prunes it
     expect(reg.openCount).toBe(0);
     expect(reg.anchorSettle(h, 2100, 150)).toBe(false);
-    expect(reg.hadConcurrentObservation(h)).toBe(false);
+    expect(saw(h)).toBe(false);
   });
 
   it('unanchoredBoundForTimeout: the floor without a timeout, timeout + margin above it', () => {
@@ -112,10 +122,10 @@ describe('ActionWindowRegistry', () => {
     // A 60 s action with a 120 s timeout: still running at 60 s, its window
     // must still be open there.
     const h = reg.beginAction('long', 'open', 1000, unanchoredBoundForTimeout(120_000));
-    reg.recordConcurrentObservation(1000 + 60_000);
+    reg.recordConcurrentObservation(1000 + 60_000, [TOAST]);
     expect(reg.openCount).toBe(1);
     expect(reg.anchorSettle(h, 1000 + 60_000, 150)).toBe(true);
-    expect(reg.hadConcurrentObservation(h)).toBe(true);
+    expect(saw(h)).toBe(true);
   });
 
   it('overlapping beginAction calls sharing a requestId keep separate windows and flags', () => {
@@ -125,15 +135,15 @@ describe('ActionWindowRegistry', () => {
     expect(reg.openCount).toBe(2);
     reg.anchorSettle(first, 1100, 100); // [1000, 1200]
     reg.anchorSettle(second, 2100, 100); // [2000, 2200]
-    reg.recordConcurrentObservation(1150); // inside the first only
-    expect(reg.hadConcurrentObservation(first)).toBe(true);
-    expect(reg.hadConcurrentObservation(second)).toBe(false);
+    reg.recordConcurrentObservation(1150, [TOAST]); // inside the first only
+    expect(saw(first)).toBe(true);
+    expect(saw(second)).toBe(false);
     reg.end(first);
     expect(reg.openCount).toBe(1);
     expect(reg.isWithinAnyWindow(2150)).toBe(true); // second still open
     reg.end(second);
-    expect(reg.hadConcurrentObservation(first)).toBe(true);
-    expect(reg.hadConcurrentObservation(second)).toBe(false);
+    expect(saw(first)).toBe(true);
+    expect(saw(second)).toBe(false);
   });
 
   it('anchorSettle sets endMs = settleStart + settleMs, keeping startMs', () => {
@@ -142,8 +152,8 @@ describe('ActionWindowRegistry', () => {
     expect(reg.isWithinAnyWindow(1000)).toBe(true); // start unchanged
     expect(reg.isWithinAnyWindow(1750)).toBe(true); // inclusive end
     expect(reg.isWithinAnyWindow(1751)).toBe(false);
-    reg.recordConcurrentObservation(1751);
-    expect(reg.hadConcurrentObservation(h)).toBe(false);
+    reg.recordConcurrentObservation(1751, [TOAST]);
+    expect(saw(h)).toBe(false);
   });
 
   it('anchorSettle returns false for a handle this registry has not issued', () => {
@@ -177,45 +187,40 @@ describe('ActionWindowRegistry', () => {
   it('end is a no-op for an unknown handle', () => {
     const foreign = new ActionWindowRegistry().beginAction('x', 'click', 0);
     expect(() => reg.end(foreign)).not.toThrow();
-    expect(reg.hadConcurrentObservation(foreign)).toBe(false);
-    expect(reg.hadConcurrentObservationForRequest('nope')).toBe(false);
+    expect(saw(foreign)).toBe(false);
   });
 
   it('recordConcurrentObservation flags only windows whose interval contains atMs', () => {
     const inside = settled('inside', 1000, 500); // [1000, 1500]
     const outside = settled('outside', 3000, 500); // [3000, 3500]
 
-    reg.recordConcurrentObservation(1200);
+    reg.recordConcurrentObservation(1200, [TOAST]);
 
-    expect(reg.hadConcurrentObservation(inside)).toBe(true);
-    expect(reg.hadConcurrentObservation(outside)).toBe(false);
-    expect(reg.hadConcurrentObservationForRequest('inside')).toBe(true);
-    expect(reg.hadConcurrentObservationForRequest('outside')).toBe(false);
+    expect(saw(inside)).toBe(true);
+    expect(saw(outside)).toBe(false);
   });
 
-  it('hadConcurrentObservation reads the flag from a STILL-OPEN window', () => {
+  it('concurrentObservations reads the flag from a STILL-OPEN window', () => {
     const h = settled('r1', 1000, 500);
-    expect(reg.hadConcurrentObservation(h)).toBe(false);
-    reg.recordConcurrentObservation(1100);
-    expect(reg.hadConcurrentObservation(h)).toBe(true);
+    expect(saw(h)).toBe(false);
+    reg.recordConcurrentObservation(1100, [TOAST]);
+    expect(saw(h)).toBe(true);
   });
 
-  it('hadConcurrentObservation still returns the right value AFTER end()', () => {
+  it('concurrentObservations still returns the right value AFTER end()', () => {
     const h = settled('r1', 1000, 500);
-    reg.recordConcurrentObservation(1100);
+    reg.recordConcurrentObservation(1100, [TOAST]);
     reg.end(h);
     // The window is closed, but the captured flag survives in the
     // recently-ended map so the verifier can read it right after ending.
     expect(reg.openCount).toBe(0);
-    expect(reg.hadConcurrentObservation(h)).toBe(true);
-    expect(reg.hadConcurrentObservationForRequest('r1')).toBe(true);
+    expect(saw(h)).toBe(true);
   });
 
-  it('hadConcurrentObservation returns false after end() when no concurrency occurred', () => {
+  it('concurrentObservations returns false after end() when no concurrency occurred', () => {
     const h = settled('r1', 1000, 500);
     reg.end(h);
-    expect(reg.hadConcurrentObservation(h)).toBe(false);
-    expect(reg.hadConcurrentObservationForRequest('r1')).toBe(false);
+    expect(saw(h)).toBe(false);
   });
 
   it('isWithinAnyWindow is true if ANY of several open windows contains atMs', () => {
@@ -225,29 +230,74 @@ describe('ActionWindowRegistry', () => {
     expect(reg.isWithinAnyWindow(1500)).toBe(false);
   });
 
-  it('a duplicate requestId opens a second window; the requestId lookup reads the newest', () => {
+  it('a duplicate requestId opens a second window with its own observations', () => {
     const first = settled('r1', 1000, 100);
-    reg.recordConcurrentObservation(1050);
+    reg.recordConcurrentObservation(1050, [TOAST]);
     const second = settled('r1', 5000, 100);
     expect(reg.openCount).toBe(2);
-    expect(reg.hadConcurrentObservation(first)).toBe(true);
-    expect(reg.hadConcurrentObservation(second)).toBe(false);
-    expect(reg.hadConcurrentObservationForRequest('r1')).toBe(false);
+    expect(saw(first)).toBe(true);
+    expect(saw(second)).toBe(false);
   });
 
   it('the recently-ended map is bounded (older flags evicted past the cap)', () => {
     // Cap is 50: end 60 flagged windows, then the oldest 10 must have dropped.
+    const handles: ActionWindowHandle[] = [];
     for (let i = 0; i < 60; i++) {
       const h = settled(`r${i}`, 1000, 100);
-      reg.recordConcurrentObservation(1050);
+      reg.recordConcurrentObservation(1050, [TOAST]);
       reg.end(h);
+      handles.push(h);
     }
     // Newest 50 retained.
-    expect(reg.hadConcurrentObservationForRequest('r59')).toBe(true);
-    expect(reg.hadConcurrentObservationForRequest('r10')).toBe(true);
-    // Oldest 10 evicted → fall back to false.
-    expect(reg.hadConcurrentObservationForRequest('r0')).toBe(false);
-    expect(reg.hadConcurrentObservationForRequest('r9')).toBe(false);
+    expect(saw(handles[59])).toBe(true);
+    expect(saw(handles[10])).toBe(true);
+    // Oldest 10 evicted → fall back to nothing seen.
+    expect(saw(handles[0])).toBe(false);
+    expect(saw(handles[9])).toBe(false);
+  });
+
+  it("records every observation's changes into the windows containing it, and carries them past end()", () => {
+    const inside = settled('inside', 1000, 500); // [1000, 1500]
+    const outside = settled('outside', 3000, 500); // [3000, 3500]
+    const spinner: ConcurrentChange = { kind: 'appeared', elementId: 'spinner', type: 'div' };
+    reg.recordConcurrentObservation(1100, [spinner]);
+    reg.recordConcurrentObservation(1200, [TOAST, { kind: 'page' }]);
+    expect(reg.concurrentObservations(inside)).toEqual({
+      saw: true,
+      changes: [spinner, TOAST, { kind: 'page' }],
+      overflow: false,
+    });
+    expect(reg.concurrentObservations(outside)).toEqual({ saw: false, changes: [], overflow: false });
+    reg.end(inside);
+    expect(reg.concurrentObservations(inside).changes).toEqual([spinner, TOAST, { kind: 'page' }]);
+  });
+
+  it('an observation with no changes still marks the window as having seen one', () => {
+    const h = settled('r1', 1000, 500);
+    reg.recordConcurrentObservation(1100, []);
+    expect(reg.concurrentObservations(h)).toEqual({ saw: true, changes: [], overflow: false });
+  });
+
+  it('caps the changes kept per window and marks the window overflowed past the cap', () => {
+    const h = settled('r1', 1000, 500);
+    const many: ConcurrentChange[] = Array.from(
+      { length: MAX_CONCURRENT_CHANGES_PER_WINDOW },
+      (_, i) => ({ kind: 'modified', elementId: `el-${i}` })
+    );
+    reg.recordConcurrentObservation(1100, many);
+    expect(reg.concurrentObservations(h).overflow).toBe(false);
+    expect(reg.concurrentObservations(h).changes).toHaveLength(MAX_CONCURRENT_CHANGES_PER_WINDOW);
+    reg.recordConcurrentObservation(1200, [TOAST]);
+    const obs = reg.concurrentObservations(h);
+    expect(obs.overflow).toBe(true);
+    expect(obs.changes).toHaveLength(MAX_CONCURRENT_CHANGES_PER_WINDOW);
+    reg.end(h);
+    expect(reg.concurrentObservations(h).overflow).toBe(true);
+  });
+
+  it('an unknown handle reads as nothing seen', () => {
+    const foreign = new ActionWindowRegistry().beginAction('x', 'click', 0);
+    expect(reg.concurrentObservations(foreign)).toEqual({ saw: false, changes: [], overflow: false });
   });
 });
 

@@ -13,10 +13,18 @@ import { DefaultActionExecutor } from './action-executor';
 import {
   getGlobalActionWindowRegistry,
   resetGlobalActionWindowRegistry,
+  type ConcurrentChange,
 } from './action-window-registry';
 import { resetGlobalEffectStore, getGlobalEffectStore } from './effect-store';
 import { EffectVerifier } from './effect-verifier';
 import type { SemanticSnapshot } from '../ai/types';
+
+/**
+ * A concurrent change on an element no action in these tests owns: a toast
+ * from unrelated background activity. Recording it inside a window must read
+ * as 'mixed'.
+ */
+const UNRELATED: ConcurrentChange[] = [{ kind: 'appeared', elementId: 'toast-1', type: 'div' }];
 
 describe('DefaultActionExecutor — D3 effect verification wiring', () => {
   let registry: UIBridgeRegistry;
@@ -216,7 +224,7 @@ describe('DefaultActionExecutor — D3 effect verification wiring', () => {
       menu.setAttribute('data-testid', 'user-menu');
       container.appendChild(menu);
       registry.registerElement('user-menu', menu, { type: 'menu', label: 'User Menu' });
-      getGlobalActionWindowRegistry().recordConcurrentObservation(Date.now());
+      getGlobalActionWindowRegistry().recordConcurrentObservation(Date.now(), UNRELATED);
     });
 
     const res = await executor.executeAction('menu-btn', {
@@ -248,7 +256,7 @@ describe('DefaultActionExecutor — D3 effect verification wiring', () => {
     const observations: number[] = [];
     const observe = (atMs: number) => {
       observations.push(atMs);
-      getGlobalActionWindowRegistry().recordConcurrentObservation(atMs);
+      getGlobalActionWindowRegistry().recordConcurrentObservation(atMs, UNRELATED);
     };
 
     const executor = new DefaultActionExecutor(registry, undefined, {
@@ -407,13 +415,16 @@ describe('EffectVerifier — the settle window is anchored to the real settle', 
    * - `'settle'`: 50 ms into the real settle;
    * - `'after'`:  1 ms past the end of the real settle.
    */
-  async function verifySlowClick(observeIn: 'action' | 'settle' | 'after') {
+  async function verifySlowClick(
+    observeIn: 'action' | 'settle' | 'after',
+    changes: ConcurrentChange[] = UNRELATED
+  ) {
     let clock = 10_000;
     let captures = 0;
     let observedAt = Number.NaN;
     const observe = (atMs: number) => {
       observedAt = atMs;
-      getGlobalActionWindowRegistry().recordConcurrentObservation(atMs);
+      getGlobalActionWindowRegistry().recordConcurrentObservation(atMs, changes);
     };
 
     const verifier = new EffectVerifier({
@@ -465,6 +476,18 @@ describe('EffectVerifier — the settle window is anchored to the real settle', 
     expect(verification.cause).toBe('mixed');
     expect(verification.outcome).toBe('Surprise');
     expect(verification.durationMs).toBe(ACTION_MS + SETTLE_MS);
+  });
+
+  it("an observation of only the acting element and the predicted element is the action's own ('causal')", async () => {
+    // The clicked button toggling state and the predicted menu appearing are
+    // both the action's own changes, even recorded mid-window.
+    const { verification } = await verifySlowClick('action', [
+      { kind: 'modified', elementId: 'menu-btn' },
+      { kind: 'appeared', elementId: 'user-menu', type: 'menu' },
+    ]);
+
+    expect(verification.cause).toBe('causal');
+    expect(verification.outcome).toBe('Confirmed');
   });
 
   it("an observation after the real settle ends is not attributed ('causal')", async () => {
