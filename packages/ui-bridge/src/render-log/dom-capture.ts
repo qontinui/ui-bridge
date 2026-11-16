@@ -513,10 +513,13 @@ export class DOMChangeObserver {
       // read as of NOW, not as of its mutation. A batch that un-marks or moves
       // a boundary (a `data-bridge-redact` change, or any removed node)
       // therefore cannot say whether an earlier value in that batch was written
-      // inside one: its attribute records fail closed.
+      // inside one: its attribute records fail closed. The same holds for a
+      // `type` change, which can take an input out of the password verdict
+      // after a value was written to it.
       const boundaryMayHaveMoved = mutations.some(
         (m) =>
-          (m.type === 'attributes' && m.attributeName === BRIDGE_REDACT_ATTR) ||
+          (m.type === 'attributes' &&
+            (m.attributeName === BRIDGE_REDACT_ATTR || m.attributeName === 'type')) ||
           (m.type === 'childList' && m.removedNodes.length > 0)
       );
       for (const mutation of mutations) {
