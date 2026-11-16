@@ -5,7 +5,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { DOMChangeObserver, type DOMChange } from './dom-capture';
 import { REDACTED_VALUE } from '../core/redaction';
 
-const SECRET = 'SECRET-mutation-6180';
+const SECRET = 'test-secret-mutation-6180';
 
 afterEach(() => {
   document.body.innerHTML = '';

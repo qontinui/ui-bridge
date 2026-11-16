@@ -14,7 +14,7 @@ import {
  * subtree. The index is a pure cost change: every reader must answer exactly
  * what the unscoped readers answer, and no find payload may carry boundary text.
  */
-const SECRET = 'tok-SECRET-123';
+const SECRET = 'test-secret-tok-123';
 
 const PAGE = `
   <main id="app">

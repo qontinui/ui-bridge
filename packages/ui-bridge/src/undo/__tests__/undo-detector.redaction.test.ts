@@ -5,7 +5,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { UndoDetector } from '../undo-detector';
 import { REDACTED_VALUE } from '../../core/redaction';
 
-const SECRET = 'SECRET-undo-9931';
+const SECRET = 'test-secret-undo-9931';
 
 afterEach(() => {
   document.body.innerHTML = '';
