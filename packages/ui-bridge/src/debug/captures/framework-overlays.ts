@@ -197,8 +197,10 @@ function textOf(el: Element | null | undefined): string | undefined {
   for (let cursor: Element = el; ; ) {
     if (closestRedactionBoundary(cursor as HTMLElement) !== null) return REDACTED_VALUE;
     const root = cursor.getRootNode();
-    if (!(root instanceof ShadowRoot)) break;
-    cursor = root.host;
+    // Not `instanceof ShadowRoot`: that global may be absent, and a root from
+    // another realm (an iframe) is not an instance of this realm's class.
+    if (root.nodeType !== 11 || !('host' in root)) break;
+    cursor = (root as ShadowRoot).host;
   }
   return textExcludingBoundaries(el)?.trim();
 }
