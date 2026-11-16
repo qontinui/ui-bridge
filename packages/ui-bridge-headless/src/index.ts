@@ -35,6 +35,7 @@ export {
   type LaunchHeadlessTabResult,
   type LaunchInitRouter,
   type LaunchRecordHarOptions,
+  type LaunchRecordVideoOptions,
   type LaunchServiceWorkersPolicy,
 } from './launcher.js';
 

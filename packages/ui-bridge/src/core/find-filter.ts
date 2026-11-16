@@ -77,7 +77,12 @@ import {
 import { isMediaObservation, mediaFactsOf, unmeasuredMediaDimension } from './media-observation';
 import { hasNestedQuantifiers } from './param-schema';
 import { answersToNamedType, impliedAriaRole } from './element-kind';
-import { scrubMediaMetadata, verdictFromState, verdictOf } from './redaction';
+import {
+  scrubMediaMetadata,
+  textExcludingBoundaries,
+  verdictFromState,
+  verdictOf,
+} from './redaction';
 import type { MediaFacts, MediaObservation } from './types';
 
 /**
@@ -339,7 +344,14 @@ function liveElement(el: FindFilterableElement): Element | undefined {
 
 /** Best-available text content across the element shapes. */
 function elementText(el: FindFilterableElement): string {
-  return el.state?.textContent ?? el.textContent ?? domNode(el)?.textContent ?? '';
+  if (el.state?.textContent != null) return el.state.textContent;
+  const { textContent: rowText } = el;
+  if (rowText != null) return rowText;
+  // §4.6: a live-DOM row carries no scrubbed text, and a text predicate over
+  // raw `textContent` is an oracle for a boundary's content — match against the
+  // boundary-excluded read instead.
+  const node = domNode(el);
+  return (node ? textExcludingBoundaries(node) : null) ?? '';
 }
 
 /**

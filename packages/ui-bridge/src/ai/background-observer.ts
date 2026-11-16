@@ -26,8 +26,11 @@
 import { computeDiff, hasSignificantChanges } from './semantic-diff';
 import type { SemanticSnapshotManager } from './semantic-snapshot';
 import type { ControlSnapshot } from '../control/types';
-import type { SemanticSnapshot } from './types';
-import { getGlobalActionWindowRegistry } from '../control/action-window-registry';
+import type { SemanticDiff, SemanticSnapshot } from './types';
+import {
+  getGlobalActionWindowRegistry,
+  type ConcurrentChange,
+} from '../control/action-window-registry';
 
 /**
  * Payload emitted when a background capture detects meaningful changes.
@@ -58,8 +61,11 @@ export interface TimelineCapturePayload {
    * - `'observational'` — the change happened with no action settle window
    *   open: pure background activity, not caused by any verified action.
    * - `'concurrent'` — the change landed inside at least one open action
-   *   settle window: it is concurrent with an action under verification, and
-   *   the verifier will report that action's cause as `'mixed'`.
+   *   settle window: it is concurrent with an action under verification. The
+   *   changes are recorded into that window, and the verifier reports the
+   *   action's cause as `'mixed'` only when a recorded change touches an
+   *   element the action does not own (its own progress/spinner UI is not
+   *   foreign).
    *
    * Additive and optional so existing `onCapture` consumers are unaffected.
    */
@@ -153,10 +159,12 @@ export class BackgroundObserver {
       // Check for significant changes
       let isSignificant = false;
       let isRealChange = false;
+      let changes: ConcurrentChange[] = [];
       if (this.lastSnapshot) {
         const diff = computeDiff(this.lastSnapshot, snapshot);
         isSignificant = hasSignificantChanges(diff);
         isRealChange = isSignificant;
+        if (isRealChange) changes = concurrentChangesOf(diff);
       } else {
         // First snapshot is always significant (bootstrap), but it is NOT a
         // real diff-detected change, so it must not flag action windows.
@@ -164,12 +172,12 @@ export class BackgroundObserver {
       }
 
       // D3 Effect Calculus (Phase 2): a genuine significant background change
-      // flags every currently-open action settle window as having concurrent
-      // background activity. The verifier reads that flag to report the
-      // action's cause as 'mixed'. Only real diff-detected changes count — the
-      // bootstrap snapshot is excluded.
+      // is recorded, with the elements it touched, into every currently-open
+      // action settle window. The verifier attributes those changes: 'mixed'
+      // only when one touches an element the action does not own. Only real
+      // diff-detected changes count — the bootstrap snapshot is excluded.
       if (isRealChange) {
-        getGlobalActionWindowRegistry().recordConcurrentObservation(now);
+        getGlobalActionWindowRegistry().recordConcurrentObservation(now, changes);
       }
 
       if (!isSignificant && !forceCapture) {
@@ -182,6 +190,13 @@ export class BackgroundObserver {
 
       // Content-level dedup (skip if hash matches previous)
       if (contentHash === this.lastContentHash && !forceCapture) {
+        // Advance the diff baseline on a real change the dedup swallows. A
+        // significant change whose text hash is unchanged (a button toggling
+        // `disabled`) would otherwise leave the baseline stale, and every
+        // later tick would re-detect the same old diff and record it into
+        // windows opened after it happened. Not advanced before onCapture
+        // succeeds on the emit path, so a failed capture is retried.
+        if (isRealChange) this.lastSnapshot = snapshot;
         return;
       }
 
@@ -287,4 +302,46 @@ export class BackgroundObserver {
     }
     return hash.toString(16).padStart(8, '0');
   }
+}
+
+/**
+ * The changes one significant diff contains, as recorded into open action
+ * windows: appeared, disappeared, the significant modifications, the content
+ * changes' element ids (a text-only change is visible only here), and a
+ * `'page'` change when the URL moved.
+ */
+function concurrentChangesOf(diff: SemanticDiff): ConcurrentChange[] {
+  const out: ConcurrentChange[] = [];
+  for (const c of diff.changes.appeared) {
+    out.push({
+      kind: 'appeared',
+      elementId: c.elementId,
+      description: c.description,
+      type: c.type,
+      semanticType: c.semanticType,
+    });
+  }
+  for (const c of diff.changes.disappeared) {
+    out.push({
+      kind: 'disappeared',
+      elementId: c.elementId,
+      description: c.description,
+      type: c.type,
+      semanticType: c.semanticType,
+    });
+  }
+  for (const m of diff.changes.modified) {
+    if (!m.significant) continue;
+    out.push({ kind: 'modified', elementId: m.elementId, description: m.description });
+  }
+  const cc = diff.contentChanges;
+  if (cc) {
+    for (const t of cc.textChanges) out.push({ kind: 'content', elementId: t.elementId });
+    for (const m of cc.metricChanges) {
+      if (m.significant) out.push({ kind: 'content', elementId: m.elementId });
+    }
+    for (const st of cc.statusChanges) out.push({ kind: 'content', elementId: st.elementId });
+  }
+  if (diff.pageChanges?.urlChanged) out.push({ kind: 'page' });
+  return out;
 }

@@ -16,6 +16,7 @@ import type {
   SnapshotShortcutContext,
 } from './types';
 import { readAriaLabelAttr, readTitleAttr } from '../core/a11y';
+import { textExcludingBoundaries } from '../core/redaction';
 
 /** Canonical modifier order for normalization */
 const MODIFIER_ORDER = ['Ctrl', 'Alt', 'Shift', 'Meta'] as const;
@@ -375,7 +376,8 @@ export class ShortcutTracker {
     const ariaLabel = readAriaLabelAttr(el);
     if (ariaLabel) return ariaLabel;
 
-    const text = el.textContent?.trim();
+    // A boundary inside (or around) the element reads as the sentinel.
+    const text = textExcludingBoundaries(el)?.trim();
     if (text && text.length > 0 && text.length < 100) return text;
 
     return undefined;

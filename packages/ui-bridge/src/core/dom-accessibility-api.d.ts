@@ -4,7 +4,14 @@
 // so we get proper types rather than implicit `any`.
 declare module 'dom-accessibility-api' {
   /** W3C accessible-name algorithm — https://w3c.github.io/accname/ */
-  export function computeAccessibleName(node: Element): string;
+  export function computeAccessibleName(
+    node: Element,
+    options?: {
+      getComputedStyle?: (el: Element, pseudo?: string | null) => CSSStyleDeclaration;
+      computedStyleSupportsPseudoElements?: boolean;
+      hidden?: boolean;
+    }
+  ): string;
   /** ARIA role per W3C ARIA-in-HTML mapping (explicit `role=` + implicit). */
   export function getRole(node: Element): string | null;
 }

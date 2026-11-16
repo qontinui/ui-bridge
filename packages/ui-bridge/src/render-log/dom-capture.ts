@@ -7,10 +7,12 @@
 import type { ElementIdentifier, ElementState } from '../core/types';
 import type { Scrubbed } from '../core/redaction';
 import {
+  BRIDGE_REDACT_ATTR,
   elementRedaction,
   scrubContent,
   scrubRecord,
   scrubSelectState,
+  verdictFailClosed,
   verdictOf,
   readScrubbedValue,
   readScrubbedText,
@@ -507,8 +509,21 @@ export class DOMChangeObserver {
     if (this.observer) return;
 
     this.observer = new MutationObserver((mutations) => {
+      // Records are delivered after the fact, so a target's boundary status is
+      // read as of NOW, not as of its mutation. A batch that un-marks or moves
+      // a boundary (a `data-bridge-redact` change, or any removed node)
+      // therefore cannot say whether an earlier value in that batch was written
+      // inside one: its attribute records fail closed. The same holds for a
+      // `type` change, which can take an input out of the password verdict
+      // after a value was written to it.
+      const boundaryMayHaveMoved = mutations.some(
+        (m) =>
+          (m.type === 'attributes' &&
+            (m.attributeName === BRIDGE_REDACT_ATTR || m.attributeName === 'type')) ||
+          (m.type === 'childList' && m.removedNodes.length > 0)
+      );
       for (const mutation of mutations) {
-        const change = this.processMutation(mutation);
+        const change = this.processMutation(mutation, boundaryMayHaveMoved);
         if (change) {
           this.addChange(change);
         }
@@ -529,24 +544,35 @@ export class DOMChangeObserver {
     this.observer = null;
   }
 
-  private processMutation(mutation: MutationRecord): DOMChange | null {
+  private processMutation(
+    mutation: MutationRecord,
+    boundaryMayHaveMoved: boolean
+  ): DOMChange | null {
     const target = mutation.target;
     if (!(target instanceof HTMLElement)) return null;
 
     const elementId = getBestIdentifier(target);
 
     if (mutation.type === 'attributes') {
+      const attributeName = mutation.attributeName;
+      // §4.6: an attribute change ships both the old and the new value, so each
+      // goes through the same record scrub the snapshot's `attributes` do —
+      // inside a boundary every value collapses, and a `value` attribute
+      // collapses under a value-only verdict (a password input).
+      const verdict = boundaryMayHaveMoved ? verdictFailClosed() : verdictOf(target);
+      const scrubbed = (raw: string | null): string | undefined =>
+        attributeName && raw
+          ? scrubRecord({ [attributeName]: raw }, verdict)[attributeName]
+          : undefined;
       return {
         timestamp: Date.now(),
         type: 'attribute',
         elementId,
         tagName: target.tagName.toLowerCase(),
         details: {
-          attributeName: mutation.attributeName || undefined,
-          oldValue: mutation.oldValue || undefined,
-          newValue: mutation.attributeName
-            ? target.getAttribute(mutation.attributeName) || undefined
-            : undefined,
+          attributeName: attributeName || undefined,
+          oldValue: scrubbed(mutation.oldValue),
+          newValue: attributeName ? scrubbed(target.getAttribute(attributeName)) : undefined,
         },
       };
     }

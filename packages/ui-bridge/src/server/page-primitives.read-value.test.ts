@@ -262,3 +262,41 @@ describe('fingerprints of an element inside a boundary', () => {
     expect(JSON.stringify(computeElementFingerprint(document.getElementById('t')!))).not.toContain('tok-SECRET');
   });
 });
+
+describe('a boundary-adjacent name is the real W3C name over a boundary-free clone', () => {
+  it('keeps descendant <img alt>, omits aria-hidden text, and shows the sentinel for the boundary', () => {
+    document.body.innerHTML =
+      '<button id="b"><img alt="Logo" src="x.png"><span aria-hidden="true">HIDDEN-TEXT</span>Pay <span data-bridge-redact="true">tok-SECRET <img alt="IMG-SECRET"></span></button>';
+    const b = document.getElementById('b')!;
+    const name = computeAccessibleNameSafe(b) ?? '';
+    expect(name).toBe(`Logo Pay ${REDACTED_VALUE}`);
+    expect(name).not.toContain('HIDDEN-TEXT');
+    expect(name).not.toContain('SECRET');
+    expect(resolveAccessibleName(b)).toEqual({ name: `Logo Pay ${REDACTED_VALUE}`, source: 'text' });
+  });
+
+  it('reads an embedded control value but never a boundary-held one', () => {
+    document.body.innerHTML =
+      '<div role="button" id="x">Qty <input id="q" type="text"> <input id="p" type="text" data-bridge-redact="true"></div>';
+    (document.getElementById('q') as HTMLInputElement).value = '7';
+    (document.getElementById('p') as HTMLInputElement).value = 'tok-SECRET';
+    const name = computeAccessibleNameSafe(document.getElementById('x')!) ?? '';
+    expect(name).not.toContain('tok-SECRET');
+    expect(name).toContain('7');
+  });
+
+  it('a labelledby chain through a boundary emits the sentinel, not its text', () => {
+    document.body.innerHTML =
+      '<span id="a">Card</span><div id="c"><b data-bridge-redact="true">4111</b><i aria-hidden="true">nope</i></div><input id="x" aria-labelledby="a c">';
+    const name = computeAccessibleNameSafe(document.getElementById('x')!) ?? '';
+    expect(name).toBe(`Card ${REDACTED_VALUE}`);
+  });
+
+  it('never mutates the live DOM', () => {
+    document.body.innerHTML =
+      '<label for="x">Card <span data-bridge-redact="true">4111</span></label><button id="x">Go <span data-bridge-redact="true">tok</span></button>';
+    const before = document.body.innerHTML;
+    computeAccessibleNameSafe(document.getElementById('x')!);
+    expect(document.body.innerHTML).toBe(before);
+  });
+});

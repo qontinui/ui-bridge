@@ -158,14 +158,16 @@ metrics emulation overrides the flag, so the page keeps reading
 
 ### HAR recording, service workers and routes (context passthrough)
 
-Three options reach the browser context for a caller that records what a page
-loads or serves it from somewhere else:
+Four options reach the browser context for a caller that records what a page
+loads or serves it from somewhere else (0.8.0 and later; an older launcher
+accepts the keys and ignores them):
 
-| Option           | Type                                                      | Passed to                                  |
-| ---------------- | --------------------------------------------------------- | ------------------------------------------ |
-| `recordHar`      | `LaunchRecordHarOptions` (Playwright's `recordHar` shape) | `newContext({ recordHar })`, unchanged     |
-| `serviceWorkers` | `'allow' \| 'block'`                                      | `newContext({ serviceWorkers })`           |
-| `initRouter`     | `(context: BrowserContext) => void \| Promise<void>`      | called with the context before `newPage()` |
+| Option           | Type                                                      | Passed to                                                       |
+| ---------------- | --------------------------------------------------------- | --------------------------------------------------------------- |
+| `recordHar`      | `LaunchRecordHarOptions` (Playwright's `recordHar` shape) | `newContext({ recordHar })`, unchanged                          |
+| `recordVideo`    | `LaunchRecordVideoOptions` (`{ dir, size?, … }`)          | `newContext({ recordVideo })`, `size` defaulted to the viewport |
+| `serviceWorkers` | `'allow' \| 'block'`                                      | `newContext({ serviceWorkers })`                                |
+| `initRouter`     | `(context: BrowserContext) => void \| Promise<void>`      | called with the context before `newPage()`                      |
 
 ```ts
 const tab = await launchHeadlessTab({
@@ -188,9 +190,17 @@ await tab.close(); // the HAR is complete once this resolves
   that fails (a HAR that could not be written, say) is reported on stderr, and
   the browser is still closed. Calling `close()` again, even concurrently,
   returns the same promise, so every caller waits for the archive.
+- **`recordVideo` needs a `dir`, and records at the viewport size.** Without a
+  `dir` Playwright keeps the file in a temporary directory deleted with the
+  browser, so the launcher refuses a missing or empty one before Chromium
+  starts. A missing `size` becomes the launch's viewport size rather than
+  Playwright's default (the viewport scaled down to fit 800x800). The file is written when the page closes;
+  `tab.page.video()?.path()` names it, and it is complete once `tab.close()`
+  resolves.
 - **A failed launch writes no HAR.** If the first navigation or the UI Bridge
   wait fails, only the browser is closed and the error rethrown; do not expect
-  an archive of a launch that threw.
+  an archive of a launch that threw. Such a launch may leave a partial video
+  file in `recordVideo.dir`.
 - **Block service workers when every request must be seen.** A service worker
   answers requests itself, so they reach neither the HAR nor your routes.
 - **`initRouter` runs before the first page exists**, after the context and
@@ -199,7 +209,7 @@ await tab.close(); // the HAR is complete once this resolves
   launch fails like any other post-launch step: the browser is closed and the
   error rethrown.
 
-With none of the three set, the context is created exactly as before. The
+With none of the four set, the context is created exactly as before. The
 close sequence did change for every tab: `tab.close()` now closes the context
 before the browser, whether or not `recordHar` is set.
 

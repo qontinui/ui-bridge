@@ -14,17 +14,25 @@
     "packages/ui-bridge/src/**/__tests__/**"
   ],
   "projectionModules": [
+    "packages/ui-bridge/src/adapters/formik.ts",
+    "packages/ui-bridge/src/adapters/react-hook-form.ts",
     "packages/ui-bridge/src/ai/search-engine.ts",
     "packages/ui-bridge/src/ai/semantic-snapshot.ts",
     "packages/ui-bridge/src/control/action-executor.ts",
     "packages/ui-bridge/src/control/media-override.ts",
     "packages/ui-bridge/src/core/element-projection.ts",
+    "packages/ui-bridge/src/core/find-filter.ts",
+    "packages/ui-bridge/src/debug/captures/framework-overlays.ts",
+    "packages/ui-bridge/src/drag-drop/drag-drop-detector.ts",
     "packages/ui-bridge/src/react/commandHandlers.ts",
+    "packages/ui-bridge/src/react/media-capture.ts",
     "packages/ui-bridge/src/recording/**/*.ts",
     "packages/ui-bridge/src/render-log/dom-capture.ts",
     "packages/ui-bridge/src/server/dom-fallback.ts",
     "packages/ui-bridge/src/server/handlers.ts",
-    "packages/ui-bridge/src/server/page-primitives.ts"
+    "packages/ui-bridge/src/server/page-primitives.ts",
+    "packages/ui-bridge/src/shortcuts/shortcut-tracker.ts",
+    "packages/ui-bridge/src/undo/undo-detector.ts"
   ],
   "routes": [
     "DELETE /ai/bookmark/:name -> deleteBookmark",

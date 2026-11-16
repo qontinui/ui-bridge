@@ -4,6 +4,8 @@
  * - `recordHar`: after `tab.close()` resolves, the archive exists on disk and
  *   lists the page's own requests. Playwright writes it on CONTEXT close, so a
  *   launcher that closed only the browser would leave no file here.
+ * - `recordVideo`: after `tab.close()` resolves, the tab's video file exists in
+ *   the requested `dir`, is non-empty, and is named by `page.video().path()`.
  * - `initRouter`: a route it installs intercepts the FIRST navigation's
  *   document request, so the page shows the routed body and the fixture server
  *   never sees that request.
@@ -15,7 +17,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { launchHeadlessTab } from './launcher.js';
@@ -75,6 +77,30 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('launchHeadlessTab context options (real 
     const urls = har.log.entries.map((e) => e.request.url);
     expect(urls).toContain(url);
     expect(urls).toContain(`${url}style.css`);
+  }, 60_000);
+
+  it('recordVideo: the tab video exists in dir after close() and is named by page.video()', async () => {
+    const videoDir = join(dir, 'videos');
+    const tab = await launchHeadlessTab({
+      url,
+      headless: true,
+      forwardConsole: false,
+      viewportWidth: 640,
+      viewportHeight: 360,
+      recordVideo: { dir: videoDir },
+    });
+    let videoPath: string | undefined;
+    try {
+      expect(await tab.page.textContent('#t')).toBe('served');
+      videoPath = await tab.page.video()?.path();
+    } finally {
+      await tab.close();
+    }
+
+    expect(videoPath).toBeDefined();
+    expect(videoPath!.startsWith(videoDir)).toBe(true);
+    expect(existsSync(videoPath!)).toBe(true);
+    expect(statSync(videoPath!).size).toBeGreaterThan(0);
   }, 60_000);
 
   it('a route installed by initRouter intercepts the first navigation', async () => {

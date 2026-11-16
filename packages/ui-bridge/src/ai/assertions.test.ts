@@ -819,18 +819,198 @@ describe('AssertionExecutor', () => {
   });
 
   describe('hasClass assertion', () => {
-    it('should fail with DOM access error', async () => {
-      const elements = [createMockAIElement('btn-1', { textContent: 'Submit' })];
-      executor.updateElements(elements);
+    it('reads the class list off the live node: a class it carries passes, one it lacks fails', async () => {
+      const node = document.createElement('button');
+      node.className = 'btn btn-primary';
+      document.body.append(node);
+      try {
+        executor.updateElements([
+          { ...createMockAIElement('btn-1', { textContent: 'Submit' }), element: node },
+        ] as AIDiscoveredElement[]);
+        expect(
+          await executor.assert({ target: 'btn-1', type: 'hasClass', expected: 'btn-primary' })
+        ).toMatchObject({ outcome: 'passed', passed: true, actual: 'btn btn-primary' });
+        expect(
+          await executor.assert({ target: 'btn-1', type: 'hasClass', expected: 'btn-danger' })
+        ).toMatchObject({
+          outcome: 'failed',
+          passed: false,
+          actual: 'btn btn-primary',
+          failureCode: 'UB-ASSERT-LAYOUT',
+        });
+      } finally {
+        node.remove();
+      }
+    });
+  });
 
-      const result = await executor.assert({
-        target: 'Submit',
-        type: 'hasClass',
-        expected: 'btn-primary',
+  /**
+   * The arms that compared nothing — a hasClass with no node to read, a
+   * spatial check whose rect is missing or whose `relatedTarget` was never
+   * named, and a type the executor does not know — answer UNMEASURED with
+   * the code that says why, never a UB-ASSERT-* failure of the page.
+   */
+  describe('an arm that compares nothing answers unmeasured', () => {
+    const detached = document.createElement('button');
+    detached.className = 'btn-primary';
+
+    function rectless(id: string, textContent: string): AIDiscoveredElement {
+      const el = createMockAIElement(id, { textContent });
+      (el.state as { rect?: unknown }).rect = undefined;
+      return el;
+    }
+
+    const rows: Array<{
+      arm: string;
+      request: Parameters<AssertionExecutor['assert']>[0];
+      failureCode: string;
+      code: string;
+      detail?: string;
+      /** What the suggestion must say, and what it must not (the other refusal's hint). */
+      suggests?: string;
+      notSuggests?: string;
+    }> = [
+      {
+        arm: 'hasClass on an element with no live node',
+        request: { target: 'Submit', type: 'hasClass', expected: 'btn-primary' },
+        failureCode: 'UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD',
+        code: 'capability_unavailable_in_build',
+      },
+      {
+        arm: 'hasClass on a node no longer in the document',
+        request: { target: 'gone-btn', type: 'hasClass', expected: 'btn-primary' },
+        failureCode: 'UB-OBS-INPUT-MISSING',
+        code: 'input_missing',
+      },
+      {
+        arm: 'hasClass naming no class',
+        request: { target: 'Submit', type: 'hasClass' },
+        failureCode: 'UB-VALIDATION-ERROR',
+        code: 'no_expectation',
+        detail: '`expected`',
+      },
+      {
+        arm: 'noOverlap with a rect missing',
+        request: { target: 'Submit', type: 'noOverlap', relatedTarget: 'Footer' },
+        failureCode: 'UB-OBS-INPUT-MISSING',
+        code: 'input_missing',
+        detail: 'no layout rect for the related target',
+      },
+      {
+        arm: 'noOverlap whose target has no rect',
+        request: { target: 'Footer', type: 'noOverlap', relatedTarget: 'Submit' },
+        failureCode: 'UB-OBS-INPUT-MISSING',
+        code: 'input_missing',
+        detail: 'no layout rect for the target',
+      },
+      {
+        arm: 'minSpacing with a rect missing',
+        request: { target: 'Submit', type: 'minSpacing', relatedTarget: 'Footer', minGap: 8 },
+        failureCode: 'UB-OBS-INPUT-MISSING',
+        code: 'input_missing',
+        detail: 'no layout rect for the related target',
+      },
+      {
+        arm: 'noOverlap naming no relatedTarget',
+        request: { target: 'Submit', type: 'noOverlap' },
+        failureCode: 'UB-VALIDATION-ERROR',
+        code: 'no_expectation',
+        detail: '`relatedTarget`',
+        suggests: '`relatedTarget`',
+        notSuggests: 'hasClass',
+      },
+      {
+        arm: 'noOverlap whose relatedTarget is empty criteria',
+        request: { target: 'Submit', type: 'noOverlap', relatedTarget: {} },
+        failureCode: 'UB-VALIDATION-ERROR',
+        code: 'no_expectation',
+        detail: '`relatedTarget`',
+      },
+      {
+        arm: 'minSpacing whose relatedTarget only modifies a search',
+        request: {
+          target: 'Submit',
+          type: 'minSpacing',
+          relatedTarget: { fuzzy: true },
+          minGap: 8,
+        },
+        failureCode: 'UB-VALIDATION-ERROR',
+        code: 'no_expectation',
+        detail: '`relatedTarget`',
+      },
+      {
+        arm: 'minSpacing naming no relatedTarget',
+        request: { target: 'Submit', type: 'minSpacing', minGap: 8 },
+        failureCode: 'UB-VALIDATION-ERROR',
+        code: 'no_expectation',
+        detail: '`relatedTarget`',
+      },
+      {
+        arm: 'an unknown type',
+        request: { target: 'Submit', type: 'isPurple' as never },
+        failureCode: 'UB-VALIDATION-ERROR',
+        code: 'no_expectation',
+        detail: '`type`',
+        suggests: 'hasClass',
+        notSuggests: '`relatedTarget`',
+      },
+      {
+        arm: 'an unknown type on a target that resolves nothing',
+        request: { target: 'nothing-here', type: 'isPurple' as never },
+        failureCode: 'UB-VALIDATION-ERROR',
+        code: 'no_expectation',
+        detail: '`type`',
+      },
+    ];
+
+    beforeEach(() => {
+      executor.updateElements([
+        createMockAIElement('btn-1', { textContent: 'Submit' }),
+        rectless('footer', 'Footer'),
+        { ...createMockAIElement('gone-btn', { textContent: 'Gone' }), element: detached },
+      ] as AIDiscoveredElement[]);
+    });
+
+    it.each(rows)('$arm', async ({ request, failureCode, code, detail, suggests, notSuggests }) => {
+      const result = await executor.assert(request);
+      expect(result).toMatchObject({
+        outcome: 'unmeasured',
+        passed: false,
+        failureCode,
+        unmeasured: { code },
+      });
+      expect(result.actual).toBeUndefined();
+      if (detail) expect(result.unmeasured!.detail).toContain(detail);
+      if (suggests) expect(result.suggestion).toContain(suggests);
+      if (notSuggests) expect(result.suggestion).not.toContain(notSuggests);
+    });
+
+    it('a batch holding them all still returns the others, and none passes mode "all"', async () => {
+      const passing = { target: 'Submit', type: 'visible' as const };
+      const failing = { target: 'Submit', type: 'hasText' as const, expected: 'Cancel' };
+      const all = await executor.assertBatch({
+        mode: 'all',
+        assertions: [passing, ...rows.map((r) => r.request), failing],
+      });
+      expect(all.results.map((r) => r.outcome)).toEqual([
+        'passed',
+        ...rows.map(() => 'unmeasured'),
+        'failed',
+      ]);
+      // Main's convention (f67a17d): failedCount counts every non-passing
+      // check; unmeasuredCount is the subset that could not be read.
+      expect(all).toMatchObject({
+        passed: false,
+        passedCount: 1,
+        failedCount: rows.length + 1,
+        unmeasuredCount: rows.length,
       });
 
-      expect(result.passed).toBe(false);
-      expect(result.failureReason).toContain('DOM access');
+      const onlyUnmeasured = await executor.assertBatch({
+        mode: 'all',
+        assertions: [passing, ...rows.map((r) => r.request)],
+      });
+      expect(onlyUnmeasured).toMatchObject({ passed: false, unmeasuredCount: rows.length });
     });
   });
 
