@@ -452,7 +452,9 @@ function preReflects(change: ConcurrentChange, pre: SemanticSnapshot): boolean {
  *      `navigationTo`;
  *   4. a change `pre` already reflects is dropped — the observer diffs tick to
  *      tick, so a tick inside the window can report a change made before the
- *      action started;
+ *      action started. Only `appeared` / `disappeared` can be checked against
+ *      `pre`; a pre-window `modified` / `content` change first seen by a tick
+ *      inside the window reads foreign (fails toward `mixed`, never `causal`);
  *   5. a change is owned when its id matches an owned id, or it satisfies a
  *      predicted criterion or an `incidental` criterion;
  *   6. anything else is foreign.

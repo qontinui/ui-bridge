@@ -178,12 +178,6 @@ export class BackgroundObserver {
       // diff-detected changes count — the bootstrap snapshot is excluded.
       if (isRealChange) {
         getGlobalActionWindowRegistry().recordConcurrentObservation(now, changes);
-        // Advance the diff baseline on EVERY real change, before the content
-        // dedup below can return. A significant change whose text hash is
-        // unchanged (a button toggling `disabled`) would otherwise leave the
-        // baseline stale, and every later tick would re-detect the same old
-        // diff and record it into windows opened after it happened.
-        this.lastSnapshot = snapshot;
       }
 
       if (!isSignificant && !forceCapture) {
@@ -196,6 +190,13 @@ export class BackgroundObserver {
 
       // Content-level dedup (skip if hash matches previous)
       if (contentHash === this.lastContentHash && !forceCapture) {
+        // Advance the diff baseline on a real change the dedup swallows. A
+        // significant change whose text hash is unchanged (a button toggling
+        // `disabled`) would otherwise leave the baseline stale, and every
+        // later tick would re-detect the same old diff and record it into
+        // windows opened after it happened. Not advanced before onCapture
+        // succeeds on the emit path, so a failed capture is retried.
+        if (isRealChange) this.lastSnapshot = snapshot;
         return;
       }
 
