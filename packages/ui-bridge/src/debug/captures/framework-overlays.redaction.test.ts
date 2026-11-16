@@ -73,4 +73,14 @@ describe('framework error overlays — redaction boundaries', () => {
     expect(message.endsWith(': ' + 'b'.repeat(195))).toBe(true);
     expect(JSON.stringify(events)).not.toContain(SECRET);
   });
+
+  it('a shadow-hosted overlay whose host sits inside a boundary reads as the sentinel', () => {
+    document.body.innerHTML = `<div data-bridge-redact="true"><nextjs-portal id="p"></nextjs-portal></div>`;
+    const shadow = document.getElementById('p')!.attachShadow({ mode: 'open' });
+    shadow.innerHTML = `<div data-nextjs-dialog><div data-nextjs-dialog-header><h1>${SECRET}-title</h1></div><div data-nextjs-dialog-body>${SECRET}-body</div></div>`;
+    const overlays = getActiveOverlays();
+    expect(overlays).toHaveLength(1);
+    expect(overlays[0].message).toBe(REDACTED_VALUE);
+    expect(JSON.stringify(overlays)).not.toContain(SECRET);
+  });
 });

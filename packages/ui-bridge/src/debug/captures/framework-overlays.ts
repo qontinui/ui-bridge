@@ -13,7 +13,12 @@
  */
 
 import type { AnyCapturedEvent } from '../browser-capture-types';
-import { textExcludingBoundaries, truncateKeepingSentinel } from '../../core/redaction';
+import {
+  closestRedactionBoundary,
+  REDACTED_VALUE,
+  textExcludingBoundaries,
+  truncateKeepingSentinel,
+} from '../../core/redaction';
 
 type Emit = (event: AnyCapturedEvent) => void;
 
@@ -186,6 +191,15 @@ function detectReactErrorBoundary(): DetectedErrorOverlay | null {
  */
 function textOf(el: Element | null | undefined): string | undefined {
   if (!el) return undefined;
+  // `closest` stops at a shadow root, and the overlays read here live in one
+  // (`nextjs-portal`, `vite-error-overlay`): walk out through each host, so an
+  // overlay hosted inside a boundary reads as the sentinel as a whole.
+  for (let cursor: Element = el; ; ) {
+    if (closestRedactionBoundary(cursor as HTMLElement) !== null) return REDACTED_VALUE;
+    const root = cursor.getRootNode();
+    if (!(root instanceof ShadowRoot)) break;
+    cursor = root.host;
+  }
   return textExcludingBoundaries(el)?.trim();
 }
 
