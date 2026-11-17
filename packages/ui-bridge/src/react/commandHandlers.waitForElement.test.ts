@@ -120,6 +120,27 @@ describe('executeCommand · waitForElementRegistered (browser-side)', () => {
     expect(result.elapsedMs!).toBeGreaterThanOrEqual(150 - TIMER_SLOP_MS);
   });
 
+  it.each([
+    ['no predicate', undefined],
+    ['an empty predicate', {}],
+    ['a predicate of empty strings', { id: '', label: '', testId: '', selector: '' }],
+  ])(
+    'refuses %s instead of returning an arbitrary registered element',
+    async (_name, predicate) => {
+      // An empty predicate constrained nothing, so the FIRST registered element
+      // was returned as a success — the selector-only bug's twin.
+      const btn = document.createElement('button');
+      container.appendChild(btn);
+      getGlobalRegistry().registerElement('button-give-feedback-0', btn, {
+        label: 'Give Feedback',
+      });
+
+      await expect(
+        executeCommand('waitForElementRegistered', { predicate, timeoutMs: 150 }, emptyBridge)
+      ).rejects.toThrow(/at least one non-empty field/);
+    }
+  );
+
   it('does not satisfy a selector-only predicate with an unrelated registered element', async () => {
     // Regression: predicateMatches ignored `selector`, so ANY registered
     // element passed and the wait returned the first one immediately
@@ -308,11 +329,7 @@ describe('executeCommand · waitForRouteChange (browser-side)', () => {
   });
 
   it('resolves when window.history.pushState fires', async () => {
-    const pending = executeCommand(
-      'waitForRouteChange',
-      { timeoutMs: 2000 },
-      emptyBridge
-    );
+    const pending = executeCommand('waitForRouteChange', { timeoutMs: 2000 }, emptyBridge);
 
     setTimeout(() => {
       window.history.pushState(null, '', '/dashboard');
@@ -360,11 +377,7 @@ describe('executeCommand · waitForRouteChange (browser-side)', () => {
     window.history.pushState(null, '', '/page-a');
     window.history.pushState(null, '', '/page-b');
 
-    const pending = executeCommand(
-      'waitForRouteChange',
-      { timeoutMs: 2000 },
-      emptyBridge
-    );
+    const pending = executeCommand('waitForRouteChange', { timeoutMs: 2000 }, emptyBridge);
 
     setTimeout(() => {
       // Simulate the user pressing back. jsdom doesn't fire popstate from

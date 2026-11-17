@@ -115,4 +115,26 @@ describe('waitForElementRegistered (server-side) · selector arm', () => {
     expect(data.element).toBeUndefined();
     expect(data.reason).toBe('timeout');
   });
+
+  it.each([
+    ['no predicate', undefined],
+    ['an empty predicate', {}],
+    ['a predicate of empty strings', { id: '', label: '', testId: '', selector: '' }],
+  ])(
+    'refuses %s instead of returning an arbitrary registered element',
+    async (_name, predicate) => {
+      // An empty predicate constrained nothing, so the FIRST registered element
+      // was returned as a success — the selector-only bug's twin.
+      register('button-give-feedback-0', document.createElement('button'), 'Give Feedback');
+
+      const resp = await makeHandlers().waitForElementRegistered({
+        predicate: predicate as never,
+        timeoutMs: 150,
+      });
+
+      expect(resp.success).toBe(false);
+      expect(resp.code).toBe('UB-VALIDATION-ERROR');
+      expect(resp.data).toBeUndefined();
+    }
+  );
 });

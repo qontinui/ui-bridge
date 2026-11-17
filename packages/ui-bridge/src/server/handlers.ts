@@ -30,6 +30,7 @@ import type {
   ComponentCaptureResponse,
   ComponentCaptureQuery,
 } from './types';
+import { EMPTY_WAIT_PREDICATE_MESSAGE, predicateNamesAField } from '../core/wait-predicate';
 import type {
   ActionExecutor,
   ControlActionRequest,
@@ -6827,6 +6828,14 @@ export function createHandlers(
       >
     > => {
       const predicate = request?.predicate ?? {};
+      if (!predicateNamesAField(predicate)) {
+        // An EMPTY predicate constrains nothing, so every registered element
+        // would match and the wait would return the FIRST one immediately —
+        // the same false success a selector-only predicate produced before
+        // its arm existed. Refuse it rather than answer with an arbitrary
+        // element.
+        return error(EMPTY_WAIT_PREDICATE_MESSAGE, 'INVALID_REQUEST');
+      }
       const requirement = request?.requirement ?? 'registered';
       const pollMs = Math.min(
         Math.max(typeof request?.pollMs === 'number' ? request.pollMs : 100, 50),

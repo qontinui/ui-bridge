@@ -104,6 +104,7 @@ import {
 import { performDragSequence } from '../control/drag-sequence';
 import { pageScrollContainer, pageViewportContext } from '../control/page-scroll-container';
 import { findElementByIdentifier } from '../core/element-identifier';
+import { EMPTY_WAIT_PREDICATE_MESSAGE, predicateNamesAField } from '../core/wait-predicate';
 import { applyValueMutation } from '../control/value-mutation';
 import { getEventStack } from '../debug/shared-utils';
 import { createStableRef, resolveStableRef } from '../core/stable-ref';
@@ -3445,6 +3446,14 @@ export async function executeCommand(
         timeoutMs?: number;
       };
       const predicate = req.predicate ?? {};
+      if (!predicateNamesAField(predicate)) {
+        // An EMPTY predicate constrains nothing, so every registered element
+        // would match and the wait would return the FIRST one immediately —
+        // the same false success a selector-only predicate produced before
+        // its arm existed. Refuse it rather than answer with an arbitrary
+        // element.
+        throw new Error(EMPTY_WAIT_PREDICATE_MESSAGE);
+      }
       const requirement = req.requirement ?? 'registered';
       const pollMs = Math.min(
         Math.max(typeof req.pollMs === 'number' ? req.pollMs : 100, 50),

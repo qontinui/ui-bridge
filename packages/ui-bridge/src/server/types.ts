@@ -1763,8 +1763,11 @@ export interface WaitForRouteChangeResponse {
 /**
  * Selector predicate for POST /ai/wait-for-element.
  *
- * All provided fields are ANDed. At least one field should be provided;
- * otherwise the first registered element is returned.
+ * The id / label / testId fields provided are ANDed (see `selector` for how it
+ * combines). At least one field must be a non-empty string: an empty
+ * predicate is refused (`UB-VALIDATION-ERROR` from the server handler; a
+ * thrown error from the browser dispatcher) rather than answered with
+ * whichever element registered first.
  */
 export interface WaitForElementPredicate {
   /** Match by element id (exact). */
