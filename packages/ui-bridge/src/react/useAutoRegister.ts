@@ -1166,6 +1166,9 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
    */
   const processPendingContentRegistrations = useCallback(() => {
     pendingContentRegistrationsRef.current.forEach((element) => {
+      // A queued node that left the DOM before the flush is never registered:
+      // it would take a semantic id verbatim and leave its live twin out.
+      if (!element.isConnected) return;
       if (registeredContentElementsRef.current.has(element)) return;
       // Semantic content takes the fast path — no shouldRegisterContent()
       // gate, because the author explicitly opted in via the attribute.
@@ -1186,6 +1189,8 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
   const processPendingMediaRegistrations = useCallback(() => {
     const isMediaRegistered = (el: HTMLElement) => registeredMediaElementsRef.current.has(el);
     pendingMediaRegistrationsRef.current.forEach((element) => {
+      // As for interactive and content elements: a detached node is never registered.
+      if (!element.isConnected) return;
       if (shouldRegisterMedia(element, mediaDiscovery, isMediaRegistered)) {
         registerMediaElement(element);
       }

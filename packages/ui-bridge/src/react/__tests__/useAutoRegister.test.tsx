@@ -299,7 +299,9 @@ describe('useAutoRegister — persistWhileMounted', () => {
     function SlowHarness() {
       useAutoRegister({
         enabled: true,
-        debounceMs: 40,
+        // Wide enough that the remove-and-remount below lands inside one
+        // window even on a loaded machine.
+        debounceMs: 400,
         contentDiscovery: { enabled: false },
         mediaDiscovery: { enabled: false },
       });
@@ -322,7 +324,7 @@ describe('useAutoRegister — persistWhileMounted', () => {
     first.remove();
     const second = persistentButton();
     document.body.appendChild(second);
-    await new Promise((r) => setTimeout(r, 80));
+    await new Promise((r) => setTimeout(r, 600));
 
     expect(registry.getElement('documents.list.sort-type')?.element).toBe(second);
     expect(registry.getElement('documents.list.sort-type-1')).toBeUndefined();
@@ -370,6 +372,38 @@ describe('useAutoRegister — data-ui-bridge-content (Item 1)', () => {
     cleanup();
     mockBridge = null;
     document.body.innerHTML = '';
+  });
+
+  it('never registers a detached content node: a card remounted inside one debounce window keeps its id on the live node', async () => {
+    function SlowContentHarness() {
+      useAutoRegister({
+        enabled: true,
+        debounceMs: 0,
+        contentDiscovery: { contentDebounceMs: 400 },
+        mediaDiscovery: { enabled: false },
+      });
+      return null;
+    }
+    const card = (text: string) => {
+      const div = document.createElement('div');
+      div.setAttribute('data-ui-bridge-content', 'documents.list.card-1');
+      div.textContent = text;
+      return div;
+    };
+    render(<SlowContentHarness />);
+    await new Promise((r) => setTimeout(r, 5));
+
+    const first = card('alt');
+    document.body.appendChild(first);
+    await new Promise((r) => setTimeout(r, 5));
+    first.remove();
+    const second = card('neu');
+    document.body.appendChild(second);
+    await new Promise((r) => setTimeout(r, 600));
+
+    const registered = registry.getElement('documents.list.card-1');
+    expect(registered?.element).toBe(second);
+    expect(registered?.content).toBe('neu');
   });
 
   it('registers a data-ui-bridge-content element as kind: "content" with normalized text', async () => {
