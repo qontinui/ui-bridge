@@ -742,6 +742,15 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
    */
   const shouldRegister = useCallback(
     (element: HTMLElement): boolean => {
+      // A queued element that left the DOM before the debounce flushed is
+      // never registered. The visibility gate below used to reject it, but a
+      // persistent element skips that gate, so a detached persistent node
+      // (a control unmounted and remounted inside one debounce window) took
+      // its test id and the live replacement was registered as `<id>-1`.
+      if (!element.isConnected) {
+        return false;
+      }
+
       // Persist-while-mounted opt-in: either the hook-wide option or a
       // per-element `data-ui-bridge-persist="true"` attribute bypasses the
       // visibility gate. The element is still subject to exclude selectors

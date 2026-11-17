@@ -292,6 +292,45 @@ describe('useAutoRegister — persistWhileMounted', () => {
     expect(skipped.getAttribute('data-ui-bridge-id')).toBeNull();
   });
 
+  it('never registers a persistent element that left the DOM before the debounce flushed: its remounted twin keeps the id', async () => {
+    // A table header button marked persistent is queued, then the table
+    // unmounts (a loading state) and remounts within one debounce window.
+    // Only the connected button may hold the test id; no `-1` twin appears.
+    function SlowHarness() {
+      useAutoRegister({
+        enabled: true,
+        debounceMs: 40,
+        contentDiscovery: { enabled: false },
+        mediaDiscovery: { enabled: false },
+      });
+      return null;
+    }
+    const persistentButton = () => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = 'Typ';
+      btn.setAttribute('data-ui-bridge-test-id', 'documents.list.sort-type');
+      btn.setAttribute('data-ui-bridge-persist', 'true');
+      return btn;
+    };
+    render(<SlowHarness />);
+    await new Promise((r) => setTimeout(r, 5));
+
+    const first = persistentButton();
+    document.body.appendChild(first);
+    await new Promise((r) => setTimeout(r, 5));
+    first.remove();
+    const second = persistentButton();
+    document.body.appendChild(second);
+    await new Promise((r) => setTimeout(r, 80));
+
+    expect(registry.getElement('documents.list.sort-type')?.element).toBe(second);
+    expect(registry.getElement('documents.list.sort-type-1')).toBeUndefined();
+    expect(
+      registry.getAllElements().filter((e) => e.id.startsWith('documents.list.sort-type'))
+    ).toHaveLength(1);
+  });
+
   it('keeps legacy behavior when the flag is off and element is not marked', async () => {
     // Baseline: opacity-0 element with no persist marker stays out of the
     // registry when the hook option is default-off. Protects the current
