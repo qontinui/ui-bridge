@@ -13,7 +13,9 @@ export interface WaitPredicateFields {
 }
 
 /**
- * True when the predicate names at least one non-empty identifying field.
+ * True when the predicate names at least one identifying field holding
+ * non-whitespace text (a whitespace-only label would match nearly every
+ * element, and a whitespace-only selector is a syntax error).
  * A predicate naming none constrains nothing — every registered element
  * matches it — so a wait on it would report the FIRST registered element as
  * a success. Callers refuse such a predicate instead.
@@ -22,7 +24,7 @@ export function predicateNamesAField(predicate: WaitPredicateFields | null | und
   if (!predicate || typeof predicate !== 'object') return false;
   return (['id', 'label', 'testId', 'selector'] as const).some((key) => {
     const value = predicate[key];
-    return typeof value === 'string' && value.length > 0;
+    return typeof value === 'string' && value.trim().length > 0;
   });
 }
 

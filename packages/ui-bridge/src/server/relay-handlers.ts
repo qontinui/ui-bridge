@@ -11,6 +11,7 @@
 
 import type { CommandRelay } from './command-relay';
 import { mapInternalErrorCode } from '../diagnostics';
+import { EMPTY_WAIT_PREDICATE_MESSAGE, predicateNamesAField } from '../core/wait-predicate';
 import { componentActionInvocation } from './component-action-invocation';
 import { scopedCallerRefusal } from './scoped-refusal';
 import { buildComponentNotFoundError } from './handlers';
@@ -2982,6 +2983,13 @@ export function createRelayHandlers(
       return relayCommand('waitForRouteChange', request, ctxOpts(context));
     },
     async waitForElementRegistered(request, context) {
+      // Refuse an empty predicate HERE, before any tab is consulted, so the
+      // relay answers it with the same UB-VALIDATION-ERROR the server
+      // handler gives — not the COMMAND_FAILED a browser-side throw would
+      // become, and not a "no tab connected" that hides the caller's error.
+      if (!predicateNamesAField(request?.predicate)) {
+        return error(EMPTY_WAIT_PREDICATE_MESSAGE, 'INVALID_REQUEST');
+      }
       return relayCommand('waitForElementRegistered', request, ctxOpts(context));
     },
 

@@ -124,6 +124,7 @@ describe('executeCommand · waitForElementRegistered (browser-side)', () => {
     ['no predicate', undefined],
     ['an empty predicate', {}],
     ['a predicate of empty strings', { id: '', label: '', testId: '', selector: '' }],
+    ['a whitespace-only predicate', { label: ' ', selector: '  ' }],
   ])(
     'refuses %s instead of returning an arbitrary registered element',
     async (_name, predicate) => {

@@ -44,7 +44,9 @@ describe('relay-handlers · iter-3 Item A — type action contract', () => {
     expect(result.httpStatus).toBe(400);
     expect(result.error).toContain("type action takes 'text' parameter");
     expect(result.error).toContain('setValue');
-    expect((result.data as { hint?: { provided: string[]; required: string[] } } | undefined)?.hint).toEqual({
+    expect(
+      (result.data as { hint?: { provided: string[]; required: string[] } } | undefined)?.hint
+    ).toEqual({
       provided: ['value'],
       required: ['text'],
     });
@@ -61,9 +63,7 @@ describe('relay-handlers · iter-3 Item A — type action contract', () => {
     expect(result.success).toBe(false);
     expect(result.code).toBe('MISSING_PARAM');
     expect(result.httpStatus).toBe(400);
-    expect(
-      (result.data as { required?: string[] } | undefined)?.required
-    ).toEqual(['text']);
+    expect((result.data as { required?: string[] } | undefined)?.required).toEqual(['text']);
   });
 
   it('rejects {action:"type"} (no params at all) with HTTP 400 + MISSING_PARAM', async () => {
@@ -93,9 +93,7 @@ describe('relay-handlers · iter-3 Item A — type action contract', () => {
 
   it('forwards valid {action:"type", params:{text:"hi"}} to the relay (no validation hijack)', async () => {
     const relay = freshRelay();
-    const spy = vi
-      .spyOn(relay, 'queueCommand')
-      .mockResolvedValue({ success: true } as unknown);
+    const spy = vi.spyOn(relay, 'queueCommand').mockResolvedValue({ success: true } as unknown);
     const handlers = createRelayHandlers(relay);
 
     const result = await handlers.executeElementAction!('input-id', {
@@ -109,9 +107,7 @@ describe('relay-handlers · iter-3 Item A — type action contract', () => {
 
   it('does NOT validate non-type actions — setValue {value:"x"} forwards to relay', async () => {
     const relay = freshRelay();
-    const spy = vi
-      .spyOn(relay, 'queueCommand')
-      .mockResolvedValue({ success: true } as unknown);
+    const spy = vi.spyOn(relay, 'queueCommand').mockResolvedValue({ success: true } as unknown);
     const handlers = createRelayHandlers(relay);
 
     await handlers.executeElementAction!('input-id', {
@@ -198,3 +194,33 @@ describe('relay-handlers · iter-3 Item B — staleMeta age-based decay', () => 
   });
 });
 
+describe('relay-handlers · waitForElementRegistered empty predicate', () => {
+  it.each([
+    ['no predicate', undefined],
+    ['an empty predicate', {}],
+    ['a whitespace-only predicate', { label: ' ' }],
+  ])('refuses %s with UB-VALIDATION-ERROR without consulting a tab', async (_name, predicate) => {
+    const relay = freshRelay();
+    const spy = vi.spyOn(relay, 'queueCommand');
+    const handlers = createRelayHandlers(relay);
+
+    const resp = await handlers.waitForElementRegistered!({
+      predicate: predicate as never,
+      timeoutMs: 150,
+    });
+
+    expect(resp.success).toBe(false);
+    expect(resp.code).toBe('UB-VALIDATION-ERROR');
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('forwards a predicate that names a field to the relay', async () => {
+    const relay = freshRelay();
+    const spy = vi.spyOn(relay, 'queueCommand').mockResolvedValue({ success: true } as unknown);
+    const handlers = createRelayHandlers(relay);
+
+    await handlers.waitForElementRegistered!({ predicate: { id: 'save-btn' }, timeoutMs: 150 });
+
+    expect(spy).toHaveBeenCalledOnce();
+  });
+});
