@@ -1773,7 +1773,13 @@ export interface WaitForElementPredicate {
   label?: string;
   /** Match by data-testid attribute (exact). */
   testId?: string;
-  /** CSS selector — falls back to document.querySelector if element is not in registry. */
+  /**
+   * CSS selector. Alone, it must match a registered element's own node
+   * (never an arbitrary registered element), and otherwise falls back to
+   * document.querySelector for an element that is not in the registry.
+   * Beside id / label / testId it is only that fallback lookup. An invalid
+   * selector matches nothing, so the wait times out.
+   */
   selector?: string;
 }
 

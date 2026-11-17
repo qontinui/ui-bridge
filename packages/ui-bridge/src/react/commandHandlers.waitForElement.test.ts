@@ -120,6 +120,85 @@ describe('executeCommand · waitForElementRegistered (browser-side)', () => {
     expect(result.elapsedMs!).toBeGreaterThanOrEqual(150 - TIMER_SLOP_MS);
   });
 
+  it('does not satisfy a selector-only predicate with an unrelated registered element', async () => {
+    // Regression: predicateMatches ignored `selector`, so ANY registered
+    // element passed and the wait returned the first one immediately
+    // (measured 2026-11-17 against qontinui.io; coord finding 9610b171).
+    const registry = getGlobalRegistry();
+    const unrelated = document.createElement('button');
+    unrelated.textContent = 'Give Feedback';
+    container.appendChild(unrelated);
+    registry.registerElement('button-give-feedback-0', unrelated, { label: 'Give Feedback' });
+
+    const result = (await executeCommand(
+      'waitForElementRegistered',
+      { predicate: { selector: '[data-testid="doc-row-x"]' }, timeoutMs: 150 },
+      emptyBridge
+    )) as { element?: { id: string }; reason?: string };
+
+    expect(result.element).toBeUndefined();
+    expect(result.reason).toBe('timeout');
+  });
+
+  it('returns the registered element a selector-only predicate matches, by its registry id', async () => {
+    const registry = getGlobalRegistry();
+    const unrelated = document.createElement('button');
+    container.appendChild(unrelated);
+    registry.registerElement('unrelated-btn', unrelated, { label: 'Other' });
+
+    setTimeout(() => {
+      const row = document.createElement('div');
+      row.setAttribute('data-testid', 'doc-row-x');
+      container.appendChild(row);
+      registry.registerElement('doc-row-x', row, { label: 'Doc row' });
+    }, 60);
+
+    const result = (await executeCommand(
+      'waitForElementRegistered',
+      { predicate: { selector: '[data-testid="doc-row-x"]' }, timeoutMs: 1500 },
+      emptyBridge
+    )) as { element?: { id: string }; reason?: string };
+
+    expect(result.reason).toBeUndefined();
+    expect(result.element?.id).toBe('doc-row-x');
+  });
+
+  it('treats an invalid selector as matching no registered element', async () => {
+    const registry = getGlobalRegistry();
+    const el = document.createElement('button');
+    container.appendChild(el);
+    registry.registerElement('any-btn', el, { label: 'Any' });
+
+    const result = (await executeCommand(
+      'waitForElementRegistered',
+      { predicate: { selector: '[[[not-a-selector' }, timeoutMs: 150 },
+      emptyBridge
+    )) as { element?: { id: string }; reason?: string };
+
+    expect(result.element).toBeUndefined();
+    expect(result.reason).toBe('timeout');
+  });
+
+  it('keeps selector as a fallback beside id: a descendant selector still resolves the registered element', async () => {
+    const registry = getGlobalRegistry();
+    const row = document.createElement('div');
+    row.setAttribute('data-testid', 'row-1');
+    const title = document.createElement('span');
+    title.className = 'title';
+    row.appendChild(title);
+    container.appendChild(row);
+    registry.registerElement('row-1', row, { label: 'Row one' });
+
+    const result = (await executeCommand(
+      'waitForElementRegistered',
+      { predicate: { id: 'row-1', selector: '[data-testid="row-1"] .title' }, timeoutMs: 500 },
+      emptyBridge
+    )) as { element?: { id: string }; reason?: string };
+
+    expect(result.reason).toBeUndefined();
+    expect(result.element?.id).toBe('row-1');
+  });
+
   it('falls back to document.querySelector when predicate.selector is given', async () => {
     setTimeout(() => {
       const div = document.createElement('div');

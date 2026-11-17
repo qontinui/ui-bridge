@@ -3475,6 +3475,31 @@ export async function executeCommand(
           const testId = domEl?.getAttribute?.('data-testid');
           if (testId !== predicate.testId) return false;
         }
+        if (
+          typeof predicate.selector === 'string' &&
+          predicate.selector.length > 0 &&
+          !(typeof predicate.id === 'string' && predicate.id.length > 0) &&
+          !labelNeedle &&
+          !(typeof predicate.testId === 'string' && predicate.testId.length > 0)
+        ) {
+          // A SELECTOR-ONLY predicate must not match an arbitrary registered
+          // element: without this arm nothing constrained the registry match,
+          // so the wait returned the FIRST registered element immediately. A
+          // registered element now matches only when its own node matches the
+          // selector. When id / label / testId is also given, those identify
+          // the element and `selector` stays the fallback lookup it is
+          // documented as, so a selector aimed at a descendant still resolves
+          // the registered element. An invalid selector matches nothing here,
+          // and the DOM fallback below treats it as no match too, so the wait
+          // times out.
+          let selectorMatches: boolean;
+          try {
+            selectorMatches = domEl?.matches?.(predicate.selector) === true;
+          } catch {
+            selectorMatches = false;
+          }
+          if (!selectorMatches) return false;
+        }
         return true;
       };
 
