@@ -255,8 +255,9 @@ describe('relay getElementState · NO live answer: the cache answers, marked as 
 
     const result = await handlers.getElementState!(ID);
 
-    // The relay tried the tab's stream, and the write was refused.
-    expect(seen).toContain('getElementState');
+    // The handler's own read tried the tab's stream too (the probe above was
+    // the first attempt), and the write was refused.
+    expect(seen.filter((a) => a === 'getElementState')).toHaveLength(2);
     expect(result.success).toBe(true);
     expect(result.data).toEqual(CACHED_STATE);
     expect(result._meta).toEqual({

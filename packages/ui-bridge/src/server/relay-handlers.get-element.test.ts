@@ -290,8 +290,9 @@ describe('relay getElement · unpinned · NO live answer: the cache answers, mar
 
     const result = await handlers.getElement!(ID);
 
-    // The relay tried the tab's stream, and the write was refused.
-    expect(seen).toContain('getElement');
+    // The handler's own read tried the tab's stream too (the probe above was
+    // the first attempt), and the write was refused.
+    expect(seen.filter((a) => a === 'getElement')).toHaveLength(2);
     expect(result.success).toBe(true);
     expect(result.data).toMatchObject({ id: ID, label: 'Save (cached)' });
     expect(result._meta).toEqual({
