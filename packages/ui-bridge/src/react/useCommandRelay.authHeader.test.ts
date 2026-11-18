@@ -12,15 +12,27 @@
  * module, not the published entry point.
  */
 
-import { createElement as h, Suspense, startTransition, use } from 'react';
+import {
+  createElement as h,
+  Suspense,
+  startTransition,
+  use,
+  type Context,
+  type ReactNode,
+} from 'react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { UIBridgeRegistry } from '../core/registry';
+import type { UIState } from '../core/types';
+import type { UIBridgeContextValue } from './UIBridgeProvider';
 import { outsideAct } from './__tests__/outside-act';
 
 // The relay client the hook starts, captured rather than run: these cases read
-// the hooks it was handed, exactly as it calls them on each request and
-// heartbeat. Hoisted, because the mock factory runs at the first import.
+// the hooks and the dispatcher it was handed, and call them exactly as it does
+// on each request, heartbeat and relayed command. Hoisted, because the mock
+// factory runs at the first import.
 const relay = vi.hoisted(() => ({
   configs: [] as Array<{
+    execute: (action: string, payload: unknown) => Promise<unknown>;
     authHeader?: () => string | null | undefined;
     registrationMetadata?: () => { userId: string; sessionId: string } | null | undefined;
   }>,
@@ -34,6 +46,21 @@ vi.mock('../relay/relay-client', async (importOriginal) => {
       return { stop: () => {} };
     },
   };
+});
+
+// The UI Bridge context the hook reads, supplied per render through a test
+// context. The real provider builds one registry for its whole life, so it
+// cannot hand one render a different bridge from the next. With no provider
+// rendered, the hook reads null, as it does outside a real UIBridgeProvider.
+const bridgeContext = vi.hoisted(() => ({
+  Context: undefined as undefined | Context<UIBridgeContextValue | null>,
+}));
+vi.mock('./UIBridgeProvider', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./UIBridgeProvider')>();
+  const { createContext, use } = await import('react');
+  const TestContext = createContext<UIBridgeContextValue | null>(null);
+  bridgeContext.Context = TestContext;
+  return { ...actual, useUIBridgeOptional: () => use(TestContext) };
 });
 
 // Import the source module directly so we can reach the internal helpers
@@ -152,10 +179,12 @@ describe('parseSSEDataBlock', () => {
   });
 });
 
-// A render that never commits must not hand the relay its hooks. The relay
-// client calls `authHeader()` on every request and `registrationMetadata()` on
-// every heartbeat, so a ref written during render served an abandoned render's
-// token. `act` is off: it would drive a suspended transition to its end.
+// A render that never commits must not hand the relay its hooks or its bridge.
+// The relay client calls `authHeader()` on every request,
+// `registrationMetadata()` on every heartbeat and its dispatcher on every
+// relayed command, so a ref written during render served an abandoned render's
+// token and bridge. `act` is off: it would drive a suspended transition to its
+// end.
 describe('useCommandRelay hands the relay the COMMITTED hooks, outside act', () => {
   const { mount, until } = outsideAct();
   beforeEach(() => {
@@ -208,5 +237,59 @@ describe('useCommandRelay hands the relay the COMMITTED hooks, outside act', () 
       userId: 'user-1',
       sessionId: 'committed',
     });
+  });
+
+  it('after an abandoned render, a relayed command dispatches through the committed bridge', async () => {
+    // Two bridges, told apart by the one state each registry holds. The relay
+    // answers `getStates` from the bridge it dispatches through.
+    const committedRegistry = new UIBridgeRegistry();
+    committedRegistry.registerState({ id: 'committed-state', name: 'Committed', elements: [] });
+    const abandonedRegistry = new UIBridgeRegistry();
+    abandonedRegistry.registerState({ id: 'abandoned-state', name: 'Abandoned', elements: [] });
+    const committedBridge = { registry: committedRegistry } as unknown as UIBridgeContextValue;
+    const abandonedBridge = { registry: abandonedRegistry } as unknown as UIBridgeContextValue;
+    const stateIds = async () => {
+      const states = (await relay.configs[0].execute('getStates', {})) as UIState[];
+      return states.map((state) => state.id);
+    };
+
+    let suspends = 0;
+    function Never(): null {
+      suspends += 1;
+      return use(never);
+    }
+    function Relay({ suspend }: { suspend: boolean }) {
+      useCommandRelay({ disablePhoneHome: true });
+      return h('span', null, 'relay', suspend ? h(Never) : null);
+    }
+    // Records which bridge each render of the subtree was handed.
+    const seen: unknown[] = [];
+    function Probe({ children }: { children: ReactNode }) {
+      seen.push(use(bridgeContext.Context!));
+      return children;
+    }
+    const app = (bridge: UIBridgeContextValue, suspend: boolean) =>
+      h(
+        Suspense,
+        { fallback: h('i', null, 'fallback') },
+        h(bridgeContext.Context!.Provider, { value: bridge }, h(Probe, null, h(Relay, { suspend })))
+      );
+
+    const { container, root } = mount();
+    root.render(app(committedBridge, false));
+    await until(() => relay.configs.length > 0, 'the relay client to start');
+    expect(await stateIds()).toEqual(['committed-state']);
+
+    // A transition hands the subtree another bridge, then suspends.
+    startTransition(() => {
+      root.render(app(abandonedBridge, true));
+    });
+    await until(() => suspends > 0, 'the transition render to suspend');
+    expect(seen).toContain(abandonedBridge);
+    // It never committed, and the relay was not restarted.
+    expect(container.textContent).toBe('relay');
+    expect(relay.configs).toHaveLength(1);
+
+    expect(await stateIds()).toEqual(['committed-state']);
   });
 });

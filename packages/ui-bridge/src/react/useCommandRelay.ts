@@ -11,8 +11,7 @@
  * but portable to any app using @qontinui/ui-bridge.
  */
 
-import { useEffect, useRef, useMemo, useState } from 'react';
-import { useIsomorphicLayoutEffect } from './useIsomorphicLayoutEffect';
+import { useEffect, useInsertionEffect, useRef, useMemo, useState } from 'react';
 import { useUIBridge } from './useUIBridge';
 import { useUIBridgeOptional } from './UIBridgeProvider';
 import { executeCommand, type BridgeAccess } from './commandHandlers';
@@ -302,10 +301,15 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
   // Refresh the three refs at COMMIT. The relay client reads them on every
   // request and heartbeat, so a write during render let a render that never
   // commits (an abandoned transition) hand the relay its `authHeader` hook,
-  // its registration metadata and its bridge. Declared before the relay-start
-  // effect, so where this falls back to a passive effect (no DOM) the refs are
-  // still current before the client starts.
-  useIsomorphicLayoutEffect(() => {
+  // its registration metadata and its bridge.
+  //
+  // It is an insertion effect, not a layout one, so the refresh does not
+  // depend on layout mounts. React skips those in a subtree hidden by a
+  // Suspense fallback or a hidden Activity. Insertion effects run in every
+  // commit that renders this component, hidden or not, and before any layout
+  // or passive effect, so the relay-start effect below always starts with
+  // current refs.
+  useInsertionEffect(() => {
     authHeaderRef.current = options?.authHeader;
     registrationMetadataRef.current = options?.registrationMetadata;
     bridgeRef.current = bridge;
