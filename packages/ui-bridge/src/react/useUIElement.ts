@@ -500,8 +500,10 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     if (registeredElementId === null) return;
     const registeredWindowLabel = registeredWindowLabelRef.current;
     if (registeredElementId !== id || registeredWindowLabel !== windowLabel) {
-      // Re-register under the new (window, id). Also re-point the bbox tracker
-      // at the new registry key so updates land on the right entry.
+      // Re-register under the new (window, id). Also restart the bbox tracker
+      // for the new id. The tracker addresses entries by id alone
+      // (`updateElementBbox` resolves through `findElement`, default window
+      // first), so a window-only move does not change where its writes land.
       stopBboxTracking();
       // Same ownership guard as the unmount path — only drop the old entry if
       // our node is still the one registered under it — and the old key's

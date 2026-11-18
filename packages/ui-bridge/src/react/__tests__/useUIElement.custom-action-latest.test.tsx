@@ -597,12 +597,20 @@ describe('useUIElement custom actions are the latest committed ones', () => {
     // effect could. The entry is still filed in w1, so that is where it must
     // come out of; nothing may be left behind there.
     const sample = await sampleInGap('T', at('w2', 'r3'), () => {
+      // Precondition: the entry really is filed in w1 when `unregister` runs.
+      const filedInW1 = entryIn('w1', 'leaving')?.element;
       committedHooks.get('T')?.unregister();
-      return { w1: entryIn('w1', 'leaving'), w2: entryIn('w2', 'leaving') };
+      return {
+        filedInW1,
+        w1: entryIn('w1', 'leaving'),
+        w2: entryIn('w2', 'leaving'),
+      };
     });
 
     expect(sample.flushedAtSample).toBe('r2');
-    expect(sample.value).toEqual({ w1: undefined, w2: undefined });
+    expect(sample.value.filedInW1).toBe(container?.querySelector('[data-name="T"]'));
+    expect(sample.value.w1).toBeUndefined();
+    expect(sample.value.w2).toBeUndefined();
     await until(() => flushed.get('T') === 'r3', 'T flushed r3');
     expect(entryIn('w1', 'leaving')).toBeUndefined();
     expect(entryIn('w2', 'leaving')).toBeUndefined();
