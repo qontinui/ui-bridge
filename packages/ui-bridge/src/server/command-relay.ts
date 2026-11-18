@@ -2657,17 +2657,15 @@ export class CommandRelay {
         // on another instance, which then delivers the command. This stream
         // delivers it only when no other instance holds the tab, so a command
         // is neither run twice nor left with no deliverer while no
-        // replacement has registered. Three races remain. The replacement
+        // replacement has registered. Two races remain. The replacement
         // registers its hold (ZADD) and subscribes (SUBSCRIBE) over separate
         // connections, so a command published between the two runs twice
         // (subscribed, its hold not yet seen) or reaches nobody (its hold
-        // seen, not yet subscribed). `holdsElsewhere` reads only this
-        // version's holder set, so a replacement on an instance of the
-        // previous version is not seen, and both deliver. And on one
-        // instance, registering a replacement releases this handler first,
-        // which can UNSUBSCRIBE the channel before the replacement's
-        // SUBSCRIBE goes out, so a command published between the two reaches
-        // no handler here; that gap predates Phase 2.
+        // seen, not yet subscribed). And on one instance, registering a
+        // replacement releases this handler first, which can UNSUBSCRIBE the
+        // channel before the replacement's SUBSCRIBE goes out, so a command
+        // published between the two reaches no handler here; that gap
+        // predates Phase 2.
         void bus
           .holdsElsewhere(id)
           .catch(() => false)

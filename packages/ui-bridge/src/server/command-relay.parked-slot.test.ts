@@ -311,15 +311,6 @@ class FakeRedisClient {
     return 'OK';
   }
 
-  async del(key: string): Promise<number> {
-    return this.delNow(key);
-  }
-
-  private delNow(key: string): number {
-    const existed = this.server.strings.delete(key) || this.server.sortedSets.delete(key);
-    return existed ? 1 : 0;
-  }
-
   async exists(key: string): Promise<number> {
     this.server.expire(key);
     return this.server.strings.has(key) || (this.server.sortedSets.get(key)?.size ?? 0) > 0 ? 1 : 0;
@@ -343,10 +334,6 @@ class FakeRedisClient {
   }
 
   async zrem(key: string, member: string): Promise<number> {
-    return this.zremNow(key, member);
-  }
-
-  private zremNow(key: string, member: string): number {
     return this.sortedSet(key, false)?.delete(member) ? 1 : 0;
   }
 
@@ -363,10 +350,6 @@ class FakeRedisClient {
   }
 
   async zcount(key: string, min: number | string, max: number | string): Promise<number> {
-    return this.zcountNow(key, min, max);
-  }
-
-  private zcountNow(key: string, min: number | string, max: number | string): number {
     let count = 0;
     for (const score of this.sortedSet(key, false)?.values() ?? []) {
       if (inRange(score, min, max)) count++;
@@ -382,64 +365,6 @@ class FakeRedisClient {
   async zscore(key: string, member: string): Promise<string | null> {
     const score = this.sortedSet(key, false)?.get(member);
     return score === undefined ? null : String(score);
-  }
-
-  /**
-   * EVAL, for scripts in the one shape `RedisRelayBus` sends: lines of
-   * `redis.call('CMD', ...)`, one level of `if redis.call(...) <op> <n> then`
-   * ... `end`, and `return <n>`, with KEYS[i], ARGV[i] and quoted literals as
-   * operands. The script is RUN, line by line, so a change to it changes what
-   * the tests see; anything else in it throws rather than passing unrun. It
-   * runs in one go, with no other command between its lines, as Redis runs
-   * a script.
-   */
-  async eval(script: string, numKeys: number, ...rest: Array<string | number>): Promise<unknown> {
-    const keys = rest.slice(0, numKeys).map(String);
-    const argv = rest.slice(numKeys).map(String);
-    const operand = (token: string): string => {
-      const text = token.trim();
-      const key = /^KEYS\[(\d+)\]$/.exec(text);
-      if (key) return keys[Number(key[1]) - 1]!;
-      const arg = /^ARGV\[(\d+)\]$/.exec(text);
-      if (arg) return argv[Number(arg[1]) - 1]!;
-      const literal = /^'([^']*)'$/.exec(text);
-      if (literal) return literal[1]!;
-      throw new Error(`FakeRedis EVAL: unsupported operand ${text}`);
-    };
-    const call = (expression: string): number => {
-      const match = /^redis\.call\((.*)\)$/.exec(expression.trim());
-      if (!match) throw new Error(`FakeRedis EVAL: unsupported expression ${expression}`);
-      const [command, ...args] = match[1]!.split(',').map(operand);
-      if (command === 'ZREM') return this.zremNow(args[0]!, args[1]!);
-      if (command === 'ZCOUNT') return this.zcountNow(args[0]!, args[1]!, args[2]!);
-      if (command === 'DEL') return this.delNow(args[0]!);
-      throw new Error(`FakeRedis EVAL: unsupported command ${command}`);
-    };
-    const holds: Record<string, (a: number, b: number) => boolean> = {
-      '==': (a, b) => a === b,
-      '~=': (a, b) => a !== b,
-      '>': (a, b) => a > b,
-      '<': (a, b) => a < b,
-      '>=': (a, b) => a >= b,
-      '<=': (a, b) => a <= b,
-    };
-    let skipping = false;
-    for (const line of script
-      .split('\n')
-      .map((text) => text.trim())
-      .filter(Boolean)) {
-      const branch = /^if (.+) (==|~=|>=|<=|>|<) (-?\d+) then$/.exec(line);
-      if (branch) {
-        skipping = !holds[branch[2]!]!(call(branch[1]!), Number(branch[3]));
-      } else if (line === 'end') {
-        skipping = false;
-      } else if (!skipping) {
-        const done = /^return (-?\d+)$/.exec(line);
-        if (done) return Number(done[1]);
-        call(line);
-      }
-    }
-    return null;
   }
 
   async pexpireat(key: string, unixTimeMs: number): Promise<number> {
@@ -471,22 +396,6 @@ function redisBus(server: FakeRedisServer, label: string): RelayBus {
   const pub = server.client(label);
   const Bus = RedisRelayBus as unknown as new (pub: unknown, sub: unknown) => RelayBus;
   return new Bus(pub, pub.duplicate());
-}
-
-/**
- * The tab presence of an instance still running the version before per-holder
- * presence: one string key per tab, `uibridge:tab:<id>`, SET, DELeted and read
- * with EXISTS, as that version's `RedisRelayBus` kept it.
- */
-function oldShapePresence(
-  client: FakeRedisClient
-): Pick<RelayBus, 'registerTab' | 'unregisterTab' | 'isTabKnown'> {
-  return {
-    registerTab: (tabId, ttlSeconds) =>
-      void client.set(`uibridge:tab:${tabId}`, '1', 'EX', ttlSeconds),
-    unregisterTab: (tabId) => void client.del(`uibridge:tab:${tabId}`),
-    isTabKnown: async (tabId) => (await client.exists(`uibridge:tab:${tabId}`)) > 0,
-  };
 }
 
 /**
@@ -1199,48 +1108,24 @@ describe('RedisRelayBus · tab presence is per holder', () => {
   });
 });
 
-describe('RedisRelayBus · presence across a rolling deploy, and the key’s life (review A3, A7)', () => {
-  it('A3 · a holder of this version is seen by an instance of the old shape', async () => {
-    const server = new FakeRedisServer();
-    const current = redisBus(server, 'N');
-    const old = oldShapePresence(server.client('O'));
-
-    current.registerTab('tab-a', 60);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(await old.isTabKnown('tab-a')).toBe(true);
-    current.unregisterTab('tab-a');
-    await vi.advanceTimersByTimeAsync(0);
-    expect(await old.isTabKnown('tab-a')).toBe(false);
-  });
-
-  it('A3 · a holder of the old shape is seen by this version', async () => {
-    const server = new FakeRedisServer();
-    const current = redisBus(server, 'N');
-    const old = oldShapePresence(server.client('O'));
-
-    old.registerTab('tab-a', 60);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(await current.isTabKnown('tab-a')).toBe(true);
-    old.unregisterTab('tab-a');
-    await vi.advanceTimersByTimeAsync(0);
-    expect(await current.isTabKnown('tab-a')).toBe(false);
-  });
-
-  it('W1 · a holder leaving while another holder of this version stays leaves the previous version’s key standing; the last holder to leave removes it', async () => {
+describe('RedisRelayBus · the retired `uibridge:tab:<id>` key, and the holder set’s life (review A7)', () => {
+  it('the retired `uibridge:tab:<id>` presence key is neither written nor read', async () => {
     const server = new FakeRedisServer();
     const [a, b] = [redisBus(server, 'A'), redisBus(server, 'B')];
-    const old = oldShapePresence(server.client('O'));
+    const raw = server.client('raw');
 
     a.registerTab('tab-a', 60);
-    b.registerTab('tab-a', 60);
     await vi.advanceTimersByTimeAsync(0);
-    a.unregisterTab('tab-a'); // the stream rotated from A to B
+    expect(await raw.exists('uibridge:tab:tab-a')).toBe(0);
+    expect(await b.isTabKnown('tab-a')).toBe(true);
+    a.unregisterTab('tab-a');
     await vi.advanceTimersByTimeAsync(0);
-    expect(await old.isTabKnown('tab-a')).toBe(true);
+    expect(await b.isTabKnown('tab-a')).toBe(false);
 
-    b.unregisterTab('tab-a');
-    await vi.advanceTimersByTimeAsync(0);
-    expect(await old.isTabKnown('tab-a')).toBe(false);
+    // A stale key of the retired shape counts for nothing, on either read.
+    await raw.set('uibridge:tab:tab-a', '1', 'EX', 60);
+    expect(await b.isTabKnown('tab-a')).toBe(false);
+    expect(await b.holdsElsewhere('tab-a')).toBe(false);
   });
 
   it('A7 · a holder refreshing with a shorter TTL cannot expire the key before another holder’s longer hold', async () => {
@@ -1607,14 +1492,14 @@ describe('relay · a tab held through a WebSocket client on the bus (review W3, 
     expect(ws.actions).toEqual(['getTabInfo']);
   });
 
-  it('S4 · at grace expiry a tab known only through the previous version’s key is not held by another instance: the parked command fails at once', async () => {
+  it('S4 · at grace expiry a tab known only through a stale retired `uibridge:tab:<id>` key is not held by another instance: the parked command fails at once', async () => {
     const server = new FakeRedisServer();
     const { relay, routes } = rig({ bus: redisBus(server, 'A') });
     const first = await openStream(routes, relay, 'tab-a', { caps: 'rotate', cid: 'page-1' });
     await first.cancel();
     const parked = track(relay.queueCommand('getTabInfo', {}, { targetTabId: 'tab-a' }));
     await vi.advanceTimersByTimeAsync(1_000);
-    oldShapePresence(server.client('O')).registerTab('tab-a', 60);
+    void server.client('O').set('uibridge:tab:tab-a', '1', 'EX', 60);
 
     await vi.advanceTimersByTimeAsync(4_000); // the dead slot's grace ends
     expect({
