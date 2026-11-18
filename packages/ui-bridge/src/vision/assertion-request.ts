@@ -29,7 +29,14 @@
  *   non-`Option` field (`require_overlap`, `level`, `kind`, `dimensions`) may be
  *   left out but not sent as `null`;
  * - a key vision-core does not read is ignored, inside an assertion as at the
- *   top level (the adapters add `tabId`), exactly as serde ignores it.
+ *   top level (the adapters add `tabId`), exactly as serde ignores it;
+ * - a nested struct (`Rgb`, `Region`, `NaturalRegion`, a `contains_text`
+ *   target) is also accepted in the sequence form serde's derived
+ *   `Deserialize` reads: its fields in declaration order (`[255, 0, 0]`).
+ *
+ * One difference cannot be closed: after `JSON.parse`, `5.0` and `1e2` are the
+ * integers 5 and 100, so an integer field accepts them where serde_json
+ * refuses a float for a `u32` / `u64`.
  *
  * One refusal is the SDK's own: a caller-supplied `snapshot`. The in-tab
  * evaluator measures the live page and reads no caller snapshot, and the five
@@ -233,10 +240,24 @@ function strings(body: Body, key: string, path: string): string[] {
   return [...(v as string[])];
 }
 
+/**
+ * A struct as serde's DERIVED `Deserialize` reads it: a map, or a sequence of
+ * exactly its fields in declaration order (`[r, g, b]` for `{r, g, b}`). The
+ * sequence is returned as the map it stands for; anything else is `null`.
+ */
+function structFields(value: unknown, fields: readonly string[]): Body | null {
+  if (isObject(value)) return value;
+  if (Array.isArray(value) && value.length === fields.length) {
+    return Object.fromEntries(fields.map((f, i) => [f, value[i]]));
+  }
+  return null;
+}
+
 /** vision-core `Region`: `{x, y}` are `i32`, `{w, h}` are `u32`. */
-function region(value: unknown, path: string): VisionRegion {
+function region(raw: unknown, path: string): VisionRegion {
+  const value = structFields(raw, ['x', 'y', 'w', 'h']);
   if (
-    !isObject(value) ||
+    !value ||
     !isInt(value.x, I32_MIN, I32_MAX) ||
     !isInt(value.y, I32_MIN, I32_MAX) ||
     !isInt(value.w, 0, U32_MAX) ||
@@ -255,21 +276,18 @@ function optRegion(body: Body, key: string, path: string): VisionRegion | null {
 }
 
 /** vision-core `Rgb`: three `u8`. */
-function rgb(value: unknown, path: string): VisionRgb {
-  if (
-    !isObject(value) ||
-    !isInt(value.r, 0, 255) ||
-    !isInt(value.g, 0, 255) ||
-    !isInt(value.b, 0, 255)
-  ) {
+function rgb(raw: unknown, path: string): VisionRgb {
+  const value = structFields(raw, ['r', 'g', 'b']);
+  if (!value || !isInt(value.r, 0, 255) || !isInt(value.g, 0, 255) || !isInt(value.b, 0, 255)) {
     refuse(path, 'must be a colour { r, g, b } of integers from 0 to 255');
   }
   return { r: value.r as number, g: value.g as number, b: value.b as number };
 }
 
 /** vision-core `NaturalRegion`: four `f64`. */
-function naturalRegion(value: unknown, path: string): VisionNaturalRegion {
-  if (!isObject(value)) refuse(path, 'must be an object { x, y, width, height } of numbers');
+function naturalRegion(raw: unknown, path: string): VisionNaturalRegion {
+  const value = structFields(raw, ['x', 'y', 'width', 'height']);
+  if (!value) refuse(path, 'must be an object { x, y, width, height } of numbers');
   return {
     x: f64(value.x, `${path}.x`),
     y: f64(value.y, `${path}.y`),
@@ -317,11 +335,15 @@ const TYPOGRAPHY_DIMENSIONS: readonly TypographyDimension[] = [
  * because serde ignores the unread `region` key.
  */
 function textTarget(body: Body, path: string): { element: string } | { region: VisionRegion } {
-  const target = body.target;
   const where = `${path}.target`;
-  if (!isObject(target)) refuse(where, 'must be { element } or { region }');
-  if (typeof target.element === 'string') return { element: target.element };
-  if (target.region !== undefined) return { region: region(target.region, `${where}.region`) };
+  // Each variant is a one-field struct, so `["id"]` / `[region]` are its
+  // sequence form.
+  const asElement = structFields(body.target, ['element']);
+  if (asElement && typeof asElement.element === 'string') return { element: asElement.element };
+  const asRegion = structFields(body.target, ['region']);
+  if (asRegion && asRegion.region !== undefined) {
+    return { region: region(asRegion.region, `${where}.region`) };
+  }
   return refuse(where, 'must be { element } or { region }');
 }
 

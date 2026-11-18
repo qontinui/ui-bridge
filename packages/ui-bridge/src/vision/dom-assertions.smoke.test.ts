@@ -179,6 +179,59 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     await page.close();
   }, 60_000);
 
+  it('contrast_meets_wcag: in a frame the canvas is the embedder, so only an opaque layer decides', async () => {
+    const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
+    const frameDoc = (body: string) =>
+      `<!doctype html><html><head><meta charset="utf-8"></head><body>${body}</body></html>`;
+    await page.setContent(
+      `<!doctype html><html><body style="background:#000">` +
+        `<iframe id="f" style="background:transparent" srcdoc='${frameDoc(
+          '<p data-id="bare" style="color:#000">On the embedder</p>' +
+            '<div style="background:#fff"><p data-id="card" style="color:#000">On a card</p></div>'
+        )}'></iframe></body></html>`
+    );
+    const frame = page.frames().find((f) => f !== page.mainFrame());
+    expect(frame).toBeDefined();
+    await frame!.waitForLoadState();
+    await frame!.addScriptTag({ content: bundle });
+    const res: VisionAssertResponse = await frame!.evaluate((request) => window.VA.run(request), {
+      assertions: [
+        { type: 'contrast_meets_wcag', element: 'bare' },
+        { type: 'contrast_meets_wcag', element: 'card' },
+      ],
+    });
+    expect(verdicts(res)).toEqual([
+      ['unknown', 'input_missing'], // black on a black embedder would read as white
+      ['passed', null],
+    ]);
+    expect(res.results[0].detail).toContain('the embedding page');
+    await page.close();
+  }, 60_000);
+
+  it('contrast_meets_wcag: a pointer-events:none overlay that paints only text or a border is unplaceable', async () => {
+    const page = await openPage(`
+      <p data-id="undertext" style="color:#000;background:#fff;margin-top:40px">Covered by text</p>
+      <div style="position:absolute;left:8px;top:40px;pointer-events:none;color:#f00;font-size:20px">OVERLAY</div>
+      <p data-id="underborder" style="color:#000;background:#fff;margin-top:40px">Covered by a border</p>
+      <div style="position:absolute;left:0;top:100px;width:600px;height:60px;pointer-events:none;border:30px solid #f00;box-sizing:border-box"></div>
+      <p data-id="underwrapper" style="color:#000;background:#fff;margin-top:40px">Under a bare wrapper</p>
+      <div style="position:absolute;left:0;top:0;width:800px;height:600px;pointer-events:none"></div>
+    `);
+    const res = await assertOn(page, [
+      { type: 'contrast_meets_wcag', element: 'undertext' },
+      { type: 'contrast_meets_wcag', element: 'underborder' },
+      { type: 'contrast_meets_wcag', element: 'underwrapper' },
+    ]);
+    const r = verdicts(res);
+    expect(r[0]).toEqual(['unknown', 'input_missing']);
+    expect(r[1]).toEqual(['unknown', 'input_missing']);
+    expect(res.results[0].detail).toContain('pointer-events: none');
+    expect(res.results[1].detail).toContain('pointer-events: none');
+    // A box that paints nothing hides nothing.
+    expect(r[2]).toEqual(['passed', null]);
+    await page.close();
+  }, 60_000);
+
   it('contrast_meets_wcag: a layer painted over the text, and an element with no text, are unknown', async () => {
     const page = await openPage(`
       <div style="position:relative;width:300px;height:40px">

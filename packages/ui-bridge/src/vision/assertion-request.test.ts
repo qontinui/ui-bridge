@@ -191,6 +191,36 @@ describe('parseVisionAssertRequest', () => {
     ).toEqual({ assertions: [] });
   });
 
+  it('accepts the sequence form serde reads for a nested struct', () => {
+    expect(
+      parseVisionAssertion({ type: 'color_within', element: 'a', expected: [1, 2, 3] })
+    ).toEqual({
+      type: 'color_within',
+      element: 'a',
+      expected: { r: 1, g: 2, b: 3 },
+      delta_e_max: null,
+    });
+    expect(parseVisionAssertion({ type: 'no_clipping', region: [-1, 2, 3, 4] })).toEqual({
+      type: 'no_clipping',
+      region: { x: -1, y: 2, w: 3, h: 4 },
+    });
+    expect(
+      parseVisionAssertion({ type: 'image_focal_visible', element: 'a', focal: [0, 0.5, 1, 0.5] })
+    ).toMatchObject({ focal: { x: 0, y: 0.5, width: 1, height: 0.5 } });
+    expect(parseVisionAssertion({ type: 'contains_text', target: ['a'], text: 'x' })).toMatchObject(
+      { target: { element: 'a' } }
+    );
+    expect(
+      parseVisionAssertion({ type: 'contains_text', target: [[0, 0, 1, 1]], text: 'x' })
+    ).toMatchObject({ target: { region: { x: 0, y: 0, w: 1, h: 1 } } });
+    expect(
+      refusal({ assertions: [{ type: 'color_within', element: 'a', expected: [1, 2] }] })
+    ).toContain('assertions[0].expected must be a colour');
+    expect(refusal({ assertions: [{ type: 'no_clipping', region: [0, 0, 1, 1, 9] }] })).toContain(
+      'assertions[0].region must be a region'
+    );
+  });
+
   it('reads contains_text targets the way the untagged TextTarget does: element first', () => {
     expect(
       parseVisionAssertion({

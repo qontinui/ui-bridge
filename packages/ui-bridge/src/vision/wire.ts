@@ -564,9 +564,9 @@ export type VisionAssertion =
       component: string;
       /** The baseline name, e.g. `storybook/DateRangePicker--default@<sha>`. */
       baseline: string;
-      size_tolerance_pct?: number | null;
-      style_props?: string[] | null;
-      compare_props?: boolean | null;
+      size_tolerance_pct?: number;
+      style_props?: string[];
+      compare_props?: boolean;
     };
 
 /** Every {@link VisionAssertion} `type`, in vision-core's declaration order. */

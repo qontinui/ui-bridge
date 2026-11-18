@@ -5383,20 +5383,17 @@ export async function executeCommand(
     // `POST /vision/assert` with no runner: the same function the in-process
     // handlers call (vision/dom-assertions.ts), measuring this page. The relay
     // handler validated the body before queuing it; it is validated again
-    // here for a WS client that dispatches the command directly, and a
-    // malformed one is answered as a failed command carrying its code.
+    // here for a WS client that dispatches the command directly. Any failure
+    // is coded as the in-process handler codes it (`sharedRouteFailure`), so
+    // one failure is one code over either transport.
     case 'visionAssert': {
       try {
         return evaluateVisionAssertions(registry, payload);
       } catch (err) {
-        if (err instanceof VisionAssertRequestError) {
-          return {
-            success: false,
-            error: err.message,
-            code: mapInternalErrorCode(err.code, err.message),
-          };
-        }
-        throw err;
+        return sharedRouteFailure(
+          (err as Error).message,
+          err instanceof VisionAssertRequestError ? err.code : 'VISION_ASSERT_ERROR'
+        );
       }
     }
 

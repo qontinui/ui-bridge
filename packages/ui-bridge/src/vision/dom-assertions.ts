@@ -363,6 +363,45 @@ function isReplaced(el: Element): boolean {
   return el.tagName.toLowerCase() === 'svg' && !(el.parentElement?.closest('svg') ?? null);
 }
 
+/**
+ * Whether `el` paints anything of its own over the point it covers: a
+ * background, replaced content, a visible border or outline, a box shadow, or
+ * text of its own (a direct, non-blank text node). A box that paints none of
+ * these (a `pointer-events: none` positioning wrapper) hides nothing.
+ */
+function paintsOwnBox(el: Element, st: CSSStyleDeclaration): boolean {
+  const bg = parseColor(st.backgroundColor);
+  if ((bg && bg.a > 0) || (st.backgroundImage && st.backgroundImage !== 'none')) return true;
+  if (isReplaced(el)) return true;
+  if (st.boxShadow && st.boxShadow !== 'none') return true;
+  for (const side of ['Top', 'Right', 'Bottom', 'Left'] as const) {
+    const width = parseFloat(st.getPropertyValue(`border-${side.toLowerCase()}-width`));
+    const style = st.getPropertyValue(`border-${side.toLowerCase()}-style`);
+    if (width > 0 && style && style !== 'none' && style !== 'hidden') return true;
+  }
+  const outlineWidth = parseFloat(st.getPropertyValue('outline-width'));
+  const outlineStyle = st.getPropertyValue('outline-style');
+  if (outlineWidth > 0 && outlineStyle && outlineStyle !== 'none') return true;
+  for (const child of Array.from(el.childNodes)) {
+    if (child.nodeType === Node.TEXT_NODE && (child.nodeValue ?? '').trim() !== '') return true;
+  }
+  return false;
+}
+
+/**
+ * Whether this document is rendered inside another (an iframe or frame). Its
+ * canvas is then transparent rather than the `Canvas` colour. A cross-origin
+ * parent makes `window.top` unreadable only for property access, not for this
+ * identity comparison.
+ */
+function isNestedBrowsingContext(): boolean {
+  try {
+    return typeof window !== 'undefined' && window.top !== window.self;
+  } catch {
+    return true;
+  }
+}
+
 /** Chrome's `Canvas` system colours, light and dark. */
 const CANVAS_LIGHT: RGBA = { r: 255, g: 255, b: 255, a: 1 };
 const CANVAS_DARK: RGBA = { r: 18, g: 18, b: 18, a: 1 };
@@ -1031,7 +1070,7 @@ class TabMeasurement {
     if (unplaceable) {
       return missing(
         'input_missing',
-        `${this.describe(unplaceable)} paints a background at the text's position but computes ` +
+        `${this.describe(unplaceable)} paints at the text's position but computes ` +
           'pointer-events: none, so the hit test cannot place it in the paint order'
       );
     }
@@ -1110,21 +1149,26 @@ class TabMeasurement {
     layers: readonly Element[]
   ): Element | null {
     if (this.pointerNoneLayers === null) {
-      this.pointerNoneLayers = [];
-      const walker = document.createTreeWalker(document.documentElement, NodeFilter.SHOW_ELEMENT);
-      for (
-        let node = walker.currentNode as Element | null;
-        node;
-        node = walker.nextNode() as Element | null
-      ) {
-        const st = this.style(node);
-        if (!readInteractionBlockers(node, st).pointerEventsNone) continue;
-        if (st.visibility === 'hidden' || st.opacity === '0' || st.display === 'none') continue;
-        const bg = parseColor(st.backgroundColor);
-        if ((bg && bg.a > 0) || st.backgroundImage !== 'none' || isReplaced(node)) {
-          this.pointerNoneLayers.push(node);
+      const found: Element[] = [];
+      // Every tree in the composed document: the light DOM, then each OPEN
+      // shadow root met on the way (a closed one cannot be read).
+      const roots: Node[] = [document.documentElement];
+      for (let i = 0; i < roots.length; i++) {
+        const walker = document.createTreeWalker(roots[i], NodeFilter.SHOW_ELEMENT);
+        for (
+          let node = walker.currentNode as Element | null;
+          node;
+          node = walker.nextNode() as Element | null
+        ) {
+          if (node.shadowRoot) roots.push(node.shadowRoot);
+          if (!(node instanceof Element)) continue;
+          const st = this.style(node);
+          if (!readInteractionBlockers(node, st).pointerEventsNone) continue;
+          if (st.visibility === 'hidden' || st.opacity === '0' || st.display === 'none') continue;
+          if (paintsOwnBox(node, st)) found.push(node);
         }
       }
+      this.pointerNoneLayers = found;
     }
     for (const layer of this.pointerNoneLayers) {
       if (layers.includes(layer) || containsComposed(layer, owner)) continue;
@@ -1143,8 +1187,14 @@ class TabMeasurement {
    */
   private canvasPaint(): { paint: Paint; label: string } {
     if (this.canvas) return this.canvas;
-    const base = this.prefersDarkCanvas() ? CANVAS_DARK : CANVAS_LIGHT;
-    let result = { paint: premultiply(base), label: 'the canvas' };
+    // A nested browsing context's canvas is transparent: the embedder shows
+    // through it, and the embedder's paint is not readable from here.
+    const base: Paint = isNestedBrowsingContext()
+      ? UNREADABLE
+      : premultiply(this.prefersDarkCanvas() ? CANVAS_DARK : CANVAS_LIGHT);
+    const baseLabel =
+      base === UNREADABLE ? 'the embedding page (this page is in a frame)' : 'the canvas';
+    let result = { paint: base, label: baseLabel };
     for (const el of [document.documentElement, document.body]) {
       if (!el) continue;
       const st = this.style(el);
@@ -1158,7 +1208,10 @@ class TabMeasurement {
         break;
       }
       if (bg.a > 0) {
-        result = { paint: over(premultiply(bg), premultiply(base)), label: this.describe(el) };
+        result = {
+          paint: over(premultiply(bg), base),
+          label: bg.a < 1 ? `${this.describe(el)} over ${baseLabel}` : this.describe(el),
+        };
         this.canvasFrom = el;
         break;
       }

@@ -30,6 +30,11 @@
 //   node scripts/sync-vision-conformance.mjs --check --schemas <dir> [--ref <ref>] | --file <path>
 //       also exit 1 when the vendored copy differs from that source: drift.
 //
+// From a qontinui-schemas source (--schemas) the sidecar also records
+// `assertionKinds`: the variant tags of vision-core's `enum Assertion`
+// (`rust-vision-core/src/assertions/mod.rs`, at the same commit), so the SDK's
+// validator is held to the enum it mirrors rather than to a hand-written list.
+//
 // A case that disagrees with the port is a finding about the PORT (vision-core
 // is the reference model). Never edit the vendored fixture by hand to make a
 // case pass — re-sync it, or report the case.
@@ -42,6 +47,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const FIXTURE_PATH = 'rust-vision-core/tests/fixtures/vision_assertions_conformance.json';
+const ASSERTIONS_PATH = 'rust-vision-core/src/assertions/mod.rs';
 const TARGET_DIR = join(ROOT, 'packages', 'ui-bridge', 'src', 'vision', 'conformance');
 const TARGET = join(TARGET_DIR, 'vision-assertions.json');
 const SIDECAR = join(TARGET_DIR, 'vision-assertions.source.json');
@@ -52,6 +58,25 @@ const SIDECAR = join(TARGET_DIR, 'vision-assertions.source.json');
  */
 function fixtureDigest(text) {
   return createHash('sha256').update(text.replace(/\r\n/g, '\n'), 'utf8').digest('hex');
+}
+
+/**
+ * The serde tags of `pub enum Assertion` in vision-core's assertions module:
+ * each variant name (a line indented one level inside the enum) in snake_case,
+ * in declaration order — `#[serde(tag = "type", rename_all = "snake_case")]`.
+ */
+function assertionKindsOf(rust, where) {
+  const lines = rust.split(/\r?\n/);
+  const start = lines.findIndex((l) => /^pub enum Assertion \{/.test(l));
+  if (start < 0) fail(`${where} declares no \`pub enum Assertion\``);
+  const kinds = [];
+  for (let i = start + 1; i < lines.length && !/^\}/.test(lines[i]); i++) {
+    const m = /^ {4}([A-Z][A-Za-z0-9]*)\s*(?:[{(,]|$)/.exec(lines[i]);
+    if (m) kinds.push(m[1].replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase());
+  }
+  if (kinds.length === 0)
+    fail(`${where}: \`enum Assertion\` has no variants the reader recognised`);
+  return kinds;
 }
 
 function fail(message) {
@@ -86,6 +111,7 @@ function readSource(args) {
     return {
       text: readFileSync(path, 'utf8'),
       source: { kind: 'file', repo: null, path: args.file, ref: null, commit: null },
+      assertionKinds: null,
     };
   }
   if (!args.schemas) return null;
@@ -104,8 +130,15 @@ function readSource(args) {
     } catch {
       fail(`${commit} carries no ${FIXTURE_PATH}`);
     }
+    let rust;
+    try {
+      rust = git('show', `${commit}:${ASSERTIONS_PATH}`);
+    } catch {
+      fail(`${commit} carries no ${ASSERTIONS_PATH}`);
+    }
     return {
       text,
+      assertionKinds: assertionKindsOf(rust, `${commit}:${ASSERTIONS_PATH}`),
       source: {
         kind: 'git',
         repo: 'qontinui/qontinui-schemas',
@@ -117,8 +150,11 @@ function readSource(args) {
   }
   const path = join(dir, FIXTURE_PATH);
   if (!existsSync(path)) fail(`no fixture at ${path}`);
+  const rustPath = join(dir, ASSERTIONS_PATH);
+  if (!existsSync(rustPath)) fail(`no ${ASSERTIONS_PATH} at ${rustPath}`);
   return {
     text: readFileSync(path, 'utf8'),
+    assertionKinds: assertionKindsOf(readFileSync(rustPath, 'utf8'), rustPath),
     source: {
       kind: 'working-tree',
       repo: 'qontinui/qontinui-schemas',
@@ -194,6 +230,16 @@ if (args.check) {
           '`node scripts/sync-vision-conformance.mjs` with the same source and commit the result.'
       );
     }
+    if (
+      source.assertionKinds &&
+      JSON.stringify(source.assertionKinds) !== JSON.stringify(vendored.sidecar.assertionKinds)
+    ) {
+      fail(
+        `vision-core's \`enum Assertion\` at ${source.source.commit ?? source.source.path} ` +
+          `differs from the kinds the sidecar records. Re-sync, then update the SDK validator ` +
+          '(packages/ui-bridge/src/vision/assertion-request.ts) to match.'
+      );
+    }
   }
   const pinned = vendored.sidecar.commit ? ` (${vendored.sidecar.commit})` : '';
   console.log(
@@ -213,6 +259,7 @@ if (args.check) {
     ...source.source,
     sha256: fixtureDigest(source.text),
     cases: doc.cases.length,
+    ...(source.assertionKinds ? { assertionKinds: source.assertionKinds } : {}),
   };
   writeFileSync(SIDECAR, JSON.stringify(sidecar, null, 2) + '\n');
   console.log(

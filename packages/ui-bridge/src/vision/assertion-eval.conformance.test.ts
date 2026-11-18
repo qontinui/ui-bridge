@@ -22,7 +22,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { parseVisionAssertion } from './assertion-request';
+import { VISION_ASSERTION_KINDS, parseVisionAssertion } from './assertion-request';
 import {
   IN_TAB_ASSERTION_KINDS,
   evalInputFromVisionCoreSnapshot,
@@ -47,9 +47,23 @@ const fixture = JSON.parse(text) as {
   generated_from: string;
   cases: ConformanceCase[];
 };
-const sidecar = JSON.parse(readFileSync(SIDECAR, 'utf8')) as { sha256: string; cases: number };
+const sidecar = JSON.parse(readFileSync(SIDECAR, 'utf8')) as {
+  sha256: string;
+  cases: number;
+  assertionKinds?: string[];
+};
 
 describe('vision-core conformance fixture (vendored)', () => {
+  it("holds the validator to vision-core's `enum Assertion` at the vendored commit", () => {
+    // Recorded by the sync script from rust-vision-core/src/assertions/mod.rs;
+    // `matches_isolated_render` is typed ahead of vision-core main.
+    expect(sidecar.assertionKinds).toBeInstanceOf(Array);
+    expect(sidecar.assertionKinds!.length).toBeGreaterThan(0);
+    expect(VISION_ASSERTION_KINDS.filter((k) => k !== 'matches_isolated_render')).toEqual(
+      sidecar.assertionKinds
+    );
+  });
+
   it('is the fixture its sidecar records — never edited by hand', () => {
     const digest = createHash('sha256').update(text.replace(/\r\n/g, '\n'), 'utf8').digest('hex');
     expect(digest).toBe(sidecar.sha256);
