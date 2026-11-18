@@ -570,12 +570,17 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
   const unregister = useCallback(() => {
     if (!bridge || !registeredRef.current) return;
 
-    bridge.registry.unregisterElement(registeredIdRef.current ?? id);
+    // Pass the ref this instance registered with, so the registry deletes the
+    // entry only if THIS instance still owns the id. A slot-keyed id can be
+    // held by another instance by the time this one unmounts, and deleting
+    // that entry would strand it: still mounted, with no registry entry.
+    bridge.registry.unregisterElement(registeredIdRef.current ?? id, ref);
     registeredRef.current = false;
     registeredIdRef.current = null;
     autoPublishedLabelRef.current = undefined;
     setRegistered(false);
-  }, [bridge, id]);
+    // `ref` is the once-per-hook interceptor object, so it is identity-stable.
+  }, [bridge, id, ref]);
 
   // Keep `onStateChange` in a ref so the layout callback doesn't get
   // re-created (and thereby miss the first layout event) when the consumer
@@ -1103,6 +1108,9 @@ export interface UseUIElementWithPropsReturn extends UseUIElementReturn {
    * Keys merge across calls and renders. A key that a later render does not
    * pass keeps its last published value. The function is created per render,
    * because it writes into that render's stage, so its identity is not stable.
+   * Listing it in an effect's deps re-runs that effect at each commit. That is
+   * safe as long as the effect does not set state; prefer listing the captured
+   * values.
    */
   captureProps: (props: Record<string, unknown>) => void;
 }
@@ -1162,8 +1170,9 @@ export function useUIElementWithProps<T extends NativeElementType = NativeElemen
   // that such a function could check. A stable `captureProps` would therefore
   // either let abandoned renders publish again, or drop or delay effect-time
   // calls, and effect-time callers are exactly the ones that list it in deps.
-  // Listing this one in deps is safe: the effect re-runs at each commit, and
-  // its call publishes at once.
+  // Listing this one in an effect's deps re-runs that effect at each commit,
+  // and its call publishes at once. That is safe as long as the effect does
+  // not set state; prefer listing the captured values instead.
   const stage: CapturedPropsStage = { props: undefined, committed: false };
   const captureProps = (props: Record<string, unknown>) => {
     stage.props = { ...stage.props, ...props };

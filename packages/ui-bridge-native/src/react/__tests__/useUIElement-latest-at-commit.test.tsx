@@ -316,6 +316,50 @@ describe('ui-bridge-native useUIElement publishes handlers and value at commit',
     expect(ran).toEqual(['handler-cell-b']);
   });
 
+  it('leaves the new id without handlers when the id change also drops them', async () => {
+    // The passive re-apply must stay silent. It re-publishes this commit's own
+    // handlers, and this commit has none, so nothing may carry cell a's onPress
+    // over to cell b.
+    const ran: string[] = [];
+    function MaybeHandlers({ id, withHandlers }: { id: string; withHandlers: boolean }) {
+      useUIElement({
+        id,
+        type: 'view',
+        handlers: withHandlers ? { onPress: () => ran.push(id) } : undefined,
+      });
+      return <span>{id}</span>;
+    }
+
+    const { root } = mount(
+      <Harness>
+        <MaybeHandlers id="drop-cell-a" withHandlers />
+      </Harness>
+    );
+    await until(
+      () => typeof propsOf('drop-cell-a').onPress === 'function',
+      'drop-cell-a registered with its onPress'
+    );
+
+    root.render(
+      <Harness>
+        <MaybeHandlers id="drop-cell-b" withHandlers={false} />
+      </Harness>
+    );
+    // The registration and the re-apply run in the same passive flush, so
+    // once drop-cell-b is registered, the re-apply has already run.
+    await until(
+      () =>
+        bridgeOf().registry.getElement('drop-cell-a') === undefined &&
+        bridgeOf().registry.getElement('drop-cell-b') !== undefined,
+      'drop-cell-b registered in place of drop-cell-a'
+    );
+
+    const response = await press('drop-cell-b');
+    expect(response.success).toBe(false);
+    expect(response.error).toBe('No press handler found on element');
+    expect(ran).toEqual([]);
+  });
+
   it('keeps the committed handlers after a bridge change re-registers the element', async () => {
     const ran: string[] = [];
     function Swapped({ version }: { version: number }) {
@@ -936,5 +980,77 @@ describe('ui-bridge-native element hooks write only the entry their instance reg
 
     expect((await press('owned-capture')).success).toBe(true);
     expect(ran).toEqual(['second']);
+  });
+
+  it("leaves another instance's entry registered when the first instance unmounts", async () => {
+    // First registers, Second takes the id over, and then First unmounts. Both
+    // its layout cleanup (the at-commit unregister) and its passive cleanup
+    // reach `unregister`, and neither may delete the entry Second now owns.
+    function First() {
+      useUIElement({ id: 'unmount-slot', type: 'view' });
+      return <span>first</span>;
+    }
+    function Second({ register }: { register: boolean }) {
+      useUIElement({ id: 'unmount-slot', type: 'view', label: 'second', autoRegister: register });
+      return null;
+    }
+    function Probe({ version }: { version: number }) {
+      useGapProbe(version);
+      return null;
+    }
+    // First's slot stays in the child list as `null` once it is hidden, so
+    // Second keeps its position and stays the SAME instance. A child list that
+    // shrank would remount Second, and the fresh Second would re-register the
+    // id itself, hiding the bug.
+    function Slots(props: { showFirst: boolean; register: boolean; version: number }) {
+      return (
+        <>
+          {props.showFirst ? <First /> : null}
+          <Second register={props.register} />
+          <Probe version={props.version} />
+        </>
+      );
+    }
+
+    const { root, container } = mount(
+      <Harness>
+        <Slots showFirst register={false} version={1} />
+      </Harness>
+    );
+    await until(
+      () => bridgeOf().registry.getElement('unmount-slot') !== undefined && probe.passive === 1,
+      'unmount-slot registered by First'
+    );
+
+    root.render(
+      <Harness>
+        <Slots showFirst register version={1} />
+      </Harness>
+    );
+    await until(
+      () => bridgeOf().registry.getElement('unmount-slot')?.label === 'second',
+      'Second to take the slot'
+    );
+    const unregistered: string[] = [];
+    const off = bridgeOf().registry.on('element:unregistered', (event) => {
+      unregistered.push((event.data as { id: string }).id);
+    });
+
+    root.render(
+      <Harness>
+        <Slots showFirst={false} register version={2} />
+      </Harness>
+    );
+    // `passive` reaching 2 means that commit's passive flush, First's passive
+    // cleanup included, has run.
+    await until(
+      () => !container.textContent?.includes('first') && probe.passive === 2,
+      'First to unmount and its commit to flush'
+    );
+    off();
+
+    // Second's entry was never deleted, and is still there.
+    expect(unregistered).toEqual([]);
+    expect(bridgeOf().registry.getElement('unmount-slot')?.label).toBe('second');
   });
 });

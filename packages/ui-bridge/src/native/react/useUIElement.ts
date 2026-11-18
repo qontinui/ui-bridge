@@ -520,6 +520,9 @@ export interface UseUIElementWithPropsReturn extends UseUIElementReturn {
    * Keys merge across calls and renders. A key that a later render does not
    * pass keeps its last published value. The function is created per render,
    * because it writes into that render's stage, so its identity is not stable.
+   * Listing it in an effect's deps re-runs that effect at each commit. That is
+   * safe as long as the effect does not set state; prefer listing the captured
+   * values.
    */
   captureProps: (props: Record<string, unknown>) => void;
 }
@@ -572,8 +575,10 @@ export function useUIElementWithProps<T extends NativeElementType = NativeElemen
   // memoized. A stable function cannot tell a call from the render body, which
   // must wait for that render's commit, from a call made after the commit,
   // which must publish now. A render that never commits leaves nothing behind
-  // that such a function could check. Listing this one in deps is safe: the
-  // effect re-runs at each commit, and its call publishes at once.
+  // that such a function could check. Listing this one in an effect's deps
+  // re-runs that effect at each commit, and its call publishes at once. That
+  // is safe as long as the effect does not set state; prefer listing the
+  // captured values instead.
   //
   // `elementReturn.registered` is a non-reactive snapshot (it mirrors the web
   // hook), so no guard reads it. Every write passes the ref `useUIElement`
