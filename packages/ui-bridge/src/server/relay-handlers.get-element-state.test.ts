@@ -87,7 +87,10 @@ type StateAnswer =
  * A tab that serves `STALE_SNAPSHOT` for every snapshot read (so the cache
  * holds the id) and answers `getElementState` as `answer` says: resolves it,
  * rejects it with a message (how `nextjs.ts` settles the in-page relay
- * client's report of a thrown or returned failure), or never answers it.
+ * client's report of a thrown or returned failure), never answers it, or
+ * refuses the write outright (`unaccepted`: its listener throws, so the
+ * relay's delivery counts zero tabs and it raises `No active UI Bridge SDK
+ * client received the getElementState command`).
  * `close` disconnects the tab.
  */
 function tab(
@@ -243,6 +246,12 @@ describe('relay getElementState · NO live answer: the cache answers, marked as 
     const { seen } = tab(relay, 'tab-a', { kind: 'unaccepted' });
     const handlers = createRelayHandlers(relay);
     await warmCache(handlers);
+
+    // The cause this test is named for, pinned at the relay: SDK_DISCONNECTED
+    // would yield the same `_meta`, so the message is asserted, not inferred.
+    await expect(relay.queueCommand('getElementState', { id: ID })).rejects.toThrow(
+      /^No active UI Bridge SDK client received the getElementState command/
+    );
 
     const result = await handlers.getElementState!(ID);
 

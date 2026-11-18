@@ -192,15 +192,19 @@ function extractRelayedActions(): {
 }
 
 /**
- * The actions an `executeCommand` source serves, read from its own body only:
+ * The actions an `executeCommand` source serves: its dispatch branches, the
+ * TOP-LEVEL statements of its body of these two forms —
  *
- *   - the `case '<x>':` labels of a `switch (action)` — a `case 'click'` in
- *     the element-action `switch (request.action)` serves no relayed `click`;
- *   - a TOP-LEVEL statement of the body of the form
- *     `if (action === '<x>') { …; return …; }` — a dispatch branch that answers
- *     the action and returns (today only `pageHealth`).
+ *   - `switch (action) { case '<x>': … }`, its string-literal case labels — a
+ *     `case 'click'` in the element-action `switch (request.action)` serves no
+ *     relayed `click`;
+ *   - `if (action === '<x>') { …; return …; }` (or `if (…) return …;`), where
+ *     the test is that comparison, parenthesised or not, or an `||` of such
+ *     comparisons — today only `pageHealth`.
  *
- * Any other `action === '<x>'` comparison serves nothing: the settle check's
+ * Nothing nested counts: a `switch (action)` inside a case body or a closure
+ * (whose `action` may be another binding) is not the dispatch. Any other
+ * `action === '<x>'` comparison serves nothing: the settle check's
  * `action === 'aiExecute' && …` inside an expression, or
  * `const isUndo = action === 'executeUndo'` inside a case body, compares the
  * action without answering it. Counting those let a deleted `case` still read
@@ -218,16 +222,25 @@ function servedActionsOf(source: string): Set<string> {
   if (!body) throw new Error('executeCommand not found in the source');
   const served = new Set<string>();
   const isAction = (node: ts.Node) => ts.isIdentifier(node) && node.text === 'action';
-  /** `action === '<x>'`, either way round: the `'<x>'`, else undefined. */
-  const comparedAction = (node: ts.Expression): string | undefined => {
-    if (
-      !ts.isBinaryExpression(node) ||
-      node.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsEqualsToken
-    ) {
-      return undefined;
+  const isLiteral = (node: ts.Node): node is ts.StringLiteral | ts.NoSubstitutionTemplateLiteral =>
+    ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node);
+  /**
+   * The actions an `if` test dispatches on: `action === '<x>'` either way
+   * round, through parentheses, or an `||` of such tests. Undefined when the
+   * test is anything else (an `&&`, a call, a comparison of something else),
+   * so a test that merely mentions `action` serves nothing.
+   */
+  const comparedActions = (node: ts.Expression): string[] | undefined => {
+    if (ts.isParenthesizedExpression(node)) return comparedActions(node.expression);
+    if (!ts.isBinaryExpression(node)) return undefined;
+    if (node.operatorToken.kind === ts.SyntaxKind.BarBarToken) {
+      const left = comparedActions(node.left);
+      const right = comparedActions(node.right);
+      return left && right ? [...left, ...right] : undefined;
     }
-    if (isAction(node.left) && ts.isStringLiteral(node.right)) return node.right.text;
-    if (isAction(node.right) && ts.isStringLiteral(node.left)) return node.left.text;
+    if (node.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsEqualsToken) return undefined;
+    if (isAction(node.left) && isLiteral(node.right)) return [node.right.text];
+    if (isAction(node.right) && isLiteral(node.left)) return [node.left.text];
     return undefined;
   };
   /** Does `stmt` end by returning: a `return`, or a block whose last statement is one. */
@@ -239,21 +252,16 @@ function servedActionsOf(source: string): Set<string> {
 
   for (const stmt of body.statements) {
     if (ts.isIfStatement(stmt) && returns(stmt.thenStatement)) {
-      const action = comparedAction(stmt.expression);
-      if (action !== undefined) served.add(action);
+      for (const action of comparedActions(stmt.expression) ?? []) served.add(action);
     }
-  }
-  const visit = (node: ts.Node): void => {
-    if (ts.isSwitchStatement(node) && isAction(node.expression)) {
-      for (const clause of node.caseBlock.clauses) {
-        if (ts.isCaseClause(clause) && ts.isStringLiteral(clause.expression)) {
+    if (ts.isSwitchStatement(stmt) && isAction(stmt.expression)) {
+      for (const clause of stmt.caseBlock.clauses) {
+        if (ts.isCaseClause(clause) && isLiteral(clause.expression)) {
           served.add(clause.expression.text);
         }
       }
     }
-    ts.forEachChild(node, visit);
-  };
-  visit(body);
+  }
   return served;
 }
 
@@ -372,6 +380,39 @@ describe('relay ↔ commandHandlers drift guard · what counts as serving an act
           case 'q': {
             const isUndo = action === 'w';
             return isUndo;
+          }
+        }`)
+    );
+    expect([...served]).toEqual(['q']);
+  });
+
+  it("a top-level `if (action === 'y') return 1;` with no block IS served", () => {
+    const served = servedActionsOf(dispatcher(`if (action === 'y') return 1;`));
+    expect([...served]).toEqual(['y']);
+  });
+
+  it('a parenthesised or `||` dispatch test serves each action it names', () => {
+    const served = servedActionsOf(
+      dispatcher(`if ((action === 'a') || 'b' === action) { return 1; }`)
+    );
+    expect([...served].sort()).toEqual(['a', 'b']);
+  });
+
+  it("an `&&` test is not a dispatch branch: `if (action === 'u' && x) return` serves nothing", () => {
+    const served = servedActionsOf(dispatcher(`if (action === 'u' && payload) { return 1; }`));
+    expect([...served]).toEqual([]);
+  });
+
+  it('a `switch (action)` nested in a case body or a closure is not the dispatch', () => {
+    const served = servedActionsOf(
+      dispatcher(`
+        const helper = (action: string) => {
+          switch (action) { case 'inner': return 1; }
+        };
+        switch (action) {
+          case 'q': {
+            switch (action) { case 'w': return 2; }
+            return helper('inner');
           }
         }`)
     );

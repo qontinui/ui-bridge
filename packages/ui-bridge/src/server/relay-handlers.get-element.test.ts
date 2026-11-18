@@ -282,6 +282,12 @@ describe('relay getElement · unpinned · NO live answer: the cache answers, mar
     const handlers = createRelayHandlers(relay);
     await warmCache(handlers);
 
+    // The cause this test is named for, pinned at the relay: SDK_DISCONNECTED
+    // would yield the same `_meta`, so the message is asserted, not inferred.
+    await expect(relay.queueCommand('getElement', { id: ID })).rejects.toThrow(
+      /^No active UI Bridge SDK client received the getElement command/
+    );
+
     const result = await handlers.getElement!(ID);
 
     // The relay tried the tab's stream, and the write was refused.
