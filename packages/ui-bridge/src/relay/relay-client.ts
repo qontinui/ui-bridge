@@ -18,7 +18,9 @@
  *   2. exec      `execute(action, payload)` — once per dedupe key
  *   3. POST      `{basePath}/commands`   — result envelope, naming the stream
  *                the command arrived on; a repeat delivery is answered too
- *                while the command's outcome is kept (`command-dedupe.ts`)
+ *                while the command's outcome is kept (`command-dedupe.ts`).
+ *                The answer is read, and retried / reported by `postResult`
+ *                (see `./result-post`)
  *   4. POST      `{basePath}/heartbeat`  — every `heartbeatIntervalMs`
  *
  * Stream lifecycle (plan
@@ -56,6 +58,7 @@
 import { registerRelayTrafficBase } from './relay-traffic';
 import { createCommandDedupe, dedupeKeyOf } from './command-dedupe';
 import { randomUuid } from './random-uuid';
+import { postResult } from './result-post';
 import { safeJsonStringify } from '../core/wire-json';
 import { STREAM_CAPABILITIES, createStreamLifecycle, type QueuedCommand } from './stream-lifecycle';
 
@@ -394,6 +397,10 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
   });
 
   let stopped = false;
+  // Aborted by `stop()`: a result POST still retrying behind a 429/503 wait
+  // ends at once and silently, so a torn-down client never re-POSTs or
+  // reports into the client that replaced it.
+  const stopController = new AbortController();
   let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   // This page instance. Its id rides on every stream GET, and its memory of
   // the commands it ran is what lets a relay redeliver into it safely.
@@ -423,10 +430,16 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
     fromStream: string | undefined
   ) => {
     if (isOpaqueOrigin()) return;
-    try {
-      await fetch(`${basePath}/commands`, {
+    // Reads the answer: a transient refusal (429/502/503/504, network error)
+    // is retried inside `Retry-After` and a bounded budget; anything else, or
+    // an exhausted retry, is reported once through `onError` — never dropped.
+    await postResult(
+      fetch,
+      `${basePath}/commands`,
+      {
         method: 'POST',
         headers: postHeaders(),
+        signal: stopController.signal,
         body: safeJsonStringify({
           commandId,
           success: ok,
@@ -435,10 +448,9 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
           streamId: fromStream,
           error: ok ? undefined : (result as { error?: string })?.error,
         }),
-      });
-    } catch (e) {
-      onError('[UIBridge] Failed to send command response:', e);
-    }
+      },
+      { onError, context: `command ${commandId}` }
+    );
   };
 
   // ----- Command processor -----
@@ -586,6 +598,7 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
     stop() {
       if (stopped) return;
       stopped = true;
+      stopController.abort();
       closeStreams();
       cancelReconnect();
       outcomes.releaseOutcomes();

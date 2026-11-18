@@ -54,9 +54,32 @@ function makeEvent(
 
 export function installConsoleCapture(
   emit: Emit,
-  options?: { levels?: ReadonlySet<ConsoleCapturedEvent['level']> }
+  options?: {
+    levels?: ReadonlySet<ConsoleCapturedEvent['level']>;
+    /** Drop a call whose arguments match (it still reaches the real console). */
+    ignore?: (args: unknown[]) => boolean;
+  }
 ): () => void {
   const levels = options?.levels ?? DEFAULT_LEVELS;
+  const ignore = options?.ignore;
+  const record = (
+    level: Exclude<ConsoleCapturedEvent['level'], 'unhandledrejection'>,
+    args: unknown[]
+  ) => {
+    if (!levels.has(level)) return;
+    if (ignore) {
+      // A throwing predicate must not break the page's console call (the real
+      // console still runs below): treat the call as not ignored.
+      let ignored: boolean;
+      try {
+        ignored = ignore(args) === true;
+      } catch {
+        ignored = false;
+      }
+      if (ignored) return;
+    }
+    emit(makeEvent(level, argsToMessage(args), extractStack(args)));
+  };
 
   const originalError = console.error;
   const originalWarn = console.warn;
@@ -65,37 +88,27 @@ export function installConsoleCapture(
   const originalInfo = console.info;
 
   console.error = (...args: unknown[]) => {
-    if (levels.has('error')) {
-      emit(makeEvent('error', argsToMessage(args), extractStack(args)));
-    }
+    record('error', args);
     originalError.apply(console, args);
   };
 
   console.warn = (...args: unknown[]) => {
-    if (levels.has('warn')) {
-      emit(makeEvent('warn', argsToMessage(args), extractStack(args)));
-    }
+    record('warn', args);
     originalWarn.apply(console, args);
   };
 
   console.debug = (...args: unknown[]) => {
-    if (levels.has('debug')) {
-      emit(makeEvent('debug', argsToMessage(args), extractStack(args)));
-    }
+    record('debug', args);
     originalDebug.apply(console, args);
   };
 
   console.log = (...args: unknown[]) => {
-    if (levels.has('log')) {
-      emit(makeEvent('log', argsToMessage(args), extractStack(args)));
-    }
+    record('log', args);
     originalLog.apply(console, args);
   };
 
   console.info = (...args: unknown[]) => {
-    if (levels.has('info')) {
-      emit(makeEvent('info', argsToMessage(args), extractStack(args)));
-    }
+    record('info', args);
     originalInfo.apply(console, args);
   };
 
