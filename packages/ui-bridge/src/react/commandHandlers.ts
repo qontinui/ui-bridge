@@ -5385,14 +5385,16 @@ export async function executeCommand(
     // handler validated the body before queuing it; it is validated again
     // here for a WS client that dispatches the command directly. Any failure
     // is coded as the in-process handler codes it (`sharedRouteFailure`), so
-    // one failure is one code over either transport.
+    // one failure is one code over either transport; an unexpected one is the
+    // canonical UB-UNKNOWN-ERROR, which the message-sniffing fallback of
+    // `mapInternalErrorCode` cannot rewrite.
     case 'visionAssert': {
       try {
         return evaluateVisionAssertions(registry, payload);
       } catch (err) {
         return sharedRouteFailure(
           (err as Error).message,
-          err instanceof VisionAssertRequestError ? err.code : 'VISION_ASSERT_ERROR'
+          err instanceof VisionAssertRequestError ? err.code : 'UB-UNKNOWN-ERROR'
         );
       }
     }

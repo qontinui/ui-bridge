@@ -2404,7 +2404,8 @@ export function createHandlers(
       } catch (err) {
         return error(
           (err as Error).message,
-          err instanceof VisionAssertRequestError ? err.code : 'VISION_ASSERT_ERROR'
+          // Canonical, so the message-sniffing fallback cannot rewrite it.
+          err instanceof VisionAssertRequestError ? err.code : 'UB-UNKNOWN-ERROR'
         );
       }
     },

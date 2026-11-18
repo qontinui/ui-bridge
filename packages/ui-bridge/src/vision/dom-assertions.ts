@@ -199,7 +199,18 @@ function noDomResult(assertion: VisionAssertion, detail: string): VisionAssertio
   };
 }
 
-/** `attributed` with the registry snapshot's id; `unattributed` when none is minted. */
+/**
+ * `attributed` with the registry snapshot's id; `unattributed` when none is
+ * minted. The plan fixes this (2026-11-09-ui-bridge-relay-evaluates-vision-
+ * assertions-in-the-tab, "Response envelope": `snapshotAttribution` is
+ * `attributed` with the registry snapshot id) so a caller can join the answer
+ * to the registry state it was taken against, the way every other registry
+ * read is attributed. The measurement itself reads the live DOM in the same
+ * synchronous turn, so the snapshot names the registry state the evaluation
+ * saw rather than an input it parsed. Minting the id costs one registry
+ * serialization per request; an id minted without one would name no snapshot
+ * a caller could fetch.
+ */
 function snapshotAttributionOf(source: VisionAssertSource): SnapshotAttribution {
   if (typeof source.createSnapshot !== 'function') return { state: 'unattributed' };
   try {
