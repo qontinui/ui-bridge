@@ -59,7 +59,9 @@ export default tseslint.config(
       '@typescript-eslint/explicit-module-boundary-types': 'off',
       // React Hooks rules (classic only, not React Compiler rules)
       'react-hooks/rules-of-hooks': 'error',
-      'react-hooks/exhaustive-deps': 'warn',
+      // useIsomorphicLayoutEffect is useLayoutEffect in the browser, so its deps
+      // are checked like those of any other effect.
+      'react-hooks/exhaustive-deps': ['warn', { additionalHooks: '(useIsomorphicLayoutEffect)' }],
       // @eslint-react/exhaustive-deps is intentionally disabled — react-hooks/exhaustive-deps
       // (above) is the canonical source of truth per the plan's "Scope — out" decision. Keeping
       // both layered produces duplicate warnings on the same hook. If react-hooks ever lags
