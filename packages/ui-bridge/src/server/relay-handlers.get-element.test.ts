@@ -96,14 +96,17 @@ function fallbackMeta(cause: string) {
 type GetElementAnswer =
   | { kind: 'resolve'; value: unknown }
   | { kind: 'reject'; message: string }
-  | { kind: 'silent' };
+  | { kind: 'silent' }
+  | { kind: 'unaccepted' };
 
 /**
  * A tab that serves `STALE_SNAPSHOT` for every snapshot read (so the cache
  * holds the id) and answers `getElement` as `answer` says: resolves it,
  * rejects it with a message (how `nextjs.ts` settles the in-page relay
- * client's `success: false` post), or never answers it. `close` disconnects
- * the tab.
+ * client's `success: false` post), never answers it, or refuses the write
+ * outright (`unaccepted`: its listener throws, so the relay's delivery counts
+ * zero tabs and it raises `No active UI Bridge SDK client received the
+ * getElement command`). `close` disconnects the tab.
  */
 function tab(
   relay: CommandRelay,
@@ -114,6 +117,9 @@ function tab(
   const close = relay.subscribeToCommands((cmd) => {
     seen.push(cmd.action);
     if (cmd.action === 'getElement' && answer.kind === 'silent') return;
+    if (cmd.action === 'getElement' && answer.kind === 'unaccepted') {
+      throw new Error('stream write failed');
+    }
     setTimeout(() => {
       if (cmd.action === 'getElement' && answer.kind === 'reject') {
         relay.rejectCommand(cmd.commandId, answer.message, tabId);
@@ -268,6 +274,25 @@ describe('relay getElement · unpinned · NO live answer: the cache answers, mar
     expect(result.success).toBe(true);
     expect(result.data).toMatchObject({ id: ID, label: 'Save (cached)' });
     expect(result._meta).toEqual(fallbackMeta('no tab answered it in time'));
+  });
+
+  it('(b) a tab whose stream accepts nothing (the relay raises "No active UI Bridge SDK client received")', async () => {
+    const relay = freshRelay();
+    const { seen } = tab(relay, 'tab-a', { kind: 'unaccepted' });
+    const handlers = createRelayHandlers(relay);
+    await warmCache(handlers);
+
+    const result = await handlers.getElement!(ID);
+
+    // The relay tried the tab's stream, and the write was refused.
+    expect(seen).toContain('getElement');
+    expect(result.success).toBe(true);
+    expect(result.data).toMatchObject({ id: ID, label: 'Save (cached)' });
+    expect(result._meta).toEqual({
+      fallback: true,
+      reason:
+        "Relay command 'getElement' got no live answer (no browser tab is connected to receive it) — answered from the cached snapshot, which can be stale or another tab's.",
+    });
   });
 
   it("an id the cache does not hold either is a not-found, marked as the cache's", async () => {

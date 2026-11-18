@@ -80,7 +80,8 @@ function fallbackMeta(cause: string) {
 type StateAnswer =
   | { kind: 'resolve'; value: unknown }
   | { kind: 'reject'; message: string }
-  | { kind: 'silent' };
+  | { kind: 'silent' }
+  | { kind: 'unaccepted' };
 
 /**
  * A tab that serves `STALE_SNAPSHOT` for every snapshot read (so the cache
@@ -99,6 +100,10 @@ function tab(
     seen.push(cmd.action);
     const isRead = cmd.action === 'getElementState';
     if (isRead && answer.kind === 'silent') return;
+    // `unaccepted`: the listener throws, so the relay's delivery counts zero
+    // tabs and it raises `No active UI Bridge SDK client received the
+    // getElementState command`.
+    if (isRead && answer.kind === 'unaccepted') throw new Error('stream write failed');
     setTimeout(() => {
       if (isRead && answer.kind === 'reject') {
         relay.rejectCommand(cmd.commandId, answer.message, tabId);
@@ -231,6 +236,25 @@ describe('relay getElementState · NO live answer: the cache answers, marked as 
     expect(result.success).toBe(true);
     expect(result.data).toEqual(CACHED_STATE);
     expect(result._meta).toEqual(fallbackMeta('no tab answered it in time'));
+  });
+
+  it('a tab whose stream accepts nothing (the relay raises "No active UI Bridge SDK client received")', async () => {
+    const relay = freshRelay();
+    const { seen } = tab(relay, 'tab-a', { kind: 'unaccepted' });
+    const handlers = createRelayHandlers(relay);
+    await warmCache(handlers);
+
+    const result = await handlers.getElementState!(ID);
+
+    // The relay tried the tab's stream, and the write was refused.
+    expect(seen).toContain('getElementState');
+    expect(result.success).toBe(true);
+    expect(result.data).toEqual(CACHED_STATE);
+    expect(result._meta).toEqual({
+      fallback: true,
+      reason:
+        "Relay command 'getElementState' got no live answer (no browser tab is connected to receive it) — answered from the cached snapshot, which can be stale or another tab's.",
+    });
   });
 
   it("an id the cache does not hold either is a not-found, marked as the cache's", async () => {

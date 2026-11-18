@@ -192,27 +192,57 @@ function extractRelayedActions(): {
 }
 
 /**
- * The actions `executeCommand` serves: the `case` labels of its
- * `switch (action)` and its `action === '<x>'` arms, read from its own body
- * only — a `case 'click'` in the element-action switch serves no relayed
- * `click`.
+ * The actions an `executeCommand` source serves, read from its own body only:
+ *
+ *   - the `case '<x>':` labels of a `switch (action)` — a `case 'click'` in
+ *     the element-action `switch (request.action)` serves no relayed `click`;
+ *   - a TOP-LEVEL statement of the body of the form
+ *     `if (action === '<x>') { …; return …; }` — a dispatch branch that answers
+ *     the action and returns (today only `pageHealth`).
+ *
+ * Any other `action === '<x>'` comparison serves nothing: the settle check's
+ * `action === 'aiExecute' && …` inside an expression, or
+ * `const isUndo = action === 'executeUndo'` inside a case body, compares the
+ * action without answering it. Counting those let a deleted `case` still read
+ * as served (plan 2026-11-08-ui-bridge-relay-and-exec-mode-follow-ups-from-pr-329,
+ * item 7).
  */
-function servedActions(): Set<string> {
-  const sf = ts.createSourceFile(
-    'commandHandlers.ts',
-    commandHandlersSrc,
-    ts.ScriptTarget.Latest,
-    true
-  );
-  let body: ts.Node | undefined;
+function servedActionsOf(source: string): Set<string> {
+  const sf = ts.createSourceFile('commandHandlers.ts', source, ts.ScriptTarget.Latest, true);
+  let body: ts.Block | undefined;
   const find = (node: ts.Node): void => {
     if (ts.isFunctionDeclaration(node) && node.name?.text === 'executeCommand') body = node.body;
     if (!body) ts.forEachChild(node, find);
   };
   find(sf);
-  if (!body) throw new Error('executeCommand not found in react/commandHandlers.ts');
+  if (!body) throw new Error('executeCommand not found in the source');
   const served = new Set<string>();
   const isAction = (node: ts.Node) => ts.isIdentifier(node) && node.text === 'action';
+  /** `action === '<x>'`, either way round: the `'<x>'`, else undefined. */
+  const comparedAction = (node: ts.Expression): string | undefined => {
+    if (
+      !ts.isBinaryExpression(node) ||
+      node.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsEqualsToken
+    ) {
+      return undefined;
+    }
+    if (isAction(node.left) && ts.isStringLiteral(node.right)) return node.right.text;
+    if (isAction(node.right) && ts.isStringLiteral(node.left)) return node.left.text;
+    return undefined;
+  };
+  /** Does `stmt` end by returning: a `return`, or a block whose last statement is one. */
+  const returns = (stmt: ts.Statement): boolean =>
+    ts.isReturnStatement(stmt) ||
+    (ts.isBlock(stmt) &&
+      stmt.statements.length > 0 &&
+      returns(stmt.statements[stmt.statements.length - 1]!));
+
+  for (const stmt of body.statements) {
+    if (ts.isIfStatement(stmt) && returns(stmt.thenStatement)) {
+      const action = comparedAction(stmt.expression);
+      if (action !== undefined) served.add(action);
+    }
+  }
   const visit = (node: ts.Node): void => {
     if (ts.isSwitchStatement(node) && isAction(node.expression)) {
       for (const clause of node.caseBlock.clauses) {
@@ -221,14 +251,6 @@ function servedActions(): Set<string> {
         }
       }
     }
-    if (
-      ts.isBinaryExpression(node) &&
-      node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken &&
-      isAction(node.left) &&
-      ts.isStringLiteral(node.right)
-    ) {
-      served.add(node.right.text);
-    }
     ts.forEachChild(node, visit);
   };
   visit(body);
@@ -236,7 +258,7 @@ function servedActions(): Set<string> {
 }
 
 const relayed = extractRelayedActions();
-const served = servedActions();
+const served = servedActionsOf(commandHandlersSrc);
 
 const emptyBridge: BridgeAccess = {
   elements: [],
@@ -304,6 +326,67 @@ describe('relay ↔ commandHandlers drift guard · every relayed action has a br
       noLongerRelayed,
       'are no longer relayed — remove them from KNOWN_UNSERVED_RELAY_ACTIONS'
     ).toEqual([]);
+  });
+});
+
+/** `executeCommand(action)` with `body` as its body, for the served-action fixtures. */
+const dispatcher = (body: string) =>
+  `export async function executeCommand(action: string, payload: unknown) {\n${body}\n}\n`;
+
+describe('relay ↔ commandHandlers drift guard · what counts as serving an action', () => {
+  it('(i) an action compared only inside an expression (the settle check) is NOT served', () => {
+    const served = servedActionsOf(
+      dispatcher(`
+        if (SETTLE.has(action)) {
+          const skip = action === 'aiExecute' && payload !== undefined;
+          if (!skip) await settle();
+        }
+        switch (action) {
+          case 'other':
+            return 1;
+        }`)
+    );
+    expect([...served].sort()).toEqual(['other']);
+  });
+
+  it("(ii) a top-level `if (action === 'y') { …; return …; }` IS served", () => {
+    const served = servedActionsOf(
+      dispatcher(`
+        if (action === 'y') {
+          const v = 1;
+          return v;
+        }`)
+    );
+    expect([...served]).toEqual(['y']);
+  });
+
+  it("(iii) a `case 'z':` of `switch (action)` IS served", () => {
+    const served = servedActionsOf(dispatcher(`switch (action) { case 'z': return 1; }`));
+    expect([...served]).toEqual(['z']);
+  });
+
+  it("(iv) `const isUndo = action === 'w'` inside another case is NOT served", () => {
+    const served = servedActionsOf(
+      dispatcher(`
+        switch (action) {
+          case 'q': {
+            const isUndo = action === 'w';
+            return isUndo;
+          }
+        }`)
+    );
+    expect([...served]).toEqual(['q']);
+  });
+
+  it("a top-level `if (action === 'v')` that does not return serves nothing", () => {
+    const served = servedActionsOf(dispatcher(`if (action === 'v') { log(); }`));
+    expect([...served]).toEqual([]);
+  });
+
+  it('(v) against the real dispatcher, aiExecute, executeUndo and pageHealth stay served', () => {
+    expect(served.has('aiExecute')).toBe(true);
+    expect(served.has('executeUndo')).toBe(true);
+    expect(served.has('pageHealth')).toBe(true);
   });
 });
 
