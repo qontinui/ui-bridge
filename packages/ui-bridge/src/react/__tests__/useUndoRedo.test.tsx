@@ -2,7 +2,7 @@
  * useUndoRedo Hook Tests
  */
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { renderHook } from '@testing-library/react';
 import { useUndoRedo } from '../useUndoRedo';
@@ -19,8 +19,14 @@ vi.mock('../UIBridgeProvider', () => ({
 }));
 
 function createMockUndoTracker() {
+  // Holds the declaration like the real tracker does, because the hook's
+  // unmount cleanup reads it back before clearing it.
+  let declared: DeclaredUndoState | null = null;
   return {
-    setDeclaredState: vi.fn(),
+    setDeclaredState: vi.fn((state: DeclaredUndoState | null) => {
+      declared = state;
+    }),
+    getDeclaredState: vi.fn(() => declared),
     // Stubs for the rest of UndoTracker — not exercised by these tests
     install: vi.fn(),
     uninstall: vi.fn(),
@@ -265,5 +271,46 @@ describe('useUndoRedo hands an agent undo the committed closure, outside act', (
     // effects had not run.
     expect(flushesAtSample).toBe(1);
     expect(ran).toEqual(['second']);
+  });
+
+  it("unmounting one declarer leaves another declarer's live declaration in place", async () => {
+    const { container, root } = mount();
+    let hideA: () => void = () => {};
+    // A sits in its own host, so hiding it re-renders that host alone: B does
+    // not re-render, and so cannot re-declare in the commit that unmounts A.
+    function AHost() {
+      const [shown, setShown] = useState(true);
+      hideA = () => setShown(false);
+      return shown ? <Editor version="A" /> : null;
+    }
+    root.render(
+      <Provider>
+        <AHost />
+        <Editor version="B" />
+      </Provider>
+    );
+    await until(() => flushes === 2, 'both declarers to commit');
+    const tracker = publishedTracker();
+
+    // B committed after A, a later sibling, so B owns the declaration.
+    tracker.executeUndo();
+    expect(ran).toEqual(['B']);
+    ran.length = 0;
+
+    hideA();
+    await until(() => container.textContent === 'B', 'A to unmount');
+
+    const result = await executeCommand('executeUndo', {}, emptyBridge);
+    expect(result).toMatchObject({ success: true, executed: true, method: 'tracker' });
+    expect(ran).toEqual(['B']);
+
+    // B's own unmount does withdraw its declaration.
+    root.render(
+      <Provider>
+        <AHost />
+      </Provider>
+    );
+    await until(() => container.textContent === '', 'B to unmount');
+    expect(tracker.getDeclaredState()).toBeNull();
   });
 });
