@@ -313,4 +313,28 @@ describe('useUndoRedo hands an agent undo the committed closure, outside act', (
     await until(() => container.textContent === '', 'B to unmount');
     expect(tracker.getDeclaredState()).toBeNull();
   });
+
+  it('unmounting the owner after a re-render that changed its onUndo withdraws the declaration', async () => {
+    // Pins the cleanup's read of the LATEST committed declaration. The
+    // re-render hands the tracker a new object. A cleanup that compared against
+    // the object it saw when the effect was created would find the tracker
+    // holding something else, and leave the unmounted owner's declaration in
+    // place.
+    const { container, root } = mount();
+    const render = (version: string | null) =>
+      root.render(<Provider>{version === null ? null : <Editor version={version} />}</Provider>);
+    render('first');
+    await until(() => flushes === 1, 'the first commit to flush');
+    render('second');
+    await until(() => flushes === 2, 'the re-render to flush');
+    const tracker = publishedTracker();
+
+    // The tracker holds the re-render's declaration, not the mount's.
+    tracker.executeUndo();
+    expect(ran).toEqual(['second']);
+
+    render(null);
+    await until(() => container.textContent === '', 'the owner to unmount');
+    expect(tracker.getDeclaredState()).toBeNull();
+  });
 });
