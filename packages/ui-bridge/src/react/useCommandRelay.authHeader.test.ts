@@ -13,8 +13,8 @@
  */
 
 import { createElement as h, Suspense, startTransition, use } from 'react';
-import { createRoot } from 'react-dom/client';
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { outsideAct } from './__tests__/outside-act';
 
 // The relay client the hook starts, captured rather than run: these cases read
 // the hooks it was handed, exactly as it calls them on each request and
@@ -155,30 +155,16 @@ describe('parseSSEDataBlock', () => {
 // A render that never commits must not hand the relay its hooks. The relay
 // client calls `authHeader()` on every request and `registrationMetadata()` on
 // every heartbeat, so a ref written during render served an abandoned render's
-// token. `act` is off: it would drive the suspended transition to its end.
+// token. `act` is off: it would drive a suspended transition to its end.
 describe('useCommandRelay hands the relay the COMMITTED hooks, outside act', () => {
-  const g = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
-  let savedAct: boolean | undefined;
-  beforeAll(() => {
-    savedAct = g.IS_REACT_ACT_ENVIRONMENT;
-    g.IS_REACT_ACT_ENVIRONMENT = false;
-  });
-  afterAll(() => {
-    g.IS_REACT_ACT_ENVIRONMENT = savedAct;
+  const { mount, until } = outsideAct();
+  beforeEach(() => {
+    relay.configs.length = 0;
   });
 
-  // A PRECONDITION wait: React renders and commits on its own schedule here.
-  // Never used for the property under test.
-  const until = (pred: () => boolean, what: string) =>
-    vi.waitFor(
-      () => {
-        if (!pred()) throw new Error(`timed out waiting for: ${what}`);
-      },
-      { timeout: 2000, interval: 10 }
-    );
+  const never = new Promise<never>(() => {});
 
   it('after an abandoned render, authHeader() returns the committed value', async () => {
-    const never = new Promise<never>(() => {});
     let suspends = 0;
     function Never(): null {
       suspends += 1;
@@ -197,10 +183,7 @@ describe('useCommandRelay hands the relay the COMMITTED hooks, outside act', () 
     const app = (token: string, suspend: boolean) =>
       h(Suspense, { fallback: h('i', null, 'fallback') }, h(Relay, { token, suspend }));
 
-    relay.configs.length = 0;
-    const container = document.createElement('div');
-    document.body.appendChild(container);
-    const root = createRoot(container);
+    const { container, root } = mount();
     root.render(app('committed', false));
     await until(() => relay.configs.length > 0, 'the relay client to start');
     const client = relay.configs[0];
@@ -225,8 +208,5 @@ describe('useCommandRelay hands the relay the COMMITTED hooks, outside act', () 
       userId: 'user-1',
       sessionId: 'committed',
     });
-
-    root.unmount();
-    container.remove();
   });
 });

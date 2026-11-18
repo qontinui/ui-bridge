@@ -3,14 +3,14 @@
  */
 
 import { useEffect } from 'react';
-import { createRoot } from 'react-dom/client';
-import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { renderHook } from '@testing-library/react';
 import { useUndoRedo } from '../useUndoRedo';
 import type { UIBridgeContextValue } from '../UIBridgeProvider';
 import type { DeclaredUndoState } from '../../undo/types';
 import type { UndoTracker } from '../../undo/undo-tracker';
 import { executeCommand, type BridgeAccess } from '../commandHandlers';
+import { outsideAct } from './outside-act';
 
 // Mock the UIBridgeProvider module to control what useUIBridgeOptional returns
 const mockUseUIBridgeOptional = vi.fn<() => UIBridgeContextValue | null>();
@@ -160,15 +160,7 @@ describe('useUndoRedo', () => {
 // literal.
 // ---------------------------------------------------------------------------
 describe('useUndoRedo hands an agent undo the committed closure, outside act', () => {
-  const g = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
-  let savedAct: boolean | undefined;
-  beforeAll(() => {
-    savedAct = g.IS_REACT_ACT_ENVIRONMENT;
-    g.IS_REACT_ACT_ENVIRONMENT = false;
-  });
-  afterAll(() => {
-    g.IS_REACT_ACT_ENVIRONMENT = savedAct;
-  });
+  const { mount, until } = outsideAct();
 
   let Provider: typeof import('../UIBridgeProvider').UIBridgeProvider;
   beforeEach(async () => {
@@ -183,16 +175,6 @@ describe('useUndoRedo hands an agent undo the committed closure, outside act', (
     mockUseUIBridgeOptional.mockReset();
   });
 
-  // A PRECONDITION wait: with `act` off, React commits and flushes on its own
-  // schedule. Never used for the property under test.
-  const until = (pred: () => boolean, what: string) =>
-    vi.waitFor(
-      () => {
-        if (!pred()) throw new Error(`timed out waiting for: ${what}`);
-      },
-      { timeout: 2000, interval: 10 }
-    );
-
   const emptyBridge: BridgeAccess = {
     elements: [],
     getElement: () => undefined,
@@ -204,6 +186,10 @@ describe('useUndoRedo hands an agent undo the committed closure, outside act', (
   // `version` is captured by it and by nothing that useUndoRedo used to key on.
   const ran: string[] = [];
   let flushes = 0;
+  beforeEach(() => {
+    ran.length = 0;
+    flushes = 0;
+  });
   function Editor({ version }: { version: string }) {
     useUndoRedo({
       canUndo: true,
@@ -220,27 +206,24 @@ describe('useUndoRedo hands an agent undo the committed closure, outside act', (
     return <span>{version}</span>;
   }
 
-  function mount() {
-    ran.length = 0;
-    flushes = 0;
-    const container = document.createElement('div');
-    document.body.appendChild(container);
-    const root = createRoot(container);
+  /** The tracker the real provider built and published, which the relay reaches. */
+  const publishedTracker = () =>
+    (globalThis as unknown as { __UI_BRIDGE__: { undoTracker: UndoTracker } }).__UI_BRIDGE__
+      .undoTracker;
+
+  function mountEditor() {
+    const { container, root } = mount();
     const render = (version: string) =>
       root.render(
         <Provider>
           <Editor version={version} />
         </Provider>
       );
-    const done = () => {
-      root.unmount();
-      container.remove();
-    };
-    return { container, render, done };
+    return { container, render };
   }
 
   it('POST /control/undo after a re-render that changed only onUndo runs the NEW closure', async () => {
-    const { render, done } = mount();
+    const { render } = mountEditor();
     render('first');
     await until(() => flushes === 1, 'the first commit to flush');
 
@@ -251,16 +234,13 @@ describe('useUndoRedo hands an agent undo the committed closure, outside act', (
 
     expect(result).toMatchObject({ success: true, executed: true, method: 'tracker' });
     expect(ran).toEqual(['second']);
-    done();
   });
 
   it('runs the new closure at commit, before the passive flush', async () => {
-    const { container, render, done } = mount();
+    const { container, render } = mountEditor();
     render('first');
     await until(() => flushes === 1, 'the first commit to flush');
-    // The tracker the real provider published, which the relay reaches.
-    const tracker = (globalThis as unknown as { __UI_BRIDGE__: { undoTracker: UndoTracker } })
-      .__UI_BRIDGE__.undoTracker;
+    const tracker = publishedTracker();
     const span = container.firstElementChild as HTMLElement;
     expect(span.textContent).toBe('first');
 
@@ -285,6 +265,5 @@ describe('useUndoRedo hands an agent undo the committed closure, outside act', (
     // effects had not run.
     expect(flushesAtSample).toBe(1);
     expect(ran).toEqual(['second']);
-    done();
   });
 });

@@ -6,8 +6,7 @@
  */
 
 import React, { Suspense, startTransition, use, useState } from 'react';
-import { createRoot } from 'react-dom/client';
-import { describe, it, expect, beforeEach, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { act, render } from '@testing-library/react';
 import { useRouteAwareness } from '../useRouteAwareness';
 import { routePatternFromParams } from '../routePatternFromParams';
@@ -19,6 +18,7 @@ import {
 } from '../routeUnmatched';
 import type { UIBridgeContextValue } from '../UIBridgeProvider';
 import type { RouteInfo } from '../../navigation/types';
+import { outsideAct } from './outside-act';
 
 const setRouteInfo = vi.fn<(info: RouteInfo | undefined) => void>();
 const bridge = { navigationTracker: { setRouteInfo } } as unknown as UIBridgeContextValue;
@@ -308,28 +308,10 @@ describe('useRouteAwareness with the not-found signal', () => {
 // `act` is off: it would drive the suspended transition and the urgent update
 // together. Every expectation is a literal.
 describe('useRouteAwareness after an abandoned transition render, outside act', () => {
-  const g = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
-  let savedAct: boolean | undefined;
-  beforeAll(() => {
-    savedAct = g.IS_REACT_ACT_ENVIRONMENT;
-    g.IS_REACT_ACT_ENVIRONMENT = false;
-  });
-  afterAll(() => {
-    g.IS_REACT_ACT_ENVIRONMENT = savedAct;
-  });
+  const { mount, until } = outsideAct();
   beforeEach(() => {
     setRouteInfo.mockClear();
   });
-
-  // A PRECONDITION wait: React renders and commits on its own schedule here.
-  // Never used for the property under test.
-  const until = (pred: () => boolean, what: string) =>
-    vi.waitFor(
-      () => {
-        if (!pred()) throw new Error(`timed out waiting for: ${what}`);
-      },
-      { timeout: 2000, interval: 10 }
-    );
 
   it('a not-found raise from an urgent commit publishes the COMMITTED route info', async () => {
     const never = new Promise<never>(() => {});
@@ -370,9 +352,7 @@ describe('useRouteAwareness after an abandoned transition render, outside act', 
       );
     }
 
-    const container = document.createElement('div');
-    document.body.appendChild(container);
-    const root = createRoot(container);
+    const { container, root } = mount();
     root.render(<App q="committed" suspend={false} />);
     await until(() => setRouteInfo.mock.calls.length > 0, 'the first report');
     expect(reported()).toEqual([
@@ -405,8 +385,5 @@ describe('useRouteAwareness after an abandoned transition render, outside act', 
     expect(reported()).toEqual([
       { pattern: null, patternSource: 'router', queryParams: { q: 'committed' } },
     ]);
-
-    root.unmount();
-    container.remove();
   });
 });
