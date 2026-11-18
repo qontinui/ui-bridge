@@ -568,17 +568,26 @@ export function useUIElementWithProps<T extends NativeElementType = NativeElemen
   // reveal re-runs this effect without a render, and with a shared ref it would
   // re-publish whatever render ran last.
   //
+  // That is also why `captureProps` is created per render rather than
+  // memoized. A stable function cannot tell a call from the render body, which
+  // must wait for that render's commit, from a call made after the commit,
+  // which must publish now. A render that never commits leaves nothing behind
+  // that such a function could check. Listing this one in deps is safe: the
+  // effect re-runs at each commit, and its call publishes at once.
+  //
   // `elementReturn.registered` is a non-reactive snapshot (it mirrors the web
-  // hook), so no guard reads it. `updateElementProps` is already a no-op for an
-  // id the registry does not hold, and the registry is the authoritative
-  // source.
+  // hook), so no guard reads it. Every write passes the ref `useUIElement`
+  // registered with instead. That is the registry's ownership guard, so a
+  // write is a no-op unless this instance holds the entry, which also covers
+  // "not registered".
+  const { ref } = elementReturn;
   const stage: CapturedPropsStage = { props: undefined, committed: false };
   const captureProps = (props: Record<string, unknown>) => {
     stage.props = { ...stage.props, ...props };
     // Called after this render committed, from an effect or a handler. There
     // is no commit left to wait for, so publish now, as this always did.
     if (stage.committed && bridge) {
-      bridge.registry.updateElementProps(options.id, props);
+      bridge.registry.updateElementProps(options.id, props, ref);
     }
   };
 
@@ -588,7 +597,7 @@ export function useUIElementWithProps<T extends NativeElementType = NativeElemen
   useLayoutEffect(() => {
     stage.committed = true;
     if (!bridge || !stage.props) return;
-    bridge.registry.updateElementProps(options.id, stage.props);
+    bridge.registry.updateElementProps(options.id, stage.props, ref);
   });
 
   // The same stage once more, after the passive flush. `useUIElement`
@@ -604,7 +613,7 @@ export function useUIElementWithProps<T extends NativeElementType = NativeElemen
   // commit.
   useEffect(() => {
     if (!bridge || !stage.props) return;
-    bridge.registry.updateElementProps(options.id, stage.props);
+    bridge.registry.updateElementProps(options.id, stage.props, ref);
   });
 
   return {

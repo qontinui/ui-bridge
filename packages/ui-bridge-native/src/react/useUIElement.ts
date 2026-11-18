@@ -85,6 +85,15 @@ interface LayoutEventData {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyHandler = (...args: any[]) => any;
 
+/** The function-valued entries of a `handlers` option: what reaches the registry. */
+function pickHandlerProps(handlers: Record<string, unknown>): Record<string, unknown> {
+  const fnProps: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(handlers)) {
+    if (typeof value === 'function') fnProps[key] = value;
+  }
+  return fnProps;
+}
+
 /**
  * A press handler for `button`/`pressable` types. Matches the loose RN
  * `Pressable` `onPress` shape (no required argument), so consumers can pass
@@ -789,19 +798,16 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
   // state. React Native has no server render, so no isomorphic helper is
   // needed. The layout mount also re-runs on a Suspense reveal, which puts the
   // handlers back on the entry the reveal re-registers.
+  //
+  // Every write passes `ref`, the ref this instance registered with. When
+  // another instance holds the same id now (slot-keyed ids, last-write-wins
+  // registration), these handlers neither land on its entry nor clear its.
   const registeredHandlerKeysRef = useRef<string[]>([]);
 
   useLayoutEffect(() => {
     if (!bridge || !registered || !handlersProp) return;
 
-    // Filter to only function values
-    const fnProps: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(handlersProp)) {
-      if (typeof value === 'function') {
-        fnProps[key] = value;
-      }
-    }
-
+    const fnProps = pickHandlerProps(handlersProp);
     const newKeys = Object.keys(fnProps);
 
     // Clear any previously registered keys that are no longer present
@@ -811,11 +817,11 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
       for (const key of removedKeys) {
         cleared[key] = undefined;
       }
-      bridge.registry.updateElementProps(id, cleared);
+      bridge.registry.updateElementProps(id, cleared, ref);
     }
 
     if (newKeys.length > 0) {
-      bridge.registry.updateElementProps(id, fnProps);
+      bridge.registry.updateElementProps(id, fnProps, ref);
     }
     registeredHandlerKeysRef.current = newKeys;
 
@@ -826,11 +832,36 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
         for (const key of registeredHandlerKeysRef.current) {
           cleared[key] = undefined;
         }
-        bridge.registry.updateElementProps(id, cleared);
+        bridge.registry.updateElementProps(id, cleared, ref);
         registeredHandlerKeysRef.current = [];
       }
     };
-  }, [bridge, registered, id, handlersProp]);
+    // `ref` is the once-per-hook interceptor object, so it is identity-stable.
+  }, [bridge, registered, id, handlersProp, ref]);
+
+  // The same handlers once more, after the passive flush.
+  //
+  // `register()` runs in a passive effect, AFTER the layout effect above, and
+  // `registerElement` replaces the entry, props included. That happens on an
+  // `id` change (a recycled list cell) and on a `bridge` change. The provider
+  // hands out a new bridge when its server starts, so every element
+  // registered before the server came up re-registers.
+  //
+  // The render that follows such a swap bails out, because `registered` ends
+  // where it started. Its effects never commit, so without this the new entry
+  // would keep no handlers at all. The passive effect this hook used before
+  // ran after the re-registration, so it never had that hole.
+  //
+  // Re-applying this commit's own handlers cannot publish anything stale:
+  // React flushes a commit's passive effects before it starts the next
+  // commit. A dropped handler stays dropped. The layout cleanup cleared it,
+  // and this returns on the same guard.
+  useEffect(() => {
+    if (!bridge || !registered || !handlersProp) return;
+    const fnProps = pickHandlerProps(handlersProp);
+    if (Object.keys(fnProps).length === 0) return;
+    bridge.registry.updateElementProps(id, fnProps, ref);
+  }, [bridge, registered, id, handlersProp, ref]);
 
   // Keep the registry's `state.value` in sync with the controlled `value`
   // prop. RN controlled inputs re-render with a new `value` on every
@@ -845,14 +876,15 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
   // returning the previous render's value. The write emits
   // `element:stateChanged`, which is safe at layout time. Only the HTTP
   // server's wait loop and the WS event bridge listen to it; no SDK React hook
-  // does.
+  // does. The write is owner-guarded by `ref`, like the handlers.
   useLayoutEffect(() => {
     if (!bridge || !registered) return;
     if (typeof valueProp !== 'string') return;
     const current = bridge.registry.getElement(id)?.getState().value;
     if (current === valueProp) return;
-    bridge.registry.updateElementState(id, { value: valueProp });
-  }, [bridge, registered, id, valueProp]);
+    bridge.registry.updateElementState(id, { value: valueProp }, ref);
+    // `ref` is the once-per-hook interceptor object, so it is identity-stable.
+  }, [bridge, registered, id, valueProp, ref]);
 
   // Publish the COMMITTED `customActions` at every commit.
   //
@@ -1107,7 +1139,10 @@ export function useUIElementWithProps<T extends NativeElementType = NativeElemen
   // no onPress ever lands in the registry, regardless of the cast.
   const elementReturn = useUIElement(options as unknown as UseUIElementOptions<'view'>);
   const bridge = useUIBridgeNativeOptional();
-  const { registered } = elementReturn;
+  // `ref` is what `useUIElement` registered with. Every write below passes it
+  // as the registry's ownership guard, so captures never land on the entry of
+  // another instance holding the same id.
+  const { registered, ref } = elementReturn;
 
   // `captureProps` is called from the render body, and it used to write the
   // registry right there. A render that React then abandoned still published
@@ -1119,13 +1154,23 @@ export function useUIElementWithProps<T extends NativeElementType = NativeElemen
   // write it too, so their keys would ride into the next commit. A Suspense
   // reveal re-runs this effect without a render, and with a shared ref it would
   // re-publish whatever render ran last.
+  //
+  // That is also why `captureProps` is created per render rather than
+  // memoized. A stable function cannot tell a call from the render body, which
+  // must wait for that render's commit, from a call made after the commit,
+  // which must publish now. A render that never commits leaves nothing behind
+  // that such a function could check. A stable `captureProps` would therefore
+  // either let abandoned renders publish again, or drop or delay effect-time
+  // calls, and effect-time callers are exactly the ones that list it in deps.
+  // Listing this one in deps is safe: the effect re-runs at each commit, and
+  // its call publishes at once.
   const stage: CapturedPropsStage = { props: undefined, committed: false };
   const captureProps = (props: Record<string, unknown>) => {
     stage.props = { ...stage.props, ...props };
     // Called after this render committed, from an effect or a handler. There
     // is no commit left to wait for, so publish now, as this always did.
     if (stage.committed && bridge && registered) {
-      bridge.registry.updateElementProps(options.id, props);
+      bridge.registry.updateElementProps(options.id, props, ref);
     }
   };
 
@@ -1135,7 +1180,7 @@ export function useUIElementWithProps<T extends NativeElementType = NativeElemen
   useLayoutEffect(() => {
     stage.committed = true;
     if (!bridge || !registered || !stage.props) return;
-    bridge.registry.updateElementProps(options.id, stage.props);
+    bridge.registry.updateElementProps(options.id, stage.props, ref);
   });
 
   // The same stage once more, after the passive flush. `useUIElement`
@@ -1152,7 +1197,7 @@ export function useUIElementWithProps<T extends NativeElementType = NativeElemen
   // commit.
   useEffect(() => {
     if (!bridge || !registered || !stage.props) return;
-    bridge.registry.updateElementProps(options.id, stage.props);
+    bridge.registry.updateElementProps(options.id, stage.props, ref);
   });
 
   return {

@@ -394,10 +394,21 @@ export class NativeUIBridgeRegistry {
   }
 
   /**
-   * Update element props (for action execution)
+   * Update element props (for action execution).
+   *
+   * `expectedRef` is the ownership guard `unregisterElement` takes. A caller
+   * that holds the ref it registered with passes it, and a mismatch makes the
+   * write a no-op. So captured props never land on the entry of another
+   * component holding the same id. Omitting it keeps the historical
+   * unconditional write.
    */
-  updateElementProps(id: string, props: Record<string, unknown>): void {
+  updateElementProps(
+    id: string,
+    props: Record<string, unknown>,
+    expectedRef?: React.RefObject<NativeElementRef>
+  ): void {
     const element = this.elements.get(id);
+    if (expectedRef && element && element.ref !== expectedRef) return;
     if (element) {
       const updated: RegisteredNativeElement = {
         ...element,

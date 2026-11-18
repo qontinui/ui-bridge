@@ -568,3 +568,102 @@ describe('native useUIElement does not re-register on the identity of an inline 
     expect(bridgeOf().registry.getElement('inline-list')?.actions).toEqual(['press', 'longPress']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 4. captureProps after the commit, and on an id another instance holds
+// ---------------------------------------------------------------------------
+
+describe('native useUIElementWithProps outside the render body and on a shared id', () => {
+  it('publishes a captureProps call made from an effect at once, with no further commit', async () => {
+    // The caller that lists `captureProps` in an effect's deps calls it from
+    // that effect, after the commit, so the call must reach the registry
+    // immediately. A `captureProps` that only staged for the next commit would
+    // leave it unpublished here.
+    const ran: string[] = [];
+    function EffectCapture({ version }: { version: number }) {
+      const { captureProps } = useUIElementWithProps({ id: 'effect-capture', type: 'view' });
+      useEffect(() => {
+        if (version === 2) captureProps({ onLongPress: () => ran.push('effect long press') });
+      }, [captureProps, version]);
+      useGapProbe(version);
+      return <span>{`effect-${version}`}</span>;
+    }
+
+    const { root } = mount(
+      <Harness>
+        <EffectCapture version={1} />
+      </Harness>
+    );
+    await until(
+      () => bridgeOf().registry.getElement('effect-capture') !== undefined && probe.passive === 1,
+      'effect-capture registered'
+    );
+
+    root.render(
+      <Harness>
+        <EffectCapture version={2} />
+      </Harness>
+    );
+    await until(() => probe.passive === 2, 'commit 2 to flush');
+
+    expect(typeof propsOf('effect-capture').onLongPress).toBe('function');
+    expect((await press('effect-capture', 'longPress')).success).toBe(true);
+    expect(ran).toEqual(['effect long press']);
+  });
+
+  it("leaves another instance's captured props alone on a shared id", async () => {
+    // First registers, Second takes the id over (last-write-wins), and then
+    // First alone re-renders from its own state, so nothing of Second's can
+    // repair what First's write would have overwritten.
+    const ran: string[] = [];
+    const first: { bump: (() => void) | null } = { bump: null };
+    function First() {
+      const [version, setVersion] = useState(1);
+      useLayoutEffect(() => {
+        first.bump = () => setVersion((v) => v + 1);
+      });
+      const { captureProps } = useUIElementWithProps({ id: 'owned-capture', type: 'view' });
+      captureProps({ onPress: () => ran.push(`first v${version}`) });
+      useGapProbe(version);
+      return <span>{`owned-capture-${version}`}</span>;
+    }
+    function Second({ register }: { register: boolean }) {
+      const { captureProps } = useUIElementWithProps({
+        id: 'owned-capture',
+        type: 'view',
+        label: 'second',
+        autoRegister: register,
+      });
+      captureProps({ onPress: () => ran.push('second') });
+      return null;
+    }
+
+    const { root } = mount(
+      <Harness>
+        <First />
+        <Second register={false} />
+      </Harness>
+    );
+    await until(
+      () => typeof propsOf('owned-capture').onPress === 'function' && probe.passive === 1,
+      'owned-capture registered by First'
+    );
+
+    root.render(
+      <Harness>
+        <First />
+        <Second register />
+      </Harness>
+    );
+    await until(() => {
+      const element = bridgeOf().registry.getElement('owned-capture');
+      return element?.label === 'second' && typeof element.props?.onPress === 'function';
+    }, 'Second to take the slot with its captured onPress');
+
+    first.bump?.();
+    await until(() => probe.passive === 2, 'First to commit again');
+
+    expect((await press('owned-capture')).success).toBe(true);
+    expect(ran).toEqual(['second']);
+  });
+});

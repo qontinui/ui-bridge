@@ -1256,10 +1256,21 @@ export class NativeUIBridgeRegistry {
   }
 
   /**
-   * Update element state
+   * Update element state.
+   *
+   * `expectedRef` is the ownership guard that {@link setElementCustomActions}
+   * takes. A caller that holds the ref it registered with passes it, and a
+   * mismatch makes the write a no-op. So when another instance now holds a
+   * shared id (slot-keyed ids, last-write-wins registration), that instance's
+   * state stays its own. Omitting it keeps the historical unconditional write.
    */
-  updateElementState(id: string, state: Partial<NativeElementState>): void {
+  updateElementState(
+    id: string,
+    state: Partial<NativeElementState>,
+    expectedRef?: React.RefObject<NativeElementRef>
+  ): void {
     const element = this.elements.get(id);
+    if (expectedRef && element && element.ref !== expectedRef) return;
     if (element) {
       // Create a new getState that includes the updated state
       const currentState = element.getState();
@@ -1368,9 +1379,18 @@ export class NativeUIBridgeRegistry {
    * mirror is gated on `type === 'input'` to avoid touching non-input
    * elements that may carry an unrelated `value` prop (e.g. a Switch's
    * boolean value, which lives on `state.checked`).
+   *
+   * `expectedRef` is the same ownership guard {@link updateElementState}
+   * takes. Without it, one instance's handlers would land on the entry of
+   * another instance holding the same id.
    */
-  updateElementProps(id: string, props: Record<string, unknown>): void {
+  updateElementProps(
+    id: string,
+    props: Record<string, unknown>,
+    expectedRef?: React.RefObject<NativeElementRef>
+  ): void {
     const element = this.elements.get(id);
+    if (expectedRef && element && element.ref !== expectedRef) return;
     if (element) {
       const updated: RegisteredNativeElement = {
         ...element,
