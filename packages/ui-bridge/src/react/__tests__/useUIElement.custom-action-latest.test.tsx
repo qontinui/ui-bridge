@@ -13,20 +13,36 @@
  * - an instance whose slot-keyed id another instance took over never writes
  *   that instance's handlers, and one sharing an id with another WINDOW's
  *   element writes its own window's entry, not the default one;
- * - an id change under a non-default window keeps the entry in that window,
- *   where the mirror writes.
+ * - on the commit that changes the id or the window label, the entry still
+ *   filed under the OLD key runs the new closure, and once the passive sync has
+ *   moved it the entry sits under the new key and keeps following later
+ *   commits; an `unregister()` in that gap removes the entry from the window it
+ *   is actually filed in.
  *
- * Every call goes through the `DefaultActionExecutor` the REAL
- * `UIBridgeProvider` builds. Updates are applied from a resolved promise: a
- * non-discrete update, which React commits in one task and whose passive
- * effects it flushes in a later one. The call under test is made from a
- * MutationObserver callback, a microtask queued by the commit's own DOM
- * mutation, so it lands after the commit (layout effects included) and before
- * that passive flush. Each such sample also reads a passive probe and asserts
- * the flush had NOT run, so a sample that drifted out of the gap fails instead
- * of passing. `act` is never used — IS_REACT_ACT_ENVIRONMENT is false for the
- * whole file — and neither is RTL, which wraps in it: both flush passive
- * effects. Every expectation is a hand-written literal.
+ * Seven of the ten cases call through `DefaultActionExecutor.executeAction`
+ * on the executor the REAL `UIBridgeProvider` builds — the door an agent's call
+ * takes. Three read the registry instead, each because no executor call
+ * answers their question:
+ * - the effect-flip case asserts what is ADVERTISED, so it reads
+ *   `serializeElementCustomActions`, the one projection every advertising
+ *   surface goes through; a call proves which handler runs, not which `effect`
+ *   an agent was shown;
+ * - the same-id-in-two-windows case must address the popout window's entry,
+ *   and the executor resolves an id default-window-first, so while the default
+ *   window holds the same id it can never reach the popout one;
+ * - the mid-move `unregister()` case asserts where an entry is (and is not)
+ *   filed, per window, after the hook's own `unregister` — not a call at all.
+ *
+ * Updates are applied from a resolved promise: a non-discrete update, which
+ * React commits in one task and whose passive effects it flushes in a later
+ * one. The sample under test is taken in a MutationObserver callback, a
+ * microtask queued by the commit's own DOM mutation, so it lands after the
+ * commit (layout effects included) and before that passive flush. Each such
+ * sample also reads a passive probe and asserts the flush had NOT run, so a
+ * sample that drifted out of the gap fails instead of passing. `act` is never
+ * used — IS_REACT_ACT_ENVIRONMENT is false for the whole file — and neither is
+ * RTL, which wraps in it: both flush passive effects. Every expectation is a
+ * hand-written literal.
  */
 
 import { useEffect, useLayoutEffect, useState, type ReactNode } from 'react';
@@ -37,7 +53,7 @@ import {
   useUIBridgeOptional,
   type UIBridgeContextValue,
 } from '../UIBridgeProvider';
-import { useUIElement } from '../useUIElement';
+import { useUIElement, type UseUIElementReturn } from '../useUIElement';
 import { serializeElementCustomActions } from '../../core/element-actions';
 import type { CustomAction } from '../../core/types';
 import type { ControlActionResponse } from '../../control/types';
@@ -104,24 +120,31 @@ interface TargetOptions {
 const setters = new Map<string, (next: TargetOptions) => void>();
 /** Per instance, the tag of the latest commit whose PASSIVE effects have run. */
 const flushed = new Map<string, string>();
+/** Per instance, what the hook returned on the latest COMMITTED render. */
+const committedHooks = new Map<string, UseUIElementReturn>();
 
 function Target({ name, initial }: { name: string; initial: TargetOptions }) {
   const [options, setOptions] = useState(initial);
   useLayoutEffect(() => {
     setters.set(name, setOptions);
   }, [name]);
-  const { ref } = useUIElement({
+  const hook = useUIElement({
     id: options.id,
     type: 'button',
     label: name,
     customActions: options.customActions,
     windowLabel: options.windowLabel,
   });
+  // At commit, so a sample in the gap sees the render that just committed.
+  useLayoutEffect(() => {
+    committedHooks.set(name, hook);
+  });
   // The passive probe. Dep-free, so it runs in the passive flush of EVERY
   // commit of this component — the same flush as the hook's passive effects.
   useEffect(() => {
     flushed.set(name, options.tag);
   });
+  const { ref } = hook;
   return (
     <button ref={ref} data-name={name}>
       {options.tag}
@@ -156,6 +179,7 @@ afterEach(() => {
   ran = [];
   setters.clear();
   flushed.clear();
+  committedHooks.clear();
 });
 
 /** Re-render instance `name` with `next` from a resolved promise. */
@@ -203,6 +227,8 @@ function sampleInGap<T>(name: string, next: TargetOptions, probe: () => T): Prom
 }
 
 interface GapCall {
+  /** The DOM node the id resolved to in the registry at the sample. */
+  element: HTMLElement | undefined;
   /** The custom-action names the registry entry advertised at the sample. */
   advertised: string[] | undefined;
   /** The handlers that ran during the call — inside the gap. */
@@ -231,9 +257,16 @@ async function callInGap(
     const advertised = entry?.customActions ? Object.keys(entry.customActions) : undefined;
     const before = ran.length;
     const response = executor.executeAction(elementId, { action: actionName });
-    return { advertised, ranInGap: ran.slice(before), response };
+    return { element: entry?.element, advertised, ranInGap: ran.slice(before), response };
   });
   return { ...value, flushedAtSample };
+}
+
+/** The rendered button of Target instance `name`. */
+function buttonOf(name: string): HTMLElement {
+  const button = container?.querySelector<HTMLElement>(`[data-name="${name}"]`);
+  if (!button) throw new Error(`no rendered Target named ${name}`);
+  return button;
 }
 
 /** The entry registered under `id` in one window (`undefined` = the default). */
@@ -319,9 +352,14 @@ describe('useUIElement custom actions are the latest committed ones', () => {
     await until(() => flushed.get('T') === 'r1', 'T mounted');
     await commitAndFlush('T', { id: 'dropped', tag: 'r2', customActions: both('r2') });
 
+    const button = buttonOf('T');
     const call = await callInGap('T', { id: 'dropped', tag: 'r3' }, 'dropped', 'keep');
 
     expect(call.flushedAtSample).toBe('r2');
+    // The ELEMENT is still registered: an id the registry does not hold is
+    // refused UB-UNSUPPORTED-ACTION too, so without this the refusal below could
+    // not tell withdrawn actions from a missing element.
+    expect(call.element).toBe(button);
     expect(call.advertised).toBeUndefined();
     expect(call.ranInGap).toEqual([]);
     const keep = await call.response;
@@ -334,6 +372,7 @@ describe('useUIElement custom actions are the latest committed ones', () => {
     const archive = await liveBridge().executor.executeAction('dropped', { action: 'archive' });
     expect(archive.success).toBe(false);
     expect(archive.failureDetails?.errorCode).toBe('UB-UNSUPPORTED-ACTION');
+    expect(liveBridge().registry.getElement('dropped')?.element).toBe(button);
     expect(liveBridge().registry.getElement('dropped')?.customActions).toBeUndefined();
     expect(ran).toEqual([]);
   });
@@ -481,9 +520,20 @@ describe('useUIElement custom actions are the latest committed ones', () => {
     renderApp(<Target name="T" initial={at('win-1', 'r1')} />);
     await until(() => flushed.get('T') === 'r1', 'T mounted');
     await commitAndFlush('T', at('win-1', 'r2'));
+    const button = buttonOf('T');
 
-    // The id changes, so the keyed sync re-registers the element under it.
-    await commitAndFlush('T', at('win-2', 'r3'));
+    // The id changes, with a new closure. Until the passive sync re-registers
+    // the element, its entry is still filed under the OLD id — the one the
+    // mirror must write, and the one a call in the gap reaches.
+    const renamed = await callInGap('T', at('win-2', 'r3'), 'win-1', 'act');
+
+    expect(renamed.flushedAtSample).toBe('r2');
+    expect(renamed.element).toBe(button);
+    expect(renamed.ranInGap).toEqual(['r3']);
+    expect((await renamed.response).result).toBe('r3');
+
+    // After the flush the entry is filed under the new id, in the same window.
+    await until(() => flushed.get('T') === 'r3', 'T flushed r3');
     expect(liveBridge().registry.getElement('win-2')?.windowLabel).toBe('popout');
     expect(liveBridge().registry.getElement('win-1')).toBeUndefined();
 
@@ -493,5 +543,68 @@ describe('useUIElement custom actions are the latest committed ones', () => {
     expect(call.flushedAtSample).toBe('r3');
     expect(call.ranInGap).toEqual(['r4']);
     expect((await call.response).result).toBe('r4');
+  });
+
+  it('moves the entry when the window label changes, and keeps its actions current', async () => {
+    const at = (windowLabel: string, tag: string): TargetOptions => ({
+      id: 'moving',
+      tag,
+      windowLabel,
+      customActions: { act: action('act', tag) },
+    });
+    renderApp(<Target name="T" initial={at('w1', 'r1')} />);
+    await until(() => flushed.get('T') === 'r1', 'T mounted');
+    await commitAndFlush('T', at('w1', 'r2'));
+    const button = buttonOf('T');
+
+    // The window label changes, with a new closure. Until the passive sync
+    // moves the entry, it is still filed in w1 — where the mirror must write,
+    // and where a call in the gap reaches it.
+    const moving = await callInGap('T', at('w2', 'r3'), 'moving', 'act');
+
+    expect(moving.flushedAtSample).toBe('r2');
+    expect(moving.element).toBe(button);
+    expect(moving.ranInGap).toEqual(['r3']);
+    expect((await moving.response).result).toBe('r3');
+
+    // After the flush the entry lives in w2, and w1 no longer holds it.
+    await until(() => flushed.get('T') === 'r3', 'T flushed r3');
+    expect(entryIn('w2', 'moving')?.element).toBe(button);
+    expect(entryIn('w1', 'moving')).toBeUndefined();
+
+    // A later commit's new closure reaches the moved entry: the custom actions
+    // follow the element into its new window instead of freezing.
+    const after = await callInGap('T', at('w2', 'r4'), 'moving', 'act');
+
+    expect(after.flushedAtSample).toBe('r3');
+    expect(after.ranInGap).toEqual(['r4']);
+    expect((await after.response).result).toBe('r4');
+  });
+
+  it('unregisters from the window its entry is filed in, mid-move', async () => {
+    const at = (windowLabel: string, tag: string): TargetOptions => ({
+      id: 'leaving',
+      tag,
+      windowLabel,
+      customActions: { act: action('act', tag) },
+    });
+    renderApp(<Target name="T" initial={at('w1', 'r1')} />);
+    await until(() => flushed.get('T') === 'r1', 'T mounted');
+    await commitAndFlush('T', at('w1', 'r2'));
+
+    // The window label changes, and before the passive sync has moved the
+    // entry, the committed render's own `unregister` runs — as an app's layout
+    // effect could. The entry is still filed in w1, so that is where it must
+    // come out of; nothing may be left behind there.
+    const sample = await sampleInGap('T', at('w2', 'r3'), () => {
+      committedHooks.get('T')?.unregister();
+      return { w1: entryIn('w1', 'leaving'), w2: entryIn('w2', 'leaving') };
+    });
+
+    expect(sample.flushedAtSample).toBe('r2');
+    expect(sample.value).toEqual({ w1: undefined, w2: undefined });
+    await until(() => flushed.get('T') === 'r3', 'T flushed r3');
+    expect(entryIn('w1', 'leaving')).toBeUndefined();
+    expect(entryIn('w2', 'leaving')).toBeUndefined();
   });
 });

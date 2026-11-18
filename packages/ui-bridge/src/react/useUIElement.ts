@@ -201,8 +201,13 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
   // callers pass neither, so this stays `undefined` (byte-identical behavior).
   const windowLabel = options.windowLabel ?? contextWindowLabel;
 
-  // See useUIState for rationale on capturing id at register time.
+  // See useUIState for rationale on capturing id at register time. The window
+  // is captured beside it for the same reason: the registry files an entry
+  // under (window, id), so an entry is addressed by what it was REGISTERED
+  // under until the option sync below moves it — never by this render's values.
+  // `undefined` is a real value here (the default window), not "unknown".
   const registeredElementIdRef = useRef<string | null>(null);
+  const registeredWindowLabelRef = useRef<string | undefined>(undefined);
 
   // Tear-down function for the live bbox tracker (ResizeObserver + shared
   // scroll/resize listeners). Null when we aren't tracking an element —
@@ -262,6 +267,7 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     });
     registeredRef.current = true;
     registeredElementIdRef.current = id;
+    registeredWindowLabelRef.current = windowLabel;
 
     if (logLevel) {
       bridge.registry.setElementLogLevel(id, logLevel);
@@ -296,16 +302,19 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     // THIS instance still owns it. Ids are commonly keyed on a slot
     // (`panel-<zoneIndex>`), so across a re-layout another component can have
     // re-registered the same id with its own node; deleting that entry on our
-    // unmount would strand a live element with no registry entry.
+    // unmount would strand a live element with no registry entry. The window
+    // is the one the entry was registered under, which this render's
+    // `windowLabel` is not until the option sync below has moved it.
     bridge.registry.unregisterElement(
       registeredElementIdRef.current ?? id,
-      windowLabel,
+      registeredWindowLabelRef.current,
       elementRef.current
     );
     registeredRef.current = false;
     registeredElementIdRef.current = null;
+    registeredWindowLabelRef.current = undefined;
     stopBboxTracking();
-  }, [bridge, id, windowLabel, stopBboxTracking]);
+  }, [bridge, id, stopBboxTracking]);
 
   // Keep latest register/unregister in refs so the ref callback doesn't
   // churn identity when consumers pass inline `actions`/`customActions`
@@ -432,24 +441,34 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
   // handlers. It is a pointer write that emits nothing, so an inline
   // `customActions` object costs no re-registration and wakes no subscriber.
   //
-  // `registeredElementIdRef` rather than `id`: on the commit that changes `id`
-  // this instance's entry is still filed under the old id until the passive
-  // sync below re-registers it, and that entry is the one to keep current.
+  // It addresses the entry by what it was REGISTERED under —
+  // `registeredElementIdRef` and `registeredWindowLabelRef` — never by this
+  // render's `id` / `windowLabel`. On the commit that changes either, the entry
+  // is still filed under the old key until the option sync below moves it, and
+  // that entry is the one a call reaches in the meantime. A `false` from the
+  // setter (nothing written) is expected exactly when another instance has taken
+  // the id over or the entry was removed outside this hook, so it is not acted on.
   useIsomorphicLayoutEffect(() => {
     const node = elementRef.current;
     const registeredElementId = registeredElementIdRef.current;
     if (!bridge || !node || registeredElementId === null) return;
-    bridge.registry.setElementCustomActions(registeredElementId, node, customActions, windowLabel);
+    bridge.registry.setElementCustomActions(
+      registeredElementId,
+      node,
+      customActions,
+      registeredWindowLabelRef.current
+    );
   });
 
-  // In-place option sync — see useUIState for rationale. Treats an `id`
-  // change as a re-registration (registry is keyed by id); all other
-  // changes go through `updateElement` which skips the re-register emit.
+  // In-place option sync — see useUIState for rationale. Treats an `id` or
+  // `windowLabel` change as a re-registration (the registry files an entry
+  // under (window, id), so the entry has to MOVE); all other changes go through
+  // `updateElement`, which skips the re-register emit.
   //
   // `customActions` is in neither the key nor the `updateElement` call: the
   // layout effect above already mirrors it at every commit, handlers included.
-  // The id-change re-registration still passes it, because `registerElement`
-  // REPLACES the entry and would otherwise drop it until the next commit.
+  // The re-registration still passes it, because `registerElement` REPLACES the
+  // entry and would otherwise drop it until the next commit.
   const elementKey =
     bridge && registeredRef.current
       ? JSON.stringify({
@@ -468,20 +487,32 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
           // Reveals is a plain string array — include it so mid-lifecycle
           // updates (e.g. dynamic reveal targets) propagate into the registry.
           reveals: reveals ?? null,
+          // A window change MOVES the entry (see below), so it must re-run
+          // this sync. Without it the entry stayed in the old window's bucket
+          // while every later commit's custom actions were addressed to the
+          // new one.
+          windowLabel: windowLabel ?? null,
         })
       : null;
   useEffect(() => {
     if (!bridge || !registeredRef.current || !elementRef.current || elementKey === null) return;
     const registeredElementId = registeredElementIdRef.current;
     if (registeredElementId === null) return;
-    if (registeredElementId !== id) {
-      // Re-register under new id. Also re-point the bbox tracker at the
-      // new registry key so updates land on the right entry.
+    const registeredWindowLabel = registeredWindowLabelRef.current;
+    if (registeredElementId !== id || registeredWindowLabel !== windowLabel) {
+      // Re-register under the new (window, id). Also re-point the bbox tracker
+      // at the new registry key so updates land on the right entry.
       stopBboxTracking();
-      // Same ownership guard as the unmount path — only drop the old id if our
-      // node is still the one registered under it.
-      bridge.registry.unregisterElement(registeredElementId, windowLabel, elementRef.current);
+      // Same ownership guard as the unmount path — only drop the old entry if
+      // our node is still the one registered under it — and the old key's
+      // window, which is where that entry is filed.
+      bridge.registry.unregisterElement(
+        registeredElementId,
+        registeredWindowLabel,
+        elementRef.current
+      );
       registeredElementIdRef.current = id;
+      registeredWindowLabelRef.current = windowLabel;
       bridge.registry.registerElement(id, elementRef.current, {
         type,
         label,
@@ -493,10 +524,6 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
         color,
         contextPath,
         reveals,
-        // The commit mirror above writes only this hook's window bucket, so the
-        // re-registered entry must be filed there too — without it a
-        // non-default window's entry landed in "main", out of the mirror's
-        // reach (and of the unmount's `unregisterElement`).
         windowLabel,
       });
       if (logLevel) bridge.registry.setElementLogLevel(id, logLevel);
@@ -515,8 +542,8 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     });
     if (logLevel) bridge.registry.setElementLogLevel(id, logLevel);
     // Keyed on `elementKey`, the value projection of the options read here.
-    // `customActions` is read only by the id-change re-registration, which the
-    // key's `id` field already drives.
+    // `customActions` is read only by the re-registration, which the key's
+    // `id` and `windowLabel` fields already drive.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bridge, elementKey]);
 

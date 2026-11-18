@@ -150,14 +150,24 @@ function ColorPicker() {
 Each entry is a `CustomAction` **object**, not a bare function:
 
 ```typescript
+import type { ActionHandlerOptions } from '@qontinui/ui-bridge';
+
 interface CustomAction<TParams = unknown, TResult = unknown> {
   id: string;
   label?: string;
   description?: string;
   effect?: 'read' | 'write' | 'destructive'; // safety class; absent = unclassified
-  handler: (params?: TParams) => TResult | Promise<TResult>;
+  handler: (
+    params?: TParams,
+    options?: ActionHandlerOptions // { signal?: AbortSignal }
+  ) => TResult | Promise<TResult>;
 }
 ```
+
+The executor always passes the second argument, `{ signal }`, so a handler
+written `(params, { signal }) => …` is safe to call. An element action has no
+cancellation source, though: its `signal` is a real `AbortSignal` you can
+listen on, but it never aborts.
 
 The hook mirrors `customActions` into its registry entry at every commit, in a
 layout effect. The actions an agent sees, each one's `effect`, and the handler a
@@ -173,9 +183,12 @@ is then answered exactly as for a name the element never declared:
 `UB-UNSUPPORTED-ACTION`, or the built-in verb when the name is one (such as
 `sendKeys`). No withdrawn handler runs.
 
-The hook writes only the entry it registered. When another instance takes over
-the same `id` — a slot-keyed id across a re-layout — this instance's later
-renders do not overwrite that instance's handlers.
+Custom actions are written only to the entry this instance registered. When
+another instance takes over the same `id` — a slot-keyed id across a re-layout —
+this instance's later renders leave that instance's custom actions alone. The
+guarantee covers custom actions only: the hook's other options (`label`, `type`
+and the rest) are still written by `id` alone, without that check. Changing `id`
+or `windowLabel` re-registers the element, moving its entry to the new key.
 
 ## useUIElementRef
 
