@@ -167,9 +167,12 @@ Exec (Variant A — one-shot; presence of any --exec/--exec-stdin selects this m
         canonical shape
           {"id":"<elementId>","request":{"action":"<action>", …}}
         and both accepted spellings, and names keys and the kinds of values,
-        never a value; "error.details" adds "expectedPayload" and
-        "receivedKeys". A well-formed payload with an unknown verb is refused
-        with UNSUPPORTED_ACTION, naming the accepted verbs.
+        never a value, with one exception: an "id" and an "elementId" that
+        disagree are both named (they are the element ids the caller sent, and
+        naming both is what makes the conflict diagnosable); "error.details"
+        adds "expectedPayload" and "receivedKeys". A well-formed payload with
+        an unknown verb is refused with UNSUPPORTED_ACTION, naming the
+        accepted verbs.
 
   A timed multi-frame capture (CLI-side, like the waits):
 
@@ -208,6 +211,11 @@ Exec (Variant A — one-shot; presence of any --exec/--exec-stdin selects this m
         ARRIVING (under --throttle, its slow-network load) while the override
         still confirms decode before it answers; its result rides on the line
         as "during" and a failed action fails the step. Not with "reload".
+        An image URL this document already decoded is NOT observed arriving:
+        Chromium 158 serves it again with no request, even under --no-cache
+        (Chromium 147 refetched it); only a new URL or a reload reaches the
+        network. So give the candidate a URL the document has not decoded,
+        such as a per-candidate query string ("cand.png?2").
 
   Swapping an image in place (dev control, served by the injected runtime):
 
@@ -218,6 +226,10 @@ Exec (Variant A — one-shot; presence of any --exec/--exec-stdin selects this m
         Swap one slot's image, wait for decode() and confirm currentSrc before
         answering (an override that cannot be confirmed is rolled back and
         fails). Inside a <picture> every <source srcset> is replaced too.
+        On Chromium 158 a candidate URL this document already decoded is
+        served with no request, even under --no-cache: only a new URL or a
+        reload reaches the network, so a slow-network candidate needs its own
+        URL (a per-candidate query string).
       mediaOverrideRestore {"overrideId":"mo-…"}   (or {} for all)
         Put the originals back and verify each attribute reads back.
       mediaOverrideList {}
@@ -299,9 +311,10 @@ Network (every mode; applied to the page once it is ready, before any action):
   --no-cache                   Disable the HTTP cache too (Network.setCacheDisabled):
                                a warm cache would let a "slow" reload paint at once.
                                It does NOT reach the document's in-memory image
-                               cache: a URL this page already decoded is answered
-                               at once, throttle or not -- give a repeated
-                               mediaOverride candidate its own URL (e.g. ?2).
+                               cache: on Chromium 158 a URL this page already
+                               decoded is answered at once, throttle or not -- give
+                               a repeated mediaOverride candidate its own URL
+                               (e.g. ?2).
                                What was applied is stamped as "network" on every
                                captureTimeline result, each capture-matrix cell, and
                                the relay info line; CDP has no getter, so the stamp
