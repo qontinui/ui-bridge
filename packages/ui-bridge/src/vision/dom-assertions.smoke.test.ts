@@ -1281,6 +1281,11 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
         .hero::before { content: ""; display: block; height: 64px; background: rgb(20, 30, 90) }
         .holder { position: relative; translate: 0; width: 400px; height: 60px }
         .dimmer::before { content: ""; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.6); pointer-events: none }
+        .fhero { height: 64px }
+        .fhero::after { content: ""; display: block; height: 64px; background: rgb(20, 30, 90) }
+        .zholder { position: relative; translate: 0; width: 400px; height: 60px }
+        .zmid { zoom: 2 }
+        .zscrim::before { content: ""; position: fixed; left: 100px; top: 0; width: 50px; height: 30px; background: rgba(0, 0, 0, 0.6) }
       </style>
       <div class="row"><a class="ilink" href="#">A link</a><span class="hi" data-id="inlinescaled" style="left:75px;top:2px">Hi</span></div>
       <div class="row"><div class="cturn"><div class="box"></div></div><span class="hi" data-id="contentsturned" style="left:170px;top:10px">Hi</span></div>
@@ -1291,8 +1296,8 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       <div class="row"><div style="padding-left:300px"><span class="scrim" style="transform:translateX(0)">x</span></div><span class="hi" data-id="inlinexfcb" style="left:10px;top:10px">Hi</span></div>
       <div class="row"><div style="padding-left:300px"><span class="scrim" style="contain:paint">x</span></div><span class="hi" data-id="inlinecontaincb" style="left:10px;top:10px">Hi</span></div>
       <div class="row"><div style="padding-left:300px"><span class="scrim" style="will-change:transform">x</span></div><span class="hi" data-id="inlinewillcb" style="left:10px;top:10px">Hi</span></div>
-      <div class="row"><div style="padding-left:300px"><span class="scrim" style="filter:blur(0)">x</span></div><span class="hi" data-id="inlinefiltercb" style="left:10px;top:10px">Hi</span></div>
-      <div class="row"><div style="padding-left:300px"><span class="scrim" style="will-change:filter">x</span></div><span class="hi" data-id="inlinewillfilter" style="left:10px;top:10px">Hi</span></div>
+      <div class="row"><div style="padding-left:300px"><span class="scrim pe" style="filter:blur(0)">x</span></div><span class="hi" data-id="inlinefiltercb" style="left:10px;top:10px">Hi</span></div>
+      <div class="row"><div style="padding-left:300px"><span class="scrim pe" style="will-change:filter">x</span></div><span class="hi" data-id="inlinewillfilter" style="left:10px;top:10px">Hi</span></div>
       <div class="row"><p style="width:200px;margin:0">aaaaaaaaaaaaaaaa <a class="split" href="#">bb cccccccccccccccccc dd</a></p><span class="hi" data-id="splitltr" style="left:160px;top:3px">Hi</span></div>
       <div class="row"><p dir="rtl" style="width:200px;margin:0">aaaaaaaaaaaaaaaa <a class="split" href="#">bb cccccccccccccccccc dd</a></p><span class="hi" data-id="splitrtl" style="left:150px;top:23px">Hi</span></div>
       <div class="row"><p style="width:200px;margin:0">aaaaaaaaaaaaaaaa <a class="split pe" href="#">bb cccccccccccccccccc dd</a></p><span class="hi" data-id="splitpe" style="left:160px;top:3px">Hi</span></div>
@@ -1301,8 +1306,10 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       <div class="row"><button class="state chev"><span data-id="chevronbtn">Options</span></button></div>
       <div class="row hero"><h1 data-id="herohead" style="position:absolute;left:10px;top:20px;margin:0;font:16px/20px monospace;color:#fff">Title</h1></div>
       <div class="row"><div class="holder"><i class="dimmer" style="display:block;width:10px;height:10px;margin-left:380px"></i><span class="hi" data-id="dimholder" style="left:10px;top:20px">Hi</span></div></div>
+      <div class="row fhero"><h1 data-id="floathead" style="float:left;margin:10px 0 0 10px;font:16px/20px monospace;color:#fff">Title</h1></div>
+      <div class="row"><div class="zholder"><div class="zmid"><i class="zscrim"></i></div><span class="hi" data-id="zoomfixed" style="left:210px;top:20px">Hi</span></div></div>
     `,
-      { width: 800, height: 1400 }
+      { width: 800, height: 1560 }
     );
     const ids = [
       'inlinescaled',
@@ -1324,6 +1331,8 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       'chevronbtn',
       'herohead',
       'dimholder',
+      'floathead',
+      'zoomfixed',
     ];
     const res = await assertOn(
       page,
@@ -1360,6 +1369,8 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       ['passed', null],
       ['unknown', 'input_missing'],
       ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
     ]);
     const covers = "is a positioned box that covers the text's position";
     for (const [i, layer] of [
@@ -1379,15 +1390,22 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     for (const i of [3, 9, 10, 15, 16]) {
       expect(res.results[i].detail).toContain('contrast ratio 21.00:1');
     }
+    // A zoom between a fixed box and the block that holds it draws its
+    // lengths: at zoom 2 its left: 100px lies 200px into the block.
+    expect(res.results[20].detail).toContain(`<i.zscrim>::before ${covers}`);
     // A ::before / ::after can be click-through on its own, its element not.
     const blind = "at the text's position but computes pointer-events: none";
     expect(res.results[13].detail).toContain(`<a.split.pe>::after paints ${blind}`);
     expect(res.results[14].detail).toContain(`<div.card>::after paints ${blind}`);
     expect(res.results[18].detail).toContain(`<i.dimmer>::before paints ${blind}`);
     // A headline positioned over the hero its in-flow ::before colours (the
-    // page shows white on navy) failed at 1.00:1 as white on white.
+    // page shows white on navy) failed at 1.00:1 as white on white; so did
+    // one floated over the hero its in-flow ::after colours.
     expect(res.results[17].detail).toContain(
       '<div.row.hero>::before is laid out in normal flow inside <div.row.hero>'
+    );
+    expect(res.results[19].detail).toContain(
+      '<div.row.fhero>::after is laid out in normal flow inside <div.row.fhero>'
     );
     await page.close();
   }, 60_000);
@@ -1444,6 +1462,49 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       'the page under the modal dialog <dialog#dlg> (inert, so the hit test lists none of it)'
     );
     for (const detail of details.slice(1)) expect(detail).toContain('contrast ratio 21.00:1');
+  }, 60_000);
+
+  it('contrast_meets_wcag: an in-flow ::before / ::after is read where its place in the flow puts it', async () => {
+    const page = await openPage(
+      `
+      <style>
+        .row { position: relative; margin-top: 6px; background: #fff; font: 16px/20px sans-serif }
+        .card { height: 120px }
+        .card::before { content: ""; display: block; height: 4px; background: #06c }
+        .panel { height: 90px; color: #000 }
+        .panel::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #0a0; margin-right: 6px }
+        .bar { display: flex; height: 40px; color: #000 }
+        .bar::before { content: ""; width: 4px; background: #c00 }
+        .head { height: 80px; color: #000; margin: 0 }
+        .head::after { content: ""; display: block; width: 40px; height: 3px; background: #c00; margin-top: 8px }
+      </style>
+      <div class="row card"><span data-id="cardbadge" style="position:absolute;top:40px;right:12px;color:#000">NEW</span></div>
+      <div class="row panel">Online<span data-id="dottip" style="position:absolute;left:10px;top:50px;color:#000">Last seen today</span></div>
+      <div class="row bar"><span>Menu</span><span data-id="flexfloat" style="float:right;margin-left:auto">Settings</span></div>
+      <div class="row head">Heading<span data-id="afterbar" style="position:absolute;right:10px;top:40px;color:#000">NEW</span></div>
+    `,
+      { width: 800, height: 600 }
+    );
+    const ids = ['cardbadge', 'dottip', 'flexfloat', 'afterbar'];
+    const res = await assertOn(
+      page,
+      ids.map((element) => ({ type: 'contrast_meets_wcag', element }))
+    );
+    // Text positioned out of a block's flow may lie over the block's in-flow
+    // ::before / ::after, but only where its place in the flow puts it: a
+    // card's 4px top band, a status dot on the panel's first line and a
+    // heading's underline bar after its text lie away from the badge and the
+    // tooltip set elsewhere in the block, which were unknown when the whole
+    // block bounded them. A float on a flex item does not apply: that text is
+    // in the bar's flow, beside its accent.
+    expect(verdicts(res)).toEqual([
+      ['passed', null],
+      ['passed', null],
+      ['passed', null],
+      ['passed', null],
+    ]);
+    for (const r of res.results) expect(r.detail).toContain('contrast ratio 21.00:1');
+    await page.close();
   }, 60_000);
 
   it('contrast_meets_wcag: a page backdrop the body draws under a footer fixed below its box', async () => {
@@ -1941,6 +2002,7 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
         <div data-id="down" style="width:100px;white-space:nowrap;overflow:hidden">Short</div>
       </div>
       <div data-id="row" style="width:60px;white-space:nowrap;overflow:hidden">Order total: <span data-bridge-redact="true">4111 1111 1111 1111</span> card</div>
+      <div data-id="scripted" style="width:80px;white-space:nowrap;overflow:hidden">Total <span data-bridge-redact="true">4111 1111</span> due<script type="application/json">{"session":"s3cr3t-token"}</script><span style="display:none">hidden note</span></div>
       <div style="transform:scale(0.4);transform-origin:0 0;width:100px">
         <div data-id="tiny" style="width:100px;white-space:nowrap;overflow:hidden"><span style="display:inline-block;width:101px">x</span></div>
         <div data-id="tinyfit" style="width:100px;white-space:nowrap;overflow:hidden"><span style="display:inline-block;width:100px">x</span></div>
@@ -1949,7 +2011,7 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     `);
     const res = await assertOn(
       page,
-      ['up', 'down', 'row', 'tiny', 'tinyfit', 'tinyinl'].map((element) => ({
+      ['up', 'down', 'row', 'tiny', 'tinyfit', 'tinyinl', 'scripted'].map((element) => ({
         type: 'text_fits_container',
         element,
       }))
@@ -1964,11 +2026,17 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       ['failed', null],
       ['passed', null], // exactly 100px of content
       ['failed', null],
+      ['failed', null],
     ]);
-    // The card number's boundary reads as the sentinel where it sits, and the
-    // text around it, outside the boundary, is echoed as it is everywhere.
+    // An element that holds a boundary is echoed as the bare sentinel: read
+    // with the boundary in place, its text would come from its text content,
+    // a <script>'s JSON and display: none text included.
     expect(res.results[2].detail).not.toContain('4111');
-    expect(res.results[2].detail).toContain('Text: "Order total: [REDACTED] card"');
+    expect(res.results[2].detail).toContain('Text: "[REDACTED]"');
+    expect(res.results[6].detail).toContain('Text: "[REDACTED]"');
+    for (const hidden of ['4111', 's3cr3t', 'hidden note']) {
+      expect(res.results[6].detail).not.toContain(hidden);
+    }
     expect(res.results[3].detail).toContain('content is 101px wide but the box is only 100px');
     expect(res.results[5].detail).toContain('content is 101px wide but the box is only 100px');
     await page.close();

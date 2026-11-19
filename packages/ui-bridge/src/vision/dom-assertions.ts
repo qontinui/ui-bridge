@@ -93,11 +93,14 @@
  *   the text is not seen, nor one the text's own relative offset or
  *   transform moves the text over, and one a 3D transform or a motion path
  *   moves is read only where its offsets move it. Text positioned out of that
- *   flow, or floated, may lie over it: it is read as one of a layer beneath
- *   the text is. One in normal flow of any other
- *   layer beneath the text lies somewhere in that layer's box, which lies
- *   under the text, so one that paints and can reach the text is
- *   `unknown{input_missing}`. Past how far its offsets and its transform
+ *   flow, or floated (a float on a flex or grid item does not apply), may lie
+ *   over it: it is read as one of a layer beneath the text is. One in normal
+ *   flow of any other layer beneath the text lies where its place in that
+ *   layer's flow can put it — in a block container on horizontal lines, a
+ *   `::before` from the content box's top and a `::after` after the last
+ *   in-flow content, as deep as itself and its margins (a line, inline),
+ *   across the box; elsewhere anywhere in the layer's box — so one that
+ *   paints and can reach the text is `unknown{input_missing}`. Past how far its offsets and its transform
  *   move it, one in normal flow that overflows its element's box is not
  *   seen; one at `opacity: 0` paints nothing. A transparent one of the
  *   text's own element or of a layer beneath the text, whose box the
@@ -177,10 +180,11 @@
  *
  * REDACTION (§4.6): element text reaches a result only through
  * `scrubContentByVerdict`, against the element's own verdict — inside a
- * `data-bridge-redact` boundary it is `[REDACTED]` — and it is read by
- * `computeVisibleText`, which reads each such boundary BELOW the element as
- * `[REDACTED]` in place, as every other visible-text reader does. Geometry,
- * colours and ids are not content.
+ * `data-bridge-redact` boundary it is `[REDACTED]`. An element that holds
+ * such a boundary below it (`hasRedactionBoundaryBelow`) is echoed as the
+ * bare `[REDACTED]`: the boundary-aware text reader reads a container's
+ * whole text content, its `<script>` and hidden text included, which the
+ * rendered text does not show. Geometry, colours and ids are not content.
  */
 
 import {
@@ -192,7 +196,12 @@ import {
 import { parseColor, type RGBA } from '../specs/color-utils';
 import { computeVisibleText, isInteractionBlocked, readInteractionBlockers } from '../core/a11y';
 import { classList } from '../core/class-name';
-import { scrubContentByVerdict, verdictOf } from '../core/redaction';
+import {
+  hasRedactionBoundaryBelow,
+  REDACTED_VALUE,
+  scrubContentByVerdict,
+  verdictOf,
+} from '../core/redaction';
 import { parseVisionAssertRequest } from './assertion-request';
 import {
   evaluateVisionAssertion,
@@ -1511,13 +1520,18 @@ class TabMeasurement {
   }
 
   /**
-   * The element's visible text, scrubbed by its own redaction verdict. A
-   * `data-bridge-redact` boundary below it reads as `[REDACTED]` where it
-   * sits ({@link computeVisibleText}): the element's own verdict looks only
-   * up, so it does not see one.
+   * The element's visible text, scrubbed by its own redaction verdict — and
+   * the bare `[REDACTED]` when a `data-bridge-redact` boundary sits below it,
+   * which its own verdict, looking only up, does not see. The text of such
+   * an element with the boundary read in place would come from its text
+   * content, which holds what the page does not render (a `<script>`'s
+   * JSON, `display: none` text); the rendered text cannot exclude a
+   * subtree.
    */
   private scrubbedText(el: Element): string | undefined {
-    return scrubContentByVerdict(computeVisibleText(el), verdictOf(el as HTMLElement));
+    const raw = computeVisibleText(el);
+    if (raw !== undefined && hasRedactionBoundaryBelow(el)) return REDACTED_VALUE;
+    return scrubContentByVerdict(raw, verdictOf(el as HTMLElement));
   }
 
   // ---- no_clipping -----------------------------------------------------------
@@ -2317,7 +2331,7 @@ class TabMeasurement {
         const shift = this.flowShift(layer, ps);
         if (shift === null ? offsetsZero(ps) : shift < hold) continue;
       } else {
-        const reach = extent ? null : this.flowReach(layer, ps);
+        const reach = extent ? null : this.flowReach(layer, ps, which);
         if (reach && !pointIn(p, reach)) continue;
       }
       // Its frame (a border, an inset box-shadow) is read where its box is
@@ -2683,7 +2697,9 @@ class TabMeasurement {
     if (frameOnly && !hasFrame(ps)) return null;
     const positioned = ps.position === 'absolute' || ps.position === 'fixed';
     const known = once(() => (positioned ? this.pseudoBox(el, ps) : null));
-    const near = once(() => (positioned ? null : this.flowReach(el, ps)) ?? boxOf(el) ?? null);
+    const near = once(
+      () => (positioned ? null : this.flowReach(el, ps, which)) ?? boxOf(el) ?? null
+    );
     return {
       layer: el,
       part: which,
@@ -2752,15 +2768,120 @@ class TabMeasurement {
   }
 
   /**
-   * Where a `::before` / `::after` of `layer` in normal flow can paint:
-   * `layer`'s box, which it is laid out in, grown by how far it can be drawn
+   * Where a `::before` / `::after` of `layer` in normal flow can paint: the
+   * band of `layer`'s box its place in the flow puts it in ({@link
+   * flowBand}), else `layer`'s whole box, grown by how far it can be drawn
    * from there ({@link flowShift}) and a pixel more; null when that is not
    * known. One that overflows `layer`'s box is not seen past it.
    */
-  private flowReach(layer: Element, ps: CSSStyleDeclaration): VisionRegion | null {
+  private flowReach(
+    layer: Element,
+    ps: CSSStyleDeclaration,
+    which: '::before' | '::after'
+  ): VisionRegion | null {
     const shift = this.flowShift(layer, ps);
     const box = shift === null ? undefined : boxOf(layer);
-    return box && shift !== null ? grown(box, shift + 1) : null;
+    if (!box || shift === null) return null;
+    return grown(this.flowBand(layer, ps, which, box) ?? box, shift + 1);
+  }
+
+  /**
+   * The band of `layer`'s box, in viewport pixels, where a `::before` /
+   * `::after` in normal flow is laid out: across the box's width, and down
+   * only as far as its place in the flow can put it — a `::before` from the
+   * content box's top, as deep as itself and its margins (to the bottom of
+   * the first line, where the content starts inline); a `::after` after the
+   * last in-flow content (on its last line, where that ends inline). A plain
+   * inline one is a line deep. Read in a block container on horizontal
+   * lines that no transform turns, flips or skews; null elsewhere — a flex
+   * or grid item, columns, a float, a vertical writing mode, a shadow host,
+   * a `vertical-align` length, a size not read — where the whole box bounds
+   * it.
+   */
+  private flowBand(
+    layer: Element,
+    ps: CSSStyleDeclaration,
+    which: '::before' | '::after',
+    box: VisionRegion
+  ): VisionRegion | null {
+    const st = this.style(layer);
+    if (!/^(block|flow-root|list-item|inline-block)$/.test(st.display)) return null;
+    if ((st.writingMode || 'horizontal-tb') !== 'horizontal-tb' || layer.shadowRoot) return null;
+    if (st.columnCount !== 'auto' || st.columnWidth !== 'auto') return null;
+    const float = ps.getPropertyValue('float').trim();
+    if (float !== '' && float !== 'none') return null;
+    const m = this.linearOf(layer);
+    if (!m || m.b !== 0 || m.c !== 0 || m.a <= 0 || m.d <= 0) return null;
+    const px = (v: string): number => pxValue(v) || 0;
+    const inline = ps.display.startsWith('inline');
+    if (inline && !/^[a-z-]+$/.test(ps.verticalAlign)) return null;
+    const lineOf = (of: CSSStyleDeclaration): number => {
+      const line = pxValue(of.lineHeight);
+      return Number.isFinite(line) ? line : pxValue(of.fontSize) * 1.5;
+    };
+    const own = ps.display === 'inline' ? lineOf(ps) : pxValue(ps.height);
+    const margins = Math.abs(px(ps.marginTop)) + Math.abs(px(ps.marginBottom));
+    const deep = (own + this.pseudoExtra(ps, 'top', 'bottom') + margins) * m.d;
+    const line = (inline ? lineOf(st) : 0) * m.d;
+    if (!Number.isFinite(deep) || !Number.isFinite(line)) return null;
+    const contentTop = box.y + (px(st.borderTopWidth) + px(st.paddingTop)) * m.d;
+    const edge = this.flowEdge(layer, which === '::before' ? 'first' : 'last', m.d);
+    if (edge === undefined) return null;
+    let top = contentTop - Math.abs(px(ps.marginTop)) * m.d;
+    let bottom = contentTop + deep + line;
+    if (which === '::before' && edge && inline && !edge.block) {
+      bottom = edge.bottom + deep;
+    } else if (which === '::after' && edge) {
+      top = (inline && !edge.block ? edge.top - line : edge.bottom) - deep;
+      bottom = edge.bottom + deep + line;
+    }
+    return { x: box.x, y: top, w: box.w, h: Math.max(0, bottom - top) };
+  }
+
+  /**
+   * The first (or last) piece of `layer`'s in-flow content, in viewport
+   * pixels: a text run's first (last) line, an inline element's first
+   * (last) fragment, a block's border box (with its bottom margin, last);
+   * null when it has none; undefined when it cannot be read (a
+   * `display: contents` child, laid out in its place).
+   */
+  private flowEdge(
+    layer: Element,
+    end: 'first' | 'last',
+    scale: number
+  ): { top: number; bottom: number; block: boolean } | null | undefined {
+    const nodes = Array.from(layer.childNodes);
+    if (end === 'last') nodes.reverse();
+    for (const node of nodes) {
+      if (node.nodeType === 3) {
+        if (!/\S/.test(node.nodeValue ?? '')) continue;
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        const rects = range.getClientRects();
+        if (rects.length === 0) continue;
+        const r = rects[end === 'first' ? 0 : rects.length - 1];
+        return { top: r.top, bottom: r.bottom, block: false };
+      }
+      if (node.nodeType !== 1) continue;
+      const el = node as Element;
+      const est = this.style(el);
+      if (est.display === 'none' || est.position === 'absolute' || est.position === 'fixed') {
+        continue;
+      }
+      const float = est.getPropertyValue('float').trim();
+      if (float !== '' && float !== 'none') continue;
+      if (est.display === 'contents') return undefined;
+      const rects = el.getClientRects();
+      if (rects.length === 0) continue;
+      if (!est.display.startsWith('inline')) {
+        const b = el.getBoundingClientRect();
+        const after = end === 'last' ? Math.max(0, pxValue(est.marginBottom) || 0) * scale : 0;
+        return { top: b.top, bottom: b.bottom + after, block: true };
+      }
+      const r = rects[end === 'first' ? 0 : rects.length - 1];
+      return { top: r.top, bottom: r.bottom, block: false };
+    }
+    return null;
   }
 
   /**
@@ -2996,7 +3117,7 @@ class TabMeasurement {
         flowing = 'beside';
       } else {
         // Inside a layer beneath the text, which may lie under the text.
-        const reach = this.flowReach(layer, ps);
+        const reach = this.flowReach(layer, ps, which);
         if (reach && !pointIn(p, reach)) return null;
         flowing = 'inside';
       }
@@ -3063,8 +3184,11 @@ class TabMeasurement {
     for (let e: Element | null = owner; e && e !== layer; e = composedParent(e)) {
       const st = this.style(e);
       if (st.position === 'absolute' || st.position === 'fixed') return false;
+      // A float does not apply to a flex or grid item, though it computes.
       const float = st.getPropertyValue('float').trim();
-      if (float !== '' && float !== 'none') return false;
+      const parent = composedParent(e);
+      const item = parent !== null && /flex|grid/.test(this.style(parent).display);
+      if (float !== '' && float !== 'none' && !item) return false;
     }
     return true;
   }

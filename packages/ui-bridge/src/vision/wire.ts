@@ -481,8 +481,10 @@ export interface VisionNaturalRegion {
  * are `u8`), so a negative or fractional value is refused, as vision-core's
  * deserializer refuses it. On the echo every optional field is present —
  * `null` when it was not given, or its default (`require_overlap: true`,
- * `level: "aa"`, `kind: "contains"`, `dimensions: []`) — because that is how
- * vision-core serializes the variant back.
+ * `level: "aa"`, `kind: "contains"`, `dimensions: []`, and
+ * `matches_isolated_render`'s `size_tolerance_pct: 5`, `style_props` and
+ * `compare_props: false`) — because that is how vision-core serializes the
+ * variant back. A defaulted field takes no `null`.
  *
  * `animation_settled` once took a `settle_frames` count. Callers still send it
  * (the runner's visual-audit skill documents `settle_frames: 3`); vision-core
@@ -542,9 +544,9 @@ export type VisionAssertion =
       component: string;
       /** The baseline name, e.g. `storybook/DateRangePicker--default@<sha>`. */
       baseline: string;
-      size_tolerance_pct?: number | null;
-      style_props?: string[] | null;
-      compare_props?: boolean | null;
+      size_tolerance_pct?: number;
+      style_props?: string[];
+      compare_props?: boolean;
     };
 
 /** Every {@link VisionAssertion} `type`, in vision-core's declaration order. */
