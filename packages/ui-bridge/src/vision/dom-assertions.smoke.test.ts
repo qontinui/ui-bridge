@@ -1437,7 +1437,7 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       ],
       [
         'bodydrop',
-        'body { height: 40px } body::before { content: ""; position: fixed; inset: 0; background: rgb(20, 30, 60) } dialog { background: #fff; color: #000 }',
+        'body { height: 40px } body::before { content: ""; position: fixed; inset: 0; background: rgb(20, 30, 60) } dialog { background: #fff; color: #000; top: 120px }',
       ],
     ];
     const outcomes: Array<Array<[string, string | null]>> = [];
@@ -1506,6 +1506,142 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     for (const r of res.results) expect(r.detail).toContain('contrast ratio 21.00:1');
     await page.close();
   }, 60_000);
+
+  it('contrast_meets_wcag: an in-flow ::before / ::after whose place in the flow is not read, and what the top layer is read over', async () => {
+    // Each unknown row here failed at 1056cb1f, as white on white, where the
+    // page shows white on navy: a block ::after after a line an inline-block
+    // makes taller starts lower than the line's text; a tile whose
+    // align-content centres it, and a button, lay their ::before lower than
+    // the content box's top. A label's click-through asterisk lies inside the
+    // label's box, not over the paragraph below it.
+    const flow = await openPage(
+      `
+      <style>
+        .row { position: relative; margin-top: 6px; background: #fff; font: 16px/20px sans-serif; color: #000 }
+        .prof { height: 90px }
+        .prof::after { content: ""; display: block; height: 24px; background: rgb(20, 30, 90) }
+        .lead { height: 80px; font: 16px/40px sans-serif }
+        .lead::after { content: ""; display: block; height: 24px; background: rgb(20, 30, 90) }
+        .tile { height: 120px; align-content: center }
+        .tile::before { content: ""; display: block; height: 40px; background: rgb(20, 30, 90) }
+        .btile { display: block; position: relative; width: 300px; height: 120px; border: 0; padding: 0; background: #fff; font: 16px/20px sans-serif }
+        .btile::before { content: ""; display: block; height: 40px; background: rgb(20, 30, 90) }
+        .req { display: block }
+        .req::after { content: " *"; color: #c00; pointer-events: none }
+      </style>
+      <div class="row prof"><span style="display:inline-block;width:48px;height:48px;background:#ccc;vertical-align:middle"></span> Jane Doe<span data-id="linebox" style="position:absolute;right:10px;bottom:4px;color:#fff">PRO</span></div>
+      <div class="row lead">Name<span data-id="leading" style="position:absolute;right:10px;top:52px;color:#fff;line-height:16px">PRO</span></div>
+      <div class="row tile"><span data-id="aligncenter" style="position:absolute;left:10px;top:56px;color:#fff">LIVE</span></div>
+      <div class="row"><button class="btile"><span data-id="buttontile" style="position:absolute;left:10px;top:56px;color:#fff">LIVE</span></button></div>
+      <div class="row"><label class="req">Name</label><p data-id="belowreq" style="margin:0">Paragraph below the label</p></div>
+    `,
+      { width: 800, height: 600 }
+    );
+    const ids = ['linebox', 'leading', 'aligncenter', 'buttontile', 'belowreq'];
+    const res = await assertOn(
+      flow,
+      ids.map((element) => ({ type: 'contrast_meets_wcag', element }))
+    );
+    // A line at line-height 40px puts its block ::after half the leading
+    // below the text: the band reaches that far, and the PRO badge sits low
+    // enough in that ::after that only the half-leading reaches it.
+    expect(verdicts(res)).toEqual([
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['passed', null],
+    ]);
+    for (const [i, layer] of [
+      [0, '<div.row.prof>::after'],
+      [1, '<div.row.lead>::after'],
+      [2, '<div.row.tile>::before'],
+      [3, '<button.btile>::before'],
+    ] as const) {
+      expect(res.results[i].detail).toContain(`${layer} is laid out in normal flow inside`);
+    }
+    expect(res.results[4].detail).toContain('contrast ratio 21.00:1');
+    await flow.close();
+
+    // The top layer: a body's fixed scrim over a white card paints over the
+    // card, so black text in a transparent popover above them shows ~2.4:1
+    // (it passed at 21:1, the scrim read beneath the card); text in a
+    // transparent popover inside a modal dialog lies over the dialog's black
+    // ::backdrop (it failed at 1.00:1); an opaque menu popover over a card's
+    // stretched-link ::after decides alone (it was unknown). A negative
+    // z-index ::before of a card that is a stacking context paints just above
+    // the card's background, so it is composited there (white on navy, as the
+    // page shows); the same ::before of a card that is not one is read as
+    // unreadable (the page shows white on white).
+    const tops: Array<[string, string, string]> = [
+      [
+        'popscrim',
+        `<style>body::before { content: ""; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.7); pointer-events: none }
+          .card { background: #fff; height: 120px; margin: 20px }
+          #pop { margin: 0; padding: 0; border: 0; background: transparent; inset: auto; left: 40px; top: 40px; color: #000 }</style>
+          <div class="card"></div><div id="pop" popover="manual"><p data-id="popscrim" style="margin:0">Popover text over the card</p></div>`,
+        'pop',
+      ],
+      [
+        'popindialog',
+        `<style>dialog { border: 0; padding: 0; margin: 0; left: 20px; top: 20px; background: transparent; color: #fff; overflow: visible }
+          dialog::backdrop { background: #000 }
+          #pop { margin: 0; padding: 0; border: 0; background: transparent; inset: auto; left: 20px; top: 200px; color: #fff }</style>
+          <dialog id="dlg"><p style="margin:0">Dialog</p><div id="pop" popover="manual"><p data-id="popindialog" style="margin:0">Popover text in the dialog</p></div></dialog>`,
+        'dlg pop',
+      ],
+      [
+        'portalmenu',
+        `<style>.card { position: relative; background: #fff; height: 160px; margin: 20px }
+          .card a::after { content: ""; position: absolute; inset: 0; z-index: 1; background: rgba(0, 0, 0, 0.6) }
+          #pop { margin: 0; padding: 4px; border: 0; background: #fff; inset: auto; left: 40px; top: 40px; color: #000 }</style>
+          <div class="card"><a href="#">Card link</a></div><div id="pop" popover="manual"><p data-id="portalmenu" style="margin:0">Menu item</p></div>`,
+        'pop',
+      ],
+      [
+        'negz',
+        `<style>.card { position: relative; z-index: 0; background: #fff; height: 140px; margin: 20px }
+          .card::before { content: ""; position: absolute; inset: 0; z-index: -1; background: rgb(20, 30, 90) }
+          #pop { margin: 0; padding: 0; border: 0; background: transparent; inset: auto; left: 40px; top: 40px; color: #fff }</style>
+          <div class="card"></div><div id="pop" popover="manual"><p data-id="negz" style="margin:0">Popover text over the card</p></div>`,
+        'pop',
+      ],
+      [
+        'negzflat',
+        `<style>.card { position: relative; background: #fff; height: 140px; margin: 20px }
+          .card::before { content: ""; position: absolute; inset: 0; z-index: -1; background: rgb(20, 30, 90) }
+          #pop { margin: 0; padding: 0; border: 0; background: transparent; inset: auto; left: 40px; top: 40px; color: #fff }</style>
+          <div class="card"></div><div id="pop" popover="manual"><p data-id="negzflat" style="margin:0">Popover text over the card</p></div>`,
+        'pop',
+      ],
+    ];
+    const outcomes: Array<Array<[string, string | null]>> = [];
+    const details: string[] = [];
+    for (const [id, body, open] of tops) {
+      const page = await openPage(body, { width: 800, height: 700 });
+      await page.evaluate((which) => {
+        if (which.includes('dlg'))
+          (document.getElementById('dlg') as HTMLDialogElement).showModal();
+        (document.getElementById('pop') as HTMLElement).showPopover();
+      }, open);
+      const r = await assertOn(page, [{ type: 'contrast_meets_wcag', element: id }]);
+      outcomes.push(verdicts(r));
+      details.push(r.results[0].detail ?? '');
+      await page.close();
+    }
+    expect(outcomes).toEqual([
+      [['unknown', 'input_missing']],
+      [['passed', null]],
+      [['passed', null]],
+      [['passed', null]],
+      [['unknown', 'input_missing']],
+    ]);
+    expect(details[0]).toContain('<body>::before (on the page, under the top layer)');
+    expect(details[1]).toContain('contrast ratio 21.00:1');
+    expect(details[2]).toContain('contrast ratio 21.00:1');
+    expect(details[3]).toContain('contrast ratio 15.41:1');
+    expect(details[4]).toContain('<div.card>::before (on the page, under the top layer)');
+  }, 90_000);
 
   it('contrast_meets_wcag: a page backdrop the body draws under a footer fixed below its box', async () => {
     // The body is 40px tall; its fixed ::before backdrop fills the viewport,
