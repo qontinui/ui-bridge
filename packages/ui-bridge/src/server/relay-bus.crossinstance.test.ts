@@ -11,88 +11,11 @@
  * This exercises the same bus contract the Redis adapter implements (which can
  * only be verified against a live multi-instance deploy).
  */
-import { afterEach, describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { CommandRelay } from './command-relay';
 import type { RelayBus, RelayCommandEnvelope, RelayResponseEnvelope } from './relay-bus';
+import { InMemoryBusHub } from './__fixtures__/in-memory-relay-bus';
 import { NoLiveAnswer, TabReportedFailure } from './live-answer';
-
-/**
- * Synchronous in-memory bus implementing the full RelayBus contract: one hub
- * shared by every instance, and one {@link InMemoryBus} view per instance.
- * Presence is per holder, as the Redis adapter keeps it: an instance
- * registers and unregisters only its own hold on a tab, and a tab is known
- * while any instance holds it.
- */
-class InMemoryBusHub {
-  readonly cmdByTab = new Map<string, Set<(e: RelayCommandEnvelope) => void>>();
-  readonly broadcast = new Set<(e: RelayCommandEnvelope) => void>();
-  readonly respByCmd = new Map<string, Set<(e: RelayResponseEnvelope) => void>>();
-  /** Each tab's holders: the instances that registered it and have not let go. */
-  readonly holders = new Map<string, Set<string>>();
-
-  /** The bus `instance` is built with. */
-  bus(instance: string): RelayBus {
-    return new InMemoryBus(this, instance);
-  }
-
-  clear(): void {
-    this.cmdByTab.clear();
-    this.broadcast.clear();
-    this.respByCmd.clear();
-    this.holders.clear();
-  }
-}
-
-class InMemoryBus implements RelayBus {
-  constructor(
-    private readonly hub: InMemoryBusHub,
-    private readonly instance: string
-  ) {}
-
-  publishCommand(env: RelayCommandEnvelope): void {
-    if (env.targetTabId) {
-      this.hub.cmdByTab.get(env.targetTabId)?.forEach((h) => h(env));
-    } else {
-      this.hub.broadcast.forEach((h) => h(env));
-    }
-  }
-  subscribeCommands(tabId: string, handler: (e: RelayCommandEnvelope) => void): () => void {
-    let set = this.hub.cmdByTab.get(tabId);
-    if (!set) this.hub.cmdByTab.set(tabId, (set = new Set()));
-    set.add(handler);
-    this.hub.broadcast.add(handler);
-    return () => {
-      set!.delete(handler);
-      this.hub.broadcast.delete(handler);
-    };
-  }
-  publishResponse(env: RelayResponseEnvelope): void {
-    this.hub.respByCmd.get(env.commandId)?.forEach((h) => h(env));
-  }
-  subscribeResponse(commandId: string, handler: (e: RelayResponseEnvelope) => void): () => void {
-    let set = this.hub.respByCmd.get(commandId);
-    if (!set) this.hub.respByCmd.set(commandId, (set = new Set()));
-    set.add(handler);
-    return () => set!.delete(handler);
-  }
-  registerTab(tabId: string): void {
-    let holders = this.hub.holders.get(tabId);
-    if (!holders) this.hub.holders.set(tabId, (holders = new Set()));
-    holders.add(this.instance);
-  }
-  unregisterTab(tabId: string): void {
-    this.hub.holders.get(tabId)?.delete(this.instance);
-  }
-  async isTabKnown(tabId: string): Promise<boolean> {
-    return (this.hub.holders.get(tabId)?.size ?? 0) > 0;
-  }
-  async holdsElsewhere(tabId: string): Promise<boolean> {
-    return [...(this.hub.holders.get(tabId) ?? [])].some((holder) => holder !== this.instance);
-  }
-  async close(): Promise<void> {
-    this.hub.clear();
-  }
-}
 
 /** Every relay `freshRelay()` built, destroyed after each test. */
 const relays: CommandRelay[] = [];
@@ -291,7 +214,7 @@ describe('a failure a tab reports crosses instances with its verdict (plan 2026-
       .catch((e: unknown) => e)) as NoLiveAnswer;
     expect(error).toBeInstanceOf(NoLiveAnswer);
     expect(error.reason).toBe('unanswered');
-    expect(error.message).toMatch(/^Command testAction timed out after 30ms \(bus\)\. /);
+    expect(error.message).toMatch(/^Command testAction timed out after 30ms \(bus\): /);
     hub.clear();
   });
 
@@ -307,5 +230,175 @@ describe('a failure a tab reports crosses instances with its verdict (plan 2026-
     expect(error).toBeInstanceOf(NoLiveAnswer);
     expect(error.reason).toBe('not_delivered');
     hub.clear();
+  });
+});
+
+/**
+ * Plan 2026-11-08-ui-bridge-relay-client-drops-refused-results-and-heartbeats-silently,
+ * Phase 4 (D2): a result that lands where nothing is pending is forwarded over
+ * the bus only when some instance awaits it — the command registry says so.
+ */
+describe('the relay forwards only a result some instance awaits (command registry)', () => {
+  /** A dispatches, B holds tab-1's stream, C is any other instance. */
+  function fleet(senderOptions: { sseTimeoutMs?: number } = {}) {
+    const hub = new InMemoryBusHub();
+    const [busA, busB, busC] = [hub.bus('A'), hub.bus('B'), hub.bus('C')];
+    const a = new CommandRelay({
+      globalPrefix: `__instA_registry_${Math.random().toString(36).slice(2, 8)}`,
+      bus: busA,
+      proactiveSnapshot: false,
+      ...senderOptions,
+    });
+    relays.push(a);
+    const b = freshRelay(`__instB_registry_${Math.random().toString(36).slice(2, 8)}`, busB);
+    const c = freshRelay(`__instC_registry_${Math.random().toString(36).slice(2, 8)}`, busC);
+    const received: RelayCommandEnvelope[] = [];
+    b.subscribeToCommands((cmd) => {
+      received.push(cmd as RelayCommandEnvelope);
+    }, 'tab-1');
+    return { hub, a, b, c, busA, busB, busC, received };
+  }
+
+  it('(1) a result posted on a third instance still resolves the dispatcher’s caller', async () => {
+    const { a, c, received } = fleet();
+    const pending = a.queueCommand<{ v: number }>('testAction', {}, { targetTabId: 'tab-1' });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(received).toHaveLength(1);
+
+    const outcome = await c.resolveCommand(received[0].commandId, { v: 7 }, 'tab-1');
+    expect(outcome).toBe('forwarded');
+    await expect(pending).resolves.toEqual({ v: 7 });
+  });
+
+  it('(2) a result for an id no instance dispatched is not published', async () => {
+    const { c, busC } = fleet();
+    const publish = vi.spyOn(busC, 'publishResponse');
+    const outcome = await c.resolveCommand('never-dispatched', { v: 1 }, 'tab-1');
+    expect(outcome).toBe('unknown');
+    expect(publish).toHaveBeenCalledTimes(0);
+  });
+
+  it('(3) a result posted after the dispatcher timed the command out is not published', async () => {
+    const { a, c, busC, received } = fleet({ sseTimeoutMs: 30 });
+    const error = await a
+      .queueCommand('testAction', {}, { targetTabId: 'tab-1' })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(NoLiveAnswer);
+    expect(received).toHaveLength(1);
+
+    const publish = vi.spyOn(busC, 'publishResponse');
+    const outcome = await c.resolveCommand(received[0].commandId, { late: true }, 'tab-1');
+    expect(outcome).toBe('unknown');
+    expect(publish).toHaveBeenCalledTimes(0);
+  });
+
+  it('(4) a failure (`success: false`) for an id no instance awaits is not published', async () => {
+    const { c, busC } = fleet();
+    const publish = vi.spyOn(busC, 'publishResponse');
+    const outcome = await c.rejectCommand('never-dispatched', 'nope', 'tab-1');
+    expect(outcome).toBe('unknown');
+    expect(publish).toHaveBeenCalledTimes(0);
+  });
+
+  it('(5) a registry read that throws or answers null still forwards, and says so', async () => {
+    const { c, busC } = fleet();
+    const publish = vi.spyOn(busC, 'publishResponse');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      vi.spyOn(busC, 'isCommandKnown').mockRejectedValueOnce(new Error('redis down'));
+      expect(await c.resolveCommand('cmd-unverified-1', { v: 1 }, 'tab-1')).toBe('forwarded');
+      vi.spyOn(busC, 'isCommandKnown').mockResolvedValueOnce(null);
+      expect(await c.rejectCommand('cmd-unverified-2', 'nope', 'tab-1')).toBe('forwarded');
+
+      expect(publish.mock.calls.map(([env]) => [env.commandId, env.ok])).toEqual([
+        ['cmd-unverified-1', true],
+        ['cmd-unverified-2', false],
+      ]);
+      const lines = warn.mock.calls.map((args) => args.map(String).join(' '));
+      expect(lines.filter((l) => l.includes('result_forward_unverified'))).toEqual([
+        '[ui-bridge] result_forward_unverified commandId=cmd-unverified-1: the command registry could not be read; forwarding the result over the bus',
+        '[ui-bridge] result_forward_unverified commandId=cmd-unverified-2: the command registry could not be read; forwarding the result over the bus',
+      ]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('(6) with no bus and nothing pending, a result is unknown', async () => {
+    const relay = new CommandRelay({
+      globalPrefix: `__noBus_registry_${Math.random().toString(36).slice(2, 8)}`,
+      proactiveSnapshot: false,
+    });
+    relays.push(relay);
+    expect(await relay.resolveCommand('never-dispatched', {}, 'tab-1')).toBe('unknown');
+    expect(await relay.rejectCommand('never-dispatched', 'nope', 'tab-1')).toBe('unknown');
+  });
+
+  it('(7) a refused result on a live bus delivery never reads the registry', async () => {
+    const { a, b, busB, received } = fleet();
+    const pending = a.queueCommand('testAction', {}, { targetTabId: 'tab-1' });
+    pending.catch(() => undefined);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(received).toHaveLength(1);
+
+    const known = vi.spyOn(busB, 'isCommandKnown');
+    const publish = vi.spyOn(busB, 'publishResponse');
+    // Posted by another tab than the one the command went to.
+    expect(await b.resolveCommand(received[0].commandId, {}, 'tab-2', {})).toBe('refused');
+    expect(await b.rejectCommand(received[0].commandId, 'x', 'tab-2', {})).toBe('refused');
+    expect(known).toHaveBeenCalledTimes(0);
+    expect(publish).toHaveBeenCalledTimes(0);
+  });
+
+  it('a delivery this instance holds forwards without reading the registry', async () => {
+    const { a, b, busB, received } = fleet();
+    const pending = a.queueCommand<{ v: number }>('testAction', {}, { targetTabId: 'tab-1' });
+    await new Promise((r) => setTimeout(r, 5));
+    const known = vi.spyOn(busB, 'isCommandKnown');
+    expect(await b.resolveCommand(received[0].commandId, { v: 3 }, 'tab-1')).toBe('forwarded');
+    expect(known).toHaveBeenCalledTimes(0);
+    await expect(pending).resolves.toEqual({ v: 3 });
+  });
+
+  it('a command settled on the dispatcher is forgotten, and one awaited stays known', async () => {
+    const { a, busA, received } = fleet();
+    const pending = a.queueCommand('testAction', {}, { targetTabId: 'tab-1' });
+    await new Promise((r) => setTimeout(r, 5));
+    const id = received[0].commandId;
+    expect(await busA.isCommandKnown(id)).toBe(true);
+    await a.resolveCommand(id, { done: true }, 'tab-1');
+    await pending;
+    expect(await busA.isCommandKnown(id)).toBe(false);
+  });
+});
+
+/**
+ * Same plan, Phase 5 (D6): a timeout says the result never reached this
+ * instance, not that the tab is unresponsive.
+ */
+describe('a bus timeout says no result arrived', () => {
+  it('names the bus and does not invent a tab count', async () => {
+    const hub = new InMemoryBusHub();
+    const sender = new CommandRelay({
+      globalPrefix: '__instA_d6_bus',
+      bus: hub.bus('A'),
+      proactiveSnapshot: false,
+      sseTimeoutMs: 30,
+    });
+    relays.push(sender);
+    const holder = freshRelay('__instB_d6_bus', hub.bus('B'));
+    holder.subscribeToCommands(() => undefined, 'tab-1'); // written, never answered
+
+    const error = (await sender
+      .queueCommand('testAction', {}, { targetTabId: 'tab-1' })
+      .catch((e: unknown) => e)) as NoLiveAnswer;
+    expect(error).toBeInstanceOf(NoLiveAnswer);
+    expect(error.reason).toBe('unanswered');
+    expect(error.message).toBe(
+      'Command testAction timed out after 30ms (bus): no result reached this relay instance. ' +
+        'The command was published on the bus, so how many tab(s) were sent it is not known here; ' +
+        'any that were may have run it; its result may have been refused (for example 429), ' +
+        'lost, or posted to another instance.'
+    );
   });
 });

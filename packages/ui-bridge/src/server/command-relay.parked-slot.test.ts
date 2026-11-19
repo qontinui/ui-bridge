@@ -132,11 +132,13 @@ async function openStream(
             commands.push({ commandId: data.commandId, action: data.action });
             const answer = options.answer?.[data.action];
             if (answer) {
-              const accepted = relay.resolveCommand(data.commandId, answer(), tabId, {
+              const outcome = await relay.resolveCommand(data.commandId, answer(), tabId, {
                 streamId,
                 callerUserId: options.caller,
               });
-              if (!accepted) actions.push(`refused:${data.action}`);
+              if (outcome === 'refused' || outcome === 'unknown') {
+                actions.push(`refused:${data.action}`);
+              }
             }
           }
         }
@@ -864,8 +866,8 @@ describe('relay parked slot · the flush to a replacement, and the warm-up gener
 
     // The page answers the warm-up it was sent before its stream died.
     expect(
-      relay.resolveCommand(warmUp.commandId, SNAPSHOT(), 'tab-a', { streamId: firstStream })
-    ).toBe(true);
+      await relay.resolveCommand(warmUp.commandId, SNAPSHOT(), 'tab-a', { streamId: firstStream })
+    ).toBe('settled');
     await vi.advanceTimersByTimeAsync(0);
 
     // Its generation is marked now: the next rotation is sent none.
@@ -889,8 +891,8 @@ describe('relay parked slot · the flush to a replacement, and the warm-up gener
 
     // The old page's warm-up is answered late.
     expect(
-      relay.resolveCommand(warmUp.commandId, SNAPSHOT(), 'tab-a', { streamId: firstStream })
-    ).toBe(true);
+      await relay.resolveCommand(warmUp.commandId, SNAPSHOT(), 'tab-a', { streamId: firstStream })
+    ).toBe('settled');
     await vi.advanceTimersByTimeAsync(0);
 
     // The new page's stream dies before its warm-up is answered, and it reconnects.
@@ -1387,8 +1389,9 @@ describe('relay parked slot · review fixes S A8, S A9', () => {
     }).toEqual({
       settled: true,
       message:
-        'Command getTabInfo timed out after 8000ms (SSE). 1 client(s) were notified but none responded. ' +
-        'The UI Bridge SDK may not be loaded or the page may be unresponsive.',
+        'Command getTabInfo timed out after 8000ms (SSE): no result reached this relay instance. ' +
+        '1 tab(s) were sent the command and may have run it; its result may have been refused ' +
+        '(for example 429), lost, or posted to another instance.',
     });
   });
 });

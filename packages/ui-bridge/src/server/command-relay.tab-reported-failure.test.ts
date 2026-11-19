@@ -195,6 +195,10 @@ describe("the relay's own rejections are NoLiveAnswer, message unchanged", () =>
       .catch((e: unknown) => e)) as NoLiveAnswer;
     expect(error).toBeInstanceOf(NoLiveAnswer);
     expect(error.reason).toBe('unanswered');
-    expect(error.message).toMatch(/^Command getElement timed out after 20ms \(SSE\)\. /);
+    expect(error.message).toBe(
+      'Command getElement timed out after 20ms (SSE): no result reached this relay instance. ' +
+        '1 tab(s) were sent the command and may have run it; its result may have been refused ' +
+        '(for example 429), lost, or posted to another instance.'
+    );
   });
 });

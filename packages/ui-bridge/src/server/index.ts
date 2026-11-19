@@ -72,6 +72,9 @@ export {
   type CommandRelayOptions,
 } from './command-relay';
 
+// What became of a result a tab posted (resolveCommand / rejectCommand)
+export { type CommandResultOutcome } from './command-registry';
+
 // A relayed command's live answer: a tab's reported failure, or none at all
 export {
   TabReportedFailure,

@@ -113,6 +113,20 @@ export interface RelayBus {
    */
   holdsElsewhere(tabId: string): Promise<boolean>;
 
+  // --- Shared command registry (KV) --------------------------------------
+  // Lets an instance that holds no pending command for a result ask "does
+  // SOME instance await this command?" before it publishes the result on the
+  // bus (plan 2026-11-08-ui-bridge-relay-client-drops-refused-results-and-heartbeats-silently,
+  // D2). The dispatching instance registers every command it delivers or
+  // publishes, and forgets it when it settles.
+
+  /** Record that an instance awaits `commandId`, for `ttlSeconds` at most. */
+  registerCommand(commandId: string, ttlSeconds: number): void;
+  /** The command settled: no instance awaits it any more. */
+  forgetCommand(commandId: string): void;
+  /** True if some instance awaits `commandId`; `null` when the read failed. */
+  isCommandKnown(commandId: string): Promise<boolean | null>;
+
   /** Release underlying connections. */
   close(): Promise<void>;
 }
@@ -120,6 +134,8 @@ export interface RelayBus {
 const CMD_TAB_PREFIX = 'uibridge:cmd:tab:';
 const CMD_BROADCAST = 'uibridge:cmd:broadcast';
 const RESP_PREFIX = 'uibridge:resp:';
+/** One string key per command some instance awaits (see `RelayBus.registerCommand`). */
+const CMD_KNOWN_PREFIX = 'uibridge:cmd:known:';
 
 /**
  * Minimal ioredis client surface this adapter needs. Declared structurally so
@@ -146,6 +162,12 @@ interface RedisLike {
   zrange(key: string, start: number, stop: number, withScores: 'WITHSCORES'): Promise<string[]>;
   /** PEXPIREAT key unix-time-milliseconds. */
   pexpireat(key: string, unixTimeMs: number): Promise<unknown>;
+  /** SET key value EX seconds. */
+  set(key: string, value: string, mode: 'EX', seconds: number): Promise<unknown>;
+  /** DEL key. */
+  del(key: string): Promise<unknown>;
+  /** EXISTS key: how many of the keys exist. */
+  exists(key: string): Promise<number>;
   quit(): Promise<unknown>;
   duplicate(): RedisLike;
 }
@@ -521,6 +543,30 @@ export class RedisRelayBus implements RelayBus {
       return live - ownLive > 0;
     } catch {
       return false;
+    }
+  }
+
+  registerCommand(commandId: string, ttlSeconds: number): void {
+    fireAndForget(
+      this.pub.set(
+        `${CMD_KNOWN_PREFIX}${commandId}`,
+        '1',
+        'EX',
+        Math.max(1, Math.ceil(ttlSeconds))
+      ),
+      this.reportCommandError
+    );
+  }
+
+  forgetCommand(commandId: string): void {
+    fireAndForget(this.pub.del(`${CMD_KNOWN_PREFIX}${commandId}`), this.reportCommandError);
+  }
+
+  async isCommandKnown(commandId: string): Promise<boolean | null> {
+    try {
+      return (await this.pub.exists(`${CMD_KNOWN_PREFIX}${commandId}`)) > 0;
+    } catch {
+      return null;
     }
   }
 

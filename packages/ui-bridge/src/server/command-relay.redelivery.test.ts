@@ -189,10 +189,13 @@ describe('relay redelivery · a pending command goes down the same page instance
     expect(alias.commandId).not.toBe(originalId);
     expect(alias.redeliveryOf).toBe(originalId);
 
-    const accepted = relay.resolveCommand(alias.commandId, { title: 'from the alias' }, 'tab-a', {
-      streamId: second.streamId(),
-    });
-    expect(accepted).toBe(true);
+    const accepted = await relay.resolveCommand(
+      alias.commandId,
+      { title: 'from the alias' },
+      'tab-a',
+      { streamId: second.streamId() }
+    );
+    expect(accepted).toBe('settled');
     await vi.advanceTimersByTimeAsync(0);
     expect(outcome).toEqual({ settled: true, value: { title: 'from the alias' } });
   });
@@ -240,11 +243,11 @@ describe('relay redelivery · a pending command goes down the same page instance
     await vi.advanceTimersByTimeAsync(0);
     expect(outcome).toEqual({ settled: true, value: { run: 'alias' } });
 
-    const late = relay.resolveCommand(originalId, { run: 'original' }, 'tab-a', {
+    const late = await relay.resolveCommand(originalId, { run: 'original' }, 'tab-a', {
       streamId: first.streamId(),
     });
 
-    expect(late).toBe(false);
+    expect(late).toBe('unknown');
     expect(relay.getTransportDiagnostics().pendingCommandCount).toBe(0);
     expect(outcome.value).toEqual({ run: 'alias' });
   });
@@ -271,15 +274,17 @@ describe('relay redelivery · a pending command goes down the same page instance
       relay.commandResponseRefusal(alias.commandId, 'tab-a', { streamId: first.streamId() })
     ).toBe('STREAM_MISMATCH');
     expect(
-      relay.resolveCommand(alias.commandId, { forged: true }, 'tab-a', {
+      await relay.resolveCommand(alias.commandId, { forged: true }, 'tab-a', {
         streamId: first.streamId(),
       })
-    ).toBe(false);
+    ).toBe('refused');
     expect(outcome.settled).toBe(false);
 
     expect(
-      relay.resolveCommand(alias.commandId, { ok: true }, 'tab-a', { streamId: second.streamId() })
-    ).toBe(true);
+      await relay.resolveCommand(alias.commandId, { ok: true }, 'tab-a', {
+        streamId: second.streamId(),
+      })
+    ).toBe('settled');
     await vi.advanceTimersByTimeAsync(0);
     expect(outcome).toEqual({ settled: true, value: { ok: true } });
   });

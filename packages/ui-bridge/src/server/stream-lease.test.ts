@@ -434,7 +434,7 @@ describe('relay stream lease · the ends the relay hears at once', () => {
     await vi.advanceTimersByTimeAsync(0);
 
     // Rejected now, as a broadcast that reached nobody is: never an 8 s
-    // timeout claiming "1 client(s) were notified".
+    // timeout claiming "1 tab(s) were sent the command".
     expect({
       settled: outcome.settled,
       message: (outcome.error as Error | undefined)?.message,

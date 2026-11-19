@@ -29,6 +29,9 @@ function busStub(overrides: Partial<RelayBus> = {}) {
     unregisterTab: vi.fn(),
     isTabKnown: vi.fn(async () => false),
     holdsElsewhere: vi.fn(async () => false),
+    registerCommand: vi.fn(),
+    forgetCommand: vi.fn(),
+    isCommandKnown: vi.fn(async (): Promise<boolean | null> => false),
     close: vi.fn(async () => {}),
     ...overrides,
   } satisfies RelayBus;

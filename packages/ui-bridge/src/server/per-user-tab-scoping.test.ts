@@ -16,63 +16,12 @@
 
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { CommandRelay, OwnerMismatchError, TabRoutingError } from './command-relay';
-import type { RelayBus, RelayCommandEnvelope, RelayResponseEnvelope } from './relay-bus';
+import type { RelayBus, RelayCommandEnvelope } from './relay-bus';
+import { InMemoryBusHub } from './__fixtures__/in-memory-relay-bus';
 import { createRelayHandlers } from './relay-handlers';
 
-/** Synchronous in-memory bus (matches relay-bus.crossinstance.test.ts). */
-class InMemoryBus implements RelayBus {
-  private cmdByTab = new Map<string, Set<(e: RelayCommandEnvelope) => void>>();
-  private broadcast = new Set<(e: RelayCommandEnvelope) => void>();
-  private respByCmd = new Map<string, Set<(e: RelayResponseEnvelope) => void>>();
-  private present = new Set<string>();
-
-  publishCommand(env: RelayCommandEnvelope): void {
-    if (env.targetTabId) {
-      this.cmdByTab.get(env.targetTabId)?.forEach((h) => h(env));
-    } else {
-      this.broadcast.forEach((h) => h(env));
-    }
-  }
-  subscribeCommands(tabId: string, handler: (e: RelayCommandEnvelope) => void): () => void {
-    let set = this.cmdByTab.get(tabId);
-    if (!set) this.cmdByTab.set(tabId, (set = new Set()));
-    set.add(handler);
-    this.broadcast.add(handler);
-    return () => {
-      set!.delete(handler);
-      this.broadcast.delete(handler);
-    };
-  }
-  publishResponse(env: RelayResponseEnvelope): void {
-    this.respByCmd.get(env.commandId)?.forEach((h) => h(env));
-  }
-  subscribeResponse(commandId: string, handler: (e: RelayResponseEnvelope) => void): () => void {
-    let set = this.respByCmd.get(commandId);
-    if (!set) this.respByCmd.set(commandId, (set = new Set()));
-    set.add(handler);
-    return () => set!.delete(handler);
-  }
-  registerTab(tabId: string): void {
-    this.present.add(tabId);
-  }
-  unregisterTab(tabId: string): void {
-    this.present.delete(tabId);
-  }
-  async isTabKnown(tabId: string): Promise<boolean> {
-    return this.present.has(tabId);
-  }
-  // One presence set shared by every instance: no holder is told apart from
-  // another, so none counts as "elsewhere".
-  async holdsElsewhere(): Promise<boolean> {
-    return false;
-  }
-  async close(): Promise<void> {
-    this.cmdByTab.clear();
-    this.broadcast.clear();
-    this.respByCmd.clear();
-    this.present.clear();
-  }
-}
+/** One bus view every instance shares (one presence set; nothing is elsewhere). */
+const sharedInMemoryBus = (): RelayBus => new InMemoryBusHub().sharedBus();
 
 /** Every relay `freshRelay()` built, destroyed after each test. */
 const relays: CommandRelay[] = [];
@@ -481,7 +430,7 @@ describe('§4.2 · unscoped fanout with ownerCheck', () => {
 
 describe('§4.2 · cross-instance bus envelope ownership enforcement', () => {
   it('publishes senderUserId on the bus envelope when ownerCheck is set', async () => {
-    const bus = new InMemoryBus();
+    const bus = sharedInMemoryBus();
     const captured: RelayCommandEnvelope[] = [];
     bus.subscribeCommands('tab-a', (env) => captured.push(env));
 
@@ -502,7 +451,7 @@ describe('§4.2 · cross-instance bus envelope ownership enforcement', () => {
   });
 
   it('receiver rejects when its local ownership disagrees with senderUserId', async () => {
-    const bus = new InMemoryBus();
+    const bus = sharedInMemoryBus();
     const instA = freshRelay({ globalPrefix: '__instAOwn_test', bus });
     const instB = freshRelay({ globalPrefix: '__instBOwn_test', bus });
 
@@ -544,7 +493,7 @@ describe('§4.2 · cross-instance bus envelope ownership enforcement', () => {
     // One clock for both answers, so they can be compared whole.
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
-    const bus = new InMemoryBus();
+    const bus = sharedInMemoryBus();
     const instA = freshRelay({ globalPrefix: '__instAHeldElsewhere_test', bus });
     const instB = freshRelay({ globalPrefix: '__instBHeldElsewhere_test', bus });
     try {
@@ -567,7 +516,7 @@ describe('§4.2 · cross-instance bus envelope ownership enforcement', () => {
   });
 
   it('receiver delivers when senderUserId matches its local ownership', async () => {
-    const bus = new InMemoryBus();
+    const bus = sharedInMemoryBus();
     const instA = freshRelay({ globalPrefix: '__instAMatch_test', bus });
     const instB = freshRelay({ globalPrefix: '__instBMatch_test', bus });
 

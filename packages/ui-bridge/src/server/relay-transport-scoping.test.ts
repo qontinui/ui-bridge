@@ -22,7 +22,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CommandRelay } from './command-relay';
 import { createRelayHandlers } from './relay-handlers';
 import { createNextRouteHandlers } from './nextjs';
-import type { RelayBus, RelayCommandEnvelope, RelayResponseEnvelope } from './relay-bus';
+import type { RelayBus } from './relay-bus';
+import { InMemoryBusHub } from './__fixtures__/in-memory-relay-bus';
 
 const BASE = '/api/ui-bridge';
 
@@ -427,63 +428,12 @@ describe("a tab cannot be taken over while its owner's session is live", () => {
   });
 });
 
-/** Synchronous in-memory bus implementing the full RelayBus contract. */
-class InMemoryBus implements RelayBus {
-  private cmdByTab = new Map<string, Set<(e: RelayCommandEnvelope) => void>>();
-  private broadcast = new Set<(e: RelayCommandEnvelope) => void>();
-  private respByCmd = new Map<string, Set<(e: RelayResponseEnvelope) => void>>();
-  private present = new Set<string>();
-
-  publishCommand(env: RelayCommandEnvelope): void {
-    if (env.targetTabId) this.cmdByTab.get(env.targetTabId)?.forEach((h) => h(env));
-    else this.broadcast.forEach((h) => h(env));
-  }
-  subscribeCommands(tabId: string, handler: (e: RelayCommandEnvelope) => void): () => void {
-    let set = this.cmdByTab.get(tabId);
-    if (!set) this.cmdByTab.set(tabId, (set = new Set()));
-    set.add(handler);
-    this.broadcast.add(handler);
-    return () => {
-      set!.delete(handler);
-      this.broadcast.delete(handler);
-    };
-  }
-  publishResponse(env: RelayResponseEnvelope): void {
-    // Through JSON, as the Redis bus carries it.
-    const wire = JSON.parse(JSON.stringify(env)) as RelayResponseEnvelope;
-    this.respByCmd.get(env.commandId)?.forEach((h) => h(wire));
-  }
-  subscribeResponse(commandId: string, handler: (e: RelayResponseEnvelope) => void): () => void {
-    let set = this.respByCmd.get(commandId);
-    if (!set) this.respByCmd.set(commandId, (set = new Set()));
-    set.add(handler);
-    return () => set!.delete(handler);
-  }
-  registerTab(tabId: string): void {
-    this.present.add(tabId);
-  }
-  unregisterTab(tabId: string): void {
-    this.present.delete(tabId);
-  }
-  async isTabKnown(tabId: string): Promise<boolean> {
-    return this.present.has(tabId);
-  }
-  // One presence set shared by every instance: no holder is told apart from
-  // another, so none counts as "elsewhere".
-  async holdsElsewhere(): Promise<boolean> {
-    return false;
-  }
-  async close(): Promise<void> {
-    this.cmdByTab.clear();
-    this.broadcast.clear();
-    this.respByCmd.clear();
-    this.present.clear();
-  }
-}
+/** One bus view every instance shares, responses through JSON as Redis carries them. */
+const sharedJsonBus = (): RelayBus => new InMemoryBusHub({ wire: 'json' }).sharedBus();
 
 describe('across instances, a result is held to where the command went', () => {
   it('a forged result is refused where the command was delivered and where it is pending', async () => {
-    const bus = new InMemoryBus();
+    const bus = sharedJsonBus();
     const prefix = Math.random().toString(36).slice(2, 8);
     const relay = (name: string) =>
       new CommandRelay({
@@ -520,7 +470,9 @@ describe('across instances, a result is held to where the command went', () => {
     expect(b.commandResponseRefusal(commandId, 'tab-a', { callerUserId: 'user-b' })).toBe(
       'NOT_OWNER'
     );
-    expect(b.resolveCommand(commandId, forged, 'tab-a', { callerUserId: 'user-b' })).toBe(false);
+    expect(await b.resolveCommand(commandId, forged, 'tab-a', { callerUserId: 'user-b' })).toBe(
+      'refused'
+    );
     expect(
       b.commandResponseRefusal(commandId, 'tab-a', {
         callerUserId: 'user-a',
@@ -530,15 +482,17 @@ describe('across instances, a result is held to where the command went', () => {
 
     // Posted on an instance that knows nothing of the command: it is forwarded
     // with who answered, and the instance holding it refuses it.
-    expect(c.resolveCommand(commandId, forged, 'tab-a', { callerUserId: 'user-b' })).toBe(true);
+    expect(await c.resolveCommand(commandId, forged, 'tab-a', { callerUserId: 'user-b' })).toBe(
+      'forwarded'
+    );
 
     // The owner's genuine result, from any instance, settles it.
     expect(
-      c.resolveCommand(commandId, { answeredBy: 'tab-a' }, 'tab-a', {
+      await c.resolveCommand(commandId, { answeredBy: 'tab-a' }, 'tab-a', {
         callerUserId: 'user-a',
         streamId: stream.streamId,
       })
-    ).toBe(true);
+    ).toBe('forwarded');
     expect(await answer).toEqual({ answeredBy: 'tab-a' });
 
     stream.unsubscribe();

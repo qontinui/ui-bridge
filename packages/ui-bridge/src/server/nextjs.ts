@@ -1311,8 +1311,23 @@ function stringOrUndefined(value: unknown): string | undefined {
   return typeof value === 'string' && value ? value : undefined;
 }
 
+/** A result the relay refused (wrong tab, stream or owner): 403. */
+function commandResponseRefusedResponse(): Response {
+  return jsonResponse(
+    {
+      success: false,
+      error: 'This result does not come from the stream the command was delivered on.',
+      code: 'COMMAND_RESPONSE_REFUSED',
+      timestamp: Date.now(),
+    },
+    403
+  );
+}
+
 /**
- * Handle command responses from the browser (POST /commands).
+ * Handle command responses from the browser (POST /commands): 200 when the
+ * result settled or was forwarded, 403 `COMMAND_RESPONSE_REFUSED` when the
+ * responder may not settle it, 404 `COMMAND_UNKNOWN` when no instance awaits it.
  */
 async function handleCommandResponse(request: NextRequest, relay: CommandRelay): Promise<Response> {
   // Read through `readJsonBody` so the 10 MB cap holds here as on every other
@@ -1346,33 +1361,37 @@ async function handleCommandResponse(request: NextRequest, relay: CommandRelay):
       callerUserId: relayCallerUserId(request),
     };
     if (relay.commandResponseRefusal(commandId, tabId, responder)) {
+      return commandResponseRefusedResponse();
+    }
+
+    const outcome = ok
+      ? await relay.resolveCommand(commandId, result, tabId, responder)
+      : await relay.rejectCommand(
+          commandId,
+          stringOrUndefined(errorMsg) ||
+            stringOrUndefined((result as { error?: unknown } | null)?.error) ||
+            'Unknown error',
+          tabId,
+          responder,
+          // The tab's own verdict (the dispatcher's envelope), so the caller is
+          // answered with its code and failureDetails, not the message alone.
+          result
+        );
+
+    if (outcome === 'refused') return commandResponseRefusedResponse();
+    // No instance awaits the command (plan 2026-11-08 relay-client, D2): the
+    // result was not published, and the tab is told so rather than 200.
+    if (outcome === 'unknown') {
       return jsonResponse(
         {
           success: false,
-          error: 'This result does not come from the stream the command was delivered on.',
-          code: 'COMMAND_RESPONSE_REFUSED',
+          code: 'COMMAND_UNKNOWN',
+          error: 'No relay instance is awaiting this command.',
           timestamp: Date.now(),
         },
-        403
+        404
       );
     }
-
-    if (ok) {
-      relay.resolveCommand(commandId, result, tabId, responder);
-    } else {
-      relay.rejectCommand(
-        commandId,
-        stringOrUndefined(errorMsg) ||
-          stringOrUndefined((result as { error?: unknown } | null)?.error) ||
-          'Unknown error',
-        tabId,
-        responder,
-        // The tab's own verdict (the dispatcher's envelope), so the caller is
-        // answered with its code and failureDetails, not the message alone.
-        result
-      );
-    }
-
     return jsonResponse({ success: true, timestamp: Date.now() });
   } catch {
     return jsonResponse(

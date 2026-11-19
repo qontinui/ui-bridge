@@ -16,8 +16,10 @@
  *     unknown).
  *
  * The classifier reads the TYPE, never the message, so a reworded message
- * cannot move a live failure into the cache arm. Each relay-raised message is
- * kept byte for byte, so a reader matching `SDK_DISCONNECTED` keeps working.
+ * cannot move a live failure into the cache arm. The not-delivered messages
+ * are kept byte for byte, so a reader matching `SDK_DISCONNECTED` keeps
+ * working; the `unanswered` timeout says what was observed, that no result
+ * arrived ({@link noResultArrivedMessage}).
  *
  * Anything untyped (a routing refusal, an `OwnerMismatchError`, a destroyed
  * relay, an unforeseen error) classifies as a live answer. That fails closed:
@@ -134,4 +136,31 @@ export function cacheFallbackMeta(
     fallback: true,
     reason: `Relay command '${action}' got no live answer (${cause}) — answered from ${answeredFrom}, which can be stale or another tab's.`,
   };
+}
+
+/**
+ * The message a relayed command's `unanswered` timeout carries (plan
+ * 2026-11-08-ui-bridge-relay-client-drops-refused-results-and-heartbeats-silently,
+ * D6). What the relay observed is that no result reached THIS instance — not
+ * that the page is unresponsive: a tab may have run the command and had its
+ * result refused, lost, or posted to another instance. `tabsSent` is how many
+ * tabs this instance wrote the command to; omitted when it cannot know (a
+ * command published on the bus for another instance to deliver).
+ */
+export function noResultArrivedMessage(
+  action: string,
+  timeoutMs: number,
+  transport: string,
+  tabsSent?: number
+): string {
+  const sent =
+    tabsSent === undefined
+      ? 'The command was published on the bus, so how many tab(s) were sent it is not known ' +
+        'here; any that were may have run it'
+      : `${tabsSent} tab(s) were sent the command and may have run it`;
+  return (
+    `Command ${action} timed out after ${timeoutMs}ms (${transport}): ` +
+    `no result reached this relay instance. ${sent}; its result may have been refused ` +
+    '(for example 429), lost, or posted to another instance.'
+  );
 }

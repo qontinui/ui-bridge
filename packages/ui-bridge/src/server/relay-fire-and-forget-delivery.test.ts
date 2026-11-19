@@ -106,12 +106,12 @@ describe('relay · fire-and-forget delivery verification (co-pilot navigate)', (
     // entry for a fire-and-forget command, so this returned false and the
     // outcome was silently dropped. The recorder now accepts it.
     const commandId = tabA.dispatched[0]!.commandId;
-    const accepted = relay.resolveCommand(
+    const accepted = await relay.resolveCommand(
       commandId,
       { success: true, url: '/dashboard', clientSideNavigation: true },
       'tab-a'
     );
-    expect(accepted).toBe(true);
+    expect(accepted).toBe('settled');
 
     // Per-tab success was recorded (routing-health bookkeeping).
     const diag = relay.getTransportDiagnostics();

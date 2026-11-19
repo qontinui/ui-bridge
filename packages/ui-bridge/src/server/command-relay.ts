@@ -18,7 +18,7 @@
 
 import type { ControlSnapshot } from '../control';
 import type { DOMChangeEvent } from './types';
-import type { RelayBus, RelayCommandEnvelope } from './relay-bus';
+import type { RelayBus, RelayCommandEnvelope, RelayResponseEnvelope } from './relay-bus';
 import {
   compareByLiveness,
   heartbeatAgeMs,
@@ -41,7 +41,13 @@ import {
   type ListenerState,
   type ParkedCommand,
 } from './stream-slot';
-import { NoLiveAnswer, TabReportedFailure } from './live-answer';
+import { NoLiveAnswer, TabReportedFailure, noResultArrivedMessage } from './live-answer';
+import {
+  commandRegistryTtlSeconds,
+  registryWrite,
+  someInstanceAwaits,
+  type CommandResultOutcome,
+} from './command-registry';
 
 // ============================================================================
 // Types
@@ -1328,9 +1334,29 @@ export class CommandRelay {
    */
   private dropPending(id: string): void {
     const group = this.pendingCommands.get(id)?.aliasGroup;
-    this.pendingCommands.delete(id);
+    this.forgetPending(id);
     if (!group) return;
-    for (const peer of group) this.pendingCommands.delete(peer);
+    for (const peer of group) this.forgetPending(peer);
+  }
+
+  /** Delete one pending entry, and withdraw it from the bus's command registry. */
+  private forgetPending(id: string): void {
+    this.pendingCommands.delete(id);
+    const bus = this.bus;
+    if (bus) registryWrite('forgetting a command', () => bus.forgetCommand(id));
+  }
+
+  /**
+   * Record in the bus's command registry that this instance awaits `id` for
+   * `timeoutMs` plus `graceMs` (the multi-tab grace window by default), so a result landing on another
+   * instance is forwarded here (D2 of plan
+   * 2026-11-08-ui-bridge-relay-client-drops-refused-results-and-heartbeats-silently).
+   */
+  private registerAwaited(id: string, timeoutMs: number, graceMs = this.multiTabGraceMs): void {
+    const bus = this.bus;
+    if (!bus) return;
+    const ttl = commandRegistryTtlSeconds(timeoutMs, graceMs);
+    registryWrite('registering a command', () => bus.registerCommand(id, ttl));
   }
 
   /**
@@ -1344,9 +1370,7 @@ export class CommandRelay {
     this.dropPending(id);
     pending.reject(
       new NoLiveAnswer(
-        `Command ${action} timed out after ${timeoutMs}ms (${transport}). ` +
-          `${pending.tabsNotified} client(s) were notified but none responded. ` +
-          'The UI Bridge SDK may not be loaded or the page may be unresponsive.',
+        noResultArrivedMessage(action, timeoutMs, transport, pending.tabsNotified),
         'unanswered'
       )
     );
@@ -1680,6 +1704,7 @@ export class CommandRelay {
         ...this.deliveryBinding(targetTabId, senderUserId),
       };
       this.pendingCommands.set(commandId, pending);
+      this.registerAwaited(commandId, timeoutMs);
 
       // If WebSocket failed, push via SSE
       if (!sentViaWebSocket) {
@@ -1696,7 +1721,7 @@ export class CommandRelay {
           // If broadcast reached no listeners, fail immediately
           if (pending.tabsNotified === 0) {
             clearTimeout(timeout);
-            this.pendingCommands.delete(commandId);
+            this.forgetPending(commandId);
             reject(
               new NoLiveAnswer(
                 `No active UI Bridge SDK client received the ${action} command. ` +
@@ -1723,7 +1748,7 @@ export class CommandRelay {
                     'it was dropped from the poll queue before a tab fetched it'
                   )
                 );
-                this.pendingCommands.delete(dropped.commandId);
+                this.forgetPending(dropped.commandId);
               }
             }
           }
@@ -1761,6 +1786,9 @@ export class CommandRelay {
       return;
     }
     const timestamp = Date.now();
+    // Nothing here awaits its result; the holder's recorder window is the
+    // registry's, as for a fire-and-forget command delivered locally.
+    this.registerAwaited(commandId, this.fireAndForgetRecorderMs(), 0);
     this.bus!.publishCommand({ commandId, action, payload, timestamp, targetTabId, senderUserId });
     resolve({
       success: true,
@@ -1817,9 +1845,9 @@ export class CommandRelay {
     targetTabId: string | undefined,
     senderUserId: string | undefined
   ): unknown {
-    const recorderTtlMs = Math.min(this.sseTimeoutMs, 2000);
+    const recorderTtlMs = this.fireAndForgetRecorderMs();
     const recorderTimeout = setTimeout(() => {
-      this.pendingCommands.delete(commandId);
+      this.forgetPending(commandId);
     }, recorderTtlMs);
     this.pendingCommands.set(commandId, {
       resolve: () => {
@@ -1835,6 +1863,7 @@ export class CommandRelay {
       errorResponseCount: 0,
       ...this.deliveryBinding(targetTabId, senderUserId),
     });
+    this.registerAwaited(commandId, recorderTtlMs, 0);
     return {
       success: true,
       fireAndForget: true,
@@ -1844,6 +1873,11 @@ export class CommandRelay {
       action,
       timestamp: Date.now(),
     };
+  }
+
+  /** How long a fire-and-forget command's result recorder stays (ms). */
+  private fireAndForgetRecorderMs(): number {
+    return Math.min(this.sseTimeoutMs, 2000);
   }
 
   /**
@@ -1926,6 +1960,7 @@ export class CommandRelay {
       };
       group.add(aliasId);
       this.pendingCommands.set(aliasId, alias);
+      this.registerAwaited(aliasId, this.sseTimeoutMs);
       const command: QueuedCommand = {
         commandId: aliasId,
         action: pending.redeliverable.action,
@@ -1970,6 +2005,7 @@ export class CommandRelay {
       () => this.timeOutPending(command.commandId, command.action, timeoutMs, transport),
       timeoutMs
     );
+    this.registerAwaited(command.commandId, timeoutMs);
   }
 
   /**
@@ -1994,14 +2030,9 @@ export class CommandRelay {
     const timeout = setTimeout(() => {
       const pending = this.pendingCommands.get(commandId);
       if (pending?.busUnsub) pending.busUnsub();
-      this.pendingCommands.delete(commandId);
-      reject(
-        new NoLiveAnswer(
-          `Command ${action} timed out after ${timeoutMs}ms (bus). ` +
-            'No instance reported a response — the target tab may be disconnected.',
-          'unanswered'
-        )
-      );
+      this.forgetPending(commandId);
+      // How many tabs the holder wrote it to is not known on this instance.
+      reject(new NoLiveAnswer(noResultArrivedMessage(action, timeoutMs, 'bus'), 'unanswered'));
     }, timeoutMs);
 
     const busUnsub = bus.subscribeResponse(commandId, (env) => {
@@ -2018,7 +2049,7 @@ export class CommandRelay {
       clearTimeout(pending.timeout);
       if (pending.graceTimeout) clearTimeout(pending.graceTimeout);
       if (pending.busUnsub) pending.busUnsub();
-      this.pendingCommands.delete(commandId);
+      this.forgetPending(commandId);
       if (env.ok) {
         pending.resolve(env.result);
       } else if (env.code === 'OWNER_MISMATCH' && targetTabId !== undefined) {
@@ -2054,6 +2085,7 @@ export class CommandRelay {
       busUnsub,
       ...this.deliveryBinding(targetTabId, senderUserId),
     });
+    this.registerAwaited(commandId, timeoutMs);
 
     bus.publishCommand({
       commandId,
@@ -2416,37 +2448,29 @@ export class CommandRelay {
 
   /**
    * Resolve a pending command with a response from the browser. `responder`
-   * says who is answering (the HTTP layer passes it); a response the checks in
-   * `responseRefusal` refuse is dropped and false is returned.
+   * says who is answering (the HTTP layer passes it). The outcome says what
+   * became of the result ({@link CommandResultOutcome}): a response the checks
+   * in `responseRefusal` refuse is dropped as `refused`, and one no instance
+   * awaits is dropped as `unknown`. Everything up to the registry read runs
+   * synchronously, so a pending command is settled before this returns.
    */
-  resolveCommand(
+  async resolveCommand(
     commandId: string,
     result: unknown,
     tabId?: string,
     responder?: CommandResponder
-  ): boolean {
+  ): Promise<CommandResultOutcome> {
     const pending = this.pendingCommands.get(commandId);
     if (!pending) {
-      // Cross-instance (P0a): the browser's response landed on an instance that
-      // did NOT originate the command. Forward it over the bus to the instance
-      // holding the pending promise, with who answered. When this instance
-      // delivered the command, the stream it went down is checked here.
-      if (this.bus) {
-        const delivery = this.liveBusDelivery(commandId);
-        if (delivery && this.responseRefusal(delivery, tabId, responder)) return false;
-        this.busDeliveries.delete(commandId);
-        this.bus.publishResponse({
-          commandId,
-          ok: true,
-          result,
-          tabId,
-          ...this.responderEnvelope(responder),
-        });
-        return true;
-      }
-      return false;
+      return this.forwardUnpendingResult(commandId, tabId, responder, {
+        commandId,
+        ok: true,
+        result,
+        tabId,
+        ...this.responderEnvelope(responder),
+      });
     }
-    if (this.responseRefusal(pending, tabId, responder)) return false;
+    if (this.responseRefusal(pending, tabId, responder)) return 'refused';
 
     clearTimeout(pending.timeout);
     if (pending.graceTimeout) clearTimeout(pending.graceTimeout);
@@ -2460,7 +2484,35 @@ export class CommandRelay {
       this.demotedTabs.delete(tabId);
     }
 
-    return true;
+    return 'settled';
+  }
+
+  /**
+   * Cross-instance (P0a): a result landed on an instance holding no pending
+   * command for it. Forward it over the bus to the instance that awaits it,
+   * with who answered — but only when one does (D2). A delivery this
+   * instance holds is proof the command is awaited, and the stream it went
+   * down is checked first: a refused result never reaches the registry.
+   * Otherwise the registry is read; a failed read forwards (logged).
+   */
+  private async forwardUnpendingResult(
+    commandId: string,
+    tabId: string | undefined,
+    responder: CommandResponder | undefined,
+    envelope: RelayResponseEnvelope
+  ): Promise<CommandResultOutcome> {
+    const bus = this.bus;
+    if (!bus) return 'unknown';
+    const delivery = this.liveBusDelivery(commandId);
+    if (delivery) {
+      if (this.responseRefusal(delivery, tabId, responder)) return 'refused';
+      this.busDeliveries.delete(commandId);
+      bus.publishResponse(envelope);
+      return 'forwarded';
+    }
+    if (!(await someInstanceAwaits(bus, commandId))) return 'unknown';
+    bus.publishResponse(envelope);
+    return 'forwarded';
   }
 
   /**
@@ -2471,33 +2523,26 @@ export class CommandRelay {
    * bus forwards it on `ok: false`. The settle semantics are those of every
    * rejection: it waits for every notified tab, and a later success wins.
    */
-  rejectCommand(
+  async rejectCommand(
     commandId: string,
     errorMessage: string,
     tabId?: string,
     responder?: CommandResponder,
     result?: unknown
-  ): boolean {
+  ): Promise<CommandResultOutcome> {
     const pending = this.pendingCommands.get(commandId);
     if (!pending) {
-      // Cross-instance (P0a): forward the error to the originating instance.
-      if (this.bus) {
-        const delivery = this.liveBusDelivery(commandId);
-        if (delivery && this.responseRefusal(delivery, tabId, responder)) return false;
-        this.busDeliveries.delete(commandId);
-        this.bus.publishResponse({
-          commandId,
-          ok: false,
-          error: errorMessage,
-          ...(result !== undefined ? { result } : {}),
-          ...(tabId !== undefined ? { tabId } : {}),
-          ...this.responderEnvelope(responder),
-        });
-        return true;
-      }
-      return false;
+      // Cross-instance (P0a): forward the error to the instance awaiting it.
+      return this.forwardUnpendingResult(commandId, tabId, responder, {
+        commandId,
+        ok: false,
+        error: errorMessage,
+        ...(result !== undefined ? { result } : {}),
+        ...(tabId !== undefined ? { tabId } : {}),
+        ...this.responderEnvelope(responder),
+      });
     }
-    if (this.responseRefusal(pending, tabId, responder)) return false;
+    if (this.responseRefusal(pending, tabId, responder)) return 'refused';
 
     pending.errorResponseCount++;
     if (!pending.firstError) {
@@ -2510,7 +2555,7 @@ export class CommandRelay {
       if (pending.graceTimeout) clearTimeout(pending.graceTimeout);
       this.dropPending(commandId);
       pending.reject(pending.firstError!);
-      return true;
+      return 'settled';
     }
 
     // Start grace timer for tabs that may go silent
@@ -2527,7 +2572,7 @@ export class CommandRelay {
       }, this.multiTabGraceMs);
     }
 
-    return true;
+    return 'settled';
   }
 
   // --------------------------------------------------------------------------

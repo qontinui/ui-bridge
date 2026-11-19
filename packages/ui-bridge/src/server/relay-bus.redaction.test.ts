@@ -251,3 +251,30 @@ describe('RedisRelayBus with the real ioredis (tripwire)', () => {
     });
   }
 });
+
+describe('RedisRelayBus command registry (plan 2026-11-08 relay-client, D2)', () => {
+  it('registers with SET … EX, forgets with DEL, and reads with EXISTS', async () => {
+    const { bus, pub } = makeBus();
+    bus.registerCommand('cmd-1', 8.2);
+    expect(pub.set).toHaveBeenCalledWith('uibridge:cmd:known:cmd-1', '1', 'EX', 9);
+    bus.forgetCommand('cmd-1');
+    expect(pub.del).toHaveBeenCalledWith('uibridge:cmd:known:cmd-1');
+    pub.exists.mockResolvedValueOnce(1);
+    expect(await bus.isCommandKnown('cmd-1')).toBe(true);
+    pub.exists.mockResolvedValueOnce(0);
+    expect(await bus.isCommandKnown('cmd-1')).toBe(false);
+    expect(pub.exists).toHaveBeenCalledWith('uibridge:cmd:known:cmd-1');
+  });
+
+  it('a failed read answers null; a failed write is reported sanitised', async () => {
+    const seen: RelayBusErrorSummary[] = [];
+    const { bus, pub } = makeBus((s) => seen.push(s));
+    pub.exists.mockRejectedValueOnce(replyErrorWithCommand());
+    expect(await bus.isCommandKnown('cmd-1')).toBeNull();
+    pub.set.mockRejectedValueOnce(replyErrorWithCommand());
+    bus.registerCommand('cmd-1', 1);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(seen.map((s) => s.role)).toEqual(['pub']);
+    expect(util.inspect(seen, { depth: 10 })).not.toContain(SECRET);
+  });
+});
