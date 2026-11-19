@@ -10,6 +10,11 @@
  */
 
 import { pageScrollContainer } from './page-scroll-container';
+import {
+  NO_SCROLL_EFFECT,
+  scrollIntoViewVerified,
+  noScrollIntoViewMessage,
+} from './scroll-visibility';
 import { projectComputedStyles } from '../core/computed-styles';
 import type { UIBridgeRegistry } from '../core/registry';
 import { serializeRegisteredElement, serializeRegisteredComponent } from '../core/registry';
@@ -197,6 +202,7 @@ import {
   ELEMENT_KIND_REFUSAL,
   checkArm,
   clearArm,
+  clickTargetArm,
   formOwnerArm,
   selectArm,
   setValueArm,
@@ -819,6 +825,23 @@ export class ElementKindRefusalError extends ActionValidationError {
   constructor(refusal: ElementKindRefusal) {
     super(refusal.message);
     this.name = 'ElementKindRefusalError';
+  }
+}
+
+/**
+ * A scroll action that provably moved nothing: nothing scrolled and, for
+ * `scrollIntoView`, the element is still not visible. Carries `code`
+ * (`NO_SCROLL_EFFECT`), which {@link readHandlerErrorEnvelope} hoists onto the
+ * failure response; `scrollInfo` rides in `failureDetails.context`.
+ */
+export class NoScrollEffectError extends ActionValidationError {
+  readonly code = NO_SCROLL_EFFECT;
+  readonly scrollInfo?: unknown;
+
+  constructor(message: string, scrollInfo?: unknown) {
+    super(message);
+    this.name = 'NoScrollEffectError';
+    this.scrollInfo = scrollInfo;
   }
 }
 
@@ -1918,6 +1941,16 @@ export class DefaultActionExecutor implements ActionExecutor {
           visibilityReason: error.visibilityReason,
           durationMs: performance.now() - startTime,
         });
+      } else if (error instanceof NoScrollEffectError) {
+        // Same envelope as the relay: `errorCode` is NO_SCROLL_EFFECT (not in the
+        // generated `UiBridgeErrorCode` catalog, hence the widening) and
+        // `scrollInfo` rides in `context`. The top-level `code` is hoisted below.
+        const base = buildActionFailureDetails('UB-ACTION-FAILED', message, {
+          elementId,
+          context: { action: request.action, scrollInfo: error.scrollInfo },
+          durationMs: performance.now() - startTime,
+        });
+        failureDetails = { ...base, errorCode: NO_SCROLL_EFFECT } as unknown as typeof base;
       } else if (error instanceof ElementKindRefusalError) {
         // The marker survives the flattening to `UB-ACTION-FAILED`: a caller
         // keys on `context.refusal`, never on the message.
@@ -3079,35 +3112,19 @@ export class DefaultActionExecutor implements ActionExecutor {
         return this.performScroll(element, params as ScrollAction);
       case 'scrollIntoView': {
         const scrollParams = params as ScrollIntoViewAction | undefined;
-        // Already-in-viewport short-circuit: return success without calling
-        // the underlying scroll so a pre-click "scroll into view" never logs
-        // as a confusing failure when the element is already on screen.
-        // `performScrollIntoView` in @qontinui/ui-bridge-auto returns the same
-        // shape.
-        if (
-          typeof window !== 'undefined' &&
-          window.innerWidth > 0 &&
-          window.innerHeight > 0 &&
-          typeof element.getBoundingClientRect === 'function'
-        ) {
-          const rect = element.getBoundingClientRect();
-          const fullyVisible =
-            rect.width > 0 &&
-            rect.height > 0 &&
-            rect.top >= 0 &&
-            rect.left >= 0 &&
-            rect.bottom <= window.innerHeight &&
-            rect.right <= window.innerWidth;
-          if (fullyVisible) {
-            return { alreadyVisible: true, scrolled: false };
-          }
-        }
-        element.scrollIntoView({
-          behavior: scrollParams?.smooth ? 'smooth' : 'auto',
+        // Measured against the element's scroll containers, not the window
+        // alone: an element clipped by an inner `overflow:auto` box is not
+        // "already visible". After the native call the outcome is re-read, and
+        // a call that moved nothing and revealed nothing is a failure.
+        const r = await scrollIntoViewVerified(element, {
+          smooth: !!scrollParams?.smooth,
           block: scrollParams?.block || 'center',
           inline: scrollParams?.inline || 'nearest',
         });
-        return { alreadyVisible: false, scrolled: true };
+        if (!r.alreadyVisible && !r.scrolled) {
+          throw new NoScrollEffectError(noScrollIntoViewMessage());
+        }
+        return { alreadyVisible: r.alreadyVisible, scrolled: r.scrolled, visible: r.visible };
       }
       case 'check':
         return this.performCheck(element, true);
@@ -3153,7 +3170,11 @@ export class DefaultActionExecutor implements ActionExecutor {
     }
   }
 
-  private performClick(element: HTMLElement, options?: MouseAction): void {
+  private performClick(clicked: HTMLElement, options?: MouseAction): void {
+    // A `<details>` toggles only through its `<summary>`.
+    const clickArm = clickTargetArm(clicked);
+    if (!clickArm.ok) throw new ElementKindRefusalError(clickArm);
+    const element = clickArm.target;
     // Pointer events fire FIRST so Radix-style pointer-only handlers
     // (e.g. `<Tabs.Trigger>`, `<Switch>`) see them before mouse/click.
     // They're cheap and idempotent on plain buttons that listen for `click`,
@@ -3557,12 +3578,18 @@ export class DefaultActionExecutor implements ActionExecutor {
 
     // Capture pre-scroll state
     const before = { scrollTop: scrollTarget.scrollTop, scrollLeft: scrollTarget.scrollLeft };
+    // `toElement`: the target is now (or already was) visible in its scroll context.
+    let revealed = false;
 
     if (options?.toElement) {
       const target = document.querySelector<HTMLElement>(options.toElement);
-      if (target) {
-        target.scrollIntoView({ behavior: isSmooth ? 'smooth' : 'auto' });
+      if (!target) {
+        throw new ActionValidationError(
+          `scroll toElement: no element matches "${options.toElement}"`
+        );
       }
+      const r = await scrollIntoViewVerified(target, { smooth: isSmooth, block: 'start' });
+      revealed = r.alreadyVisible || r.scrolled;
     } else if (options?.position) {
       scrollTarget.scrollTo({
         left: options.position.x,
@@ -3628,14 +3655,18 @@ export class DefaultActionExecutor implements ActionExecutor {
 
     // Capture post-scroll state
     const after = { scrollTop: scrollTarget.scrollTop, scrollLeft: scrollTarget.scrollLeft };
+    const changed = before.scrollTop !== after.scrollTop || before.scrollLeft !== after.scrollLeft;
+    const scrollInfo = { before, after, changed };
 
-    return {
-      scrollInfo: {
-        before,
-        after,
-        changed: before.scrollTop !== after.scrollTop || before.scrollLeft !== after.scrollLeft,
-      },
-    };
+    // Nothing moved (not scrollable, or already at the boundary): not a success.
+    if (!changed && !revealed) {
+      throw new NoScrollEffectError(
+        'scroll had no effect: the scroll position did not change (the target is not scrollable ' +
+          'in that direction, or is already at its boundary)',
+        scrollInfo
+      );
+    }
+    return { scrollInfo };
   }
 
   private findScrollableElement(element: HTMLElement): HTMLElement {

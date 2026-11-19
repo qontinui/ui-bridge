@@ -30,6 +30,7 @@ import { useCommandRelay } from '../react/useCommandRelay';
 import { listener } from '../react/__tests__/relay-into-listener';
 import { getGlobalRegistry, resetGlobalRegistry } from '../core/registry';
 import { createActionExecutor } from '../control/action-executor';
+import { movingScrollBy } from '../control/scroll-test-fixture';
 import { MAX_PROJECTED_NAMES } from '../core/element-projection';
 import { REDACTED_VALUE } from '../core/redaction';
 import { AssertionExecutor } from '../ai/assertions';
@@ -954,7 +955,7 @@ describe('the document sentinel', () => {
   let shimmedScrollBy = false;
   beforeAll(() => {
     if (!Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollBy')) {
-      HTMLElement.prototype.scrollBy = function () {} as HTMLElement['scrollBy'];
+      HTMLElement.prototype.scrollBy = movingScrollBy as HTMLElement['scrollBy'];
       shimmedScrollBy = true;
     }
   });

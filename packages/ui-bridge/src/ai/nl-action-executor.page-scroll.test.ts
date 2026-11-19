@@ -5,6 +5,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createNLActionExecutor } from './nl-action-executor';
+import { movingScrollBy } from '../control/scroll-test-fixture';
 import { DefaultActionExecutor } from '../control/action-executor';
 import { getGlobalRegistry, resetGlobalRegistry } from '../core/registry';
 
@@ -21,7 +22,7 @@ describe('NLActionExecutor page scroll with the real action executor', () => {
   it('scrolls the page scroll container through the document sentinel', async () => {
     // jsdom implements no element scrolling; a stub lets the spy observe it.
     if (!nativeScrollBy) {
-      HTMLElement.prototype.scrollBy = function () {} as HTMLElement['scrollBy'];
+      HTMLElement.prototype.scrollBy = movingScrollBy as HTMLElement['scrollBy'];
     }
     const containerScroll = vi.spyOn(HTMLElement.prototype, 'scrollBy');
     const windowScroll = vi.spyOn(window, 'scrollBy').mockImplementation(() => {});
@@ -47,7 +48,7 @@ describe('NLActionExecutor page scroll with the real action executor', () => {
 
   it('scrolls the viewport, not the body, when the body content merely overflows', async () => {
     if (!nativeScrollBy) {
-      HTMLElement.prototype.scrollBy = function () {} as HTMLElement['scrollBy'];
+      HTMLElement.prototype.scrollBy = movingScrollBy as HTMLElement['scrollBy'];
     }
     // Standards-mode page whose body content overflows the body box while
     // <html> (the viewport) is the real scroller: body.scrollBy is a no-op.

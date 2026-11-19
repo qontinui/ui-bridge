@@ -94,6 +94,7 @@ import {
   checkArm,
   clearArm,
   formOwnerArm,
+  clickTargetArm,
   selectArm,
   setValueArm,
   textEntryArm,
@@ -103,6 +104,12 @@ import {
 } from '../control/element-arms';
 import { performDragSequence } from '../control/drag-sequence';
 import { pageScrollContainer, pageViewportContext } from '../control/page-scroll-container';
+import {
+  NO_SCROLL_EFFECT,
+  scrollIntoViewVerified,
+  settleScroll,
+  noScrollIntoViewMessage,
+} from '../control/scroll-visibility';
 import { findElementByIdentifier } from '../core/element-identifier';
 import { EMPTY_WAIT_PREDICATE_MESSAGE, predicateNamesAField } from '../core/wait-predicate';
 import { applyValueMutation } from '../control/value-mutation';
@@ -427,6 +434,28 @@ function getRecoverySuggestions(errorCode: string) {
         },
       ];
   }
+}
+
+/**
+ * The relay's NO_SCROLL_EFFECT failure, shaped like the executor's: top-level
+ * `code`, `failureDetails.errorCode`, and `scrollInfo` (when measured) in
+ * `failureDetails.context`.
+ */
+function createNoScrollEffectFailure(
+  id: string,
+  message: string,
+  startTime: number,
+  scrollInfo?: unknown
+) {
+  const failure = createActionFailure(id, NO_SCROLL_EFFECT, message, startTime);
+  return {
+    ...failure,
+    code: NO_SCROLL_EFFECT,
+    failureDetails: {
+      ...failure.failureDetails,
+      context: { action: 'scroll', scrollInfo },
+    },
+  };
 }
 
 function createActionFailure(
@@ -1972,9 +2001,13 @@ export async function executeCommand(
         }
 
         switch (request.action) {
-          case 'click':
-            dispatchRealClick(dom);
+          case 'click': {
+            // A `<details>` toggles only through its `<summary>`.
+            const clickArm = clickTargetArm(dom);
+            if (!clickArm.ok) return createKindRefusalFailure(id, 'click', clickArm, startTime);
+            dispatchRealClick(clickArm.target);
             break;
+          }
           case 'hoverClick': {
             // Composite reveal-then-click for a control whose interactivity is
             // gated behind a CSS `:hover` / Tailwind `group-hover` rule (the
@@ -2031,48 +2064,25 @@ export async function executeCommand(
               sivParams?.smooth !== false ? ('smooth' as const) : ('auto' as const);
             const sivBlock = sivParams?.block || 'center';
             const sivInline = sivParams?.inline || 'nearest';
-            // Already-in-viewport short-circuit: if the element is fully on
-            // screen, skip the underlying scroll so a pre-click "scroll into
-            // view" doesn't surface as a confusing failure when downstream
-            // detectors observe "no change". Mirrors the same shape returned
-            // by `performScrollIntoView` in @qontinui/ui-bridge-auto.
-            const sivRect = dom.getBoundingClientRect();
-            const sivFullyVisible =
-              typeof window !== 'undefined' &&
-              window.innerWidth > 0 &&
-              window.innerHeight > 0 &&
-              sivRect.width > 0 &&
-              sivRect.height > 0 &&
-              sivRect.top >= 0 &&
-              sivRect.left >= 0 &&
-              sivRect.bottom <= window.innerHeight &&
-              sivRect.right <= window.innerWidth;
-            if (sivFullyVisible) {
-              return {
-                success: true,
-                action: 'scrollIntoView',
-                elementId: id,
-                durationMs: performance.now() - startTime,
-                alreadyVisible: true,
-                scrolled: false,
-                timestamp: Date.now(),
-              };
-            }
-            dom.scrollIntoView({ behavior: sivBehavior, block: sivBlock, inline: sivInline });
-            // For smooth scrollIntoView, wait for the animation to settle before returning.
-            // Use setTimeout instead of rAF — rAF doesn't fire when the tab is backgrounded.
-            if (sivBehavior === 'smooth') {
-              await new Promise<void>((r) => setTimeout(r, 400));
-            } else {
-              await new Promise<void>((r) => setTimeout(r, 16));
+            // Measured against the element's scroll containers, not the window
+            // alone, then re-read after the native call (which can be a real
+            // no-op, e.g. under an `overflow:hidden` ancestor).
+            const siv = await scrollIntoViewVerified(dom, {
+              smooth: sivBehavior === 'smooth',
+              block: sivBlock,
+              inline: sivInline,
+            });
+            if (!siv.alreadyVisible && !siv.scrolled) {
+              return createNoScrollEffectFailure(id, noScrollIntoViewMessage(), startTime);
             }
             return {
               success: true,
               action: 'scrollIntoView',
               elementId: id,
               durationMs: performance.now() - startTime,
-              alreadyVisible: false,
-              scrolled: true,
+              alreadyVisible: siv.alreadyVisible,
+              scrolled: siv.scrolled,
+              visible: siv.visible,
               timestamp: Date.now(),
             };
           }
@@ -2140,22 +2150,34 @@ export async function executeCommand(
             // Use setTimeout instead of requestAnimationFrame — rAF doesn't fire
             // when the tab is backgrounded, which causes SSE relay timeouts.
             // scrollBy with behavior:'auto' is synchronous, so a minimal yield suffices.
-            await new Promise<void>((r) => setTimeout(r, 16));
+            // Smooth scrolls animate: wait (bounded) for the position to settle.
+            await settleScroll(
+              () => `${scrollTarget.scrollTop}:${scrollTarget.scrollLeft}`,
+              behavior === 'smooth'
+            );
             const after = {
               scrollTop: scrollTarget.scrollTop,
               scrollLeft: scrollTarget.scrollLeft,
             };
+            const scrollChanged =
+              before.scrollTop !== after.scrollTop || before.scrollLeft !== after.scrollLeft;
+            const scrollInfo = { before, after, changed: scrollChanged };
+            if (!scrollChanged) {
+              // Not scrollable that way, or already at the boundary: nothing moved.
+              return createNoScrollEffectFailure(
+                id,
+                'scroll had no effect: the scroll position did not change (the target is not ' +
+                  'scrollable in that direction, or is already at its boundary)',
+                startTime,
+                scrollInfo
+              );
+            }
             return {
               success: true,
               action: 'scroll',
               elementId: id,
               durationMs: performance.now() - startTime,
-              scrollInfo: {
-                before,
-                after,
-                changed:
-                  before.scrollTop !== after.scrollTop || before.scrollLeft !== after.scrollLeft,
-              },
+              scrollInfo,
               timestamp: Date.now(),
             };
           }
@@ -4479,13 +4501,50 @@ export async function executeCommand(
     }
 
     case 'pageScroll': {
-      const scrollReq = payload as { top?: number; left?: number; smooth?: boolean };
+      const scrollReq = payload as {
+        top?: number;
+        left?: number;
+        smooth?: boolean;
+        selector?: string;
+        elementId?: string;
+      };
       // Scroll the page's real scroll container. Where `<body>` scrolls
       // itself (the SPA / Tauri layout) the viewport does not move, so
       // `window.scrollBy` would be a silent no-op; everywhere else the
-      // container is the viewport and the window drives it.
-      const container = pageScrollContainer();
-      const viewport = container === (document.scrollingElement ?? document.documentElement);
+      // container is the viewport and the window drives it. With a `selector`
+      // or `elementId` the named container is scrolled instead.
+      // Contract: with NO named container the call keeps its historical
+      // `success:true, changed:false` when the page cannot move; with a NAMED
+      // container (selector/elementId) a no-op is NO_SCROLL_EFFECT, because the
+      // caller asked for that specific container to move.
+      let container: HTMLElement;
+      if (scrollReq?.selector || scrollReq?.elementId) {
+        const named: HTMLElement | null = scrollReq.elementId
+          ? ((getElement(scrollReq.elementId)?.element as HTMLElement | null | undefined) ??
+            findElementByIdentifier(scrollReq.elementId) ??
+            null)
+          : (() => {
+              try {
+                return document.querySelector<HTMLElement>(scrollReq.selector as string);
+              } catch {
+                return null;
+              }
+            })();
+        if (!named) {
+          return {
+            success: false,
+            error: `pageScroll container not found: ${scrollReq.elementId ?? scrollReq.selector}`,
+            code: 'ELEMENT_NOT_FOUND',
+            timestamp: Date.now(),
+          };
+        }
+        container = named;
+      } else {
+        container = pageScrollContainer();
+      }
+      const viewport =
+        !(scrollReq?.selector || scrollReq?.elementId) &&
+        container === (document.scrollingElement ?? document.documentElement);
       const target: Window | HTMLElement = viewport ? window : container;
       const position = () =>
         viewport
@@ -4511,12 +4570,33 @@ export async function executeCommand(
         });
       }
       const after = position();
+      const pageChanged = after.scrollX !== before.scrollX || after.scrollY !== before.scrollY;
+      const containerName = viewport
+        ? 'viewport'
+        : scrollReq?.selector || scrollReq?.elementId
+          ? 'element'
+          : 'body';
+      if (!pageChanged && (scrollReq?.selector || scrollReq?.elementId)) {
+        // A named container that did not move is a failure, not `changed:false`.
+        return {
+          success: false,
+          error:
+            'pageScroll had no effect: the container is not scrollable in that direction, ' +
+            'or is already at its boundary',
+          code: NO_SCROLL_EFFECT,
+          container: containerName,
+          before,
+          after,
+          changed: false,
+          timestamp: Date.now(),
+        };
+      }
       return {
         success: true,
-        container: viewport ? 'viewport' : 'body',
+        container: containerName,
         before,
         after,
-        changed: after.scrollX !== before.scrollX || after.scrollY !== before.scrollY,
+        changed: pageChanged,
         timestamp: Date.now(),
       };
     }

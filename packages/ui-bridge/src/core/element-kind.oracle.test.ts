@@ -53,6 +53,7 @@ import { executeCommand, type BridgeAccess } from '../react/commandHandlers';
 import { useAutoRegister } from '../react/useAutoRegister';
 import type { UIBridgeContextValue } from '../react/UIBridgeProvider';
 import { scanDOMForInteractiveElementsWithRefs } from '../server/dom-fallback';
+import { movingScrollIntoView } from '../control/scroll-test-fixture';
 
 let bridge: UIBridgeContextValue | null = null;
 vi.mock('../react/UIBridgeProvider', () => ({ useUIBridgeOptional: () => bridge }));
@@ -344,8 +345,22 @@ beforeAll(() => {
   // jsdom gaps, not kind facts: scrolling APIs it does not implement, and the
   // <dialog> methods (jsdom 23 reflects `open` but has no show/close).
   const proto = Element.prototype as unknown as Record<string, unknown>;
-  for (const api of ['scrollBy', 'scrollTo', 'scrollIntoView']) {
-    if (typeof proto[api] !== 'function') proto[api] = function noop(): void {};
+  // A scroll that moves nothing is a NO_SCROLL_EFFECT failure, so the stubs
+  // model a movement (jsdom has no layout to produce a real one).
+  const moveBy = (el: Element, dy: number): void => {
+    Object.defineProperty(el, 'scrollTop', {
+      configurable: true,
+      value: (el.scrollTop || 0) + dy,
+    });
+  };
+  if (typeof proto.scrollBy !== 'function') {
+    proto.scrollBy = function scrollBy(this: Element, o?: ScrollToOptions): void {
+      moveBy(this, o?.top || 1);
+    };
+  }
+  if (typeof proto.scrollTo !== 'function') proto.scrollTo = function noop(): void {};
+  if (typeof proto.scrollIntoView !== 'function') {
+    proto.scrollIntoView = movingScrollIntoView;
   }
   const dialog = HTMLDialogElement.prototype as unknown as Record<string, unknown>;
   for (const api of ['show', 'showModal']) {

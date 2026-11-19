@@ -310,3 +310,22 @@ export function formOwnerArm(
         'a <form>, or an element inside one or owned by one through form="…" — this one has no owner form'
       );
 }
+
+/**
+ * `click`: where the click lands. A native `click()` on a `<details>` toggles
+ * nothing — only its `<summary>` is the activation target — so a `<details>`
+ * is retargeted to its first `<summary>`; one with none is refused, naming
+ * `toggle` as the route. Every other element is clicked as itself.
+ */
+export function clickTargetArm(element: HTMLElement): ArmOutcome<{ target: HTMLElement }> {
+  if (element instanceof HTMLDetailsElement) {
+    const summary = Array.from(element.children).find((c) => c.localName === 'summary');
+    if (summary) return { ok: true, target: summary as HTMLElement };
+    return refused(
+      'click',
+      element,
+      'a <details> that has a <summary> (use the toggle verb to open or close this one)'
+    );
+  }
+  return { ok: true, target: element };
+}

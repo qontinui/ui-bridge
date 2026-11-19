@@ -48,7 +48,18 @@ describe('relay executeElementAction · scroll target', () => {
     if (!nativeScrollBy) {
       HTMLElement.prototype.scrollBy = function () {} as HTMLElement['scrollBy'];
     }
-    return vi.spyOn(HTMLElement.prototype, 'scrollBy');
+    // jsdom has no layout: model the move, since a scroll that moves nothing
+    // is (correctly) reported as NO_SCROLL_EFFECT.
+    return vi.spyOn(HTMLElement.prototype, 'scrollBy').mockImplementation(function (
+      this: HTMLElement,
+      o?: ScrollToOptions | number
+    ) {
+      const top = typeof o === 'object' ? (o.top ?? 0) : 0;
+      Object.defineProperty(this, 'scrollTop', {
+        configurable: true,
+        value: this.scrollTop + top,
+      });
+    } as HTMLElement['scrollBy']);
   }
 
   it('scrolls the viewport, not the body, for the page sentinel when the body merely overflows', async () => {

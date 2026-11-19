@@ -30,6 +30,7 @@ import {
 } from '../relay/relay-traffic';
 import { startRelayClient } from '../relay/relay-client';
 import { getGlobalRegistry } from '../core/registry';
+import { movingScrollBy, movingScrollIntoView } from '../control/scroll-test-fixture';
 import { CommandRelay } from '../server/command-relay';
 import { createRelayHandlers } from '../server/relay-handlers';
 
@@ -545,7 +546,8 @@ describe('relay aiExecute withDiff · the shared tracker path', () => {
     const list = document.createElement('div');
     list.textContent = 'Results';
     makeVisible(list);
-    const scrollBy = vi.fn();
+    // jsdom has no layout: model the movement (a scroll that moves nothing fails).
+    const scrollBy = vi.fn(movingScrollBy);
     (list as unknown as { scrollBy: typeof scrollBy }).scrollBy = scrollBy;
     document.body.appendChild(list);
     getGlobalRegistry().registerElement('results-list', list, {
@@ -601,7 +603,7 @@ describe('relay aiExecute withDiff · the shared tracker path', () => {
     const footer = document.createElement('div');
     footer.textContent = 'Footer';
     makeVisible(footer);
-    const scrollIntoView = vi.fn();
+    const scrollIntoView = vi.fn(movingScrollIntoView);
     (footer as unknown as { scrollIntoView: typeof scrollIntoView }).scrollIntoView =
       scrollIntoView;
     document.body.appendChild(footer);

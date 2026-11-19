@@ -17,6 +17,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { UIBridgeRegistry, getGlobalRegistry } from '../core/registry';
 import { DefaultActionExecutor } from './action-executor';
+import { movingScrollIntoView } from './scroll-test-fixture';
 import { executeCommand, type BridgeAccess } from '../react/commandHandlers';
 import { __resetForcedPseudoStateForTest, getForcedPseudoState } from './forced-hover';
 
@@ -161,7 +162,7 @@ describe('DefaultActionExecutor — forced hover', () => {
 
   it('hover → scrollIntoView / focus (read-class) → still held', async () => {
     // jsdom implements no scrolling; the verb's own outcome is not under test.
-    f.tool.scrollIntoView = () => undefined;
+    f.tool.scrollIntoView = movingScrollIntoView;
     await executor.executeAction('header', { action: 'hover' });
     const scrolled = await executor.executeAction('tool', { action: 'scrollIntoView' });
     expect(scrolled.success).toBe(true);
