@@ -1430,26 +1430,44 @@ export class UIBridgeRegistry {
    * before any layout-forcing read — is a small fraction of work already being
    * done there. It is deliberately NOT wired into `getAllElements()` or the
    * action paths, which must stay layout-free.
+   *
+   * A read of ONE element (`getElement`) re-derives only that element's
+   * fields through {@link refreshScrapedTextOf}, the per-entry body this sweep
+   * is a loop over, so a point read costs O(1) rather than O(page) and the
+   * two can never disagree on what "refreshed" means.
    */
   refreshScrapedText(): number {
     let changed = 0;
     for (const bucket of this.elementsByWindow.values()) {
       for (const entry of bucket.values()) {
-        const withSources = entry as WithScrapedTextSources;
-        const labelSource = withSources.__labelSource;
-        const contentSource = withSources.__contentSource;
-        if (!labelSource && !contentSource) continue;
-        const node = entry.element;
-        // A node being torn down can report an empty accessible name; keeping
-        // the last known value is strictly better than blanking it.
-        if (!node || node.isConnected === false) continue;
-        if (labelSource) {
-          changed += this.applyScraped(entry, 'label', labelSource);
-        }
-        if (contentSource) {
-          changed += this.applyScraped(entry, 'content', contentSource);
-        }
+        changed += this.refreshScrapedTextOf(entry);
       }
+    }
+    return changed;
+  }
+
+  /**
+   * Re-derive ONE entry's DOM-scraped `label` / `content`: the per-entry body
+   * of {@link refreshScrapedText}, with the same rules. An entry with no
+   * scraped source (a developer-set value) and an entry whose node is
+   * detached are left verbatim; a throwing closure leaves its field verbatim.
+   * Returns the number of fields it changed (0, 1 or 2).
+   */
+  refreshScrapedTextOf(entry: RegisteredElement): number {
+    const withSources = entry as WithScrapedTextSources;
+    const labelSource = withSources.__labelSource;
+    const contentSource = withSources.__contentSource;
+    if (!labelSource && !contentSource) return 0;
+    const node = entry.element;
+    // A node being torn down can report an empty accessible name; keeping
+    // the last known value is strictly better than blanking it.
+    if (!node || node.isConnected === false) return 0;
+    let changed = 0;
+    if (labelSource) {
+      changed += this.applyScraped(entry, 'label', labelSource);
+    }
+    if (contentSource) {
+      changed += this.applyScraped(entry, 'content', contentSource);
     }
     return changed;
   }
