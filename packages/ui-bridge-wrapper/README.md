@@ -173,10 +173,12 @@ ui-bridge-inject --url http://127.0.0.1:3000/ \
   Every refused shape is a returned `INVALID_REQUEST` (an `error` line and
   exit 1, never a thrown `TypeError`) whose message names the canonical shape
   `{"id":"<elementId>","request":{"action":"<action>", …}}` and both accepted
-  spellings, and names keys and the kinds of values, never a value;
-  `error.details` adds `expectedPayload` and `receivedKeys`. A well-formed
-  payload with an unknown verb is refused with `UNSUPPORTED_ACTION`, naming the
-  accepted verbs.
+  spellings, and names keys and the kinds of values, never a value, with one
+  exception: an `"id"` and an `"elementId"` that disagree are both named (they
+  are the element ids the caller sent, and naming both is what makes the
+  conflict diagnosable); `error.details` adds `expectedPayload` and
+  `receivedKeys`. A well-formed payload with an unknown verb is refused with
+  `UNSUPPORTED_ACTION`, naming the accepted verbs.
 
 These need `@qontinui/ui-bridge` 0.47.0 or later, the first injected runtime
 that serves `getElement` and the payload grammar. Against an older one,
@@ -282,6 +284,11 @@ ui-bridge-inject --url http://127.0.0.1:3000/ --throttle slow-3g --no-cache \
 `mediaOverride` answers only after the browser decoded the candidate and its
 `currentSrc` names it (inside a `<picture>` every `<source srcset>` is replaced
 too); one it cannot confirm is rolled back and fails the step.
+On Chromium 158 a candidate URL the document already decoded is served with no
+request, even under `--no-cache` (Chromium 147 refetched it); only a new URL or
+a reload reaches the network. A candidate a timeline (or `captureTimeline`'s
+`during`) should observe ARRIVING therefore needs a URL that document has not
+decoded, such as a per-candidate query string (`cand.png?2`).
 A `loading="lazy"` slot is loaded eagerly while overridden, so an offscreen one
 still decodes. `mediaOverrideRestore` puts every attribute back and verifies
 what the browser then RENDERS (the slot's `currentSrc` back on an original URL,
@@ -292,9 +299,10 @@ rewrote a value meanwhile) or `verified: false` is an unknown one.
 `--throttle <slow-3g|fast-3g|latency=<ms>,down=<kbps>,up=<kbps>>` applies CDP
 network emulation once the page is ready (it persists across a reload) and
 `--no-cache` disables the HTTP cache (not the document's in-memory image cache:
-a URL the page already decoded is answered at once, throttle or not, so give a
-repeated `mediaOverride` candidate its own URL, e.g. `cand.png?2`); what Chromium accepted is stamped as
-`network` on timeline results, matrix cells and the relay info line.
+on Chromium 158 a URL the page already decoded is answered at once, throttle or
+not, so give a repeated `mediaOverride` candidate its own URL, e.g.
+`cand.png?2`); what Chromium accepted is stamped as `network` on timeline
+results, matrix cells and the relay info line.
 `captureTimeline` screenshots the page `frames` times, `intervalMs` apart, each
 frame stamped with its offset; `"reload":true` starts the clock at a fresh
 navigation commit (the loading-to-loaded timeline) and waits for the runtime to

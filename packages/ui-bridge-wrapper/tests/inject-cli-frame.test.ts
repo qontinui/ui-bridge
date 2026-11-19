@@ -41,6 +41,26 @@ describe('USAGE', () => {
     expect(USAGE).toContain('--capture-matrix <dir>');
   });
 
+  // Measured on Chromium 158 (#329's branch, commit 213dfdf; the numbers are in
+  // plan 2026-11-08-ui-bridge-relay-and-exec-mode-follow-ups-from-pr-329,
+  // item 6, and inject-cli-override-smoke.test.ts states the rule): an image URL the document
+  // already decoded is served with no request, even with the HTTP cache off,
+  // so a candidate must carry its own URL to be observed arriving.
+  it('says a decoded candidate URL is not observed arriving, for "during" and mediaOverride', () => {
+    expect(USAGE).toContain('An image URL this document already decoded is NOT observed arriving:');
+    expect(USAGE).toContain(
+      'On Chromium 158 a candidate URL this document already decoded is\n        served with no request, even under --no-cache'
+    );
+  });
+
+  // react/element-command-payload.ts names two disagreeing ids: the one
+  // exception to "never a value" (element-command-payload.test.ts).
+  it('names the id-pair exception to "never a value"', () => {
+    expect(USAGE).toContain(
+      'never a value, with one exception: an "id" and an "elementId" that\n        disagree are both named'
+    );
+  });
+
   // CONSUMER: qontinui-claude-config's scripts/verify-page-verdict.sh (the
   // /verify-web verdict) reads the frame record's fields BY NAME — it copies
   // the record into each capture, hands "path" to vision-audit with
