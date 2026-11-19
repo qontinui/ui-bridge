@@ -234,6 +234,15 @@ name = "redaction-surface-ratchet"
 command = ["npm", "run", "redaction:check-surface"]
 
 [[steps]]
+name = "dep-range-ratchet-self-test"
+# parity: ci.yml lint-and-test "Dependency range ratchet self-test"
+# ci.yml "Dependency range ratchet self-test" → `deps:check-ranges:test` =
+# `node scripts/check-dep-ranges.test.cjs`. Pins rule 6 (FROZEN) of the step
+# below against fixtures, and runs BEFORE it: a tag reader that misreads an
+# unreadable tag as "untagged" turns that gate QUIET, not red.
+command = ["npm", "run", "deps:check-ranges:test"]
+
+[[steps]]
 name = "dep-range-ratchet"
 # parity: ci.yml lint-and-test "Dependency range ratchet"
 # ci.yml "Dependency range ratchet" → `deps:check-ranges` =

@@ -9,8 +9,9 @@
 // two of the three had already shipped to npm before anyone noticed.
 //
 // This is that guard. For every PUBLISHED workspace package it enforces four
-// offline rules on each internal `@qontinui/*` dependency, plus one optional
-// online rule (`--registry`, publish-time only).
+// offline rules on each internal `@qontinui/*` dependency, a release-path rule
+// and a frozen-release rule per package, plus one optional online rule
+// (`--registry`, publish-time only).
 //
 // OFFLINE RULES
 //
@@ -45,6 +46,29 @@
 //      matching `<dir>-v*` tag prefix in publish.yml. Without one there is no
 //      way to ship it, so its version and its dependency metadata are fiction.
 //
+//   6. FROZEN — a released version is frozen. When the release tag
+//      `<dir>-v<source version>` exists, the source manifest's dependency
+//      blocks (`dependencies`, `peerDependencies`, `optionalDependencies`) must
+//      equal the TAGGED manifest's. A change to them after the release needs a
+//      version bump, or the next publish ships different metadata under a
+//      version npm already holds (it refuses it), and every reader of the
+//      source misreads what that version requires. Commit 20e7c37 raised
+//      `@qontinui/ui-bridge-cli-args`'s floor in two released packages
+//      (headless 0.7.0, wrapper 0.12.0) without a bump; this is the rule that
+//      would have failed it. "Released" keys on the tag, not on npm: a
+//      release tag is conventionally never moved (no ruleset enforces it), it
+//      is readable from git in CI, and a tag whose publish failed still freezes
+//      its version (the workflow publishes from the tag). The tag is read
+//      locally first, else from `git ls-remote --tags origin` plus a fetch of
+//      that one tag (depth 1 only in a repository that is ALREADY shallow, so
+//      a full clone is never made shallow). An origin that lists no tags at
+//      all reads as UNKNOWN, never as "nothing released". A lookup that cannot
+//      answer FAILS, naming UNKNOWN — it never passes
+//      [policy: unknown-must-not-render-as-a-default]. Residual: an origin that
+//      carries SOME tags but not this package's (a partial mirror, a fork
+//      synced before the release) still reads the version as unreleased; CI's
+//      origin is the canonical GitHub repository, where that cannot happen.
+//
 // PRIVATE packages are exempt from all of it by design: `ui-bridge-extension`,
 // `e2e`, the repo root and the six `examples/` are `private: true`, never
 // publish, and use `"*"` / `file:` as plain workspace links. No consumer can
@@ -68,6 +92,7 @@
 'use strict';
 
 const { readFileSync, existsSync, readdirSync, statSync } = require('node:fs');
+const { execFileSync } = require('node:child_process');
 const { join, resolve, relative } = require('node:path');
 const semver = require('semver');
 
@@ -298,6 +323,145 @@ async function checkRegistry(manifest, alreadyFailed, failures) {
   return checked;
 }
 
+/** `block` as a canonical string: keys sorted, an absent block read as `{}`. */
+function canonicalBlock(block) {
+  const entries = Object.entries(block ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return JSON.stringify(Object.fromEntries(entries));
+}
+
+/**
+ * Rule 6 for one package: the failures a released version's frozen dependency
+ * metadata produces. `readTag(dir, version)` answers the tagged manifest:
+ * `{ state: 'untagged' }`, `{ state: 'tagged', tag, json }` or
+ * `{ state: 'unknown', tag, detail }`. An unknown answer is a failure.
+ */
+function frozenFailures(where, dir, json, readTag) {
+  if (!dir || !json.version) return [];
+  const answer = readTag(dir, json.version);
+  const tag = answer.tag ?? `${dir}-v${json.version}`;
+  if (answer.state === 'untagged') return [];
+  if (answer.state !== 'tagged') {
+    return [
+      {
+        where,
+        block: 'package',
+        name: json.name,
+        range: json.version,
+        label: `${json.name}@${json.version}`,
+        packageLevel: true,
+        reason:
+          `UNKNOWN whether ${json.version} is released: the release tag ${tag} could not be ` +
+          `read (${answer.detail ?? 'no answer'}), so its frozen metadata was not compared`,
+        fix: 'make the tag readable (fetch tags, or run with network access to origin) and re-run',
+      },
+    ];
+  }
+  const failures = [];
+  for (const block of DEP_BLOCKS) {
+    const released = canonicalBlock(answer.json[block]);
+    const source = canonicalBlock(json[block]);
+    if (released === source) continue;
+    failures.push({
+      where,
+      block,
+      name: json.name,
+      range: json.version,
+      label: `${block} of ${json.name}@${json.version}`,
+      packageLevel: true,
+      reason:
+        `is released as ${tag}, whose ${block} is ${released}, but the source declares ` +
+        `${source} — a released version's dependency metadata is frozen`,
+      fix: `bump ${json.name} to the next version (above ${json.version}) in the same change`,
+    });
+  }
+  return failures;
+}
+
+/** Run git in ROOT, returning stdout, or throwing with git's stderr. */
+function git(args) {
+  return execFileSync('git', ['-C', ROOT, ...args], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+/**
+ * The tag reader for rule 6 over a `git(args)` runner: the tagged
+ * `packages/<dir>/package.json`, as `{ state: 'untagged' | 'tagged' | 'unknown' }`.
+ * Local tag first; else origin's tag list (read once per reader, and a failed
+ * read is remembered and answered as UNKNOWN on every later call), and a
+ * fetch of the one tag that exists there. Anything that cannot answer is
+ * `unknown`. `git` is injectable so the self-test can drive every arm.
+ */
+function makeTagReader(runGit) {
+  let remote = null; // { tags: Set<string> } | { error: string }
+  const remoteTags = () => {
+    if (remote === null) {
+      try {
+        const tags = new Set();
+        for (const line of runGit(['ls-remote', '--tags', 'origin']).split('\n')) {
+          const name = line.split('\t')[1];
+          if (name) tags.add(name.trim().replace(/\^\{\}$/, ''));
+        }
+        remote =
+          tags.size > 0
+            ? { tags }
+            : { error: 'origin lists no tags at all, so "never released" cannot be told apart' };
+      } catch (err) {
+        remote = { error: errorDetail(err) };
+      }
+    }
+    if (remote.error) throw new Error(`git ls-remote --tags origin: ${remote.error}`);
+    return remote.tags;
+  };
+
+  return function readTag(dir, version) {
+    const tag = `${dir}-v${version}`;
+    if (!semver.valid(version)) {
+      return { state: 'unknown', tag, detail: `"${version}" is not a valid semver version` };
+    }
+    const ref = `refs/tags/${tag}`;
+    const show = () => ({
+      state: 'tagged',
+      tag,
+      json: JSON.parse(runGit(['show', `${ref}:packages/${dir}/package.json`])),
+    });
+    let local = false;
+    try {
+      runGit(['rev-parse', '-q', '--verify', `${ref}^{commit}`]);
+      local = true;
+    } catch {
+      local = false;
+    }
+    try {
+      if (local) return show();
+      if (!remoteTags().has(ref)) return { state: 'untagged', tag };
+      // Deepen-fetch only a repository that is already shallow (a CI
+      // checkout): a depth-limited fetch into a full clone writes
+      // .git/shallow and truncates the history every linked worktree shares.
+      const shallow = runGit(['rev-parse', '--is-shallow-repository']).trim() === 'true';
+      runGit([
+        'fetch',
+        '--quiet',
+        '--no-tags',
+        ...(shallow ? ['--depth=1'] : []),
+        'origin',
+        `+${ref}:${ref}`,
+      ]);
+      return show();
+    } catch (err) {
+      return { state: 'unknown', tag, detail: errorDetail(err) };
+    }
+  };
+}
+
+/** The first line of what a failed git call (or any error) said. */
+function errorDetail(err) {
+  return String(err.stderr || err.message || err)
+    .trim()
+    .split('\n')[0];
+}
+
 async function main() {
   const manifests = readWorkspaceManifests();
   const publishable = publishableDirs();
@@ -324,6 +488,7 @@ async function main() {
     process.exit(2);
   }
 
+  const readTag = makeTagReader(git);
   const failures = [];
   const accepted = [];
   const published = [];
@@ -347,12 +512,16 @@ async function main() {
         block: 'package',
         name: json.name,
         range: json.version,
+        packageLevel: true,
         reason:
           'is not private but has no release path — no matching tag prefix in ' +
           '.github/workflows/publish.yml, so there is no way to ship it',
         fix: `add '${dir}-v*' to publish.yml's tag triggers, or mark the package private`,
       });
     }
+
+    // Rule 6 — a released version's dependency metadata is frozen.
+    failures.push(...frozenFailures(where, dir, json, readTag));
 
     for (const block of DEP_BLOCKS) {
       for (const [name, range] of Object.entries(json[block] ?? {})) {
@@ -415,7 +584,10 @@ async function main() {
 
   let registryChecked = 0;
   if (CHECK_REGISTRY) {
-    const failedNames = new Set(failures.map((f) => f.name));
+    // A DEPENDENCY that failed an offline rule needs one report, not two; a
+    // package-level failure (rules 5-6) names the package itself and must not
+    // hide its registry check wherever another package depends on it.
+    const failedNames = new Set(failures.filter((f) => !f.packageLevel).map((f) => f.name));
     for (const manifest of published) {
       registryChecked += await checkRegistry(manifest, failedNames, failures);
     }
@@ -432,14 +604,15 @@ async function main() {
     process.stderr.write(`Internal dependency check failed (${failures.length}):\n\n`);
     for (const f of failures) {
       process.stderr.write(`  ${f.where}\n`);
-      process.stderr.write(`    ${f.block}["${f.name}"] = "${f.range}"\n`);
+      process.stderr.write(`    ${f.label ?? `${f.block}["${f.name}"] = "${f.range}"`}\n`);
       process.stderr.write(`    ${f.reason}\n`);
       process.stderr.write(`    fix: ${f.fix}\n\n`);
     }
     process.stderr.write(
       'Every internal @qontinui/* range in a PUBLISHED package must be a valid registry\n' +
         'range, bounded above, wide enough to span its major band, and satisfied by the\n' +
-        'depended-on package’s current source version. See\n' +
+        'depended-on package’s current source version, and a released version keeps the\n' +
+        'dependency metadata it was released with. See\n' +
         'docs/wrappers/authoring-guide.md for the reasoning.\n'
     );
     process.exit(1);
@@ -455,8 +628,12 @@ async function main() {
   );
 }
 
-main().catch((err) => {
-  process.stderr.write(`${err.message ?? err}
+module.exports = { canonicalBlock, frozenFailures, makeTagReader };
+
+if (require.main === module) {
+  main().catch((err) => {
+    process.stderr.write(`${err.message ?? err}
 `);
-  process.exit(1);
-});
+    process.exit(1);
+  });
+}

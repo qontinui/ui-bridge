@@ -232,12 +232,21 @@ jobs:
         # even when the new file has no raw-read lint violation yet.
         run: npm run redaction:check-surface
 
+      - name: Dependency range ratchet self-test
+        # Pins rule 6 (FROZEN) of the step below against fixture manifests and a
+        # stubbed tag reader. It runs FIRST: a reader that answers "untagged"
+        # for a tag it could not read does not turn the ratchet red, it turns it
+        # QUIET, passing exactly the drift it exists to catch.
+        run: npm run deps:check-ranges:test
+
       - name: Dependency range ratchet
         # Fails if a published package declares an internal @qontinui/* range
         # that is unbounded above, a hand-maintained OR-chain, or stale against
-        # the depended-on package's current source version. Guards the
-        # invariant PR #147 established; without it every one of those defects
-        # is reintroducible by a single hand edit.
+        # the depended-on package's current source version, or if a released
+        # version (its `<dir>-v<version>` tag exists) no longer carries the
+        # dependency metadata it was released with. Guards the invariant PR #147
+        # established; without it every one of those defects is reintroducible
+        # by a single hand edit.
         run: npm run deps:check-ranges
 
       - name: Documentation symbol ratchet self-test

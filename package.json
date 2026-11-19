@@ -26,6 +26,7 @@
     "redaction:check-surface": "node scripts/check-redaction-surface.cjs",
     "redaction:surface:update": "node scripts/check-redaction-surface.cjs --update",
     "deps:check-ranges": "node scripts/check-dep-ranges.cjs",
+    "deps:check-ranges:test": "node scripts/check-dep-ranges.test.cjs",
     "docs:check-symbols": "node scripts/check-docs-symbols.cjs",
     "docs:check-symbols:test": "node scripts/check-docs-symbols.test.cjs",
     "docs:symbol-debt:update": "node scripts/check-docs-symbols.cjs --update",
