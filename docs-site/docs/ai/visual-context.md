@@ -267,14 +267,17 @@ other layer beneath the text lies where its place in that layer's flow can put
 it: in a block container on horizontal lines, a `::before` from the content
 box's top and a `::after` after the last in-flow content, each as deep as
 itself and its margins (a line, for a plain inline one), across the box's
-width, and not past the box (a block after inline content, below that content's
-last line box, leading included). Anywhere in the layer's box elsewhere: a flex or grid
-item, columns, a float, vertical lines, a `<button>` or an `align-content` that
-lays the content lower, and a line that an inline-block or a replaced element
-may make taller. One that paints and can reach the text there makes contrast
-`unknown`. Past how far its offsets and its transform move it, one in
-normal flow that overflows its element's box is not seen, and one at
-`opacity: 0` paints nothing. A transparent one of the text's own element or of
+width (a block after inline content, below that content's last line box,
+leading included). Anywhere in the layer's box elsewhere: a flex or grid item,
+columns, a float, vertical lines, a `<button>` or an `align-content` that lays
+the content lower, and, for a `::after` or an inline `::before`, a line that an
+inline-block, a replaced element or an inline box of another line-height, font
+size or `vertical-align` may make taller (a block `::before` is laid out above
+the lines and keeps its band). Either reaches past the box as far as the box's
+content overflows a side the box does not clip, and anywhere on the screen
+where a box a transform turns overflows. One that paints and can reach the text
+there makes contrast `unknown`. One at `opacity: 0` paints nothing. A
+transparent one of the text's own element or of
 a layer beneath the text, whose box the computed style does not pin down (one
 its relative offsets nudge, a 3D transform, a motion path), is taken to paint
 nothing, so its glyphs and its border are not seen, over the text as well. An
@@ -293,8 +296,11 @@ browser draws it, out of its ancestors' transforms, opacity, filters and clips,
 at the zoom it inherits, over its own `::backdrop` and that of every top-layer
 element holding it (a popover in a modal dialog), and over all of the page. A
 page element's `::before` / `::after` under it is read as unreadable, since
-where among the page's layers it paints is not resolved, and in a modal dialog
-the page is inert and the hit test lists none of it, so it is read as
+where among the page's layers it paints is not resolved (except one with a
+negative `z-index` in an element that is a stacking context: it paints just
+above that element's background, beneath its content, and is composited there
+exactly), and in a modal dialog the page is inert and the hit test lists none
+of it, so it is read as
 unreadable too: there contrast is `unknown` unless an opaque background of a
 top-layer element, or an opaque `::backdrop`, hides the page.
 Every
