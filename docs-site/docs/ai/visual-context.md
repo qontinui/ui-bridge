@@ -267,9 +267,12 @@ other layer beneath the text lies where its place in that layer's flow can put
 it: in a block container on horizontal lines, a `::before` from the content
 box's top and a `::after` after the last in-flow content, each as deep as
 itself and its margins (a line, for a plain inline one), across the box's
-width; anywhere in the layer's box elsewhere (a flex or grid item, columns, a
-float, vertical lines). One that paints and can reach the text there makes
-contrast `unknown`. Past how far its offsets and its transform move it, one in
+width, and not past the box (a block after inline content, below that content's
+last line box, leading included). Anywhere in the layer's box elsewhere: a flex or grid
+item, columns, a float, vertical lines, a `<button>` or an `align-content` that
+lays the content lower, and a line that an inline-block or a replaced element
+may make taller. One that paints and can reach the text there makes contrast
+`unknown`. Past how far its offsets and its transform move it, one in
 normal flow that overflows its element's box is not seen, and one at
 `opacity: 0` paints nothing. A transparent one of the text's own element or of
 a layer beneath the text, whose box the computed style does not pin down (one
@@ -287,11 +290,13 @@ over text outside its popover makes contrast `unknown`, even when the popover
 or a block holding it is at `opacity: 0`.
 Content in the top layer (an open popover, a modal dialog) is read as the
 browser draws it, out of its ancestors' transforms, opacity, filters and clips,
-at the zoom it inherits, over its own `::backdrop`, over everything of the page
-(a `::before` / `::after` included, whatever its `z-index`), and, in a modal
-dialog, over a page the dialog makes inert, which the hit test does not list:
-there contrast is `unknown` unless an opaque background of the dialog, or an
-opaque `::backdrop`, hides the page.
+at the zoom it inherits, over its own `::backdrop` and that of every top-layer
+element holding it (a popover in a modal dialog), and over all of the page. A
+page element's `::before` / `::after` under it is read as unreadable, since
+where among the page's layers it paints is not resolved, and in a modal dialog
+the page is inert and the hit test lists none of it, so it is read as
+unreadable too: there contrast is `unknown` unless an opaque background of a
+top-layer element, or an opaque `::backdrop`, hides the page.
 Every
 other kind answers per result with `outcome: "unknown"` and
 `code: "capability_unavailable_in_build"`. A mixed batch still answers what it
