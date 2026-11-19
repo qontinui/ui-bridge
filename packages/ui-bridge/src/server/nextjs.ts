@@ -1354,16 +1354,14 @@ async function handleCommandResponse(request: NextRequest, relay: CommandRelay):
 
     // Per-user tab scoping (§4.2): a result settles a command only when it
     // comes from the tab the command went to, presents that stream's id (when
-    // it presents one), and is posted by the tab's verified owner.
+    // it presents one), and is posted by the tab's verified owner. The relay
+    // applies that check itself, before it settles, forwards or reads the
+    // command registry, and answers `refused`.
     const tabId = typeof responseTabId === 'string' ? responseTabId : undefined;
     const responder = {
       streamId: typeof body.streamId === 'string' ? (body.streamId as string) : undefined,
       callerUserId: relayCallerUserId(request),
     };
-    if (relay.commandResponseRefusal(commandId, tabId, responder)) {
-      return commandResponseRefusedResponse();
-    }
-
     const outcome = ok
       ? await relay.resolveCommand(commandId, result, tabId, responder)
       : await relay.rejectCommand(

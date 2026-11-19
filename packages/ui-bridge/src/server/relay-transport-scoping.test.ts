@@ -467,18 +467,15 @@ describe('across instances, a result is held to where the command went', () => {
     const forged = { forgedBy: 'user-b' };
 
     // Posted where the command was delivered: refused there, never forwarded.
-    expect(b.commandResponseRefusal(commandId, 'tab-a', { callerUserId: 'user-b' })).toBe(
-      'NOT_OWNER'
-    );
     expect(await b.resolveCommand(commandId, forged, 'tab-a', { callerUserId: 'user-b' })).toBe(
       'refused'
     );
     expect(
-      b.commandResponseRefusal(commandId, 'tab-a', {
+      await b.resolveCommand(commandId, forged, 'tab-a', {
         callerUserId: 'user-a',
         streamId: '00000000-0000-4000-8000-000000000000',
       })
-    ).toBe('STREAM_MISMATCH');
+    ).toBe('refused');
 
     // Posted on an instance that knows nothing of the command: it is forwarded
     // with who answered, and the instance holding it refuses it.

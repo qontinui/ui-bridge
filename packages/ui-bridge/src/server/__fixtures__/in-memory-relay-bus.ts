@@ -14,7 +14,10 @@
  *   no holder is told apart from another and none counts as "elsewhere".
  *
  * `wire: 'json'` sends every response through JSON, as the Redis bus carries
- * it. Not part of the published package: only tests import it.
+ * it. A view's `close()` drops only that view's subscriptions, as
+ * `RedisRelayBus.close` does by quitting its connections: its tab holds and
+ * registered commands stay, to expire by their TTLs as Redis keys would.
+ * `hub.clear()` resets the whole fleet between tests. Not part of the published package: only tests import it.
  */
 import type { RelayBus, RelayCommandEnvelope, RelayResponseEnvelope } from '../relay-bus';
 
@@ -44,6 +47,7 @@ export class InMemoryBusHub {
     return new InMemoryBus(this, undefined);
   }
 
+  /** Reset the whole fleet (test teardown); a view's `close()` drops only its own. */
   clear(): void {
     this.cmdByTab.clear();
     this.broadcast.clear();
@@ -57,6 +61,9 @@ export class InMemoryBusHub {
 const SHARED_HOLDER = '__shared__';
 
 export class InMemoryBus implements RelayBus {
+  /** Undo each subscription this view made; `close()` runs what is left. */
+  private readonly subscriptions = new Set<() => void>();
+
   constructor(
     private readonly hub: InMemoryBusHub,
     /** This view's holder name; undefined for the shared view. */
@@ -73,10 +80,10 @@ export class InMemoryBus implements RelayBus {
     if (!set) this.hub.cmdByTab.set(tabId, (set = new Set()));
     set.add(handler);
     this.hub.broadcast.add(handler);
-    return () => {
+    return this.track(() => {
       set!.delete(handler);
       this.hub.broadcast.delete(handler);
-    };
+    });
   }
 
   publishResponse(env: RelayResponseEnvelope): void {
@@ -91,7 +98,16 @@ export class InMemoryBus implements RelayBus {
     let set = this.hub.respByCmd.get(commandId);
     if (!set) this.hub.respByCmd.set(commandId, (set = new Set()));
     set.add(handler);
-    return () => set!.delete(handler);
+    return this.track(() => set!.delete(handler));
+  }
+
+  /** Record `undo` so `close()` can run it; the returned unsubscribe runs it once. */
+  private track(undo: () => void): () => void {
+    const once = () => {
+      if (this.subscriptions.delete(once)) undo();
+    };
+    this.subscriptions.add(once);
+    return once;
   }
 
   registerTab(tabId: string): void {
@@ -131,7 +147,14 @@ export class InMemoryBus implements RelayBus {
     return true;
   }
 
+  /**
+   * Drop this view's subscriptions, as quitting its Redis connections does.
+   * Its tab holds and registered commands stay: in Redis they are keys, which
+   * expire by TTL, not when a client disconnects. Unlike a quit Redis client,
+   * a closed view still accepts publish / register / subscribe calls, so a
+   * test of "a closed bus is inert" cannot be written against this fixture.
+   */
   async close(): Promise<void> {
-    this.hub.clear();
+    for (const undo of Array.from(this.subscriptions)) undo();
   }
 }

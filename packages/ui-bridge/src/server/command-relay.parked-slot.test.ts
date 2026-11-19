@@ -1511,3 +1511,74 @@ describe('relay · a tab held through a WebSocket client on the bus (review W3, 
     }).toEqual({ settled: true, message: NOT_DELIVERED_GET_TAB_INFO });
   });
 });
+
+/**
+ * Plan 2026-11-08-ui-bridge-relay-client-drops-refused-results-and-heartbeats-silently,
+ * D2: a parked command's registration is issued again just before its flush
+ * sends it, so the registry knows it at the moment of send even when the
+ * registration made at dispatch lapsed while it waited (a fire-and-forget
+ * command's is held for its recorder window only, 2 s here).
+ */
+describe('relay · a parked command is re-registered before its flush sends it', () => {
+  const KNOWN = 'uibridge:cmd:known:';
+  /** Whether the fake Redis holds `commandId` in the command registry, unexpired. */
+  function knownNow(server: FakeRedisServer, commandId: string): boolean {
+    const entry = server.strings.get(`${KNOWN}${commandId}`);
+    return entry !== undefined && entry.expiresAt > Date.now();
+  }
+
+  it('flushed down the tab’s next SSE stream', async () => {
+    const server = new FakeRedisServer();
+    const { relay, routes } = rig({ bus: redisBus(server, 'A') });
+    const first = await openStream(routes, relay, 'tab-a', { caps: 'rotate', cid: 'page-1' });
+    await first.cancel();
+
+    const navigate = track(
+      relay.queueCommand('pageNavigate', { url: '/next' }, { targetTabId: 'tab-a' })
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    const knownAtSend: boolean[] = [];
+    const internals = relay as unknown as {
+      deliver: (listener: unknown, command: { commandId: string }) => boolean;
+    };
+    const deliver = internals.deliver.bind(relay);
+    vi.spyOn(internals, 'deliver').mockImplementation((listener, command) => {
+      knownAtSend.push(knownNow(server, command.commandId));
+      return deliver(listener, command);
+    });
+    await vi.advanceTimersByTimeAsync(2_500); // the dispatch-time registration lapses
+    expect(navigate.settled).toBe(false);
+
+    const second = await openStream(routes, relay, 'tab-a', { caps: 'rotate', cid: 'page-1' });
+    expect(second.actions).toEqual(['pageNavigate']);
+    expect(knownAtSend).toEqual([true]);
+    expect(navigate.settled).toBe(true);
+  });
+
+  it('sent at grace expiry to a WebSocket client of the tab', async () => {
+    const server = new FakeRedisServer();
+    const { relay, routes } = rig({ bus: redisBus(server, 'A') });
+    const first = await openStream(routes, relay, 'tab-a', { caps: 'rotate', cid: 'page-1' });
+    await first.cancel();
+
+    const navigate = track(
+      relay.queueCommand('pageNavigate', { url: '/next' }, { targetTabId: 'tab-a' })
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    const knownAtSend: boolean[] = [];
+    relay.registerWebSocketClient({
+      clientId: 'tab-a',
+      isConnected: () => true,
+      close: () => undefined,
+      send: (message) => {
+        const { commandId } = JSON.parse(message) as { commandId: string };
+        knownAtSend.push(knownNow(server, commandId));
+      },
+    });
+    expect(navigate.settled).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(4_000); // grace ends; the dispatch-time registration lapsed
+    expect(knownAtSend).toEqual([true]);
+    expect(navigate.settled).toBe(true);
+  });
+});

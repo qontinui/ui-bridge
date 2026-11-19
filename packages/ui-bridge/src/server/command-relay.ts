@@ -1570,6 +1570,18 @@ export class CommandRelay {
     );
 
     return new Promise((resolve, reject) => {
+      // The registry write is ISSUED before any transport sends the command.
+      // Only on the bus path does that order it against the send (the SET and
+      // the PUBLISH share one connection); a WebSocket or SSE send is not
+      // ordered against it. The write is fire-and-forget (a Redis SET not
+      // awaited), so it is not confirmed to have landed when a fast tab's
+      // result reaches another instance.
+      this.registerBeforeSend(
+        commandId,
+        fireAndForget,
+        Math.max(this.wsTimeoutMs, this.sseTimeoutMs)
+      );
+
       // Try WebSocket delivery first
       const sentViaWebSocket = this.sendCommandViaWebSocket(
         commandId,
@@ -1656,6 +1668,7 @@ export class CommandRelay {
         // no live listener, so `broadcastToListeners` returned 0 and the
         // navigation was silently dropped while the relay still returned success.
         if (notified === 0) {
+          this.forgetPending(commandId);
           reject(
             new NoLiveAnswer(
               `No active UI Bridge SDK client received the ${action} command. ` +
@@ -1704,7 +1717,6 @@ export class CommandRelay {
         ...this.deliveryBinding(targetTabId, senderUserId),
       };
       this.pendingCommands.set(commandId, pending);
-      this.registerAwaited(commandId, timeoutMs);
 
       // If WebSocket failed, push via SSE
       if (!sentViaWebSocket) {
@@ -1863,7 +1875,6 @@ export class CommandRelay {
       errorResponseCount: 0,
       ...this.deliveryBinding(targetTabId, senderUserId),
     });
-    this.registerAwaited(commandId, recorderTtlMs, 0);
     return {
       success: true,
       fireAndForget: true,
@@ -1873,6 +1884,15 @@ export class CommandRelay {
       action,
       timestamp: Date.now(),
     };
+  }
+
+  /**
+   * Register `id` before a local send: a fire-and-forget command for its
+   * result recorder's window, any other for `timeoutMs` plus the grace window.
+   */
+  private registerBeforeSend(id: string, fireAndForget: boolean, timeoutMs: number): void {
+    if (fireAndForget) this.registerAwaited(id, this.fireAndForgetRecorderMs(), 0);
+    else this.registerAwaited(id, timeoutMs);
   }
 
   /** How long a fire-and-forget command's result recorder stays (ms). */
@@ -1902,6 +1922,7 @@ export class CommandRelay {
       if (!pending) continue; // settled meanwhile: timed out, evicted, or destroyed
       pending.streamId = listener.streamId;
       pending.streamUserId = listener.userId;
+      this.registerBeforeSend(command.commandId, fireAndForget, this.sseTimeoutMs);
       if (!this.deliver(listener, command)) {
         const why = `Tab "${tabId}"'s new command stream did not accept it.`;
         this.settlePending(
@@ -2005,7 +2026,6 @@ export class CommandRelay {
       () => this.timeOutPending(command.commandId, command.action, timeoutMs, transport),
       timeoutMs
     );
-    this.registerAwaited(command.commandId, timeoutMs);
   }
 
   /**
@@ -2408,21 +2428,6 @@ export class CommandRelay {
       if (expected !== undefined && expected !== identity) return 'NOT_OWNER';
     }
     return null;
-  }
-
-  /**
-   * Why `responder` may not settle `commandId`, or null when it may or when
-   * this instance knows nothing of the command. The HTTP layer asks first so
-   * a refused result gets its own answer; `resolveCommand` and
-   * `rejectCommand` apply the same check themselves.
-   */
-  commandResponseRefusal(
-    commandId: string,
-    tabId: string | undefined,
-    responder: CommandResponder
-  ): 'TAB_MISMATCH' | 'STREAM_MISMATCH' | 'NOT_OWNER' | null {
-    const binding = this.pendingCommands.get(commandId) ?? this.liveBusDelivery(commandId);
-    return binding ? this.responseRefusal(binding, tabId, responder) : null;
   }
 
   /** This instance's record of delivering `commandId` for another instance, if live. */
@@ -3133,6 +3138,7 @@ export class CommandRelay {
       const { command } = item;
       const pending = this.pendingCommands.get(command.commandId);
       if (!pending) continue; // settled meanwhile: timed out, evicted, or destroyed
+      this.registerBeforeSend(command.commandId, item.fireAndForget, this.wsTimeoutMs);
       if (this.sendCommandViaWebSocket(command.commandId, command.action, command.payload, tabId)) {
         this.settleParkedDelivery(tabId, item, pending, this.wsTimeoutMs, 'WebSocket');
       } else {

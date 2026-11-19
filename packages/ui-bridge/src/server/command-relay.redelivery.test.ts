@@ -271,9 +271,6 @@ describe('relay redelivery · a pending command goes down the same page instance
     const [alias] = second.commands;
 
     expect(
-      relay.commandResponseRefusal(alias.commandId, 'tab-a', { streamId: first.streamId() })
-    ).toBe('STREAM_MISMATCH');
-    expect(
       await relay.resolveCommand(alias.commandId, { forged: true }, 'tab-a', {
         streamId: first.streamId(),
       })
@@ -294,9 +291,11 @@ describe('relay redelivery · a pending command goes down the same page instance
     const { originalId, outcome } = await strandedCommand(relay, routes);
     const second = await openStream(routes, 'tab-a', { caps: CAPS, cid: 'page-1' });
 
-    expect(relay.commandResponseRefusal(originalId, 'tab-a', { streamId: second.streamId() })).toBe(
-      'STREAM_MISMATCH'
-    );
+    expect(
+      await relay.resolveCommand(originalId, { forged: true }, 'tab-a', {
+        streamId: second.streamId(),
+      })
+    ).toBe('refused');
     expect(outcome.settled).toBe(false);
   });
 

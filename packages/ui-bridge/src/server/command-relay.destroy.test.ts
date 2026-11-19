@@ -153,6 +153,29 @@ describe('CommandRelay.destroy()', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it('withdraws a pending command from the bus command registry, registered before it was sent', async () => {
+    const bus = busStub();
+    const r = relay({ proactiveSnapshot: false, bus });
+    const client = wsClient('ws-1');
+    r.registerWebSocketClient(client);
+    const outcome = r.queueCommand('getControlSnapshot', {}).catch((err: unknown) => err);
+    await flushMicrotasks();
+    expect(client.send).toHaveBeenCalledTimes(1);
+    const { commandId } = JSON.parse(client.send.mock.calls[0]![0] as string) as {
+      commandId: string;
+    };
+    expect(bus.registerCommand).toHaveBeenCalledWith(commandId, expect.any(Number));
+    expect(bus.registerCommand.mock.invocationCallOrder[0]).toBeLessThan(
+      client.send.mock.invocationCallOrder[0]!
+    );
+    expect(bus.forgetCommand).not.toHaveBeenCalled();
+
+    r.destroy();
+
+    expect(await outcome).toBeInstanceOf(RelayDestroyedError);
+    expect(bus.forgetCommand).toHaveBeenCalledWith(commandId);
+  });
+
   it('fails a caller waiting for a browser to connect with RelayDestroyedError, and clears its timer', async () => {
     const r = relay();
     const outcome = r.queueCommand('getControlSnapshot', {}).then(
