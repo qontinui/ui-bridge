@@ -1338,17 +1338,17 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       page,
       ids.map((element) => ({ type: 'contrast_meets_wcag', element }))
     );
-    // Each "Hi" the 60% black scrim covers shows ~3.7:1 (measured), and
-    // passed at 21:1 at 85258f9f: a transform that applies to no box (an
-    // inline link's scale(2), a display: contents wrapper's rotate), a
-    // static block will-change: position makes a containing block, a
-    // display: contents element that makes none, an inline box's transform,
+    // Each "Hi" the 60% black scrim covers shows ~3.7:1 (measured), where a
+    // read that misses the scrim passes it at 21:1: a transform that applies
+    // to no box (an inline link's scale(2), a display: contents wrapper's
+    // rotate), a static block will-change: position makes a containing block,
+    // a display: contents element that makes none, an inline box's transform,
     // contain or will-change: transform, which hold nothing, a link split
-    // over two lines, which holds its scrim from its first line's start
-    // (its last line's under rtl), a click-through ::after outside its
-    // element's box, and a fixed dimmer held by a translate: 0 block. A
-    // filter, or will-change: filter, does make an inline box hold it, away
-    // from the text.
+    // over two lines, which holds its scrim from its first line's start (its
+    // last line's under rtl), a click-through ::after outside its element's
+    // box, and a fixed dimmer held by a translate: 0 block. A filter, or
+    // will-change: filter, does make an inline box hold it, away from the
+    // text.
     expect(verdicts(res)).toEqual([
       ['unknown', 'input_missing'],
       ['unknown', 'input_missing'],
@@ -1508,12 +1508,12 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
   }, 60_000);
 
   it('contrast_meets_wcag: an in-flow ::before / ::after whose place in the flow is not read, and what the top layer is read over', async () => {
-    // Each unknown row here failed at 1056cb1f, as white on white, where the
-    // page shows white on navy: a block ::after after a line an inline-block
-    // makes taller starts lower than the line's text; a tile whose
-    // align-content centres it, and a button, lay their ::before lower than
-    // the content box's top. A label's click-through asterisk lies inside the
-    // label's box, not over the paragraph below it.
+    // In each unknown row the page shows white on navy, where the row's own
+    // white read beneath the badge would fail it: a block ::after after a
+    // line an inline-block makes taller starts lower than the line's text; a
+    // tile whose align-content centres it, and a button, lay their ::before
+    // lower than the content box's top. A label's click-through asterisk
+    // lies inside the label's box, not over the paragraph below it.
     const flow = await openPage(
       `
       <style>
@@ -1565,10 +1565,10 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
 
     // The top layer: a body's fixed scrim over a white card paints over the
     // card, so black text in a transparent popover above them shows ~2.4:1
-    // (it passed at 21:1, the scrim read beneath the card); text in a
-    // transparent popover inside a modal dialog lies over the dialog's black
-    // ::backdrop (it failed at 1.00:1); an opaque menu popover over a card's
-    // stretched-link ::after decides alone (it was unknown). A negative
+    // (21:1 with the scrim read beneath the card); text in a transparent
+    // popover inside a modal dialog lies over the dialog's black ::backdrop
+    // (1.00:1 with the page's white read beneath it); an opaque menu popover
+    // over a card's stretched-link ::after decides alone. A negative
     // z-index ::before of a card that is a stacking context paints just above
     // the card's background, so it is composited there (white on navy, as the
     // page shows); the same ::before of a card that is not one is read as
@@ -1642,6 +1642,61 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     expect(details[3]).toContain('contrast ratio 15.41:1');
     expect(details[4]).toContain('<div.card>::before (on the page, under the top layer)');
   }, 90_000);
+
+  it('contrast_meets_wcag: an in-flow ::after past a box that does not clip it, and a line taller than its container sets', async () => {
+    // A block ::after overflows a 30px section that does not clip it, under a
+    // badge positioned below the section's box; a span at line-height 80px,
+    // an image three inline levels deep set middle, and a span set 30px
+    // below the baseline before the line's last text make the last line
+    // taller, so the block ::after after it lies lower than the container's
+    // line-height puts it, under a badge there. The page shows black on navy
+    // in each, where white read beneath it would pass at 21:1: unknown. A
+    // block ::before band stays exact beside an inline-block: the badge far
+    // below it is black on white.
+    const svg =
+      "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='60'/%3E";
+    const page = await openPage(
+      `
+      <style>
+        .row { position: relative; margin-top: 6px; background: #fff; font: 16px/20px sans-serif; color: #000 }
+        .spill { position: relative; height: 30px; margin: 6px 0 40px; font: 16px/20px sans-serif; color: #000 }
+        .spill::after { content: ""; display: block; height: 40px; background: rgb(20, 30, 90) }
+        .tall, .deep, .low { height: 120px }
+        .tall::after, .deep::after, .low::after { content: ""; display: block; height: 24px; background: rgb(20, 30, 90) }
+        .bb { height: 100px }
+        .bb::before { content: ""; display: block; height: 4px; background: rgb(20, 30, 90) }
+      </style>
+      <section class="spill">Title<span data-id="spill" style="position:absolute;left:10px;top:40px;color:#000">PRO</span></section>
+      <div class="row tall"><span style="line-height:80px">Name</span><span data-id="tallline" style="position:absolute;right:10px;top:84px;color:#000">PRO</span></div>
+      <div class="row deep"><span><span><span><img alt="" src="${svg}" style="width:10px;height:60px;vertical-align:middle"></span></span></span> Name<span data-id="deepimg" style="position:absolute;right:10px;top:62px;color:#000">PRO</span></div>
+      <div class="row low">Name<span style="vertical-align:-30px">x</span> more<span data-id="lowspan" style="position:absolute;right:10px;top:54px;color:#000">PRO</span></div>
+      <div class="row bb"><span style="display:inline-block;width:20px;height:20px;background:#ccc"></span> Title<span data-id="beforeband" style="position:absolute;right:10px;top:60px;color:#000">PRO</span></div>
+    `,
+      { width: 800, height: 700 }
+    );
+    const ids = ['spill', 'tallline', 'deepimg', 'lowspan', 'beforeband'];
+    const res = await assertOn(
+      page,
+      ids.map((element) => ({ type: 'contrast_meets_wcag', element }))
+    );
+    expect(verdicts(res)).toEqual([
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['unknown', 'input_missing'],
+      ['passed', null],
+    ]);
+    for (const [i, layer] of [
+      [0, '<section.spill>::after'],
+      [1, '<div.row.tall>::after'],
+      [2, '<div.row.deep>::after'],
+      [3, '<div.row.low>::after'],
+    ] as const) {
+      expect(res.results[i].detail).toContain(`${layer} is laid out in normal flow inside`);
+    }
+    expect(res.results[4].detail).toContain('contrast ratio 21.00:1');
+    await page.close();
+  }, 60_000);
 
   it('contrast_meets_wcag: a page backdrop the body draws under a footer fixed below its box', async () => {
     // The body is 40px tall; its fixed ::before backdrop fills the viewport,
