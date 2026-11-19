@@ -164,11 +164,13 @@ describe('POST /design/evaluate through a relay app', () => {
 
   // The page's dispatcher answers a malformed body with `UB-VALIDATION-ERROR`
   // (pinned on both handler sets in commandHandlers.designEvaluate.test.ts).
-  // This test does not pin the code over HTTP: the relay client posts any
-  // failure as `ok: false`, and the Next.js `POST /commands` handler keeps only
-  // its message, so every coded relay failure reaches the caller as
-  // `UB-ACTION-FAILED`. That transport defect predates this route and is
-  // recorded as coord finding 388a6c8a.
+  // Over HTTP the relay client posts that failure as `ok: false` with the
+  // dispatcher's envelope as `result`; the Next.js `POST /commands` settle
+  // carries it (a `TabReportedFailure`), so the caller gets the dispatcher's
+  // own code with its envelope under `data`, never a computed evaluation. Until
+  // plan 2026-11-08-ui-bridge-relay-and-exec-mode-follow-ups-from-pr-329 Phase 2
+  // the settle kept only the message and every coded relay failure answered
+  // `UB-ACTION-FAILED` (coord finding 388a6c8a).
   it('a malformed body is refused and nothing is computed on it', async () => {
     await mountRelayApp();
     expect((await post('/design/evaluate/baseline', {})).body.success).toBe(true);
@@ -189,7 +191,12 @@ describe('POST /design/evaluate through a relay app', () => {
         success: false,
       });
       expect(body.error).toContain(`${path}: ${message}`);
-      expect(body.data).toBeUndefined();
+      expect(body.code).toBe('UB-VALIDATION-ERROR');
+      // `data` is the dispatcher's refusal, not an evaluation: nothing was computed.
+      const refusal = body.data as Record<string, unknown> | undefined;
+      expect(refusal?.success).toBe(false);
+      expect(String(refusal?.error)).toContain(`${path}: ${message}`);
+      expect(refusal).not.toHaveProperty('metrics');
     }
   });
 
