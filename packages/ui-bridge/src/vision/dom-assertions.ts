@@ -51,8 +51,11 @@
  *   its own `::backdrop` and that of every top-layer element holding it,
  *   and over all of the page: a page element's `::before` / `::after` under
  *   it is read as unreadable (where among the page's layers it paints is
- *   not resolved), and so is a modal dialog's page, which is inert, so the
- *   hit test lists none of it; only an opaque top-layer background or
+ *   not resolved), but for one at a negative `z-index` in an element that
+ *   is a stacking context, which paints just above that element's
+ *   background, beneath its content, and is composited there exactly; a
+ *   modal dialog's page is read as unreadable too, being inert, so the hit
+ *   test lists none of it; only an opaque top-layer background or
  *   `::backdrop` hides them. A
  *   translucent colour or an opacity group above the first opaque layer is
  *   composited exactly. With no opaque layer, the base is the `Canvas`
@@ -101,17 +104,20 @@
  *   layer's flow can put it — in a block container on horizontal lines, a
  *   `::before` from the content box's top and a `::after` after the last
  *   in-flow content, as deep as itself and its margins (a line, inline),
- *   across the box and not past it; elsewhere (a flex or grid item, a
- *   `<button>` or an `align-content` that lays the content lower, a line an
- *   atomic inline may make taller) anywhere in the layer's box — so one that
- *   paints and can reach the text is `unknown{input_missing}`. Past how far its offsets and its transform
- *   move it, one in normal flow that overflows its element's box is not
- *   seen; one at `opacity: 0` paints nothing. A transparent one of the
- *   text's own element or of a layer beneath the text, whose box the
- *   computed style does not pin down (one its relative offsets nudge, a 3D
- *   transform, a motion path), is taken to paint nothing, so its glyphs and
- *   its frame are not seen, over the text as well. An ancestor whose box
- *   misses the text paints its background and frame elsewhere, and is read
+ *   across the box; elsewhere (a flex or grid item, a `<button>` or an
+ *   `align-content` that lays the content lower, and for a `::after` or an
+ *   inline `::before` a line an atomic inline, or an inline box of another
+ *   line-height, font size or `vertical-align`, may make taller) anywhere
+ *   in the layer's box; past the box only as far as its content overflows a
+ *   side the box does not clip (anywhere on screen where a turned box's
+ *   overflow is not known) — so one that paints and can reach the text is
+ *   `unknown{input_missing}`. One at `opacity: 0` paints nothing. A
+ *   transparent one of the text's own element or of a layer beneath the text,
+ *   whose box the computed style does not pin down (one its relative offsets
+ *   nudge, a 3D transform, a motion path), is taken to paint nothing, so its
+ *   glyphs and its frame are not seen, over the text as well. An ancestor
+ *   whose box misses the text paints its background and frame elsewhere,
+ *   and is read
  *   for its `::before` / `::after` alone (a page backdrop the body draws with
  *   a fixed `::before`, under a footer fixed below the body). A click-through
  *   `::before` / `::after` is looked for whatever its element computes; one
@@ -968,6 +974,9 @@ function hasOwnText(el: Element): boolean {
 
 /** Replaced content: its pixels are not CSS colours the DOM can read. */
 const REPLACED_TAGS = new Set(['IMG', 'VIDEO', 'CANVAS', 'IFRAME', 'OBJECT', 'EMBED', 'PICTURE']);
+
+/** Form controls, laid out as atomic inline boxes whatever their computed display. */
+const FORM_CONTROL_TAGS = new Set(['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON', 'METER', 'PROGRESS']);
 
 function isReplaced(el: Element): boolean {
   if (REPLACED_TAGS.has(el.tagName.toUpperCase())) return true;
@@ -2414,7 +2423,13 @@ class TabMeasurement {
     return items;
   }
 
-  /** The top-layer elements that hold `el` (itself or ancestors), outermost first. */
+  /**
+   * The top-layer elements that hold `el` (itself or ancestors), outermost
+   * first. The browser stacks the top layer in the order its elements
+   * entered it, not by nesting: outermost first assumes each one was opened
+   * after the one holding it (a popover shown from an open dialog), which
+   * is the usual order and is not checked.
+   */
   private topLayersHolding(el: Element): Element[] {
     const tops: Element[] = [];
     for (let e: Element | null = el; e; e = composedParent(e)) {
@@ -2793,9 +2808,11 @@ class TabMeasurement {
   /**
    * Where a `::before` / `::after` of `layer` in normal flow can paint: the
    * band of `layer`'s box its place in the flow puts it in ({@link
-   * flowBand}), else `layer`'s whole box, grown by how far it can be drawn
-   * from there ({@link flowShift}) and a pixel more; null when that is not
-   * known. One that overflows `layer`'s box is not seen past it.
+   * flowBand}), else `layer`'s whole box, each grown past the box as far as
+   * its content overflows a side the box does not clip ({@link spillBox}),
+   * then by how far it can be drawn from there ({@link flowShift}) and a
+   * pixel more. The whole viewport where that overflow is not known; null
+   * when the rest is not.
    */
   private flowReach(
     layer: Element,
@@ -2805,7 +2822,44 @@ class TabMeasurement {
     const shift = this.flowShift(layer, ps);
     const box = shift === null ? undefined : boxOf(layer);
     if (!box || shift === null) return null;
-    return grown(this.flowBand(layer, ps, which, box) ?? box, shift + 1);
+    const spill = this.spillBox(layer, ps, box);
+    if (!spill) return viewport();
+    return grown(this.flowBand(layer, ps, which, box, spill) ?? spill, shift + 1);
+  }
+
+  /**
+   * `box`, `layer`'s border box in viewport pixels, grown to hold what of
+   * `layer`'s flow may lie past it: as far as its content overflows it (its
+   * scroll size past its client size, at the box's scale) on each axis whose
+   * overflow is `visible`, and as far as a negative margin pulls out the
+   * pseudo-element `ps` styles. Null when that is not known: such a box a
+   * transform turns, skews or flips.
+   */
+  private spillBox(
+    layer: Element,
+    ps: CSSStyleDeclaration,
+    box: VisionRegion
+  ): VisionRegion | null {
+    if (!(layer instanceof HTMLElement)) return box;
+    const st = this.style(layer);
+    const past = (scroll: number, client: number, overflow: string): number =>
+      overflow === 'visible' && scroll - client > 1 ? scroll - client : 0;
+    const down = past(layer.scrollHeight, layer.clientHeight, st.overflowY);
+    const across = past(layer.scrollWidth, layer.clientWidth, st.overflowX);
+    const pulled = (v: string): number => Math.max(0, -(pxValue(v) || 0));
+    const up = pulled(ps.marginTop);
+    const aside = Math.max(pulled(ps.marginLeft), pulled(ps.marginRight));
+    if (down === 0 && across === 0 && up === 0 && aside === 0) return box;
+    const m = this.linearOf(layer);
+    if (!m || m.b !== 0 || m.c !== 0 || m.a <= 0 || m.d <= 0) return null;
+    // The scroll and client sizes are layout pixels, as offsetWidth is.
+    const sx = layer.offsetWidth > 0 ? box.w / layer.offsetWidth : m.a;
+    const sy = layer.offsetHeight > 0 ? box.h / layer.offsetHeight : m.d;
+    const x = box.x - aside * m.a - across * sx;
+    const y = box.y - up * m.d;
+    const right = box.x + box.w + aside * m.a + across * sx;
+    const bottom = box.y + box.h + down * sy;
+    return { x, y, w: right - x, h: bottom - y };
   }
 
   /**
@@ -2817,19 +2871,22 @@ class TabMeasurement {
    * last in-flow content (on its last line, where that ends inline; below
    * the last line box, half its leading under that content's last fragment,
    * where a block follows inline content). A plain inline one is a line deep.
-   * Clipped to the box: past it, one is not seen. Read in a block container
-   * on horizontal lines that no transform turns, flips or skews, whose
-   * content starts at its content box's top; null elsewhere — a flex or grid
-   * item, columns, a float, a vertical writing mode, a shadow host, a
-   * `<button>` or an `align-content` that lays the content lower, a line an
-   * atomic inline may make taller, a `vertical-align` length, a size not
-   * read — where the whole box bounds it.
+   * Clipped to `spill`, the box grown where its content overflows a side the
+   * box does not clip ({@link spillBox}). Read in a block container on
+   * horizontal lines that no transform turns, flips or skews, whose content
+   * starts at its content box's top; null elsewhere — a flex or grid item,
+   * columns, a float, a vertical writing mode, a shadow host, a `<button>`
+   * or an `align-content` that lays the content lower, for a `::after` or
+   * an inline `::before` a line that may be taller than the container's
+   * line-height sets it ({@link lineMayGrow}), a `vertical-align` length, a
+   * size not read — where `spill` bounds it.
    */
   private flowBand(
     layer: Element,
     ps: CSSStyleDeclaration,
     which: '::before' | '::after',
-    box: VisionRegion
+    box: VisionRegion,
+    spill: VisionRegion
   ): VisionRegion | null {
     const st = this.style(layer);
     if (!/^(block|flow-root|list-item|inline-block)$/.test(st.display)) return null;
@@ -2858,10 +2915,14 @@ class TabMeasurement {
     const contentTop = box.y + (px(st.borderTopWidth) + px(st.paddingTop)) * m.d;
     const edge = this.flowEdge(layer, which === '::before' ? 'first' : 'last', m.d);
     if (edge === undefined) return null;
-    // A line holding an atomic inline (an inline-block, an image, a form
-    // control) can be taller than its text: where the pseudo's place is such
-    // a line, or follows one, how far down it lies is not read.
-    if (edge && !edge.block && this.holdsAtomicInline(layer)) return null;
+    // A line holding an atomic inline, or an inline box of another
+    // line-height, font size or vertical-align, can be taller than the
+    // container's line-height sets it, or hold its text higher: how far down
+    // a ::after (or an inline ::before) such a line places lies is not read.
+    // A block ::before is laid out above the lines, and its band stands.
+    if (edge && !edge.block && (which === '::after' || inline) && this.lineMayGrow(layer)) {
+      return null;
+    }
     // A block after inline content starts at the bottom of that content's
     // last line box: half the line's leading below its last fragment.
     const leading = edge ? Math.max(0, lineOf(st) * m.d - (edge.bottom - edge.top)) / 2 + 1 : 0;
@@ -2874,33 +2935,48 @@ class TabMeasurement {
       top = (inline && afterInline ? edge.top - line : edge.bottom) - deep;
       bottom = edge.bottom + deep + line + (!inline && afterInline ? leading : 0);
     }
-    const band = { x: box.x, y: top, w: box.w, h: Math.max(0, bottom - top) };
-    return intersect(band, box) ?? { x: box.x, y: box.y, w: box.w, h: 0 };
+    const band = { x: spill.x, y: top, w: spill.w, h: Math.max(0, bottom - top) };
+    return intersect(band, spill) ?? { x: spill.x, y: spill.y, w: spill.w, h: 0 };
   }
 
   /**
-   * Whether `layer` lays out an atomic inline in its lines (an inline-block,
-   * a replaced element, a form control), as a child or inside an inline
-   * child.
+   * Whether a line of `layer` may be taller, or hold its text higher, than
+   * `layer`'s own line-height sets it: its in-flow inline content, at any
+   * depth, holds an atomic inline (an inline-block, a replaced element, a
+   * form control, ruby), or an inline box whose line-height, font size or
+   * vertical-align differs from `layer`'s, or that a relative offset moves.
+   * True, too, past 512 elements, which are not all read.
    */
-  private holdsAtomicInline(layer: Element): boolean {
-    const atomic = (el: Element, depth: number): boolean => {
+  private lineMayGrow(layer: Element): boolean {
+    const st = this.style(layer);
+    let budget = 512;
+    const grows = (el: Element): boolean => {
       for (const child of Array.from(el.children)) {
+        if (--budget < 0) return true;
         const cst = this.style(child);
         if (cst.display === 'none' || cst.position === 'absolute' || cst.position === 'fixed') {
           continue;
         }
-        if (/^inline-/.test(cst.display)) return true;
-        if (
-          cst.display === 'inline' &&
-          (isReplaced(child) || (depth > 0 && atomic(child, depth - 1)))
-        ) {
-          return true;
+        const float = cst.getPropertyValue('float').trim();
+        if (float !== '' && float !== 'none') continue;
+        if (cst.display === 'contents') {
+          if (grows(child)) return true;
+          continue;
         }
+        if (cst.display !== 'inline') {
+          // An inline-level box that is not a plain inline one is atomic;
+          // a block lays out lines of its own.
+          if (/^(inline|ruby)/.test(cst.display)) return true;
+          continue;
+        }
+        if (isReplaced(child) || FORM_CONTROL_TAGS.has(child.tagName.toUpperCase())) return true;
+        if (cst.position !== 'static' || cst.verticalAlign !== 'baseline') return true;
+        if (cst.lineHeight !== st.lineHeight || cst.fontSize !== st.fontSize) return true;
+        if (grows(child)) return true;
       }
       return false;
     };
-    return atomic(layer, 1);
+    return grows(layer);
   }
 
   /**
