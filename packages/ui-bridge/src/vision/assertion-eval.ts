@@ -375,15 +375,24 @@ export function evaluateVisionAssertion(
   }
 }
 
-/** A kind the in-tab evaluator does not implement: unknown, never refused, never passed. */
+/**
+ * A kind the in-tab evaluator does not implement: unknown, never refused,
+ * never passed. `matches_isolated_render` compares a component's capture with
+ * a baseline the runner stores, so only the runner evaluates it.
+ */
 function notInTab(assertion: VisionAssertion): VisionAssertionResult {
+  const where =
+    assertion.type === 'matches_isolated_render'
+      ? 'the runner evaluates it against the component baseline it stores: send the ' +
+        'assertion to the runner (POST /ui-bridge/vision/assert).'
+      : 'vision-core evaluates it: send the assertion to the runner (POST ' +
+        '/ui-bridge/vision/assert), or evaluate it runner-less with `vision-audit assert` ' +
+        'over an ElementSnapshot.';
   return unknown(
     assertion,
     'capability_unavailable_in_build',
     `\`${assertion.type}\` is not one of the five kinds the in-tab evaluator implements ` +
-      `(${IN_TAB_ASSERTION_KINDS.join(', ')}), so it was not evaluated here. vision-core ` +
-      'evaluates it: send the assertion to the runner (POST /ui-bridge/vision/assert), or ' +
-      'evaluate it runner-less with `vision-audit assert` over an ElementSnapshot.'
+      `(${IN_TAB_ASSERTION_KINDS.join(', ')}), so it was not evaluated here. ${where}`
   );
 }
 
