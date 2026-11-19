@@ -2390,7 +2390,7 @@ class TabMeasurement {
     // Neither is faded by the element's opacity, or a block's holding it:
     // they are composited as the root's.
     const root = document.documentElement;
-    let modal = false;
+    let modal: boolean;
     try {
       modal = el.localName === 'dialog' && el.matches(':modal');
     } catch {
