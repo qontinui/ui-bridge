@@ -806,6 +806,19 @@ function tabCommandErrorResponse(err: unknown, scoped: boolean): Response {
       named.code === 'TAB_STALE' ? 410 : 404
     );
   }
+  // The relay was destroyed under the command (shutdown or hot reload): the
+  // server is going away, which is a 503, not a 500 from the page.
+  if (named?.name === 'RelayDestroyedError' && named.code === 'RELAY_DESTROYED') {
+    return jsonResponse(
+      {
+        success: false,
+        error: String(named.message),
+        code: 'RELAY_DESTROYED',
+        timestamp: Date.now(),
+      },
+      503
+    );
+  }
   const msg = err instanceof Error ? err.message : String(err);
   return jsonResponse({ success: false, error: msg, timestamp: Date.now() }, 500);
 }

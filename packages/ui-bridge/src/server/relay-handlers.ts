@@ -161,6 +161,33 @@ function relayInnerFailureResponse<T>(
 }
 
 /**
+ * Did a relayed command fail because its `CommandRelay` was destroyed while
+ * the command was in flight (`RelayDestroyedError`)? Read by name and code,
+ * like `TabRoutingError`, so an error from a second copy of the module (a
+ * duplicated bundle) still matches.
+ */
+function isRelayDestroyed(e: unknown): boolean {
+  const named = e as { name?: unknown; code?: unknown } | null;
+  return named?.name === 'RelayDestroyedError' && named.code === 'RELAY_DESTROYED';
+}
+
+/**
+ * The envelope for a command its relay was destroyed under: the literal
+ * `RELAY_DESTROYED` code (contract surface, like `TAB_NOT_FOUND`) and 503,
+ * because the server is shutting down or reloading, not the page failing.
+ */
+function relayDestroyedResponse<T>(message: string): APIResponse<T> {
+  return {
+    success: false,
+    error: message,
+    code: 'RELAY_DESTROYED' as APIResponse['code'],
+    timestamp: Date.now(),
+    httpStatus: 503,
+    suggestions: ['The server is shutting down or reloading — retry once it is back'],
+  } as APIResponse<T>;
+}
+
+/**
  * The relayed capture command's payload: the id, the normalised `props`
  * opt-in, and the query's tab routing (which `relayCommand` lifts out).
  */
@@ -774,6 +801,11 @@ export function createRelayHandlers(
         ],
       } as APIResponse<T>;
     }
+    // The relay was torn down while this command was in flight (server
+    // shutdown or hot reload). Answered before the listener check below:
+    // `destroy()` forgets every listener, so that check would tell the
+    // caller to open the app when the server itself is going away.
+    if (isRelayDestroyed(e)) return relayDestroyedResponse<T>(msg);
     const hasListeners = relay.hasCommandListeners() || relay.getWebSocketClientCount() > 0;
     const isTimeout = msg.includes('timeout') || msg.includes('Timeout');
     const hint = !hasListeners
@@ -824,7 +856,12 @@ export function createRelayHandlers(
     try {
       const result = await relay.queueCommand<T>(action, cleaned, opts);
       return success(result);
-    } catch {
+    } catch (e) {
+      // A destroyed relay is not a missing or slow page: a default value
+      // would report a healthy empty answer from a server that is going away.
+      if (isRelayDestroyed(e)) {
+        return relayDestroyedResponse<T>(e instanceof Error ? e.message : String(e));
+      }
       return success(fallback, {
         fallback: true,
         reason: `Relay command '${action}' failed or timed out — returning default value. Ensure the target app is connected and responsive.`,
@@ -1924,7 +1961,9 @@ export function createRelayHandlers(
           scope.cache.consoleErrors = success(result as ConsoleErrorsResult);
         }
         return success(result as ConsoleErrorsResult | GroupedResult);
-      } catch {
+      } catch (e) {
+        // A destroyed relay answers so, not "no errors" from a dying server.
+        if (isRelayDestroyed(e)) return relayDestroyedResponse((e as Error).message);
         // Relay failed — return cached data if available (ungrouped only)
         if (!isGrouped && scope.cache.consoleErrors)
           return scope.cache.consoleErrors as APIResponse<ConsoleErrorsResult>;
@@ -1991,6 +2030,7 @@ export function createRelayHandlers(
         scope.cache.semanticSnapshot = result;
         return success(result);
       } catch (e) {
+        if (isRelayDestroyed(e)) return relayDestroyedResponse((e as Error).message);
         if (scope.cache.semanticSnapshot) return success(scope.cache.semanticSnapshot);
         return error((e as Error).message, 'COMMAND_FAILED');
       }
