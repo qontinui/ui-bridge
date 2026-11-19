@@ -1298,9 +1298,9 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       <div class="row"><div style="padding-left:300px"><span class="scrim" style="will-change:transform">x</span></div><span class="hi" data-id="inlinewillcb" style="left:10px;top:10px">Hi</span></div>
       <div class="row"><div style="padding-left:300px"><span class="scrim pe" style="filter:blur(0)">x</span></div><span class="hi" data-id="inlinefiltercb" style="left:10px;top:10px">Hi</span></div>
       <div class="row"><div style="padding-left:300px"><span class="scrim pe" style="will-change:filter">x</span></div><span class="hi" data-id="inlinewillfilter" style="left:10px;top:10px">Hi</span></div>
-      <div class="row"><p style="width:200px;margin:0">aaaaaaaaaaaaaaaa <a class="split" href="#">bb cccccccccccccccccc dd</a></p><span class="hi" data-id="splitltr" style="left:160px;top:3px">Hi</span></div>
-      <div class="row"><p dir="rtl" style="width:200px;margin:0">aaaaaaaaaaaaaaaa <a class="split" href="#">bb cccccccccccccccccc dd</a></p><span class="hi" data-id="splitrtl" style="left:150px;top:23px">Hi</span></div>
-      <div class="row"><p style="width:200px;margin:0">aaaaaaaaaaaaaaaa <a class="split pe" href="#">bb cccccccccccccccccc dd</a></p><span class="hi" data-id="splitpe" style="left:160px;top:3px">Hi</span></div>
+      <div class="row"><p style="width:22.5ch;margin:0">aaaaaaaaaaaaaaaa <a class="split" href="#">bb cccccccccccccccccc dd</a></p><span class="hi" data-id="splitltr" style="left:18ch;top:3px">Hi</span></div>
+      <div class="row"><p dir="rtl" style="width:22.5ch;margin:0">aaaaaaaaaaaaaaaa <a class="split" href="#">bb cccccccccccccccccc dd</a></p><span class="hi" data-id="splitrtl" style="left:17ch;top:23px">Hi</span></div>
+      <div class="row"><p style="width:22.5ch;margin:0">aaaaaaaaaaaaaaaa <a class="split pe" href="#">bb cccccccccccccccccc dd</a></p><span class="hi" data-id="splitpe" style="left:18ch;top:3px">Hi</span></div>
       <div class="row"><div class="card"></div><span class="hi" data-id="cardout" style="left:10px;top:30px">Hi</span></div>
       <div class="row"><a class="state arrow" href="#"><span data-id="arrowlink">Read more</span></a></div>
       <div class="row"><button class="state chev"><span data-id="chevronbtn">Options</span></button></div>
@@ -1348,7 +1348,12 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     // last line's under rtl), a click-through ::after outside its element's
     // box, and a fixed dimmer held by a translate: 0 block. A filter, or
     // will-change: filter, does make an inline box hold it, away from the
-    // text.
+    // text. The split link's paragraph and its "Hi" are sized in ch, so the
+    // link wraps onto exactly two lines, with the "Hi" inside its scrim,
+    // whatever monospace font the platform resolves: in px, Linux's DejaVu
+    // Sans Mono (9.63px a glyph, against Consolas' 8.8px) wraps it onto
+    // three, where its containing block runs back from the first line's
+    // start, so the scrim covers no "Hi" and the page shows 21:1.
     expect(verdicts(res)).toEqual([
       ['unknown', 'input_missing'],
       ['unknown', 'input_missing'],
