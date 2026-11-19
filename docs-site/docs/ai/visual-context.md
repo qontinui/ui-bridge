@@ -173,24 +173,150 @@ fixed.
 ## Pixel-Level Vision
 
 Screenshots and anything derived from them are **runner-direct**. The route
-table is the single source of truth, so the SDK ships stubs for all thirteen
-`/vision/*` routes that return `RUNNER_REQUIRED` when no runner is mounted:
+table is the single source of truth, so the SDK ships stubs for twelve of the
+thirteen `/vision/*` routes that return `RUNNER_REQUIRED` when no runner is
+mounted:
 
-| Route                            | Purpose                                               |
-| -------------------------------- | ----------------------------------------------------- |
-| `POST /vision/capture`           | Capture a screenshot                                  |
-| `POST /vision/annotate`          | Capture with element overlays drawn                   |
-| `POST /vision/diff`              | Pixel diff against a previous capture                 |
-| `POST /vision/raw`               | Raw capture, no post-processing                       |
-| `POST /vision/extract`           | OCR — visible text with bounding boxes                |
-| `POST /vision/describe`          | VLM caption of the capture                            |
-| `POST /vision/analyze`           | Declarative analyzers (layout, typography, colour, …) |
-| `POST /vision/assert`            | The visual assertion DSL                              |
-| `POST /vision/baseline`          | Record a visual baseline                              |
-| `GET /vision/baselines`          | List recorded baselines                               |
-| `POST /vision/mutation-occurred` | Frontend → runner mutation signal                     |
-| `GET /vision/cache/:sha256`      | Stream a cached capture                               |
-| `GET /vision/health`             | Vision pipeline health                                |
+| Route                            | Purpose                                                                  |
+| -------------------------------- | ------------------------------------------------------------------------ |
+| `POST /vision/capture`           | Capture a screenshot                                                     |
+| `POST /vision/annotate`          | Capture with element overlays drawn                                      |
+| `POST /vision/diff`              | Pixel diff against a previous capture                                    |
+| `POST /vision/raw`               | Raw capture, no post-processing                                          |
+| `POST /vision/extract`           | OCR — visible text with bounding boxes                                   |
+| `POST /vision/describe`          | VLM caption of the capture                                               |
+| `POST /vision/analyze`           | Declarative analyzers (layout, typography, colour, …)                    |
+| `POST /vision/assert`            | The visual assertion DSL — evaluated in the tab without a runner (below) |
+| `POST /vision/baseline`          | Record a visual baseline                                                 |
+| `GET /vision/baselines`          | List recorded baselines                                                  |
+| `POST /vision/mutation-occurred` | Frontend → runner mutation signal                                        |
+| `GET /vision/cache/:sha256`      | Stream a cached capture                                                  |
+| `GET /vision/health`             | Vision pipeline health                                                   |
+
+### `POST /vision/assert` without a runner
+
+The relay (`createRelayHandlers`) and the in-process handlers
+(`createHandlers`) evaluate `/vision/assert` **in the tab**. Five kinds read
+only what the page itself can measure, and they get a verdict:
+
+| Kind | What the tab measures |
+| --- | --- |
+| `contrast_meets_wcag` | The text colour against the backdrop composited under its first rendered text run, with every translucent layer the hit test shows above the text (a scrim) composited over both. An ancestor of the text that the hit test lists above it (for a stretched link's positioned `::after`, or a shadow tree's overlay) adds only what it draws over the text: its own background stays beneath the text, unless a negative `z-index` sinks the text past it. WCAG large-text thresholds (AA 3:1 / AAA 4.5:1 at 24px, or 18.66px bold). A layer covering the text, or painting over it in a way the DOM cannot read (an image, a filter, its own text or generated content, or its border, a scrollbar or an inset box-shadow over the text), is `unknown`, and so is a border, scrollbar or inset box-shadow beneath the text that reaches it, or generated content positioned beneath it, where the backdrop shows through. So is a `pointer-events: none` layer the hit test cannot place that paints at the text's position: its background, its frame, its own text, or its `::before` / `::after`. Text whose own element the hit test lists twice, with layers between (its text and its own positioned `::after`, as a stretched link under a veil), is `unknown` too |
+| `text_fits_container` | A block-level element's `scrollWidth`/`scrollHeight` (borders and scrollbars included) against its border box, rounded up. An inline element is measured by its own line fragments against the content box of the block it lays out in, so a sibling's overflow is not its own. Both sides are layout pixels, so a CSS transform neither causes an overflow nor hides one. An element with no text is `unknown` |
+| `no_overlap` | Border boxes, after the `tolerance_px` inset |
+| `element_above` | Paint order from `document.elementsFromPoint` inside the pair's visible intersection (never scrolls) |
+| `no_clipping` | Each registered element against the padding box of its nearest ancestor with `overflow` `hidden` or `clip`, or `contain: paint`. A scroll container (`overflow` `auto` or `scroll`) clips only past the edge it scrolls from (its block-start and inline-start edges: top and left by default; in a vertical writing mode the block-start edge is the right one under `vertical-rl` and `sideways-rl` and the left one under `vertical-lr` and `sideways-lr`, and the inline-start edge the top one, the bottom one under `sideways-lr`; `direction: rtl` moves the inline-start edge to the opposite side; swapped along a reversed flex container's reversed axes), where no scroll position reaches: what is scrolled out past its far side is reachable, and only its own box is compared further out. The page's own scroll (the viewport) is not a clip. No element inside a clipping ancestor is `unknown` |
+
+The tab hands every box over unrounded, and each kind rounds it as vision-core
+does: `text_fits_container` rounds its box's width and height up, and the
+geometry kinds (`no_overlap`, `element_above`, `no_clipping`) round each edge to
+the nearest pixel, so two boxes that share a fractional edge do not overlap.
+
+The evaluator is a port of the runner's (vision-core) and is held to it by
+vision-core's own conformance fixture (`rust-vision-core/tests/fixtures/
+vision_assertions_conformance.json`), so both paths give the same answer for
+the same snapshot once the runner builds against a vision-core that carries the
+fixture's rules. Shadow DOM: covers inside open shadow roots are hit-tested at
+any depth; a *defined* custom element with no open shadow root lying over the
+text, and text held directly by an OPEN shadow host (so its shadow tree paints
+it), make contrast `unknown`; an element slotted into an open root is measured
+through its slot, whose ancestors in the shadow tree are read beneath it.
+Beneath the text nothing else of a shadow tree is read: a layer of that tree
+beside the slot, painting beneath the slotted text (a background `div`
+positioned behind the slot), and the shadow tree of a host that light-DOM text
+is laid over (a banner component whose shadow `div` paints its backdrop) are
+not seen, and such a host is read by its own box alone, so contrast is measured
+against what lies under them and can pass or fail wrongly. A
+closed shadow root cannot be read: a scrim inside one
+attached to an undefined tag or a built-in element (such as `div`) is not seen,
+unless it lies over text slotted into that same element, which the hit test
+then lists above its own text, so contrast is `unknown`. Content slotted into a
+closed root is measured as if it were light DOM, so it can pass on colours its
+shadow tree does not paint. An outer box-shadow and an outline are read
+nowhere: one cast over the text by an element whose box misses it (a spotlight
+drawn with a large spread or a wide outline), and an outline that a negative
+`outline-offset` pulls inside its own box, are not seen, so contrast can pass
+on colours they darken. A positioned `::before` / `::after` is read where its
+2D transform (`transform`, `translate`, `rotate`, `scale`) places it, turned or
+scaled, as every 2D transform and `zoom` above it, and its own `zoom`, draw it.
+A fixed one inside an element that holds fixed boxes (a transform, a filter,
+`contain`, `content-visibility`, `transform-style: preserve-3d`, a `will-change`
+naming one; `will-change: transform-origin` and the like name none) is laid
+out against that element's padding box, as an absolute one is against its
+containing block (which `will-change: position` makes too). A transform
+applies only where the browser applies one: a plain inline box (an `<a>`, a
+`<span>`), a ruby box and a `display: contents` element are drawn at their
+`zoom` alone, whatever their computed `transform`, and they hold a fixed or an
+absolute box only by a filter (or a `will-change` naming one), or an absolute
+one by a position; a `display: contents` element holds none. An inline box
+split over lines holds its absolute boxes from its first line's start (its
+last line's, under `direction: rtl`). Under a 3D transform or a motion path,
+on vertical lines (an inline box split over them), or where a turn or a flip
+draws such an inline box, the box is not pinned down. One in
+normal flow of the text's own element or of an ancestor is laid out beside the
+text, so it is read only where its relative offsets or its transform move it at
+least half the height of the text's run (half its width, if that is less): one
+that a negative margin or a shared grid area lays over the text is not seen,
+and one a 3D transform or a motion path moves is read only as far as its
+offsets move it. That holds only for text in that element's flow: text
+positioned out of it (`absolute`, `fixed`) or floated may lie over it, so there
+it is read wherever it can reach, as one of a layer beneath the text is; text
+that a relative offset or a transform of its own (or of an element between)
+moves over it is not seen. One in normal flow of any other layer beneath the text may lie
+anywhere in that layer's box, so one that paints and can reach the text makes
+contrast `unknown`. Past how far its offsets and its transform move it, one in
+normal flow that overflows its element's box is not seen, and one at
+`opacity: 0` paints nothing. A transparent one of the text's own element or of
+a layer beneath the text, whose box the computed style does not pin down (one
+its relative offsets nudge, a 3D transform, a motion path), is taken to paint
+nothing, so its glyphs and its border are not seen, over the text as well. An
+ancestor whose box misses the text (text positioned out of it) paints its
+background there no more, but its `::before` / `::after` may (a page backdrop
+the body draws with a fixed `::before`, under a footer fixed below the body's
+box), so they are read. A click-through `::before` / `::after` (one that
+computes `pointer-events: none`) is looked for whatever its element computes;
+one whose box is not pinned down is seen only inside its element's own box, or
+as far as its offsets and transform move it. An open popover's `::backdrop` is
+click-through too, and the top layer draws it over the page: one that paints
+over text outside its popover makes contrast `unknown`, even when the popover
+or a block holding it is at `opacity: 0`.
+Content in the top layer (an open popover, a modal dialog) is read as the
+browser draws it, out of its ancestors' transforms, opacity, filters and clips,
+at the zoom it inherits, over its own `::backdrop`, over everything of the page
+(a `::before` / `::after` included, whatever its `z-index`), and, in a modal
+dialog, over a page the dialog makes inert, which the hit test does not list:
+there contrast is `unknown` unless an opaque background of the dialog, or an
+opaque `::backdrop`, hides the page.
+Every
+other kind answers per result with `outcome: "unknown"` and
+`code: "capability_unavailable_in_build"`. A mixed batch still answers what it
+can. Apart from the shadow-tree, shadow, outline and pseudo-element limits
+above, anything the page cannot decide is
+`unknown` with a code, never `passed`:
+a gradient or image under the text, a hit test that cannot show both elements,
+an element with no box. An empty assertion list is `unknown` with
+`unknownCodes: ["no_results"]`. A malformed body is refused with
+`UB-VALIDATION-ERROR` before anything reaches the tab, and so is a
+caller-supplied `snapshot`: the tab measures the live page.
+
+The body crosses the relay into a user's tab, so it is bounded where the
+runner's is not: at most 1000 assertions per request, 256 entries in any list
+(`elements`, `palette`, `dimensions`) and 256 characters in any string. A
+larger body is refused with `UB-VALIDATION-ERROR`, and a refusal quotes at most
+64 characters of what was sent. Only the validated assertions and the routing
+keys (`tabId`) are relayed. No other key of the body reaches the tab,
+`settleTimeout` and `skipSettle` included: the tab waits at most its default
+500 ms for the page to settle before it measures.
+
+A request must answer within the relay's 8 s command timeout, and a Chromium
+timing smoke holds the 1000-assertion limit to it on every run. On its
+3200-node page measuring costs under a millisecond per assertion, so a full
+batch takes a small part of it. A request that measures contrast also walks
+the page once, reading each element's computed style, to find the layers the
+hit test cannot see. Each request also takes one registry snapshot to
+attribute its answer (`snapshotAttribution`), and that costs about as much as
+a `/control/snapshot` of the same page: it grows with the number of
+registered elements, whatever the batch size.
 
 A capture result (`capture`, `annotate`, `diff`, `raw`) names its bytes by
 `url`, whose literal value is the relative HTTP path
