@@ -48,10 +48,12 @@
  *   fades the backdrop. Content in the top layer (an open popover, a modal
  *   dialog) is read as the browser draws it: out of its ancestors'
  *   transforms, opacity, filters and clips, at the zoom it inherits, over
- *   its own `::backdrop` and over all of the page, a page element's
- *   `::before` / `::after` included; a modal dialog's page is inert, so the
- *   hit test lists none of it, and it is read as unreadable, which only an
- *   opaque dialog background or `::backdrop` hides. A
+ *   its own `::backdrop` and that of every top-layer element holding it,
+ *   and over all of the page: a page element's `::before` / `::after` under
+ *   it is read as unreadable (where among the page's layers it paints is
+ *   not resolved), and so is a modal dialog's page, which is inert, so the
+ *   hit test lists none of it; only an opaque top-layer background or
+ *   `::backdrop` hides them. A
  *   translucent colour or an opacity group above the first opaque layer is
  *   composited exactly. With no opaque layer, the base is the `Canvas`
  *   colour under the root's `color-scheme`. Every layer the hit
@@ -99,7 +101,9 @@
  *   layer's flow can put it — in a block container on horizontal lines, a
  *   `::before` from the content box's top and a `::after` after the last
  *   in-flow content, as deep as itself and its margins (a line, inline),
- *   across the box; elsewhere anywhere in the layer's box — so one that
+ *   across the box and not past it; elsewhere (a flex or grid item, a
+ *   `<button>` or an `align-content` that lays the content lower, a line an
+ *   atomic inline may make taller) anywhere in the layer's box — so one that
  *   paints and can reach the text is `unknown{input_missing}`. Past how far its offsets and its transform
  *   move it, one in normal flow that overflows its element's box is not
  *   seen; one at `opacity: 0` paints nothing. A transparent one of the
@@ -1017,6 +1021,11 @@ interface PaintItem {
   owner: Element;
   /** Names the layer in an unknown's detail. */
   label: string;
+  /**
+   * Paints above all of the page, beneath the top layer (a page element's
+   * pseudo-element under text in the top layer), wherever its own layer is.
+   */
+  abovePage?: boolean;
 }
 
 /**
@@ -2112,23 +2121,28 @@ class TabMeasurement {
       );
     }
 
-    // Bottom-up paint operations under the text. A top-layer element that
-    // holds the text paints above its own ::backdrop, which paints above the
-    // page ({@link underTopLayerItems}).
+    // Bottom-up paint operations under the text. Each top-layer element that
+    // holds the text, outermost first, paints above its own ::backdrop,
+    // which paints above everything before it in the top layer and above
+    // the page ({@link underTopLayerItems}); a page element's pseudo-element
+    // that may paint over any of the page is read just beneath the first.
     const items: PaintItem[] = [];
-    const lifted = this.topLayerOf(owner);
-    let liftedReached = false;
+    const tops = this.topLayersHolding(owner);
+    const abovePage: PaintItem[] = [];
+    let next = 0;
     for (let i = layers.length - 1; i >= 0; i--) {
-      if (lifted && !liftedReached && containsComposed(lifted, layers[i])) {
-        liftedReached = true;
-        items.push(...this.underTopLayerItems(lifted));
+      while (next < tops.length && containsComposed(tops[next], layers[i])) {
+        if (next === 0) items.push(...abovePage.splice(0));
+        items.push(...this.underTopLayerItems(tops[next]));
+        next += 1;
       }
       const layerItems = this.paintOf(layers[i], owner, p, hold, boxMisses.has(layers[i]));
       if (layerItems instanceof ColorUnmeasured) {
         return missing(layerItems.reason.code, layerItems.reason.detail);
       }
-      items.push(...layerItems);
+      for (const item of layerItems) (item.abovePage ? abovePage : items).push(item);
     }
+    items.push(...abovePage);
 
     // A translucent layer over the text tints the text and its backdrop alike.
     const canvas = this.canvasPaint();
@@ -2398,6 +2412,15 @@ class TabMeasurement {
       items.push({ color: null, owner: root, label: `the background-image of ${label}` });
     }
     return items;
+  }
+
+  /** The top-layer elements that hold `el` (itself or ancestors), outermost first. */
+  private topLayersHolding(el: Element): Element[] {
+    const tops: Element[] = [];
+    for (let e: Element | null = el; e; e = composedParent(e)) {
+      if (inTopLayer(e)) tops.unshift(e);
+    }
+    return tops;
   }
 
   /** The top-layer element `el` is drawn in: itself or its nearest ancestor in the top layer. */
@@ -2791,12 +2814,16 @@ class TabMeasurement {
    * only as far as its place in the flow can put it — a `::before` from the
    * content box's top, as deep as itself and its margins (to the bottom of
    * the first line, where the content starts inline); a `::after` after the
-   * last in-flow content (on its last line, where that ends inline). A plain
-   * inline one is a line deep. Read in a block container on horizontal
-   * lines that no transform turns, flips or skews; null elsewhere — a flex
-   * or grid item, columns, a float, a vertical writing mode, a shadow host,
-   * a `vertical-align` length, a size not read — where the whole box bounds
-   * it.
+   * last in-flow content (on its last line, where that ends inline; below
+   * the last line box, half its leading under that content's last fragment,
+   * where a block follows inline content). A plain inline one is a line deep.
+   * Clipped to the box: past it, one is not seen. Read in a block container
+   * on horizontal lines that no transform turns, flips or skews, whose
+   * content starts at its content box's top; null elsewhere — a flex or grid
+   * item, columns, a float, a vertical writing mode, a shadow host, a
+   * `<button>` or an `align-content` that lays the content lower, a line an
+   * atomic inline may make taller, a `vertical-align` length, a size not
+   * read — where the whole box bounds it.
    */
   private flowBand(
     layer: Element,
@@ -2808,6 +2835,10 @@ class TabMeasurement {
     if (!/^(block|flow-root|list-item|inline-block)$/.test(st.display)) return null;
     if ((st.writingMode || 'horizontal-tb') !== 'horizontal-tb' || layer.shadowRoot) return null;
     if (st.columnCount !== 'auto' || st.columnWidth !== 'auto') return null;
+    // A button centres its content; align-content can lay it lower.
+    if (layer.localName === 'button') return null;
+    const align = (st.alignContent || 'normal').trim();
+    if (!['normal', 'start', 'flex-start', 'stretch', 'baseline'].includes(align)) return null;
     const float = ps.getPropertyValue('float').trim();
     if (float !== '' && float !== 'none') return null;
     const m = this.linearOf(layer);
@@ -2827,15 +2858,49 @@ class TabMeasurement {
     const contentTop = box.y + (px(st.borderTopWidth) + px(st.paddingTop)) * m.d;
     const edge = this.flowEdge(layer, which === '::before' ? 'first' : 'last', m.d);
     if (edge === undefined) return null;
+    // A line holding an atomic inline (an inline-block, an image, a form
+    // control) can be taller than its text: where the pseudo's place is such
+    // a line, or follows one, how far down it lies is not read.
+    if (edge && !edge.block && this.holdsAtomicInline(layer)) return null;
+    // A block after inline content starts at the bottom of that content's
+    // last line box: half the line's leading below its last fragment.
+    const leading = edge ? Math.max(0, lineOf(st) * m.d - (edge.bottom - edge.top)) / 2 + 1 : 0;
     let top = contentTop - Math.abs(px(ps.marginTop)) * m.d;
     let bottom = contentTop + deep + line;
     if (which === '::before' && edge && inline && !edge.block) {
       bottom = edge.bottom + deep;
     } else if (which === '::after' && edge) {
-      top = (inline && !edge.block ? edge.top - line : edge.bottom) - deep;
-      bottom = edge.bottom + deep + line;
+      const afterInline = !edge.block;
+      top = (inline && afterInline ? edge.top - line : edge.bottom) - deep;
+      bottom = edge.bottom + deep + line + (!inline && afterInline ? leading : 0);
     }
-    return { x: box.x, y: top, w: box.w, h: Math.max(0, bottom - top) };
+    const band = { x: box.x, y: top, w: box.w, h: Math.max(0, bottom - top) };
+    return intersect(band, box) ?? { x: box.x, y: box.y, w: box.w, h: 0 };
+  }
+
+  /**
+   * Whether `layer` lays out an atomic inline in its lines (an inline-block,
+   * a replaced element, a form control), as a child or inside an inline
+   * child.
+   */
+  private holdsAtomicInline(layer: Element): boolean {
+    const atomic = (el: Element, depth: number): boolean => {
+      for (const child of Array.from(el.children)) {
+        const cst = this.style(child);
+        if (cst.display === 'none' || cst.position === 'absolute' || cst.position === 'fixed') {
+          continue;
+        }
+        if (/^inline-/.test(cst.display)) return true;
+        if (
+          cst.display === 'inline' &&
+          (isReplaced(child) || (depth > 0 && atomic(child, depth - 1)))
+        ) {
+          return true;
+        }
+      }
+      return false;
+    };
+    return atomic(layer, 1);
   }
 
   /**
@@ -3098,15 +3163,11 @@ class TabMeasurement {
     const label = `${this.describe(layer)}${which}`;
     const position = ps.position;
     const unmoved = offsetsZero(ps);
-    // Text in the top layer lies above all of the page, so an element of the
-    // page that holds its top-layer element paints all of itself beneath
-    // the text, its ::before / ::after included, whatever their z-index.
-    const lifted = this.topLayerOf(owner);
-    const underTopLayer =
-      lifted !== null &&
-      lifted !== layer &&
-      containsComposed(layer, lifted) &&
-      this.topLayerOf(layer) === null;
+    // Text in the top layer lies above all of the page, so every element of
+    // the page paints all of itself beneath the text, its ::before / ::after
+    // included, whatever their z-index; where among the page's layers such a
+    // pseudo-element paints is not resolved here.
+    const underTopLayer = this.topLayerOf(owner) !== null && this.topLayerOf(layer) === null;
     let flowing: 'beside' | 'inside' | null = null;
     if (position === 'static' || position === 'relative') {
       if (containsComposed(layer, owner) && this.inFlowOf(owner, layer)) {
@@ -3135,13 +3196,22 @@ class TabMeasurement {
     const frame = extent && local ? frameAt(ps, insetByBorders(extent.box, ps), 1, local) : null;
     if (clear && !glyphs && !frame) return null;
     const z = ps.zIndex === 'auto' ? NaN : Number(ps.zIndex);
-    // Beneath the top layer but not pinned down: it may lie under the text,
-    // where only an opaque layer above it decides the colours.
-    if (underTopLayer && !extent) {
-      return [{ color: null, owner: layer, label: `${label}, which may lie beneath the text` }];
-    }
     const beneath = Number.isFinite(z) && z < 0 && this.isStackingContext(layer, layerSt);
-    if (extent && (beneath || underTopLayer)) {
+    // A page element's pseudo-element under the top layer may paint over any
+    // of the page's layers there: it is read as UNREADABLE, above all of the
+    // page and beneath the top layer, where only an opaque layer of the top
+    // layer (a background, a ::backdrop) decides the colours.
+    if (underTopLayer && !(extent && beneath)) {
+      return [
+        {
+          color: null,
+          owner: layer,
+          label: `${label} (on the page, under the top layer)`,
+          abovePage: true,
+        },
+      ];
+    }
+    if (extent && beneath) {
       const items: PaintItem[] = [];
       // Its own opacity fades its one colour.
       const opacity = Number(ps.opacity);
