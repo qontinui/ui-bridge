@@ -121,9 +121,9 @@ describe('stale label — DOM-scraped labels are re-derived, not frozen at first
     const first = (await executeCommand('discover', {}, bridge)) as {
       elements: { id: string; label?: string }[];
     };
-    expect(
-      first.elements.find((e) => e.id.includes('usage-card'))?.label
-    ).toBe('Section: Account Usage (0 accounts)');
+    expect(first.elements.find((e) => e.id.includes('usage-card'))?.label).toBe(
+      'Section: Account Usage (0 accounts)'
+    );
 
     document
       .getElementById('usage-card')!
@@ -132,9 +132,9 @@ describe('stale label — DOM-scraped labels are re-derived, not frozen at first
     const second = (await executeCommand('discover', {}, bridge)) as {
       elements: { id: string; label?: string }[];
     };
-    expect(
-      second.elements.find((e) => e.id.includes('usage-card'))?.label
-    ).toBe('Section: Account Usage (2 accounts)');
+    expect(second.elements.find((e) => e.id.includes('usage-card'))?.label).toBe(
+      'Section: Account Usage (2 accounts)'
+    );
   });
 
   it('a DEVELOPER-SET label is never overwritten by a DOM re-read', () => {
@@ -172,5 +172,125 @@ describe('stale label — DOM-scraped labels are re-derived, not frozen at first
     expect(Object.keys(entry)).not.toContain('__labelSource');
     const snap = registry.createSnapshot();
     expect(JSON.stringify(snap)).not.toContain('__labelSource');
+  });
+});
+
+/**
+ * A point read refreshes ONE element (plan
+ * 2026-11-08-ui-bridge-relay-and-exec-mode-follow-ups-from-pr-329, Phase 6,
+ * D7): `refreshScrapedTextOf` is the per-entry body the page sweep loops over,
+ * and the dispatcher's `getElement` calls it on the element it answers instead
+ * of sweeping every registered element.
+ */
+describe('refreshScrapedTextOf — one entry, not the page', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  type RegisterOptions = Parameters<UIBridgeRegistry['registerElement']>[2];
+
+  /**
+   * Register `n` buttons whose label and content sources each count their
+   * calls (`calls` is label + content calls per element).
+   */
+  function registerCounted(registry: UIBridgeRegistry, n: number) {
+    const calls = new Map<string, number>();
+    const labels = new Map<string, string>();
+    for (let i = 0; i < n; i++) {
+      const id = `el-${i}`;
+      const node = document.createElement('button');
+      node.id = id;
+      document.body.appendChild(node);
+      labels.set(id, `label ${i}`);
+      calls.set(id, 0);
+      const bump = () => calls.set(id, calls.get(id)! + 1);
+      const options: RegisterOptions = {
+        label: `label ${i}`,
+        content: `content ${i}`,
+        origin: 'auto',
+        labelSource: () => {
+          bump();
+          return labels.get(id);
+        },
+        contentSource: () => {
+          bump();
+          return `content ${i}`;
+        },
+      };
+      registry.registerElement(id, node, options);
+    }
+    return { calls, labels };
+  }
+
+  it("calls only the target's sources, and returns the fields it changed", () => {
+    const registry = new UIBridgeRegistry();
+    const { calls, labels } = registerCounted(registry, 5);
+    labels.set('el-2', 'label 2 (changed)');
+
+    const changed = registry.refreshScrapedTextOf(registry.getElement('el-2')!);
+
+    expect(changed).toBe(1);
+    expect(registry.getElement('el-2')!.label).toBe('label 2 (changed)');
+    // Label AND content source of the target, once each; nobody else's.
+    expect([...calls.entries()]).toEqual([
+      ['el-0', 0],
+      ['el-1', 0],
+      ['el-2', 2],
+      ['el-3', 0],
+      ['el-4', 0],
+    ]);
+  });
+
+  it("the sweep's count equals the sum of the per-entry counts over the same state", () => {
+    // Two registries in the same state: one swept, one refreshed entry by entry.
+    const swept = new UIBridgeRegistry();
+    const perEntryRegistry = new UIBridgeRegistry();
+    const a = registerCounted(swept, 5);
+    const b = registerCounted(perEntryRegistry, 5);
+    for (const labels of [a.labels, b.labels]) {
+      labels.set('el-1', 'one');
+      labels.set('el-3', 'three');
+    }
+
+    const sweep = swept.refreshScrapedText();
+    const perEntry = perEntryRegistry
+      .getAllElements()
+      .reduce((sum, entry) => sum + perEntryRegistry.refreshScrapedTextOf(entry), 0);
+
+    expect(sweep).toBe(2);
+    expect(perEntry).toBe(sweep);
+  });
+
+  it('a developer-set label and a detached node are left verbatim (0), like the sweep', () => {
+    const registry = new UIBridgeRegistry();
+    const dev = document.createElement('button');
+    document.body.appendChild(dev);
+    registry.registerElement('dev', dev, { label: 'dev label', origin: 'hook' });
+    expect(registry.refreshScrapedTextOf(registry.getElement('dev')!)).toBe(0);
+
+    const { labels } = registerCounted(registry, 1);
+    labels.set('el-0', 'new');
+    document.getElementById('el-0')!.remove();
+    expect(registry.refreshScrapedTextOf(registry.getElement('el-0')!)).toBe(0);
+    expect(registry.getElement('el-0')!.label).toBe('label 0');
+  });
+
+  it("executeCommand('getElement') over 50 scraped elements invokes one element's label and content sources, once each", async () => {
+    const registry = new UIBridgeRegistry();
+    setGlobalRegistry(registry);
+    const { calls, labels } = registerCounted(registry, 50);
+    labels.set('el-17', 'label 17 (fresh)');
+    makeAllVisible();
+
+    const el = (await executeCommand(
+      'getElement',
+      { id: 'el-17' },
+      bridgeAccessOver(registry)
+    )) as { id: string; label?: string };
+
+    expect(el.id).toBe('el-17');
+    expect(el.label).toBe('label 17 (fresh)');
+    const called = [...calls.entries()].filter(([, n]) => n > 0);
+    expect(called).toEqual([['el-17', 2]]);
   });
 });

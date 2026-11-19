@@ -1271,12 +1271,12 @@ const SETTLE_BEFORE_READ_ACTIONS: ReadonlySet<string> = new Set([
  *
  * `getControlSnapshot` is here because the relay builds its element array from
  * the `elements` captured below rather than going through
- * `registry.createSnapshot()`, which refreshes on its own. `getElement` is here
- * because it answers one element of that same projection, `label` included.
+ * `registry.createSnapshot()`, which refreshes on its own. `getElement` is NOT
+ * here: it answers one element, so its case re-derives that element's own
+ * scraped text (`registry.refreshScrapedTextOf`) instead of the whole page's.
  */
 const LABEL_REFRESH_ACTIONS: ReadonlySet<string> = new Set([
   'getControlSnapshot',
-  'getElement',
   'captureSnapshot',
   'find',
   'discover',
@@ -1790,6 +1790,15 @@ export async function executeCommand(
           `DOM element for ${parsed.id} not found`,
           startTime
         );
+      }
+      // Re-derive THIS element's DOM-scraped label / content before it is
+      // serialized, so a changed `aria-label` is read fresh — one element's
+      // closures, not the page's (`LABEL_REFRESH_ACTIONS` would sweep every
+      // registered element). Non-fatal, like the sweep.
+      try {
+        registry.refreshScrapedTextOf(el);
+      } catch {
+        // Answer with the label the registry already holds.
       }
       return serializeRegisteredElement(el);
     }
