@@ -126,9 +126,10 @@ export class DeadSlot {
 }
 
 /**
- * The relay's not-delivered message, `why` naming the cause. Its prefix is the
- * one `noLiveAnswerCause` (relay-handlers.ts) classifies as no live answer, so
- * a caller may fail over and re-send it, writes included: nothing was written.
+ * The relay's not-delivered message, `why` naming the cause. The relay raises
+ * it as a `NoLiveAnswer('not_delivered')` (live-answer.ts), which
+ * `noLiveAnswerCause` classifies as no live answer, so a caller may fail over
+ * and re-send it, writes included: nothing was written.
  */
 export function notDeliveredMessage(action: string, why: string): string {
   return (

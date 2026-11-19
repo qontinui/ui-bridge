@@ -41,6 +41,7 @@ import {
   type ListenerState,
   type ParkedCommand,
 } from './stream-slot';
+import { NoLiveAnswer, TabReportedFailure } from './live-answer';
 
 // ============================================================================
 // Types
@@ -1223,11 +1224,12 @@ export class CommandRelay {
         // ownership-scoped misses immediately.
         hasOwnerCheck ? 0 : 3000,
         () =>
-          new Error(
+          new NoLiveAnswer(
             'SDK_DISCONNECTED: No browser connected — no WebSocket clients and no SSE listeners. ' +
               'Open the web app in a browser tab, or launch a headless one with ' +
               '`npx @qontinui/ui-bridge-headless --url <your-app-url>`. ' +
-              'Use `GET /tabs/wait?timeoutMs=<ms>` to block until the tab registers.'
+              'Use `GET /tabs/wait?timeoutMs=<ms>` to block until the tab registers.',
+            'not_delivered'
           )
       );
       this.throwIfDestroyedSince(epoch);
@@ -1341,10 +1343,11 @@ export class CommandRelay {
     if (pending.graceTimeout) clearTimeout(pending.graceTimeout);
     this.dropPending(id);
     pending.reject(
-      new Error(
+      new NoLiveAnswer(
         `Command ${action} timed out after ${timeoutMs}ms (${transport}). ` +
           `${pending.tabsNotified} client(s) were notified but none responded. ` +
-          'The UI Bridge SDK may not be loaded or the page may be unresponsive.'
+          'The UI Bridge SDK may not be loaded or the page may be unresponsive.',
+        'unanswered'
       )
     );
   }
@@ -1398,12 +1401,13 @@ export class CommandRelay {
         // before it reopens (stream-slot.ts, `slotActionForEnd`).
         const awaited = this.leaseReturnOf(targetTabId);
         if (awaited) {
-          throw new Error(
+          throw new NoLiveAnswer(
             notDeliveredMessage(
               action,
               `Tab "${targetTabId}"'s command stream closed at its lease (${awaited.reason}) ` +
                 'and has not reopened yet.'
-            )
+            ),
+            'not_delivered'
           );
         }
         // Owner-scoped TAB_NOT_FOUND: redact the connectedTabs list to the
@@ -1463,12 +1467,13 @@ export class CommandRelay {
     if (ownerCheck) {
       const owned = this.rankOwnedTabs(ownerCheck.userId);
       if (owned.length === 0) {
-        throw new Error(
+        throw new NoLiveAnswer(
           `SDK_DISCONNECTED: No browser connected to receive ${action} command. ` +
             'No WebSocket clients and no SSE listeners registered. ' +
             'Open the web app in a browser tab, or launch a headless one with ' +
             '`npx @qontinui/ui-bridge-headless --url <your-app-url>`. ' +
-            'Use `GET /tabs/wait?timeoutMs=<ms>` to block until the tab registers.'
+            'Use `GET /tabs/wait?timeoutMs=<ms>` to block until the tab registers.',
+          'not_delivered'
         );
       }
       const ownedPrimary = owned[0]!;
@@ -1578,12 +1583,13 @@ export class CommandRelay {
       // Fail fast if no transport available
       if (!sentViaWebSocket && this.tabListeners.size === 0) {
         reject(
-          new Error(
+          new NoLiveAnswer(
             `SDK_DISCONNECTED: No browser connected to receive ${action} command. ` +
               'No WebSocket clients and no SSE listeners registered. ' +
               'Open the web app in a browser tab, or launch a headless one with ' +
               '`npx @qontinui/ui-bridge-headless --url <your-app-url>`. ' +
-              'Use `GET /tabs/wait?timeoutMs=<ms>` to block until the tab registers.'
+              'Use `GET /tabs/wait?timeoutMs=<ms>` to block until the tab registers.',
+            'not_delivered'
           )
         );
         return;
@@ -1627,11 +1633,12 @@ export class CommandRelay {
         // navigation was silently dropped while the relay still returned success.
         if (notified === 0) {
           reject(
-            new Error(
+            new NoLiveAnswer(
               `No active UI Bridge SDK client received the ${action} command. ` +
                 `${this.tabListeners.size} SSE listener(s) registered but none accepted the command` +
                 `${targetTabId ? ` (target tab "${targetTabId}" has no live listener)` : ''}. ` +
-                'Ensure the web app is open in a browser tab with the UI Bridge SDK loaded.'
+                'Ensure the web app is open in a browser tab with the UI Bridge SDK loaded.',
+              'not_delivered'
             )
           );
           return;
@@ -1652,7 +1659,14 @@ export class CommandRelay {
       if (this.pendingCommands.size >= this.maxPendingCommands) {
         const oldestKey = this.pendingCommands.keys().next().value;
         if (oldestKey) {
-          this.settlePending(oldestKey, new Error('Command evicted: too many pending commands'));
+          this.settlePending(
+            oldestKey,
+            new NoLiveAnswer(
+              'Command evicted: too many pending commands',
+              'unanswered',
+              'it was evicted from the pending queue under load before a tab answered'
+            )
+          );
         }
       }
 
@@ -1684,10 +1698,11 @@ export class CommandRelay {
             clearTimeout(timeout);
             this.pendingCommands.delete(commandId);
             reject(
-              new Error(
+              new NoLiveAnswer(
                 `No active UI Bridge SDK client received the ${action} command. ` +
                   `${this.tabListeners.size} SSE listener(s) registered but none accepted the command. ` +
-                  'Ensure the web app is open in a browser tab with the UI Bridge SDK loaded.'
+                  'Ensure the web app is open in a browser tab with the UI Bridge SDK loaded.',
+                'not_delivered'
               )
             );
             return;
@@ -1701,7 +1716,13 @@ export class CommandRelay {
               const p = this.pendingCommands.get(dropped.commandId);
               if (p) {
                 clearTimeout(p.timeout);
-                p.reject(new Error('Command dropped from queue'));
+                p.reject(
+                  new NoLiveAnswer(
+                    'Command dropped from queue',
+                    'not_delivered',
+                    'it was dropped from the poll queue before a tab fetched it'
+                  )
+                );
                 this.pendingCommands.delete(dropped.commandId);
               }
             }
@@ -1849,7 +1870,10 @@ export class CommandRelay {
       pending.streamUserId = listener.userId;
       if (!this.deliver(listener, command)) {
         const why = `Tab "${tabId}"'s new command stream did not accept it.`;
-        this.settlePending(command.commandId, new Error(notDeliveredMessage(command.action, why)));
+        this.settlePending(
+          command.commandId,
+          new NoLiveAnswer(notDeliveredMessage(command.action, why), 'not_delivered')
+        );
       } else {
         this.settleParkedDelivery(
           tabId,
@@ -1972,9 +1996,10 @@ export class CommandRelay {
       if (pending?.busUnsub) pending.busUnsub();
       this.pendingCommands.delete(commandId);
       reject(
-        new Error(
+        new NoLiveAnswer(
           `Command ${action} timed out after ${timeoutMs}ms (bus). ` +
-            'No instance reported a response — the target tab may be disconnected.'
+            'No instance reported a response — the target tab may be disconnected.',
+          'unanswered'
         )
       );
     }, timeoutMs);
@@ -2002,10 +2027,21 @@ export class CommandRelay {
         // not exist read the same to a scoped caller.
         pending.reject(new OwnerMismatchError(targetTabId, senderUserId ?? '', ''));
       } else {
-        // `NOT_DELIVERED` carries the relay's not-delivered message in `error`;
-        // a sender on an older version never sees the code and still rejects
-        // with that text.
-        pending.reject(new Error(env.error || `Command ${action} failed`));
+        // `NOT_DELIVERED` carries the relay's not-delivered message in `error`:
+        // nothing ran. An `OWNER_MISMATCH` for a command that named no tab is
+        // a relay refusal, not a tab's answer: it is answered as an ownership
+        // refusal (the no-leak envelope, never the holder's tab-naming text),
+        // which is never retried or answered from a cache. Any other
+        // `ok: false` is a tab's own failure, whose verdict rides in `result`
+        // (absent from a responder that predates it).
+        const message = env.error || `Command ${action} failed`;
+        pending.reject(
+          env.code === 'NOT_DELIVERED'
+            ? new NoLiveAnswer(message, 'not_delivered')
+            : env.code === 'OWNER_MISMATCH'
+              ? new OwnerMismatchError(env.tabId ?? '', senderUserId ?? '', '')
+              : new TabReportedFailure(message, env.result, env.tabId)
+        );
       }
     });
 
@@ -2428,13 +2464,19 @@ export class CommandRelay {
   }
 
   /**
-   * Reject a pending command with an error from the browser.
+   * Reject a pending command with a failure the browser reported. `result` is
+   * what the tab posted (the dispatcher's `{ success: false, … }` envelope),
+   * when it posted one: the rejection is a {@link TabReportedFailure} carrying
+   * it, so the tab's own verdict reaches the caller, and across instances the
+   * bus forwards it on `ok: false`. The settle semantics are those of every
+   * rejection: it waits for every notified tab, and a later success wins.
    */
   rejectCommand(
     commandId: string,
     errorMessage: string,
     tabId?: string,
-    responder?: CommandResponder
+    responder?: CommandResponder,
+    result?: unknown
   ): boolean {
     const pending = this.pendingCommands.get(commandId);
     if (!pending) {
@@ -2447,6 +2489,7 @@ export class CommandRelay {
           commandId,
           ok: false,
           error: errorMessage,
+          ...(result !== undefined ? { result } : {}),
           ...(tabId !== undefined ? { tabId } : {}),
           ...this.responderEnvelope(responder),
         });
@@ -2458,7 +2501,7 @@ export class CommandRelay {
 
     pending.errorResponseCount++;
     if (!pending.firstError) {
-      pending.firstError = new Error(errorMessage);
+      pending.firstError = new TabReportedFailure(errorMessage, result, tabId);
     }
 
     // All notified tabs responded with errors — reject immediately
@@ -2477,7 +2520,9 @@ export class CommandRelay {
         if (stillPending) {
           clearTimeout(stillPending.timeout);
           this.dropPending(commandId);
-          stillPending.reject(stillPending.firstError || new Error(errorMessage));
+          stillPending.reject(
+            stillPending.firstError || new TabReportedFailure(errorMessage, result, tabId)
+          );
         }
       }, this.multiTabGraceMs);
     }
@@ -3101,7 +3146,10 @@ export class CommandRelay {
       `Tab "${tabId}"'s command stream ended (${reason}) and no new stream opened ` +
       `within ${this.reconnectGraceMs}ms.`;
     for (const { command } of parked) {
-      this.settlePending(command.commandId, new Error(notDeliveredMessage(command.action, why)));
+      this.settlePending(
+        command.commandId,
+        new NoLiveAnswer(notDeliveredMessage(command.action, why), 'not_delivered')
+      );
     }
   }
 

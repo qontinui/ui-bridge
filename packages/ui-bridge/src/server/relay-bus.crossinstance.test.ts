@@ -14,6 +14,7 @@
 import { afterEach, describe, it, expect } from 'vitest';
 import { CommandRelay } from './command-relay';
 import type { RelayBus, RelayCommandEnvelope, RelayResponseEnvelope } from './relay-bus';
+import { NoLiveAnswer, TabReportedFailure } from './live-answer';
 
 /**
  * Synchronous in-memory bus implementing the full RelayBus contract: one hub
@@ -239,5 +240,72 @@ describe('CommandRelay cross-instance routing via RelayBus (P0a)', () => {
       void sender;
       hub.clear();
     });
+  });
+});
+
+describe('a failure a tab reports crosses instances with its verdict (plan 2026-11-08 follow-ups, Phase 2)', () => {
+  it('a failure posted on instance B rejects instance A’s caller with a TabReportedFailure carrying the result', async () => {
+    const hub = new InMemoryBusHub();
+    const instA = freshRelay('__instA_tabfail', hub.bus('A'));
+    const instB = freshRelay('__instB_tabfail', hub.bus('B'));
+    const received: RelayCommandEnvelope[] = [];
+    instB.subscribeToCommands((cmd) => {
+      received.push(cmd as RelayCommandEnvelope);
+    }, 'tab-1');
+
+    const pending = instA.queueCommand('getElement', { id: 'x' }, { targetTabId: 'tab-1' });
+    await new Promise((r) => setTimeout(r, 5));
+    const cmd = received.find((c) => c.action === 'getElement');
+    expect(cmd, 'command should have reached instance B via the bus').toBeTruthy();
+
+    const posted = {
+      success: false,
+      error: 'Element x not found',
+      failureDetails: { errorCode: 'ELEMENT_NOT_FOUND', message: 'Element x not found' },
+    };
+    // The browser's failure POST lands on B, which forwards it over the bus.
+    instB.rejectCommand(cmd!.commandId, 'Element x not found', 'tab-1', undefined, posted);
+
+    const error = (await pending.catch((e: unknown) => e)) as TabReportedFailure;
+    expect(error).toBeInstanceOf(TabReportedFailure);
+    expect(error.message).toBe('Element x not found');
+    expect(error.result).toEqual(posted);
+    expect(error.tabId).toBe('tab-1');
+    hub.clear();
+  });
+
+  it('a holder that never answers rejects as NoLiveAnswer(unanswered) at the bus timeout', async () => {
+    const hub = new InMemoryBusHub();
+    const sender = new CommandRelay({
+      globalPrefix: '__instA_tabfail_to',
+      bus: hub.bus('A'),
+      proactiveSnapshot: false,
+      sseTimeoutMs: 30,
+    });
+    relays.push(sender);
+    const holder = freshRelay('__instB_tabfail_to', hub.bus('B'));
+    holder.subscribeToCommands(() => undefined, 'tab-1'); // written, never answered
+
+    const error = (await sender
+      .queueCommand('testAction', {}, { targetTabId: 'tab-1' })
+      .catch((e: unknown) => e)) as NoLiveAnswer;
+    expect(error).toBeInstanceOf(NoLiveAnswer);
+    expect(error.reason).toBe('unanswered');
+    expect(error.message).toMatch(/^Command testAction timed out after 30ms \(bus\)\. /);
+    hub.clear();
+  });
+
+  it('a NOT_DELIVERED reply rejects as NoLiveAnswer(not_delivered), not as a tab failure', async () => {
+    const hub = new InMemoryBusHub();
+    const sender = freshRelay('__instA_tabfail_nd', hub.bus('A'));
+    const holder = freshRelay('__instB_tabfail_nd', hub.bus('B'));
+    holder.subscribeToCommands(() => false, 'tab-1'); // the stream write fails
+
+    const error = (await sender
+      .queueCommand('testAction', {}, { targetTabId: 'tab-1' })
+      .catch((e: unknown) => e)) as NoLiveAnswer;
+    expect(error).toBeInstanceOf(NoLiveAnswer);
+    expect(error.reason).toBe('not_delivered');
+    hub.clear();
   });
 });

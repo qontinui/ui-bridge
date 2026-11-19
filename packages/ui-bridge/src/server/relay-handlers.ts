@@ -16,6 +16,7 @@ import { componentActionInvocation } from './component-action-invocation';
 import { scopedCallerRefusal } from './scoped-refusal';
 import { buildComponentNotFoundError } from './handlers';
 import { describeInnerFailure } from './inner-failure';
+import { cacheFallbackMeta, isTabReportedFailure, noLiveAnswerCause } from './live-answer';
 import { fitMediaOverrideBudget } from '../control/media-override-budget';
 import {
   componentCaptureRefusalEnvelope,
@@ -204,14 +205,15 @@ function capturePayload(id: string, query: ComponentCaptureQuery | undefined) {
 /**
  * A relayed component capture's answer, with its typed refusal restored.
  *
- * A refusal crosses the relay as a MESSAGE only: the in-page relay client
- * posts the dispatcher's `success: false`, `nextjs.ts` settles it through
- * `rejectCommand(commandId, message)` and the cross-instance bus re-raises
- * `new Error(message)`, so `reason`, `code` and status are gone by the time
- * `relayCommand` answers. The dispatcher therefore encodes the reason in the
- * message (`componentCaptureRefusalMessage`); this recognises it, wherever it
- * landed (`error`, or `data.error` on the resolved path), and answers the
- * same envelope as the direct handler. Every other answer passes through.
+ * The in-page relay client posts the dispatcher's `success: false`, which
+ * `nextjs.ts` settles through `rejectCommand(…, result)`; `relayCommand` then
+ * answers the tab's payload as an inner failure. A tab, adapter or peer
+ * instance that predates the posted `result` sends the MESSAGE only, so
+ * `reason`, `code` and status can still be gone by the time `relayCommand`
+ * answers. The dispatcher therefore encodes the reason in the message
+ * (`componentCaptureRefusalMessage`); this recognises it, wherever it landed
+ * (`error`, or `data.error`), and answers the same envelope as the direct
+ * handler. Every other answer passes through.
  */
 function captureRelayAnswer(response: APIResponse<unknown>): ComponentCaptureResponse {
   if (response.success) return response as ComponentCaptureResponse;
@@ -220,62 +222,6 @@ function captureRelayAnswer(response: APIResponse<unknown>): ComponentCaptureRes
     parseComponentCaptureRefusal((response.data as { error?: unknown } | undefined)?.error);
   if (!refusal) return response as ComponentCaptureResponse;
   return componentCaptureRefusalEnvelope(refusal.reason, refusal.message);
-}
-
-/**
- * Why a relayed command got NO live answer, or `undefined` when a tab did
- * answer it.
- *
- * A rejection from `relay.queueCommand` is one of two things. Either no tab
- * answered at all, or a tab ran the command and reported a failure. The second
- * is the ordinary case, not the exception: the in-page relay client posts the
- * dispatcher's returned `{ success: false, … }` back as `success: false`, which
- * the adapter settles with `rejectCommand(commandId, error)` (`./nextjs.ts`),
- * and across instances the bus re-raises it as `new Error(env.error)`
- * (`./command-relay.ts`, `dispatchViaBus`). Only the message survives either
- * path, so each no-answer cause is recognised by the exact message the relay,
- * or the dispatcher's `default:` arm, raises for it:
- *
- *   - no connected tab: `SDK_DISCONNECTED: …` (`queueCommand`'s wait for a
- *     transport, an owner-scoped dispatch whose caller owns no tab, and
- *     `sendCommand`'s fail-fast), or `No active UI Bridge SDK client received
- *     the <action> command` (a broadcast no listener accepted);
- *   - a timeout: `Command <action> timed out after <n>ms (<transport>)`, from
- *     the local timer and the bus timer alike;
- *   - a tab whose SDK has no case for the action: `Unknown command action:
- *     <action>`, which the in-page dispatcher's `default:` arm throws.
- *
- * Anything else — a not-found, a crash in the handler, a routing or ownership
- * refusal — is never a reason to answer from a cache.
- */
-function noLiveAnswerCause(action: string, e: unknown): string | undefined {
-  const msg = e instanceof Error ? e.message : String(e);
-  if (
-    msg.startsWith('SDK_DISCONNECTED: ') ||
-    msg.startsWith(`No active UI Bridge SDK client received the ${action} command`)
-  ) {
-    return 'no browser tab is connected to receive it';
-  }
-  if (msg.startsWith(`Command ${action} timed out after `)) {
-    return 'no tab answered it in time';
-  }
-  const noCase = `Unknown command action: ${action}`;
-  if (msg.startsWith(noCase) && !/^[\w$]/.test(msg.slice(noCase.length))) {
-    return `the tab's UI Bridge SDK has no ${action} case`;
-  }
-  return undefined;
-}
-
-/**
- * The `_meta` of an answer a relay read took from its cached snapshot because
- * there was no live answer (`noLiveAnswerCause`): the `{ fallback, reason }`
- * marker `relayWithFallback` puts on its default, with the cause named.
- */
-function cacheFallbackMeta(action: string, cause: string): { fallback: true; reason: string } {
-  return {
-    fallback: true,
-    reason: `Relay command '${action}' got no live answer (${cause}) — answered from the cached snapshot, which can be stale or another tab's.`,
-  };
 }
 
 /**
@@ -806,6 +752,15 @@ export function createRelayHandlers(
     // `destroy()` forgets every listener, so that check would tell the
     // caller to open the app when the server itself is going away.
     if (isRelayDestroyed(e)) return relayDestroyedResponse<T>(msg);
+    // A tab ran the command and reported a failure, and posted its verdict
+    // (`TabReportedFailure.result`: the SSE settle in `nextjs.ts`, or the bus
+    // on `ok: false`). It answers the envelope a RESOLVED inner failure gets
+    // (`relayInnerFailureResponse`): the tab's own code, its payload verbatim
+    // under `data`. With no payload, the generic arm below answers as before.
+    if (isTabReportedFailure(e)) {
+      const innerFailure = readRelayInnerFailure(e.result);
+      if (innerFailure) return relayInnerFailureResponse<T>(innerFailure, e.result);
+    }
     const hasListeners = relay.hasCommandListeners() || relay.getWebSocketClientCount() > 0;
     const isTimeout = msg.includes('timeout') || msg.includes('Timeout');
     const hint = !hasListeners

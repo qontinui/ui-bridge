@@ -1366,7 +1366,10 @@ async function handleCommandResponse(request: NextRequest, relay: CommandRelay):
           stringOrUndefined((result as { error?: unknown } | null)?.error) ||
           'Unknown error',
         tabId,
-        responder
+        responder,
+        // The tab's own verdict (the dispatcher's envelope), so the caller is
+        // answered with its code and failureDetails, not the message alone.
+        result
       );
     }
 

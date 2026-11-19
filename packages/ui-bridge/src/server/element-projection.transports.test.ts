@@ -25,6 +25,7 @@ import { createNextRouteHandlers } from './nextjs';
 import { createExpressApp } from './express';
 import { StandaloneServer } from './standalone';
 import { createRelayHandlers } from './relay-handlers';
+import { NoLiveAnswer } from './live-answer';
 import { createAIHandlers, createHandlers, type RegistryLike } from './handlers';
 import { useCommandRelay } from '../react/useCommandRelay';
 import { listener } from '../react/__tests__/relay-into-listener';
@@ -803,7 +804,12 @@ describe('the tab dispatcher, reached directly', () => {
 });
 
 describe('the relay with its tab unreachable', () => {
-  /** A relay whose tab never answers, so every read falls back to the cached snapshot. */
+  /**
+   * A relay whose tab never answers, so every read falls back to the cached
+   * snapshot. It rejects as the relay itself does when no tab is connected: a
+   * typed `NoLiveAnswer('not_delivered')`, which is what classifies it as no
+   * live answer (a plain `Error` with the same text is a live failure).
+   */
   function deadTabRelay() {
     const relay = new CommandRelay({
       globalPrefix: `__uiBridgeProjectionDead_${Math.random().toString(36).slice(2, 10)}`,
@@ -811,7 +817,7 @@ describe('the relay with its tab unreachable', () => {
     relays.push(relay);
     const queue = vi
       .spyOn(relay, 'queueCommand')
-      .mockRejectedValue(new Error('SDK_DISCONNECTED: no tab'));
+      .mockRejectedValue(new NoLiveAnswer('SDK_DISCONNECTED: no tab', 'not_delivered'));
     return { queue, handlers: createRelayHandlers(relay) };
   }
 

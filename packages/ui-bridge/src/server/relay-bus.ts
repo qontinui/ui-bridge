@@ -50,6 +50,13 @@ export interface RelayResponseEnvelope {
   commandId: string;
   /** true = resolve with `result`; false = reject with `error`. */
   ok: boolean;
+  /**
+   * On `ok: true`, the answer. On `ok: false`, what the tab posted with its
+   * failure (the dispatcher's `{ success: false, … }` envelope), when it
+   * posted one: the sender rejects with a `TabReportedFailure` carrying it,
+   * so the tab's own code and `failureDetails` reach the caller. Absent from
+   * a `NOT_DELIVERED` reply and from a responder that predates it.
+   */
   result?: unknown;
   error?: string;
   /** Tab that produced the response (for success tracking). */

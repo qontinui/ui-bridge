@@ -72,6 +72,15 @@ export {
   type CommandRelayOptions,
 } from './command-relay';
 
+// A relayed command's live answer: a tab's reported failure, or none at all
+export {
+  TabReportedFailure,
+  NoLiveAnswer,
+  isTabReportedFailure,
+  isNoLiveAnswer,
+  type NoLiveAnswerReason,
+} from './live-answer';
+
 // Command stream lease and listener slots: the relay owns a stream's end
 export { STREAM_LEASE_MS, type StreamEndReason, type StreamLeaseTimings } from './stream-lease';
 export { type CommandStreamHandle, type CommandStreamOptions } from './stream-slot';
