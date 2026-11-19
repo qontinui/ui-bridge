@@ -259,11 +259,16 @@ least half the height of the text's run (half its width, if that is less): one
 that a negative margin or a shared grid area lays over the text is not seen,
 and one a 3D transform or a motion path moves is read only as far as its
 offsets move it. That holds only for text in that element's flow: text
-positioned out of it (`absolute`, `fixed`) or floated may lie over it, so there
-it is read wherever it can reach, as one of a layer beneath the text is; text
-that a relative offset or a transform of its own (or of an element between)
-moves over it is not seen. One in normal flow of any other layer beneath the text may lie
-anywhere in that layer's box, so one that paints and can reach the text makes
+positioned out of it (`absolute`, `fixed`) or floated (a float on a flex or grid
+item does not apply) may lie over it, so there it is read as one of a layer
+beneath the text is; text that a relative offset or a transform of its own (or
+of an element between) moves over it is not seen. One in normal flow of any
+other layer beneath the text lies where its place in that layer's flow can put
+it: in a block container on horizontal lines, a `::before` from the content
+box's top and a `::after` after the last in-flow content, each as deep as
+itself and its margins (a line, for a plain inline one), across the box's
+width; anywhere in the layer's box elsewhere (a flex or grid item, columns, a
+float, vertical lines). One that paints and can reach the text there makes
 contrast `unknown`. Past how far its offsets and its transform move it, one in
 normal flow that overflows its element's box is not seen, and one at
 `opacity: 0` paints nothing. A transparent one of the text's own element or of

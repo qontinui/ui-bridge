@@ -507,6 +507,17 @@ describe('kinds the tab does not implement', () => {
     }
   );
 
+  it('matches_isolated_render is unknown, naming the runner alone: vision-audit holds no baseline', () => {
+    const r = evaluate(
+      { type: 'matches_isolated_render', component: 'picker', baseline: 'storybook/Picker@abc' },
+      { elements: [] }
+    );
+    expect(r).toMatchObject({ outcome: 'unknown', code: 'capability_unavailable_in_build' });
+    expect(r.detail).toContain('POST /ui-bridge/vision/assert');
+    expect(r.detail).toContain('component baseline');
+    expect(r.detail).not.toContain('vision-audit');
+  });
+
   it('a snapshot-reading kind with no snapshot at all is unknown{input_missing}', () => {
     expect(evaluate({ type: 'no_clipping' }, null)).toMatchObject({
       outcome: 'unknown',

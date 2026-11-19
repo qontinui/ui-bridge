@@ -25,8 +25,9 @@
  *   against a stored component baseline — with every field typed as there:
  *   `[String; 2]` is exactly two strings, `u32` / `u64` / `u8` / `i32` are
  *   integers in range, an `Option` field takes `null`, and a defaulted
- *   non-`Option` field (`require_overlap`, `level`, `kind`, `dimensions`) may be
- *   left out but not sent as `null`;
+ *   non-`Option` field (`require_overlap`, `level`, `kind`, `dimensions`,
+ *   `size_tolerance_pct`, `style_props`, `compare_props`) may be left out but
+ *   not sent as `null`;
  * - a key vision-core does not read is ignored, inside an assertion as at the
  *   top level (the adapters add `tabId`), exactly as serde ignores it.
  *
