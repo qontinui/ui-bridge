@@ -13,6 +13,7 @@ import {
   informationDensity,
   containerEfficiency,
   viewportUtilization,
+  wcagContrastCompliance,
   METRIC_FUNCTIONS,
 } from '../quality-metrics';
 import { evaluateQuality } from '../quality-evaluator';
@@ -430,5 +431,26 @@ describe('METRIC_FUNCTIONS registry', () => {
     expect(METRIC_FUNCTIONS).toHaveProperty('cardConsistency');
     expect(METRIC_FUNCTIONS).toHaveProperty('inputConsistency');
     expect(METRIC_FUNCTIONS).toHaveProperty('touchTargetCompliance');
+  });
+});
+
+describe('wcagContrastCompliance reads CSS Color 4 computed colours', () => {
+  it('scores oklch() text it used to skip: one readable, one faint', () => {
+    const rect = { x: 0, y: 0, width: 100, height: 20 };
+    const result = wcagContrastCompliance(
+      [
+        makeElement('readable', 'text', rect, {
+          color: 'oklch(0.2 0 0)',
+          backgroundColor: 'oklch(0.98 0 0)',
+        }),
+        makeElement('faint', 'text', rect, {
+          color: 'oklch(0.75 0 0)',
+          backgroundColor: 'oklch(1 0 0)',
+        }),
+      ],
+      DEFAULT_VIEWPORT
+    );
+    expect(result.score).toBe(50);
+    expect(result.findings[0]?.elementIds).toEqual(['faint']);
   });
 });
