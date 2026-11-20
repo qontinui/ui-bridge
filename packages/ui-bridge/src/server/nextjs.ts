@@ -212,14 +212,14 @@ export function createNextRouteHandlers(
       // relay command to a specific tab instead of `primaryTabId`. Body
       // takes lowest precedence — see `extractTabRouting` in relay-handlers.
       const queryTabId =
-        request.nextUrl.searchParams.get('tabId') ??
-        request.nextUrl.searchParams.get('targetTabId') ??
+        request.nextUrl.searchParams.get('tabId') ||
+        request.nextUrl.searchParams.get('targetTabId') ||
         undefined;
       const headerTabId =
-        request.headers.get('x-ui-bridge-tab-id') ??
-        request.headers.get('X-UI-Bridge-Tab-Id') ??
+        request.headers.get('x-ui-bridge-tab-id') ||
+        request.headers.get('X-UI-Bridge-Tab-Id') ||
         undefined;
-      const externalTabId = queryTabId ?? headerTabId ?? undefined;
+      const externalTabId = queryTabId || headerTabId || undefined;
 
       // Per-user tab scoping (§4.2): the consumer's auth gate populates
       // `X-Caller-User-Id` from the authenticated identity (NEVER from a
@@ -306,7 +306,17 @@ export function createNextRouteHandlers(
       // primary-tab dispatch). It is the last argument, except on a
       // `queryAfterContext` route, where the query follows it
       // (`queryAndContextArgs`).
-      args.push(...queryAndContextArgs(route, query, { callerUserId }));
+      //
+      // The pin rides in the context too: most handlers take no body or
+      // query (`getStateSummary(context)`, `getComponent(id, context)`), so
+      // without it a `?tabId=` on those routes never reached the relay and
+      // the command went to whichever tab ranked first (finding 3df6267e).
+      args.push(
+        ...queryAndContextArgs(route, query, {
+          callerUserId,
+          ...(externalTabId ? { targetTabId: externalTabId } : {}),
+        })
+      );
 
       // Call handler
       const result = await (handler as (...args: unknown[]) => Promise<APIResponse<unknown>>)(
@@ -385,7 +395,27 @@ function callerContextOf(request?: Request): HandlerContext {
     request?.headers.get('x-caller-user-id') ??
     request?.headers.get('X-Caller-User-Id') ??
     undefined;
-  return { callerUserId };
+  const targetTabId = request ? pinnedTabOf(request) : undefined;
+  return { callerUserId, ...(targetTabId ? { targetTabId } : {}) };
+}
+
+/**
+ * The tab a request is pinned to: `?tabId=` (or `?targetTabId=`), then the
+ * `X-UI-Bridge-Tab-Id` header. The catch-all reads the same three spellings.
+ */
+function pinnedTabOf(request: Request): string | undefined {
+  let searchParams: URLSearchParams | undefined;
+  try {
+    searchParams = new URL(request.url).searchParams;
+  } catch {
+    searchParams = undefined;
+  }
+  return (
+    searchParams?.get('tabId') ||
+    searchParams?.get('targetTabId') ||
+    request.headers.get('x-ui-bridge-tab-id') ||
+    undefined
+  );
 }
 
 /**

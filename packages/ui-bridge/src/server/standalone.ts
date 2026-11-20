@@ -484,10 +484,31 @@ export class StandaloneServer {
           ? (req.headers['x-caller-user-id'] as string)
           : undefined) ?? undefined;
 
+      // Item #4 — per-tab routing, as the Next.js and Express adapters read
+      // it: `?tabId=` (or `?targetTabId=`), then `X-UI-Bridge-Tab-Id`. A
+      // body that names its own tab keeps it.
+      const externalTabId =
+        url.searchParams.get('tabId') ||
+        url.searchParams.get('targetTabId') ||
+        (typeof req.headers['x-ui-bridge-tab-id'] === 'string'
+          ? (req.headers['x-ui-bridge-tab-id'] as string)
+          : undefined) ||
+        undefined;
+
       if (route.bodyRequired) {
         // A request-supplied `__callerUserId` never survives: the verified
         // header is the only source (see nextjs.ts, reserved-caller.ts).
         body = withoutReservedCaller(body);
+        if (
+          externalTabId &&
+          body !== null &&
+          typeof body === 'object' &&
+          !Array.isArray(body) &&
+          (body as Record<string, unknown>).tabId === undefined &&
+          (body as Record<string, unknown>).targetTabId === undefined
+        ) {
+          body = { ...(body as Record<string, unknown>), tabId: externalTabId };
+        }
         if (
           headerCallerUserId &&
           body !== null &&
@@ -503,14 +524,24 @@ export class StandaloneServer {
       // and to no other (see nextjs.ts). A repeated list-valued key arrives as
       // the whole list, not its last value (`request-query.ts`).
       const query = route.queryRequired
-        ? withoutReservedCaller(routeQueryOf(url.searchParams))
+        ? (withoutReservedCaller(routeQueryOf(url.searchParams)) as Record<string, unknown>)
         : undefined;
+      if (query && externalTabId && query.tabId === undefined && query.targetTabId === undefined) {
+        query.tabId = externalTabId;
+      }
 
       // Per-user tab scoping (§4.2) — the context arg. Adapter always
       // supplies it so zero-arg / id-only handlers still enforce ownership.
       // It follows the query, except on a `queryAfterContext` route
       // (`queryAndContextArgs`).
-      args.push(...queryAndContextArgs(route, query, { callerUserId: headerCallerUserId }));
+      // The pin rides in the context too, for the handlers that take no body
+      // or query (see nextjs.ts).
+      args.push(
+        ...queryAndContextArgs(route, query, {
+          callerUserId: headerCallerUserId,
+          ...(externalTabId ? { targetTabId: externalTabId } : {}),
+        })
+      );
 
       // Call handler
       const result = await (handler as (...args: unknown[]) => Promise<APIResponse<unknown>>)(

@@ -416,7 +416,14 @@ function createRouteHandler(
       // absent (context.callerUserId undefined → relay falls back to
       // primary-tab dispatch). It follows the query, except on a
       // `queryAfterContext` route (`queryAndContextArgs`).
-      args.push(...queryAndContextArgs(route, query, { callerUserId: headerCallerUserId }));
+      // The pin rides in the context too, for the handlers that take no body
+      // or query (see nextjs.ts).
+      args.push(
+        ...queryAndContextArgs(route, query, {
+          callerUserId: headerCallerUserId,
+          ...(externalTabId ? { targetTabId: externalTabId } : {}),
+        })
+      );
 
       const result = await handler(...args);
       // Honor APIResponse.httpStatus for endpoints that need 4xx semantics

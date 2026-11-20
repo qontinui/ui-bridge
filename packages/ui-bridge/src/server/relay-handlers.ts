@@ -500,7 +500,16 @@ export function createRelayHandlers(
   interface CallerScope {
     /** The scoped caller, or undefined for the unscoped (admin) caller. */
     userId: string | undefined;
+    /**
+     * The tab the read is pinned to, or undefined. A pinned scope's cache is
+     * its own and lives for one request: the caller's cache is last-writer-
+     * wins across ALL the caller's tabs, so a pinned read can never be served
+     * from it, and a pinned read never writes into it.
+     */
+    tabId: string | undefined;
     cache: CallerCache;
+    /** A pinned scope's last refresh rejection, answered by `pinnedRefreshRefusal`. */
+    refreshError?: unknown;
   }
 
   function emptyCallerCache(): CallerCache {
@@ -525,9 +534,14 @@ export function createRelayHandlers(
   /** How many scoped callers keep a cache; past it, the least recently used is dropped. */
   const MAX_SCOPED_CACHES = 256;
 
-  /** The scope for `userId`: its own cache when scoped, the shared one otherwise. */
-  function scopeOf(userId: string | undefined): CallerScope {
-    if (!userId) return { userId: undefined, cache: unscopedCache };
+  /**
+   * The scope for `userId`: its own cache when scoped, the shared one
+   * otherwise. Pinned to `tabId`, a fresh, empty cache that only that tab
+   * fills (see `CallerScope.tabId`), so the first read refreshes from the tab.
+   */
+  function scopeOf(userId: string | undefined, tabId?: string): CallerScope {
+    if (tabId !== undefined) return { userId, tabId, cache: emptyCallerCache() };
+    if (!userId) return { userId: undefined, tabId: undefined, cache: unscopedCache };
     const cache = scopedCaches.get(userId) ?? emptyCallerCache();
     // Re-insert so iteration order is least recently used first.
     scopedCaches.delete(userId);
@@ -536,12 +550,59 @@ export function createRelayHandlers(
       const oldest = scopedCaches.keys().next().value;
       if (oldest !== undefined) scopedCaches.delete(oldest);
     }
-    return { userId, cache };
+    return { userId, tabId: undefined, cache };
   }
 
   /** The `ownerCheck` a relay dispatch carries on behalf of `userId`, if any. */
   function ownedBy(userId: string | undefined): { ownerCheck: { userId: string } } | undefined {
     return userId ? { ownerCheck: { userId } } : undefined;
+  }
+
+  /**
+   * The relay options for a dispatch on behalf of `userId`, pinned to `tabId`
+   * when there is one: a pinned dispatch reaches that tab or fails with a
+   * routing error, never another tab.
+   */
+  function routedTo(
+    userId: string | undefined,
+    tabId: string | undefined
+  ): { targetTabId?: string; ownerCheck?: { userId: string } } | undefined {
+    if (tabId === undefined) return ownedBy(userId);
+    return { targetTabId: tabId, ...ownedBy(userId) };
+  }
+
+  /**
+   * The tab a request is pinned to: the payload's own `tabId`/`targetTabId`
+   * first, then the pin the adapter read from `?tabId=` or the
+   * `X-UI-Bridge-Tab-Id` header (`HandlerContext.targetTabId`), which is the
+   * only channel that reaches a handler taking no body or query.
+   */
+  function pinOf(payloadTabId: string | undefined, context?: HandlerContext): string | undefined {
+    // An empty pin is no pin, in either place: the relay routes `''` as unpinned.
+    return payloadTabId || context?.targetTabId || undefined;
+  }
+
+  /**
+   * A pinned scope whose refresh failed answers that failure — the tab's
+   * routing or timeout error, or the malformed-snapshot refusal — never its
+   * empty per-request cache as a success. `undefined` when the scope is not
+   * pinned or its refresh succeeded.
+   */
+  function pinnedRefreshRefusal(scope: CallerScope): APIResponse<never> | undefined {
+    if (scope.tabId === undefined) return undefined;
+    if (scope.cache.lastRefreshFailure === 'malformed_response') {
+      return error(MALFORMED_SNAPSHOT_MESSAGE);
+    }
+    if (scope.cache.lastRefreshFailure === 'relay_failed') {
+      return relayErrorResponse<never>(scope.refreshError, ownedBy(scope.userId)?.ownerCheck);
+    }
+    return undefined;
+  }
+
+  /** The scope of a request: its caller, and the tab it is pinned to. */
+  function requestScope(payload: unknown, context?: HandlerContext): CallerScope {
+    const { targetTabId, callerUserId } = extractTabRouting(payload ?? {});
+    return scopeOf(scopedCaller(callerUserId, context), pinOf(targetTabId, context));
   }
 
   /**
@@ -660,7 +721,7 @@ export function createRelayHandlers(
     }
   ): Promise<APIResponse<T>> {
     const { targetTabId: payloadTabId, callerUserId, cleaned } = extractTabRouting(payload);
-    const effectiveTabId = opts?.targetTabId ?? payloadTabId;
+    const effectiveTabId = opts?.targetTabId || pinOf(payloadTabId, opts?.context);
     const scopedUserId = scopedCaller(callerUserId, opts?.context);
     const effectiveOwnerCheck =
       opts?.ownerCheck ?? (scopedUserId ? { userId: scopedUserId } : undefined);
@@ -799,7 +860,8 @@ export function createRelayHandlers(
     fallback: T,
     context?: HandlerContext
   ): Promise<APIResponse<T>> {
-    const { targetTabId, callerUserId, cleaned } = extractTabRouting(payload);
+    const { targetTabId: payloadTabId, callerUserId, cleaned } = extractTabRouting(payload);
+    const targetTabId = pinOf(payloadTabId, context);
     const effectiveCallerUserId = scopedCaller(callerUserId, context);
     const opts =
       targetTabId || effectiveCallerUserId
@@ -953,11 +1015,12 @@ export function createRelayHandlers(
 
     cache.inflightRefresh = (async () => {
       try {
-        // A scoped cache is filled from the caller's own tabs only.
+        // A scoped cache is filled from the caller's own tabs only, and a
+        // pinned one from its tab only.
         const result = await relay.queueCommand<unknown>(
           'getControlSnapshot',
           {},
-          ownedBy(scope.userId)
+          routedTo(scope.userId, scope.tabId)
         );
         if (!isControlSnapshot(result)) {
           // A malformed answer is handled like a relay failure — never cached,
@@ -971,10 +1034,11 @@ export function createRelayHandlers(
         cache.controlSnapshot = result;
         cache.staleSince = null;
         cache.lastRefreshFailure = null;
-      } catch {
+      } catch (e) {
         // A relay failure: keep the last good snapshot.
         // Track when we first started returning stale data
         cache.lastRefreshFailure = 'relay_failed';
+        scope.refreshError = e;
         if (!cache.staleSince) cache.staleSince = Date.now();
       }
     })();
@@ -1024,11 +1088,16 @@ export function createRelayHandlers(
     // ========================================================================
 
     async getRenderLog(query, context) {
-      const { cleaned, callerUserId } = extractTabRouting(query ?? {});
+      const { cleaned, callerUserId, targetTabId } = extractTabRouting(query ?? {});
       const effectiveUserId = scopedCaller(callerUserId, context);
+      const pinned = pinOf(targetTabId, context);
       // Try relaying to the browser first for live render log data
       try {
-        const result = await relay.queueCommand('getRenderLog', cleaned, ownedBy(effectiveUserId));
+        const result = await relay.queueCommand(
+          'getRenderLog',
+          cleaned,
+          routedTo(effectiveUserId, pinned)
+        );
         if (
           result &&
           typeof result === 'object' &&
@@ -1038,10 +1107,13 @@ export function createRelayHandlers(
         }
       } catch (err) {
         // Relay failed. The server-side log below names no tab or user, so a
-        // scoped caller gets the failure rather than other users' entries.
-        if (effectiveUserId) return error((err as Error).message, 'COMMAND_FAILED');
+        // scoped or pinned caller gets the failure rather than entries it
+        // cannot tell are its own tab's.
+        if (effectiveUserId || pinned !== undefined) {
+          return error((err as Error).message, 'COMMAND_FAILED');
+        }
       }
-      if (effectiveUserId) return success([]);
+      if (effectiveUserId || pinned !== undefined) return success([]);
       let results = [...renderLogEntries];
       if (query?.type) results = results.filter((e) => e.type === query.type);
       if (query?.since) results = results.filter((e) => e.timestamp >= query.since!);
@@ -1053,16 +1125,17 @@ export function createRelayHandlers(
     async clearRenderLog(context) {
       // The server-side log is shared and names no user: a scoped caller
       // clears only its own tabs' logs, below.
-      if (!context?.callerUserId) renderLogEntries = [];
+      if (!context?.callerUserId && context?.targetTabId === undefined) renderLogEntries = [];
       // Also relay the clear to the browser so live render log entries are cleared.
       // Per-user tab scoping (§4.2): when invoked through the HTTP layer
       // with `X-Caller-User-Id`, the adapter passes the userId via `context`
       // so the live-relay leg dispatches only to the caller's tabs.
       try {
-        const liveOpts = context?.callerUserId
-          ? { ownerCheck: { userId: context.callerUserId } }
-          : undefined;
-        await relay.queueCommand('clearRenderLog', {}, liveOpts);
+        await relay.queueCommand(
+          'clearRenderLog',
+          {},
+          routedTo(context?.callerUserId, context?.targetTabId)
+        );
       } catch {
         // Browser may be disconnected — server-side cache already cleared above
       }
@@ -1082,7 +1155,8 @@ export function createRelayHandlers(
     // ========================================================================
 
     async getElements(options, context) {
-      const { targetTabId, callerUserId, cleaned } = extractTabRouting(options ?? {});
+      const { targetTabId: payloadTabId, callerUserId, cleaned } = extractTabRouting(options ?? {});
+      const targetTabId = pinOf(payloadTabId, context);
       const opts = (cleaned ?? {}) as NonNullable<typeof options> & { revealsAny?: string };
 
       // Apply substring filters via the shared matcher. The relay works
@@ -1138,7 +1212,7 @@ export function createRelayHandlers(
     },
 
     async rankElements(request, context) {
-      const scope = scopeOf(scopedCaller(extractTabRouting(request ?? {}).callerUserId, context));
+      const scope = requestScope(request, context);
       // Rank against the cached relay snapshot — the disambiguation
       // metadata is passthrough from the browser tab's registry, so no
       // live relay call is needed. Respects the caller's recency hint
@@ -1149,6 +1223,8 @@ export function createRelayHandlers(
         recency,
         scope.cache.controlSnapshot.elements.length === 0
       );
+      const rankRefusal = pinnedRefreshRefusal(scope);
+      if (rankRefusal) return rankRefusal;
       const query = (request ?? {}) as ElementQuery;
       const matches = findElements(
         scope.cache.controlSnapshot.elements as unknown as Parameters<typeof findElements>[0],
@@ -1175,7 +1251,8 @@ export function createRelayHandlers(
     },
 
     async getElement(id, options, context) {
-      const { targetTabId, callerUserId } = extractTabRouting(options ?? {});
+      const { targetTabId: payloadTabId, callerUserId } = extractTabRouting(options ?? {});
+      const targetTabId = pinOf(payloadTabId, context);
       const effectiveUserId = scopedCaller(callerUserId, context);
 
       // P0 (plan 2026-06-12 item 1): a PINNED read must never fall back to
@@ -1273,7 +1350,8 @@ export function createRelayHandlers(
       // (`RouteDefinition.queryAfterContext`), so an `(id, context)` caller
       // keeps its scoping; `?tabId=` pins the read too, as it does for
       // `getElement`.
-      const { targetTabId, callerUserId } = extractTabRouting(query ?? {});
+      const { targetTabId: payloadTabId, callerUserId } = extractTabRouting(query ?? {});
+      const targetTabId = pinOf(payloadTabId, context);
       const effectiveUserId = scopedCaller(callerUserId, context);
       const ownerCheck = effectiveUserId ? { userId: effectiveUserId } : undefined;
       const liveOpts = ownerCheck ? { ownerCheck } : undefined;
@@ -1410,7 +1488,8 @@ export function createRelayHandlers(
     // ========================================================================
 
     async getComponents(options, context) {
-      const { targetTabId, callerUserId, cleaned } = extractTabRouting(options ?? {});
+      const { targetTabId: payloadTabId, callerUserId, cleaned } = extractTabRouting(options ?? {});
+      const targetTabId = pinOf(payloadTabId, context);
 
       // P0 (plan 2026-06-12 item 1): a PINNED read must never be served from
       // the shared cross-tab cache — dispatch a live snapshot to that tab and
@@ -1453,7 +1532,7 @@ export function createRelayHandlers(
     },
 
     async getComponent(id, options, context) {
-      const scope = scopeOf(scopedCaller(extractTabRouting(options ?? {}).callerUserId, context));
+      const scope = requestScope(options, context);
       // Refresh snapshot before looking up — components mount/unmount with page navigation
       // First try cached, then refresh if not found (avoids unnecessary refresh when cache is fresh)
       let component = scope.cache.controlSnapshot.components.find((c) => c.id === id);
@@ -1464,6 +1543,8 @@ export function createRelayHandlers(
           recency.kind === 'any' ? Recency.Current : recency,
           true
         );
+        const componentRefusal = pinnedRefreshRefusal(scope);
+        if (componentRefusal) return componentRefusal;
         component = scope.cache.controlSnapshot.components.find((c) => c.id === id);
       }
       if (!component) {
@@ -1554,11 +1635,14 @@ export function createRelayHandlers(
       // spellings — the destructured internal `targetTabId` and the public
       // `tabId` the adapters splice into the body (relayCommand extracts and
       // strips the latter via extractTabRouting).
+      // An empty pin is no pin, in every spelling (see `pinOf`).
       const pinnedTabId =
-        targetTabId ??
+        targetTabId ||
         (typeof (payload as { tabId?: unknown }).tabId === 'string'
-          ? ((payload as { tabId: string }).tabId as string)
-          : undefined);
+          ? (payload as { tabId: string }).tabId
+          : undefined) ||
+        context?.targetTabId ||
+        undefined;
       // A malformed projection (`properties` / `attributes`) is refused HERE,
       // before anything is queued. The tab's canonical filter would refuse it
       // too, but a request that can only be refused never has to reach a tab.
@@ -1569,7 +1653,10 @@ export function createRelayHandlers(
         if (isProjectionRequestError(err)) return error(`find ${err.message}`, err.code);
         throw err;
       }
-      const result = await relayCommand<FindResponse>('find', payload, { targetTabId, context });
+      const result = await relayCommand<FindResponse>('find', payload, {
+        targetTabId: targetTabId || undefined,
+        context,
+      });
       if (result.success) {
         // A live answer whose rows lack the projection asked for came from a
         // tab whose SDK predates it — see `projectionMissingFromLiveAnswer`.
@@ -1714,7 +1801,8 @@ export function createRelayHandlers(
 
     async getControlSnapshot(request, context) {
       const recency = parseRecency(request?.recency);
-      const { targetTabId, callerUserId } = extractTabRouting(request ?? {});
+      const { targetTabId: payloadTabId, callerUserId } = extractTabRouting(request ?? {});
+      const targetTabId = pinOf(payloadTabId, context);
       const effectiveUserId = scopedCaller(callerUserId, context);
       const scope = scopeOf(effectiveUserId);
 
@@ -1832,13 +1920,15 @@ export function createRelayHandlers(
     // ========================================================================
 
     async getWorkflows(options, context) {
-      const scope = scopeOf(scopedCaller(extractTabRouting(options ?? {}).callerUserId, context));
+      const scope = requestScope(options, context);
       const recency = resolveRecency(options);
       await refreshSnapshotIfNeeded(
         scope,
         recency,
         scope.cache.controlSnapshot.workflows.length === 0
       );
+      const workflowsRefusal = pinnedRefreshRefusal(scope);
+      if (workflowsRefusal) return workflowsRefusal;
       const _meta = staleMeta(scope);
       return success(scope.cache.controlSnapshot.workflows, _meta);
     },
@@ -1903,13 +1993,13 @@ export function createRelayHandlers(
         totalGroups: number;
       };
       const isGrouped = params?.group === true;
-      const { cleaned, callerUserId } = extractTabRouting(params ?? {});
-      const scope = scopeOf(scopedCaller(callerUserId, context));
+      const { cleaned } = extractTabRouting(params ?? {});
+      const scope = requestScope(params, context);
       try {
         const result = await relay.queueCommand<ConsoleErrorsResult | GroupedResult>(
           'getConsoleErrors',
           cleaned,
-          ownedBy(scope.userId)
+          routedTo(scope.userId, scope.tabId)
         );
         // Cache successful result for fallback when browser disconnects (ungrouped only)
         if (!isGrouped && result && typeof result === 'object') {
@@ -1919,6 +2009,10 @@ export function createRelayHandlers(
       } catch (e) {
         // A destroyed relay answers so, not "no errors" from a dying server.
         if (isRelayDestroyed(e)) return relayDestroyedResponse((e as Error).message);
+        // A pinned tab that did not answer is its error, never "no errors".
+        if (scope.tabId !== undefined) {
+          return relayErrorResponse(e, ownedBy(scope.userId)?.ownerCheck);
+        }
         // Relay failed — return cached data if available (ungrouped only)
         if (!isGrouped && scope.cache.consoleErrors)
           return scope.cache.consoleErrors as APIResponse<ConsoleErrorsResult>;
@@ -1974,18 +2068,21 @@ export function createRelayHandlers(
     },
 
     async getSemanticSnapshot(options, context) {
-      const { cleaned, callerUserId } = extractTabRouting(options ?? {});
-      const scope = scopeOf(scopedCaller(callerUserId, context));
+      const { cleaned } = extractTabRouting(options ?? {});
+      const scope = requestScope(options, context);
       try {
         const result = await relay.queueCommand<SemanticSnapshot>(
           'getSemanticSnapshot',
           cleaned,
-          ownedBy(scope.userId)
+          routedTo(scope.userId, scope.tabId)
         );
         scope.cache.semanticSnapshot = result;
         return success(result);
       } catch (e) {
         if (isRelayDestroyed(e)) return relayDestroyedResponse((e as Error).message);
+        if (scope.tabId !== undefined) {
+          return relayErrorResponse(e, ownedBy(scope.userId)?.ownerCheck);
+        }
         if (scope.cache.semanticSnapshot) return success(scope.cache.semanticSnapshot);
         return error((e as Error).message, 'COMMAND_FAILED');
       }
@@ -2557,7 +2654,38 @@ export function createRelayHandlers(
     // ========================================================================
 
     async getStateSummary(context?: HandlerContext): Promise<APIResponse<StateSummary>> {
-      const scope = scopeOf(context?.callerUserId);
+      const scope = scopeOf(context?.callerUserId, context?.targetTabId);
+      // A PINNED summary is synthesized from the pinned tab alone: its scope
+      // starts empty (`scopeOf`), so its snapshot and console errors are read
+      // live from that tab rather than from the caller's cache, which holds
+      // whichever of the caller's tabs answered last (finding 3df6267e).
+      // A pinned tab that cannot be read answers its routing or timeout
+      // error, as every pinned read does, never a summary of nothing.
+      if (scope.tabId !== undefined) {
+        const live = await relayCommand<ControlSnapshot>(
+          'getControlSnapshot',
+          {},
+          routedTo(scope.userId, scope.tabId)
+        );
+        if (!live.success) return live as unknown as APIResponse<StateSummary>;
+        if (!isControlSnapshot(live.data)) {
+          warnMalformedSnapshot(live.data);
+          return error(MALFORMED_SNAPSHOT_MESSAGE);
+        }
+        scope.cache.controlSnapshot = live.data;
+        try {
+          const errors = await relay.queueCommand<unknown>(
+            'getConsoleErrors',
+            {},
+            routedTo(scope.userId, scope.tabId)
+          );
+          if (errors && typeof errors === 'object') scope.cache.consoleErrors = success(errors);
+        } catch {
+          // No answer: `hasErrors` stays false (its type has no unknown), and
+          // the envelope says it was not measured — see `pinnedErrorsUnread`.
+        }
+      }
+      const pinnedErrorsUnread = scope.tabId !== undefined && scope.cache.consoleErrors === null;
       // Reuse the caller's cached snapshot — the same data
       // a fresh `/control/snapshot` call would synthesize, just without the
       // round-trip cost. The whole point of state-summary is to skip the
@@ -2609,15 +2737,23 @@ export function createRelayHandlers(
         idleSignals = null;
       }
 
-      return success({
-        visibleElementCount,
-        modalOpen,
-        hasErrors,
-        idleSignals,
-        registeredComponents: snapshot.components.length,
-        route: snapshot.route ?? null,
-        activeTab: snapshot.activeTab ?? null,
-      });
+      return success(
+        {
+          visibleElementCount,
+          modalOpen,
+          hasErrors,
+          idleSignals,
+          registeredComponents: snapshot.components.length,
+          route: snapshot.route ?? null,
+          activeTab: snapshot.activeTab ?? null,
+        },
+        pinnedErrorsUnread
+          ? {
+              fallback: true,
+              reason: 'hasErrors was not measured: the pinned tab did not answer getConsoleErrors',
+            }
+          : undefined
+      );
     },
 
     // ========================================================================
@@ -2661,7 +2797,7 @@ export function createRelayHandlers(
       },
       context?: HandlerContext
     ) {
-      const scope = scopeOf(scopedCaller(extractTabRouting(params ?? {}).callerUserId, context));
+      const scope = requestScope(params, context);
       try {
         // Populate the cache before reading it. Every other cache-reading
         // handler here (`getElements`, `rankElements`, `getComponents`, …)
@@ -2689,6 +2825,8 @@ export function createRelayHandlers(
           recency,
           scope.cache.controlSnapshot.elements.length === 0
         );
+        const visibilityRefusal = pinnedRefreshRefusal(scope);
+        if (visibilityRefusal) return visibilityRefusal;
 
         const snapshot = scope.cache.controlSnapshot as ControlSnapshot;
         const elements = (snapshot?.elements ?? []) as Array<{
@@ -2738,7 +2876,7 @@ export function createRelayHandlers(
     // at now. `provenance.observedAt` is the cached snapshot's own (old)
     // timestamp, with `_meta` carrying the stale flag.
     async pageHealth(context?: HandlerContext) {
-      const scope = scopeOf(context?.callerUserId);
+      const scope = scopeOf(context?.callerUserId, context?.targetTabId);
       try {
         // Both cache-write sites validate the snapshot (`isControlSnapshot`),
         // so `elements` is an array; it is still read through `Array.isArray`
@@ -2754,6 +2892,8 @@ export function createRelayHandlers(
             cachedElements.length === 0 ||
             scope.cache.staleSince !== null
         );
+        const healthRefusal = pinnedRefreshRefusal(scope);
+        if (healthRefusal) return healthRefusal;
         const raw = scope.cache.controlSnapshot as {
           elements?: unknown;
           components?: unknown;

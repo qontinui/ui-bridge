@@ -491,6 +491,18 @@ export interface HandlerContext {
    * fallback applies.
    */
   callerUserId?: string;
+  /**
+   * The tab the request is pinned to, as the adapter read it from `?tabId=`
+   * (or `?targetTabId=`) or the `X-UI-Bridge-Tab-Id` header. The adapter
+   * also splices it into the body or query when the route takes one, but
+   * most handlers take neither — `getStateSummary(context)`,
+   * `getComponent(id, context)` — so this is the one channel that reaches
+   * every handler. A pin in the request payload itself takes precedence.
+   * When present, the command goes to this tab only (an unreachable tab is
+   * its routing or timeout error, never another tab), and no answer is
+   * served from a cache filled by another tab.
+   */
+  targetTabId?: string;
 }
 
 /**
