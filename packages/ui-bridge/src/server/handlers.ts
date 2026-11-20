@@ -152,6 +152,7 @@ import type {
   IntentExecutionResult,
   RecoveryAttemptRequest,
   RecoveryAttemptResult,
+  ParsedAction,
   PageDataMap,
   PageRegionMap,
   StructuredDataExtraction,
@@ -208,6 +209,7 @@ import {
   generateComparisonReport,
   captureStateVariations,
   analyzeStructuredChanges,
+  parseNLInstruction,
 } from '../ai';
 import type { InteractionStateName, StateStyles } from '../core/types';
 import type { NavigationTracker } from '../navigation';
@@ -782,6 +784,171 @@ function success<T>(data: T): APIResponse<T> {
     data,
     timestamp: Date.now(),
   };
+}
+
+/**
+ * The envelope of a recovery attempt in which no strategy reported success
+ * (`attemptRecovery`).
+ *
+ * Envelope `success: false`, the stated verdict under `data`
+ * (`attemptSucceeded: false`, never absent), the human text in both `error`
+ * fields, and an HTTP status hint: 400 when the attempt ran and no strategy
+ * reported success, or was refused for the caller's payload (the runner's
+ * `RECOVERY_FAILED` / refusal 400s), 500 when the server itself failed.
+ */
+function recoveryNotSucceeded(
+  data: Omit<RecoveryAttemptResult, 'originalActionPerformed' | 'originalActionAttempted'> & {
+    attemptSucceeded: false;
+    error: string;
+    /** Defaults to `false`: a refusal runs nothing. */
+    originalActionAttempted?: boolean;
+  },
+  internalCode: string,
+  httpStatus: 400 | 500
+): APIResponse<RecoveryAttemptResult> {
+  return {
+    success: false,
+    // No strategy reported success, so no acting strategy performed the
+    // original action.
+    data: {
+      ...data,
+      originalActionPerformed: false,
+      originalActionAttempted: data.originalActionAttempted ?? false,
+    },
+    error: data.error,
+    code: mapInternalErrorCode(internalCode, data.error),
+    timestamp: Date.now(),
+    httpStatus,
+  };
+}
+
+/**
+ * What is wrong with a recovery-attempt payload, or `null` when every field
+ * `attemptRecovery` reads has the shape it reads:
+ *
+ * - `failure`: an object; its `errorCode` and `message`, when present, strings;
+ * - `instruction`: a non-empty string;
+ * - `maxRetries`: a positive integer (required, no default). A budget below 1
+ *   would still reach the direct-instruction fallback and run the original
+ *   action, so it is refused rather than run;
+ * - `failure.suggestedActions`, when present, an array of objects whose
+ *   `suggestion` (string), `command` (string), `confidence` / `priority`
+ *   (finite numbers) and `retryable` (boolean) have those types when present.
+ *
+ * "Present" means neither absent nor `null`. `null` is accepted wherever a
+ * field is optional because the repo's own Python clients serialize every
+ * unset optional as `null` (`model_dump(by_alias=True)` of
+ * `StructuredFailureInfo` / `RecoverySuggestionInfo`, where `command` is
+ * `str | None`), and a commandless suggestion is ordinary.
+ */
+function recoveryPayloadProblem(request: unknown): string | null {
+  if (typeof request !== 'object' || request === null) return 'the body is not an object';
+  const body = request as { failure?: unknown; instruction?: unknown; maxRetries?: unknown };
+  const failure = body.failure;
+  if (typeof failure !== 'object' || failure === null || Array.isArray(failure)) {
+    return '`failure` must be an object';
+  }
+  const f = failure as Record<string, unknown>;
+  for (const key of ['errorCode', 'message']) {
+    const v = f[key];
+    if (isPresent(v) && typeof v !== 'string') {
+      return `\`failure.${key}\` must be a string`;
+    }
+  }
+  if (typeof body.instruction !== 'string' || body.instruction.trim() === '') {
+    return '`instruction` must be a non-empty string';
+  }
+  if (
+    typeof body.maxRetries !== 'number' ||
+    !Number.isInteger(body.maxRetries) ||
+    body.maxRetries < 1
+  ) {
+    return '`maxRetries` must be a positive integer';
+  }
+  const suggested = f.suggestedActions;
+  if (!isPresent(suggested)) return null;
+  if (!Array.isArray(suggested)) return '`failure.suggestedActions` must be an array';
+  for (let i = 0; i < suggested.length; i++) {
+    const s: unknown = suggested[i];
+    const at = `failure.suggestedActions[${i}]`;
+    if (typeof s !== 'object' || s === null || Array.isArray(s)) {
+      return `\`${at}\` must be an object`;
+    }
+    const field = s as Record<string, unknown>;
+    for (const key of ['suggestion', 'command']) {
+      const v = field[key];
+      if (isPresent(v) && typeof v !== 'string') {
+        return `\`${at}.${key}\` must be a string`;
+      }
+    }
+    for (const key of ['confidence', 'priority']) {
+      const v = field[key];
+      if (isPresent(v) && (typeof v !== 'number' || !Number.isFinite(v))) {
+        return `\`${at}.${key}\` must be a finite number`;
+      }
+    }
+    const retryable = field.retryable;
+    if (isPresent(retryable) && typeof retryable !== 'boolean') {
+      return `\`${at}.retryable\` must be a boolean`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether two instructions name the SAME action, for the recovery's
+ * at-most-once guard. Running one after the other would run the original
+ * action twice.
+ *
+ * Both are PARSED (`parseNLInstruction`) and compared on what the action
+ * does:
+ * - the action and its modifiers / scroll direction / wait condition /
+ *   assertion type;
+ * - the target, case- and whitespace-insensitively. The parser already drops
+ *   filler, so `Click the Submit button` and `click Submit` both target
+ *   `Submit`;
+ * - the typed or selected value, case-SENSITIVELY: `type 'ABC' into name` and
+ *   `type 'abc' into name` are different actions.
+ *
+ * The wait condition is compared case-insensitively too.
+ *
+ * When either side does not parse, the two raw strings are compared, trimmed,
+ * with internal whitespace collapsed, and case-insensitively.
+ *
+ * The comparison is on the instruction TEXT as parsed, not on the element it
+ * resolves to: two differently worded targets that resolve to the same element
+ * (`click Submit` and `click the primary button`) are different here, and both
+ * can run.
+ */
+function sameAction(a: string, b: string): boolean {
+  const pa = parseNLInstruction(a);
+  const pb = parseNLInstruction(b);
+  if (!pa || !pb)
+    return collapseWhitespace(a).toLowerCase() === collapseWhitespace(b).toLowerCase();
+  const target = (p: ParsedAction) => collapseWhitespace(p.targetDescription).toLowerCase();
+  const modifiers = (p: ParsedAction) => [...(p.modifiers ?? [])].sort().join('+');
+  // The parsed typed/selected value (an instruction string, not a DOM read).
+  const { value: valueA } = pa;
+  const { value: valueB } = pb;
+  return (
+    pa.action === pb.action &&
+    target(pa) === target(pb) &&
+    valueA === valueB &&
+    modifiers(pa) === modifiers(pb) &&
+    pa.scrollDirection === pb.scrollDirection &&
+    (pa.waitCondition ?? '').toLowerCase() === (pb.waitCondition ?? '').toLowerCase() &&
+    pa.assertionType === pb.assertionType
+  );
+}
+
+/** Trimmed, internal whitespace collapsed to one space. */
+function collapseWhitespace(text: string): string {
+  return text.trim().split(/\s+/).join(' ');
+}
+
+/** Neither absent nor `null` (an optional field the payload actually set). */
+function isPresent(value: unknown): boolean {
+  return value !== undefined && value !== null;
 }
 
 /**
@@ -4545,10 +4712,52 @@ export function createHandlers(
     // Recovery Handler
     // =========================================================================
 
+    // Every arm states the verdict in `attemptSucceeded` — the field name the
+    // runner's `/ai/recovery/attempt` reads (`ai_analyze.rs` `attempt_verdict`;
+    // plan 2026-11-18-the-journey-ledger-never-records-an-unknown-action-
+    // verdict-as-a-success-or-a-failure, D4). `true` arms answer envelope
+    // `success: true` (200). Every other arm answers envelope `success: false`
+    // with `data.attemptSucceeded: false`, mirroring the runner's 400
+    // `RECOVERY_FAILED`. The runner's SDK twin
+    // (`/ui-bridge/sdk/ai/recovery/attempt`) forwards a `success: true` body
+    // verbatim, rebuilds every `success: false` body as `{success: false,
+    // error}` (dropping `data`), and records its journey edge from the
+    // top-level `success` alone — so a not-recovered attempt answered with
+    // `success: true` would be recorded as a success.
     attemptRecovery: async (
       request: RecoveryAttemptRequest
     ): Promise<APIResponse<RecoveryAttemptResult>> => {
       const startTime = Date.now();
+      // Declared outside the `try` so the fault arm reports the strategies
+      // that already ran, and whether the original action was among them.
+      const strategiesAttempted: string[] = [];
+      let executions = 0;
+      let ranOriginal = false;
+      // The strategy that reported success, once one has: the fault arm must
+      // not answer "nothing acted" for a throw while building its answer.
+      let acted: { result: NLActionResponse; isOriginal: boolean } | undefined;
+      // The last executed strategy's result, reported as `finalResult` on
+      // every arm that ran one (the fault arm included).
+      let lastResult: NLActionResponse | undefined;
+
+      // The caller's payload is validated before anything reads it: a missing
+      // `failure`, a non-array `suggestedActions` or a non-object suggestion
+      // is the caller's fault and nothing acted, so it is a 400 refusal — not
+      // a throw into the 500 "server failed" arm below.
+      const payloadProblem = recoveryPayloadProblem(request);
+      if (payloadProblem) {
+        return recoveryNotSucceeded(
+          {
+            attemptSucceeded: false,
+            strategiesAttempted: [],
+            error: `Invalid recovery request: ${payloadProblem}`,
+            durationMs: Date.now() - startTime,
+          },
+          'VALIDATION_ERROR',
+          400
+        );
+      }
+
       try {
         // Item A (iter-4 manual-test remediation): operator-contract errors
         // MUST surface verbatim. `WRONG_TYPE_PARAM` / `MISSING_PARAM` are
@@ -4562,20 +4771,24 @@ export function createHandlers(
         // recovery for these codes so the 400 propagates unchanged.
         const passthroughCodes = new Set(['WRONG_TYPE_PARAM', 'MISSING_PARAM']);
         if (passthroughCodes.has(request.failure?.errorCode)) {
-          return success({
-            recovered: false,
-            strategiesAttempted: [],
-            error:
-              `Operator-contract error (${request.failure.errorCode}) is not recoverable — ` +
-              'fix the request payload at the call site. ' +
-              (request.failure.message || ''),
-            durationMs: Date.now() - startTime,
-          });
+          // Refused before any strategy ran: the caller's payload is wrong,
+          // so this is a 400 validation refusal that did not act.
+          return recoveryNotSucceeded(
+            {
+              attemptSucceeded: false,
+              strategiesAttempted: [],
+              error:
+                `Operator-contract error (${request.failure.errorCode}) is not recoverable — ` +
+                'fix the request payload at the call site. ' +
+                (request.failure.message || ''),
+              durationMs: Date.now() - startTime,
+            },
+            'VALIDATION_ERROR',
+            400
+          );
         }
 
         refreshElements();
-        const strategiesAttempted: string[] = [];
-        let lastResult: NLActionResponse | undefined;
 
         // Try recovery strategies based on the failure info.
         //
@@ -4601,64 +4814,171 @@ export function createHandlers(
           })
           .map((x) => x.s);
 
-        for (let i = 0; i < Math.min(suggestions.length, request.maxRetries); i++) {
+        // Two invariants bound what one attempt may do:
+        //
+        // - `maxRetries` is the ACTION BUDGET: the attempt performs at most
+        //   `maxRetries` executions, the direct-instruction fallback included.
+        // - The ORIGINAL instruction (`request.instruction`) runs AT MOST ONCE.
+        //   A commandless suggestion, a suggestion whose command equals the
+        //   instruction, and the fallback all run it. Once one has (even if it
+        //   reported failure, because a failed action may have partly
+        //   applied), every later one is skipped.
+        //
+        // `ranOriginal` is answered on every arm as `originalActionAttempted`.
+        //
+        // The guard is PER SERVER ATTEMPT. It does not count the client's own
+        // earlier execution of the original, the failure that made the client
+        // ask for recovery, because the server cannot see it. The request only
+        // says what to recover from, not whether this instruction already ran.
+        // So one original-instruction strategy, or the fallback, may replay the
+        // original once after that client failure. That replay is the point of
+        // the fallback. The client accounts for it: it never re-executes after
+        // an attempt that ran the original, or might have.
+        for (let i = 0; i < suggestions.length && executions < request.maxRetries; i++) {
           const suggestion = suggestions[i];
-          strategiesAttempted.push(suggestion.suggestion || `strategy-${i}`);
-
-          // If the suggestion has a command, try executing it
           const instruction = suggestion.command || request.instruction;
-          try {
-            const result = await nlExecutor.execute({
-              instruction,
-              context: `Recovery attempt ${i + 1}: ${suggestion.suggestion}`,
-            });
-            lastResult = result;
+          const isOriginal = sameAction(instruction, request.instruction);
+          if (isOriginal && ranOriginal) continue;
 
-            if (result.success) {
-              return success({
-                recovered: true,
-                strategiesAttempted,
-                finalResult: result,
-                durationMs: Date.now() - startTime,
-              });
-            }
+          strategiesAttempted.push(suggestion.suggestion || `strategy-${i}`);
+          executions += 1;
+          if (isOriginal) ranOriginal = true;
+          // Only the executor call is inside the per-strategy try. The
+          // success answer is built OUTSIDE it, so a throw while building it is
+          // never swallowed as a pre-action strategy failure, and no further
+          // strategy runs after one reported success.
+          let result: NLActionResponse | undefined;
+          try {
+            result = await nlExecutor.execute({
+              instruction,
+              context: `Recovery attempt ${executions}: ${suggestion.suggestion}`,
+            });
           } catch {
-            // Continue to next strategy
+            // A strategy whose execute() THREW did not act. NLActionExecutor.execute
+            // catches its own performAction (and scrollPage catches its own
+            // scroll) and answers `success: false` UB-ACTION-FAILED, so a throw
+            // that reaches here came from before any action ran (parsing,
+            // validation, search). Continue to the next strategy.
+            //
+            // "Pre-action" holds in practice, not strictly: execute's own
+            // catch around performAction builds its failure answer
+            // (createFailureResponse), and a throw from THERE would come after
+            // the action ran. That is why `ranOriginal` is set BEFORE the call:
+            // a throw from an original-instruction strategy still counts as
+            // the original having run, so the behaviour never depends on where
+            // the throw came from.
+            continue;
+          }
+          lastResult = result;
+          if (result.success) {
+            acted = { result, isOriginal };
+            return success({
+              attemptSucceeded: true,
+              // The acting strategy ran the ORIGINAL action itself, so it has
+              // already happened, and the caller must not perform it again.
+              originalActionPerformed: isOriginal,
+              originalActionAttempted: ranOriginal,
+              strategiesAttempted,
+              finalResult: result,
+              durationMs: Date.now() - startTime,
+            });
           }
         }
 
-        // If no suggestions or all failed, try the instruction directly
-        if (strategiesAttempted.length === 0 || !lastResult?.success) {
+        // The direct-instruction fallback: only when the original has not run
+        // in this attempt and budget remains.
+        if (!ranOriginal && executions < request.maxRetries) {
           strategiesAttempted.push('direct-instruction');
+          executions += 1;
+          ranOriginal = true;
+          let result: NLActionResponse | undefined;
           try {
-            const result = await nlExecutor.execute({
+            result = await nlExecutor.execute({
               instruction: request.instruction,
               context: 'Recovery: direct instruction attempt',
             });
+          } catch {
+            // Did not act, for the reason given at the strategy loop's catch:
+            // a throw out of execute() is pre-action. Fall through to failure.
+          }
+          if (result) {
             lastResult = result;
-
             if (result.success) {
+              acted = { result, isOriginal: true };
               return success({
-                recovered: true,
+                attemptSucceeded: true,
+                // The direct-instruction fallback IS the original action.
+                originalActionPerformed: true,
+                originalActionAttempted: true,
                 strategiesAttempted,
                 finalResult: result,
                 durationMs: Date.now() - startTime,
               });
             }
-          } catch {
-            // Fall through to failure
           }
         }
 
-        return success({
-          recovered: false,
-          strategiesAttempted,
-          finalResult: lastResult,
-          error: 'All recovery strategies exhausted',
-          durationMs: Date.now() - startTime,
-        });
+        // The attempt RAN and no strategy reported success: the runner's 400
+        // `RECOVERY_FAILED` arm. `false` means exactly that, not "nothing
+        // changed": performAction throws on an executeAction `success: false`,
+        // which can follow a partly applied action (same wording as
+        // `RecoveryAttemptResult.attemptSucceeded` in ai/types.ts).
+        return recoveryNotSucceeded(
+          {
+            attemptSucceeded: false,
+            originalActionAttempted: ranOriginal,
+            strategiesAttempted,
+            finalResult: lastResult,
+            error: 'RECOVERY_FAILED: All recovery strategies exhausted',
+            durationMs: Date.now() - startTime,
+          },
+          'RECOVERY_FAILED',
+          400
+        );
       } catch (err) {
-        return error((err as Error).message, 'RECOVERY_ERROR');
+        // Every executor call above is inside its own try, so a throw that
+        // reaches here came from outside a strategy: refreshing the registry,
+        // the bookkeeping between strategies, or building an answer. The fault
+        // is the server's (the caller's payload was validated above), so it
+        // is a 500.
+        const message = err instanceof Error ? err.message : String(err);
+        if (acted) {
+          // A strategy HAD reported success, and the server failed while
+          // building the success answer. The verdict is still stated as
+          // true, with what acted, inside a failed envelope. A reader must
+          // not take this 500 for "nothing acted"; the Python reader reads a
+          // stated success inside a failed 5xx as UNKNOWN and never retries
+          // on it.
+          return {
+            success: false,
+            data: {
+              attemptSucceeded: true,
+              originalActionPerformed: acted.isOriginal,
+              originalActionAttempted: ranOriginal,
+              strategiesAttempted,
+              finalResult: acted.result,
+              error: message,
+              durationMs: Date.now() - startTime,
+            },
+            error: message,
+            code: mapInternalErrorCode('RECOVERY_ERROR', message),
+            timestamp: Date.now(),
+            httpStatus: 500,
+          };
+        }
+        // No strategy reported success, so the verdict is `false`.
+        return recoveryNotSucceeded(
+          {
+            attemptSucceeded: false,
+            originalActionAttempted: ranOriginal,
+            strategiesAttempted,
+            finalResult: lastResult,
+            error: message,
+            durationMs: Date.now() - startTime,
+          },
+          'RECOVERY_ERROR',
+          500
+        );
       }
     },
 

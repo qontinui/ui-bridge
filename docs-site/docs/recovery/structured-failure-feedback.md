@@ -249,10 +249,96 @@ Content-Type: application/json
 }
 ```
 
-The response is a `RecoveryAttemptResult`:
-`{ recovered, strategiesAttempted, finalResult?, error?, durationMs }` —
+The response data is a `RecoveryAttemptResult`:
+`{ attemptSucceeded, originalActionPerformed, originalActionAttempted, strategiesAttempted, finalResult?, error?, durationMs }` —
 `strategiesAttempted` names what was tried, so a failed recovery is still
 diagnostic rather than opaque.
+
+Two limits bound one attempt:
+
+- `maxRetries` is its **action budget**. The attempt performs at most
+  `maxRetries` executions, and the direct-instruction fallback counts against
+  it.
+- The **original instruction runs at most once**. A commandless suggestion, a
+  suggestion whose `command` equals `instruction`, and the direct-instruction
+  fallback all run it. Commands are compared as PARSED actions: same action,
+  same target (ignoring case, whitespace and filler words, so
+  `Click the Submit button` is `click Submit`), and the same typed or selected
+  value, compared case-sensitively because typed text is case-significant. A
+  command that does not parse is compared as text, with whitespace trimmed and
+  collapsed, ignoring case. The comparison is on the instruction text, not on the element it
+  resolves to: two differently worded targets that resolve to the same element
+  are different here, and both can run.
+  Once one of them has run it (whatever it reported), every later one is
+  skipped, the fallback included. The guard is per server attempt. It does not
+  count the client's own earlier failed execution of the original, the one
+  that led the client to ask for recovery: the attempt may run the original
+  once more.
+
+`attemptSucceeded` is the verdict. Where each server states it:
+
+- **The `createHandlers` server** (`POST /ai/recovery/attempt`) states it on
+  every answer, at `data.attemptSucceeded`.
+- **The generic relay's in-page stub** (`executeCommand('attemptRecovery')`)
+  answers `success: false` with `data: {attemptSucceeded: false,
+  originalActionPerformed: false, originalActionAttempted: false,
+  strategiesAttempted: []}`. Recovery is not implemented there, so no strategy
+  runs. Over the relay server, that in-page answer is an inner failure, which
+  the relay nests whole under the outer envelope's `data` (outer
+  `success: false`). The verdict therefore sits at `data.data.attemptSucceeded`.
+
+From the `createHandlers` server: when a strategy's action reported success,
+the envelope is `success: true` (HTTP 200) with `attemptSucceeded: true`.
+Otherwise the envelope is `success: false` with `attemptSucceeded: false` still
+under `data`:
+
+- HTTP 400 (code `UB-ACTION-FAILED`, error `RECOVERY_FAILED: …`) when the
+  attempt ran and no strategy reported success;
+- HTTP 400 `UB-VALIDATION-ERROR` when it was refused for the caller's payload:
+  - a missing or malformed `failure`, `instruction`, `maxRetries` (not a
+    positive integer: a budget below 1 runs no strategy, not even the
+    direct-instruction fallback) or `suggestedActions`. An optional field set
+    to `null` counts as absent;
+  - or an operator-contract failure (`failure.errorCode` `WRONG_TYPE_PARAM` or
+    `MISSING_PARAM`), which no strategy can fix: fix the request at the call
+    site;
+- HTTP 500 (code `UB-UNKNOWN-ERROR`) when the server itself failed;
+  `strategiesAttempted` names what already ran.
+
+`attemptSucceeded: false` means no strategy reported success, not that the UI
+is unchanged: an action that reported failure may have partly applied. The
+runner's own `/ai/recovery/attempt` uses the same field name, and its 200 / 400
+`RECOVERY_FAILED` split.
+
+`attemptSucceeded: true` says a recovery strategy's action reported success.
+Whether the original action now succeeds depends on `originalActionPerformed`,
+which the `createHandlers` server states on every answer:
+
+- `true`: the acting strategy executed the original instruction itself (the
+  direct-instruction fallback, a commandless suggestion, or a command equal to
+  the instruction), and it reported success; `finalResult` is its result. The
+  original action has already happened, so do NOT perform it again. The Python
+  clients return success without another execution.
+- `false` with `attemptSucceeded: true`: a different command acted (scroll,
+  wait, dismiss). What to do next depends on `originalActionAttempted`:
+  - `false`: the original did not run in this attempt. Retry it to find out
+    whether it now succeeds.
+  - `true`: the original already ran in this attempt and reported failure
+    before the other command succeeded. Do NOT re-run it, because a failed
+    action may have partly applied. The Python clients stop and report the
+    original as not succeeded.
+  - unstated (a server that does not send it, such as the runner, whose
+    scoped recovery runs the original instruction itself): UNKNOWN. Do NOT
+    re-run it. The Python clients stop with `ORIGINAL_OUTCOME_UNKNOWN_ERROR`.
+
+`originalActionPerformed` is `false` on every answer whose `attemptSucceeded`
+is `false`; there, `originalActionAttempted` still says whether the original
+ran. `originalActionAttempted` is `false` on every refusal (nothing runs).
+
+If the server fails while building a success answer, it answers HTTP 500
+(`success: false`) and still states `attemptSucceeded: true`, together with
+what acted. Treat that as UNKNOWN: neither retry the original nor report it as
+succeeded.
 
 ## Server-Side Codes
 

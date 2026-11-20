@@ -1826,11 +1826,50 @@ export interface RecoveryAttemptRequest {
  * Result from a recovery attempt
  */
 export interface RecoveryAttemptResult {
-  /** Whether recovery was successful */
-  recovered: boolean;
+  /**
+   * The attempt verdict: `true` when a recovery strategy's action reported
+   * success, `false` when none did (or the attempt was refused). Stated on
+   * every answer, success or failure. Same field name and meaning as the
+   * runner's `/ai/recovery/attempt` data (`attemptSucceeded`). It answers
+   * whether the RECOVERY acted. What a caller may do next:
+   * - `originalActionPerformed: true`: the acting strategy WAS the original
+   *   action and it reported success. Do not perform it again.
+   * - otherwise, retry the original ONLY when `originalActionAttempted` is
+   *   stated `false`. When it is `true` (the original already ran in this
+   *   attempt and reported failure) or unstated (another server, such as the
+   *   runner), do NOT re-execute it.
+   */
+  attemptSucceeded: boolean;
+  /**
+   * Whether the strategy that acted executed the ORIGINAL instruction
+   * (`request.instruction`) itself: the direct-instruction fallback, a
+   * commandless suggestion, or a suggestion whose command equals it. When
+   * `true`, the original action already happened and reported success
+   * (`finalResult`), so the caller must NOT perform it again. When `false`
+   * with `attemptSucceeded: true`, a different command acted (scroll, wait,
+   * dismiss). That alone does NOT license a retry: retry the original only
+   * when `originalActionAttempted` is stated `false`; when it is `true` or
+   * unstated, do not re-execute. Always `false` when `attemptSucceeded` is
+   * `false`. Stated on every answer.
+   */
+  originalActionPerformed: boolean;
+  /**
+   * Whether this attempt executed the ORIGINAL instruction at all, whatever it
+   * reported. An attempt runs it at most once. When `true` and
+   * `originalActionPerformed` is `false` (the original ran and reported
+   * failure, then a different strategy succeeded), the caller must NOT
+   * re-execute the original: a failed action may have partly applied. The
+   * Python clients stop and report the original as not succeeded. Stated on
+   * every answer (`false` on refusals).
+   */
+  originalActionAttempted: boolean;
   /** Names of strategies that were attempted */
   strategiesAttempted: string[];
-  /** Final action result if recovery succeeded */
+  /**
+   * The last executed strategy's result: the acting one when
+   * `attemptSucceeded` is `true`, else the last that ran (on the 400 and 500
+   * arms too). Absent when no strategy ran.
+   */
   finalResult?: NLActionResponse;
   /** Error message if recovery failed */
   error?: string;

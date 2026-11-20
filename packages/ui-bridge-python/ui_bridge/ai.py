@@ -941,11 +941,47 @@ class AIClient:
             context: Optional context to help disambiguate
             timeout: Action timeout in milliseconds
             confidence_threshold: Minimum confidence for element matching (0-1)
-            max_retries: Maximum number of recovery attempts (default: 3)
+            max_retries: Maximum number of executions of the instruction by this
+                client (default: 3). It also bounds the recovery: after its k-th
+                failed execution the client hands the server a budget of
+                ``max_retries - k`` UI actions for one recovery attempt. Across
+                client and server, at most ``max_retries + max_retries *
+                (max_retries - 1) / 2`` UI actions run (6 for the default 3).
             recovery_enabled: Whether to attempt recovery on failure (default: True)
 
         Returns:
             ExecuteWithRecoveryResult with execution and recovery history
+            (``success=True`` without a further execution when the recovery
+            itself performed the original instruction and it reported success:
+            ``recovery_result.original_action_performed``), or ``success=False``
+            with ``ORIGINAL_ALREADY_ATTEMPTED_ERROR`` / ``ORIGINAL_OUTCOME_UNKNOWN_ERROR``
+            without a further execution when the recovery acted but the
+            original already ran in it, or may have (an unstated
+            ``originalActionAttempted``, as from the runner). The server's
+            at-most-once guard is per server attempt: it cannot see this
+            client's own earlier failed execution, so the recovery may replay
+            the original once more (its direct-instruction fallback). That is
+            why the client never re-executes after an attempt that ran the
+            original, or might have. On a ``success=False`` result,
+            ``executed_action``, ``element_used``, ``element_state``,
+            ``confidence`` and ``duration_ms`` describe this client's last own
+            execution (the one before any recovery), and a stop after a
+            recovery carries its own ``error_code``
+            (``RECOVERY_ORIGINAL_ALREADY_ATTEMPTED``,
+            ``RECOVERY_ORIGINAL_OUTCOME_UNKNOWN``,
+            ``RECOVERY_ORIGINAL_RETRIED_AND_FAILED``, or
+            ``RECOVERY_VERDICT_UNKNOWN`` when the recovery stated no verdict). A recovery attempt
+            is posted only while a retry remains (``max_retries`` > attempts
+            made).
+
+        Raises:
+            Exception: Any non-transport exception raised while requesting the
+                recovery attempt propagates. Only an ``httpx.HTTPError`` (the
+                request got no usable answer) is caught, and it is recorded as
+                ``recovery_result.attempt_succeeded = None`` (UNKNOWN). Before
+                plan 2026-11-18-the-journey-ledger-never-records-an-unknown-
+                action-verdict-as-a-success-or-a-failure, every exception was
+                swallowed and read as "recovery failed", which hid client bugs.
 
         Example:
             >>> # Execute with automatic recovery
@@ -966,20 +1002,27 @@ class AIClient:
         """
         import time
 
-        from .recovery_types import ExecuteWithRecoveryResult, RecoveryExecutorResult
+        import httpx
+
+        from .recovery_types import (
+            ExecuteWithRecoveryResult,
+            RecoveryExecutorResult,
+            performed_recovery_result,
+            read_recovery_attempt,
+            recovery_stop,
+        )
 
         start_time = time.time()
         total_attempts = 0
         recovery_result: RecoveryExecutorResult | None = None
         last_response: NLActionResponse | None = None
-        current_instruction = instruction
 
         while total_attempts < max_retries:
             total_attempts += 1
 
             # Execute the instruction
             response = self.execute(
-                current_instruction,
+                instruction,
                 context=context,
                 timeout=timeout,
                 confidence_threshold=confidence_threshold,
@@ -1011,43 +1054,66 @@ class AIClient:
             if not failure_info or not failure_info.retry_recommended:
                 break
 
-            # Attempt recovery via the server
+            # No retry budget left: stop. `remaining_retries` is sent as the
+            # recovery's ACTION budget — the server performs at most that many
+            # executions, its direct-instruction fallback included, and refuses
+            # a budget below 1. This client's own retry after a recovery is a
+            # further loop iteration, bounded by `max_retries` here.
+            remaining_retries = max_retries - total_attempts
+            if remaining_retries <= 0:
+                break
+
+            # Attempt recovery via the server. A failed attempt answers a 4xx /
+            # `success: false` envelope, so the answer is read whatever its
+            # status, and its verdict decides (`read_recovery_attempt`).
             try:
-                recovery_data = self._client._request(
+                status, body = self._client._request_envelope(
                     "POST",
                     "/ai/recovery/attempt",
                     json={
                         "failure": failure_info.model_dump(by_alias=True),
                         "instruction": instruction,
                         "elementId": response.element_used.id if response.element_used else None,
-                        "maxRetries": max_retries - total_attempts,
+                        "maxRetries": remaining_retries,
                     },
                 )
-                recovery_result = RecoveryExecutorResult.model_validate(recovery_data)
+            except httpx.HTTPError as e:
+                # No answer at all: whether the attempt acted is unknown.
+                recovery_result = RecoveryExecutorResult(
+                    attempt_succeeded=None,
+                    error=f"recovery attempt request failed: {e}",
+                )
+                break
+            recovery_result = read_recovery_attempt(status, body)
 
-                # If recovery failed or shouldn't retry, break
-                if not recovery_result.success or not recovery_result.should_retry:
-                    break
+            # Only a stated `attemptSucceeded: true` retries the action. A
+            # `False` (no strategy reported success) and a `None` (verdict UNKNOWN)
+            # both stop.
+            if recovery_result.attempt_succeeded is not True:
+                break
 
-                # If we have an alternative element, try using it
-                if recovery_result.alternative_element:
-                    # Update instruction to target the alternative element
-                    alt_desc = recovery_result.alternative_element.description
-                    # Try to extract action type from original instruction
-                    action_type = "click"  # default
-                    lower_instruction = instruction.lower()
-                    if "type" in lower_instruction or "enter" in lower_instruction:
-                        action_type = "type"
-                    elif "select" in lower_instruction:
-                        action_type = "select"
-                    current_instruction = f'{action_type} "{alt_desc}"'
+            # The acting strategy WAS the original instruction (a commandless
+            # suggestion or the direct-instruction fallback) and it reported
+            # success: the action already happened. Performing it again would
+            # repeat a non-idempotent action (a second "click Submit").
+            if recovery_result.original_action_performed is True:
+                return performed_recovery_result(
+                    recovery_result,
+                    total_attempts=total_attempts,
+                    total_duration_ms=(time.time() - start_time) * 1000,
+                    timestamp=int(time.time() * 1000),
+                )
 
-            except Exception:
-                # If recovery request fails, just break the loop
+            # Only an EXPLICIT originalActionAttempted: false (a different command
+            # acted, the original did not run) permits a retry. True means the
+            # original already ran and failed; unstated (the runner) is UNKNOWN,
+            # and the runner's recovery does run the original. Never repeat it.
+            if recovery_result.original_action_attempted is not False:
                 break
 
         # Recovery failed or not attempted
         total_duration_ms = (time.time() - start_time) * 1000
+        stop = recovery_stop(recovery_result)
         return ExecuteWithRecoveryResult(
             success=False,
             executed_action=last_response.executed_action if last_response else instruction,
@@ -1056,8 +1122,8 @@ class AIClient:
             element_state=last_response.element_state if last_response else None,
             duration_ms=last_response.duration_ms if last_response else 0.0,
             timestamp=last_response.timestamp if last_response else int(time.time() * 1000),
-            error=last_response.error if last_response else "Unknown error",
-            error_code=last_response.error_code if last_response else None,
+            error=stop[0] if stop else (last_response.error if last_response else "Unknown error"),
+            error_code=stop[1] if stop else (last_response.error_code if last_response else None),
             recovery_attempted=recovery_result is not None,
             recovery_result=recovery_result,
             total_attempts=total_attempts,

@@ -4224,9 +4224,20 @@ export async function executeCommand(
     // ======================================================================
 
     case 'attemptRecovery':
+      // Not implemented here, so no strategy ran — but the verdict is still
+      // stated (`attemptSucceeded`). This is the IN-PAGE answer: over the
+      // relay server, `relayInnerFailureResponse` nests this whole envelope
+      // under the outer `data`, so the verdict sits at
+      // `data.data.attemptSucceeded` there (outer `success: false`).
       return {
         success: false,
         error: 'Recovery not implemented for generic relay',
+        data: {
+          attemptSucceeded: false,
+          originalActionPerformed: false,
+          originalActionAttempted: false,
+          strategiesAttempted: [],
+        },
         suggestions: getRecoverySuggestions('UNKNOWN_ERROR'),
         timestamp: Date.now(),
       };

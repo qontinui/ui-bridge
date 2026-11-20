@@ -201,6 +201,12 @@ export const INTERNAL_CODE_TO_CANONICAL: Readonly<Record<string, UiBridgeErrorCo
   RUNNER_UNAVAILABLE: 'UB-OBS-APP-UNREACHABLE',
   RUNNER_ERROR: 'UB-OBS-PRODUCER-FAILED',
   COMMAND_FAILED: 'UB-ACTION-FAILED',
+  // A recovery attempt that ran and did not act (the runner maps the same
+  // token to `ACTION_FAILED`).
+  RECOVERY_FAILED: 'UB-ACTION-FAILED',
+  // A recovery attempt the server itself failed (the 500 arm): never coded
+  // from message heuristics.
+  RECOVERY_ERROR: 'UB-UNKNOWN-ERROR',
   HEADLESS_SPAWN_UNSUPPORTED_ON_RELAY: 'UB-UNSUPPORTED-ACTION',
   HEADLESS_SPAWN_DISABLED: 'UB-ACTION-REJECTED',
   HEADLESS_PEER_MISSING: 'UB-UNSUPPORTED-ACTION',

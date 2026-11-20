@@ -20,6 +20,7 @@ from .logging import (
     TraceContext,
     UIBridgeLogger,
 )
+from .request_logging import RequestLog
 from .types import (
     ActionResponse,
     AnnotationConfig,
@@ -176,9 +177,8 @@ class AsyncUIBridgeClient:
     ) -> Any:
         """Make an async HTTP request and return the data."""
         start_time = time.time()
-
-        if self._logger:
-            self._logger.request_started(method, path, trace=self._active_trace)
+        log = RequestLog(self._logger, self._active_trace, method, path)
+        log.started()
 
         try:
             response = await self._client.request(
@@ -194,56 +194,57 @@ class AsyncUIBridgeClient:
             if not result.get("success", False):
                 error = result.get("error", "Unknown error")
                 code = result.get("code")
-
-                if self._logger:
-                    self._logger.request_failed(
-                        method,
-                        path,
-                        error_message=error,
-                        duration_ms=duration_ms,
-                        trace=self._active_trace,
-                        status=response.status_code,
-                    )
-
+                log.failed(
+                    error_message=error, duration_ms=duration_ms, status=response.status_code
+                )
                 if code == "NOT_FOUND":
                     raise ElementNotFoundError(error, code)
                 raise UIBridgeError(error, code)
 
-            if self._logger:
-                self._logger.request_completed(
-                    method,
-                    path,
-                    status=response.status_code,
-                    duration_ms=duration_ms,
-                    trace=self._active_trace,
-                )
-
+            log.completed(status=response.status_code, duration_ms=duration_ms)
             return result.get("data")
 
         except httpx.HTTPStatusError as e:
-            duration_ms = (time.time() - start_time) * 1000
-            if self._logger:
-                self._logger.request_failed(
-                    method,
-                    path,
-                    error_message=str(e),
-                    duration_ms=duration_ms,
-                    trace=self._active_trace,
-                    status=e.response.status_code if e.response else None,
-                )
+            log.failed(
+                error_message=str(e),
+                duration_ms=(time.time() - start_time) * 1000,
+                status=e.response.status_code if e.response else None,
+            )
             raise
 
         except Exception as e:
-            duration_ms = (time.time() - start_time) * 1000
-            if self._logger:
-                self._logger.request_failed(
-                    method,
-                    path,
-                    error_message=str(e),
-                    duration_ms=duration_ms,
-                    trace=self._active_trace,
-                )
+            log.failed(error_message=str(e), duration_ms=(time.time() - start_time) * 1000)
             raise
+
+    async def _request_envelope(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: dict[str, Any] | None = None,
+    ) -> tuple[int, Any]:
+        """Make an HTTP request and return ``(status, parsed JSON body)``.
+
+        Unlike :meth:`_request`, a 4xx/5xx status or a ``success: false``
+        envelope does not raise: the caller reads the answer itself (the
+        recovery-attempt route states its verdict on failure answers too).
+        The body is ``None`` when it is not JSON. Transport failures raise.
+        """
+        start_time = time.time()
+        log = RequestLog(self._logger, self._active_trace, method, path)
+        log.started()
+        try:
+            response = await self._client.request(method, self._url(path), json=json)
+        except Exception as e:
+            log.failed(error_message=str(e), duration_ms=(time.time() - start_time) * 1000)
+            raise
+        duration_ms = (time.time() - start_time) * 1000
+        try:
+            body: Any = response.json()
+        except ValueError:
+            body = None
+        log.envelope_answer(status=response.status_code, body=body, duration_ms=duration_ms)
+        return response.status_code, body
 
     # ==========================================================================
     # Element Actions

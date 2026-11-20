@@ -102,6 +102,7 @@ from .recovery_types import (
     RecoveryExecutorResult,
     RecoveryStrategyResult,
     StrategyStatus,
+    read_recovery_attempt,
 )
 
 # State machine integration
@@ -315,6 +316,7 @@ __all__ = [
     "RecoveryContext",
     "RecoveryExecutorConfig",
     "RecoveryExecutorResult",
+    "read_recovery_attempt",
     "RecoveryStrategyResult",
     "StrategyStatus",
     # Capture-host pattern

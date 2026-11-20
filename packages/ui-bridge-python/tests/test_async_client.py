@@ -12,6 +12,7 @@ from ui_bridge.async_client import (
     AsyncUIBridgeClient,
 )
 from ui_bridge.client import ActionFailedError, ElementNotFoundError, UIBridgeError
+from ui_bridge.recovery_types import ORIGINAL_OUTCOME_UNKNOWN_ERROR
 
 # =============================================================================
 # Helpers
@@ -1030,10 +1031,12 @@ class TestAsyncAIClient:
         assert result.recovery_attempted is False
 
     @pytest.mark.asyncio
-    async def test_ai_execute_with_recovery_success_after_retry(
+    async def test_ai_execute_with_recovery_runner_success_is_not_re_executed(
         self, client: AsyncUIBridgeClient
     ) -> None:
-        # First call fails with retryable error, second succeeds
+        # The runner's recovery executes the original instruction itself and
+        # states no originalActionAttempted, so the outcome of the original is
+        # UNKNOWN: the client must not execute it a second time.
         failure_response = _nl_action_response_data(success=False, error="Not visible")
         failure_response["failureInfo"] = {
             "errorCode": "ELEMENT_NOT_VISIBLE",
@@ -1042,25 +1045,33 @@ class TestAsyncAIClient:
             "suggestedActions": [],
         }
 
-        recovery_data = {
+        # The runner's real 200 answer: the verdict under data, no `success`.
+        recovery_answer = {
             "success": True,
-            "strategyResults": [],
-            "shouldRetry": True,
-            "alternativeElement": None,
+            "data": {"attemptSucceeded": True, "elementId": "btn-1"},
         }
 
         success_response = _nl_action_response_data(success=True)
 
-        # First: execute fails. Second: recovery attempt. Third: execute succeeds.
+        # A second execute would succeed — the test proves it never happens.
         client._request = AsyncMock(  # type: ignore[method-assign]
-            side_effect=[failure_response, recovery_data, success_response]
+            side_effect=[failure_response, success_response]
+        )
+        client._request_envelope = AsyncMock(  # type: ignore[method-assign]
+            return_value=(200, recovery_answer)
         )
 
         result = await client.ai.execute_with_recovery("click Submit", max_retries=3)
 
-        assert result.success is True
-        assert result.total_attempts == 2
+        assert client._request.await_count == 1, "the original must not be executed again"
+        assert result.success is False
+        assert result.error == ORIGINAL_OUTCOME_UNKNOWN_ERROR
+        assert result.error_code == "RECOVERY_ORIGINAL_OUTCOME_UNKNOWN"
+        assert result.total_attempts == 1
         assert result.recovery_attempted is True
+        assert result.recovery_result is not None
+        assert result.recovery_result.attempt_succeeded is True
+        assert result.recovery_result.original_action_attempted is None
 
     @pytest.mark.asyncio
     async def test_ai_execute_with_recovery_disabled(self, client: AsyncUIBridgeClient) -> None:

@@ -87,8 +87,11 @@ describe('Phase 3 — attemptRecovery consumes sync RecoverySuggestion[] (no NL 
       maxRetries: 1,
     });
 
-    expect(res.success).toBe(true);
+    // Nothing recovers on an empty registry: envelope `success: false`, the
+    // verdict stated, and the attempted strategies still reported.
+    expect(res.success).toBe(false);
     const data = res.data!;
+    expect(data.attemptSucceeded).toBe(false);
     // Empty registry -> nothing recovers, but the *first* strategy attempted
     // must be the highest-confidence retryable command (the scroll/reveal
     // one), proving sync suggestions drove selection with no NL synthesis.
@@ -138,7 +141,7 @@ describe('Phase 3 — attemptRecovery consumes sync RecoverySuggestion[] (no NL 
       maxRetries: 1,
     });
 
-    expect(res.success).toBe(true);
+    expect(res.success).toBe(false);
     expect(res.data!.strategiesAttempted[0]).toBe('Scroll the page to reveal x');
   });
 });

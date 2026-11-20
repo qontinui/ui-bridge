@@ -85,9 +85,12 @@ describe('attemptRecovery · iter-4 Item A — operator-contract pass-through', 
       maxRetries: 3,
     });
 
-    expect(res.success).toBe(true);
+    // A refusal answers envelope `success: false` with the verdict stated.
+    expect(res.success).toBe(false);
+    expect(res.httpStatus).toBe(400);
+    expect(res.code).toBe('UB-VALIDATION-ERROR');
     expect(res.data).toBeDefined();
-    expect(res.data!.recovered).toBe(false);
+    expect(res.data!.attemptSucceeded).toBe(false);
     expect(res.data!.strategiesAttempted).toEqual([]);
     expect(res.data!.error).toContain('WRONG_TYPE_PARAM');
     expect(res.data!.error).toContain('not recoverable');
@@ -112,9 +115,12 @@ describe('attemptRecovery · iter-4 Item A — operator-contract pass-through', 
       maxRetries: 3,
     });
 
-    expect(res.success).toBe(true);
+    // A refusal answers envelope `success: false` with the verdict stated.
+    expect(res.success).toBe(false);
+    expect(res.httpStatus).toBe(400);
+    expect(res.code).toBe('UB-VALIDATION-ERROR');
     expect(res.data).toBeDefined();
-    expect(res.data!.recovered).toBe(false);
+    expect(res.data!.attemptSucceeded).toBe(false);
     expect(res.data!.strategiesAttempted).toEqual([]);
     expect(res.data!.error).toContain('MISSING_PARAM');
     expect(res.data!.error).toContain('not recoverable');
@@ -156,8 +162,8 @@ describe('attemptRecovery · iter-4 Item A — operator-contract pass-through', 
 
     // The test passes only if the executor was NEVER called — the
     // short-circuit returned before reaching the recovery loop.
-    expect(res.success).toBe(true);
-    expect(res.data!.recovered).toBe(false);
+    expect(res.success).toBe(false);
+    expect(res.data!.attemptSucceeded).toBe(false);
     expect(res.data!.strategiesAttempted).toEqual([]);
   });
 
@@ -196,7 +202,9 @@ describe('attemptRecovery · iter-4 Item A — operator-contract pass-through', 
       maxRetries: 1,
     });
 
-    expect(res.success).toBe(true);
+    // Nothing recovers on an empty registry: the attempt ran and did not act.
+    expect(res.success).toBe(false);
+    expect(res.data!.attemptSucceeded).toBe(false);
     // Non-operator-contract codes DO reach the loop, so at least one
     // strategy is attempted (and recorded) even if it fails on an empty
     // registry.
