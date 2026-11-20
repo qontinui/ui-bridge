@@ -192,6 +192,8 @@ import {
   readElementIdPayload,
   type ElementPayloadRefusal,
 } from './element-command-payload';
+import { evaluateVisionAssertions } from '../vision/dom-assertions';
+import { VisionAssertRequestError } from '../vision/assertion-request';
 
 // ============================================================================
 // Types
@@ -1255,6 +1257,9 @@ const SETTLE_BEFORE_READ_ACTIONS: ReadonlySet<string> = new Set([
   'aiAssert',
   'aiAssertBatch',
   'executeElementAction',
+  // Measures layout, paint order and colours: an element still registering
+  // would read as "not in the snapshot", a page mid-transition as a failure.
+  'visionAssert',
 ]);
 
 /**
@@ -5470,6 +5475,29 @@ export async function executeCommand(
 
     case 'getQualityContexts':
       return listContexts();
+
+    // ======================================================================
+    // Vision assertions
+    // ======================================================================
+
+    // `POST /vision/assert` with no runner: the same function the in-process
+    // handlers call (vision/dom-assertions.ts), measuring this page. The relay
+    // handler validated the body before queuing it; it is validated again
+    // here for a WS client that dispatches the command directly. Any failure
+    // is coded as the in-process handler codes it (`sharedRouteFailure`), so
+    // one failure is one code over either transport; an unexpected one is the
+    // canonical UB-UNKNOWN-ERROR, which the message-sniffing fallback of
+    // `mapInternalErrorCode` cannot rewrite.
+    case 'visionAssert': {
+      try {
+        return evaluateVisionAssertions(registry, payload);
+      } catch (err) {
+        return sharedRouteFailure(
+          (err as Error).message,
+          err instanceof VisionAssertRequestError ? err.code : 'UB-UNKNOWN-ERROR'
+        );
+      }
+    }
 
     case 'saveBaseline': {
       try {

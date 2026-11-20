@@ -173,8 +173,9 @@ fixed.
 ## Pixel-Level Vision
 
 Screenshots and anything derived from them are **runner-direct**. The route
-table is the single source of truth, so the SDK ships stubs for all thirteen
-`/vision/*` routes that return `RUNNER_REQUIRED` when no runner is mounted:
+table is the single source of truth, so the SDK ships stubs for twelve of the
+thirteen `/vision/*` routes that return `RUNNER_REQUIRED` when no runner is
+mounted:
 
 | Route | Purpose |
 | --- | --- |
@@ -185,12 +186,48 @@ table is the single source of truth, so the SDK ships stubs for all thirteen
 | `POST /vision/extract` | OCR — visible text with bounding boxes |
 | `POST /vision/describe` | VLM caption of the capture |
 | `POST /vision/analyze` | Declarative analyzers (layout, typography, colour, …) |
-| `POST /vision/assert` | The visual assertion DSL |
+| `POST /vision/assert` | The visual assertion DSL — evaluated in the tab without a runner (below) |
 | `POST /vision/baseline` | Record a visual baseline |
 | `GET /vision/baselines` | List recorded baselines |
 | `POST /vision/mutation-occurred` | Frontend → runner mutation signal |
 | `GET /vision/cache/:sha256` | Stream a cached capture |
 | `GET /vision/health` | Vision pipeline health |
+
+### `POST /vision/assert` without a runner
+
+The relay (`createRelayHandlers`) and the in-process handlers
+(`createHandlers`) evaluate `/vision/assert` **in the tab**. Five kinds read
+only what the page itself can measure, and they get a verdict:
+
+| Kind | What the tab measures |
+| --- | --- |
+| `contrast_meets_wcag` | The text colour against the backdrop composited under its first rendered text run; WCAG large-text thresholds (AA 3:1 / AAA 4.5:1 at 24px, or 18.66px bold) |
+| `text_fits_container` | The nearest block box's `scrollWidth`/`scrollHeight` (borders and scrollbars included) against its border box, rounded up; an element with no text is `unknown` |
+| `no_overlap` | Border boxes, after the `tolerance_px` inset |
+| `element_above` | Paint order from `document.elementsFromPoint` inside the pair's visible intersection (never scrolls) |
+| `no_clipping` | Each registered element against the padding box of its nearest clipping ancestor; no element inside a clipping ancestor is `unknown` |
+
+The evaluator is a port of the runner's (vision-core) and is held to it by
+vision-core's own conformance fixture (`rust-vision-core/tests/fixtures/
+vision_assertions_conformance.json`), so both paths give the same answer for
+the same snapshot once the runner builds against a vision-core that carries the
+fixture's rules. Shadow DOM: covers inside open shadow roots are hit-tested at
+any depth; a *defined* custom element with no open shadow root lying over the
+text, and text held directly by an OPEN shadow host (so its shadow tree paints
+it), make contrast `unknown`; an element slotted into an open root is measured
+through its slot. A closed shadow root cannot be read: a scrim inside one
+attached to an undefined tag or a built-in element (such as `div`) is not seen,
+and content slotted into a closed root is measured as if it were light DOM, so
+it can pass on colours its shadow tree does not paint. Every
+other kind answers per result with `outcome: "unknown"` and
+`code: "capability_unavailable_in_build"`. A mixed batch still answers what it
+can. Apart from the closed-root limit above, anything the page cannot decide is
+`unknown` with a code, never `passed`:
+a gradient or image under the text, a hit test that cannot show both elements,
+an element with no box. An empty assertion list is `unknown` with
+`unknownCodes: ["no_results"]`. A malformed body is refused with
+`UB-VALIDATION-ERROR` before anything reaches the tab, and so is a
+caller-supplied `snapshot`: the tab measures the live page.
 
 A capture result (`capture`, `annotate`, `diff`, `raw`) names its bytes by
 `url`, whose literal value is the relative HTTP path
