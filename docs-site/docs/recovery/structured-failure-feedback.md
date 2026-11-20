@@ -340,6 +340,23 @@ If the server fails while building a success answer, it answers HTTP 500
 what acted. Treat that as UNKNOWN: neither retry the original nor report it as
 succeeded.
 
+### Python client stop codes
+
+When the Python clients' `execute_with_recovery` stops without retrying the
+original, the returned `ExecuteWithRecoveryResult` carries `success: False` and
+one of these `error_code` values. Each is exported from `ui_bridge`, so a
+caller compares against the constant rather than a string literal:
+
+| Constant | `error_code` | When |
+| --- | --- | --- |
+| `ORIGINAL_ALREADY_ATTEMPTED_CODE` | `RECOVERY_ORIGINAL_ALREADY_ATTEMPTED` | The recovery acted, but it already ran the original and the original reported failure. |
+| `ORIGINAL_OUTCOME_UNKNOWN_CODE` | `RECOVERY_ORIGINAL_OUTCOME_UNKNOWN` | The recovery acted and did not state `originalActionAttempted` (for example, the runner). |
+| `ORIGINAL_RETRIED_AND_FAILED_CODE` | `RECOVERY_ORIGINAL_RETRIED_AND_FAILED` | The recovery did not act; it re-ran the original and the original failed again. |
+| `VERDICT_UNKNOWN_CODE` | `RECOVERY_VERDICT_UNKNOWN` | The recovery stated no verdict (transport error, a verdict-less answer, a 5xx). |
+
+`result.recovery_result` holds the parsed `RecoveryExecutorResult` behind each
+stop.
+
 ## Server-Side Codes
 
 Handlers built with `@qontinui/ui-bridge-server` map their internal error

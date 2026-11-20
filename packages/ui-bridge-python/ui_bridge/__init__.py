@@ -96,6 +96,10 @@ from .observation import (
 from .recovery_types import (
     DEFAULT_RECOVERY_CONFIG,
     ERROR_CODE_STRATEGIES,
+    ORIGINAL_ALREADY_ATTEMPTED_CODE,
+    ORIGINAL_OUTCOME_UNKNOWN_CODE,
+    ORIGINAL_RETRIED_AND_FAILED_CODE,
+    VERDICT_UNKNOWN_CODE,
     ExecuteWithRecoveryResult,
     RecoveryContext,
     RecoveryExecutorConfig,
@@ -312,6 +316,10 @@ __all__ = [
     # Recovery types
     "DEFAULT_RECOVERY_CONFIG",
     "ERROR_CODE_STRATEGIES",
+    "ORIGINAL_ALREADY_ATTEMPTED_CODE",
+    "ORIGINAL_OUTCOME_UNKNOWN_CODE",
+    "ORIGINAL_RETRIED_AND_FAILED_CODE",
+    "VERDICT_UNKNOWN_CODE",
     "ExecuteWithRecoveryResult",
     "RecoveryContext",
     "RecoveryExecutorConfig",

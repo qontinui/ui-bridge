@@ -24,6 +24,12 @@ from typing import Any
 import httpx
 import pytest
 
+import ui_bridge
+from ui_bridge import (
+    ORIGINAL_ALREADY_ATTEMPTED_CODE,
+    ORIGINAL_OUTCOME_UNKNOWN_CODE,
+    ORIGINAL_RETRIED_AND_FAILED_CODE,
+)
 from ui_bridge.async_client import AsyncUIBridgeClient
 from ui_bridge.client import UIBridgeClient
 from ui_bridge.recovery_types import (
@@ -471,7 +477,7 @@ async def test_a_runner_success_with_unstated_original_fields_is_not_re_executed
     assert server.recovery_calls == 1
     assert result.success is False
     assert result.error == ORIGINAL_OUTCOME_UNKNOWN_ERROR
-    assert result.error_code == "RECOVERY_ORIGINAL_OUTCOME_UNKNOWN"
+    assert result.error_code == ORIGINAL_OUTCOME_UNKNOWN_CODE
     # The action fields describe the client's own pre-recovery execution.
     assert result.executed_action == "click"
     assert result.recovery_attempted is True
@@ -682,7 +688,7 @@ async def test_an_original_already_attempted_in_the_recovery_is_not_re_executed(
     assert server.recovery_calls == 1
     assert result.success is False
     assert result.error == ORIGINAL_ALREADY_ATTEMPTED_ERROR
-    assert result.error_code == "RECOVERY_ORIGINAL_ALREADY_ATTEMPTED"
+    assert result.error_code == ORIGINAL_ALREADY_ATTEMPTED_CODE
     assert result.recovery_result is not None
     assert result.recovery_result.attempt_succeeded is True
     assert result.recovery_result.original_action_performed is False
@@ -770,7 +776,7 @@ async def test_a_failed_recovery_that_re_ran_the_original_says_so(kind: str) -> 
     assert server.executes == 1
     assert result.success is False
     assert result.error == ORIGINAL_RETRIED_AND_FAILED_ERROR
-    assert result.error_code == "RECOVERY_ORIGINAL_RETRIED_AND_FAILED"
+    assert result.error_code == ORIGINAL_RETRIED_AND_FAILED_CODE
     assert result.recovery_result is not None
     assert result.recovery_result.attempt_succeeded is False
     assert result.recovery_result.original_action_attempted is True
@@ -817,3 +823,19 @@ async def test_a_stated_success_inside_a_failed_5xx_reports_unknown(kind: str) -
     assert result.recovery_result is not None
     assert result.recovery_result.attempt_succeeded is None
     assert result.error_code == VERDICT_UNKNOWN_CODE
+
+
+def test_the_stop_codes_are_exported_from_the_package_root() -> None:
+    # Callers branch on ExecuteWithRecoveryResult.error_code; the four stop
+    # codes are part of the public API, with stable wire values.
+    assert ui_bridge.ORIGINAL_ALREADY_ATTEMPTED_CODE == "RECOVERY_ORIGINAL_ALREADY_ATTEMPTED"
+    assert ui_bridge.ORIGINAL_OUTCOME_UNKNOWN_CODE == "RECOVERY_ORIGINAL_OUTCOME_UNKNOWN"
+    assert ui_bridge.ORIGINAL_RETRIED_AND_FAILED_CODE == "RECOVERY_ORIGINAL_RETRIED_AND_FAILED"
+    assert ui_bridge.VERDICT_UNKNOWN_CODE == "RECOVERY_VERDICT_UNKNOWN"
+    for name in (
+        "ORIGINAL_ALREADY_ATTEMPTED_CODE",
+        "ORIGINAL_OUTCOME_UNKNOWN_CODE",
+        "ORIGINAL_RETRIED_AND_FAILED_CODE",
+        "VERDICT_UNKNOWN_CODE",
+    ):
+        assert name in ui_bridge.__all__
