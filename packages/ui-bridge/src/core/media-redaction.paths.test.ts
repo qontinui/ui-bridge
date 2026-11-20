@@ -26,6 +26,7 @@ import { DefaultActionExecutor } from '../control/action-executor';
 import { createHandlers, type RegistryLike } from '../server/handlers';
 import { createRelayHandlers } from '../server/relay-handlers';
 import { CommandRelay } from '../server/command-relay';
+import { NoLiveAnswer } from '../server/live-answer';
 import { executeCommand, type BridgeAccess } from '../react/commandHandlers';
 import { makeImage, registerMedia, stubBox } from '../react/__tests__/media-fixture';
 
@@ -78,7 +79,7 @@ const PATHS: Record<string, () => Promise<string>> = {
     const relay = new CommandRelay({ globalPrefix: `__uiBridgeRedactPaths_${Math.random()}` });
     vi.spyOn(relay, 'queueCommand').mockImplementation((async (action: string) => {
       if (action === 'getControlSnapshot') return getGlobalRegistry().createSnapshot();
-      throw new Error('timeout: no browser answered');
+      throw new NoLiveAnswer('timeout: no browser answered', 'unanswered');
     }) as never);
     return JSON.stringify(await createRelayHandlers(relay).find({ mediaOnly: true }));
   },

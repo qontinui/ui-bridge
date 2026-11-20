@@ -21,7 +21,9 @@ import {
   cacheFallbackMeta,
   isNoLiveAnswer,
   isTabReportedFailure,
+  liveRead,
   noLiveAnswerCause,
+  type LiveRead,
 } from './live-answer';
 import { fitMediaOverrideBudget } from '../control/media-override-budget';
 import {
@@ -275,16 +277,6 @@ function captureRelayAnswer(response: APIResponse<unknown>): ComponentCaptureRes
   return componentCaptureRefusalEnvelope(refusal.reason, refusal.message);
 }
 
-/**
- * Is a relay command's `data` the browser's typed find refusal — an inner
- * `success: false` carrying the `refusal` the canonical filter raised?
- */
-function isRelayFindRefusal(result: unknown): boolean {
-  if (!readRelayInnerFailure(result)) return false;
-  const refusal = (result as Record<string, unknown>).refusal;
-  return typeof refusal === 'object' && refusal !== null && !Array.isArray(refusal);
-}
-
 /** The projection options a request named, quoted for a refusal's message. */
 function projectionOptionsOf(projection: ElementProjectionRequest): string {
   return [
@@ -533,9 +525,18 @@ export function createRelayHandlers(
    */
   interface CallerCache {
     controlSnapshot: ControlSnapshot;
-    semanticSnapshot: SemanticSnapshot | null;
-    /** The last ungrouped console-errors answer, served when the browser disconnects. */
-    consoleErrors: APIResponse<unknown> | null;
+    /**
+     * The last semantic snapshot a tab answered, and when it was read.
+     * Served, marked as the cache's with its age, only when a later read got
+     * no live answer.
+     */
+    semanticSnapshot: { data: SemanticSnapshot; readAt: number } | null;
+    /**
+     * The last ungrouped console-errors DATA a tab answered, and when it was
+     * read. Served, marked as the cache's (`cacheFallbackMeta`) with its age,
+     * only when a later read got no live answer.
+     */
+    consoleErrors: { data: unknown; readAt: number } | null;
     /** When this cache was first known stale, or `null` while it is fresh. */
     staleSince: number | null;
     /**
@@ -762,29 +763,48 @@ export function createRelayHandlers(
   // into. Precedence (highest first): explicit `opts.ownerCheck` →
   // `opts.context.callerUserId` → payload-supplied `__callerUserId`
   // (`scopedCaller`).
-  async function relayCommand<T>(
-    action: string,
-    payload: unknown = {},
-    opts?: {
-      targetTabId?: string;
-      ownerCheck?: { userId: string };
-      context?: HandlerContext;
-    }
-  ): Promise<APIResponse<T>> {
+  type RelayDispatchOpts = {
+    targetTabId?: string;
+    ownerCheck?: { userId: string };
+    context?: HandlerContext;
+  };
+
+  /**
+   * Resolve a relayed command's routing: the payload with its routing fields
+   * stripped, the relay options (pin and owner scope), and the owner scope the
+   * failure envelope is built under. One resolution for `relayCommand` and
+   * `liveRelayRead`, so a read and a write route alike.
+   */
+  function relayDispatch(
+    payload: unknown,
+    opts: RelayDispatchOpts | undefined
+  ): {
+    cleaned: unknown;
+    relayOpts: { targetTabId?: string; ownerCheck?: { userId: string } } | undefined;
+    ownerCheck: { userId: string } | undefined;
+  } {
     const { targetTabId: payloadTabId, callerUserId, cleaned } = extractTabRouting(payload);
     const effectiveTabId = opts?.targetTabId || pinOf(payloadTabId, opts?.context);
     const scopedUserId = scopedCaller(callerUserId, opts?.context);
-    const effectiveOwnerCheck =
-      opts?.ownerCheck ?? (scopedUserId ? { userId: scopedUserId } : undefined);
-    const effectiveOpts =
-      effectiveTabId || effectiveOwnerCheck
+    const ownerCheck = opts?.ownerCheck ?? (scopedUserId ? { userId: scopedUserId } : undefined);
+    const relayOpts =
+      effectiveTabId || ownerCheck
         ? {
             ...(effectiveTabId ? { targetTabId: effectiveTabId } : {}),
-            ...(effectiveOwnerCheck ? { ownerCheck: effectiveOwnerCheck } : {}),
+            ...(ownerCheck ? { ownerCheck } : {}),
           }
         : undefined;
+    return { cleaned, relayOpts, ownerCheck };
+  }
+
+  async function relayCommand<T>(
+    action: string,
+    payload: unknown = {},
+    opts?: RelayDispatchOpts
+  ): Promise<APIResponse<T>> {
+    const { cleaned, relayOpts, ownerCheck } = relayDispatch(payload, opts);
     try {
-      const result = await relay.queueCommand<T>(action, cleaned, effectiveOpts);
+      const result = await relay.queueCommand<T>(action, cleaned, relayOpts);
       // An inner `success: false` is a FAILURE — it must never surface as an
       // outer success. See `readRelayInnerFailure`; the envelope keeps the
       // payload verbatim under `data` (`relayInnerFailureResponse`).
@@ -792,14 +812,52 @@ export function createRelayHandlers(
       if (innerFailure) return relayInnerFailureResponse<T>(innerFailure, result);
       return success(result);
     } catch (e) {
-      return relayErrorResponse<T>(e, effectiveOwnerCheck);
+      return relayErrorResponse<T>(e, ownerCheck);
     }
   }
 
+  /**
+   * A relay READ that asks the tab, answered by the one rule every such read
+   * follows (D5, `liveRead` in `./live-answer`): a live answer is the answer —
+   * a success through `onSuccess`, the tab's inner failure
+   * (`relayInnerFailureResponse`), or a live rejection (`relayErrorResponse`)
+   * — and only NO live answer comes back as `no_live_answer`, for the reader
+   * to answer from its cache (marked) or as a failure
+   * (`noLiveAnswerResponse`). Routes exactly as `relayCommand` does.
+   */
+  async function liveRelayRead<T>(
+    action: string,
+    payload: unknown,
+    opts: RelayDispatchOpts | undefined,
+    onSuccess: (result: unknown) => APIResponse<T> = (result) => success(result as T)
+  ): Promise<LiveRead<T>> {
+    const { cleaned, relayOpts, ownerCheck } = relayDispatch(payload, opts);
+    return liveRead<T>(action, relay.queueCommand(action, cleaned, relayOpts), {
+      resolved: (result) => {
+        const innerFailure = readRelayInnerFailure(result);
+        if (innerFailure) return relayInnerFailureResponse<T>(innerFailure, result);
+        return onSuccess(result);
+      },
+      rejected: (e) => relayErrorResponse<T>(e, ownerCheck),
+    });
+  }
+
+  /**
+   * The failure a read answers when there was no live answer and no cache may
+   * answer for the tab: the relay's own rejection, under the read's owner
+   * scope. Never an empty success (D5).
+   */
+  function noLiveAnswerResponse<T>(
+    live: Extract<LiveRead<unknown>, { kind: 'no_live_answer' }>,
+    ownerCheck: { userId: string } | undefined
+  ): APIResponse<T> {
+    return relayErrorResponse<T>(live.error, ownerCheck);
+  }
+
   // The failure envelope for a relayed command that REJECTED. Shared by
-  // `relayCommand` and the one handler that reads its live answer itself
-  // (`getElement`'s unpinned read), so a rejection answers the same envelope
-  // whichever path relayed it. `ownerCheck` is the dispatch's owner scope.
+  // `relayCommand` and `liveRelayRead`, so a rejection answers the same
+  // envelope whichever path relayed it. `ownerCheck` is the dispatch's owner
+  // scope.
   function relayErrorResponse<T>(
     e: unknown,
     ownerCheck: { userId: string } | undefined
@@ -1164,55 +1222,73 @@ export function createRelayHandlers(
       const { cleaned, callerUserId, targetTabId } = extractTabRouting(query ?? {});
       const effectiveUserId = scopedCaller(callerUserId, context);
       const pinned = pinOf(targetTabId, context);
-      // Try relaying to the browser first for live render log data
-      try {
-        const result = await relay.queueCommand(
-          'getRenderLog',
-          cleaned,
-          routedTo(effectiveUserId, pinned)
-        );
-        if (
-          result &&
-          typeof result === 'object' &&
-          'entries' in (result as Record<string, unknown>)
-        ) {
-          return success((result as Record<string, unknown>).entries as RenderLogEntry[]);
+      const routing = routedTo(effectiveUserId, pinned);
+      // The tab's own log first, and a live answer is the answer (D5): its
+      // `entries`, or its failure. A live answer WITHOUT `entries` is a
+      // malformed answer, a failure, never an empty list.
+      const live = await liveRelayRead<RenderLogEntry[]>(
+        'getRenderLog',
+        cleaned,
+        routing,
+        (result) => {
+          if (result && typeof result === 'object' && 'entries' in result) {
+            return success((result as { entries: RenderLogEntry[] }).entries);
+          }
+          return error(
+            'The tab answered getRenderLog without an `entries` list, so it reported no render log'
+          );
         }
-      } catch (err) {
-        // Relay failed. The server-side log below names no tab or user, so a
-        // scoped or pinned caller gets the failure rather than entries it
-        // cannot tell are its own tab's.
-        if (effectiveUserId || pinned !== undefined) {
-          return error((err as Error).message, 'COMMAND_FAILED');
-        }
+      );
+      if (live.kind === 'answer') return live.response;
+      // No live answer. The server-side log below names no tab or user, so a
+      // scoped or pinned caller gets the failure rather than entries it cannot
+      // tell are its own tab's.
+      if (effectiveUserId || pinned !== undefined) {
+        return noLiveAnswerResponse(live, routing?.ownerCheck);
       }
-      if (effectiveUserId || pinned !== undefined) return success([]);
       let results = [...renderLogEntries];
       if (query?.type) results = results.filter((e) => e.type === query.type);
       if (query?.since) results = results.filter((e) => e.timestamp >= query.since!);
       if (query?.until) results = results.filter((e) => e.timestamp <= query.until!);
       if (query?.limit) results = results.slice(-query.limit);
-      return success(results);
+      return success(
+        results,
+        cacheFallbackMeta('getRenderLog', live.cause, "the server's render log, which names no tab")
+      );
     },
 
     async clearRenderLog(context) {
       // The server-side log is shared and names no user: a scoped caller
       // clears only its own tabs' logs, below.
-      if (!context?.callerUserId && context?.targetTabId === undefined) renderLogEntries = [];
+      const unscoped = !context?.callerUserId && context?.targetTabId === undefined;
+      if (unscoped) renderLogEntries = [];
       // Also relay the clear to the browser so live render log entries are cleared.
       // Per-user tab scoping (§4.2): when invoked through the HTTP layer
       // with `X-Caller-User-Id`, the adapter passes the userId via `context`
       // so the live-relay leg dispatches only to the caller's tabs.
-      try {
-        await relay.queueCommand(
-          'clearRenderLog',
-          {},
-          routedTo(context?.callerUserId, context?.targetTabId)
-        );
-      } catch {
-        // Browser may be disconnected — server-side cache already cleared above
-      }
-      return success(undefined);
+      const routing = routedTo(context?.callerUserId, context?.targetTabId);
+      // The answer names the clear's EFFECT (D6): a success only when a tab
+      // confirmed it, the tab's failure when it reported one. With no live
+      // answer the browser's log was not established as cleared, so that is a
+      // failure. Every failure's `data.serverLogCleared` says whether the
+      // server-side log (cleared above, for an unscoped caller only) was; a
+      // tab's failure keeps its own verdict, code and payload beside it.
+      const live = await liveRelayRead<undefined>('clearRenderLog', {}, routing, () =>
+        success(undefined)
+      );
+      const failure =
+        live.kind === 'answer'
+          ? live.response
+          : noLiveAnswerResponse<undefined>(live, routing?.ownerCheck);
+      if (failure.success) return failure;
+      const payload: unknown = failure.data;
+      return {
+        ...failure,
+        data:
+          payload !== null && typeof payload === 'object' && !Array.isArray(payload)
+            ? { ...(payload as Record<string, unknown>), serverLogCleared: unscoped }
+            : { serverLogCleared: unscoped },
+      } as unknown as APIResponse<undefined>;
     },
 
     async captureSnapshot(context) {
@@ -1357,23 +1433,14 @@ export function createRelayHandlers(
       // `_meta.fallback` with the cause, the way `relayWithFallback` marks
       // its default.
       const liveOpts = effectiveUserId ? { ownerCheck: { userId: effectiveUserId } } : undefined;
-      let noLiveAnswer: string;
-      try {
-        const result = await relay.queueCommand('getElement', { id }, liveOpts);
-        const innerFailure = readRelayInnerFailure(result);
-        if (innerFailure) {
-          return relayInnerFailureResponse<ControlSnapshot['elements'][0]>(innerFailure, result);
-        }
-        return success(result) as APIResponse<ControlSnapshot['elements'][0]>;
-      } catch (e) {
-        const cause = noLiveAnswerCause('getElement', e);
-        if (cause === undefined) {
-          return relayErrorResponse<ControlSnapshot['elements'][0]>(e, liveOpts?.ownerCheck);
-        }
-        noLiveAnswer = cause;
-      }
+      const live = await liveRelayRead<ControlSnapshot['elements'][0]>(
+        'getElement',
+        { id },
+        liveOpts
+      );
+      if (live.kind === 'answer') return live.response;
       // Every answer from here on is the cache's, the not-found included.
-      const fallbackMeta = cacheFallbackMeta('getElement', noLiveAnswer);
+      const fallbackMeta = cacheFallbackMeta('getElement', live.cause);
       let element = scope.cache.controlSnapshot.elements.find((e) => e.id === id);
       if (!element) {
         // Refresh and retry — element may have been registered after the cached snapshot
@@ -1455,20 +1522,13 @@ export function createRelayHandlers(
       // (`noLiveAnswerCause`: no connected tab, a timeout, or a tab whose SDK
       // has no `getElementState` case), and its answer is marked
       // `_meta.fallback` with the cause.
-      let noLiveAnswer: string;
-      try {
-        const result = await relay.queueCommand('getElementState', payload, liveOpts);
-        const innerFailure = readRelayInnerFailure(result);
-        if (innerFailure) return relayInnerFailureResponse(innerFailure, result);
-        if (projection && !carriesProjection(result)) {
-          return projectionMissingFromLiveAnswer(`Element state for ${id}`, projection);
-        }
-        return success(result);
-      } catch (e) {
-        const cause = noLiveAnswerCause('getElementState', e);
-        if (cause === undefined) return relayErrorResponse(e, ownerCheck);
-        noLiveAnswer = cause;
-      }
+      const live = await liveRelayRead<unknown>('getElementState', payload, liveOpts, (result) =>
+        projection && !carriesProjection(result)
+          ? projectionMissingFromLiveAnswer(`Element state for ${id}`, projection)
+          : success(result)
+      );
+      if (live.kind === 'answer') return live.response;
+      const noLiveAnswer = live.cause;
       // The cached snapshot is serialized JSON: no node behind it to read a
       // projection from. Refused, typed — never answered with a state that
       // silently lacks the values asked for.
@@ -1722,33 +1782,36 @@ export function createRelayHandlers(
         if (isProjectionRequestError(err)) return error(`find ${err.message}`, err.code);
         throw err;
       }
-      const result = await relayCommand<FindResponse>('find', payload, {
-        targetTabId: targetTabId || undefined,
-        context,
-      });
-      if (result.success) {
-        // A live answer whose rows lack the projection asked for came from a
-        // tab whose SDK predates it — see `projectionMissingFromLiveAnswer`.
-        if (projection && anyRowLacksProjection(result.data)) {
-          return projectionMissingFromLiveAnswer('find', projection);
-        }
-        return result;
-      }
-      // The browser ANSWERED with a typed refusal (a request the canonical
-      // filter will not honour, carrying `refusal`): it would refuse it over
-      // the cache too, so that is the answer, and falling back would replace a
-      // precise failure with a guess. Any OTHER browser-side failure (a
-      // handler that threw, an unready page) still falls back to the cache,
-      // as every failure did before the canonical filter.
-      if (isRelayFindRefusal(result.data)) return result;
+      // The caller, as `relayCommand` resolves it: the verified context first.
+      const findCaller = scopedCaller(extractTabRouting(payload).callerUserId, context);
+      // A live answer is the answer (D5): the tab's find, its typed refusal
+      // (a request the canonical filter will not honour, carrying `refusal`),
+      // and any other failure it reported (a handler that threw, an unready
+      // page) alike. Only NO live answer reaches the cache below.
+      const live = await liveRelayRead<FindResponse>(
+        'find',
+        payload,
+        { targetTabId: targetTabId || undefined, context },
+        (result) =>
+          // A live answer whose rows lack the projection asked for came from a
+          // tab whose SDK predates it — see `projectionMissingFromLiveAnswer`.
+          projection && anyRowLacksProjection(result)
+            ? projectionMissingFromLiveAnswer('find', projection)
+            : success(result as FindResponse)
+      );
+      if (live.kind === 'answer') return live.response;
+      const noLiveAnswer = noLiveAnswerResponse<FindResponse>(
+        live,
+        findCaller ? { userId: findCaller } : undefined
+      );
       // P0 (plan 2026-06-12 item 1): a PINNED read must NEVER be answered from
       // the caller's snapshot cache — that cache is last-writer-wins across
       // ALL the caller's tabs, so serving it would silently return another
       // tab's elements as `success: true`. Propagate the routing/timeout
       // error envelope (TAB_NOT_FOUND / TAB_STALE / TIMEOUT / ...) instead.
-      if (pinnedTabId !== undefined) return result;
-      // Unpinned relay failure — fall back to filtering cached snapshot elements
-      const scope = scopeOf(scopedCaller(extractTabRouting(payload).callerUserId, context));
+      if (pinnedTabId !== undefined) return noLiveAnswer;
+      // Unpinned, no live answer — fall back to filtering cached snapshot elements
+      const scope = scopeOf(findCaller);
       const recency = parseRecency(recencyParam);
       await refreshSnapshotIfNeeded(
         scope,
@@ -1767,10 +1830,7 @@ export function createRelayHandlers(
         // cache raises (a projection, `root` or `selector` over rows with no
         // DOM node, …) names that cause too, as `getElementState`'s does.
         if (isFindRefusalError(err)) {
-          return error(
-            `${err.message} (no live answer: ${result.error ?? 'the live find failed'})`,
-            err.code
-          );
+          return error(`${err.message} (no live answer: ${noLiveAnswer.error})`, err.code);
         }
         throw err;
       }
@@ -2088,32 +2148,36 @@ export function createRelayHandlers(
       const isGrouped = params?.group === true;
       const { cleaned } = extractTabRouting(params ?? {});
       const scope = requestScope(params, context);
-      try {
-        const result = await relay.queueCommand<ConsoleErrorsResult | GroupedResult>(
-          'getConsoleErrors',
-          cleaned,
-          routedTo(scope.userId, scope.tabId)
-        );
-        // Cache successful result for fallback when browser disconnects (ungrouped only)
-        if (!isGrouped && result && typeof result === 'object') {
-          scope.cache.consoleErrors = success(result as ConsoleErrorsResult);
+      const routing = routedTo(scope.userId, scope.tabId);
+      // A live answer is the answer (D5): the tab's errors, or its failure.
+      // A destroyed relay answers so, through `relayErrorResponse`.
+      const live = await liveRelayRead<ConsoleErrorsResult | GroupedResult>(
+        'getConsoleErrors',
+        cleaned,
+        routing,
+        (result) => {
+          // Keep the DATA and its read time (ungrouped only), for a later read
+          // that gets no live answer.
+          if (!isGrouped && result && typeof result === 'object') {
+            scope.cache.consoleErrors = { data: result, readAt: Date.now() };
+          }
+          return success(result as ConsoleErrorsResult | GroupedResult);
         }
-        return success(result as ConsoleErrorsResult | GroupedResult);
-      } catch (e) {
-        // A destroyed relay answers so, not "no errors" from a dying server.
-        if (isRelayDestroyed(e)) return relayDestroyedResponse((e as Error).message);
-        // A pinned tab that did not answer is its error, never "no errors".
-        if (scope.tabId !== undefined) {
-          return relayErrorResponse(e, ownedBy(scope.userId)?.ownerCheck);
-        }
-        // Relay failed — return cached data if available (ungrouped only)
-        if (!isGrouped && scope.cache.consoleErrors)
-          return scope.cache.consoleErrors as APIResponse<ConsoleErrorsResult>;
-        if (isGrouped) {
-          return success({ groups: [], totalErrors: 0, totalGroups: 0 } as GroupedResult);
-        }
-        return success({ errors: [], count: 0 } as ConsoleErrorsResult);
+      );
+      if (live.kind === 'answer') return live.response;
+      // No live answer: the last ungrouped read, marked as the cache's with its
+      // age. A pinned scope's cache is its own and empty, so a pinned tab that
+      // did not answer is its error. With nothing cached the answer is the
+      // failure — never `{ errors: [] }`, which reads as "no errors" from a
+      // relay that could not look.
+      const cached = scope.cache.consoleErrors;
+      if (!isGrouped && cached) {
+        return success(cached.data as ConsoleErrorsResult, {
+          ...cacheFallbackMeta('getConsoleErrors', live.cause, 'the last console-errors read'),
+          cacheAgeMs: Date.now() - cached.readAt,
+        });
       }
+      return noLiveAnswerResponse(live, routing?.ownerCheck);
     },
 
     async clearConsoleErrors(context) {
@@ -2163,22 +2227,27 @@ export function createRelayHandlers(
     async getSemanticSnapshot(options, context) {
       const { cleaned } = extractTabRouting(options ?? {});
       const scope = requestScope(options, context);
-      try {
-        const result = await relay.queueCommand<SemanticSnapshot>(
-          'getSemanticSnapshot',
-          cleaned,
-          routedTo(scope.userId, scope.tabId)
-        );
-        scope.cache.semanticSnapshot = result;
-        return success(result);
-      } catch (e) {
-        if (isRelayDestroyed(e)) return relayDestroyedResponse((e as Error).message);
-        if (scope.tabId !== undefined) {
-          return relayErrorResponse(e, ownedBy(scope.userId)?.ownerCheck);
+      const routing = routedTo(scope.userId, scope.tabId);
+      // A live answer is the answer (D5); the cache answers only when there
+      // was none, marked as the cache's. A pinned scope's cache is empty.
+      const live = await liveRelayRead<SemanticSnapshot>(
+        'getSemanticSnapshot',
+        cleaned,
+        routing,
+        (result) => {
+          scope.cache.semanticSnapshot = { data: result as SemanticSnapshot, readAt: Date.now() };
+          return success(result as SemanticSnapshot);
         }
-        if (scope.cache.semanticSnapshot) return success(scope.cache.semanticSnapshot);
-        return error((e as Error).message, 'COMMAND_FAILED');
+      );
+      if (live.kind === 'answer') return live.response;
+      const cachedSemantic = scope.cache.semanticSnapshot;
+      if (cachedSemantic) {
+        return success(cachedSemantic.data, {
+          ...cacheFallbackMeta('getSemanticSnapshot', live.cause, 'the last semantic snapshot'),
+          cacheAgeMs: Date.now() - cachedSemantic.readAt,
+        });
       }
+      return noLiveAnswerResponse(live, routing?.ownerCheck);
     },
 
     async getSemanticDiff(query, context) {
@@ -2781,7 +2850,9 @@ export function createRelayHandlers(
             {},
             routedTo(scope.userId, scope.tabId)
           );
-          if (errors && typeof errors === 'object') scope.cache.consoleErrors = success(errors);
+          if (errors && typeof errors === 'object') {
+            scope.cache.consoleErrors = { data: errors, readAt: Date.now() };
+          }
         } catch {
           // No answer: `hasErrors` stays false (its type has no unknown), and
           // the envelope says it was not measured — see `pinnedErrorsUnread`.
@@ -2811,16 +2882,15 @@ export function createRelayHandlers(
       // NOT trigger a fresh round-trip here — state-summary's contract is
       // "synthesize from what we already have", not "make extra calls".
       let hasErrors = false;
-      const cache = scope.cache.consoleErrors as APIResponse<{
-        count?: number;
-        errors?: unknown[];
-      }> | null;
-      if (cache?.success && cache.data) {
-        const count = cache.data.count;
+      const cached = scope.cache.consoleErrors?.data as
+        | { count?: number; errors?: unknown[] }
+        | undefined;
+      if (cached) {
+        const count = cached.count;
         if (typeof count === 'number') {
           hasErrors = count > 0;
-        } else if (Array.isArray(cache.data.errors)) {
-          hasErrors = cache.data.errors.length > 0;
+        } else if (Array.isArray(cached.errors)) {
+          hasErrors = cached.errors.length > 0;
         }
       }
 
