@@ -30,6 +30,8 @@
  * duplicated bundle) still matches.
  */
 
+import { RELAY_READ_ACTIONS } from './relay-read-actions';
+
 /**
  * The `noAnswerCause` of a command evicted from a full pending queue. It is
  * `unanswered` (it may have been delivered) but no timer ran out, so the
@@ -69,18 +71,33 @@ export class TabReportedFailure extends Error {
  * The relay got no live answer: `not_delivered` (nothing could carry the
  * command, so nothing ran) or `unanswered` (delivered, and no tab answered in
  * time: its effect is unknown). `noAnswerCause` is the human cause a cache
- * answer names (`cacheFallbackMeta`).
+ * answer names (`cacheFallbackMeta`). `noTransport` marks the
+ * `SDK_DISCONNECTED` refusal: nothing was delivered because the relay had no
+ * transport at all, the one state a wait for a reconnection can change
+ * (`CommandRelay.queueCommand`'s retry reads it, never the message).
+ * `evicted` marks a command the relay evicted from its full pending queue
+ * under load: re-sending it would add load to that queue, so `mayFailOver`
+ * never fails it over.
  */
 export class NoLiveAnswer extends Error {
   readonly code = 'NO_LIVE_ANSWER' as const;
   readonly reason: NoLiveAnswerReason;
   readonly noAnswerCause: string;
+  readonly noTransport: boolean;
+  readonly evicted: boolean;
 
-  constructor(message: string, reason: NoLiveAnswerReason, noAnswerCause?: string) {
+  constructor(
+    message: string,
+    reason: NoLiveAnswerReason,
+    noAnswerCause?: string,
+    options?: { noTransport?: boolean; evicted?: boolean }
+  ) {
     super(message);
     this.name = 'NoLiveAnswer';
     this.reason = reason;
     this.noAnswerCause = noAnswerCause ?? DEFAULT_NO_ANSWER_CAUSE[reason];
+    this.noTransport = options?.noTransport === true;
+    this.evicted = options?.evicted === true;
   }
 }
 
@@ -127,6 +144,36 @@ export function noLiveAnswerCause(action: string, e: unknown): string | undefine
     }
   }
   return undefined;
+}
+
+/**
+ * May the relay re-send `action` to ANOTHER tab after its first tab failed
+ * with `e`? Only when that tab provably did not run it, or, for a declared
+ * read (`RELAY_READ_ACTIONS`), did not answer in time (plan
+ * 2026-11-08-ui-bridge-relay-and-exec-mode-follow-ups-from-pr-329, D3):
+ *
+ *   - `NoLiveAnswer('not_delivered')`: nothing carried the command, so
+ *     nothing ran;
+ *   - the no-case {@link TabReportedFailure} for THIS action (the
+ *     dispatcher's `Unknown command action: <action>`): the tab has no case
+ *     for it, so it ran nothing;
+ *   - `NoLiveAnswer('unanswered')` for an action in `RELAY_READ_ACTIONS`: the
+ *     tab may have run it, which a read makes harmless. Except a command the
+ *     relay evicted from its full pending queue (`evicted`): re-sending it
+ *     adds load to the queue that just overflowed.
+ *
+ * False for everything else: any other failure a tab reported is that tab's
+ * live answer, which a second tab must not overrule; a write that timed out
+ * may have run; and anything untyped fails closed.
+ */
+export function mayFailOver(action: string, e: unknown): boolean {
+  if (isNoLiveAnswer(e)) {
+    if (e.evicted === true) return false;
+    if (e.reason === 'not_delivered') return true;
+    return e.reason === 'unanswered' && RELAY_READ_ACTIONS.has(action);
+  }
+  if (isTabReportedFailure(e)) return noLiveAnswerCause(action, e) !== undefined;
+  return false;
 }
 
 /**
