@@ -92,6 +92,69 @@ async function post(
   };
 }
 
+/**
+ * Whether the server reads a declared over-limit upload off to its end
+ * within `ms`, driven by a raw socket that always sends the whole body.
+ *
+ * `fetch` cannot answer this on every OS: on Linux undici stops uploading
+ * and closes the socket as soon as the 413 arrives, so the request never
+ * ends whatever the server does, while on Windows it keeps sending. A raw
+ * client sends every byte, so the request ends only if the server keeps
+ * reading: a request stopped after reading began, or a connection closed
+ * under the upload, still fails this. (A request nobody began reading is
+ * drained by Node itself once its response finishes, so it passes.)
+ * The raw request must also be answered 413.
+ */
+async function rawUploadReadOffWithin(port: number, length: number, ms: number): Promise<boolean> {
+  const ended = new Promise<true>((resolve) =>
+    server!.once('request', (req) => req.on('end', () => resolve(true)))
+  );
+  const socket = connect(port, '127.0.0.1');
+  let answer = '';
+  const answered = new Promise<true>((resolve) =>
+    socket.on('data', (d) => {
+      answer += d.toString('latin1');
+      if (answer.includes('\r\n')) resolve(true);
+    })
+  );
+  await new Promise<void>((resolve, reject) => {
+    socket.once('connect', () => resolve());
+    socket.once('error', reject);
+  });
+  // Writes after the final destroy below are absorbed here.
+  socket.on('error', () => {});
+  socket.write(
+    `POST ${PATH} HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n` +
+      `Content-Length: ${length}\r\n\r\n`
+  );
+  const chunk = Buffer.alloc(64 * 1024, 0x78);
+  void (async () => {
+    for (let sent = 0; sent < length && socket.writable; sent += chunk.length) {
+      if (!socket.write(chunk.subarray(0, Math.min(chunk.length, length - sent)))) {
+        await new Promise<void>((resolve) => {
+          const done = () => {
+            socket.off('drain', done);
+            socket.off('close', done);
+            resolve();
+          };
+          socket.once('drain', done);
+          socket.once('close', done);
+        });
+      }
+    }
+  })();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
+  });
+  // Both, within `ms`: the server read the upload to its end, and the raw
+  // request's own status line arrived (it can trail the request's 'end').
+  const readOff = await Promise.race([Promise.all([ended, answered]).then(() => true), timedOut]);
+  clearTimeout(timer);
+  socket.destroy();
+  return readOff && answer.split('\r\n')[0] === 'HTTP/1.1 413 Payload Too Large';
+}
+
 /** createExpressRouter with its own body parser, mounted on a bare app. */
 async function routerApp(): Promise<number> {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -125,7 +188,7 @@ describe.each([
       code: 'UB-VALIDATION-ERROR',
     });
     expect(received).toBeUndefined();
-    expect(await uploadReadOffWithin(3000)).toBe(true);
+    expect(await rawUploadReadOffWithin(port, MAX_BODY_BYTES + 1, 3000)).toBe(true);
   });
 
   it('refuses a malformed JSON body with a JSON 400, not an HTML page', async () => {
@@ -220,7 +283,7 @@ describe('a 413 keeps the connection, called through each Express entry point', 
     expect(response.status).toBe(413);
     expect(response.connection).toBe('keep-alive');
     expect(received).toBeUndefined();
-    expect(await uploadReadOffWithin(3000)).toBe(true);
+    expect(await rawUploadReadOffWithin(port, MAX_BODY_BYTES + 1, 3000)).toBe(true);
   });
 
   it('createExpressRouter answers an over-limit body with a keep-alive 413 and reads the upload off', async () => {
@@ -233,7 +296,7 @@ describe('a 413 keeps the connection, called through each Express entry point', 
     expect(response.status).toBe(413);
     expect(response.connection).toBe('keep-alive');
     expect(received).toBeUndefined();
-    expect(await uploadReadOffWithin(3000)).toBe(true);
+    expect(await rawUploadReadOffWithin(port, MAX_BODY_BYTES + 1, 3000)).toBe(true);
   });
 });
 
