@@ -168,8 +168,9 @@ describe('every image registers', () => {
     // `img-x` never passes when the dead node registers too: no fixed delay to
     // outrun on a loaded machine.
     await expectMediaIds(registry, ['img-x']);
-    // The identity check is what makes a flush that somehow fired before the
-    // removal fail rather than pass: then `first` would hold `img-x`.
+    // A flush that somehow fired before the removal lets the poll pass on its
+    // first check, while `first` still holds `img-x`. Only this identity check
+    // then fails.
     expect(registry.getElement('img-x')?.element).toBe(second);
   });
 
