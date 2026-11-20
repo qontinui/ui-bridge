@@ -342,17 +342,20 @@ succeeded.
 
 ### Python client stop codes
 
-When the Python clients' `execute_with_recovery` stops without retrying the
-original, the returned `ExecuteWithRecoveryResult` carries `success: False` and
-one of these `error_code` values. Each is exported from `ui_bridge`, so a
-caller compares against the constant rather than a string literal:
+When a recovery attempt's answer makes the Python clients'
+`execute_with_recovery` stop without retrying the original, the returned
+`ExecuteWithRecoveryResult` carries `success: False` and one of these
+`error_code` values. Other stops (recovery disabled, no retry recommended, the
+retry budget spent, or a recovery that reported no success and did not re-run
+the original) keep the client's own `error_code`. Each constant is exported
+from `ui_bridge`, so a caller compares against it rather than a string literal:
 
 | Constant | `error_code` | When |
 | --- | --- | --- |
 | `ORIGINAL_ALREADY_ATTEMPTED_CODE` | `RECOVERY_ORIGINAL_ALREADY_ATTEMPTED` | The recovery acted, but it already ran the original and the original reported failure. |
 | `ORIGINAL_OUTCOME_UNKNOWN_CODE` | `RECOVERY_ORIGINAL_OUTCOME_UNKNOWN` | The recovery acted and did not state `originalActionAttempted` (for example, the runner). |
 | `ORIGINAL_RETRIED_AND_FAILED_CODE` | `RECOVERY_ORIGINAL_RETRIED_AND_FAILED` | The recovery did not act; it re-ran the original and the original failed again. |
-| `VERDICT_UNKNOWN_CODE` | `RECOVERY_VERDICT_UNKNOWN` | The recovery stated no verdict (transport error, a verdict-less answer, a 5xx). |
+| `VERDICT_UNKNOWN_CODE` | `RECOVERY_VERDICT_UNKNOWN` | The recovery stated no verdict (a transport error, a verdict-less answer, or a 5xx that states no failure). |
 
 `result.recovery_result` holds the parsed `RecoveryExecutorResult` behind each
 stop.
