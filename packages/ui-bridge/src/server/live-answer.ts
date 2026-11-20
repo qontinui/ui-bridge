@@ -30,6 +30,8 @@
  * duplicated bundle) still matches.
  */
 
+import type { APIResponse } from './types';
+
 /** Why the relay got no live answer: nothing carried it, or nobody answered. */
 export type NoLiveAnswerReason = 'not_delivered' | 'unanswered';
 
@@ -163,4 +165,56 @@ export function noResultArrivedMessage(
     `no result reached this relay instance. ${sent}; its result may have been refused ` +
     '(for example 429), lost, or posted to another instance.'
   );
+}
+
+// ============================================================================
+// Relay reads: one rule for every read that asks the tab
+// (plan 2026-11-08-ui-bridge-relay-and-exec-mode-follow-ups-from-pr-329, D5)
+// ============================================================================
+
+/**
+ * What a relay read that asked the tab got back:
+ *
+ *   - `answer`: the tab answered, and `response` is the envelope to return.
+ *     A success, a resolved inner failure (`{ success: false, … }`) and a
+ *     rejection that was a live answer (a {@link TabReportedFailure}, or
+ *     anything untyped, which fails closed) are all answers. A live failure is
+ *     never overruled by a cache.
+ *   - `no_live_answer`: nothing answered (`noLiveAnswerCause`). Only this arm
+ *     may consult a cache, and a cache answer names `cause`
+ *     (`cacheFallbackMeta`). `error` is the rejection, for the failure a read
+ *     answers when it holds no cache.
+ */
+export type LiveRead<T> =
+  | { kind: 'answer'; response: APIResponse<T> }
+  | { kind: 'no_live_answer'; cause: string; error: unknown };
+
+/** How a {@link liveRead} turns what the tab sent into an envelope. */
+export interface LiveReadEnvelopes<T> {
+  /** A RESOLVED result: a success, or the tab's inner failure. */
+  resolved(result: unknown): APIResponse<T>;
+  /** A rejection that was a live answer. */
+  rejected(error: unknown): APIResponse<T>;
+}
+
+/**
+ * Classify what the tab answered to ONE relayed `action` (`sent`, the
+ * relay's pending answer) by {@link noLiveAnswerCause}. The envelopes are
+ * built OUTSIDE the `try`, so a throw while building one is never mistaken
+ * for the tab's silence.
+ */
+export async function liveRead<T>(
+  action: string,
+  sent: Promise<unknown>,
+  envelopes: LiveReadEnvelopes<T>
+): Promise<LiveRead<T>> {
+  let result: unknown;
+  try {
+    result = await sent;
+  } catch (e) {
+    const cause = noLiveAnswerCause(action, e);
+    if (cause === undefined) return { kind: 'answer', response: envelopes.rejected(e) };
+    return { kind: 'no_live_answer', cause, error: e };
+  }
+  return { kind: 'answer', response: envelopes.resolved(result) };
 }

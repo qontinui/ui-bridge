@@ -22,6 +22,7 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { CommandRelay, TabRoutingError } from './command-relay';
 import { createRelayHandlers } from './relay-handlers';
 import { createNextRouteHandlers } from './nextjs';
+import { NoLiveAnswer } from './live-answer';
 
 /** Every relay `freshRelay()` built, destroyed by `destroyRelays()` after each test. */
 const relays: CommandRelay[] = [];
@@ -621,8 +622,11 @@ describe('relay-handlers · pinned reads never serve the shared snapshot cache (
       snapshotWith([], { totalRegistered: 0, everHadRegistrations: false, byRoute: {} })
     );
 
+    // NO live answer (a typed timeout, as the relay raises it). A plain
+    // `Error` is a live answer and is answered as a failure, never from the
+    // cache (plan 2026-11-08-ui-bridge-relay-and-exec-mode-follow-ups-from-pr-329, D5).
     vi.spyOn(relay, 'queueCommand').mockRejectedValue(
-      new Error('Timeout waiting for browser response')
+      new NoLiveAnswer('Timeout waiting for browser response', 'unanswered')
     );
     const result = await handlers.find!({} as never);
 
