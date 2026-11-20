@@ -5,13 +5,14 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { OwnerMismatchError } from './command-relay';
+import { OwnerMismatchError, RelayDestroyedError, TabRoutingError } from './command-relay';
 import {
   NoLiveAnswer,
   TabReportedFailure,
   cacheFallbackMeta,
   isNoLiveAnswer,
   isTabReportedFailure,
+  mayFailOver,
   noLiveAnswerCause,
 } from './live-answer';
 
@@ -116,5 +117,94 @@ describe('cacheFallbackMeta', () => {
     expect(cacheFallbackMeta('getConsoleErrors', 'x', 'the last console-errors read').reason).toBe(
       "Relay command 'getConsoleErrors' got no live answer (x) — answered from the last console-errors read, which can be stale or another tab's."
     );
+  });
+});
+
+/**
+ * A `NoLiveAnswer` from a second copy of the module (a duplicated bundle): a
+ * plain `Error` carrying only the name, code and fields, never `instanceof`.
+ */
+function duckNoLiveAnswer(reason: 'not_delivered' | 'unanswered', extra: object = {}): Error {
+  return Object.assign(new Error('from another bundle'), {
+    name: 'NoLiveAnswer',
+    code: 'NO_LIVE_ANSWER',
+    reason,
+    noAnswerCause: 'a cause',
+    noTransport: false,
+    evicted: false,
+    ...extra,
+  });
+}
+
+describe('mayFailOver (Phase 3, D3)', () => {
+  it('a duck-typed copy is not an instance of the class (the rows below test the name/code path)', () => {
+    expect(duckNoLiveAnswer('not_delivered')).not.toBeInstanceOf(NoLiveAnswer);
+  });
+
+  const unanswered = new NoLiveAnswer('Command x timed out', 'unanswered');
+  const notDelivered = new NoLiveAnswer('nothing carried it', 'not_delivered');
+
+  it.each([
+    ['not_delivered, a write', 'click', notDelivered, true],
+    ['not_delivered, a read', 'getElement', notDelivered, true],
+    ['unanswered, a declared read', 'getElement', unanswered, true],
+    ['unanswered, a write', 'click', unanswered, false],
+    ['unanswered, an unclassified action (absent means write)', 'someNewAction', unanswered, false],
+    [
+      'the no-case failure for this action',
+      'click',
+      new TabReportedFailure('Unknown command action: click'),
+      true,
+    ],
+    [
+      "another action's no-case failure",
+      'click',
+      new TabReportedFailure('Unknown command action: clickElement'),
+      false,
+    ],
+    [
+      'a failure the tab reported',
+      'getElement',
+      new TabReportedFailure('Element x not found'),
+      false,
+    ],
+    ['an untyped error', 'getElement', new Error('SDK_DISCONNECTED: No browser connected'), false],
+    ['an ownership refusal', 'getElement', new OwnerMismatchError('tab-a', 'u1', 'u2'), false],
+    [
+      'a routing refusal',
+      'getElement',
+      new TabRoutingError('TAB_NOT_FOUND', 'tab-z', [], 'tabId "tab-z" is not in connectedTabs'),
+      false,
+    ],
+    ['a destroyed relay', 'getElement', new RelayDestroyedError(), false],
+    [
+      'an eviction under load, a declared read',
+      'getElement',
+      new NoLiveAnswer('Command evicted: too many pending commands', 'unanswered', 'evicted', {
+        evicted: true,
+      }),
+      false,
+    ],
+    [
+      'a duck-typed not_delivered copy (a second bundle)',
+      'click',
+      duckNoLiveAnswer('not_delivered'),
+      true,
+    ],
+    [
+      'a duck-typed unanswered copy, a declared read',
+      'getElement',
+      duckNoLiveAnswer('unanswered'),
+      true,
+    ],
+    ['a duck-typed unanswered copy, a write', 'click', duckNoLiveAnswer('unanswered'), false],
+    [
+      'a duck-typed evicted copy, a declared read',
+      'getElement',
+      duckNoLiveAnswer('unanswered', { evicted: true }),
+      false,
+    ],
+  ])('%s', (_label, action, e, expected) => {
+    expect(mayFailOver(action, e)).toBe(expected);
   });
 });
