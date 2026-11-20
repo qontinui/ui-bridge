@@ -148,6 +148,26 @@ describe('every image registers', () => {
     await expectMediaIds(registry, ['img-late']);
   });
 
+  it('never registers an image that left the DOM before the debounce flushed: its remounted twin keeps the id', async () => {
+    // A card's image is queued, then the card unmounts (a loading state) and
+    // remounts within one media debounce window. The detached image still has
+    // a box, so only the flush's connectedness check keeps it out: without it
+    // the dead node takes `img-x` and the live one is registered as `img-x-2`.
+    render(<Harness media={{ mediaDebounceMs: 400 }} />);
+    await new Promise((r) => setTimeout(r, 5));
+
+    const first = makeImage({ alt: 'x', src: '/a.png', natural: [10, 10] });
+    await new Promise((r) => setTimeout(r, 5));
+    first.remove();
+    const second = makeImage({ alt: 'x', src: '/a.png', natural: [10, 10] });
+
+    // One flush registers the whole batch synchronously, so a poll for exactly
+    // `img-x` never passes when the dead node registers too: no fixed delay to
+    // outrun on a loaded machine.
+    await expectMediaIds(registry, ['img-x']);
+    expect(registry.getElement('img-x')?.element).toBe(second);
+  });
+
   it('inside a redaction boundary the id never slugs the alt or the file name', async () => {
     const boundary = document.createElement('section');
     boundary.setAttribute('data-bridge-redact', 'true');
