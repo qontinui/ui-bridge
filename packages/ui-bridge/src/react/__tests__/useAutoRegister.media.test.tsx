@@ -153,6 +153,9 @@ describe('every image registers', () => {
     // remounts within one media debounce window. The detached image still has
     // a box, so only the flush's connectedness check keeps it out: without it
     // the dead node takes `img-x` and the live one is registered as `img-x-2`.
+    // The window must stay far wider than the 5 ms gap below: with the default
+    // of 0 the first image registers and is unregistered on removal, and the
+    // test passes without the check.
     render(<Harness media={{ mediaDebounceMs: 400 }} />);
     await new Promise((r) => setTimeout(r, 5));
 
@@ -165,6 +168,8 @@ describe('every image registers', () => {
     // `img-x` never passes when the dead node registers too: no fixed delay to
     // outrun on a loaded machine.
     await expectMediaIds(registry, ['img-x']);
+    // The identity check is what makes a flush that somehow fired before the
+    // removal fail rather than pass: then `first` would hold `img-x`.
     expect(registry.getElement('img-x')?.element).toBe(second);
   });
 
