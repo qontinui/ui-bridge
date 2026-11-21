@@ -419,7 +419,7 @@ the same field the web SDK uses. The runner's journey ledger reads
 `page.route.pattern` from that field and stores it as the screen's node key.
 
 ```typescript
-function useRouteAwareness(info: RouteInfo, options?: { unmatched?: boolean }): void
+function useRouteAwareness(info: RouteInfo, options?: { unmatched?: boolean }): void;
 ```
 
 `RouteInfo` has the same fields as the web hook's (`pattern`, `patternSource`,
@@ -565,16 +565,16 @@ route names, not the file routes.
 From version 0.11.0, the server in `@qontinui/ui-bridge-native` admits only
 callers on the device itself unless a request is signed:
 
-| Caller | Answer |
-| --- | --- |
-| `adb forward` or anything else on the device, with a loopback `Host` and nothing a web page sends | Admitted, no token |
-| Any other caller with a valid `X-UI-Bridge-Auth` signature | Admitted |
-| Anyone else, `GET /ui-bridge/health` | Answered with status, `serverTime`, `pairing`, `deviceId` (null until set), and `uiBridge` when the app passes `appInfo` |
-| Anyone but a web page, `POST /ui-bridge/pair` | Answered, and needs the armed code unless the caller is on the device |
-| A web page, `POST /ui-bridge/pair` | `403 PAIRING_WEB_CALLER_REFUSED` |
-| Everyone else | `401 PAIRING_REQUIRED` |
-| Off the device, on an app with no `pairingStore` | `401 PAIRING_UNCONFIGURED` |
-| WebSocket upgrade from anywhere but a trusted caller on the device, signed or not | `403 PAIRING_WS_LOOPBACK_ONLY` |
+| Caller                                                                                            | Answer                                                                                                                   |
+| ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `adb forward` or anything else on the device, with a loopback `Host` and nothing a web page sends | Admitted, no token                                                                                                       |
+| Any other caller with a valid `X-UI-Bridge-Auth` signature                                        | Admitted                                                                                                                 |
+| Anyone else, `GET /ui-bridge/health`                                                              | Answered with status, `serverTime`, `pairing`, `deviceId` (null until set), and `uiBridge` when the app passes `appInfo` |
+| Anyone but a web page, `POST /ui-bridge/pair`                                                     | Answered, and needs the armed code unless the caller is on the device                                                    |
+| A web page, `POST /ui-bridge/pair`                                                                | `403 PAIRING_WEB_CALLER_REFUSED`                                                                                         |
+| Everyone else                                                                                     | `401 PAIRING_REQUIRED`                                                                                                   |
+| Off the device, on an app with no `pairingStore`                                                  | `401 PAIRING_UNCONFIGURED`                                                                                               |
+| WebSocket upgrade from anywhere but a trusted caller on the device, signed or not                 | `403 PAIRING_WS_LOOPBACK_ONLY`                                                                                           |
 
 So an emulator needs nothing new, and a cable should not, as long as the
 [server adapter](https://github.com/qontinui/ui-bridge/tree/main/packages/ui-bridge-native#custom-server-adapter)
@@ -637,9 +637,9 @@ curl -X POST http://localhost:8087/ui-bridge/control/element/submit-button/actio
 ```jsonc
 // Request body schema
 {
-  "action": "press",          // required — the action name (press, type, setValue, scroll, …)
-  "params": { },              // optional — per-action arguments (see below)
-  "waitOptions": { }          // optional — pre-action wait predicate
+  "action": "press", // required — the action name (press, type, setValue, scroll, …)
+  "params": {}, // optional — per-action arguments (see below)
+  "waitOptions": {}, // optional — pre-action wait predicate
 }
 ```
 

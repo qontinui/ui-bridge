@@ -126,7 +126,7 @@ rather than raising, so a pinned client keeps parsing.
 `cancel_reason` — not the code — is the reliable "was this abandoned?" test:
 a request timeout reports `UB-ACTION-TIMEOUT` while a caller's in-process signal
 reports `UB-ACTION-FAILED`, and both set `cancel_reason`. A `UB-ACTION-FAILED`
-*without* one is a handler that threw.
+_without_ one is a handler that threw.
 
 `invalid_params` is set only when the SDK's param-validation gate rejects a call
 (`UB-ACTION-REJECTED`); each `ParamSchemaIssue` names the offending param by

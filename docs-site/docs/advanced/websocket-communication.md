@@ -38,8 +38,17 @@ directly if you want to construct and start in separate steps.
 The server can push to every connected client:
 
 ```typescript
-server.broadcastEvent({ type: 'element:registered', data: { elementId: 'save-btn' }, timestamp: Date.now() });
-server.broadcast({ type: 'event', channel: 'custom', data: { cartTotal: 42 }, timestamp: Date.now() });
+server.broadcastEvent({
+  type: 'element:registered',
+  data: { elementId: 'save-btn' },
+  timestamp: Date.now(),
+});
+server.broadcast({
+  type: 'event',
+  channel: 'custom',
+  data: { cartTotal: 42 },
+  timestamp: Date.now(),
+});
 
 await server.stop();
 ```
@@ -147,7 +156,9 @@ over HTTP:
 
 ```typescript
 const result = await client.executeWorkflow('checkout', { coupon: 'SAVE10' }, (progress) => {
-  console.log(`${progress.currentStep}/${progress.totalSteps}: ${progress.step.id} ${progress.step.status}`);
+  console.log(
+    `${progress.currentStep}/${progress.totalSteps}: ${progress.step.id} ${progress.step.status}`
+  );
 });
 ```
 

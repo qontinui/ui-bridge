@@ -57,7 +57,7 @@ required; all are optional and combined with AND.
 | `selector`       | `string`                | CSS selector applied to the rendered DOM.                                                                                                             |
 | `xpath`          | `string`                | XPath expression.                                                                                                                                     |
 | `dataAttributes` | `Record<string,string>` | Match `data-*` attributes by exact value.                                                                                                             |
-| `near`           | `string`                | Spatial proximity anchor: an element **id** (e.g. `"url-input"`); a description resolves no anchor.                                                  |
+| `near`           | `string`                | Spatial proximity anchor: an element **id** (e.g. `"url-input"`); a description resolves no anchor.                                                   |
 | `within`         | `string`                | Container hint (e.g. `"within the login form"`).                                                                                                      |
 | `fuzzy`          | `boolean`               | Enable fuzzy matching. Default `true` when `text`/`textContains` set.                                                                                 |
 | `fuzzyThreshold` | `number`                | Confidence floor for fuzzy matches, `0..1`. Default `0.7`.                                                                                            |

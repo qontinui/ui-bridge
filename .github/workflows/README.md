@@ -29,11 +29,11 @@ updating the blob pin in each `route` step, never by editing it — under
 `auto`, a copy that does not match its pin routes to the hosted floor). The
 repository variable `UIBRIDGE_CI_LINUX_LANE` picks the lane:
 
-| Value | `route` | The routed jobs |
-|---|---|---|
-| `auto` | runs | the pool, unless it is stalled (a pool job queued 10 min or more), saturated (4 or more queued) or unreadable — then the hosted floor |
-| `self-hosted` | skipped | the pool, with no overflow: a dead pool queues them for up to 24 h |
-| `hosted`, unset, anything else | skipped | the hosted floor (the kill switch) |
+| Value                          | `route` | The routed jobs                                                                                                                       |
+| ------------------------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `auto`                         | runs    | the pool, unless it is stalled (a pool job queued 10 min or more), saturated (4 or more queued) or unreadable — then the hosted floor |
+| `self-hosted`                  | skipped | the pool, with no overflow: a dead pool queues them for up to 24 h                                                                    |
+| `hosted`, unset, anything else | skipped | the hosted floor (the kill switch)                                                                                                    |
 
 What `auto` costs: `route` itself runs on a hosted runner, so a run still waits
 for one hosted job before its pool jobs start — and when `route` picks the floor,
@@ -94,11 +94,11 @@ Runs `scripts/check-runner-contract.mjs` (zero dependencies, no build step)
 against a checkout of the sibling runner repo. **Two modes, and the split is
 the safety property:**
 
-| Event | Sibling tree | Route drift / extraction failure |
-|---|---|---|
-| `pull_request` | the commit in `.github/sibling-pins.conf` | **gating** |
-| `push` to `main` | same pin | advisory |
-| `schedule` (nightly) / `workflow_dispatch` | runner's default branch (pin bypassed) | advisory |
+| Event                                      | Sibling tree                              | Route drift / extraction failure |
+| ------------------------------------------ | ----------------------------------------- | -------------------------------- |
+| `pull_request`                             | the commit in `.github/sibling-pins.conf` | **gating**                       |
+| `push` to `main`                           | same pin                                  | advisory                         |
+| `schedule` (nightly) / `workflow_dispatch` | runner's default branch (pin bypassed)    | advisory                         |
 
 **"Advisory" is scoped to the peer, not to the job.** Route drift and
 extraction failure are softened there, because a moving peer repo must never
@@ -107,7 +107,7 @@ the peer's doing: a usage error, and a **sibling-provenance violation** — the
 run being handed a runner tree this repo did not ask for.
 
 The gating job must never float on the runner's `main` — a runner land exposing
-a route this repo does not declare would then red *this* repo's main, which is
+a route this repo does not declare would then red _this_ repo's main, which is
 the same defect pointed the other way. Only the advisory nightly floats, and a
 rotting pin therefore shows up as a growing nightly warning rather than as
 silence.
@@ -117,7 +117,7 @@ passes `--expect-sibling pinned|floating` and the checker fails closed if the
 sibling resolver's own `source` output disagrees. That covers the ways the pin
 can quietly stop applying — manifest deleted or renamed, the `qontinui-runner`
 line dropped from it, or the `mode` step regressing to an empty `pin_file` —
-each of which is only a *log line* inside the resolver, not an error.
+each of which is only a _log line_ inside the resolver, not an error.
 
 On the pinned arm it also checks the pin is **ours**: the resolver looks for a
 relative `pin-file` in the action's own repo as well as this workspace, and the
@@ -148,10 +148,10 @@ touches `.github/workflows/**` or `.github/actions/**`. Every such file counts a
 a gate, except this README (listed in the guard's `NON_GATING`, with the reason).
 The guard never checks out PR code; it reads the diff through the API.
 
-| The PR... | It needs |
-|---|---|
-| touches no workflow or action | nothing |
-| only ADDS (a new job or file; nothing existing altered) | label `ci:gate-change=declared` |
+| The PR...                                                              | It needs                                                                       |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| touches no workflow or action                                          | nothing                                                                        |
+| only ADDS (a new job or file; nothing existing altered)                | label `ci:gate-change=declared`                                                |
 | ALTERS or REMOVES an existing job, or changes anything outside `jobs:` | label `ci:gate-change=alters-a-gate`, plus one line per finding in the PR body |
 
 Body lines are matched as WHOLE lines, each on its own line starting at column
@@ -192,7 +192,8 @@ always-green syntax gate.
 ## Running the full smoke locally
 
 The full smoke runs from your own dev machine, where the supervisor + backend
-+ a primary runner already exist — no CI job involved.
+
+- a primary runner already exist — no CI job involved.
 
 Prerequisites:
 

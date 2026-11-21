@@ -7,10 +7,10 @@ high-level goal in the same language.
 Those are two related but separate mechanisms, and it is worth being precise
 about which does what:
 
-| Mechanism | What it is | Entry point |
-| --- | --- | --- |
-| **NL actions** | Parse an instruction, resolve the target element, perform the action | `NLActionExecutor` / `POST /ai/execute` |
-| **Intent registry** | A named, described, searchable record of a goal, executed by feeding its `description` back through the NL executor | `POST /ai/intents/*` |
+| Mechanism           | What it is                                                                                                          | Entry point                             |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| **NL actions**      | Parse an instruction, resolve the target element, perform the action                                                | `NLActionExecutor` / `POST /ai/execute` |
+| **Intent registry** | A named, described, searchable record of a goal, executed by feeding its `description` back through the NL executor | `POST /ai/intents/*`                    |
 
 ## Overview
 
@@ -35,21 +35,21 @@ confidence score.
 `parseNLInstruction` recognises 13 action verbs. Each is matched by a set of
 phrasings, and each phrasing carries its own parse confidence:
 
-| Action        | Example phrasings                                             |
-| ------------- | ------------------------------------------------------------- |
-| `click`       | "click the Save button", "press Save", "tap Save"             |
-| `doubleClick` | "double-click the row"                                        |
-| `rightClick`  | "right-click the file", "context click the file"              |
-| `type`        | "type \"user@example.com\" into the email field"              |
-| `select`      | "select United States from the country dropdown"              |
-| `check`       | "check the terms checkbox"                                    |
-| `uncheck`     | "uncheck remember me"                                         |
-| `clear`       | "clear the search input"                                      |
-| `hover`       | "hover over the menu"                                         |
-| `focus`       | "focus the email field"                                       |
-| `scroll`      | "scroll to the footer"                                        |
-| `wait`        | "wait for the results table"                                  |
-| `assert`      | "assert the banner is visible"                                |
+| Action        | Example phrasings                                 |
+| ------------- | ------------------------------------------------- |
+| `click`       | "click the Save button", "press Save", "tap Save" |
+| `doubleClick` | "double-click the row"                            |
+| `rightClick`  | "right-click the file", "context click the file"  |
+| `type`        | "type \"user@example.com\" into the email field"  |
+| `select`      | "select United States from the country dropdown"  |
+| `check`       | "check the terms checkbox"                        |
+| `uncheck`     | "uncheck remember me"                             |
+| `clear`       | "clear the search input"                          |
+| `hover`       | "hover over the menu"                             |
+| `focus`       | "focus the email field"                           |
+| `scroll`      | "scroll to the footer"                            |
+| `wait`        | "wait for the results table"                      |
+| `assert`      | "assert the banner is visible"                    |
 
 There is no `submit` or `navigate` verb. Submitting a form is `click` on its
 submit control; page navigation is `POST /control/page/navigate`, and state
@@ -60,7 +60,11 @@ navigation is `POST /control/states/navigate`.
 ### Basic Execution
 
 ```typescript
-import { createNLActionExecutor, createActionExecutor, getGlobalRegistry } from '@qontinui/ui-bridge';
+import {
+  createNLActionExecutor,
+  createActionExecutor,
+  getGlobalRegistry,
+} from '@qontinui/ui-bridge';
 
 const registry = getGlobalRegistry();
 const executor = createNLActionExecutor();

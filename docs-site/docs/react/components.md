@@ -11,16 +11,16 @@ patterns.
 Every component on this page is exported from both `@qontinui/ui-bridge` and
 `@qontinui/ui-bridge/react`.
 
-| Component               | Renders                | Purpose                                                     |
-| ----------------------- | ---------------------- | ----------------------------------------------------------- |
-| `UIBridgeProvider`       | context + children     | Root provider — everything else needs it                    |
-| `State`                  | `Fragment`             | Declarative wrapper around `useUIState`                     |
-| `TransitionTo`           | `Fragment`             | Declarative wrapper around `useUITransition`                |
-| `AutoRegisterProvider`   | children (or a `div`)  | Auto-register interactive elements in a subtree             |
-| `UIBridgeComponentScope` | `display: contents` div| Attribute every element in a subtree to an owning component |
-| `UIBridgeWindowProvider` | context + children     | Scope registrations to a named window (multi-window hosts)  |
-| `CommandRelayListener`   | `null`                 | Connect the browser back to a UI Bridge server              |
-| `CaptureHostFrame`       | an iframe host UI      | Drive an iframe through an automation-controlled URL list   |
+| Component                | Renders                 | Purpose                                                     |
+| ------------------------ | ----------------------- | ----------------------------------------------------------- |
+| `UIBridgeProvider`       | context + children      | Root provider — everything else needs it                    |
+| `State`                  | `Fragment`              | Declarative wrapper around `useUIState`                     |
+| `TransitionTo`           | `Fragment`              | Declarative wrapper around `useUITransition`                |
+| `AutoRegisterProvider`   | children (or a `div`)   | Auto-register interactive elements in a subtree             |
+| `UIBridgeComponentScope` | `display: contents` div | Attribute every element in a subtree to an owning component |
+| `UIBridgeWindowProvider` | context + children      | Scope registrations to a named window (multi-window hosts)  |
+| `CommandRelayListener`   | `null`                  | Connect the browser back to a UI Bridge server              |
+| `CaptureHostFrame`       | an iframe host UI       | Drive an iframe through an automation-controlled URL list   |
 
 ## UIBridgeProvider
 
@@ -42,14 +42,14 @@ function App() {
 
 ### Props
 
-| Prop                   | Type                    | Description                                          |
-| ---------------------- | ----------------------- | ---------------------------------------------------- |
-| `children`             | `ReactNode`             | Your app                                             |
-| `features`             | `UIBridgeFeatures`      | `renderLog`, `control`, `debug` toggles              |
-| `config`               | `UIBridgeConfig`        | `serverPort`, `apiPath`, `websocket`, `appInfo`, …   |
-| `onEvent`              | `BridgeEventListener`   | Called for every bridge event                        |
-| `onBrowserEvent`       | `OnBrowserEventCallback`| Called for every captured browser event              |
-| `browserCaptureConfig` | `BrowserCaptureConfig`  | Configures the browser-event capture sub-modules     |
+| Prop                   | Type                     | Description                                        |
+| ---------------------- | ------------------------ | -------------------------------------------------- |
+| `children`             | `ReactNode`              | Your app                                           |
+| `features`             | `UIBridgeFeatures`       | `renderLog`, `control`, `debug` toggles            |
+| `config`               | `UIBridgeConfig`         | `serverPort`, `apiPath`, `websocket`, `appInfo`, … |
+| `onEvent`              | `BridgeEventListener`    | Called for every bridge event                      |
+| `onBrowserEvent`       | `OnBrowserEventCallback` | Called for every captured browser event            |
+| `browserCaptureConfig` | `BrowserCaptureConfig`   | Configures the browser-event capture sub-modules   |
 
 ## State
 
@@ -88,22 +88,22 @@ function LoginPage() {
 
 `StateProps` extends every option of `UseUIStateOptions`:
 
-| Prop               | Type                                     | Description                                            |
-| ------------------ | ---------------------------------------- | ------------------------------------------------------ |
-| `id`               | `string` _(required)_                    | Unique identifier for the state                        |
-| `name`             | `string` _(required)_                    | Human-readable name                                    |
-| `children`         | `ReactNode`                              | Rendered as-is                                         |
-| `elements`         | `string[]`                               | Element IDs belonging to this state                    |
-| `requiredElements` | `IRElementCriteria[]`                    | IR-canonical form of `elements`; wins if both are given |
-| `activeWhen`       | `() => boolean`                          | Predicate deciding whether the state is active         |
-| `blocking`         | `boolean`                                | Blocks other state activations (modal behaviour)       |
-| `blocks`           | `string[]`                               | Specific state IDs this state blocks                   |
-| `group`            | `string`                                 | State group membership                                 |
-| `pathCost`         | `number`                                 | Pathfinding cost (default `1.0`)                       |
-| `metadata`         | `IRMetadata \| Record<string, unknown>`  | `description` / `purpose` / `tags` / `relatedElements` / `notes` |
-| `provenance`       | `IRProvenance`                           | Set by build plugins                                   |
-| `autoRegister`     | `boolean`                                | Register on mount                                      |
-| `initialActive`    | `boolean`                                | Initial active state                                   |
+| Prop               | Type                                    | Description                                                      |
+| ------------------ | --------------------------------------- | ---------------------------------------------------------------- |
+| `id`               | `string` _(required)_                   | Unique identifier for the state                                  |
+| `name`             | `string` _(required)_                   | Human-readable name                                              |
+| `children`         | `ReactNode`                             | Rendered as-is                                                   |
+| `elements`         | `string[]`                              | Element IDs belonging to this state                              |
+| `requiredElements` | `IRElementCriteria[]`                   | IR-canonical form of `elements`; wins if both are given          |
+| `activeWhen`       | `() => boolean`                         | Predicate deciding whether the state is active                   |
+| `blocking`         | `boolean`                               | Blocks other state activations (modal behaviour)                 |
+| `blocks`           | `string[]`                              | Specific state IDs this state blocks                             |
+| `group`            | `string`                                | State group membership                                           |
+| `pathCost`         | `number`                                | Pathfinding cost (default `1.0`)                                 |
+| `metadata`         | `IRMetadata \| Record<string, unknown>` | `description` / `purpose` / `tags` / `relatedElements` / `notes` |
+| `provenance`       | `IRProvenance`                          | Set by build plugins                                             |
+| `autoRegister`     | `boolean`                               | Register on mount                                                |
+| `initialActive`    | `boolean`                               | Initial active state                                             |
 
 :::note
 `metadata` only routes into the global annotation store when it matches the
@@ -143,23 +143,23 @@ function LoginButton() {
 
 `TransitionToProps` extends every option of `UseUITransitionOptions`:
 
-| Prop              | Type                                     | Description                                          |
-| ----------------- | ---------------------------------------- | ---------------------------------------------------- |
-| `id`              | `string` _(required)_                    | Unique identifier for the transition                 |
-| `name`            | `string` _(required)_                    | Human-readable name                                  |
-| `fromStates`      | `string[]` _(required)_                  | Precondition — at least one must be active           |
-| `activateStates`  | `string[]` _(required)_                  | States to activate                                   |
-| `exitStates`      | `string[]` _(required)_                  | States to deactivate                                 |
-| `children`        | `ReactNode`                              | Rendered as-is                                       |
-| `activateGroups`  | `string[]`                               | Groups to activate                                   |
-| `exitGroups`      | `string[]`                               | Groups to deactivate                                 |
-| `actions`         | `WorkflowStep[]`                         | Actions executed during the transition               |
-| `pathCost`        | `number`                                 | Pathfinding cost                                     |
-| `staysVisible`    | `boolean`                                | Source states remain visible during the transition   |
-| `effect`          | `'read' \| 'write' \| 'destructive'`     | Side-effect annotation                               |
-| `metadata`        | `IRMetadata`                             | Semantic metadata                                    |
-| `provenance`      | `IRProvenance`                           | Set by build plugins                                 |
-| `autoRegister`    | `boolean`                                | Register on mount                                    |
+| Prop             | Type                                 | Description                                        |
+| ---------------- | ------------------------------------ | -------------------------------------------------- |
+| `id`             | `string` _(required)_                | Unique identifier for the transition               |
+| `name`           | `string` _(required)_                | Human-readable name                                |
+| `fromStates`     | `string[]` _(required)_              | Precondition — at least one must be active         |
+| `activateStates` | `string[]` _(required)_              | States to activate                                 |
+| `exitStates`     | `string[]` _(required)_              | States to deactivate                               |
+| `children`       | `ReactNode`                          | Rendered as-is                                     |
+| `activateGroups` | `string[]`                           | Groups to activate                                 |
+| `exitGroups`     | `string[]`                           | Groups to deactivate                               |
+| `actions`        | `WorkflowStep[]`                     | Actions executed during the transition             |
+| `pathCost`       | `number`                             | Pathfinding cost                                   |
+| `staysVisible`   | `boolean`                            | Source states remain visible during the transition |
+| `effect`         | `'read' \| 'write' \| 'destructive'` | Side-effect annotation                             |
+| `metadata`       | `IRMetadata`                         | Semantic metadata                                  |
+| `provenance`     | `IRProvenance`                       | Set by build plugins                               |
+| `autoRegister`   | `boolean`                            | Register on mount                                  |
 
 :::warning
 `effect="destructive"` is not cosmetic — destructive transitions are excluded
@@ -194,21 +194,21 @@ function App() {
 `AutoRegisterProviderProps` extends `AutoRegisterOptions` minus `root`, which
 `scopeToChildren` replaces:
 
-| Prop                  | Type                                                     | Default              | Description                                             |
-| --------------------- | -------------------------------------------------------- | -------------------- | ------------------------------------------------------- |
-| `children`            | `ReactNode` _(required)_                                 | —                    | Subtree to observe                                      |
-| `scopeToChildren`     | `boolean`                                                | `false`              | Observe a wrapper `div` instead of `document.body`      |
-| `enabled`             | `boolean`                                                | dev mode             | Enable auto-registration                                |
-| `idStrategy`          | `'data-testid' \| 'semantic' \| 'auto' \| 'prefer-existing'` | `'prefer-existing'` | How IDs are generated                                   |
-| `debounceMs`          | `number`                                                 | `100`                | Mutation-handling debounce                              |
-| `includeHidden`       | `boolean`                                                | `false`              | Register hidden elements too                            |
-| `includeSelectors`    | `string[]`                                               | `[]`                 | Only register elements matching these                   |
-| `excludeSelectors`    | `string[]`                                               | `[]`                 | Skip elements matching these                            |
-| `generateId`          | `(element: HTMLElement) => string`                       | —                    | Custom ID generator                                     |
-| `onRegister`          | `(id: string, element: HTMLElement) => void`             | —                    | Registration callback                                   |
-| `onUnregister`        | `(id: string) => void`                                   | —                    | Unregistration callback                                 |
-| `contentDiscovery`    | `ContentDiscoveryOptions`                                | enabled              | Content-discovery options                               |
-| `persistWhileMounted` | `boolean`                                                | `false`              | Keep elements registered while mounted even when the visibility gate would reject them |
+| Prop                  | Type                                                         | Default             | Description                                                                            |
+| --------------------- | ------------------------------------------------------------ | ------------------- | -------------------------------------------------------------------------------------- |
+| `children`            | `ReactNode` _(required)_                                     | —                   | Subtree to observe                                                                     |
+| `scopeToChildren`     | `boolean`                                                    | `false`             | Observe a wrapper `div` instead of `document.body`                                     |
+| `enabled`             | `boolean`                                                    | dev mode            | Enable auto-registration                                                               |
+| `idStrategy`          | `'data-testid' \| 'semantic' \| 'auto' \| 'prefer-existing'` | `'prefer-existing'` | How IDs are generated                                                                  |
+| `debounceMs`          | `number`                                                     | `100`               | Mutation-handling debounce                                                             |
+| `includeHidden`       | `boolean`                                                    | `false`             | Register hidden elements too                                                           |
+| `includeSelectors`    | `string[]`                                                   | `[]`                | Only register elements matching these                                                  |
+| `excludeSelectors`    | `string[]`                                                   | `[]`                | Skip elements matching these                                                           |
+| `generateId`          | `(element: HTMLElement) => string`                           | —                   | Custom ID generator                                                                    |
+| `onRegister`          | `(id: string, element: HTMLElement) => void`                 | —                   | Registration callback                                                                  |
+| `onUnregister`        | `(id: string) => void`                                       | —                   | Unregistration callback                                                                |
+| `contentDiscovery`    | `ContentDiscoveryOptions`                                    | enabled             | Content-discovery options                                                              |
+| `persistWhileMounted` | `boolean`                                                    | `false`             | Keep elements registered while mounted even when the visibility gate would reject them |
 
 ### Scoped to a section
 
@@ -258,10 +258,10 @@ function ProfilePicker() {
 
 ### Props
 
-| Prop          | Type                  | Description                                              |
-| ------------- | --------------------- | -------------------------------------------------------- |
+| Prop          | Type                  | Description                                                  |
+| ------------- | --------------------- | ------------------------------------------------------------ |
 | `componentId` | `string` _(required)_ | ID of the `useUIComponent` that owns elements in the subtree |
-| `children`    | `ReactNode`           | The owned subtree                                        |
+| `children`    | `ReactNode`           | The owned subtree                                            |
 
 The wrapper is a real DOM node carrying `data-ui-bridge-component`, styled
 `display: contents` so it is invisible to layout. That attribute is what lets
@@ -288,10 +288,10 @@ function WindowRoot({ children }: { children: React.ReactNode }) {
 
 ### Props
 
-| Prop          | Type                  | Description                                                              |
-| ------------- | --------------------- | ------------------------------------------------------------------------ |
+| Prop          | Type                               | Description                                                           |
+| ------------- | ---------------------------------- | --------------------------------------------------------------------- |
 | `windowLabel` | `string \| undefined` _(required)_ | The real webview label. `undefined` means the default `"main"` window |
-| `children`    | `ReactNode`           | The window's subtree                                                     |
+| `children`    | `ReactNode`                        | The window's subtree                                                  |
 
 :::note
 This provider is additive and opt-in. Single-window hosts never wrap their tree
@@ -324,21 +324,21 @@ The server side of this pairing is
 
 ### Props
 
-| Prop                   | Type                                                     | Default                    | Description                                        |
-| ---------------------- | -------------------------------------------------------- | -------------------------- | -------------------------------------------------- |
-| `basePath`             | `string`                                                 | `'/api/ui-bridge'`         | Base path for UI Bridge API routes                 |
-| `enabled`              | `boolean`                                                | `true`                     | Whether the relay is active                        |
-| `heartbeatInterval`    | `number`                                                 | `10000`                    | Heartbeat interval in ms                           |
-| `runnerUrl`            | `string`                                                 | `'http://127.0.0.1:9876'`  | Explicit runner URL for phone-home registration    |
-| `disablePhoneHome`     | `boolean`                                                | `false`                    | Opt out of phone-home (and passive capture)        |
-| `appId`                | `string`                                                 | `location.host`            | Stable identity in the runner's registry           |
-| `appName`              | `string`                                                 | `document.title` or hostname | Display name                                     |
-| `appType`              | `'web' \| 'desktop' \| 'mobile' \| 'dashboard' \| 'other'` | `'web'`                  | App classification                                 |
-| `framework`            | `string`                                                 | `'react'`                  | Framework hint                                     |
-| `capabilities`         | `string[]`                                               | `['control']`              | Capability tags                                    |
-| `version`              | `string`                                                 | —                          | SDK/app version forwarded on each heartbeat        |
-| `authHeader`           | `() => string \| null \| undefined`                      | —                          | Returns the raw session token (no `Bearer ` prefix) |
-| `registrationMetadata` | `() => { userId: string; sessionId: string } \| null \| undefined` | —                | Tab-ownership envelope sent with every heartbeat    |
+| Prop                   | Type                                                               | Default                      | Description                                         |
+| ---------------------- | ------------------------------------------------------------------ | ---------------------------- | --------------------------------------------------- |
+| `basePath`             | `string`                                                           | `'/api/ui-bridge'`           | Base path for UI Bridge API routes                  |
+| `enabled`              | `boolean`                                                          | `true`                       | Whether the relay is active                         |
+| `heartbeatInterval`    | `number`                                                           | `10000`                      | Heartbeat interval in ms                            |
+| `runnerUrl`            | `string`                                                           | `'http://127.0.0.1:9876'`    | Explicit runner URL for phone-home registration     |
+| `disablePhoneHome`     | `boolean`                                                          | `false`                      | Opt out of phone-home (and passive capture)         |
+| `appId`                | `string`                                                           | `location.host`              | Stable identity in the runner's registry            |
+| `appName`              | `string`                                                           | `document.title` or hostname | Display name                                        |
+| `appType`              | `'web' \| 'desktop' \| 'mobile' \| 'dashboard' \| 'other'`         | `'web'`                      | App classification                                  |
+| `framework`            | `string`                                                           | `'react'`                    | Framework hint                                      |
+| `capabilities`         | `string[]`                                                         | `['control']`                | Capability tags                                     |
+| `version`              | `string`                                                           | —                            | SDK/app version forwarded on each heartbeat         |
+| `authHeader`           | `() => string \| null \| undefined`                                | —                            | Returns the raw session token (no `Bearer ` prefix) |
+| `registrationMetadata` | `() => { userId: string; sessionId: string } \| null \| undefined` | —                            | Tab-ownership envelope sent with every heartbeat    |
 
 :::warning
 Strict mode is the only mode in `@qontinui/ui-bridge` ≥ 0.12: without

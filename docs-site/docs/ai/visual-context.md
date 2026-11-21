@@ -4,10 +4,10 @@ Visual Context is UI Bridge's answer to "what is on the screen right now, in a
 form an LLM can read". It comes in two layers, and they are answered by
 different processes:
 
-| Layer | What it produces | Who answers |
-| --- | --- | --- |
-| **Semantic** | Structured, text-only snapshots, diffs and summaries of the registry | The SDK, in-page |
-| **Pixel** | Screenshots, OCR, VLM captions, visual baselines | The runner, over `/vision/*` |
+| Layer        | What it produces                                                     | Who answers                  |
+| ------------ | -------------------------------------------------------------------- | ---------------------------- |
+| **Semantic** | Structured, text-only snapshots, diffs and summaries of the registry | The SDK, in-page             |
+| **Pixel**    | Screenshots, OCR, VLM captions, visual baselines                     | The runner, over `/vision/*` |
 
 Everything in the semantic layer works with no runner attached. The pixel layer
 needs one — see [Pixel-level vision](#pixel-level-vision) below.
@@ -176,21 +176,21 @@ Screenshots and anything derived from them are **runner-direct**. The route
 table is the single source of truth, so the SDK ships stubs for all thirteen
 `/vision/*` routes that return `RUNNER_REQUIRED` when no runner is mounted:
 
-| Route | Purpose |
-| --- | --- |
-| `POST /vision/capture` | Capture a screenshot |
-| `POST /vision/annotate` | Capture with element overlays drawn |
-| `POST /vision/diff` | Pixel diff against a previous capture |
-| `POST /vision/raw` | Raw capture, no post-processing |
-| `POST /vision/extract` | OCR — visible text with bounding boxes |
-| `POST /vision/describe` | VLM caption of the capture |
-| `POST /vision/analyze` | Declarative analyzers (layout, typography, colour, …) |
-| `POST /vision/assert` | The visual assertion DSL |
-| `POST /vision/baseline` | Record a visual baseline |
-| `GET /vision/baselines` | List recorded baselines |
-| `POST /vision/mutation-occurred` | Frontend → runner mutation signal |
-| `GET /vision/cache/:sha256` | Stream a cached capture |
-| `GET /vision/health` | Vision pipeline health |
+| Route                            | Purpose                                               |
+| -------------------------------- | ----------------------------------------------------- |
+| `POST /vision/capture`           | Capture a screenshot                                  |
+| `POST /vision/annotate`          | Capture with element overlays drawn                   |
+| `POST /vision/diff`              | Pixel diff against a previous capture                 |
+| `POST /vision/raw`               | Raw capture, no post-processing                       |
+| `POST /vision/extract`           | OCR — visible text with bounding boxes                |
+| `POST /vision/describe`          | VLM caption of the capture                            |
+| `POST /vision/analyze`           | Declarative analyzers (layout, typography, colour, …) |
+| `POST /vision/assert`            | The visual assertion DSL                              |
+| `POST /vision/baseline`          | Record a visual baseline                              |
+| `GET /vision/baselines`          | List recorded baselines                               |
+| `POST /vision/mutation-occurred` | Frontend → runner mutation signal                     |
+| `GET /vision/cache/:sha256`      | Stream a cached capture                               |
+| `GET /vision/health`             | Vision pipeline health                                |
 
 A capture result (`capture`, `annotate`, `diff`, `raw`) names its bytes by
 `url`, whose literal value is the relative HTTP path

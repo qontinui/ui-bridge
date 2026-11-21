@@ -1,15 +1,15 @@
 # Navigation Assistance
 
-Navigation Assistance helps an agent answer three questions: *where am I*,
-*can I get to X from here*, and *what does it take*.
+Navigation Assistance helps an agent answer three questions: _where am I_,
+_can I get to X from here_, and _what does it take_.
 
 UI Bridge answers them with three distinct mechanisms:
 
-| Mechanism | Answers | Entry point |
-| --- | --- | --- |
+| Mechanism                   | Answers                                               | Entry point                                                |
+| --------------------------- | ----------------------------------------------------- | ---------------------------------------------------------- |
 | **State-graph pathfinding** | "Is `checkout` reachable, and via which transitions?" | `useUINavigation`, `useNavigationPath`, `useCanNavigateTo` |
-| **Route tracking** | "What page am I on, and how did I get here?" | `NavigationTracker`, `usePageContext`, `useRouteAwareness` |
-| **Navigation maps** | "Do these two apps expose the same navigation?" | `buildNavigationMap` |
+| **Route tracking**          | "What page am I on, and how did I get here?"          | `NavigationTracker`, `usePageContext`, `useRouteAwareness` |
+| **Navigation maps**         | "Do these two apps expose the same navigation?"       | `buildNavigationMap`                                       |
 
 Note that pathfinding is over the **registered state graph**, not over URLs. It
 requires that your app registers states and transitions — see

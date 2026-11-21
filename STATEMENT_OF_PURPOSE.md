@@ -25,16 +25,17 @@ UI Bridge is a **semantic control plane** for React applications. It transforms 
 - **What its architecture should be** — component structure, data flow, state management
 - **What correct domain logic looks like** — for pages backed by algorithms or backend libraries, specs define testable criteria for correct output (e.g., "every discovered state must contain at least one element", "no two states should have identical element sets")
 
-Specs can reference functionality in any module available to the AI — backend services, shared libraries, data models. This makes specs a powerful tool: an AI can read a spec to understand what functionality *should* do, then use UI Bridge to see what it *currently* does. The gap between the two is the work to be done. This enables long-running autonomous workflows to develop entire applications by iterating against specs.
+Specs can reference functionality in any module available to the AI — backend services, shared libraries, data models. This makes specs a powerful tool: an AI can read a spec to understand what functionality _should_ do, then use UI Bridge to see what it _currently_ does. The gap between the two is the work to be done. This enables long-running autonomous workflows to develop entire applications by iterating against specs.
 
 ### 3. Model-Based State Machine
 
 The UI Bridge state machine uses **model-based GUI automation** to provide effortless navigation to any place in an application's UI. Instead of writing brittle sequential scripts ("click A, then B, then C to reach the dashboard"), the consumer says "navigate to the dashboard" and the state machine finds and executes the optimal path.
 
 Key properties:
+
 - **Multiple active states** — A toolbar, sidebar, and main content area can all be active simultaneously. The state machine tracks the full set of active states (`S_Ξ`), not just one.
 - **Multi-target pathfinding** — "Navigate to states X, Y, and Z" finds a path that reaches all targets, not just one.
-- **Automatic pathfinding** — BFS, Dijkstra, and A* strategies find optimal paths through the state graph. Consumers never think about navigation sequences.
+- **Automatic pathfinding** — BFS, Dijkstra, and A\* strategies find optimal paths through the state graph. Consumers never think about navigation sequences.
 - **Fingerprint-based state discovery** — States can be automatically discovered by analyzing which UI elements co-occur across different views of the application.
 
 This reduces automation complexity from exponential (O(c^n) for process-based scripts) to polynomial (O(n × c) for model-based). For a 30-state app with 5 transitions each, that's 180 definitions instead of trillions of possible paths.
@@ -49,12 +50,12 @@ This reduces automation complexity from exponential (O(c^n) for process-based sc
 
 ## Who It Serves
 
-| Consumer | How They Use It | What They Need |
-|----------|----------------|----------------|
-| **AI agents** (Claude, LLMs) | HTTP API or MCP tools to understand and interact with UI | Semantic snapshots, fuzzy search, concise element descriptions, reliable action feedback, specs to understand intent |
-| **Automation workflows** (Qontinui Runner) | Deterministic steps in state-machine workflows | Stable element IDs, state machine navigation, spec-based verification, idle detection |
-| **Developers** | Python/TypeScript clients for testing and debugging | Simple API, inspector overlay, console/error capture, render logs |
-| **Specs/QA** | Declarative assertions against expected UI state | Spec format, assertion execution, regression detection, quality evaluation |
+| Consumer                                   | How They Use It                                          | What They Need                                                                                                       |
+| ------------------------------------------ | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| **AI agents** (Claude, LLMs)               | HTTP API or MCP tools to understand and interact with UI | Semantic snapshots, fuzzy search, concise element descriptions, reliable action feedback, specs to understand intent |
+| **Automation workflows** (Qontinui Runner) | Deterministic steps in state-machine workflows           | Stable element IDs, state machine navigation, spec-based verification, idle detection                                |
+| **Developers**                             | Python/TypeScript clients for testing and debugging      | Simple API, inspector overlay, console/error capture, render logs                                                    |
+| **Specs/QA**                               | Declarative assertions against expected UI state         | Spec format, assertion execution, regression detection, quality evaluation                                           |
 
 ## Design Principles
 

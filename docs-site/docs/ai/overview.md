@@ -16,7 +16,11 @@ Execute an instruction written in prose — the executor parses it, searches the
 registry for the target, and performs the action:
 
 ```typescript
-import { createNLActionExecutor, createActionExecutor, getGlobalRegistry } from '@qontinui/ui-bridge';
+import {
+  createNLActionExecutor,
+  createActionExecutor,
+  getGlobalRegistry,
+} from '@qontinui/ui-bridge';
 
 const registry = getGlobalRegistry();
 const executor = createNLActionExecutor();

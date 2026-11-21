@@ -50,11 +50,11 @@ the `RegistryLike` and `ActionExecutorLike` contracts — it is not tied to the
 browser registry. That is what makes the same server usable from three very
 different hosts:
 
-| Host                                             | Handler source                                                                          |
-| ------------------------------------------------ | --------------------------------------------------------------------------------------- |
-| Same Node process as the registry                | `createHandlers(getGlobalRegistry(), createActionExecutor(registry))`                    |
-| Browser app, server out of process               | `createRelayHandlers(relay)` from `@qontinui/ui-bridge/server` — see [Relay-backed handlers](#relay-backed-handlers) |
-| Custom store (headless, test double, native host)| Your own object satisfying `RegistryLike` / `ActionExecutorLike`                          |
+| Host                                              | Handler source                                                                                                       |
+| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Same Node process as the registry                 | `createHandlers(getGlobalRegistry(), createActionExecutor(registry))`                                                |
+| Browser app, server out of process                | `createRelayHandlers(relay)` from `@qontinui/ui-bridge/server` — see [Relay-backed handlers](#relay-backed-handlers) |
+| Custom store (headless, test double, native host) | Your own object satisfying `RegistryLike` / `ActionExecutorLike`                                                     |
 
 :::warning
 `StandaloneServer` uses Node's `http` module. It cannot run inside a browser
@@ -96,15 +96,15 @@ import { UIBridgeProvider, CommandRelayListener } from '@qontinui/ui-bridge';
 `StandaloneServerConfig` extends `UIBridgeServerConfig`. The fields the
 standalone server actually reads:
 
-| Option           | Type                      | Default       | Description                                        |
-| ---------------- | ------------------------- | ------------- | -------------------------------------------------- |
-| `host`           | `string`                  | `'localhost'` | Address to bind to                                 |
-| `port`           | `number`                  | `9876`        | Port to listen on                                  |
-| `websocket`      | `boolean`                 | `false`       | Enable the WebSocket handler (single-user only; see [Security](#security)) |
-| `websocketPort`  | `number`                  | `port`        | WebSocket port                                     |
-| `log`            | `(message: string) => void` | `console.log` | Logging function                                   |
-| `basePath`       | `string`                  | `'/ui-bridge'`| Route prefix for all API endpoints                 |
-| `cors`           | `boolean \| CORSOptions`  | _(off)_       | Any truthy value sends permissive CORS headers     |
+| Option          | Type                        | Default        | Description                                                                |
+| --------------- | --------------------------- | -------------- | -------------------------------------------------------------------------- |
+| `host`          | `string`                    | `'localhost'`  | Address to bind to                                                         |
+| `port`          | `number`                    | `9876`         | Port to listen on                                                          |
+| `websocket`     | `boolean`                   | `false`        | Enable the WebSocket handler (single-user only; see [Security](#security)) |
+| `websocketPort` | `number`                    | `port`         | WebSocket port                                                             |
+| `log`           | `(message: string) => void` | `console.log`  | Logging function                                                           |
+| `basePath`      | `string`                    | `'/ui-bridge'` | Route prefix for all API endpoints                                         |
+| `cors`          | `boolean \| CORSOptions`    | _(off)_        | Any truthy value sends permissive CORS headers                             |
 
 ```typescript
 const server = await createStandaloneServer(handlers, {
@@ -227,7 +227,10 @@ For desktop apps, start the server in the main process:
 import path from 'node:path';
 import { app, BrowserWindow } from 'electron';
 import { CommandRelay, createRelayHandlers } from '@qontinui/ui-bridge/server';
-import { createStandaloneServer, type StandaloneServer } from '@qontinui/ui-bridge-server/standalone';
+import {
+  createStandaloneServer,
+  type StandaloneServer,
+} from '@qontinui/ui-bridge-server/standalone';
 
 let server: StandaloneServer | undefined;
 

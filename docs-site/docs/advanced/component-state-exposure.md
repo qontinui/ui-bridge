@@ -1,7 +1,7 @@
 # Component State Exposure
 
-An element registration tells a driver *what is on the page*. Component state
-tells it *what the app thinks is true* — the cart total, the form's validity,
+An element registration tells a driver _what is on the page_. Component state
+tells it _what the app thinks is true_ — the cart total, the form's validity,
 which tab is selected — without scraping it back out of the DOM.
 
 You expose it with `useUIComponent`, and read it over
@@ -119,8 +119,16 @@ Component ids are flat strings, so namespace by convention with a separator you
 choose. Each namespace is a separate component with its own lifecycle:
 
 ```tsx
-useUIComponent({ id: 'user-profile.details', name: 'Profile details', state: () => ({ name, email }) });
-useUIComponent({ id: 'user-profile.preferences', name: 'Profile preferences', state: () => ({ theme }) });
+useUIComponent({
+  id: 'user-profile.details',
+  name: 'Profile details',
+  state: () => ({ name, email }),
+});
+useUIComponent({
+  id: 'user-profile.preferences',
+  name: 'Profile preferences',
+  state: () => ({ theme }),
+});
 ```
 
 ```http

@@ -157,12 +157,12 @@ export const { GET, DELETE } = createRenderLogHandlers(handlers);
 
 `NextJSAdapterConfig` extends `UIBridgeServerConfig` with a `runtime` field:
 
-| Option         | Type                                   | Description                                       |
-| -------------- | -------------------------------------- | ------------------------------------------------- |
-| `runtime`      | `'edge' \| 'nodejs'`                   | Declared runtime hint                             |
-| `authenticate` | `(req) => boolean \| Promise<boolean>` | Runs before every route; falsy returns 401        |
-| `basePath`     | `string`                               | Route prefix                                      |
-| `cors`         | `boolean \| CORSOptions`               | Declared on the base config                       |
+| Option         | Type                                   | Description                                |
+| -------------- | -------------------------------------- | ------------------------------------------ |
+| `runtime`      | `'edge' \| 'nodejs'`                   | Declared runtime hint                      |
+| `authenticate` | `(req) => boolean \| Promise<boolean>` | Runs before every route; falsy returns 401 |
+| `basePath`     | `string`                               | Route prefix                               |
+| `cors`         | `boolean \| CORSOptions`               | Declared on the base config                |
 
 ### With Authentication
 

@@ -4,7 +4,7 @@ sidebar_position: 2.1
 
 # Registration Hooks
 
-Five hooks from `@qontinui/ui-bridge/react` put things *into* the registry: a DOM
+Five hooks from `@qontinui/ui-bridge/react` put things _into_ the registry: a DOM
 node, a logical component, or the scope that links the two. What the registry
 holds and how it is queried is covered in
 [The Registry](../concepts/registry.md) and
@@ -35,13 +35,13 @@ Attaching the returned `ref` is what registers the element — the hook has no D
 node to register before that. It also stamps `data-ui-bridge-id="<your id>"` on
 the node so out-of-process runners can resolve it without holding the React ref;
 you do not write that attribute yourself. It is an output of registration, not
-an identification input — to pin the id an *unregistered* element is discovered
+an identification input — to pin the id an _unregistered_ element is discovered
 under, stamp `data-ui-bridge-test-id` instead (see
 [Element Identification](../concepts/element-identification.md#pinning-a-discovered-id)).
 
 `id` is a key in a registry-wide namespace, and registration is last-write-wins.
 Two components may legitimately hold the same id at different moments when the
-id is keyed on a *slot* (`panel-<zoneIndex>`) rather than on a component
+id is keyed on a _slot_ (`panel-<zoneIndex>`) rather than on a component
 instance; the hook's unmount cleanup removes the registry entry only if this
 instance's node is still the one registered under that id, so a component that
 took the id over is never stranded. Unique-per-instance ids remain the
@@ -51,24 +51,24 @@ recommendation.
 
 `UseUIElementOptions`:
 
-| Option | Type | Default | Meaning |
-|--------|------|---------|---------|
-| `id` | `string` | — | **Required.** Unique element identifier |
-| `type` | `ElementType` | auto-detected | Element type (inferred as every discovery path infers it) |
-| `label` | `string` | — | Human-readable label |
-| `actions` | `StandardAction[]` | derived from the element | Override the available actions. The default is the type's verbs plus what the element itself takes ([Actions](../concepts/actions.md)), even when `type` is declared |
-| `customActions` | `Record<string, CustomAction>` | — | Named handlers callable via `trigger` |
-| `autoRegister` | `boolean` | `true` | Register as soon as the ref attaches |
-| `onStateChange` | `(state: ElementState) => void` | — | State-change callback |
-| `logLevel` | `ElementLogLevel` | — | Per-element event-logging level |
-| `relationships` | `Array<{ targetId, type, bidirectional?, metadata? }>` | — | Relationships declared from this element |
-| `variant` | `string` | — | Semantic role: `"primary"`, `"destructive"`, `"ghost"`, … |
-| `position` | `string` | — | Positional hint: `"top-right"`, `"center"`, … |
-| `color` | `string` | — | Dominant colour as the user sees it: `"red"`, `"#ef4444"`, `"danger"` |
-| `contextPath` | `string` | — | Hierarchical path, e.g. `"settings-modal > theme-section > accent-color"` |
-| `persistWhileMounted` | `boolean` | `false` | Stay registered through visibility changes; see below |
-| `reveals` | `string[]` | — | Element ids or `*`-globs this control unhides |
-| `windowLabel` | `string` | context, then `"main"` | Registry bucket in multi-window hosts |
+| Option                | Type                                                   | Default                  | Meaning                                                                                                                                                              |
+| --------------------- | ------------------------------------------------------ | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                  | `string`                                               | —                        | **Required.** Unique element identifier                                                                                                                              |
+| `type`                | `ElementType`                                          | auto-detected            | Element type (inferred as every discovery path infers it)                                                                                                            |
+| `label`               | `string`                                               | —                        | Human-readable label                                                                                                                                                 |
+| `actions`             | `StandardAction[]`                                     | derived from the element | Override the available actions. The default is the type's verbs plus what the element itself takes ([Actions](../concepts/actions.md)), even when `type` is declared |
+| `customActions`       | `Record<string, CustomAction>`                         | —                        | Named handlers callable via `trigger`                                                                                                                                |
+| `autoRegister`        | `boolean`                                              | `true`                   | Register as soon as the ref attaches                                                                                                                                 |
+| `onStateChange`       | `(state: ElementState) => void`                        | —                        | State-change callback                                                                                                                                                |
+| `logLevel`            | `ElementLogLevel`                                      | —                        | Per-element event-logging level                                                                                                                                      |
+| `relationships`       | `Array<{ targetId, type, bidirectional?, metadata? }>` | —                        | Relationships declared from this element                                                                                                                             |
+| `variant`             | `string`                                               | —                        | Semantic role: `"primary"`, `"destructive"`, `"ghost"`, …                                                                                                            |
+| `position`            | `string`                                               | —                        | Positional hint: `"top-right"`, `"center"`, …                                                                                                                        |
+| `color`               | `string`                                               | —                        | Dominant colour as the user sees it: `"red"`, `"#ef4444"`, `"danger"`                                                                                                |
+| `contextPath`         | `string`                                               | —                        | Hierarchical path, e.g. `"settings-modal > theme-section > accent-color"`                                                                                            |
+| `persistWhileMounted` | `boolean`                                              | `false`                  | Stay registered through visibility changes; see below                                                                                                                |
+| `reveals`             | `string[]`                                             | —                        | Element ids or `*`-globs this control unhides                                                                                                                        |
+| `windowLabel`         | `string`                                               | context, then `"main"`   | Registry bucket in multi-window hosts                                                                                                                                |
 
 `variant`, `position`, `color` and `contextPath` are open-ended strings passed
 through to snapshots verbatim — they exist to let a natural-language query
@@ -193,7 +193,7 @@ or `windowLabel` re-registers the element, moving its entry to the new key.
 ## useUIElementRef
 
 ```typescript
-function useUIElementRef(id: string): React.RefCallback<HTMLElement>
+function useUIElementRef(id: string): React.RefCallback<HTMLElement>;
 ```
 
 :::danger Deprecated no-op
@@ -268,17 +268,17 @@ not.
 
 `UseUIComponentOptions`:
 
-| Option | Type | Default | Meaning |
-|--------|------|---------|---------|
-| `id` | `string` | — | **Required.** Unique component identifier |
-| `name` | `string` | — | **Required.** Display name |
-| `description` | `string` | — | Description |
-| `actions` | `ComponentActionDef[]` | `[]` | Actions exposed on this component |
-| `elementIds` | `string[]` | `[]` | Child element ids owned by this component |
-| `autoRegister` | `boolean` | `true` | Register on mount |
-| `state` | `() => Record<string, unknown>` | — | Getter for the component's current state |
-| `computed` | `Record<string, ComputedPropertyDef \| (() => unknown)>` | — | Computed properties |
-| `scope` | `'global' \| 'route'` | `'route'` | Discoverability hint |
+| Option         | Type                                                     | Default   | Meaning                                   |
+| -------------- | -------------------------------------------------------- | --------- | ----------------------------------------- |
+| `id`           | `string`                                                 | —         | **Required.** Unique component identifier |
+| `name`         | `string`                                                 | —         | **Required.** Display name                |
+| `description`  | `string`                                                 | —         | Description                               |
+| `actions`      | `ComponentActionDef[]`                                   | `[]`      | Actions exposed on this component         |
+| `elementIds`   | `string[]`                                               | `[]`      | Child element ids owned by this component |
+| `autoRegister` | `boolean`                                                | `true`    | Register on mount                         |
+| `state`        | `() => Record<string, unknown>`                          | —         | Getter for the component's current state  |
+| `computed`     | `Record<string, ComputedPropertyDef \| (() => unknown)>` | —         | Computed properties                       |
+| `scope`        | `'global' \| 'route'`                                    | `'route'` | Discoverability hint                      |
 
 `actions` is **optional** in the type — a component that only exposes `state` or
 `computed` is valid.
@@ -288,12 +288,9 @@ interface ComponentActionDef<TParams = unknown, TResult = unknown> {
   id: string;
   label?: string;
   description?: string;
-  paramSchema?: Record<string, unknown>;   // surfaced verbatim AND validated
+  paramSchema?: Record<string, unknown>; // surfaced verbatim AND validated
   effect?: 'read' | 'write' | 'destructive';
-  handler: (
-    params?: TParams,
-    options?: { signal?: AbortSignal }
-  ) => TResult | Promise<TResult>;
+  handler: (params?: TParams, options?: { signal?: AbortSignal }) => TResult | Promise<TResult>;
 }
 ```
 
@@ -313,7 +310,7 @@ prose and constrains nothing, and map form can never mark a param required.
 deploy. Nothing can infer it for you: the static verb map behind this field
 never produces `'destructive'`, because destructiveness depends on what the
 control does, not what it is called, and a walk skips only what is declared. An
-absent `effect` means *unclassified*, not *safe*.
+absent `effect` means _unclassified_, not _safe_.
 
 `options.signal` is aborted when the caller cancels or the request's
 `timeoutMs` elapses. Observing it is optional — the executor races your promise
@@ -369,7 +366,7 @@ render and does not itself trigger one.
 function useUIComponentAction<TParams, TResult>(
   handler: (params?: TParams) => TResult | Promise<TResult>,
   deps: React.DependencyList
-): (params?: TParams) => TResult | Promise<TResult>
+): (params?: TParams) => TResult | Promise<TResult>;
 ```
 
 A typed `useCallback` for component action handlers — it memoizes `handler`
@@ -382,7 +379,11 @@ const login = useUIComponentAction(
   [authenticate]
 );
 
-useUIComponent({ id: 'login-form', name: 'Login Form', actions: [{ id: 'login', handler: login }] });
+useUIComponent({
+  id: 'login-form',
+  name: 'Login Form',
+  actions: [{ id: 'login', handler: login }],
+});
 ```
 
 It is rarely necessary: `useUIComponent` already delegates through a stable
@@ -393,7 +394,7 @@ somewhere else too.
 ## useOwningComponent
 
 ```typescript
-function useOwningComponent(): string | null
+function useOwningComponent(): string | null;
 ```
 
 Reads the `componentId` of the nearest enclosing `UIBridgeComponentScope`, or

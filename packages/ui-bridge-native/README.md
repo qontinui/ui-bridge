@@ -158,7 +158,11 @@ Report the current screen as a route **template** (never the concrete path), emi
 
 ```tsx
 import { useSegments } from 'expo-router';
-import { expoRouterPattern, isExpoRouterUnmatched, useRouteAwareness } from '@qontinui/ui-bridge-native';
+import {
+  expoRouterPattern,
+  isExpoRouterUnmatched,
+  useRouteAwareness,
+} from '@qontinui/ui-bridge-native';
 
 const segments = useSegments();
 useRouteAwareness(
@@ -219,10 +223,10 @@ The bridge serves **56** method+path pairs. Two of them tell you about the other
 the surface grew, and a partial table read as a complete one is worse than no
 table:
 
-| Method | Path                  | Description                                                  |
-| ------ | --------------------- | ------------------------------------------------------------ |
-| GET    | `/ui-bridge/_routes`  | Every mounted route as `{method, path}` — ask the live server |
-| GET    | `/ui-bridge/_help`    | The same list plus per-handler descriptions, actions and tips |
+| Method | Path                 | Description                                                   |
+| ------ | -------------------- | ------------------------------------------------------------- |
+| GET    | `/ui-bridge/_routes` | Every mounted route as `{method, path}` — ask the live server |
+| GET    | `/ui-bridge/_help`   | The same list plus per-handler descriptions, actions and tips |
 
 ```bash
 # Over `adb forward`, which arrives as loopback. On a device IP this route answers
@@ -250,20 +254,20 @@ header naming the verbs it accepts (and the same verbs in the JSON envelope's
 
 The server admits callers as follows:
 
-| Caller | Answer |
-| --- | --- |
-| Loopback peer with a loopback `Host` and nothing a web page sends (`Origin`, `Referer`, a `Sec-Fetch-Site` other than `none`) | Admitted, no token |
-| Any other caller with a valid `X-UI-Bridge-Auth` signature | Admitted |
-| Anyone, `GET /ui-bridge/health` (trimmed) | Answered |
-| Anyone but a web page, `POST /ui-bridge/pair` | Answered |
-| A web page, `POST /ui-bridge/pair` | `403 PAIRING_WEB_CALLER_REFUSED` |
-| Signature outside the 300 s window, or older than this server will accept | `401 PAIRING_TIMESTAMP_REFUSED` with `data.serverTime`: re-sync and sign again, no new pairing needed |
-| Signed body over `SIGNED_BODY_MAX_CHARS` (262,144 characters) | `413 PAIRING_BODY_TOO_LARGE` |
-| Signed method over 16 characters, or target over `SIGNED_TARGET_MAX_CHARS` (8,192) | `414 PAIRING_TARGET_TOO_LONG` |
-| A peer whose last signature failed, until its backoff ends (1 s, doubling to 30 s per further failure; per source address, so a peer sharing a NAT with a paired phone shares its backoff; cleared by a valid signature, a successful pair from that address, or a cable pair; not applied when the adapter passes no `remoteAddress`) | `429 PAIRING_BACKOFF`, with `Retry-After` in seconds |
-| Everyone else | `401 PAIRING_REQUIRED` |
-| Not loopback, on a server with no `pairingStore` | `401 PAIRING_UNCONFIGURED` |
-| WebSocket upgrade from anywhere but a trusted loopback caller, signed or not | `403 PAIRING_WS_LOOPBACK_ONLY` |
+| Caller                                                                                                                                                                                                                                                                                                                                 | Answer                                                                                                |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Loopback peer with a loopback `Host` and nothing a web page sends (`Origin`, `Referer`, a `Sec-Fetch-Site` other than `none`)                                                                                                                                                                                                          | Admitted, no token                                                                                    |
+| Any other caller with a valid `X-UI-Bridge-Auth` signature                                                                                                                                                                                                                                                                             | Admitted                                                                                              |
+| Anyone, `GET /ui-bridge/health` (trimmed)                                                                                                                                                                                                                                                                                              | Answered                                                                                              |
+| Anyone but a web page, `POST /ui-bridge/pair`                                                                                                                                                                                                                                                                                          | Answered                                                                                              |
+| A web page, `POST /ui-bridge/pair`                                                                                                                                                                                                                                                                                                     | `403 PAIRING_WEB_CALLER_REFUSED`                                                                      |
+| Signature outside the 300 s window, or older than this server will accept                                                                                                                                                                                                                                                              | `401 PAIRING_TIMESTAMP_REFUSED` with `data.serverTime`: re-sync and sign again, no new pairing needed |
+| Signed body over `SIGNED_BODY_MAX_CHARS` (262,144 characters)                                                                                                                                                                                                                                                                          | `413 PAIRING_BODY_TOO_LARGE`                                                                          |
+| Signed method over 16 characters, or target over `SIGNED_TARGET_MAX_CHARS` (8,192)                                                                                                                                                                                                                                                     | `414 PAIRING_TARGET_TOO_LONG`                                                                         |
+| A peer whose last signature failed, until its backoff ends (1 s, doubling to 30 s per further failure; per source address, so a peer sharing a NAT with a paired phone shares its backoff; cleared by a valid signature, a successful pair from that address, or a cable pair; not applied when the adapter passes no `remoteAddress`) | `429 PAIRING_BACKOFF`, with `Retry-After` in seconds                                                  |
+| Everyone else                                                                                                                                                                                                                                                                                                                          | `401 PAIRING_REQUIRED`                                                                                |
+| Not loopback, on a server with no `pairingStore`                                                                                                                                                                                                                                                                                       | `401 PAIRING_UNCONFIGURED`                                                                            |
+| WebSocket upgrade from anywhere but a trusted loopback caller, signed or not                                                                                                                                                                                                                                                           | `403 PAIRING_WS_LOOPBACK_ONLY`                                                                        |
 
 `POST /ui-bridge/pair` refuses in its own terms: `401 PAIRING_NOT_ARMED` with no code live, `400 PAIRING_CODE_REQUIRED` with no well-formed code, `401 PAIRING_CODE_INVALID` for a wrong one, and `503 PAIRING_UNAVAILABLE` while the store or the device id is not ready, or, for a cable caller, while the store holds an unusable token (`PAIRING_TOKEN_UNUSABLE_MESSAGE`; a revoke replaces it).
 
@@ -326,7 +330,11 @@ function App() {
 Full TypeScript support included. Import types as needed:
 
 ```tsx
-import type { NativeElementState, NativeElementType, UseUIElementOptions } from '@qontinui/ui-bridge-native';
+import type {
+  NativeElementState,
+  NativeElementType,
+  UseUIElementOptions,
+} from '@qontinui/ui-bridge-native';
 ```
 
 ## License
