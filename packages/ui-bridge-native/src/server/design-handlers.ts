@@ -708,7 +708,16 @@ export function createDesignHandlers(
         return error('Style guide is required in request body', 'INVALID_REQUEST');
       }
 
-      // Stored without validation, as the web transports' loadStyleGuide does.
+      // The shape the audit route's guide check (the web transports'
+      // `guideOf`) requires: an object with a `rules` array, refused with
+      // its message rather than stored and failing later in the validator.
+      if (!(isObject(body.guide) && Array.isArray(body.guide.rules))) {
+        return error(
+          '/design/style-guide/load: guide must be a style guide object with a rules array',
+          'INVALID_REQUEST'
+        );
+      }
+
       loadedStyleGuide = body.guide as NativeStyleGuideConfig;
       return success({ loaded: true });
     },
