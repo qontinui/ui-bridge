@@ -45,6 +45,7 @@ import {
   describeResolution,
   describeSiblingProvenance,
   ourPinnedSha,
+  parseRunnerBaselines,
 } from './check-runner-contract.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -293,6 +294,62 @@ test('the tripwire fires if the guard ever misses a flagged invocation', () => {
 // format and format:check all scope to packages/*/src/**, so nothing else
 // looks at these files at all.
 //
+// ── The runner's accepted-divergence lists ──────────────────────────────────
+//
+// qontinui-runner 786329ddb hoisted runner_only_baseline out of the test into
+// `fn runner_only_baseline() -> HashSet<..> { [ .. ].into_iter().collect() }`.
+// The checker read only the `let NAME: .. = [` form, so every runner past that
+// commit failed extraction and the pin could not move past it. Both shapes are
+// pinned here, plus the refusal of a fn body the checker does not understand.
+
+console.log('runner baselines');
+const PREFIXES = 'let runner_only_prefixes: &[&str] = &["/ui-bridge/sdk/"];';
+const SDK_ONLY_LET = 'let sdk_only_baseline: HashSet<(&str, &str)> = [("GET", "/ui-bridge/a")].into_iter().collect();';
+test('let form still reads', () => {
+  const src = `let runner_only_baseline: HashSet<(&str, &str)> = [("POST", "/ui-bridge/r"),].into_iter().collect();\n${SDK_ONLY_LET}\n${PREFIXES}`;
+  const b = parseRunnerBaselines(src, 'mod.rs');
+  assert.equal(b.runnerOnly.size, 1);
+  assert.equal(b.sdkOnly.size, 1);
+  assert.deepEqual(b.prefixes, ['/ui-bridge/sdk/']);
+});
+test('fn form (runner 786329ddb) reads, rustfmt-wrapped tuples included', () => {
+  const src = `fn runner_only_baseline() -> HashSet<(&'static str, &'static str)> {
+        [
+            ("POST", "/ui-bridge/r1"),
+            (
+                "GET",
+                "/ui-bridge/r2/{id}",
+            ),
+        ]
+        .into_iter()
+        .collect()
+    }
+    fn t() { let runner_only_baseline = runner_only_baseline(); ${SDK_ONLY_LET} ${PREFIXES} }`;
+  const b = parseRunnerBaselines(src, 'mod.rs');
+  assert.equal(b.runnerOnly.size, 2);
+  assert.equal(b.sdkOnly.size, 1);
+});
+test('a fn body of any other shape -> REFUSED, never harvested', () =>
+  assert.throws(
+    () =>
+      parseRunnerBaselines(
+        `fn runner_only_baseline() -> HashSet<(&str, &str)> { let mut s = HashSet::new(); s.insert(("GET", "/ui-bridge/x")); s }\n${SDK_ONLY_LET}\n${PREFIXES}`,
+        'mod.rs',
+      ),
+    /not the shape this checker reads/,
+  ));
+test('a fn array with extra chained calls -> REFUSED', () =>
+  assert.throws(
+    () =>
+      parseRunnerBaselines(
+        `fn runner_only_baseline() -> HashSet<(&str, &str)> { [("GET", "/ui-bridge/x")].into_iter().chain(extra()).collect() }\n${SDK_ONLY_LET}\n${PREFIXES}`,
+        'mod.rs',
+      ),
+    /not the shape this checker reads/,
+  ));
+test('absent list -> REFUSED', () =>
+  assert.throws(() => parseRunnerBaselines(`${SDK_ONLY_LET}\n${PREFIXES}`, 'mod.rs'), /runner_only_baseline not found/));
+
 // The specific defect: this very file was committed once with a UTF-8 BOM and
 // 374 mojibake sequences, from a PowerShell `Set-Content` round-trip through
 // cp1252. Nothing caught it. A BOM before `#!/usr/bin/env node` also silently

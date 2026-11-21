@@ -708,18 +708,41 @@ function parseRunnerManifest(runnerDir) {
  * Lift the runner's OWN accepted-divergence lists. They belong to the consumer;
  * re-declaring them here would fork the moment the runner edits its own.
  */
-function parseRunnerBaselines(modSrc, modPath) {
+export function parseRunnerBaselines(modSrc, modPath) {
+  const tuples = (body) =>
+    new Set(
+      [...body.matchAll(/\(\s*"([A-Z]+)"\s*,\s*"([^"]*)"\s*,?\s*\)/g)].map((x) => key(x[1], x[2])),
+    );
+
+  // Two shapes, both read exactly:
+  //   let NAME: HashSet<..> = [ ... ]...;              (inline in the test)
+  //   fn NAME() -> HashSet<..> { [ ... ].into_iter().collect() }
+  // The fn form arrived with qontinui-runner 786329ddb, which hoisted
+  // runner_only_baseline so a second test could assert every entry is served.
+  // Any other fn body is refused: harvesting tuples from a body we do not
+  // understand could lift routes that are not baseline entries at all.
   const list = (name) => {
     const m = new RegExp(String.raw`let\s+` + name + String.raw`\s*:[^=]*=\s*\[`).exec(modSrc);
-    if (!m) {
+    if (m) return tuples(balancedBody(modSrc, m.index + m[0].length, '[', ']', name));
+
+    const fnBody = rustFnBody(modSrc, name, 'mod.rs');
+    if (fnBody !== null) {
+      const open = /^\s*\[/.exec(fnBody);
+      if (open) {
+        const arr = balancedBody(fnBody, open[0].length, '[', ']', name);
+        const rest = fnBody.slice(open[0].length + arr.length + 1);
+        if (/^\s*\.\s*into_iter\s*\(\s*\)\s*\.\s*collect\s*\(\s*\)\s*$/.test(rest)) return tuples(arr);
+      }
       throw new ExtractionError(
-        `${name} not found in ${modPath} — the runner's accepted-divergence list moved or was ` +
-          'renamed. Refusing to diff without it: every baselined route would surface as drift.',
+        `fn ${name}() in ${modPath} is not the shape this checker reads ` +
+          '(`[ ... ].into_iter().collect()`). Teach this script the new shape rather than ' +
+          'harvesting tuples from a body it does not understand.',
       );
     }
-    const body = balancedBody(modSrc, m.index + m[0].length, '[', ']', name);
-    return new Set(
-      [...body.matchAll(/\(\s*"([A-Z]+)"\s*,\s*"([^"]*)"\s*,?\s*\)/g)].map((x) => key(x[1], x[2])),
+
+    throw new ExtractionError(
+      `${name} not found in ${modPath} — the runner's accepted-divergence list moved or was ` +
+        'renamed. Refusing to diff without it: every baselined route would surface as drift.',
     );
   };
 
