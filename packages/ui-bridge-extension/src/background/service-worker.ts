@@ -1,5 +1,6 @@
 import type { ExtensionMessage, ContentMessage } from '../shared/messages';
 import { SHORTCUTS, STORAGE_KEYS } from '../shared/constants';
+import { captureSenderTab } from './capture-visible-tab';
 
 /** Track which tabs have content scripts injected */
 const activeTabs = new Set<number>();
@@ -65,9 +66,15 @@ chrome.runtime.onMessage.addListener(
 /** Route and handle an extension message */
 async function handleMessage(
   message: ExtensionMessage,
-  _sender: chrome.runtime.MessageSender
+  sender: chrome.runtime.MessageSender
 ): Promise<unknown> {
   switch (message.type) {
+    case 'CAPTURE_VISIBLE_TAB': {
+      // From the live relay's getScreenshot: capture the SENDER's tab, and only
+      // when it is the active tab of its window (capture-visible-tab.ts).
+      return captureSenderTab(sender);
+    }
+
     case 'OPEN_SIDE_PANEL': {
       const tabId = await getActiveTabId();
       if (tabId !== undefined) {
