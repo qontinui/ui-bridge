@@ -331,11 +331,7 @@ export function createDesignHandlers(
     samples: Array<{ elementId: string; styles: Record<string, string> }>;
     capture: Record<string, unknown>;
   } {
-    let elements = registry.getAllElements();
-    if (body.elementIds) {
-      const idSet = new Set(body.elementIds);
-      elements = elements.filter((e) => idSet.has(e.id));
-    }
+    const elements = selectElements(body.elementIds);
     const available = elements.length;
     const notes = [
       "React Native: styles are each element's flattened StyleSheet; there are no CSS custom properties and no cascade",
