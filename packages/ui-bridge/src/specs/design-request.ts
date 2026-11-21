@@ -639,6 +639,9 @@ export function designAuditOf(
   const includePassed = booleanOf(body, 'includePassed', route) ?? false;
   const maxResults = positiveIntegerOf(body, 'maxResults', route) ?? DEFAULT_AUDIT_MAX_RESULTS;
   const requestedRoot = body.rootFontSizePx;
+  if (isGiven(requestedRoot) && !isPositiveNumber(requestedRoot)) {
+    throw new DesignRequestError(`${route}: rootFontSizePx must be a finite number greater than 0`);
+  }
   const { kept, report } = bounded(selectElements(elements, elementIds), limit);
   const bounds: DesignAuditBounds = { ...report, checkedElements: kept.length };
   if (guide) {
@@ -647,12 +650,9 @@ export function designAuditOf(
       summary,
       ...audit
     } = runStyleAudit(collectDesignData(kept, undefined, collectOptionsFor(guide)), guide, {
-      // `rem` resolves against the page's measured root font size (or the
-      // caller's), the same figure inference and drift use.
-      rootFontSizePx:
-        typeof requestedRoot === 'number' && Number.isFinite(requestedRoot) && requestedRoot > 0
-          ? requestedRoot
-          : measureRootFontSizePx(),
+      // `rem` resolves against the caller's root font size, else the page's
+      // measured one — the same figure inference and drift use.
+      rootFontSizePx: isGiven(requestedRoot) ? (requestedRoot as number) : measureRootFontSizePx(),
     });
     const listable = includePassed ? audit.results : audit.results.filter((r) => !r.passed);
     return {

@@ -49,7 +49,7 @@ let qualityEvaluator: {
 
 /**
  * The web SDK's pure style-inference functions (`@qontinui/ui-bridge/specs`,
- * releases after 0.47.0). The peer range admits older versions that load but lack them, so
+ * 0.56.0 or later). The peer range admits older versions that load but lack them, so
  * availability is decided by the functions' presence, not by the `require`.
  */
 export interface StyleInferenceModule {
@@ -251,7 +251,7 @@ export function createDesignHandlers(
 
   function inferenceUnavailable<T>(): APIResponse<T> {
     return error(
-      'Install a @qontinui/ui-bridge release later than 0.47.0 for style inference support.',
+      'Install a @qontinui/ui-bridge release containing style inference (0.56.0 or later).',
       'INFERENCE_NOT_AVAILABLE'
     );
   }
@@ -360,6 +360,20 @@ export function createDesignHandlers(
           }
         | undefined;
 
+      // Refused, not ignored: the web transports' `designAuditOf` validates
+      // it the same way, before the guide is consulted.
+      const root = body?.rootFontSizePx;
+      if (
+        root !== undefined &&
+        root !== null &&
+        !(typeof root === 'number' && Number.isFinite(root) && root > 0)
+      ) {
+        return error(
+          '/design/audit: rootFontSizePx must be a finite number greater than 0',
+          'INVALID_REQUEST'
+        );
+      }
+
       const guide = body?.guide ?? loadedStyleGuide;
 
       if (!guide) {
@@ -388,10 +402,9 @@ export function createDesignHandlers(
 
       try {
         // React Native has no root font size; a caller auditing rem-valued
-        // tokens says which one, else `rem` resolves at 16px (as inference does).
-        const root = body?.rootFontSizePx;
-        const rootFontSizePx =
-          typeof root === 'number' && Number.isFinite(root) && root > 0 ? root : undefined;
+        // tokens says which one (validated above), else `rem` resolves at 16px
+        // (as inference does).
+        const rootFontSizePx = typeof root === 'number' ? root : undefined;
         const report = validator.runStyleAudit(
           auditElements,
           guide,

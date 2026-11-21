@@ -26,10 +26,12 @@ import { DefaultActionExecutor } from '../control/action-executor';
 import type { StyleGuideConfig } from '../specs/style-types';
 import { scrubStyleUrls } from '../ai/design-inspector';
 import { setUnsubstitutedVarIsDerived } from '../ai/design-tokens';
-import type {
-  DesignAuditResponse,
-  DesignSnapshotResponse,
-  ResponsiveSnapshotsResponse,
+import {
+  designAuditOf,
+  DesignRequestError,
+  type DesignAuditResponse,
+  type DesignSnapshotResponse,
+  type ResponsiveSnapshotsResponse,
 } from '../specs/design-request';
 
 // jsdom computes no var(): these tests read attribution without stating
@@ -742,6 +744,39 @@ describe('design-inspection routes · relay and server answer the same model', (
       expect(relay.success).toBe(true);
       expect(stable(relay.data)).toEqual(stable(server.data));
     }
+  });
+
+  it('runDesignAudit refuses a rootFontSizePx that is not a positive finite number with UB-VALIDATION-ERROR on both transports', async () => {
+    for (const rootFontSizePx of [
+      0,
+      -16,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+      '16',
+    ]) {
+      // Refused in the shared model itself, before any guide is consulted...
+      expect(
+        () => designAuditOf([], { guide: GUIDE, rootFontSizePx }, undefined),
+        String(rootFontSizePx)
+      ).toThrow(DesignRequestError);
+      // ...and over each transport, with a guide and without one.
+      for (const request of [{ guide: GUIDE, rootFontSizePx }, { rootFontSizePx }]) {
+        const server = await serverHandlers().runDesignAudit(request as never);
+        const relay = await relayHandlers().runDesignAudit(request as never);
+        expect(server.success, String(rootFontSizePx)).toBe(false);
+        expect(server.code).toBe('UB-VALIDATION-ERROR');
+        expect(server.error).toMatch(/rootFontSizePx must be a finite number greater than 0/);
+        expect({ success: relay.success, error: relay.error, code: relay.code }).toEqual({
+          success: server.success,
+          error: server.error,
+          code: server.code,
+        });
+      }
+    }
+    // A positive value is accepted.
+    const ok = await serverHandlers().runDesignAudit({ guide: GUIDE, rootFontSizePx: 20 });
+    expect(ok.success).toBe(true);
   });
 });
 
