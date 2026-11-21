@@ -27,6 +27,22 @@ export function createTransport(config: TransportConfig): WrapperTransport {
     case 'injected':
       return new InjectedTransport(config);
     case 'live': {
+      // `options.screenshotPage` is read by LiveSessionTransport itself (it
+      // registers `getScreenshot` and advertises the `screenshot` capability),
+      // so a Node process that owns a Playwright page makes its live session
+      // capturable by the runner's vision routes like this:
+      //
+      //   import WebSocket from 'ws';
+      //   const page = await browser.newPage();
+      //   const transport = createTransport({
+      //     kind: 'live',
+      //     runnerUrl: 'ws://127.0.0.1:9876/ui-bridge/ws',
+      //     appId: 'my-app',
+      //     options: { webSocketCtor: WebSocket, screenshotPage: page },
+      //   });
+      //   await transport.ready();
+      //   // POST /ui-bridge/vision/capture {target: 'my-app'} now frames `page`.
+      //
       // Allow Node wrappers to pass `ws` via `options.webSocketCtor` without
       // constructing `LiveSessionTransport` directly. In the browser, leave
       // undefined so the transport picks up `globalThis.WebSocket`.

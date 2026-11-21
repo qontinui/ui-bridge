@@ -51,6 +51,8 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { InjectCliArgError } from './inject-cli-errors.js';
 import {
   ensurePrivateDir,
+  NO_COMPOSITOR_FRAME,
+  NO_COMPOSITOR_FRAME_RETRY_MS,
   pngDimensions,
   readPageMetrics,
   writePrivateFile,
@@ -66,15 +68,12 @@ export const MAX_TIMELINE_INTERVAL_MS = 10_000;
 export const DEFAULT_TIMELINE_READY_TIMEOUT_MS = 30_000;
 
 /**
- * Chromium's refusal to screenshot a document that has no compositor frame
- * yet — CDP `Page.captureScreenshot` answering `Unable to capture screenshot`,
- * measured on frame 1 right after a reload commit. The ONLY screenshot error
- * {@link takeFrameByDeadline} retries; every other one is final at once.
+ * Chromium's no-compositor-frame refusal and its retry wait now live beside
+ * the other frame helpers, so the `getScreenshot` handler retries the same
+ * one error. The ONLY screenshot error {@link takeFrameByDeadline} retries;
+ * every other one is final at once.
  */
-export const NO_COMPOSITOR_FRAME = /Unable to capture screenshot/;
-
-/** The wait between attempts at a frame Chromium refused: about one 60 Hz frame. */
-export const NO_COMPOSITOR_FRAME_RETRY_MS = 16;
+export { NO_COMPOSITOR_FRAME, NO_COMPOSITOR_FRAME_RETRY_MS };
 
 /**
  * The most sleeps one frame's wait for its due time may take: one for the

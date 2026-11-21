@@ -68,6 +68,18 @@ export {
   type LiveTransportOptions,
 } from './transports/live.js';
 
+export {
+  SCREENSHOT_CAPABILITY,
+  SCREENSHOT_ACTION,
+  SCREENSHOT_TIMEOUT_MS,
+  registerScreenshotCapture,
+  captureScreenshotReply,
+  type FramePage,
+  type ScreenshotReply,
+  type ScreenshotRegistrar,
+  type ScreenshotCaptureOptions,
+} from './frame-capture.js';
+
 export { withRetry, type WithRetryOptions } from './helpers/retry.js';
 export { withAuthRefresh, type WithAuthRefreshOptions } from './helpers/auth.js';
 export { paramSchemaOf } from './helpers/schema.js';
