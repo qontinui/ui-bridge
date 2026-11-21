@@ -434,7 +434,7 @@ interface ForcedPseudoGlobal {
  * The shape of the shared state object. Bump it whenever
  * {@link ForcedPseudoGlobal} or {@link Hold} changes shape.
  */
-export const FORCED_PSEUDO_STATE_VERSION = 4;
+export const FORCED_PSEUDO_STATE_VERSION = 5;
 
 /**
  * One pointer per PAGE. tsup emits each entry point (`index`, `control`,

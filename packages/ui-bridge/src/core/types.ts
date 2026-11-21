@@ -3281,10 +3281,14 @@ export type InteractionStateName =
 
 /**
  * Whether the browser's own `:focus-visible` matched an element while the
- * inspector held it focused. `'unknown'` when the match could not be read (an
- * engine without the selector makes `matches` throw) — never `false`.
+ * inspector held it focused. `'not_focused'` when `el.focus()` did not land
+ * (a non-focusable, disabled or inert element, or a focus handler that moved
+ * focus elsewhere): there is no focus appearance to classify. `'unknown'` when
+ * the match could not be read (an engine without the selector makes `matches`
+ * throw). Neither is ever reported as `false`, which means the
+ * pointer-focus appearance.
  */
-export type FocusVisibleMatch = boolean | 'unknown';
+export type FocusVisibleMatch = boolean | 'not_focused' | 'unknown';
 
 /**
  * Style diff entry: a property that changed from default state
@@ -3309,8 +3313,17 @@ export interface StateStyles {
    * means the `focus` entry's styles are the `:focus`-without-`:focus-visible`
    * appearance (Chromium answers `false` to a programmatic focus that follows
    * a pointer focus); the `focus-visible` entry forces the other appearance.
+   * `'not_focused'`: the focus never landed, so the entry's styles are the
+   * unfocused ones.
    */
   focusVisible?: FocusVisibleMatch;
+  /**
+   * Present on the `focus-visible` entry only: whether `el.focus()` landed.
+   * `false` means nothing was forced — the element cannot hold focus, so it
+   * can never draw a focus ring — and the entry's styles are the unfocused
+   * ones.
+   */
+  focused?: boolean;
 }
 
 /**

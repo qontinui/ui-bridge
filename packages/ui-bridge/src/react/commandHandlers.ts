@@ -5371,7 +5371,10 @@ export async function executeCommand(
     }
 
     case 'getElementStateStyles': {
-      const { id, states = ['hover', 'focus', 'focus-visible', 'active'] } = payload as {
+      // The relay default is the HTTP default minus `disabled` (which writes
+      // the element's `disabled` property), derived so a new state reaches
+      // both doors.
+      const { id, states = INTERACTION_STATES.filter((s) => s !== 'disabled') } = payload as {
         id: string;
         states?: string[];
       };

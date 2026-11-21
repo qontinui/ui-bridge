@@ -330,7 +330,8 @@ async function captureEachState(
       // Apply the state. `hover`/`active` force the real CSS pseudo-class and
       // wait for the transitions it started, so the read below is the settled
       // state appearance rather than a frame of a fade.
-      restore = await applyInteractionState(el, stateName, borrowedFrom);
+      const applied = await applyInteractionState(el, stateName, borrowedFrom);
+      restore = applied.restore;
       await waitFrame();
 
       // Read styles in the new state
@@ -344,8 +345,12 @@ async function captureEachState(
       };
       // Inside the hold: whether the browser's own `:focus-visible` matched
       // the focus just applied, so a reader knows which focus appearance
-      // the `focus` entry's styles are.
+      // the `focus` entry's styles are — or `'not_focused'` when the focus
+      // never landed, so there is no focus appearance at all.
       if (stateName === 'focus') entry.focusVisible = readFocusVisible(el);
+      // The focus-visible entry says whether the focus landed: when it did
+      // not, nothing was forced and its styles are the unfocused ones.
+      if (stateName === 'focus-visible') entry.focused = applied.focused ?? false;
       results.push(entry);
     } finally {
       // Always restore to default state
@@ -879,6 +884,13 @@ function computeStyleDiff(
   return diffs;
 }
 
+/** What {@link applyInteractionState} did: how to undo it, and (focus states) whether the focus landed. */
+interface AppliedInteractionState {
+  restore: () => Promise<void>;
+  /** Set by `focus`/`focus-visible`: whether `el` holds focus after `el.focus()`. */
+  focused?: boolean;
+}
+
 /**
  * Apply an interaction state to an element and return the function that
  * restores it.
@@ -892,34 +904,44 @@ function computeStyleDiff(
  * input-modality heuristic (Chromium: `false` when the last focus came from a
  * pointer), so `focus-visible` focuses the element AND forces
  * `:focus-visible` through the same rewrite, giving the keyboard-focus
- * appearance whatever input preceded the read. `disabled` restores the
- * element's own prior value.
+ * appearance whatever input preceded the read. When the focus does not land
+ * (a non-focusable, disabled or inert element, or a focus handler that moves
+ * focus elsewhere) nothing is forced: the element can never draw that ring.
+ * `disabled` restores the element's own prior value.
  */
 async function applyInteractionState(
   el: HTMLElement,
   state: InteractionStateName,
   borrowedFrom?: ForcedPseudoHoldSnapshot
-): Promise<() => Promise<void>> {
+): Promise<AppliedInteractionState> {
   switch (state) {
     case 'hover':
     case 'active': {
       const { holdId } = await forcePseudoState(el, state, { borrowedFrom });
-      return async () => {
-        await releaseForcedPseudoStateIfOwner(holdId, 'explicit');
+      return {
+        restore: async () => {
+          await releaseForcedPseudoStateIfOwner(holdId, 'explicit');
+        },
       };
     }
-    case 'focus':
-      return applyFocus(el);
+    case 'focus': {
+      const restore = applyFocus(el);
+      return { restore, focused: holdsFocus(el) };
+    }
     case 'focus-visible': {
       const restoreFocus = applyFocus(el);
+      if (!holdsFocus(el)) return { restore: restoreFocus, focused: false };
       try {
         const { holdId } = await forcePseudoState(el, 'focus-visible', { borrowedFrom });
-        return async () => {
-          try {
-            await releaseForcedPseudoStateIfOwner(holdId, 'explicit');
-          } finally {
-            await restoreFocus();
-          }
+        return {
+          focused: true,
+          restore: async () => {
+            try {
+              await releaseForcedPseudoStateIfOwner(holdId, 'explicit');
+            } finally {
+              await restoreFocus();
+            }
+          },
         };
       } catch (err) {
         await restoreFocus();
@@ -930,12 +952,14 @@ async function applyInteractionState(
       const control = el as HTMLButtonElement | HTMLInputElement;
       const wasDisabled = control.disabled;
       control.disabled = true;
-      return async () => {
-        control.disabled = wasDisabled;
+      return {
+        restore: async () => {
+          control.disabled = wasDisabled;
+        },
       };
     }
     default:
-      return async () => undefined;
+      return { restore: async () => undefined };
   }
 }
 
@@ -947,16 +971,30 @@ function applyFocus(el: HTMLElement): () => Promise<void> {
     if (previous instanceof HTMLElement && previous !== el && previous !== document.body) {
       previous.focus();
     }
-    if (document.activeElement === el) el.blur();
+    if (holdsFocus(el)) el.blur();
   };
 }
 
 /**
+ * Whether `el` is the focused element of its own tree: the document's
+ * `activeElement`, or its shadow root's when it lives in one (where the
+ * document's `activeElement` is the shadow host).
+ */
+function holdsFocus(el: Element): boolean {
+  const root = el.getRootNode?.() as Document | ShadowRoot | undefined;
+  const active = root && 'activeElement' in root ? root.activeElement : document.activeElement;
+  return active === el;
+}
+
+/**
  * Whether the browser's own `:focus-visible` matches `el` right now.
+ * `'not_focused'` when `el` does not hold focus (it has no focus appearance
+ * to classify — never `false`, which means the pointer-focus appearance).
  * `'unknown'` when `matches` throws (an engine without the selector): a match
  * that could not be read is never reported as `false`.
  */
 export function readFocusVisible(el: Element): FocusVisibleMatch {
+  if (!holdsFocus(el)) return 'not_focused';
   try {
     return el.matches(':focus-visible');
   } catch {

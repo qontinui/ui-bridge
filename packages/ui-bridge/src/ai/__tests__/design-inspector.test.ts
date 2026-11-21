@@ -550,13 +550,17 @@ describe('captureStateVariations', () => {
     ]);
   });
 
-  it('reports focusVisible on the focus entry only', async () => {
+  it('reports focusVisible on the focus entry and focused on the focus-visible entry only', async () => {
     const results = await captureStateVariations(el, ['hover', 'focus', 'focus-visible']);
     const byState = Object.fromEntries(results.map((r) => [r.state, r]));
+    // A <button> takes focus, so the read is a real match (or unreadable).
     expect([true, false, 'unknown']).toContain(byState.focus.focusVisible);
+    expect(byState['focus-visible'].focused).toBe(true);
     expect(byState.default.focusVisible).toBeUndefined();
     expect(byState.hover.focusVisible).toBeUndefined();
     expect(byState['focus-visible'].focusVisible).toBeUndefined();
+    expect(byState.default.focused).toBeUndefined();
+    expect(byState.focus.focused).toBeUndefined();
   });
 
   it("reports focusVisible 'unknown', never false, when the match cannot be read", async () => {
@@ -569,12 +573,47 @@ describe('captureStateVariations', () => {
       return native.call(this, selector);
     });
     try {
+      el.focus();
       expect(readFocusVisible(el)).toBe('unknown');
+      el.blur();
       const results = await captureStateVariations(el, ['focus']);
       expect(results.find((r) => r.state === 'focus')?.focusVisible).toBe('unknown');
     } finally {
       spy.mockRestore();
     }
+  });
+
+  it("an element the focus does not land on reports 'not_focused' and focused=false, and nothing is forced", async () => {
+    const div = document.createElement('div');
+    div.textContent = 'not focusable';
+    document.body.appendChild(div);
+    // Records every attribute write on the div, so a forced hold that was
+    // taken and released again still shows up.
+    const written: Array<string | null> = [];
+    const observer = new MutationObserver((records) => {
+      for (const r of records) written.push(r.attributeName);
+    });
+    observer.observe(div, { attributes: true });
+    try {
+      expect(readFocusVisible(div)).toBe('not_focused');
+      const results = await captureStateVariations(div, ['focus', 'focus-visible']);
+      const byState = Object.fromEntries(results.map((r) => [r.state, r]));
+      expect(byState.focus.focusVisible).toBe('not_focused');
+      expect(byState['focus-visible'].focused).toBe(false);
+      for (const r of observer.takeRecords()) written.push(r.attributeName);
+      expect(written).not.toContain('data-ui-bridge-pseudo-focus-visible');
+    } finally {
+      observer.disconnect();
+      div.remove();
+    }
+  });
+
+  it('a disabled control reports focused=false on focus-visible', async () => {
+    el.disabled = true;
+    const results = await captureStateVariations(el, ['focus', 'focus-visible']);
+    const byState = Object.fromEntries(results.map((r) => [r.state, r]));
+    expect(byState.focus.focusVisible).toBe('not_focused');
+    expect(byState['focus-visible'].focused).toBe(false);
   });
 
   it('restores focus after the focus-visible state, and leaves nothing forced', async () => {
