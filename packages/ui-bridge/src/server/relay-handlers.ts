@@ -16,7 +16,13 @@ import { componentActionInvocation } from './component-action-invocation';
 import { scopedCallerRefusal } from './scoped-refusal';
 import { buildComponentNotFoundError } from './handlers';
 import { describeInnerFailure } from './inner-failure';
-import { cacheFallbackMeta, isTabReportedFailure, noLiveAnswerCause } from './live-answer';
+import {
+  EVICTED_NO_ANSWER_CAUSE,
+  cacheFallbackMeta,
+  isNoLiveAnswer,
+  isTabReportedFailure,
+  noLiveAnswerCause,
+} from './live-answer';
 import { fitMediaOverrideBudget } from '../control/media-override-budget';
 import {
   componentCaptureRefusalEnvelope,
@@ -823,32 +829,54 @@ export function createRelayHandlers(
       if (innerFailure) return relayInnerFailureResponse<T>(innerFailure, e.result);
     }
     const hasListeners = relay.hasCommandListeners() || relay.getWebSocketClientCount() > 0;
-    const isTimeout = msg.includes('timeout') || msg.includes('Timeout');
+    // The relay's own errors are typed (`NoLiveAnswer`), so read the type, not
+    // the words: its timeout says "timed out", which the word match never
+    // caught, and its not-delivered messages name `timeoutMs`, which it did.
+    // An `unanswered` command evicted from a full queue ran out no timer, so
+    // it is not a timeout. The word match stays for untyped errors only.
+    const typedNoAnswer = isNoLiveAnswer(e);
+    const evicted = typedNoAnswer && e.noAnswerCause === EVICTED_NO_ANSWER_CAUSE;
+    const noResultArrived = typedNoAnswer && e.reason === 'unanswered' && !evicted;
+    const isTimeout = noResultArrived || (!typedNoAnswer && /timeout/i.test(msg));
+    // An `unanswered` message already says the tab may have run the command
+    // and its result may have been refused or lost (plan D6), so it gets no
+    // "the browser did not respond" hint, which would contradict it.
     const hint = !hasListeners
       ? ' No browser tab is connected — ensure the app is open and the UI Bridge SDK is loaded.'
-      : isTimeout
+      : isTimeout && !noResultArrived
         ? ' The browser did not respond in time — the page may be unresponsive or navigating.'
         : '';
     const isUnsupported =
       msg.includes('unsupported') || msg.includes('Unsupported') || msg.includes('not supported');
-    const suggestions = isTimeout
+    const suggestions = evicted
       ? [
-          'Check if the browser tab is responsive',
-          'The page may be navigating or loading heavy content',
-          'Try again after the page settles',
+          'The relay dropped this command under load; it may already have reached a tab: read the page state before retrying an action that changes it',
+          'Send fewer concurrent commands to this relay',
         ]
-      : !hasListeners
+      : noResultArrived
         ? [
-            'Ensure the app is open in a browser tab',
-            'Verify the UI Bridge SDK is loaded in the app',
+            'The tab may have run the command: read the page state before retrying an action that changes it',
+            'The page may be navigating or loading heavy content',
+            'Try again after the page settles',
           ]
-        : isUnsupported
+        : isTimeout
           ? [
-              'Check that the action is supported for this element type',
-              'Use getControlSnapshot() to see element capabilities',
-              'Supported actions: click, type, select, toggle, scroll, focus',
+              'Check if the browser tab is responsive',
+              'The page may be navigating or loading heavy content',
+              'Try again after the page settles',
             ]
-          : undefined;
+          : !hasListeners
+            ? [
+                'Ensure the app is open in a browser tab',
+                'Verify the UI Bridge SDK is loaded in the app',
+              ]
+            : isUnsupported
+              ? [
+                  'Check that the action is supported for this element type',
+                  'Use getControlSnapshot() to see element capabilities',
+                  'Supported actions: click, type, select, toggle, scroll, focus',
+                ]
+              : undefined;
     const code = isTimeout ? 'TIMEOUT' : isUnsupported ? 'UNSUPPORTED_ACTION' : 'COMMAND_FAILED';
     return error(`${msg}${hint}`, code, suggestions);
   }

@@ -41,7 +41,12 @@ import {
   type ListenerState,
   type ParkedCommand,
 } from './stream-slot';
-import { NoLiveAnswer, TabReportedFailure, noResultArrivedMessage } from './live-answer';
+import {
+  EVICTED_NO_ANSWER_CAUSE,
+  NoLiveAnswer,
+  TabReportedFailure,
+  noResultArrivedMessage,
+} from './live-answer';
 import {
   commandRegistryTtlSeconds,
   registryWrite,
@@ -1701,7 +1706,7 @@ export class CommandRelay {
             new NoLiveAnswer(
               'Command evicted: too many pending commands',
               'unanswered',
-              'it was evicted from the pending queue under load before a tab answered'
+              EVICTED_NO_ANSWER_CAUSE
             )
           );
         }

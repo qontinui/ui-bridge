@@ -212,6 +212,11 @@ export const INTERNAL_CODE_TO_CANONICAL: Readonly<Record<string, UiBridgeErrorCo
   HEADLESS_PEER_MISSING: 'UB-UNSUPPORTED-ACTION',
   HEADLESS_LAUNCH_FAILED: 'UB-ACTION-FAILED',
   WAIT_ERROR: 'UB-ACTION-TIMEOUT',
+  // The relay handlers' timeout classification (a typed `NoLiveAnswer`
+  // `unanswered`, or an untyped message naming a timeout): mapped by code so
+  // the canonical code does not depend on the message's wording.
+  TIMEOUT: 'UB-ACTION-TIMEOUT',
+  UNSUPPORTED_ACTION: 'UB-UNSUPPORTED-ACTION',
   PAGE_HEALTH_ERROR: 'UB-UNKNOWN-ERROR',
   QUERY_ERROR: 'UB-VALIDATION-ERROR',
   CDP_DISABLED: 'UB-ACTION-REJECTED',
