@@ -26,13 +26,16 @@
  * ORDER. Steps run in the order given, so an inlined package (cli-args) is
  * built before the package that bundles it.
  *
- * TIMEOUT. Each build gets BUILD_TIMEOUT_MS (10 min; QONTINUI_TEST_BUILD_TIMEOUT_MS
- * overrides it). On timeout the build's whole process tree is killed by its own
- * pid (`taskkill /T /F /PID <pid>` on Windows, SIGKILL to its process group
- * elsewhere), never by image name, and setup throws. On POSIX the build runs
- * detached (its own process group), so while it runs, SIGINT, SIGTERM and exit
- * handlers kill that group the same way; they are removed when it exits. On
- * Windows the build is not detached, so Ctrl-C reaches it directly.
+ * TIMEOUT. Each build gets 10 min (QONTINUI_TEST_BUILD_TIMEOUT_MS overrides it,
+ * clamped to 2147483647 ms). On timeout the build's whole process tree is
+ * killed by its own pid (`taskkill /T /F /PID <pid>` on Windows, SIGKILL to its
+ * process group elsewhere), never by image name, and setup throws; the error
+ * carries the build's pid as `buildPid`. On POSIX the build runs detached (its
+ * own process group), so while it runs, SIGINT, SIGTERM, SIGHUP and exit
+ * handlers kill that group the same way; they are removed when it exits. A
+ * signal is re-raised only when no other listener (such as vitest's own) is
+ * left to handle it. On Windows the build is not detached, so Ctrl-C reaches it
+ * directly.
  *
  * In CI the root `npm run build` runs first, so every step is a no-op there.
  */
@@ -45,11 +48,17 @@ export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CONFIG_INPUTS = ['package.json', 'tsconfig.json', 'tsconfig.build.json', 'tsup.config.ts'];
 const LOG = '[build-if-stale]';
 const DEFAULT_TIMEOUT_MS = 600_000;
+/** setTimeout's ceiling; a larger delay fires immediately. */
+const MAX_TIMEOUT_MS = 2_147_483_647;
+const HANDLED_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
 
-/** The build timeout: QONTINUI_TEST_BUILD_TIMEOUT_MS when set to a positive number, else 10 min. */
+/**
+ * The build timeout: QONTINUI_TEST_BUILD_TIMEOUT_MS when set to a positive
+ * number (clamped to setTimeout's 2147483647 ms ceiling), else 10 min.
+ */
 export function buildTimeoutMs() {
   const raw = Number(process.env.QONTINUI_TEST_BUILD_TIMEOUT_MS);
-  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TIMEOUT_MS;
+  return Number.isFinite(raw) && raw > 0 ? Math.min(raw, MAX_TIMEOUT_MS) : DEFAULT_TIMEOUT_MS;
 }
 
 /** `@qontinui/ui-bridge-cli-args`, which ui-bridge-headless and ui-bridge-wrapper inline. */
@@ -137,17 +146,17 @@ function runBuild(step, timeoutMs) {
     const child = spawn(command, { cwd, shell: true, stdio: 'inherit', detached });
     const done = (error) => resolveRun({ pid: child.pid, error });
 
-    // POSIX only: a detached group outlives Ctrl-C or a killed vitest unless it
-    // is killed here. The signal is re-raised afterwards so the default (or
-    // vitest's own) handling still runs.
+    // POSIX only: a detached group outlives Ctrl-C, a hangup or a killed vitest
+    // unless it is killed here. When another listener (vitest's own) handles
+    // the signal, it decides how the process ends; only when ours was the sole
+    // listener is the signal re-raised, so the default termination still runs.
     const onSignal = (signal) => {
       killTree(child);
-      process.kill(process.pid, signal);
+      if (process.listenerCount(signal) === 0) process.kill(process.pid, signal);
     };
     const onExit = () => killTree(child);
     if (detached) {
-      process.once('SIGINT', onSignal);
-      process.once('SIGTERM', onSignal);
+      for (const signal of HANDLED_SIGNALS) process.once(signal, onSignal);
       process.once('exit', onExit);
     }
     let timedOut = false;
@@ -157,8 +166,7 @@ function runBuild(step, timeoutMs) {
     }, timeoutMs);
     const cleanup = () => {
       clearTimeout(timer);
-      process.removeListener('SIGINT', onSignal);
-      process.removeListener('SIGTERM', onSignal);
+      for (const signal of HANDLED_SIGNALS) process.removeListener(signal, onSignal);
       process.removeListener('exit', onExit);
     };
 

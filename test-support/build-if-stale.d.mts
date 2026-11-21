@@ -15,7 +15,7 @@ export interface BuildStep {
 export declare const REPO_ROOT: string;
 /** `@qontinui/ui-bridge-cli-args`, which ui-bridge-headless and ui-bridge-wrapper inline. */
 export declare const CLI_ARGS: BuildStep;
-/** The build timeout: QONTINUI_TEST_BUILD_TIMEOUT_MS when set to a positive number, else 10 min. */
+/** The build timeout: QONTINUI_TEST_BUILD_TIMEOUT_MS (clamped to 2147483647) when positive, else 10 min. */
 export declare function buildTimeoutMs(): number;
 /** Why `step` needs a build, or null when its dist is fresh. */
 export declare function staleReason(step: BuildStep): string | null;

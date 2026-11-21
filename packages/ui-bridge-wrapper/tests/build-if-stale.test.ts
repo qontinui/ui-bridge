@@ -1,8 +1,20 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildIfStale, staleReason } from '../../../test-support/build-if-stale.mjs';
+import {
+  buildIfStale,
+  buildTimeoutMs,
+  staleReason,
+} from '../../../test-support/build-if-stale.mjs';
 
 /**
  * test-support/build-if-stale.mjs against throwaway packages in os.tmpdir()
@@ -123,24 +135,51 @@ function stalePackage(): string {
 }
 
 describe('buildIfStale (test-support/build-if-stale.mjs)', () => {
-  it('kills a build that outlives the timeout, and rejects', async () => {
+  it('kills the whole build tree when it outlives the timeout, and rejects', async () => {
     const dir = stalePackage();
-    // Records its own pid (the shell's child), then sleeps past the timeout.
+    // The sleeper records its own pid as its very first action, then sleeps far
+    // past the timeout. It is NOT the shell's last command (`&& echo`), so no
+    // shell (dash on Linux, cmd on Windows) can exec it in place of itself: it
+    // is a grandchild of the build, and only a tree kill reaches it.
     const command =
-      "node -e \"require('fs').writeFileSync('sleeper.pid', String(process.pid)); setTimeout(function () {}, 60000)\"";
-    const err = await buildIfStale([{ ...step(dir), command }], 3_000).then(
+      "node -e \"require('fs').writeFileSync('sleeper.pid', String(process.pid)); setTimeout(function () {}, 120000)\" && echo sleeper-exited";
+    const err = await buildIfStale([{ ...step(dir), command }], 20_000).then(
       () => null,
       (e: Error & { buildPid?: number }) => e
     );
-    expect(err?.message).toMatch(/did not finish within 3000 ms/);
-    const sleeper = Number(readFileSync(join(dir, 'sleeper.pid'), 'utf8'));
-    expect(await waitGone(err?.buildPid as number), 'the build shell outlived the timeout').toBe(
-      true
+    expect(err?.message).toMatch(/did not finish within 20000 ms/);
+    const buildPid = err?.buildPid as number;
+    expect(Number.isInteger(buildPid), 'the error carries no buildPid').toBe(true);
+
+    const pidFile = join(dir, 'sleeper.pid');
+    const until = Date.now() + 5_000;
+    while (!existsSync(pidFile) && Date.now() < until) await new Promise((r) => setTimeout(r, 100));
+    if (!existsSync(pidFile)) throw new Error('sleeper never started');
+    const sleeper = Number(readFileSync(pidFile, 'utf8'));
+
+    expect(sleeper, 'the sleeper is the build process itself, so no tree is tested').not.toBe(
+      buildPid
     );
+    expect(await waitGone(buildPid), 'the build shell outlived the timeout').toBe(true);
     expect(await waitGone(sleeper), `the sleeping node (pid ${sleeper}) outlived the timeout`).toBe(
       true
     );
-  }, 60_000);
+  }, 90_000);
+
+  it('clamps QONTINUI_TEST_BUILD_TIMEOUT_MS to setTimeout’s ceiling', () => {
+    const saved = process.env.QONTINUI_TEST_BUILD_TIMEOUT_MS;
+    try {
+      process.env.QONTINUI_TEST_BUILD_TIMEOUT_MS = '9000000000000';
+      expect(buildTimeoutMs()).toBe(2_147_483_647);
+      process.env.QONTINUI_TEST_BUILD_TIMEOUT_MS = '1234';
+      expect(buildTimeoutMs()).toBe(1234);
+      delete process.env.QONTINUI_TEST_BUILD_TIMEOUT_MS;
+      expect(buildTimeoutMs()).toBe(600_000);
+    } finally {
+      if (saved === undefined) delete process.env.QONTINUI_TEST_BUILD_TIMEOUT_MS;
+      else process.env.QONTINUI_TEST_BUILD_TIMEOUT_MS = saved;
+    }
+  });
 
   it('a build that writes its outputs but exits 1 still fails', async () => {
     const dir = stalePackage();
