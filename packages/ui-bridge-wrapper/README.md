@@ -249,8 +249,7 @@ catches the first document request. The HAR and the video are complete once
 HAR, but a `ready()` that fails after the launch (an emulation refusal, an
 injected-runtime wait) can still leave a complete archive, so a missing file is
 not how to tell that `ready()` failed. A malformed value fails construction
-with `INVALID_CONFIG`, and a headless peer older than 0.8.0 (ui-bridge#381; 0.8.1
-is the first npm release with it, since 0.8.0 was never published)
+with `INVALID_CONFIG`, and a headless peer older than 0.8.0 (ui-bridge#381)
 ignores all four, so the transport then fails `ready()` with
 `CONTEXT_OPTIONS_NOT_APPLIED` and closes the browser it opened.
 `serviceWorkers: 'allow'` alone is exempt, since it is Playwright's default.

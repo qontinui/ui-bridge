@@ -159,9 +159,8 @@ metrics emulation overrides the flag, so the page keeps reading
 ### HAR recording, service workers and routes (context passthrough)
 
 Four options reach the browser context for a caller that records what a page
-loads or serves it from somewhere else (0.8.0 and later — 0.8.1 on npm, since
-0.8.0 was never published; an older launcher accepts the keys and ignores
-them):
+loads or serves it from somewhere else (0.8.0 and later; an older launcher
+accepts the keys and ignores them):
 
 | Option           | Type                                                      | Passed to                                                       |
 | ---------------- | --------------------------------------------------------- | --------------------------------------------------------------- |
