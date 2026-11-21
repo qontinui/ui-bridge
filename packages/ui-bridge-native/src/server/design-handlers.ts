@@ -14,11 +14,16 @@ import type {
   ResponsiveSnapshot,
 } from '../design/design-types';
 import {
-  mapNativeStyleToExtended,
   getNativeElementDesignData,
   captureNativeStateVariations,
   captureNativeResponsiveSnapshot,
 } from '../design/design-inspector-native';
+import {
+  asDesignAuditCore,
+  nativeAudit,
+  type DesignAuditCoreModule,
+  type NativeDesignAuditResponse,
+} from './design-audit-native';
 
 /**
  * The first `@qontinui/ui-bridge` release whose `./specs` entry carries
@@ -30,17 +35,8 @@ const EVALUATE_PARSER_RELEASE = '0.58.0';
 let loadedStyleGuide: unknown = null;
 let savedBaseline: unknown = null;
 
-/** The web SDK's style validator (`@qontinui/ui-bridge/specs`). */
-export interface StyleValidatorModule {
-  runStyleAudit: (
-    elements: Array<{ elementId: string; styles: Record<string, string> }>,
-    guide: unknown,
-    options?: { rootFontSizePx?: number }
-  ) => unknown;
-}
-
-// Try to load the style validator from the web SDK (optional peer dep)
-let styleValidator: StyleValidatorModule | null = null;
+// The web SDK's shared design-audit core (optional peer dep, 0.57.0 or later)
+let designAudit: DesignAuditCoreModule | null = null;
 
 // Try to load quality evaluator from the web SDK (optional peer dep)
 /** The quality-evaluator functions native calls (from `@qontinui/ui-bridge/specs`). */
@@ -134,7 +130,7 @@ function asStyleInference(specs: unknown): StyleInferenceModule | null {
 try {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const specs = require('@qontinui/ui-bridge/specs');
-  styleValidator = specs;
+  designAudit = asDesignAuditCore(specs);
   qualityEvaluator = specs;
   styleInference = asStyleInference(specs);
 } catch {
@@ -387,7 +383,7 @@ export interface NativeDesignHandlers {
   getResponsiveSnapshots: (
     ctx: HandlerContext
   ) => Promise<APIResponse<Array<ResponsiveSnapshot & Partial<ElementBoundReport>>>>;
-  runDesignAudit: (ctx: HandlerContext) => Promise<APIResponse<unknown>>;
+  runDesignAudit: (ctx: HandlerContext) => Promise<APIResponse<NativeDesignAuditResponse>>;
   loadStyleGuide: (ctx: HandlerContext) => Promise<APIResponse<{ loaded: boolean }>>;
   getStyleGuide: (ctx: HandlerContext) => Promise<APIResponse<unknown>>;
   clearStyleGuide: (ctx: HandlerContext) => Promise<APIResponse<{ cleared: boolean }>>;
@@ -413,10 +409,11 @@ export interface DesignHandlerOptions {
    */
   styleInference?: StyleInferenceModule | null;
   /**
-   * The style validator `/design/audit` runs. Absent: the optional peer's.
-   * `null`: none (`VALIDATOR_NOT_AVAILABLE`). Injectable for the same reason.
+   * The shared audit core `/design/audit` runs. Absent: the optional peer's,
+   * when it carries one. `null`: none (`VALIDATOR_NOT_AVAILABLE`). Injectable
+   * for the same reason.
    */
-  styleValidator?: StyleValidatorModule | null;
+  designAudit?: DesignAuditCoreModule | null;
   /**
    * The quality evaluator the `/design/evaluate` family runs. Absent: the
    * optional peer's. `null`: none (`EVALUATOR_NOT_AVAILABLE`). Injectable for
@@ -456,7 +453,7 @@ export function createDesignHandlers(
   options: DesignHandlerOptions = {}
 ): NativeDesignHandlers {
   const inference = 'styleInference' in options ? (options.styleInference ?? null) : styleInference;
-  const validator = 'styleValidator' in options ? (options.styleValidator ?? null) : styleValidator;
+  const auditCore = 'designAudit' in options ? (options.designAudit ?? null) : designAudit;
   const evaluator =
     'qualityEvaluator' in options ? (options.qualityEvaluator ?? null) : qualityEvaluator;
 
@@ -680,86 +677,21 @@ export function createDesignHandlers(
 
     // 5. POST /design/audit
     runDesignAudit: async (ctx) => {
-      // The fields native reads — body, rootFontSizePx, elementIds, guide —
-      // are validated in the web transports' `designAuditOf` order and with
-      // its messages, so a body wrong in several of them is refused for the
-      // same one on either side. Native does not read `limit`,
-      // `includePassed` or `maxResults`, so it does not validate them.
-      const route = '/design/audit';
-      let body: Record<string, unknown>;
-      try {
-        body = bodyOf(ctx.body, route);
-      } catch (err) {
-        return invalidRequest(err);
-      }
-
-      // Refused, not ignored: the web transports' `designAuditOf` validates
-      // it the same way, before the guide is consulted.
-      const root = body.rootFontSizePx;
-      if (isGiven(root) && !isPositiveNumber(root)) {
+      // The web transports' shared core (`auditDesign`) parses the body in
+      // their order and with their messages, applies `limit`, `includePassed`
+      // and `maxResults`, and answers `mode: 'style-guide'` with a guide or
+      // `mode: 'heuristic'` without one — see `./design-audit-native` for the
+      // native adapter and the differences React Native forces.
+      if (!auditCore) {
         return error(
-          `${route}: rootFontSizePx must be a finite number greater than 0`,
-          'INVALID_REQUEST'
-        );
-      }
-
-      let elementIds: string[] | undefined;
-      try {
-        elementIds = elementIdsOf(body, route);
-      } catch (err) {
-        return invalidRequest(err);
-      }
-
-      // A guide given in the body must have the shape the web transports'
-      // `designAuditOf` requires (an object with a `rules` array); refused
-      // with the same message rather than handed to the validator.
-      const requestedGuide = body.guide;
-      if (
-        isGiven(requestedGuide) &&
-        !(isObject(requestedGuide) && Array.isArray(requestedGuide.rules))
-      ) {
-        return error(
-          `${route}: guide must be a style guide object with a rules array`,
-          'INVALID_REQUEST'
-        );
-      }
-
-      const guide = requestedGuide ?? loadedStyleGuide;
-
-      if (!guide) {
-        return error('No style guide loaded or provided', 'NO_STYLE_GUIDE');
-      }
-
-      if (!validator) {
-        return error(
-          'Install @qontinui/ui-bridge for style audit support. ' +
-            'Add it as a dependency: npm install @qontinui/ui-bridge',
+          'Install a @qontinui/ui-bridge release containing the shared design audit (0.57.0 or later).',
           'VALIDATOR_NOT_AVAILABLE'
         );
       }
-
-      // A given list selects exactly its ids — an empty one selects nothing,
-      // as web's `selectElements` does; only an absent list means all.
-      const elements = selectElements(elementIds);
-
-      // Map elements to the format expected by the validator
-      const auditElements = elements.map((el) => ({
-        elementId: el.id,
-        styles: mapNativeStyleToExtended(el.flatStyle) as unknown as Record<string, string>,
-      }));
-
       try {
-        // React Native has no root font size; a caller auditing rem-valued
-        // tokens says which one (validated above), else `rem` resolves at 16px
-        // (as inference does).
-        const rootFontSizePx = typeof root === 'number' ? root : undefined;
-        const report = validator.runStyleAudit(
-          auditElements,
-          guide,
-          rootFontSizePx !== undefined ? { rootFontSizePx } : undefined
-        );
-        return success(report);
+        return success(nativeAudit(registry, ctx.body, loadedStyleGuide, auditCore));
       } catch (err) {
+        if (isInvalidRequest(err)) return error(err.message, 'INVALID_REQUEST');
         return error(
           'Audit failed: ' + (err instanceof Error ? err.message : String(err)),
           'DESIGN_AUDIT_ERROR'

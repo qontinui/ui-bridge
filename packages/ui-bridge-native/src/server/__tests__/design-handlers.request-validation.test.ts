@@ -10,7 +10,7 @@ import type { NativeElementRef } from '../../core/types';
  * fields with the web transports' rules and messages (`design-request.ts`, `quality-request.ts`),
  * and select by `elementIds` the way web does: absent or `null` is every
  * element, a given list exactly its ids, `[]` none. `/design/audit` has its
- * own tests in `design-handlers.style-inference.test.ts`.
+ * own tests in `design-handlers.audit.test.ts`.
  */
 
 function makeRef(): React.RefObject<NativeElementRef> {
