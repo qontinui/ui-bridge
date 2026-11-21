@@ -91,19 +91,31 @@ describe('createHandlers heuristic audit coverage', () => {
     return el;
   }
 
+  /** Give `el` a laid-out box of `width` x `height` (jsdom lays nothing out). */
+  function laidOut(el: HTMLElement, width: number, height: number): void {
+    const box = { x: 0, y: 0, top: 0, left: 0, width, height, right: width, bottom: height };
+    el.getBoundingClientRect = () => box as DOMRect;
+    el.getClientRects = () => [box] as unknown as DOMRectList;
+  }
+
+  function registryOfTyped(rows: Array<[string, HTMLElement, string]>): RegistryLike {
+    return {
+      getAllElements: () => rows.map(([id, element, type]) => ({ id, element, type, label: id })),
+    } as unknown as RegistryLike;
+  }
+
   it('reports one measured row per heuristic, and counts what it could not judge', async () => {
     const see = styled('div', { color: 'rgb(0, 0, 0)', backgroundColor: 'rgb(255, 255, 255)' });
     const through = styled('div', { color: 'rgb(0, 0, 0)', backgroundColor: 'transparent' });
     const pick = styled('select', { color: 'rgb(0, 0, 0)', backgroundColor: 'rgb(255, 255, 255)' });
     const tick = styled('input', { color: 'rgb(0, 0, 0)', backgroundColor: 'rgb(255, 255, 255)' });
-    const registry = {
-      getAllElements: () => [
-        { id: 'see', element: see, type: 'div', label: 'see' },
-        { id: 'through', element: through, type: 'div', label: 'through' },
-        { id: 'pick', element: pick, type: 'select', label: 'pick' },
-        { id: 'tick', element: tick, type: 'checkbox', label: 'tick' },
-      ],
-    } as unknown as RegistryLike;
+    laidOut(tick, 30, 30);
+    const registry = registryOfTyped([
+      ['see', see, 'div'],
+      ['through', through, 'div'],
+      ['pick', pick, 'select'],
+      ['tick', tick, 'checkbox'],
+    ]);
     const res = await createHandlers(registry, {} as never).runDesignAudit!({});
     expect(res.success).toBe(true);
     const report = res.data!;
@@ -115,13 +127,67 @@ describe('createHandlers heuristic audit coverage', () => {
       { heuristic: 'touch-target', status: 'measured', checked: 1, notMeasured: 0 },
     ]);
     // The transparent background produced no contrast finding; the checkbox,
-    // a touch target since the web adapter widened past button/link, is laid
-    // out at 0x0 under jsdom and is reported.
+    // a touch target since the web adapter widened past button/link, is
+    // laid out at 30x30 and is reported.
     expect(report.issues).toEqual([
       expect.objectContaining({
         element: 'tick',
-        issue: 'Touch target too small: 0x0px (min 44x44)',
+        issue: 'Touch target too small: 30x30px (min 44x44)',
       }),
     ]);
+  });
+
+  it('a touch target with no box (hidden, not laid out) is not measured, never 0x0', async () => {
+    const hidden = styled('button', {
+      color: 'rgb(0, 0, 0)',
+      backgroundColor: 'rgb(255, 255, 255)',
+      display: 'none',
+    });
+    const unlaid = styled('button', {
+      color: 'rgb(0, 0, 0)',
+      backgroundColor: 'rgb(255, 255, 255)',
+    });
+    const zero = styled('button', { color: 'rgb(0, 0, 0)', backgroundColor: 'rgb(255, 255, 255)' });
+    laidOut(zero, 0, 0);
+    // A box with no client rects (as `display: contents` has) is no box either.
+    const boxless = styled('button', {
+      color: 'rgb(0, 0, 0)',
+      backgroundColor: 'rgb(255, 255, 255)',
+    });
+    boxless.getBoundingClientRect = () => ({ width: 30, height: 30 }) as DOMRect;
+    boxless.getClientRects = () => [] as unknown as DOMRectList;
+    const res = await createHandlers(
+      registryOfTyped([
+        ['hidden', hidden, 'button'],
+        ['unlaid', unlaid, 'button'],
+        ['zero', zero, 'button'],
+        ['boxless', boxless, 'button'],
+      ]),
+      {} as never
+    ).runDesignAudit!({});
+    const report = res.data!;
+    if (report.mode !== 'heuristic') throw new Error('expected heuristic mode');
+    expect(report.issues).toEqual([]);
+    expect(report.heuristicCoverage[3]).toEqual({
+      heuristic: 'touch-target',
+      status: 'measured',
+      checked: 0,
+      notMeasured: 4,
+    });
+  });
+
+  it('a <select> whose colours cannot be judged is select-dark-mode not measured', async () => {
+    const pick = styled('select', { color: 'rgb(255, 255, 255)', backgroundColor: 'transparent' });
+    const res = await createHandlers(registryOfTyped([['pick', pick, 'select']]), {} as never)
+      .runDesignAudit!({});
+    const report = res.data!;
+    if (report.mode !== 'heuristic') throw new Error('expected heuristic mode');
+    expect(report.heuristicCoverage[1]).toEqual({
+      heuristic: 'select-dark-mode',
+      status: 'measured',
+      checked: 0,
+      notMeasured: 1,
+    });
+    expect(report.issues).toEqual([]);
   });
 });

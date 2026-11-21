@@ -499,7 +499,11 @@ const TOUCH_TARGET_TYPES: ReadonlySet<string> = new Set([
   'switch',
 ]);
 
-/** What the heuristics read of one live element: computed colours and font size, its box, and for a `<select>` its first `<option>`. */
+/**
+ * What the heuristics read of one live element: computed colours and font
+ * size, its laid-out box (`null` when it has none), and for a `<select>` its
+ * first `<option>`.
+ */
 function webHeuristicInput(el: LiveSource): HeuristicInput {
   const dom = el.element;
   const cs = getComputedStyle(dom);
@@ -511,7 +515,12 @@ function webHeuristicInput(el: LiveSource): HeuristicInput {
     color: cs.color,
     backgroundColor: cs.backgroundColor,
     fontSizePx: Number.isFinite(fontSizePx) ? fontSizePx : null,
-    rect: { width: rect.width, height: rect.height },
+    // An element with no box (`display: none`, detached, not laid out) has
+    // no size to judge: not measured, never a 0x0 touch-target finding.
+    rect:
+      dom.getClientRects().length === 0 || (rect.width === 0 && rect.height === 0)
+        ? null
+        : { width: rect.width, height: rect.height },
   };
   if (dom.tagName === 'SELECT') {
     const firstOption = dom.querySelector('option');
