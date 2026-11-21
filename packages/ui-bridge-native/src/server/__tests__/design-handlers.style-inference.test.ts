@@ -293,4 +293,40 @@ describe('native review regressions (each threw or answered wrong before its fix
     expect((atDefault.data as { failedCount: number }).failedCount).toBe(1);
     expect(audits).toEqual([{ rootFontSizePx: 20 }, undefined]);
   });
+
+  it('the audit refuses a rootFontSizePx that is not a positive finite number', async () => {
+    const audits: unknown[] = [];
+    const real = specs as unknown as StyleValidatorModule;
+    const validator: StyleValidatorModule = {
+      runStyleAudit: (elements, guide, options) => {
+        audits.push(options);
+        return real.runStyleAudit(elements, guide, options);
+      },
+    };
+    const registry = new NativeUIBridgeRegistry();
+    registry.registerElement('box', makeRef(), { type: 'view' });
+    registry.updateElementStyle('box', { paddingTop: 20 });
+    const handlers = createDesignHandlers(registry, undefined, { styleValidator: validator });
+    const guide = { version: '1.0', name: 'g', tokens: {}, rules: [] };
+    for (const rootFontSizePx of [
+      0,
+      -16,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+      '16',
+    ]) {
+      // With a guide and without one: the value is refused before either is read.
+      for (const body of [{ guide, rootFontSizePx }, { rootFontSizePx }]) {
+        const r = await handlers.runDesignAudit(ctx(body));
+        expect(r, String(rootFontSizePx)).toMatchObject({
+          success: false,
+          code: 'INVALID_REQUEST',
+        });
+        expect(r.error).toMatch(/rootFontSizePx must be a finite number greater than 0/);
+      }
+    }
+    // Nothing reached the validator.
+    expect(audits).toEqual([]);
+  });
 });
