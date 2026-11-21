@@ -16,6 +16,13 @@
  */
 
 import { STORAGE_KEYS, DEFAULT_LIVE_RELAY_RUNNER_URL } from '../shared/constants';
+import type { ExtensionMessage } from '../shared/messages';
+import { buildLiveRelayOptions } from './live-relay-config';
+import {
+  createScreenshotHandler,
+  SCREENSHOT_ACTION,
+  type WrapperTransportErrorCtor,
+} from './screenshot-handler';
 
 /** Minimal subset of the wrapper-package surface we use. */
 interface LiveTransportLike {
@@ -36,6 +43,8 @@ interface WrapperModule {
     registry?: unknown,
     injected?: { webSocketCtor?: typeof WebSocket }
   ) => LiveTransportLike;
+  /** Thrown by handlers so a typed code (e.g. `TAB_NOT_VISIBLE`) reaches the runner. */
+  WrapperTransportError: WrapperTransportErrorCtor;
 }
 
 /** Currently-active transport for this tab, if any. */
@@ -104,15 +113,9 @@ async function start(): Promise<void> {
         runnerUrl,
         appId,
         appName,
-        // Forward the page's origin and href so the runner's registry
-        // surfaces a real URL to the integration tool. Without these,
-        // the runner falls back to a synthetic "ws://runner/ui-bridge/ws"
-        // placeholder that's useless on the card.
-        options: {
-          origin: location.origin,
-          pageUrl: location.href,
-          appType: 'wrapper',
-        },
+        // origin/pageUrl for the registry card, and the `screenshot`
+        // capability for the getScreenshot handler registered below.
+        options: { ...buildLiveRelayOptions(location) },
       },
       undefined,
       // Use the browser's native WebSocket. The wrapper picks this up
@@ -139,6 +142,23 @@ async function start(): Promise<void> {
     // If the registry rejects us we still want to attempt connection;
     // surface the error but keep going.
     console.warn('[ui-bridge live-relay] register("ping") failed', err);
+  }
+
+  // Answer the runner's vision capture over this socket (the capability is
+  // advertised in the options above). Refuses with TAB_NOT_VISIBLE while the
+  // tab is hidden; the service worker re-checks the sender is the active tab.
+  try {
+    t.register(
+      SCREENSHOT_ACTION,
+      createScreenshotHandler({
+        WrapperTransportError: mod.WrapperTransportError,
+        doc: document,
+        win: window,
+        sendMessage: (message: ExtensionMessage) => chrome.runtime.sendMessage(message),
+      })
+    );
+  } catch (err) {
+    console.warn(`[ui-bridge live-relay] register("${SCREENSHOT_ACTION}") failed`, err);
   }
 
   transport = t;
