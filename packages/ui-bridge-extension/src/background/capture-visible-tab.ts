@@ -65,26 +65,36 @@ const PNG_DATA_URL_PREFIX = 'data:image/png;base64,';
 const CAPTURE_QUOTA = /MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND/;
 
 /**
- * Refusals that the same request cannot outgrow — a missing permission, or a
- * page Chrome will never let an extension read: a chrome:// page, another
- * extension's chrome-extension:// pages, the Web Store. Each pattern matches
- * ONE Chromium message (extensions/common/manifest_constants.h), and the
- * table test in tests/live-relay-screenshot.test.ts holds each to exactly
- * its own. Every other captureVisibleTab refusal is treated as retryable — a
- * window mid-transition, a tab still loading — since retrying costs one
+ * Refusals that the same request cannot outgrow. Each pattern matches one
+ * FAMILY of Chromium refusals (extensions/common/manifest_constants.h and
+ * permissions_data.cc); the comment beside each names the constants it covers.
+ * The table test in tests/live-relay-screenshot.test.ts holds each row to
+ * exactly one pattern, and a negative table holds Chrome's transient capture
+ * failures to none.
+ *
+ * Under the `<all_urls>` grant, a page captureVisibleTab will never read (a
+ * chrome:// page, another extension's chrome-extension:// page, a data: URL,
+ * the Web Store) is refused by PermissionsData::CanCaptureVisiblePage with
+ * kActiveTabPermissionNotGranted, which the second pattern catches. The
+ * chrome:// / extension-URL and gallery patterns are reached by this API only
+ * rarely (kCannotAccessChromeUrl via chrome://feedback) and are kept as a
+ * guard. Every other captureVisibleTab refusal is treated as retryable (a
+ * window mid-transition, a view not yet painted), since retrying costs one
  * request.
  */
 export const CAPTURE_FINAL_PATTERNS: readonly RegExp[] = [
-  // kAllURLOrActiveTabNeeded
+  // kAllURLOrActiveTabNeeded (also kPageCaptureNeeded)
   /permission is required/i,
   // kActiveTabPermissionNotGranted
   /'activeTab' permission is not in effect/i,
-  // kCannotAccessPageWithUrl ("Cannot access contents of url "…". …")
+  // kCannotAccessPage / kCannotAccessPageWithUrl
   /Cannot access contents of/i,
-  // kCannotScriptGallery — the one Web Store message
+  // kCannotScriptGallery, kCannotScriptNtp, kPolicyBlockedScripting
   /cannot be scripted/i,
   // kCannotAccessChromeUrl / kCannotAccessExtensionUrl
   /Cannot access a [a-z-]+:\/\/ URL/i,
+  // kErrorBlocked: the user blocked the extension on this site
+  /^Blocked$/,
 ];
 
 function isFinalRefusal(text: string): boolean {

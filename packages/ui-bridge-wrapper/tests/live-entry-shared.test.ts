@@ -58,10 +58,10 @@ describe('the ./live entry shares classes with the root entry', () => {
   });
 
   it('the ./live ESM graph imports no Node builtin and no Node-only package', () => {
-    // Walked by URL (href keys), read through fileURLToPath. (The path bug the
-    // review caught was the CJS test's `require(url.pathname)`, which breaks on
-    // a Windows drive letter or a percent-encoded space; both now go through
-    // fileURLToPath.)
+    // Walked by URL (href keys) and read through fileURLToPath, which turns a
+    // file: URL into a native path: a Windows drive letter or a
+    // percent-encoded space in the checkout path would break a path built
+    // from `url.pathname`.
     const seen = new Set<string>();
     const queue = [new URL('live/index.js', dist).href];
     const found: string[] = [];
