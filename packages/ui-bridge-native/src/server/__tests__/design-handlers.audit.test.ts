@@ -402,6 +402,22 @@ describe('native heuristics: what React Native can and cannot read', () => {
       },
     ]);
   });
+
+  it('a collapsed 0x0 layout (display none) is not measured, never a 0x0 finding', async () => {
+    const report = heuristic(
+      await handlersFor(
+        registryOf({
+          collapsed: { type: 'pressable', layout: layout(0, 0) },
+          thin: { type: 'pressable', layout: layout(0, 30) },
+        })
+      ).runDesignAudit(ctx({}))
+    );
+    expect(coverage(report, 'touch-target')).toMatchObject({ checked: 1, notMeasured: 1 });
+    // A layout with one real dimension is still measured, and reported.
+    expect(report.issues).toEqual([
+      { element: 'thin', issue: 'Touch target too small: 0x30px (min 44x44)', severity: 'warning' },
+    ]);
+  });
 });
 
 describe('native /design/audit over the server', () => {
