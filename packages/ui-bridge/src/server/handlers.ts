@@ -211,6 +211,7 @@ import {
   analyzeStructuredChanges,
   parseNLInstruction,
 } from '../ai';
+import { invalidStatesMessage } from '../ai/interaction-states';
 import type { InteractionStateName, StateStyles } from '../core/types';
 import type { NavigationTracker } from '../navigation';
 import type { ShortcutTracker } from '../shortcuts';
@@ -5384,6 +5385,10 @@ export function createHandlers(
       request: { states?: InteractionStateName[] }
     ): Promise<APIResponse<{ elementId: string; stateStyles: StateStyles[] }>> => {
       try {
+        // An unknown state name would come back as the default styles under
+        // that name, which reads like a measurement: refuse it instead.
+        const invalid = invalidStatesMessage(request?.states);
+        if (invalid) return error(invalid, 'VALIDATION_ERROR');
         const rawElement = registry.getElement(id);
         if (!rawElement) {
           return error(`Element not found: ${id}`, 'ELEMENT_NOT_FOUND');
@@ -5392,7 +5397,7 @@ export function createHandlers(
         if (!el.element || !(el.element instanceof HTMLElement)) {
           return error('Element does not have a DOM reference', 'NO_DOM_REFERENCE');
         }
-        const stateStyles = await captureStateVariations(el.element, request.states);
+        const stateStyles = await captureStateVariations(el.element, request?.states ?? undefined);
         return success({ elementId: id, stateStyles });
       } catch (err) {
         return error((err as Error).message, 'DESIGN_STATE_STYLES_ERROR');
