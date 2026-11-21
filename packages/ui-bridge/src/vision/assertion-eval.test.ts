@@ -407,7 +407,7 @@ describe('the rounding contract — unrounded boxes, each kind rounding its own 
     const snapshot = (bbox: Record<string, number>) => ({
       elements: [{ id: 'label', bbox, scroll_width_px: 120, scroll_height_px: 20, text: 'Name' }],
     });
-    // vision-core 1770f324 (element_snapshot.rs): every edge (x, y, x + w,
+    // vision-core c3fc2a0b (element_snapshot.rs): every edge (x, y, x + w,
     // y + h) must lie within the i32 range, so a box snaps to the grid with
     // nothing clamped. Its four refusals, and the whole range read.
     for (const json of [
