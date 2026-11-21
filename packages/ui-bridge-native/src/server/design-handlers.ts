@@ -23,6 +23,7 @@ import {
   nativeAudit,
   type DesignAuditCoreModule,
   type NativeDesignAuditResponse,
+  type NativeStyleGuideConfig,
 } from './design-audit-native';
 
 /**
@@ -32,7 +33,7 @@ import {
 const EVALUATE_PARSER_RELEASE = '0.58.0';
 
 // Style guide and baseline stored in closure (same pattern as web SDK)
-let loadedStyleGuide: unknown = null;
+let loadedStyleGuide: NativeStyleGuideConfig | null = null;
 let savedBaseline: unknown = null;
 
 // The web SDK's shared design-audit core (optional peer dep, 0.57.0 or later)
@@ -707,7 +708,8 @@ export function createDesignHandlers(
         return error('Style guide is required in request body', 'INVALID_REQUEST');
       }
 
-      loadedStyleGuide = body.guide;
+      // Stored without validation, as the web transports' loadStyleGuide does.
+      loadedStyleGuide = body.guide as NativeStyleGuideConfig;
       return success({ loaded: true });
     },
 
