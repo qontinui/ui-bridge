@@ -787,6 +787,9 @@ describe('captureStateVariations', () => {
       expect(byState['focus-visible'].forced).toBe(false);
       expect(byState['focus-visible'].notForcedReason).toBe('document_unfocused');
       expect(byState['focus-visible'].focused).toBe(false);
+      // Nothing had focus before, so the restore must blur `el` even though
+      // the document has no focus (where `el` is still its activeElement).
+      expect(document.activeElement).toBe(document.body);
     } finally {
       spy.mockRestore();
     }
@@ -809,6 +812,9 @@ describe('captureStateVariations', () => {
       expect(fv.forced).toBe(false);
       expect(fv.notForcedReason).toBe('document_unfocused');
       expect(fv.focused).toBe(false);
+      // The previous focus (inner) is restored and kept.
+      expect(shadow.activeElement).toBe(inner);
+      expect(document.activeElement).toBe(host);
     } finally {
       spy.mockRestore();
       host.remove();
@@ -838,6 +844,44 @@ describe('captureStateVariations', () => {
       expect(readFocusVisible(target)).toBe('not_focused');
     } finally {
       outerHost.remove();
+    }
+  });
+
+  it('a document without focus, whose previous focus is removed during the read: the focus ends on the body', async () => {
+    const before = document.createElement('input');
+    document.body.appendChild(before);
+    before.focus();
+    el.addEventListener('focus', () => before.remove(), { once: true });
+    const spy = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+    try {
+      await captureStateVariations(el, ['focus']);
+      expect(document.activeElement).toBe(document.body);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("an element focused in a frame whose frame element is not its parent's active element reads 'document_unfocused'", async () => {
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    const doc = frame.contentDocument!;
+    const target = doc.createElement('button');
+    target.textContent = 'in frame';
+    doc.body.appendChild(target);
+    const outside = document.createElement('input');
+    document.body.appendChild(outside);
+    try {
+      target.focus();
+      expect(readFocusVisible(target)).toBe(false);
+      // The parent's focus moves away; the frame keeps its own activeElement.
+      outside.focus();
+      expect(doc.activeElement).toBe(target);
+      expect(document.activeElement).toBe(outside);
+      expect(doc.hasFocus()).toBe(true);
+      expect(readFocusVisible(target)).toBe('document_unfocused');
+    } finally {
+      frame.remove();
+      outside.remove();
     }
   });
 
