@@ -228,6 +228,7 @@ export type {
   DriftBody,
   DeclaredSourceSpec,
 } from './style-inference-body';
+export { inferRegisteredStyleGuide, diffRegisteredDesignTokens } from './style-inference-request';
 export type {
   StyleCaptureReport,
   StyleInferenceResponse,
