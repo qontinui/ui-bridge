@@ -1082,15 +1082,16 @@ function recordAncestorFocus(doc: Document): AncestorFocus[] {
   let current = doc;
   for (;;) {
     let frame: Element | null;
+    let parent: Document;
     let previous: Element | null;
     try {
       frame = current.defaultView?.frameElement ?? null;
       if (!frame) break;
-      previous = ancestorFocusOf(frame.ownerDocument, frame);
+      parent = frame.ownerDocument;
+      previous = ancestorFocusOf(parent, frame);
     } catch {
       break;
     }
-    const parent = frame.ownerDocument;
     out.push({ doc: parent, frame, previous });
     current = parent;
   }
