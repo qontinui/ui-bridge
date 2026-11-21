@@ -774,6 +774,149 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('design inspector focus states (real Chro
     await page.close();
   }, 30_000);
 
+  it('a frame inside a CLOSED shadow root, nothing focused: the frame is blurred out of the page again', async () => {
+    const page = await openPage();
+    const read = await page.evaluate(async () => {
+      const host = document.createElement('div');
+      host.id = 'closed-frame-host';
+      document.body.appendChild(host);
+      const closed = host.attachShadow({ mode: 'closed' });
+      const frame = document.createElement('iframe');
+      frame.srcdoc = `<!doctype html><button id="cf">in frame</button>`;
+      const loaded = new Promise((done) => frame.addEventListener('load', done, { once: true }));
+      closed.appendChild(frame);
+      await loaded;
+      const before = document.activeElement === document.body;
+      const target = frame.contentDocument!.getElementById('cf')!;
+      await window.FV.captureStateVariations(target, ['focus', 'focus-visible']);
+      return {
+        before,
+        after: document.activeElement === document.body ? 'body' : document.activeElement?.id,
+        closedActive: closed.activeElement,
+      };
+    });
+    expect(read).toEqual({ before: true, after: 'body', closedActive: null });
+    await page.close();
+  }, 30_000);
+
+  it('nested frames: a read two frames down gives the page focus back to the top input', async () => {
+    // Chromium clears a frame's activeElement to its body as soon as the page
+    // focus leaves the frame (measured: #y is gone once #outside is focused),
+    // so no ancestor ever records a remembered focus while the top holds the
+    // focus elsewhere. The restore ORDER is therefore not observable here;
+    // this case pins the two-level chain: every frame back to its body and
+    // the page focus back on the top input.
+    const page = await openPage();
+    const read = await page.evaluate(async () => {
+      const outside = document.createElement('input');
+      outside.id = 'outside';
+      outside.setAttribute('aria-label', 'outside');
+      document.body.appendChild(outside);
+      // top document -> frame f1 (input #y, frame f2) -> frame f2 (button #t)
+      const f1 = document.createElement('iframe');
+      f1.srcdoc =
+        '<!doctype html><input id="y" aria-label="y">' +
+        '<iframe id="f2" srcdoc="<!doctype html><button id=&quot;t&quot;>t</button>"></iframe>';
+      const loaded = new Promise((done) => f1.addEventListener('load', done, { once: true }));
+      document.body.appendChild(f1);
+      await loaded;
+      const d1 = f1.contentDocument!;
+      const f2 = d1.getElementById('f2') as HTMLIFrameElement;
+      if (!f2.contentDocument?.getElementById('t')) {
+        await new Promise((done) => f2.addEventListener('load', done, { once: true }));
+      }
+      const d2 = f2.contentDocument!;
+      // Focus #y in f1, then move the page focus to the top input.
+      (d1.getElementById('y') as HTMLInputElement).focus();
+      outside.focus();
+      const before = {
+        top: document.activeElement?.id,
+        f1: d1.activeElement === d1.body ? 'body' : d1.activeElement?.id,
+      };
+      await window.FV.captureStateVariations(d2.getElementById('t')!, ['focus', 'focus-visible']);
+      return {
+        before,
+        top: document.activeElement?.id,
+        f1: d1.activeElement === d1.body ? 'body' : d1.activeElement?.id,
+        f2: d2.activeElement === d2.body ? 'body' : d2.activeElement?.id,
+      };
+    });
+    expect(read).toEqual({
+      before: { top: 'outside', f1: 'body' },
+      top: 'outside',
+      f1: 'body',
+      f2: 'body',
+    });
+    await page.close();
+  }, 30_000);
+
+  it('a frame inside a focusable CLOSED host, already holding the focus: the focus stays in the frame', async () => {
+    const page = await openPage();
+    const read = await page.evaluate(async () => {
+      const host = document.createElement('div');
+      host.id = 'closed-focusable-host';
+      host.tabIndex = -1;
+      document.body.appendChild(host);
+      const closed = host.attachShadow({ mode: 'closed' });
+      const frame = document.createElement('iframe');
+      frame.srcdoc = `<!doctype html><input id="fi" aria-label="fi"><button id="fb3">in frame</button>`;
+      const loaded = new Promise((done) => frame.addEventListener('load', done, { once: true }));
+      closed.appendChild(frame);
+      await loaded;
+      const doc = frame.contentDocument!;
+      (doc.getElementById('fi') as HTMLInputElement).focus();
+      await window.FV.captureStateVariations(doc.getElementById('fb3')!, [
+        'focus',
+        'focus-visible',
+      ]);
+      return {
+        top: document.activeElement?.id,
+        closedActive: closed.activeElement === frame ? 'frame' : closed.activeElement,
+        frameActive: doc.activeElement?.id,
+      };
+    });
+    // Recorded as "the frame is active" (walking up from the frame), so the
+    // ancestor restore leaves it: the host is NOT refocused, which would pull
+    // the focus out of the frame.
+    expect(read).toEqual({
+      top: 'closed-focusable-host',
+      closedActive: 'frame',
+      frameActive: 'fi',
+    });
+    await page.close();
+  }, 30_000);
+
+  it('the ancestor restore does not scroll the page back to the restored element', async () => {
+    const page = await openPage();
+    const read = await page.evaluate(async () => {
+      const outside = document.createElement('input');
+      outside.id = 'scroll-outside';
+      outside.setAttribute('aria-label', 'outside');
+      document.body.prepend(outside);
+      const spacer = document.createElement('div');
+      spacer.style.height = '3000px';
+      document.body.appendChild(spacer);
+      const frame = document.createElement('iframe');
+      frame.srcdoc = `<!doctype html><button id="fb4">in frame</button>`;
+      const loaded = new Promise((done) => frame.addEventListener('load', done, { once: true }));
+      document.body.appendChild(frame);
+      await loaded;
+      outside.focus({ preventScroll: true });
+      frame.scrollIntoView();
+      const scrolledTo = window.scrollY;
+      await window.FV.captureStateVariations(frame.contentDocument!.getElementById('fb4')!, [
+        'focus',
+      ]);
+      return {
+        scrolled: scrolledTo > 1000,
+        scrollKept: window.scrollY === scrolledTo,
+        active: document.activeElement?.id,
+      };
+    });
+    expect(read).toEqual({ scrolled: true, scrollKept: true, active: 'scroll-outside' });
+    await page.close();
+  }, 30_000);
+
   it("a focus whose :focus-visible match cannot be read is 'unknown', never false", async () => {
     const page = await openPage();
     const read = await page.evaluate(async () => {
