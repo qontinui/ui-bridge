@@ -10,7 +10,7 @@
 
 import { readFileSync } from 'node:fs';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import * as wrapper from '@qontinui/ui-bridge-wrapper';
+import * as wrapper from '@qontinui/ui-bridge-wrapper/live';
 import { installChromeMock, type ChromeMock } from './chrome-mock';
 import {
   createScreenshotHandler,
