@@ -574,4 +574,34 @@ describe('relay getElementStateStyles — reads each state for real', () => {
     expect(document.activeElement).not.toBe(btn);
     expect(getComputedStyle(btn).color).toBe('rgb(0, 0, 0)');
   });
+
+  it('with no states passed, reads every interaction state except disabled, and leaves disabled alone', async () => {
+    root = document.createElement('div');
+    const btn = document.createElement('button');
+    btn.id = 'b';
+    btn.textContent = 'b';
+    root.appendChild(btn);
+    document.body.appendChild(root);
+    getGlobalRegistry().registerElement('b', btn, { type: 'button' });
+    let disabledWrites = 0;
+    const observer = new MutationObserver((records) => {
+      for (const r of records) if (r.attributeName === 'disabled') disabledWrites += 1;
+    });
+    observer.observe(btn, { attributes: true });
+
+    const out = (await executeCommand('getElementStateStyles', { id: 'b' }, emptyBridge)) as {
+      stateStyles: Array<{ state: string }>;
+    };
+    for (const r of observer.takeRecords()) if (r.attributeName === 'disabled') disabledWrites += 1;
+    observer.disconnect();
+
+    expect(out.stateStyles.map((s) => s.state)).toEqual([
+      'default',
+      'hover',
+      'focus',
+      'focus-visible',
+      'active',
+    ]);
+    expect(disabledWrites).toBe(0);
+  });
 });

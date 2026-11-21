@@ -5382,11 +5382,13 @@ export async function executeCommand(
       if (!el) return { error: `Element ${id} not found` };
       const dom = el.element as HTMLElement;
       // The same implementation the HTTP handler uses: `hover`/`active` are
-      // forced through the in-place selector rewrite (`forced-hover.ts`) and released
-      // after the read, `focus` through `el.focus()` with the previous focus
-      // restored (its entry carries `focusVisible`, the browser's own match),
-      // `focus-visible` through `el.focus()` plus the forced rewrite. Each state is read in its real computed appearance, never
-      // the placeholder this case used to return without interacting at all.
+      // forced through the in-place selector rewrite (`forced-hover.ts`) and
+      // released after the read, `focus` through `el.focus()` with the
+      // previous focus restored (its entry carries `focusVisible`, the
+      // browser's own match), `focus-visible` through `el.focus()` plus the
+      // forced rewrite (its entry carries `focused`). Each state is read in
+      // its real computed appearance, never the placeholder this case used to
+      // return without interacting at all.
       const stateStyles = await captureStateVariations(
         dom,
         states.filter((s): s is InteractionStateName =>

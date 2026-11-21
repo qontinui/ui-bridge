@@ -392,6 +392,7 @@ describe('the hold is one per page, not one per bundle', () => {
     const olderKeys = [
       Symbol.for('ui-bridge.forcedPseudo'),
       Symbol.for('ui-bridge.forcedPseudo@v3'),
+      Symbol.for('ui-bridge.forcedPseudo@v4'),
     ];
     const saved = olderKeys.map((k) => host[k]);
     const older = olderKeys.map(() => ({ version: 3, hold: 'older-shape' }));
@@ -400,7 +401,7 @@ describe('the hold is one per page, not one per bundle', () => {
     document.body.appendChild(el);
     try {
       await forcePseudoState(el, 'hover');
-      expect(older.map((o) => o.hold)).toEqual(['older-shape', 'older-shape']);
+      expect(older.map((o) => o.hold)).toEqual(['older-shape', 'older-shape', 'older-shape']);
       expect((host[KEY] as { hold: unknown }).hold).not.toBeNull();
       expect((await releaseForcedPseudoState()).released).toBe(true);
     } finally {
