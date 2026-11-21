@@ -28,6 +28,11 @@ import { BaseTransport } from '../base-transport.js';
 import { HandlerRegistry } from '../handler-registry.js';
 import type { TransportConfig, WrapperTransportKind } from '../types.js';
 import { WrapperTransportError } from '../types.js';
+import {
+  registerScreenshotCapture,
+  SCREENSHOT_CAPABILITY,
+  type FramePage,
+} from '../frame-capture.js';
 
 /** Options extracted from `TransportConfig.options` for the live transport. */
 export interface LiveTransportOptions {
@@ -45,8 +50,22 @@ export interface LiveTransportOptions {
   framework?: string;
   /** Wrapper version forwarded to `app_registry`. */
   version?: string;
-  /** Capability strings forwarded to `app_registry` (informational). */
+  /**
+   * Capability strings forwarded to `app_registry`. The runner reads
+   * `"screenshot"` to decide whether it may relay `getScreenshot` to this app;
+   * do not list it here by hand — set {@link screenshotPage}, which registers
+   * the handler and advertises the capability together.
+   */
   capabilities?: string[];
+  /**
+   * A page this process owns (a Playwright `Page` satisfies it). When set, the
+   * transport registers a `getScreenshot` handler that captures it (see
+   * `registerScreenshotCapture` in `frame-capture.ts`) and appends
+   * `"screenshot"` to the register frame's `capabilities`, so the runner's
+   * vision routes can frame this app over its socket. Unset: no handler, no
+   * capability, and the runner refuses this app as a capture target by name.
+   */
+  screenshotPage?: FramePage;
   /** Origin URL forwarded to `app_registry` (informational). */
   origin?: string;
   /** Page URL forwarded to `app_registry` (informational). */
@@ -156,6 +175,20 @@ export class LiveSessionTransport extends BaseTransport {
     this.appId = config.appId;
     this.appName = config.appName;
     this.opts = (config.options ?? {}) as LiveTransportOptions;
+    const page = this.opts.screenshotPage;
+    if (page !== undefined) {
+      if (
+        page === null ||
+        typeof page.screenshot !== 'function' ||
+        typeof page.evaluate !== 'function'
+      ) {
+        throw new WrapperTransportError(
+          'INVALID_CONFIG',
+          `options.screenshotPage must expose screenshot() and evaluate() (a Playwright Page does)`
+        );
+      }
+      registerScreenshotCapture(this.registry, page);
+    }
     const fromInjection = injected?.webSocketCtor;
     // Prefer the browser's global WebSocket if present; allow the caller
     // to inject a Node-side `ws` implementation.
@@ -194,7 +227,8 @@ export class LiveSessionTransport extends BaseTransport {
           };
           if (this.opts.framework !== undefined) frame.framework = this.opts.framework;
           if (this.opts.version !== undefined) frame.version = this.opts.version;
-          if (this.opts.capabilities !== undefined) frame.capabilities = this.opts.capabilities;
+          const capabilities = this.advertisedCapabilities();
+          if (capabilities !== undefined) frame.capabilities = capabilities;
           if (this.opts.origin !== undefined) frame.origin = this.opts.origin;
           if (this.opts.pageUrl !== undefined) frame.pageUrl = this.opts.pageUrl;
           ws.send(JSON.stringify(frame));
@@ -235,6 +269,19 @@ export class LiveSessionTransport extends BaseTransport {
         // ignore — best-effort teardown
       }
     }
+  }
+
+  /**
+   * The register frame's `capabilities`: the caller's list, plus
+   * `"screenshot"` exactly when this transport registered the handler for it.
+   * `undefined` (field omitted) when there is nothing to advertise.
+   */
+  private advertisedCapabilities(): string[] | undefined {
+    const declared = this.opts.capabilities;
+    if (this.opts.screenshotPage === undefined) return declared;
+    const list = [...(declared ?? [])];
+    if (!list.includes(SCREENSHOT_CAPABILITY)) list.push(SCREENSHOT_CAPABILITY);
+    return list;
   }
 
   protected async buildContext(): Promise<LiveContext> {

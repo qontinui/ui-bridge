@@ -39,6 +39,36 @@ await transport.dispatch('login', { email: 'a@b.c', password: '...' });
 await transport.close();
 ```
 
+## A live session the runner can capture
+
+The runner's vision routes (`POST /ui-bridge/vision/capture` and the analyze,
+OCR and audit routes beside it) frame a WebSocket-transport app by relaying
+`getScreenshot` over its socket — and only to an app whose register frame
+advertises the `screenshot` capability. A Node process that owns a Playwright
+page opts in by handing that page to the live transport:
+
+```ts
+import WebSocket from 'ws';
+import { createTransport } from '@qontinui/ui-bridge-wrapper';
+
+const transport = createTransport({
+  kind: 'live',
+  runnerUrl: 'ws://127.0.0.1:9876/ui-bridge/ws',
+  appId: 'my-app',
+  options: { webSocketCtor: WebSocket, screenshotPage: page },
+});
+await transport.ready();
+```
+
+`screenshotPage` registers the `getScreenshot` handler and advertises
+`screenshot` together, so the advertisement cannot drift from the behaviour.
+The reply is `{ screenshot: <base64 png>, width, height }` (CSS pixels); a
+capture is bounded at 10 s (`SCREENSHOT_TIMEOUT`, retryable) and a failed one
+answers a typed `SCREENSHOT_FAILED`. Without `screenshotPage` the runner refuses
+the app as a capture target by name (`FRAME_SOURCE_UNSUPPORTED`).
+`registerScreenshotCapture(registrar, page)` registers the same handler on any
+other transport that owns a page.
+
 ## Package layout
 
 - `src/index.ts` — public surface (transports, helpers, types).
