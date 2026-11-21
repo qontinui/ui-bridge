@@ -241,19 +241,35 @@ describe('live relay getScreenshot', () => {
   });
 
   it('each known-final pattern matches a real Chrome refusal, which answers non-retryable CAPTURE_FAILED', async () => {
-    // One real Chrome message per CAPTURE_FINAL_PATTERNS entry, in order.
-    const messages = [
-      "Either the '<all_urls>' or 'activeTab' permission is required.",
-      'Cannot access contents of url "chrome://settings/". Extension manifest must request permission to access this host.',
-      'The extensions gallery cannot be scripted.',
-      'Cannot access a chrome:// URL',
-      'The extensions gallery cannot be scripted.',
-      'Cannot access a chrome-extension:// URL of different extension',
+    // One distinct real Chromium message per row (extensions/common/
+    // manifest_constants.h), each bound to the ONE pattern that must match it.
+    const rows: Array<[RegExp, string]> = [
+      [
+        CAPTURE_FINAL_PATTERNS[0]!,
+        "Either the '<all_urls>' or 'activeTab' permission is required.",
+      ],
+      [
+        CAPTURE_FINAL_PATTERNS[1]!,
+        "The 'activeTab' permission is not in effect because this extension has not been in invoked.",
+      ],
+      [
+        CAPTURE_FINAL_PATTERNS[2]!,
+        'Cannot access contents of url "https://example.com/". Extension manifest must request permission to access this host.',
+      ],
+      [CAPTURE_FINAL_PATTERNS[3]!, 'The extensions gallery cannot be scripted.'],
+      [CAPTURE_FINAL_PATTERNS[4]!, 'Cannot access a chrome:// URL'],
+      [
+        CAPTURE_FINAL_PATTERNS[4]!,
+        'Cannot access a chrome-extension:// URL of different extension',
+      ],
     ];
-    expect(messages).toHaveLength(CAPTURE_FINAL_PATTERNS.length);
-    for (const [i, pattern] of CAPTURE_FINAL_PATTERNS.entries()) {
-      const message = messages[i]!;
-      expect(pattern.test(message), `${pattern} vs ${message}`).toBe(true);
+    // Every pattern is exercised by at least one row.
+    expect(new Set(rows.map(([p]) => p)).size).toBe(CAPTURE_FINAL_PATTERNS.length);
+    for (const [pattern, message] of rows) {
+      expect(
+        CAPTURE_FINAL_PATTERNS.filter((p) => p.test(message)),
+        message
+      ).toEqual([pattern]);
       chromeMock.tabs.query.mockResolvedValue([{ id: SENDER_TAB.id }]);
       chromeMock.tabs.captureVisibleTab.mockRejectedValueOnce(new Error(message));
       const reply = await deliverToServiceWorker(

@@ -32,7 +32,16 @@
  * settle it, the plan's D6 falsification probe decides — a headed Chromium,
  * `captureVisibleTab` on an opted-in `https://` tab with no gesture under
  * `https://*\/*` alone — and it has NOT been run. Until it is, `<all_urls>`
- * (the grant both readings accept) stands. If the probe shows the narrower
+ * (the grant both readings accept) stands.
+ *
+ * Source evidence, not the probe: Chromium's
+ * `PermissionsData::CanCaptureVisiblePage` sets `has_all_urls` only when a
+ * granted pattern's `match_all_urls()` is true, and without it (and without
+ * an active-tab grant) it refuses with `kAllURLOrActiveTabNeeded` ("Either
+ * the '<all_urls>' or 'activeTab' permission is required."). Read that way,
+ * `https://*\/*` alone does NOT satisfy a no-gesture capture, which supports
+ * `<all_urls>`. It is a reading of the source, not the headed D6 probe, so
+ * the probe still decides. If the probe shows the narrower
  * grant suffices, replace it with
  * `["http://localhost:*\/*", "http://127.0.0.1:*\/*", "https://*\/*"]` (the
  * content scripts' match set); tests/live-relay-screenshot.test.ts asserts the
@@ -56,18 +65,26 @@ const PNG_DATA_URL_PREFIX = 'data:image/png;base64,';
 const CAPTURE_QUOTA = /MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND/;
 
 /**
- * Refusals that the same request cannot outgrow: a missing permission, or a
- * page Chrome will never let an extension read (chrome://, the Web Store).
- * Every other captureVisibleTab refusal is treated as retryable — a window
- * mid-transition, a tab still loading — since retrying costs one request.
+ * Refusals that the same request cannot outgrow — a missing permission, or a
+ * page Chrome will never let an extension read: a chrome:// page, another
+ * extension's chrome-extension:// pages, the Web Store. Each pattern matches
+ * ONE Chromium message (extensions/common/manifest_constants.h), and the
+ * table test in tests/live-relay-screenshot.test.ts holds each to exactly
+ * its own. Every other captureVisibleTab refusal is treated as retryable — a
+ * window mid-transition, a tab still loading — since retrying costs one
+ * request.
  */
 export const CAPTURE_FINAL_PATTERNS: readonly RegExp[] = [
-  /permission is required/i, // "Either the '<all_urls>' or 'activeTab' permission is required."
-  /Cannot access contents of/i, // "Cannot access contents of url "…". Extension manifest must request permission…"
-  /cannot be scripted/i, // "The extensions gallery cannot be scripted."
-  /chrome:\/\//i, // "Cannot access a chrome:// URL"
-  /extensions gallery/i, // the Web Store, in its own wording
-  /Cannot access a /i, // "Cannot access a chrome-extension:// URL of different extension"
+  // kAllURLOrActiveTabNeeded
+  /permission is required/i,
+  // kActiveTabPermissionNotGranted
+  /'activeTab' permission is not in effect/i,
+  // kCannotAccessPageWithUrl ("Cannot access contents of url "…". …")
+  /Cannot access contents of/i,
+  // kCannotScriptGallery — the one Web Store message
+  /cannot be scripted/i,
+  // kCannotAccessChromeUrl / kCannotAccessExtensionUrl
+  /Cannot access a [a-z-]+:\/\/ URL/i,
 ];
 
 function isFinalRefusal(text: string): boolean {
