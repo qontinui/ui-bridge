@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ensureBuilt } from '../../../test-support/ensure-built.mjs';
+import { CLI_ARGS_PREREQUISITE, ensureBuilt } from '../../../test-support/ensure-built.mjs';
 
 /**
  * Regression guard for the CLI entry-point guard.
@@ -67,7 +67,8 @@ describe.skipIf(!SYMLINKS_AVAILABLE)('bin entry guard survives the bin symlink',
   beforeAll(() => {
     ensureBuilt(
       PKG_DIR,
-      BINS.map((b) => b.dist)
+      BINS.map((b) => b.dist),
+      { prerequisites: [CLI_ARGS_PREREQUISITE] }
     );
   }, 1_200_000);
 

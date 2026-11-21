@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ensureBuilt } from '../../../test-support/ensure-built.mjs';
+import { CLI_ARGS_PREREQUISITE, ensureBuilt } from '../../../test-support/ensure-built.mjs';
 
 /**
  * Build-output guard: `@qontinui/ui-bridge-cli-args` is INLINED into this
@@ -44,7 +44,7 @@ function walk(dir: string, keep: (name: string) => boolean): string[] {
 
 describe('cli-args is bundled into dist, not a runtime dependency', () => {
   beforeAll(() => {
-    ensureBuilt(PKG_DIR, OUTPUTS);
+    ensureBuilt(PKG_DIR, OUTPUTS, { prerequisites: [CLI_ARGS_PREREQUISITE] });
   }, 1_200_000);
 
   it('the manifest does not list cli-args as a runtime dependency', () => {

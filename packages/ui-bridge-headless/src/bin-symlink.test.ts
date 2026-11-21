@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ensureBuilt } from '../../../test-support/ensure-built.mjs';
+import { CLI_ARGS_PREREQUISITE, ensureBuilt } from '../../../test-support/ensure-built.mjs';
 
 /**
  * Regression guard for the `ui-bridge-tab` entry-point guard.
@@ -44,7 +44,7 @@ function run(entry: string): { status: number | null; output: string } {
 
 describe.skipIf(!SYMLINKS_AVAILABLE)('ui-bridge-tab entry guard survives the bin symlink', () => {
   beforeAll(() => {
-    ensureBuilt(PKG_DIR, [DIST]);
+    ensureBuilt(PKG_DIR, [DIST], { prerequisites: [CLI_ARGS_PREREQUISITE] });
   }, 1_200_000);
 
   it('runs main() when invoked through node_modules/.bin/ui-bridge-tab', () => {
