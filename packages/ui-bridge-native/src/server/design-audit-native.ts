@@ -29,7 +29,9 @@
  * `NativeDesignHandlers` is a public export, so the core's types are mirrored
  * here. `design-audit-native.test-d.ts` pins the mirror to the SDK's own:
  * the response, the heuristic input, the coverage declaration and the style
- * guide exactly; the adapter member by member (same keys both ways, and
+ * guide exactly; the adapter member by member (the same keys both ways, each
+ * method's parameters exactly, each return exactly — records' assignable,
+ * since a native record omits `stateVariations` — and the whole adapter
  * assignable to the SDK's); and the SDK's `auditDesign` as assignable to
  * `DesignAuditCoreModule['auditDesign']`, a property, so that check is strict
  * under `strictFunctionTypes` — narrowing any of the SDK's parameters fails it.
