@@ -398,6 +398,26 @@ export function createDesignHandlers(
     return elements.filter((e) => idSet.has(e.id));
   }
 
+  /**
+   * The context a named `/design/evaluate` request resolves to, as the web
+   * transports' `requestedContext`: a context the loaded style guide declares
+   * under that name (own keys only, so `toString` names none), else the
+   * built-in of that name. Any other name — `""` included — is refused with
+   * web's message rather than left to the evaluator.
+   */
+  function requestedContextName(body: Record<string, unknown>, route: string): unknown {
+    const name = stringOf(body, 'context', route) ?? 'general';
+    const declared = (loadedStyleGuide as { qualityContexts?: Record<string, unknown> } | null)
+      ?.qualityContexts;
+    if (declared && Object.prototype.hasOwnProperty.call(declared, name)) return declared[name];
+    const builtIns = qualityEvaluator?.listContexts().map((c) => c.name) ?? [];
+    if (builtIns.includes(name)) return name;
+    const available = [...builtIns, ...Object.keys(declared ?? {})];
+    throw new NativeRequestError(
+      `Unknown quality context: "${name}". Available: ${available.join(', ')}`
+    );
+  }
+
   /** Native design data for the selected elements. */
   function designDataOf(elementIds: readonly string[] | undefined): ElementDesignData[] {
     return selectElements(elementIds).map((el) => {
@@ -609,17 +629,9 @@ export function createDesignHandlers(
         elementIds = elementIdsOf(body, route);
         viewport = viewportOf(body, route) ?? getScreenDimensions();
         // Resolve context: custom object > style guide context > built-in name
-        context = customContextOf(body, route) ?? stringOf(body, 'context', route) ?? 'general';
+        context = customContextOf(body, route) ?? requestedContextName(body, route);
       } catch (err) {
         return invalidRequest(err);
-      }
-      if (typeof context === 'string' && loadedStyleGuide) {
-        const declared = (loadedStyleGuide as { qualityContexts?: Record<string, unknown> })
-          .qualityContexts;
-        // Own keys only, so `toString` names no context.
-        if (declared && Object.prototype.hasOwnProperty.call(declared, context)) {
-          context = declared[context];
-        }
       }
 
       const designData = designDataOf(elementIds);
@@ -667,10 +679,15 @@ export function createDesignHandlers(
         return invalidRequest(err);
       }
 
-      const designData = designDataOf(elementIds);
-      const viewport = getScreenDimensions();
-      savedBaseline = qualityEvaluator.createBaseline(designData, viewport, label);
-      return success({ saved: true, elementCount: designData.length });
+      try {
+        const designData = designDataOf(elementIds);
+        const viewport = getScreenDimensions();
+        savedBaseline = qualityEvaluator.createBaseline(designData, viewport, label);
+        return success({ saved: true, elementCount: designData.length });
+      } catch (err) {
+        // Answered, not thrown, as the web transports answer it.
+        return error(err instanceof Error ? err.message : String(err), 'SAVE_BASELINE_ERROR');
+      }
     },
 
     // 12. POST /design/evaluate/diff

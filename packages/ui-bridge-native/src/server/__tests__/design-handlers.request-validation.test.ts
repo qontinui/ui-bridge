@@ -111,10 +111,56 @@ describe('native design request validation', () => {
       );
     });
 
-    it('evaluates a well-formed body', async () => {
-      const h = createDesignHandlers(registry(), () => ({ width: 400, height: 800 }));
-      const r = await h.evaluateQuality(ctx({ elementIds: ['box'], context: 'general' }));
+    it('refuses an unknown or empty context name with the web message', async () => {
+      const h = createDesignHandlers(registry());
+      for (const context of ['bogus', '', 'toString', 'constructor']) {
+        expect(await h.evaluateQuality(ctx({ context }))).toMatchObject({
+          success: false,
+          code: 'INVALID_REQUEST',
+          error: expect.stringMatching(
+            new RegExp(`^Unknown quality context: "${context}"\\. Available: general, minimal, `)
+          ),
+        });
+      }
+    });
+
+    it('resolves a guide-declared context by own key, and names it when refusing', async () => {
+      vi.resetModules();
+      const fresh = await import('../design-handlers');
+      const h = fresh.createDesignHandlers(registry(), () => ({ width: 400, height: 800 }));
+      const declared = {
+        name: 'brand',
+        description: 'brand',
+        metrics: { contrast: { enabled: true, weight: 1, thresholds: { good: 1, warning: 0 } } },
+      };
+      const guide = {
+        version: '1.0',
+        name: 'g',
+        tokens: {},
+        rules: [],
+        qualityContexts: { brand: declared },
+      };
+      expect((await h.loadStyleGuide(ctx({ guide }))).success).toBe(true);
+      const r = await h.evaluateQuality(ctx({ context: 'brand' }));
       expect(r.success, JSON.stringify(r)).toBe(true);
+      expect((r.data as { contextName: string }).contextName).toBe('brand');
+      expect(await h.evaluateQuality(ctx({ context: 'toString' }))).toMatchObject({
+        success: false,
+        code: 'INVALID_REQUEST',
+        error: expect.stringMatching(/Available: .*accessibility, brand$/),
+      });
+    });
+
+    it('evaluates exactly the selected elements', async () => {
+      const h = createDesignHandlers(registry(), () => ({ width: 400, height: 800 }));
+      const count = async (body: unknown) => {
+        const r = await h.evaluateQuality(ctx(body));
+        expect(r.success, JSON.stringify(r)).toBe(true);
+        return (r.data as { totalElements: number }).totalElements;
+      };
+      expect(await count({ elementIds: ['box'], context: 'general' })).toBe(1);
+      expect(await count({ elementIds: [] })).toBe(0);
+      expect(await count({ elementIds: null })).toBe(4);
     });
   });
 
@@ -168,8 +214,15 @@ describe('native design request validation', () => {
           refusal(`${route}: elementIds must be an array of strings`)
         );
       }
-      expect((await h.diffBaseline(ctx({ elementIds: ['box'] }))).success).toBe(true);
-      expect((await h.diffBaseline(ctx(null))).success).toBe(true);
+      // Against a baseline of all four, a diff selects as web does.
+      const removed = async (body: unknown) => {
+        const r = await h.diffBaseline(ctx(body));
+        expect(r.success, JSON.stringify(r)).toBe(true);
+        return (r.data as { removed: unknown[] }).removed.length;
+      };
+      expect(await removed({ elementIds: ['box'] })).toBe(3);
+      expect(await removed({ elementIds: [] })).toBe(4);
+      expect(await removed(null)).toBe(0);
     });
   });
 });
