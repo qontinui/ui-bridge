@@ -917,6 +917,60 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('design inspector focus states (real Chro
     await page.close();
   }, 30_000);
 
+  it('an ancestor focus inside a NON-focusable closed host beside the frame: the frame does not keep the page focus', async () => {
+    const page = await openPage();
+    const read = await page.evaluate(async () => {
+      const host = document.createElement('div');
+      host.id = 'closed-input-host';
+      document.body.appendChild(host);
+      const closed = host.attachShadow({ mode: 'closed' });
+      closed.innerHTML = `<input id="ci" aria-label="ci">`;
+      const frame = document.createElement('iframe');
+      frame.id = 'side-frame';
+      frame.srcdoc = `<!doctype html><button id="fb5">in frame</button>`;
+      const loaded = new Promise((done) => frame.addEventListener('load', done, { once: true }));
+      document.body.appendChild(frame);
+      await loaded;
+      (closed.getElementById('ci') as HTMLInputElement).focus();
+      const before = document.activeElement?.id;
+      await window.FV.captureStateVariations(frame.contentDocument!.getElementById('fb5')!, [
+        'focus',
+        'focus-visible',
+      ]);
+      return {
+        before,
+        frameActive: document.activeElement === frame,
+        after: document.activeElement === document.body ? 'body' : document.activeElement?.id,
+      };
+    });
+    // The input's focus inside the closed host cannot be read or restored
+    // (host.focus() does nothing on a non-focusable host), but the page focus
+    // must not stay in the frame.
+    expect(read).toEqual({ before: 'closed-input-host', frameActive: false, after: 'body' });
+    await page.close();
+  }, 30_000);
+
+  it('a target below the fold: the read does not scroll the page', async () => {
+    const page = await openPage();
+    const read = await page.evaluate(async () => {
+      const spacer = document.createElement('div');
+      spacer.style.height = '3000px';
+      document.body.appendChild(spacer);
+      const target = document.createElement('button');
+      target.id = 'below-fold';
+      target.textContent = 'below the fold';
+      document.body.appendChild(target);
+      window.scrollTo(0, 0);
+      const before = window.scrollY;
+      const offscreen = target.getBoundingClientRect().top > window.innerHeight;
+      const states = await window.FV.captureStateVariations(target, ['focus', 'focus-visible']);
+      const fv = states.find((s: { state: string }) => s.state === 'focus-visible');
+      return { before, offscreen, after: window.scrollY, forced: fv.forced };
+    });
+    expect(read).toEqual({ before: 0, offscreen: true, after: 0, forced: true });
+    await page.close();
+  }, 30_000);
+
   it("a focus whose :focus-visible match cannot be read is 'unknown', never false", async () => {
     const page = await openPage();
     const read = await page.evaluate(async () => {

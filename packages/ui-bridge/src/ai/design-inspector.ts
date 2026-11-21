@@ -1040,7 +1040,9 @@ function applyFocus(el: HTMLElement): () => Promise<void> {
     tree ? deepestBelow(tree.activeElement ?? null) : deepestActiveElement(doc);
   const previous = readFocus();
   const ancestors = recordAncestorFocus(doc);
-  el.focus();
+  // `:focus-visible` does not depend on scroll position, and nothing scrolls
+  // back afterwards, so the read's own focus must not scroll the page.
+  el.focus({ preventScroll: true });
   return async () => {
     if (previous === el) {
       if (!isActiveInTreeChain(el)) el.focus({ preventScroll: true });
@@ -1104,7 +1106,10 @@ function ancestorFocusOf(doc: Document, frame: Element): Element | null {
  * it there), nor does one whose focus already equals the recorded element.
  * One that had nothing focused gets that frame blurred, when the frame is the
  * active element of its tree chain (read by walking up from the frame, so a
- * frame inside a closed shadow root counts). Focus calls pass
+ * frame inside a closed shadow root counts). So does one whose recorded
+ * element took no focus back (a non-focusable host of a closed shadow root:
+ * its real focus inside cannot be read or restored), so the page focus never
+ * stays in the frame. Focus calls pass
  * `preventScroll`, so a restore never scrolls the page.
  */
 function restoreAncestorFocus(ancestors: AncestorFocus[]): void {
@@ -1114,7 +1119,10 @@ function restoreAncestorFocus(ancestors: AncestorFocus[]): void {
       if (ancestorFocusOf(doc, frame) === previous) continue;
       if (previous && previous !== doc.body && previous.isConnected && isFocusable(previous)) {
         (previous as HTMLElement).focus({ preventScroll: true });
-        continue;
+        // A recorded element that takes no focus (a non-focusable host of a
+        // closed shadow root, whose real focus inside cannot be read) leaves
+        // the page focus in the frame: take it out, as the own document does.
+        if (ancestorFocusOf(doc, frame) !== frame) continue;
       }
       if (isActiveInTreeChain(frame) && isFocusable(frame)) (frame as HTMLElement).blur();
     } catch {

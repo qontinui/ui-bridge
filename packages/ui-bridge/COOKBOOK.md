@@ -566,7 +566,12 @@ The read puts the previous focus back, within limits:
   `delegatesFocus` that is the host's first focusable element, and a host
   without `delegatesFocus` that is not itself focusable takes no focus at
   all, so the focus falls to the body;
-- an element that was already focused before the read stays focused.
+- an element that was already focused before the read stays focused;
+- if an ancestor document's recorded focus is a non-focusable closed host
+  (its real focus inside cannot be read), that focus is lost, but the frame
+  is still blurred, so the page focus does not stay in the frame;
+- the read never scrolls the page: its own focus and every restore pass
+  `preventScroll`.
 
 ```bash
 curl -s -X POST "$BASE/design/element/save-btn/state-styles" \
