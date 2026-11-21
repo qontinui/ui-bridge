@@ -900,7 +900,7 @@ const I32_MAX = 2_147_483_647;
  * fractions kept (it is the producer's unrounded measurement), a `w` or `h`
  * below zero refused, as a size cannot be negative, and an edge (`x`, `y`,
  * `x + w`, `y + h`) outside the `i32` range refused, so every box read snaps
- * to the grid with nothing clamped (qontinui-schemas 1770f324).
+ * to the grid with nothing clamped (qontinui-schemas c3fc2a0b).
  */
 function optRegion(
   raw: Record<string, unknown>,
