@@ -1043,10 +1043,10 @@ function applyFocus(el: HTMLElement): () => Promise<void> {
   el.focus();
   return async () => {
     if (previous === el) {
-      if (!isActiveInTreeChain(el)) el.focus();
+      if (!isActiveInTreeChain(el)) el.focus({ preventScroll: true });
     } else {
       if (previous && previous !== doc.body && previous.isConnected && isFocusable(previous)) {
-        (previous as HTMLElement).focus();
+        (previous as HTMLElement).focus({ preventScroll: true });
       }
       if (readFocus() !== previous && isActiveInTreeChain(el)) el.blur();
     }
@@ -1081,29 +1081,42 @@ function recordAncestorFocus(doc: Document): AncestorFocus[] {
     }
     if (!frame) break;
     const parent = frame.ownerDocument;
-    out.push({ doc: parent, frame, previous: deepestActiveElement(parent) });
+    out.push({ doc: parent, frame, previous: ancestorFocusOf(parent, frame) });
     current = parent;
   }
   return out;
 }
 
 /**
+ * What `doc` has focused, as seen from the frame on the chain: the frame
+ * itself when it is the active element of its tree chain (read by walking UP
+ * from it, so a frame inside a CLOSED shadow root is recognised), else the
+ * deepest focused element of `doc` (which stops at a closed host).
+ */
+function ancestorFocusOf(doc: Document, frame: Element): Element | null {
+  return isActiveInTreeChain(frame) ? frame : deepestActiveElement(doc);
+}
+
+/**
  * Put each recorded ancestor focus back, innermost first so the top
  * document's own focus is set last and wins. An ancestor whose recorded focus
  * was its frame on the chain needs nothing (restoring the inner document left
- * it there); one that had nothing focused gets that frame blurred, when the
- * frame is what it now has focused.
+ * it there), nor does one whose focus already equals the recorded element.
+ * One that had nothing focused gets that frame blurred, when the frame is the
+ * active element of its tree chain (read by walking up from the frame, so a
+ * frame inside a closed shadow root counts). Focus calls pass
+ * `preventScroll`, so a restore never scrolls the page.
  */
 function restoreAncestorFocus(ancestors: AncestorFocus[]): void {
   for (const { doc, frame, previous } of ancestors) {
     try {
       if (previous === frame) continue;
+      if (ancestorFocusOf(doc, frame) === previous) continue;
       if (previous && previous !== doc.body && previous.isConnected && isFocusable(previous)) {
-        (previous as HTMLElement).focus();
+        (previous as HTMLElement).focus({ preventScroll: true });
         continue;
       }
-      const now = deepestActiveElement(doc);
-      if (now === frame && isFocusable(frame)) (frame as HTMLElement).blur();
+      if (isActiveInTreeChain(frame) && isFocusable(frame)) (frame as HTMLElement).blur();
     } catch {
       // A document that became unreadable mid-read: nothing to restore.
     }
