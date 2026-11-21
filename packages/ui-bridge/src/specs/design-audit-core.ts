@@ -529,19 +529,19 @@ function heuristicIssuesOf(input: HeuristicInput): {
     }
   }
 
-  // <select> in dark mode: native <option> dropdowns may be invisible. Judged
-  // only when the select's own colours are opaque and readable and, where it
-  // has an <option>, that option's contrast is judgeable; otherwise the select
-  // is not measured and produces no issue.
+  // <select> in dark mode: native <option> dropdowns may be invisible. The
+  // select is measured when its own colours are opaque and readable, and the
+  // select-level warning reads those alone. Its first <option>'s contrast is
+  // a separate check inside it: reported only when that pair is judgeable (a
+  // browser-default transparent option background is not), and never for a
+  // select that is not measured.
   if (input.select) {
     const { colorScheme, option } = input.select;
     const textLuminance = luminanceOf(textColor);
     const bgLuminance = luminanceOf(bgColor);
-    const optRatio = option ? contrastOfColors(option.color, option.backgroundColor) : null;
-    const judgeable =
-      textLuminance !== null && bgLuminance !== null && (option === undefined || optRatio !== null);
-    checks['select-dark-mode'] = judgeable;
-    if (judgeable && bgLuminance < 0.4 && textLuminance > 0.6 && !colorScheme.includes('dark')) {
+    const readable = textLuminance !== null && bgLuminance !== null;
+    checks['select-dark-mode'] = readable;
+    if (readable && bgLuminance < 0.4 && textLuminance > 0.6 && !colorScheme.includes('dark')) {
       issues.push({
         element: id,
         issue: `Select has light text (${textColor}) on dark bg (${bgColor}) without color-scheme:dark — native <option> dropdowns may be invisible`,
@@ -549,7 +549,9 @@ function heuristicIssuesOf(input: HeuristicInput): {
         fix: `Add style={{ colorScheme: "dark" }} to the <select> element and set option colors explicitly: [&>option]:text-black [&>option]:bg-white`,
       });
     }
-    if (judgeable && option && optRatio !== null && optRatio < 3.0) {
+    const optRatio =
+      readable && option ? contrastOfColors(option.color, option.backgroundColor) : null;
+    if (option && optRatio !== null && optRatio < 3.0) {
       issues.push({
         element: id,
         issue: `Select option text has low contrast: ${optRatio.toFixed(2)}:1 (${option.color} on ${option.backgroundColor})`,
