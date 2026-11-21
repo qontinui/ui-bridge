@@ -39,10 +39,43 @@ import {
 } from './quality-request';
 import { indexCustomProperties } from '../ai/design-inspector';
 import { disposeTokenIndex, reportedTokensOf, type ReportedTokens } from '../ai/design-tokens';
-import { runStyleAudit } from './style-validator';
-import { contrastOfColors, parseColor, relativeLuminance } from './color-utils';
 import { measureRootFontSizePx } from './style-inference-request';
-import type { StyleAuditReport, StyleGuideConfig } from './style-types';
+import type { StyleGuideConfig } from './style-types';
+import {
+  auditDesign,
+  bodyOf,
+  booleanOf,
+  bounded,
+  DesignRequestError,
+  elementIdsOf,
+  isGiven,
+  isObject,
+  isPositiveNumber,
+  limitOf,
+  selectElements,
+  type DesignAuditAdapter,
+  type DesignAuditResponse,
+  type DesignSelectionReport,
+  type HeuristicInput,
+  type RequestBody,
+} from './design-audit-core';
+
+export {
+  DEFAULT_AUDIT_ELEMENT_LIMIT,
+  DEFAULT_AUDIT_MAX_RESULTS,
+  DesignRequestError,
+  MAX_ECHOED_ELEMENT_IDS,
+} from './design-audit-core';
+export type {
+  AuditResultBounds,
+  DesignAuditBounds,
+  DesignAuditRequest,
+  DesignAuditResponse,
+  DesignSelectionReport,
+  HeuristicDesignAuditIssue,
+  HeuristicDesignAuditReport,
+  StyleGuideDesignAuditReport,
+} from './design-audit-core';
 
 /** The fields of a registered element these requests read (see `QualityElementSource`). */
 export type DesignElementSource = QualityElementSource;
@@ -73,64 +106,13 @@ export type DesignElementSource = QualityElementSource;
  */
 export const DEFAULT_DESIGN_RECORD_BUDGET = 250;
 
-/**
- * The default number of elements `/design/audit` checks. Its report carries
- * findings, not per-element design data — failures only, capped by
- * `maxResults` — so its size does not follow the element count the way a
- * snapshot's does, and a whole page fits.
- */
-export const DEFAULT_AUDIT_ELEMENT_LIMIT = 2_000;
-
 /** The most viewports one `/design/responsive` request may name. */
 export const MAX_RESPONSIVE_VIEWPORTS = 16;
-
-/** The most ids `missingElementIds` / `unreadableElementIds` echo; the counts cover the rest. */
-export const MAX_ECHOED_ELEMENT_IDS = 50;
-
-/**
- * The most findings an audit lists: rule results in style-guide mode,
- * issues in heuristic mode. A rule result echoes its constraints with expected
- * and actual values, a few hundred bytes, so 1,000 keeps the report under
- * about 1 MB — the same order as the record budget. This bound, not the
- * element limit, is what keeps an audit's size independent of the page.
- */
-export const DEFAULT_AUDIT_MAX_RESULTS = 1_000;
-
-/** What the request selected, and what of it could not be read. */
-export interface DesignSelectionReport {
-  /** Registered elements the request selected that have a live DOM node. */
-  totalElements: number;
-  /** The element bound applied: the request's `limit`, else the default. */
-  limit: number;
-  /** `true` when the bound cut the selection. */
-  truncated: boolean;
-  /**
-   * Requested `elementIds` that name no registered element (empty without
-   * `elementIds`), at most `MAX_ECHOED_ELEMENT_IDS` of them.
-   */
-  missingElementIds: string[];
-  /** How many requested ids name no registered element. */
-  missingElementCount: number;
-  /**
-   * Selected registered elements whose node is not an `HTMLElement` (an SVG
-   * element, or none at all), so no design data was read for them, at most
-   * `MAX_ECHOED_ELEMENT_IDS` of them. They are not counted in `totalElements`.
-   */
-  unreadableElementIds: string[];
-  /** How many selected registered elements had no `HTMLElement` node. */
-  unreadableElementCount: number;
-}
 
 /** How much of the selection a design-data response carries. */
 export interface DesignSelectionBounds extends DesignSelectionReport {
   /** Elements whose design data this response carries. */
   returned: number;
-}
-
-/** How much of the selection an audit checked. */
-export interface DesignAuditBounds extends DesignSelectionReport {
-  /** Elements the audit checked. */
-  checkedElements: number;
 }
 
 // ============================================================================
@@ -158,24 +140,6 @@ export interface ResponsiveSnapshotsRequest {
    * command timeout.
    */
   budgetMs?: number;
-}
-
-/** `/design/audit` request body. */
-export interface DesignAuditRequest {
-  /** Audit against this guide; else the loaded one; else run the heuristics. */
-  guide?: StyleGuideConfig;
-  elementIds?: string[];
-  /** Most elements to audit; default `DEFAULT_AUDIT_ELEMENT_LIMIT`. */
-  limit?: number;
-  /** List passing rule results too (style-guide mode); default `false`. */
-  includePassed?: boolean;
-  /** Most rule results to list (style-guide mode); default `DEFAULT_AUDIT_MAX_RESULTS`. */
-  maxResults?: number;
-  /**
-   * Root font size `rem` resolves against (style-guide mode); default: measured
-   * from `documentElement`, the figure style inference and drift use.
-   */
-  rootFontSizePx?: number;
 }
 
 // ============================================================================
@@ -230,80 +194,9 @@ export interface ResponsiveSnapshotsResponse extends DesignSelectionBounds, Repo
   timestamp: number;
 }
 
-/**
- * `/design/audit` answer when a style guide was provided or loaded.
- *
- * `results` lists failures only unless `includePassed`, and at most
- * `maxResults` of them (`resultsTruncated`, `listableResults`).
- * `passedCount` / `failedCount` and the `summary` counts cover every result.
- * `summary` carries counts, not lists: the failures are already in `results`,
- * and listing them twice doubled the report.
- */
-export interface StyleGuideDesignAuditReport
-  extends
-    Omit<StyleAuditReport, 'totalElements' | 'summary'>,
-    DesignAuditBounds,
-    AuditResultBounds {
-  mode: 'style-guide';
-  /** Failed results by severity. */
-  summary: { errors: number; warnings: number; info: number };
-  /** Whether passing results are listed. */
-  includePassed: boolean;
-}
-
-/** How much of an audit's findings its report lists (both modes). */
-export interface AuditResultBounds {
-  /** The bound applied to the listed findings (`results`, or `issues`). */
-  maxResults: number;
-  /** Findings eligible for listing (all failures; with `includePassed`, passes too). */
-  listableResults: number;
-  /** `true` when `maxResults` cut the list. */
-  resultsTruncated: boolean;
-}
-
-/** One finding of the heuristic audit. */
-export interface HeuristicDesignAuditIssue {
-  element: string;
-  issue: string;
-  severity: 'error' | 'warning' | 'info';
-  fix?: string;
-}
-
-/**
- * `/design/audit` answer when NO style guide was provided or loaded: built-in
- * heuristics (contrast, dark-mode `<select>`, font size, touch target), never a
- * style-guide verdict. `mode` says which one the caller got.
- */
-export interface HeuristicDesignAuditReport extends DesignAuditBounds, AuditResultBounds {
-  mode: 'heuristic';
-  /** Why the heuristic ran instead of a style-guide audit. */
-  reason: string;
-  issues: HeuristicDesignAuditIssue[];
-  timestamp: number;
-}
-
-/** `/design/audit` answer: self-describing by `mode`. */
-export type DesignAuditResponse = StyleGuideDesignAuditReport | HeuristicDesignAuditReport;
-
 // ============================================================================
 // Request validation
 // ============================================================================
-
-/**
- * A design request that cannot be answered: a malformed body
- * (`INVALID_REQUEST`), an unknown element (`ELEMENT_NOT_FOUND`), or one with no
- * DOM node (`NO_DOM_REFERENCE`). Each transport maps `code` onto the canonical
- * `UB-*` vocabulary the same way.
- */
-export class DesignRequestError extends Error {
-  constructor(
-    message: string,
-    readonly code: 'INVALID_REQUEST' | 'ELEMENT_NOT_FOUND' | 'NO_DOM_REFERENCE' = 'INVALID_REQUEST'
-  ) {
-    super(message);
-    this.name = 'DesignRequestError';
-  }
-}
 
 /**
  * The internal failure code a design handler answers `err` with: the request
@@ -312,60 +205,6 @@ export class DesignRequestError extends Error {
 export function designFailureCode(err: unknown, routeCode: string): string {
   if (err instanceof DesignRequestError || err instanceof RootWidthLockError) return err.code;
   return routeCode;
-}
-
-type RequestBody = Record<string, unknown>;
-
-function isObject(value: unknown): value is RequestBody {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/** Absent and JSON `null` both mean "not given". */
-function isGiven(value: unknown): boolean {
-  return value !== undefined && value !== null;
-}
-
-function isPositiveNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0;
-}
-
-function bodyOf(request: unknown, route: string): RequestBody {
-  if (!isGiven(request)) return {};
-  if (!isObject(request)) {
-    throw new DesignRequestError(`${route}: the request body must be a JSON object`);
-  }
-  return request;
-}
-
-function elementIdsOf(body: RequestBody, route: string): string[] | undefined {
-  const ids = body.elementIds;
-  if (!isGiven(ids)) return undefined;
-  if (!Array.isArray(ids) || !ids.every((id) => typeof id === 'string')) {
-    throw new DesignRequestError(`${route}: elementIds must be an array of strings`);
-  }
-  return ids;
-}
-
-function booleanOf(body: RequestBody, key: string, route: string): boolean | undefined {
-  const value = body[key];
-  if (!isGiven(value)) return undefined;
-  if (typeof value !== 'boolean') {
-    throw new DesignRequestError(`${route}: ${key} must be a boolean`);
-  }
-  return value;
-}
-
-function positiveIntegerOf(body: RequestBody, key: string, route: string): number | undefined {
-  const value = body[key];
-  if (!isGiven(value)) return undefined;
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
-    throw new DesignRequestError(`${route}: ${key} must be an integer >= 1`);
-  }
-  return value;
-}
-
-function limitOf(body: RequestBody, route: string): number | undefined {
-  return positiveIntegerOf(body, 'limit', route);
 }
 
 /**
@@ -406,69 +245,15 @@ function viewportsOf(body: RequestBody, route: string): Record<string, number> |
   return viewports as Record<string, number> | number[];
 }
 
-function guideOf(body: RequestBody, route: string): StyleGuideConfig | undefined {
-  const guide = body.guide;
-  if (!isGiven(guide)) return undefined;
-  if (!isObject(guide) || !Array.isArray(guide.rules)) {
-    throw new DesignRequestError(`${route}: guide must be a style guide object with a rules array`);
-  }
-  return guide as unknown as StyleGuideConfig;
-}
-
 // ============================================================================
 // Selection
 // ============================================================================
 
 type LiveSource = DesignElementSource & { element: HTMLElement };
 
-interface Selection {
-  /** Selected elements with an `HTMLElement` node, in registry order. */
-  live: LiveSource[];
-  missingElementIds: string[];
-  unreadableElementIds: string[];
-}
-
-/**
- * The selected registered elements (all of them when `elementIds` is absent),
- * split into those with a live `HTMLElement` node and those without, plus the
- * requested ids that name no registered element.
- */
-function selectElements(
-  elements: readonly DesignElementSource[],
-  elementIds: readonly string[] | undefined
-): Selection {
-  const wanted = elementIds ? new Set(elementIds) : null;
-  const live: LiveSource[] = [];
-  const unreadableElementIds: string[] = [];
-  const seen = new Set<string>();
-  for (const el of elements) {
-    if (wanted !== null && !wanted.has(el.id)) continue;
-    seen.add(el.id);
-    if (el.element instanceof HTMLElement) live.push(el as LiveSource);
-    else unreadableElementIds.push(el.id);
-  }
-  const missingElementIds = wanted ? [...wanted].filter((id) => !seen.has(id)) : [];
-  return { live, missingElementIds, unreadableElementIds };
-}
-
-function bounded(
-  selection: Selection,
-  limit: number
-): { kept: LiveSource[]; report: DesignSelectionReport } {
-  const { live, missingElementIds, unreadableElementIds } = selection;
-  const kept = live.slice(0, limit);
-  return {
-    kept,
-    report: {
-      totalElements: live.length,
-      limit,
-      truncated: kept.length < live.length,
-      missingElementIds: missingElementIds.slice(0, MAX_ECHOED_ELEMENT_IDS),
-      missingElementCount: missingElementIds.length,
-      unreadableElementIds: unreadableElementIds.slice(0, MAX_ECHOED_ELEMENT_IDS),
-      unreadableElementCount: unreadableElementIds.length,
-    },
-  };
+/** Whether a registered element has an `HTMLElement` node, so its design data can be read. */
+function isLive(el: DesignElementSource): el is LiveSource {
+  return el.element instanceof HTMLElement;
 }
 
 // ============================================================================
@@ -575,7 +360,7 @@ export function designSnapshotOf(
   const parsed = parseDesignSnapshotRequest(request);
   const { elementIds, includePseudoElements } = parsed;
   const limit = parsed.limit ?? DEFAULT_DESIGN_RECORD_BUDGET;
-  const { kept, report } = bounded(selectElements(elements, elementIds), limit);
+  const { kept, report } = bounded(selectElements(elements, elementIds, isLive), limit);
   const batch = collectDesignBatch(kept, undefined, { includePseudoElements });
   const { elements: designData, ...reported } = batch;
   return {
@@ -612,7 +397,7 @@ export async function responsiveSnapshotsOf(
     {
       getAllElements: () => {
         const source = typeof elements === 'function' ? elements() : elements;
-        selected = bounded(selectElements(source, elementIds), limit);
+        selected = bounded(selectElements(source, elementIds, isLive), limit);
         return selected.kept.map((el) => ({
           id: el.id,
           element: el.element,
@@ -624,7 +409,7 @@ export async function responsiveSnapshotsOf(
     viewports,
     { budgetMs }
   );
-  const { kept, report } = selected ?? bounded(selectElements([], elementIds), limit);
+  const { kept, report } = selected ?? bounded(selectElements([], elementIds, isLive), limit);
   return {
     snapshots: capture.snapshots,
     method: RESPONSIVE_SNAPSHOT_METHOD,
@@ -669,197 +454,59 @@ function collectOptionsFor(guide: StyleGuideConfig): DesignCollectOptions {
 }
 
 /**
- * Answer `/design/audit`. With a guide — the request's `guide`, else the one
- * the transport has loaded — the selected elements' full design data is
- * audited against it (`runStyleAudit`), `mode: 'style-guide'`. With none, the
- * built-in heuristics run, `mode: 'heuristic'`.
- *
- * `runStyleAudit` yields one result per matched element x rule, passes
- * included, so an unbounded report grows with the page. Both modes therefore
- * check at most `limit` elements (default `DEFAULT_AUDIT_ELEMENT_LIMIT`) and
- * report the cut. The style-guide mode also lists only failed results unless
- * `includePassed` is set, and summarises by count rather than repeating the
- * failures (its counts always cover every result). Both modes list at most
- * `maxResults` findings (default `DEFAULT_AUDIT_MAX_RESULTS`) and report
- * `listableResults` / `resultsTruncated`.
+ * Answer `/design/audit` on the web transports: `auditDesign`
+ * (`./design-audit-core`, which the React Native server shares) over the
+ * registered elements, through the DOM adapter below. With a guide — the
+ * request's `guide`, else the one the transport has loaded — the selected
+ * elements' full design data is audited against it, `mode: 'style-guide'`.
+ * With none, the built-in heuristics run, `mode: 'heuristic'`. See
+ * `auditDesign` for the bounds.
  */
 export function designAuditOf(
   elements: readonly DesignElementSource[],
   request: unknown,
   loadedGuide: StyleGuideConfig | null | undefined
 ): DesignAuditResponse {
-  const route = '/design/audit';
-  const body = bodyOf(request, route);
-  // Checked first, before any other field and before the guide is read, so a
-  // body that is wrong in several ways is refused for the root on every
-  // transport — the native server's `runDesignAudit` checks it first too.
-  const requestedRoot = body.rootFontSizePx;
-  if (isGiven(requestedRoot) && !isPositiveNumber(requestedRoot)) {
-    throw new DesignRequestError(`${route}: rootFontSizePx must be a finite number greater than 0`);
-  }
-  const elementIds = elementIdsOf(body, route);
-  const guide = guideOf(body, route) ?? loadedGuide ?? undefined;
-  const limit = limitOf(body, route) ?? DEFAULT_AUDIT_ELEMENT_LIMIT;
-  const includePassed = booleanOf(body, 'includePassed', route) ?? false;
-  const maxResults = positiveIntegerOf(body, 'maxResults', route) ?? DEFAULT_AUDIT_MAX_RESULTS;
-  const { kept, report } = bounded(selectElements(elements, elementIds), limit);
-  const bounds: DesignAuditBounds = { ...report, checkedElements: kept.length };
-  if (guide) {
-    const {
-      totalElements: _audited,
-      summary,
-      ...audit
-    } = runStyleAudit(collectDesignData(kept, undefined, collectOptionsFor(guide)), guide, {
-      // `rem` resolves against the caller's root font size, else the page's
-      // measured one — the same figure inference and drift use.
-      rootFontSizePx: isGiven(requestedRoot) ? (requestedRoot as number) : measureRootFontSizePx(),
-    });
-    const listable = includePassed ? audit.results : audit.results.filter((r) => !r.passed);
-    return {
-      mode: 'style-guide',
-      ...audit,
-      results: listable.slice(0, maxResults),
-      summary: {
-        errors: summary.errors.length,
-        warnings: summary.warnings.length,
-        info: summary.info.length,
-      },
-      includePassed,
-      maxResults,
-      listableResults: listable.length,
-      resultsTruncated: listable.length > maxResults,
-      ...bounds,
+  return auditDesign(elements, request, loadedGuide, webAuditAdapter);
+}
+
+/**
+ * The web transports' audit adapter. An element is readable when it has an
+ * `HTMLElement` node; the style-guide audit reads its full design data
+ * (`collectDesignData`), the heuristics its computed style and laid-out box,
+ * and `rem` resolves against the page's measured root font size — the figure
+ * style inference and drift use.
+ */
+const webAuditAdapter: DesignAuditAdapter<DesignElementSource, LiveSource> = {
+  isReadable: isLive,
+  records: (kept, guide) => collectDesignData(kept, undefined, collectOptionsFor(guide)),
+  heuristicInput: webHeuristicInput,
+  defaultRootFontSizePx: measureRootFontSizePx,
+};
+
+/** What the heuristics read of one live element: computed colours and font size, its box, and for a `<select>` its first `<option>`. */
+function webHeuristicInput(el: LiveSource): HeuristicInput {
+  const dom = el.element;
+  const cs = getComputedStyle(dom);
+  const fontSizePx = parseFloat(cs.fontSize);
+  const rect = dom.getBoundingClientRect();
+  const input: HeuristicInput = {
+    id: el.id,
+    touchTarget: el.type === 'button' || el.type === 'link',
+    color: cs.color,
+    backgroundColor: cs.backgroundColor,
+    fontSizePx: Number.isFinite(fontSizePx) ? fontSizePx : null,
+    rect: { width: rect.width, height: rect.height },
+  };
+  if (dom.tagName === 'SELECT') {
+    const firstOption = dom.querySelector('option');
+    const optCs = firstOption ? getComputedStyle(firstOption) : null;
+    input.select = {
+      colorScheme: cs.colorScheme || '',
+      option: optCs ? { color: optCs.color, backgroundColor: optCs.backgroundColor } : undefined,
     };
   }
-  const issues = kept.flatMap((el) => heuristicIssues(el.id, el.type, el.element));
-  return {
-    mode: 'heuristic',
-    reason: 'No style guide was provided in the request or loaded with loadStyleGuide',
-    ...bounds,
-    issues: issues.slice(0, maxResults),
-    maxResults,
-    listableResults: issues.length,
-    resultsTruncated: issues.length > maxResults,
-    timestamp: Date.now(),
-  };
-}
-
-// ============================================================================
-// Heuristic audit
-// ============================================================================
-
-/**
- * Contrast ratio below this means foreground and background are nearly identical,
- * making text effectively invisible (WCAG contrast ratio scale starts at 1:1).
- */
-const NEARLY_INVISIBLE_CONTRAST_THRESHOLD = 1.15;
-
-/**
- * Relative luminance of an opaque colour value, or `null` when it does not
- * parse or is not opaque (a partly transparent colour's look depends on what
- * is behind it — the same rule `contrastOfColors` applies to a background).
- * One colour grammar with the quality metrics (`specs/color-utils`), so an
- * `oklch()` computed colour is read.
- */
-function luminanceOf(color: string): number | null {
-  const c = parseColor(color);
-  return c !== null && c.a === 1 ? relativeLuminance(c) : null;
-}
-
-function isLikelyDarkColor(color: string): boolean {
-  const l = luminanceOf(color);
-  return l !== null && l < 0.4;
-}
-
-function isLikelyLightColor(color: string): boolean {
-  const l = luminanceOf(color);
-  return l !== null && l > 0.6;
-}
-
-/** The heuristic findings for one element. */
-function heuristicIssues(
-  id: string,
-  type: string | undefined,
-  dom: HTMLElement
-): HeuristicDesignAuditIssue[] {
-  const issues: HeuristicDesignAuditIssue[] = [];
-  const cs = getComputedStyle(dom);
-  const textColor = cs.color;
-  const bgColor = cs.backgroundColor;
-  const fontSize = parseFloat(cs.fontSize);
-
-  // Contrast, WCAG 2.1: only where both colours can be read and the
-  // background is opaque (what shows through a transparent one is not known).
-  const ratio = contrastOfColors(textColor, bgColor);
-  if (ratio !== null) {
-    if (ratio < NEARLY_INVISIBLE_CONTRAST_THRESHOLD) {
-      issues.push({
-        element: id,
-        issue: `Text nearly invisible: contrast ratio ${ratio.toFixed(2)}:1 (${textColor} on ${bgColor})`,
-        severity: 'error',
-        fix: `Add explicit text color with sufficient contrast against ${bgColor}`,
-      });
-    } else if (ratio < 3.0) {
-      issues.push({
-        element: id,
-        issue: `Low contrast: ${ratio.toFixed(2)}:1 (${textColor} on ${bgColor}) — fails WCAG AA${fontSize >= 18 ? ' for large text (3:1)' : ' (4.5:1)'}`,
-        severity: 'warning',
-        fix: `Increase contrast to at least ${fontSize >= 18 ? '3:1' : '4.5:1'} for WCAG AA compliance`,
-      });
-    } else if (ratio < 4.5 && fontSize < 18) {
-      issues.push({
-        element: id,
-        issue: `Insufficient contrast for normal text: ${ratio.toFixed(2)}:1 (${textColor} on ${bgColor}) — WCAG AA requires 4.5:1`,
-        severity: 'info',
-        fix: `Increase contrast to 4.5:1, or increase font size to 18px+`,
-      });
-    }
-  }
-
-  // <select> in dark mode: native <option> dropdowns may be invisible
-  if (dom.tagName === 'SELECT') {
-    const scheme = cs.colorScheme || '';
-    if (isLikelyDarkColor(bgColor) && isLikelyLightColor(textColor) && !scheme.includes('dark')) {
-      issues.push({
-        element: id,
-        issue: `Select has light text (${textColor}) on dark bg (${bgColor}) without color-scheme:dark — native <option> dropdowns may be invisible`,
-        severity: 'warning',
-        fix: `Add style={{ colorScheme: "dark" }} to the <select> element and set option colors explicitly: [&>option]:text-black [&>option]:bg-white`,
-      });
-    }
-    const firstOption = dom.querySelector('option');
-    if (firstOption) {
-      const optCs = getComputedStyle(firstOption);
-      const optRatio = contrastOfColors(optCs.color, optCs.backgroundColor);
-      if (optRatio !== null) {
-        if (optRatio < 3.0) {
-          issues.push({
-            element: id,
-            issue: `Select option text has low contrast: ${optRatio.toFixed(2)}:1 (${optCs.color} on ${optCs.backgroundColor})`,
-            severity: 'error',
-            fix: `Add explicit option colors: select option { color: #000; background-color: #fff; } or use [&>option]:text-black [&>option]:bg-white`,
-          });
-        }
-      }
-    }
-  }
-
-  if (fontSize < 12) {
-    issues.push({ element: id, issue: `Font size too small: ${cs.fontSize}`, severity: 'info' });
-  }
-
-  if (type === 'button' || type === 'link') {
-    const rect = dom.getBoundingClientRect();
-    if (rect.width < 44 || rect.height < 44) {
-      issues.push({
-        element: id,
-        issue: `Touch target too small: ${Math.round(rect.width)}x${Math.round(rect.height)}px (min 44x44)`,
-        severity: 'warning',
-      });
-    }
-  }
-
-  return issues;
+  return input;
 }
 
 // ============================================================================
