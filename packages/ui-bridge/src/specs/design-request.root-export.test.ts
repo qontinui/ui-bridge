@@ -109,3 +109,44 @@ describe('root entry: quality-request runtime', () => {
     expect(root.qualityFailureCode(new Error('x'), 'Q')).toBe('Q');
   });
 });
+
+describe('root entry: style-inference-request runtime', () => {
+  it('infers a style guide from registered elements', () => {
+    const source = mount();
+    const guide = root.inferRegisteredStyleGuide([source], {});
+    expect(guide.capture.scope).toBe('registered');
+    expect(guide.capture.elementsSampled).toBe(1);
+    expect(guide.capture.elementsAvailable).toBe(1);
+    expect(typeof guide.durationMs).toBe('number');
+  });
+
+  it('diffs registered elements against declared tokens', () => {
+    const source = mount();
+    const drift = root.diffRegisteredDesignTokens(
+      [source],
+      { tokens: { colors: { primary: 'rgb(255, 0, 0)' } } },
+      null
+    );
+    expect(drift.declaredSource).toBe('tokens');
+    expect(drift.capture.elementsSampled).toBe(1);
+  });
+
+  it('reports a malformed body as a StyleInferenceRequestError with its code', () => {
+    const source = mount();
+    let caught: unknown;
+    try {
+      root.inferRegisteredStyleGuide([source], { scope: 'everywhere' });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(root.StyleInferenceRequestError);
+    expect(root.styleInferenceFailureCode(caught, 'STYLE_INFER_FAILED')).toBe('INVALID_REQUEST');
+    expect(root.styleInferenceFailureCode(new Error('x'), 'STYLE_INFER_FAILED')).toBe(
+      'STYLE_INFER_FAILED'
+    );
+    // No declared token source and no loaded guide is refused, not answered empty.
+    expect(() => root.diffRegisteredDesignTokens([source], {}, null)).toThrow(
+      root.StyleInferenceRequestError
+    );
+  });
+});
