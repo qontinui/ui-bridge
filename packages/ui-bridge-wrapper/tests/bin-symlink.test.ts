@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CLI_ARGS_PREREQUISITE, ensureBuilt } from '../../../test-support/ensure-built.mjs';
+import { missingOutputMessage } from '../../../test-support/build-if-stale.mjs';
 
 /**
  * Regression guard for the CLI entry-point guard.
@@ -65,12 +65,9 @@ function run(entry: string): { status: number | null; stdout: string; stderr: st
 
 describe.skipIf(!SYMLINKS_AVAILABLE)('bin entry guard survives the bin symlink', () => {
   beforeAll(() => {
-    ensureBuilt(
-      PKG_DIR,
-      BINS.map((b) => b.dist),
-      { prerequisites: [CLI_ARGS_PREREQUISITE] }
-    );
-  }, 1_200_000);
+    // Built once by vitest.global-setup.ts before any worker starts.
+    for (const b of BINS) expect(existsSync(b.dist), missingOutputMessage(b.dist)).toBe(true);
+  });
 
   for (const bin of BINS) {
     it(`${bin.name} runs main() when invoked through node_modules/.bin/${bin.name}`, () => {

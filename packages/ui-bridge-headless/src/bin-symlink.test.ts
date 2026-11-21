@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CLI_ARGS_PREREQUISITE, ensureBuilt } from '../../../test-support/ensure-built.mjs';
+import { missingOutputMessage } from '../../../test-support/build-if-stale.mjs';
 
 /**
  * Regression guard for the `ui-bridge-tab` entry-point guard.
@@ -44,8 +44,9 @@ function run(entry: string): { status: number | null; output: string } {
 
 describe.skipIf(!SYMLINKS_AVAILABLE)('ui-bridge-tab entry guard survives the bin symlink', () => {
   beforeAll(() => {
-    ensureBuilt(PKG_DIR, [DIST], { prerequisites: [CLI_ARGS_PREREQUISITE] });
-  }, 1_200_000);
+    // Built once by vitest.global-setup.ts before any worker starts.
+    expect(existsSync(DIST), missingOutputMessage(DIST)).toBe(true);
+  });
 
   it('runs main() when invoked through node_modules/.bin/ui-bridge-tab', () => {
     const link = join(SYMLINK_DIR, BIN_NAME);

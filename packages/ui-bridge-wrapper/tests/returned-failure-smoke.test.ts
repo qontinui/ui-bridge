@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { missingOutputMessage } from '../../../test-support/build-if-stale.mjs';
 import { chromiumAvailable } from '../../../test-support/chromium-gate.mjs';
 
 /**
@@ -27,28 +28,6 @@ const BIN = resolve(PKG_DIR, 'dist/inject-cli.cjs');
 // ---------------------------------------------------------------------------
 
 const PLAYWRIGHT_AVAILABLE = chromiumAvailable();
-
-/** Newest mtime under `src/` — used to detect a dist built from older sources. */
-function newestSourceMtime(dir: string): number {
-  let newest = 0;
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const abs = join(dir, entry.name);
-    if (entry.isDirectory()) newest = Math.max(newest, newestSourceMtime(abs));
-    else if (entry.name.endsWith('.ts') || entry.name.endsWith('.tsx'))
-      newest = Math.max(newest, statSync(abs).mtimeMs);
-  }
-  return newest;
-}
-
-/** Same convention as bin-symlink.test.ts: build if dist is missing or stale. */
-function ensureBuilt(): void {
-  if (existsSync(BIN) && statSync(BIN).mtimeMs >= newestSourceMtime(join(PKG_DIR, 'src'))) return;
-  execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build'], {
-    cwd: PKG_DIR,
-    stdio: 'inherit',
-    timeout: 600_000,
-  });
-}
 
 const PAGE_HTML = `<!doctype html>
 <html lang="en">
@@ -122,8 +101,9 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)(
   'ui-bridge-inject --exec surfaces a RETURNED failure',
   () => {
     beforeAll(() => {
-      ensureBuilt();
-    }, 600_000);
+      // Built once by vitest.global-setup.ts before any worker starts.
+      expect(existsSync(BIN), missingOutputMessage(BIN)).toBe(true);
+    });
 
     it('puts a returned failure on the error channel and exits non-zero, without aborting the rest', async () => {
       const { status, lines, stderr } = await runBin([
