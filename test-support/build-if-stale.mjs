@@ -7,18 +7,21 @@
  * dist that a parallel test file is reading: nothing races inside one run, and
  * test files only assert that the outputs exist. Two CONCURRENT vitest runs in
  * one checkout are not guarded against each other: both may judge a dist stale
- * and rebuild it. A build that fails is therefore re-checked, and when the dist
- * has meanwhile become fresh (a peer run built it), setup proceeds. Watch mode
- * does not re-run a globalSetup, so a source edit under `vitest` (watch) needs
- * a restart or a manual `npm run build`.
+ * and rebuild it at the same time. A build that exits non-zero always fails
+ * setup, whatever it left in dist. Watch mode does not re-run a globalSetup, so
+ * a source edit under `vitest` (watch) needs a restart or a manual
+ * `npm run build`.
  *
  * STALENESS (the one rule). A package is stale when a required output is
  * missing, or when its OLDEST required output is older than the NEWEST build
  * input. Build inputs are every file under `src/` except test files
  * (`*.test.ts`, `*.test.tsx`), plus `package.json`, `tsconfig.json`,
  * `tsconfig.build.json` and `tsup.config.ts`, of the package itself and of each
- * package it inlines (`inlines`). `package.json` counts because its
- * `dependencies` decide what tsup externalises.
+ * package it inlines (`inlines`), plus the step's own `extraInputs` (files or
+ * directories relative to the package, e.g. a build script). `package.json`
+ * counts because its `dependencies` decide what tsup externalises. Only mtimes
+ * are compared, so DELETING or RENAMING a source file does not mark the package
+ * stale (no remaining input got newer); rebuild by hand after one.
  *
  * ORDER. Steps run in the order given, so an inlined package (cli-args) is
  * built before the package that bundles it.
@@ -26,7 +29,10 @@
  * TIMEOUT. Each build gets BUILD_TIMEOUT_MS (10 min; QONTINUI_TEST_BUILD_TIMEOUT_MS
  * overrides it). On timeout the build's whole process tree is killed by its own
  * pid (`taskkill /T /F /PID <pid>` on Windows, SIGKILL to its process group
- * elsewhere), never by image name, and setup throws.
+ * elsewhere), never by image name, and setup throws. On POSIX the build runs
+ * detached (its own process group), so while it runs, SIGINT, SIGTERM and exit
+ * handlers kill that group the same way; they are removed when it exits. On
+ * Windows the build is not detached, so Ctrl-C reaches it directly.
  *
  * In CI the root `npm run build` runs first, so every step is a no-op there.
  */
@@ -68,19 +74,26 @@ function newestUnder(dir) {
   return newest;
 }
 
-function newestInputOf(pkgDir) {
+function newestOf(path) {
+  if (!existsSync(path)) return 0;
+  const st = statSync(path);
+  return st.isDirectory() ? newestUnder(path) : st.mtimeMs;
+}
+
+function newestInputOf(pkgDir, extraInputs = []) {
   let newest = newestUnder(join(pkgDir, 'src'));
-  for (const name of CONFIG_INPUTS) {
-    const abs = join(pkgDir, name);
-    if (existsSync(abs)) newest = Math.max(newest, statSync(abs).mtimeMs);
+  for (const name of [...CONFIG_INPUTS, ...extraInputs]) {
+    newest = Math.max(newest, newestOf(join(pkgDir, name)));
   }
   return newest;
 }
 
 /**
  * Why `step` needs a build, or null when its dist is fresh.
- * A step is `{ dir, outputs, inlines }`: `dir` relative to the repo root (or
- * absolute), `outputs` relative to `dir`, `inlines` the package dirs it bundles.
+ * A step is `{ dir, outputs, inlines, extraInputs, command }`: `dir` relative to
+ * the repo root (or absolute), `outputs` and `extraInputs` relative to `dir`,
+ * `inlines` the package dirs it bundles, and `command` (tests of this helper
+ * only) replaces `npm run build -w <dir>` and runs in the package directory.
  */
 export function staleReason(step) {
   const pkgDir = resolve(REPO_ROOT, step.dir);
@@ -90,7 +103,7 @@ export function staleReason(step) {
     oldest = Math.min(oldest, statSync(join(pkgDir, rel)).mtimeMs);
   }
   const newest = Math.max(
-    newestInputOf(pkgDir),
+    newestInputOf(pkgDir, step.extraInputs ?? []),
     ...(step.inlines ?? []).map((dir) => newestInputOf(resolve(REPO_ROOT, dir)))
   );
   return oldest < newest ? 'a build input is newer than its oldest output' : null;
@@ -108,47 +121,73 @@ function killTree(child) {
   }
 }
 
-/** Run `npm run build -w <dir>` from the repo root; resolves to an error string or null. */
-function runBuild(dir, timeoutMs) {
-  const command = `npm run build -w ${dir}`;
+/**
+ * Run the step's build; resolves to `{ pid, error }`, where `error` is null on
+ * exit 0. The command is `npm run build -w <dir>` from the repo root, unless the
+ * step names its own `command` (tests of this helper), which runs in the package.
+ */
+function runBuild(step, timeoutMs) {
+  const command = step.command ?? `npm run build -w ${step.dir}`;
+  const cwd = step.command ? resolve(REPO_ROOT, step.dir) : REPO_ROOT;
+  const detached = process.platform !== 'win32';
   return new Promise((resolveRun) => {
-    // A fixed command string through the shell: npm is a .cmd on Windows,
-    // which Node will not spawn without one. On POSIX the shell leads its own
-    // process group, so a timeout can signal the whole tree.
-    const child = spawn(command, {
-      cwd: REPO_ROOT,
-      shell: true,
-      stdio: 'inherit',
-      detached: process.platform !== 'win32',
-    });
+    // A command string through the shell: npm is a .cmd on Windows, which Node
+    // will not spawn without one. On POSIX the shell leads its own process
+    // group, so a timeout or an interrupt can signal the whole tree.
+    const child = spawn(command, { cwd, shell: true, stdio: 'inherit', detached });
+    const done = (error) => resolveRun({ pid: child.pid, error });
+
+    // POSIX only: a detached group outlives Ctrl-C or a killed vitest unless it
+    // is killed here. The signal is re-raised afterwards so the default (or
+    // vitest's own) handling still runs.
+    const onSignal = (signal) => {
+      killTree(child);
+      process.kill(process.pid, signal);
+    };
+    const onExit = () => killTree(child);
+    if (detached) {
+      process.once('SIGINT', onSignal);
+      process.once('SIGTERM', onSignal);
+      process.once('exit', onExit);
+    }
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
       killTree(child);
     }, timeoutMs);
-    child.on('error', (err) => {
+    const cleanup = () => {
       clearTimeout(timer);
-      resolveRun(`could not run \`${command}\`: ${err.message}`);
+      process.removeListener('SIGINT', onSignal);
+      process.removeListener('SIGTERM', onSignal);
+      process.removeListener('exit', onExit);
+    };
+
+    child.on('error', (err) => {
+      cleanup();
+      done(`could not run \`${command}\`: ${err.message}`);
     });
     child.on('exit', (code, signal) => {
-      clearTimeout(timer);
+      cleanup();
       if (timedOut) {
-        resolveRun(
+        done(
           `\`${command}\` did not finish within ${timeoutMs} ms; its process tree (pid ` +
             `${child.pid}) was killed. Set QONTINUI_TEST_BUILD_TIMEOUT_MS to allow longer.`
         );
       } else if (code !== 0) {
-        resolveRun(`\`${command}\` failed (exit ${code ?? signal})`);
+        done(`\`${command}\` failed (exit ${code ?? signal})`);
       } else {
-        resolveRun(null);
+        done(null);
       }
     });
   });
 }
 
-/** Build each stale step, in order; throws when a step is still stale afterwards. */
-export async function buildIfStale(steps) {
-  const timeoutMs = buildTimeoutMs();
+/**
+ * Build each stale step, in order. Rejects when a build exits non-zero (always,
+ * whatever it left in dist) or leaves its step stale. `timeoutMs` defaults to
+ * buildTimeoutMs(); tests of this helper pass a small one.
+ */
+export async function buildIfStale(steps, timeoutMs = buildTimeoutMs()) {
   for (const step of steps) {
     const reason = staleReason(step);
     if (reason === null) {
@@ -156,19 +195,16 @@ export async function buildIfStale(steps) {
       continue;
     }
     console.log(`${LOG} building ${step.dir} (${reason})`);
-    const error = await runBuild(step.dir, timeoutMs);
-    const after = staleReason(step);
+    const { pid, error } = await runBuild(step, timeoutMs);
     if (error !== null) {
-      if (after === null) {
-        console.log(
-          `${LOG} ${step.dir} build failed, but its dist is now fresh (a concurrent run built it); proceeding`
-        );
-        continue;
-      }
-      throw new Error(`${LOG} ${error}`);
+      const err = new Error(`${LOG} ${error}`);
+      err.buildPid = pid;
+      throw err;
     }
-    if (after !== null)
+    const after = staleReason(step);
+    if (after !== null) {
       throw new Error(`${LOG} ${step.dir} is still stale after its build: ${after}`);
+    }
   }
 }
 
