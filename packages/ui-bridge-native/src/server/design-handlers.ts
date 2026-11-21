@@ -352,10 +352,21 @@ export function createDesignHandlers(
 
     // 5. POST /design/audit
     runDesignAudit: async (ctx) => {
-      const body = ctx.body as
+      // Validated in the web transports' `designAuditOf` order — body,
+      // rootFontSizePx, elementIds, guide — with the same messages, so a body
+      // wrong in several ways is refused for the same field on either side.
+      const rawBody: unknown = ctx.body;
+      if (
+        rawBody !== undefined &&
+        rawBody !== null &&
+        (typeof rawBody !== 'object' || Array.isArray(rawBody))
+      ) {
+        return error('/design/audit: the request body must be a JSON object', 'INVALID_REQUEST');
+      }
+      const body = (rawBody ?? undefined) as
         | {
             guide?: unknown;
-            elementIds?: string[];
+            elementIds?: unknown;
             rootFontSizePx?: unknown;
           }
         | undefined;
@@ -373,6 +384,16 @@ export function createDesignHandlers(
           'INVALID_REQUEST'
         );
       }
+
+      const requestedIds = body?.elementIds;
+      if (
+        requestedIds !== undefined &&
+        requestedIds !== null &&
+        !(Array.isArray(requestedIds) && requestedIds.every((id) => typeof id === 'string'))
+      ) {
+        return error('/design/audit: elementIds must be an array of strings', 'INVALID_REQUEST');
+      }
+      const elementIds = requestedIds as string[] | null | undefined;
 
       // A guide given in the body must have the shape the web transports'
       // `designAuditOf` requires (an object with a `rules` array); refused
@@ -408,8 +429,8 @@ export function createDesignHandlers(
       }
 
       let elements = registry.getAllElements();
-      if (body?.elementIds && body.elementIds.length > 0) {
-        const idSet = new Set(body.elementIds);
+      if (elementIds && elementIds.length > 0) {
+        const idSet = new Set(elementIds);
         elements = elements.filter((e) => idSet.has(e.id));
       }
 

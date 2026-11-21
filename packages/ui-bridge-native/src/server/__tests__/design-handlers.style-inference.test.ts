@@ -367,4 +367,51 @@ describe('native review regressions (each threw or answered wrong before its fix
       expect(r.success).toBe(true);
     }
   });
+
+  it('the audit refuses bad elementIds and a non-object body, in the web order', async () => {
+    const audits: unknown[] = [];
+    const real = specs as unknown as StyleValidatorModule;
+    const validator: StyleValidatorModule = {
+      runStyleAudit: (elements, guide, options) => {
+        audits.push(elements);
+        return real.runStyleAudit(elements, guide, options);
+      },
+    };
+    const registry = new NativeUIBridgeRegistry();
+    registry.registerElement('box', makeRef(), { type: 'view' });
+    registry.registerElement('b', makeRef(), { type: 'view' });
+    const guide = { version: '1.0', name: 'g', tokens: {}, rules: [] };
+    const handlers = createDesignHandlers(registry, undefined, { styleValidator: validator });
+    for (const elementIds of ['box', 42, {}, ['box', 7]]) {
+      // A string used to pass and filter by its characters ('b', 'o', 'x').
+      for (const body of [
+        { guide, elementIds },
+        // Before the guide is read: a malformed guide still names elementIds.
+        { guide: 'g', elementIds },
+      ]) {
+        const r = await handlers.runDesignAudit(ctx(body));
+        expect(r, JSON.stringify(elementIds)).toMatchObject({
+          success: false,
+          code: 'INVALID_REQUEST',
+        });
+        expect(r.error).toMatch(/elementIds must be an array of strings/);
+      }
+      // After rootFontSizePx, as on the web transports.
+      const r = await handlers.runDesignAudit(ctx({ guide, elementIds, rootFontSizePx: 0 }));
+      expect(r.error).toMatch(/rootFontSizePx must be a finite number greater than 0/);
+    }
+    for (const body of ['g', 42, [guide]]) {
+      const r = await handlers.runDesignAudit(ctx(body));
+      expect(r, JSON.stringify(body)).toMatchObject({ success: false, code: 'INVALID_REQUEST' });
+      expect(r.error).toMatch(/the request body must be a JSON object/);
+    }
+    expect(audits).toEqual([]);
+    // A valid list still filters; null still means every element.
+    const filtered = await handlers.runDesignAudit(ctx({ guide, elementIds: ['box'] }));
+    expect(filtered.success).toBe(true);
+    expect(audits.pop()).toEqual([expect.objectContaining({ elementId: 'box' })]);
+    const all = await handlers.runDesignAudit(ctx({ guide, elementIds: null }));
+    expect(all.success).toBe(true);
+    expect(audits.pop()).toHaveLength(2);
+  });
 });
