@@ -529,18 +529,20 @@ function heuristicIssuesOf(input: HeuristicInput): {
     }
   }
 
-  // <select> in dark mode: native <option> dropdowns may be invisible. The
-  // select is measured when its own colours are opaque and readable, and the
-  // select-level warning reads those alone. Its first <option>'s contrast is
-  // a separate check inside it: reported only when that pair is judgeable (a
-  // browser-default transparent option background is not), and never for a
-  // select that is not measured.
+  // <select> in dark mode: native <option> dropdowns may be invisible. Two
+  // independent judgments: the select-level warning reads only the select's
+  // own colours (when opaque and readable), and the option error only its
+  // first <option>'s pair (when judgeable — a browser-default transparent
+  // option background is not). The select counts checked when either could
+  // be made, and notMeasured only when neither could, so a notMeasured select
+  // never carries an issue.
   if (input.select) {
     const { colorScheme, option } = input.select;
     const textLuminance = luminanceOf(textColor);
     const bgLuminance = luminanceOf(bgColor);
     const readable = textLuminance !== null && bgLuminance !== null;
-    checks['select-dark-mode'] = readable;
+    const optRatio = option ? contrastOfColors(option.color, option.backgroundColor) : null;
+    checks['select-dark-mode'] = readable || optRatio !== null;
     if (readable && bgLuminance < 0.4 && textLuminance > 0.6 && !colorScheme.includes('dark')) {
       issues.push({
         element: id,
@@ -549,8 +551,6 @@ function heuristicIssuesOf(input: HeuristicInput): {
         fix: `Add style={{ colorScheme: "dark" }} to the <select> element and set option colors explicitly: [&>option]:text-black [&>option]:bg-white`,
       });
     }
-    const optRatio =
-      readable && option ? contrastOfColors(option.color, option.backgroundColor) : null;
     if (option && optRatio !== null && optRatio < 3.0) {
       issues.push({
         element: id,
@@ -585,8 +585,18 @@ function heuristicIssuesOf(input: HeuristicInput): {
 
 /** What a transport can run of each heuristic (`DesignAuditAdapter.heuristicCoverage`). */
 export type HeuristicCoverageDeclaration = Readonly<
-  Record<HeuristicId, { status: HeuristicCoverageStatus; note?: string }>
+  Partial<Record<HeuristicId, { status: HeuristicCoverageStatus; note?: string }>>
 >;
+
+/**
+ * What a transport that does not declare a heuristic (one written before the
+ * core added it) reports for it: its inputs may or may not be read, so not
+ * `measured`.
+ */
+const UNDECLARED_HEURISTIC = {
+  status: 'partial',
+  note: 'not declared by this transport',
+} as const satisfies { status: HeuristicCoverageStatus; note: string };
 
 /**
  * The heuristic report over the checked elements' inputs, at most
@@ -600,13 +610,16 @@ function heuristicAuditReport(
   declared: HeuristicCoverageDeclaration
 ): HeuristicDesignAuditReport {
   const issues: HeuristicDesignAuditIssue[] = [];
-  const heuristicCoverage: HeuristicCoverage[] = HEURISTIC_IDS.map((heuristic) => ({
-    heuristic,
-    status: declared[heuristic].status,
-    checked: 0,
-    notMeasured: 0,
-    ...(declared[heuristic].note !== undefined ? { note: declared[heuristic].note } : {}),
-  }));
+  const heuristicCoverage: HeuristicCoverage[] = HEURISTIC_IDS.map((heuristic) => {
+    const { status, note } = declared[heuristic] ?? UNDECLARED_HEURISTIC;
+    return {
+      heuristic,
+      status,
+      checked: 0,
+      notMeasured: 0,
+      ...(note !== undefined ? { note } : {}),
+    };
+  });
   for (const input of inputs) {
     const result = heuristicIssuesOf(input);
     issues.push(...result.issues);
