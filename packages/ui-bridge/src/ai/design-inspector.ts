@@ -541,10 +541,17 @@ async function captureUnderRootWidthLock(
  * Returns a ratio like 4.5 (for 4.5:1 contrast).
  *
  * Colors should be in CSS color format (rgb, rgba, hex, or named).
+ *
+ * Returns `null` (UNKNOWN) when either color cannot be parsed. An unparseable
+ * color is never substituted with a default: a made-up black would fabricate a
+ * ratio (and a pass or fail) the page does not have.
  */
-export function computeContrastRatio(fgColor: string, bgColor: string): number {
-  const fgLuminance = getRelativeLuminance(parseColor(fgColor));
-  const bgLuminance = getRelativeLuminance(parseColor(bgColor));
+export function computeContrastRatio(fgColor: string, bgColor: string): number | null {
+  const fg = parseColor(fgColor);
+  const bg = parseColor(bgColor);
+  if (fg === null || bg === null) return null;
+  const fgLuminance = getRelativeLuminance(fg);
+  const bgLuminance = getRelativeLuminance(bg);
 
   const lighter = Math.max(fgLuminance, bgLuminance);
   const darker = Math.min(fgLuminance, bgLuminance);
@@ -562,8 +569,10 @@ export function checkContrastCompliance(
   bgColor: string,
   fontSize: string,
   fontWeight: string
-): { ratio: number; passesAA: boolean; passesAAA: boolean } {
+): { ratio: number | null; passesAA: boolean | null; passesAAA: boolean | null } {
   const ratio = computeContrastRatio(fgColor, bgColor);
+  // Unparseable color: the verdict is UNKNOWN, not a pass or a fail.
+  if (ratio === null) return { ratio: null, passesAA: null, passesAAA: null };
   const isLargeText = isLargeTextForContrast(fontSize, fontWeight);
 
   return {
@@ -931,13 +940,17 @@ function waitFrame(): Promise<boolean> {
 const FRAME_FALLBACK_MS = 50;
 
 /**
- * Parse a CSS color value to [r, g, b] (0-255 range)
+ * Parse a CSS color value to [r, g, b] (0-255 range), or `null` when it is not
+ * a color this can read. Never defaults: a caller must treat `null` as UNKNOWN.
  */
-function parseColor(color: string): [number, number, number] {
+function parseColor(color: string): [number, number, number] | null {
   // Try to use a temporary element for reliable parsing
   if (typeof document !== 'undefined') {
     const temp = document.createElement('div');
     temp.style.color = color;
+    // The engine drops a value it cannot parse, leaving the property empty; the
+    // computed color would then be the INHERITED one, not this color's.
+    if (temp.style.color === '') return null;
     temp.style.display = 'none';
     document.body.appendChild(temp);
     const computed = window.getComputedStyle(temp).color;
@@ -955,8 +968,7 @@ function parseColor(color: string): [number, number, number] {
     return [parseInt(rgbMatch[1], 10), parseInt(rgbMatch[2], 10), parseInt(rgbMatch[3], 10)];
   }
 
-  // Default to black
-  return [0, 0, 0];
+  return null;
 }
 
 /**
