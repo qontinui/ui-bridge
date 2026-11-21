@@ -18,6 +18,16 @@ vi.mock('../UIBridgeProvider', () => ({
   useUIBridgeOptional: () => mockUseUIBridgeOptional(),
 }));
 
+// The REAL provider module, for the outside-act cases below. Imported once at
+// module level, during collection, which has no hook timeout: as an awaited
+// import inside a `beforeEach` its cold load (the whole provider tree) counted
+// against the hook budget and timed out under load. This file never resets or
+// re-mocks modules, so every hook used to receive this same cached instance
+// anyway; hoisting it loses no isolation. It must stay out of the `vi.mock`
+// factory above, which is hoisted above this line.
+const actualProvider =
+  await vi.importActual<typeof import('../UIBridgeProvider')>('../UIBridgeProvider');
+
 function createMockUndoTracker() {
   // Holds the declaration like the real tracker does, because the hook's
   // unmount cleanup reads it back before clearing it.
@@ -168,14 +178,11 @@ describe('useUndoRedo', () => {
 describe('useUndoRedo hands an agent undo the committed closure, outside act', () => {
   const { mount, until } = outsideAct();
 
-  let Provider: typeof import('../UIBridgeProvider').UIBridgeProvider;
-  beforeEach(async () => {
-    const actual =
-      await vi.importActual<typeof import('../UIBridgeProvider')>('../UIBridgeProvider');
-    Provider = actual.UIBridgeProvider;
+  const Provider = actualProvider.UIBridgeProvider;
+  beforeEach(() => {
     // The hook under test imports the mocked module; route it to the real
     // context, which the real provider below fills.
-    mockUseUIBridgeOptional.mockImplementation(() => actual.useUIBridgeOptional());
+    mockUseUIBridgeOptional.mockImplementation(() => actualProvider.useUIBridgeOptional());
   });
   afterEach(() => {
     mockUseUIBridgeOptional.mockReset();
