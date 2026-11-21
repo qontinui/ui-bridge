@@ -607,7 +607,7 @@ its version. If the tag cannot be read, the check fails as UNKNOWN instead of
 passing. For example, there may be no local tag while `origin` is unreachable or
 lists no tags, or the tagged `packages/<dir>/package.json` may be missing. One
 gap remains: run from a fork or mirror whose `origin` carries some tags but not
-this package's, the check reads the version as unreleased and passes.
+this package's, and with no local copy of the tag, the check reads the version as unreleased and passes.
 
 React is optional so pure-Node daemons (headless / live) skip it. Add
 `playwright` as an optional peer if you support `headless` / `headed`:
