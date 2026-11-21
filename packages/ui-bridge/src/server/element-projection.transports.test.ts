@@ -810,19 +810,30 @@ describe('the relay with its tab unreachable', () => {
    * typed `NoLiveAnswer('not_delivered')`, which is what classifies it as no
    * live answer (a plain `Error` with the same text is a live failure).
    */
-  function deadTabRelay() {
+  async function deadTabRelay() {
     const relay = new CommandRelay({
       globalPrefix: `__uiBridgeProjectionDead_${Math.random().toString(36).slice(2, 10)}`,
     });
     relays.push(relay);
+    // The tab filled the cache once, then went away: a cache no tab ever
+    // filled holds no answer (plan
+    // 2026-11-08-ui-bridge-relay-and-exec-mode-follow-ups-from-pr-329, Phase 5).
     const queue = vi
       .spyOn(relay, 'queueCommand')
+      .mockResolvedValueOnce({
+        timestamp: Date.now(),
+        elements: [{ id: 'save', type: 'button', label: 'Save', state: {} }],
+        components: [],
+        workflows: [],
+      } as never)
       .mockRejectedValue(new NoLiveAnswer('SDK_DISCONNECTED: no tab', 'not_delivered'));
-    return { queue, handlers: createRelayHandlers(relay) };
+    const handlers = createRelayHandlers(relay);
+    expect((await handlers.getElements({ recency: 'current' })).success).toBe(true);
+    return { queue, handlers };
   }
 
   it('find: the cached snapshot cannot answer a projection, so it is refused, typed', async () => {
-    const { handlers } = deadTabRelay();
+    const { handlers } = await deadTabRelay();
     const reply = await handlers.find({ skipSettle: true, attributes: ['lang'] });
     expect(reply.success).toBe(false);
     expect(reply.code).toBe('UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD');
@@ -830,7 +841,7 @@ describe('the relay with its tab unreachable', () => {
   });
 
   it('find: a refusal from the cache names why the cache was asked — the live failure', async () => {
-    const { handlers } = deadTabRelay();
+    const { handlers } = await deadTabRelay();
     const projection = await handlers.find({ skipSettle: true, properties: ['hyphens'] });
     expect(projection.code).toBe('UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD');
     expect(projection.error).toContain('(no live answer: SDK_DISCONNECTED: no tab');
@@ -841,20 +852,20 @@ describe('the relay with its tab unreachable', () => {
   });
 
   it('find without a projection still falls back to the cache', async () => {
-    const { handlers } = deadTabRelay();
+    const { handlers } = await deadTabRelay();
     const reply = await handlers.find({ skipSettle: true });
     expect(reply.success).toBe(true);
   });
 
   it('element state: the cached snapshot cannot answer a projection, so it is refused, typed', async () => {
-    const { handlers } = deadTabRelay();
+    const { handlers } = await deadTabRelay();
     const reply = await handlers.getElementState('save', undefined, { properties: 'hyphens' });
     expect(reply.success).toBe(false);
     expect(reply.code).toBe('UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD');
   });
 
   it('element state pinned to a tab never falls back to the cache, and names the tab it asked', async () => {
-    const { queue, handlers } = deadTabRelay();
+    const { queue, handlers } = await deadTabRelay();
     const reply = await handlers.getElementState('save', undefined, {
       tabId: 'tab-x',
       attributes: 'lang',

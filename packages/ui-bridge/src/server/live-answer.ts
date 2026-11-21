@@ -277,3 +277,128 @@ export async function liveRead<T>(
   }
   return { kind: 'answer', response: envelopes.resolved(result) };
 }
+
+// ============================================================================
+// Reads served from the snapshot cache: which answer they are
+// (plan 2026-11-08-ui-bridge-relay-and-exec-mode-follow-ups-from-pr-329,
+// Phase 5, D5)
+// ============================================================================
+
+/**
+ * What a snapshot-cache refresh (`refreshSnapshotIfNeeded`) did:
+ *
+ *   - `cached`: no fetch was needed (the cache satisfied the recency);
+ *   - `refreshed`: the tab answered a snapshot, now cached;
+ *   - `no_live_answer`: nothing answered (`noLiveAnswerCause`), so the last
+ *     good snapshot is kept, and an answer from it names `cause`; `error` is
+ *     the relay's rejection, for a cache no tab ever filled;
+ *   - `live_failure`: the tab ANSWERED with a failure, which is the answer;
+ *   - `malformed`: the tab answered a malformed snapshot, never cached (the
+ *     2026-10-01 design); the last good one is kept and its answer says so.
+ */
+export type RefreshOutcome =
+  | { kind: 'cached' }
+  | { kind: 'refreshed' }
+  | { kind: 'no_live_answer'; cause: string; error: unknown }
+  | { kind: 'live_failure'; error: unknown }
+  | { kind: 'malformed' };
+
+/** The cause a cache answer names after a malformed snapshot. */
+export const MALFORMED_SNAPSHOT_CAUSE =
+  'the tab answered a malformed control snapshot, which is never cached';
+
+/** The cause the relay's own no-listener check names: nothing could carry the read. */
+export function notDeliveredCause(): string {
+  return new NoLiveAnswer('', 'not_delivered').noAnswerCause;
+}
+
+/** The `_meta` a snapshot-cache answer carries (`staleMeta`, plus the fallback marker). */
+export interface SnapshotCacheMeta {
+  stale: boolean;
+  staleSinceMs?: number;
+  cacheAgeMs: number;
+  fallback?: true;
+  reason?: string;
+}
+
+/** What `answerFromSnapshotCache` needs of a caller's cache. */
+export interface SnapshotCacheScope {
+  /** The cache's age and staleness (`staleMeta`). */
+  staleMeta(): { stale: boolean; staleSinceMs?: number; cacheAgeMs: number };
+  /** The envelope for a failure the tab reported (`relayErrorResponse`). */
+  liveFailure(error: unknown): APIResponse<never>;
+  /** Has a tab ever filled this cache? An unfilled one holds no answer at all. */
+  filled(): boolean;
+  /**
+   * The failure for no live answer over a cache no tab ever filled: the
+   * relay's rejection, or the malformed-snapshot refusal. Never an empty
+   * success (D5).
+   */
+  unfilled(
+    outcome: Extract<RefreshOutcome, { kind: 'no_live_answer' | 'malformed' }>
+  ): APIResponse<never>;
+}
+
+/**
+ * A read that itself asked the tab and got no live answer (`find`): its
+ * cache answer is marked with ITS cause, whatever the refresh did.
+ */
+export interface ReadWithoutLiveAnswer {
+  action: string;
+  cause: string;
+}
+
+/**
+ * How a read answers from the snapshot cache after `outcome`: a live failure
+ * is that failure (`failure`), so is no live answer over a cache no tab ever
+ * filled, and every other outcome answers the cache with
+ * `meta` — `staleMeta`, plus the `_meta.fallback` marker when the answer is
+ * the cache's for want of a live one. `cached` and `refreshed` carry no
+ * marker (a read by request, or a fresh snapshot).
+ */
+export function snapshotCacheAnswer(
+  scope: SnapshotCacheScope,
+  outcome: RefreshOutcome,
+  read?: ReadWithoutLiveAnswer
+): { kind: 'failure'; response: APIResponse<never> } | { kind: 'meta'; meta: SnapshotCacheMeta } {
+  if (outcome.kind === 'live_failure') {
+    return { kind: 'failure', response: scope.liveFailure(outcome.error) };
+  }
+  // No live answer and nothing a tab ever put in the cache: the "cache" is
+  // the empty seed, and answering it would render "cannot see" as "none".
+  if ((outcome.kind === 'no_live_answer' || outcome.kind === 'malformed') && !scope.filled()) {
+    return { kind: 'failure', response: scope.unfilled(outcome) };
+  }
+  const meta: SnapshotCacheMeta = scope.staleMeta();
+  if (read)
+    return { kind: 'meta', meta: { ...meta, ...cacheFallbackMeta(read.action, read.cause) } };
+  if (outcome.kind === 'no_live_answer') {
+    return {
+      kind: 'meta',
+      meta: { ...meta, ...cacheFallbackMeta('getControlSnapshot', outcome.cause) },
+    };
+  }
+  if (outcome.kind === 'malformed') {
+    return {
+      kind: 'meta',
+      meta: { ...meta, ...cacheFallbackMeta('getControlSnapshot', MALFORMED_SNAPSHOT_CAUSE) },
+    };
+  }
+  return { kind: 'meta', meta };
+}
+
+/**
+ * The one composition every snapshot-cache reader answers through: a live
+ * failure is that failure, and otherwise `build()` over the cache, with
+ * {@link snapshotCacheAnswer}'s `_meta`.
+ */
+export function answerFromSnapshotCache<T>(
+  scope: SnapshotCacheScope,
+  outcome: RefreshOutcome,
+  build: () => T,
+  read?: ReadWithoutLiveAnswer
+): APIResponse<T> {
+  const answer = snapshotCacheAnswer(scope, outcome, read);
+  if (answer.kind === 'failure') return answer.response;
+  return { success: true, data: build(), timestamp: Date.now(), _meta: answer.meta };
+}

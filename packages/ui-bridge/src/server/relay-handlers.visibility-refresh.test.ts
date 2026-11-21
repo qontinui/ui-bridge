@@ -25,6 +25,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { CommandRelay } from './command-relay';
 import { createRelayHandlers } from './relay-handlers';
+import { NoLiveAnswer } from './live-answer';
 
 function freshRelay(): CommandRelay {
   const prefix = `__uiBridgeTest_${Math.random().toString(36).slice(2, 10)}`;
@@ -98,13 +99,18 @@ describe('relay visibility · refreshes the snapshot before reading it', () => {
 
   it('leaves the verdict UNKNOWN rather than PASS when the refresh itself fails', async () => {
     const relay = freshRelay();
-    vi.spyOn(relay, 'queueCommand').mockRejectedValue(new Error('no browser connected'));
+    vi.spyOn(relay, 'queueCommand').mockRejectedValue(
+      new NoLiveAnswer('no browser connected', 'not_delivered')
+    );
     const handlers = createRelayHandlers(relay);
 
     const res = await handlers.visibility!();
 
     // A failed refresh must not be reported as "clear" — there is nothing to
-    // be clear ABOUT.
-    expect((res.data as { verdict: string }).verdict).toBe('unknown_empty_registry');
+    // be clear ABOUT. // Corrected by plan 2026-11-08-ui-bridge-relay-and-exec-mode-follow-ups-from-pr-329
+    // Phase 5 (D5): no live answer over a cache no tab ever filled is a failure,
+    // never an empty success.
+    expect(res.success).toBe(false);
+    expect(res.data).toBeUndefined();
   });
 });
