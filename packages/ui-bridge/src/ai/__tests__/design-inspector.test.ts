@@ -774,17 +774,25 @@ describe('captureResponsiveSnapshots', () => {
 
 describe('edge cases', () => {
   describe('computeContrastRatio with unparseable colors', () => {
-    it('should fall back to black (0,0,0) for unparseable color strings', () => {
-      // "not-a-color" won't parse as rgb and jsdom may not resolve it either
-      // The function defaults to [0,0,0] when parsing fails
-      const ratio = computeContrastRatio('not-a-color', 'rgb(255, 255, 255)');
-      // Fallback is black, so should be close to 21:1
-      expect(ratio).toBeCloseTo(21, 0);
+    it('is unknown (null), not a fabricated black, for an unparseable color string', () => {
+      expect(computeContrastRatio('not-a-color', 'rgb(255, 255, 255)')).toBeNull();
+      expect(computeContrastRatio('rgb(255, 255, 255)', 'not-a-color')).toBeNull();
     });
 
-    it('should handle empty string colors by defaulting to black', () => {
-      const ratio = computeContrastRatio('', 'rgb(255, 255, 255)');
-      expect(ratio).toBeCloseTo(21, 0);
+    it('is unknown (null) for an empty string color', () => {
+      expect(computeContrastRatio('', 'rgb(255, 255, 255)')).toBeNull();
+    });
+
+    it('still parses real black', () => {
+      expect(computeContrastRatio('black', 'rgb(255, 255, 255)')).toBeCloseTo(21, 0);
+    });
+
+    it('checkContrastCompliance reports unknown, not pass or fail', () => {
+      expect(checkContrastCompliance('not-a-color', '#fff', '16px', '400')).toEqual({
+        ratio: null,
+        passesAA: null,
+        passesAAA: null,
+      });
     });
   });
 
