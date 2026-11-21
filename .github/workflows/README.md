@@ -133,7 +133,16 @@ too — deliberately, in a reviewable diff.
 
 `scripts/check-runner-contract.test.mjs` covers the provenance logic (every
 `source` string the resolver can emit, both `--expect-sibling` arms, the
-absent-vs-empty splits, and the entry-module guard). It runs in the same job,
+absent-vs-empty splits, and the entry-module guard) and the reading of the
+runner's own accepted-divergence lists: both shapes `runner_only_baseline` /
+`sdk_only_baseline` take in the runner's `mod.rs` — an inline
+`let NAME: .. = [ .. ].into_iter().collect();` and the
+`fn NAME() -> .. { [ .. ].into_iter().collect() }` form the runner hoisted to at
+`786329ddb` — each held to that exact tail, and refused (fail-closed: exit 2 on
+a gating run, an annotated exit 0 on an advisory one) in any other shape rather
+than harvested. When the runner changes the shape
+again, teach `parseRunnerBaselines` the new one; never loosen the tail check.
+It runs in the same job,
 before the sibling is fetched — it needs no runner tree and no `npm ci` — and is
 gating on every event, since it asserts only this repo's own logic.
 
