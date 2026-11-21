@@ -787,13 +787,19 @@ describe('edge cases', () => {
       expect(computeContrastRatio('black', 'rgb(255, 255, 255)')).toBeCloseTo(21, 0);
     });
 
-    it.each(['transparent', 'currentcolor', 'inherit', 'initial', 'unset', 'rgba(0, 0, 0, 0)'])(
-      'is unknown (null) for %s, which names no colour of its own',
-      (value) => {
-        expect(computeContrastRatio(value, 'rgb(255, 255, 255)')).toBeNull();
-        expect(computeContrastRatio('rgb(255, 255, 255)', value)).toBeNull();
-      }
-    );
+    it.each([
+      'transparent',
+      'currentcolor',
+      'inherit',
+      'initial',
+      'unset',
+      'rgba(0, 0, 0, 0)',
+      'rgb(0 0 0 / none)',
+      'var(--undefined-colour)',
+    ])('is unknown (null) for %s, which names no colour of its own', (value) => {
+      expect(computeContrastRatio(value, 'rgb(255, 255, 255)')).toBeNull();
+      expect(computeContrastRatio('rgb(255, 255, 255)', value)).toBeNull();
+    });
 
     it('still reads a partly transparent colour by its rgb (alpha ignored)', () => {
       expect(computeContrastRatio('rgba(0, 0, 0, 0.5)', 'rgb(255, 255, 255)')).toBeCloseTo(21, 0);

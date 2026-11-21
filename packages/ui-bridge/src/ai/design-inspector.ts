@@ -956,7 +956,8 @@ function isFullyTransparent(color: string): boolean {
   if (!m) return false;
   // Only a 4th component is alpha; `rgb(0, 0, 0)` has none.
   const parts = m[1].split(/[\s,/]+/).filter(Boolean);
-  return parts.length >= 4 && parseFloat(parts[3]) === 0;
+  // CSS reads an alpha of `none` as 0.
+  return parts.length >= 4 && (parts[3].toLowerCase() === 'none' || parseFloat(parts[3]) === 0);
 }
 
 /**
@@ -969,6 +970,10 @@ function parseColor(color: string): [number, number, number] | null {
   // `currentcolor` computes to the probe's INHERITED colour, and `transparent`
   // shows whatever is behind it. Either would fabricate a ratio.
   if (NON_COLOR_KEYWORDS.has(keyword)) return null;
+  // A `var()` reference resolves against the PROBE's custom properties (what
+  // it inherits from <body>), not the caller's element, so it is not this
+  // colour either; an undefined one computes to the inherited colour.
+  if (keyword.includes('var(')) return null;
   // Try to use a temporary element for reliable parsing
   if (typeof document !== 'undefined') {
     const temp = document.createElement('div');
