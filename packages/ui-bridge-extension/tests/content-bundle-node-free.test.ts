@@ -60,7 +60,8 @@ describe('built extension bundles are Node-free', () => {
 
   it('dist/content/live-relay.js actually bundles the wrapper live entry', () => {
     // Positive control: a relay built before the wrapper had a dist/ leaves the
-    // import unbundled (esbuild only warns inside a try) — Node-free, and dead.
+    // import unbundled (esbuild prints no warning and the build succeeds) —
+    // Node-free, and dead.
     const path = new URL('../dist/content/live-relay.js', import.meta.url);
     expect(existsSync(path), 'dist/content/live-relay.js is missing — build first').toBe(true);
     const code = readFileSync(path, 'utf8');

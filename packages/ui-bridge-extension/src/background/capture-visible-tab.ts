@@ -14,15 +14,25 @@
  * taken after a switch shows another tab. A frame whose window no longer has
  * the sender as its active tab is discarded and answered `TAB_NOT_VISIBLE`.
  *
+ * RESIDUAL WINDOW (A->B->A). Two reads bracket the capture; they cannot see
+ * what happened between them. If the user switches from the sender's tab A to
+ * tab B and back to A while captureVisibleTab is running, both reads see A
+ * active and the frame — which may show B — is returned as A's. Chrome offers
+ * no capture-by-tab-id that would close this; the window is the capture's own
+ * duration (tens of milliseconds) and needs two tab switches inside it.
+ *
  * PERMISSION — PENDING A PROBE. `manifest.json` grants
- * `"host_permissions": ["<all_urls>"]`. That grant follows Chrome's
- * `tabs.captureVisibleTab` documentation, which names `<all_urls>` (or
- * `activeTab`, granted only on a user gesture) as what allows a capture; a
- * per-scheme pattern such as `https://*\/*` is not listed as sufficient. The
- * plan's D6 falsification probe — a headed Chromium, `captureVisibleTab` on an
- * opted-in `https://` tab with no gesture under `https://*\/*` alone — has NOT
- * been run. Until it is, `<all_urls>` stands on the documentation alone. If the
- * probe shows the narrower grant suffices, replace it with
+ * `"host_permissions": ["<all_urls>"]`. Chrome's own `chrome.tabs` page
+ * disagrees with itself about what a no-gesture capture needs: the
+ * `captureVisibleTab` method reference names `<all_urls>` or `activeTab`
+ * (granted only on a user gesture), while the page's "Host permissions"
+ * section says host permissions allow `captureVisibleTab`, with an
+ * http/https pattern as its example. Because the documentation does not
+ * settle it, the plan's D6 falsification probe decides — a headed Chromium,
+ * `captureVisibleTab` on an opted-in `https://` tab with no gesture under
+ * `https://*\/*` alone — and it has NOT been run. Until it is, `<all_urls>`
+ * (the grant both readings accept) stands. If the probe shows the narrower
+ * grant suffices, replace it with
  * `["http://localhost:*\/*", "http://127.0.0.1:*\/*", "https://*\/*"]` (the
  * content scripts' match set); tests/live-relay-screenshot.test.ts asserts the
  * property (https origins and http localhost are covered), not the literal.
@@ -40,9 +50,18 @@ const PNG_DATA_URL_PREFIX = 'data:image/png;base64,';
 
 /**
  * Chrome's refusal when captureVisibleTab is called more often than its quota
- * (about two calls a second per extension) allows: a later call succeeds.
+ * (Chrome documents two calls a second) allows: a later call succeeds.
  */
 const CAPTURE_QUOTA = /MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND/;
+
+/**
+ * Refusals that the same request cannot outgrow: a missing permission, or a
+ * page Chrome will never let an extension read (chrome://, the Web Store).
+ * Every other captureVisibleTab refusal is treated as retryable — a window
+ * mid-transition, a tab still loading — since retrying costs one request.
+ */
+const CAPTURE_FINAL =
+  /permission is required|Cannot access contents of|cannot be scripted|chrome:\/\/|extensions gallery/i;
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -102,7 +121,7 @@ export async function captureSenderTab(
       success: false,
       code: 'CAPTURE_FAILED',
       error: `captureVisibleTab failed: ${text}`,
-      retryable: false,
+      retryable: !CAPTURE_FINAL.test(text),
     };
   }
 

@@ -79,8 +79,9 @@ const builds = [
     // Build order: the root `build` script builds ui-bridge-wrapper before the
     // `--workspaces` pass, so even a clean first build bundles the wrapper
     // here. (`npm run build --workspaces` alone runs this package before the
-    // wrapper; the relay's import then stays unbundled — esbuild only warns
-    // inside a try — and the node-free test's positive control catches it.)
+    // wrapper; the relay's import then stays unbundled — esbuild prints no
+    // warning for it and the build succeeds — and the node-free test's
+    // positive control catches it.)
     external: [
       '@qontinui/ui-bridge-headless',
       'playwright',

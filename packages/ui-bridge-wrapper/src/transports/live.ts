@@ -49,9 +49,14 @@ export interface LiveTransportOptions {
   version?: string;
   /**
    * Capability strings forwarded to `app_registry`. The runner reads
-   * `"screenshot"` to decide whether it may relay `getScreenshot` to this app;
-   * do not list it here by hand — set {@link screenshotPage}, which registers
-   * the handler and advertises the capability together.
+   * `"screenshot"` to decide whether it may relay `getScreenshot` to this app.
+   * When this process owns a page, do not list it by hand — set
+   * {@link screenshotPage}, which registers the handler and advertises the
+   * capability together. The one legitimate hand-listing is a caller that
+   * registers its OWN `getScreenshot` handler on the registry and has no page
+   * to hand over — the browser extension's live relay, which captures through
+   * `chrome.tabs.captureVisibleTab` in its service worker. Such a caller must
+   * list `"screenshot"` only once that registration has succeeded.
    */
   capabilities?: string[];
   /**

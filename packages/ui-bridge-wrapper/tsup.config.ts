@@ -22,7 +22,15 @@ export default defineConfig([
     // script — matches the ui-bridge-headless package convention and keeps
     // tsup away from transitive tsconfigs that still use deprecated options.
     dts: false,
-    splitting: false,
+    // Code splitting, so the three entries SHARE one copy of the modules they
+    // have in common (WrapperTransportError, HandlerRegistry, the live
+    // transport...). Without it `./live` and `.` each carried their own class,
+    // and a `./live` WrapperTransportError thrown through a root
+    // HandlerRegistry failed its `instanceof` and became HANDLER_ERROR. The
+    // shared chunks hold only modules both entries reach, so `./live` stays
+    // Node-free: the Node-only transports live in the root entry's own file.
+    // tsup applies it to the CJS build too (esbuild splits ESM; tsup converts).
+    splitting: true,
     sourcemap: true,
     clean: true,
     treeshake: true,
