@@ -1540,11 +1540,9 @@ class TabMeasurement {
   /**
    * The element's visible text, scrubbed by its own redaction verdict — and
    * the bare `[REDACTED]` when a `data-bridge-redact` boundary sits below it,
-   * which its own verdict, looking only up, does not see. The text of such
-   * an element with the boundary read in place would come from its text
-   * content, which holds what the page does not render (a `<script>`'s
-   * JSON, `display: none` text); the rendered text cannot exclude a
-   * subtree.
+   * which its own verdict, looking only up, does not see. A boundary below
+   * withholds the whole text: an assertion result echoes no part of a
+   * redacted region's surroundings.
    */
   private scrubbedText(el: Element): string | undefined {
     const raw = computeVisibleText(el);
@@ -1977,7 +1975,9 @@ class TabMeasurement {
     if (Number.isFinite(weight)) record.fontWeight = weight;
 
     const fillValue = ownerSt.getPropertyValue('-webkit-text-fill-color');
-    const fill = (fillValue && parseColor(fillValue)) || parseColor(ownerSt.color);
+    // A fill that is set but unreadable is not replaced by `color`: the
+    // fill is what paints the glyphs, so the text colour is then unknown.
+    const fill = fillValue ? parseColor(fillValue) : parseColor(ownerSt.color);
     if (!fill) {
       return missing(
         'input_missing',
@@ -2637,10 +2637,18 @@ class TabMeasurement {
         // A box at visibility: hidden paints nothing; its pseudo-elements may.
         if (!hidden) {
           const bg = parseColor(st.backgroundColor);
+          // A background colour the parser cannot read (a display-p3 or xyz
+          // value) may paint: counted, as hitHiddenPseudo and popoverBackdrop
+          // count one, never taken for transparent.
+          const unreadable = bg === null && st.backgroundColor.trim() !== '';
           const replaced = isReplaced(el);
-          if ((bg && bg.a > 0) || st.backgroundImage !== 'none' || replaced) {
+          if (unreadable || (bg && bg.a > 0) || st.backgroundImage !== 'none' || replaced) {
             const box = once(() => boxOf(el) ?? null);
-            const what = replaced ? 'replaced content' : 'a background';
+            const what = replaced
+              ? 'replaced content'
+              : unreadable
+                ? 'a background whose colour could not be read'
+                : 'a background';
             found.push({
               layer: el,
               bounds: box,
