@@ -3318,10 +3318,17 @@ export interface StateStyles {
    */
   focusVisible?: FocusVisibleMatch;
   /**
-   * Present on the `focus-visible` entry only: whether `el.focus()` landed.
-   * `false` means nothing was forced — the element cannot hold focus, so it
-   * can never draw a focus ring — and the entry's styles are the unfocused
-   * ones.
+   * Present on the `focus-visible` entry only: whether `:focus-visible` was
+   * forced, decided at apply time right after `el.focus()`. `false` means the
+   * focus did not land — the element cannot hold focus, so it can never draw
+   * a focus ring — and nothing was forced.
+   */
+  forced?: boolean;
+  /**
+   * Present on the `focus-visible` entry only: whether the element held focus
+   * when its styles were read (after the force and a frame). `forced: true`
+   * with `focused: false` means the focus moved away in between (a focus
+   * handler, an app timer): the styles carry the forced ring without focus.
    */
   focused?: boolean;
 }

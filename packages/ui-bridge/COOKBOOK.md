@@ -519,21 +519,33 @@ element, a state the inspector is routinely in. So:
   (`:is(:focus-visible,[data-ui-bridge-pseudo-focus-visible])`, the target alone
   marked), so it reads the keyboard-focus appearance, and
   `:focus:not(:focus-visible)` rules stop matching while it is held. Its entry
-  carries `focused`: `false` means the focus did not land, nothing was forced
-  (the element can never draw that ring), and the styles are the unfocused
-  ones.
+  carries `forced` and `focused`. `forced` is decided at apply time:
+  `false` means the focus did not land, nothing was forced (the element can
+  never draw that ring), and the styles are the unfocused ones. `focused`
+  says whether the element still held focus when the styles were read:
+  `forced: true, focused: false` means something moved the focus in between.
 
-"Holds focus" means the element is the DEEPEST focused element of its own
-document, followed down through open shadow roots — not the retargeted
-`activeElement`, which is an outer shadow host whenever anything inside it has
-focus (a host with `delegatesFocus` holds focus when the focus is inside its
-shadow tree). The previous focus is recorded the same way, so the read returns
-focus to the element that really had it, inside a shadow root or an iframe.
+"Holds focus" is read by walking UP from the element: it must be its own
+tree's `activeElement`, its shadow host must be the next tree's, and so on to
+the document. That works inside open AND closed shadow roots. A host is its
+tree's `activeElement` whenever anything inside it has focus, so a host whose
+OPEN shadow root holds the focus is not itself focused, unless that root has
+`delegatesFocus`. A host with a CLOSED shadow root cannot be told apart: it
+reads as holding focus whenever the focus is anywhere in its closed tree.
+
+The read puts the previous focus back, within limits:
+
+- only the element's own document is restored. If the element is inside a
+  frame, a focus that was in the parent document is not put back;
+- a focus inside an open shadow root is restored to the element that had it;
+- a focus inside a CLOSED shadow root can only be restored to its host (with
+  `delegatesFocus`, that is the host's first focusable element);
+- an element that was already focused before the read stays focused.
 
 ```bash
 curl -s -X POST "$BASE/design/element/save-btn/state-styles" \
   -H 'Content-Type: application/json' -d '{"states":["focus","focus-visible"]}' \
-  | jq '.data.stateStyles[] | {state, focusVisible, focused, outline: .styles.outline}'
+  | jq '.data.stateStyles[] | {state, focusVisible, forced, focused, outline: .styles.outline}'
 ```
 
 ## 9. Read the styles and attributes a check needs
