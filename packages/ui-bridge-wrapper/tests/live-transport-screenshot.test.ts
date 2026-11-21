@@ -197,16 +197,39 @@ describe('LiveSessionTransport getScreenshot', () => {
     ).toThrow(/screenshotPage/);
   });
 
-  it('createTransport threads options.screenshotPage through the live case', () => {
-    const t = createTransport({
+  it('a createTransport live session given a screenshotPage is framed by the runner over its socket', async () => {
+    // The door a Node process uses (plan Phase 3 arming line):
+    // createTransport({kind:'live', options:{screenshotPage}}). The runner's
+    // side is played on the fake socket: it reads the register frame, then
+    // relays getScreenshot. Literal wire strings, so the test reads the wire.
+    const png = fakePng(800, 600);
+    FakeWebSocket.last = null;
+    const transport = createTransport({
       kind: 'live',
       runnerUrl: 'ws://127.0.0.1:9876/ui-bridge/ws',
-      options: {
-        webSocketCtor: FakeWebSocket,
-        screenshotPage: fakePage(async () => fakePng(1, 1)),
-      },
+      appId: 'node-app',
+      options: { webSocketCtor: FakeWebSocket, screenshotPage: fakePage(async () => png) },
     });
-    expect(t.handlerRegistry.has(SCREENSHOT_ACTION)).toBe(true);
+    const ready = transport.ready();
+    let ws: FakeWebSocket | null = null;
+    for (let i = 0; i < 20 && !(ws && ws.sent.length > 0); i++) {
+      ws = FakeWebSocket.last;
+      await Promise.resolve();
+    }
+    expect(ws?.sent.length).toBeGreaterThan(0);
+    const register = JSON.parse(ws!.sent[0]!) as Record<string, unknown>;
+    expect(register['capabilities']).toEqual(['screenshot']);
+    ws!.receive({ type: 'registered', appId: 'node-app', connId: 1, acceptedAt: 0 });
+    await ready;
+
+    const reply = await command(ws!, 'getScreenshot');
+    expect(reply['success']).toBe(true);
+    expect(reply['result']).toEqual({
+      screenshot: Buffer.from(png).toString('base64'),
+      width: 640,
+      height: 480,
+    });
+    await transport.close();
   });
 
   it('exports the capability and action constants from the package index', () => {
