@@ -760,8 +760,13 @@ describe('design-inspection routes · relay and server answer the same model', (
         () => designAuditOf([], { guide: GUIDE, rootFontSizePx }, undefined),
         String(rootFontSizePx)
       ).toThrow(DesignRequestError);
-      // ...and over each transport, with a guide and without one.
-      for (const request of [{ guide: GUIDE, rootFontSizePx }, { rootFontSizePx }]) {
+      // ...and over each transport, with a guide, without one, and with a
+      // malformed guide (the root is checked first, as on native).
+      for (const request of [
+        { guide: GUIDE, rootFontSizePx },
+        { rootFontSizePx },
+        { guide: { rules: 'not-an-array' }, rootFontSizePx },
+      ]) {
         const server = await serverHandlers().runDesignAudit(request as never);
         const relay = await relayHandlers().runDesignAudit(request as never);
         expect(server.success, String(rootFontSizePx)).toBe(false);

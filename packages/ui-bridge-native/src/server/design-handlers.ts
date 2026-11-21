@@ -374,7 +374,26 @@ export function createDesignHandlers(
         );
       }
 
-      const guide = body?.guide ?? loadedStyleGuide;
+      // A guide given in the body must have the shape the web transports'
+      // `designAuditOf` requires (an object with a `rules` array); refused
+      // with the same message rather than handed to the validator.
+      const requestedGuide = body?.guide;
+      if (
+        requestedGuide !== undefined &&
+        requestedGuide !== null &&
+        !(
+          typeof requestedGuide === 'object' &&
+          !Array.isArray(requestedGuide) &&
+          Array.isArray((requestedGuide as { rules?: unknown }).rules)
+        )
+      ) {
+        return error(
+          '/design/audit: guide must be a style guide object with a rules array',
+          'INVALID_REQUEST'
+        );
+      }
+
+      const guide = requestedGuide ?? loadedStyleGuide;
 
       if (!guide) {
         return error('No style guide loaded or provided', 'NO_STYLE_GUIDE');
