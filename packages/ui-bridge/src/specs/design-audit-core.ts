@@ -147,6 +147,31 @@ export interface HeuristicDesignAuditIssue {
   fix?: string;
 }
 
+/** The built-in heuristics. */
+export type HeuristicId = 'contrast' | 'select-dark-mode' | 'font-size' | 'touch-target';
+
+/**
+ * How completely a transport can run a heuristic: `measured` — on every
+ * element it applies to; `partial` — only where the transport's data allows
+ * (the row's `note` says where); `not-applicable` — the platform has no such
+ * thing.
+ */
+export type HeuristicCoverageStatus = 'measured' | 'partial' | 'not-applicable';
+
+/**
+ * What one heuristic checked. Without it an empty `issues` list could mean
+ * "clean" or "never checked"; with it, `checked` and `notMeasured` say which.
+ */
+export interface HeuristicCoverage {
+  heuristic: HeuristicId;
+  status: HeuristicCoverageStatus;
+  /** Checked elements the heuristic applied to and could read. */
+  checked: number;
+  /** Checked elements the heuristic applied to but could not read; none of them produced an issue. */
+  notMeasured: number;
+  note?: string;
+}
+
 /**
  * `/design/audit` answer when NO style guide was provided or loaded: built-in
  * heuristics (contrast, dark-mode `<select>`, font size, touch target), never a
@@ -157,6 +182,8 @@ export interface HeuristicDesignAuditReport extends DesignAuditBounds, AuditResu
   /** Why the heuristic ran instead of a style-guide audit. */
   reason: string;
   issues: HeuristicDesignAuditIssue[];
+  /** One row per heuristic, in `HEURISTIC_IDS` order. */
+  heuristicCoverage: HeuristicCoverage[];
   timestamp: number;
 }
 
@@ -417,6 +444,14 @@ export interface HeuristicInput {
  */
 const NEARLY_INVISIBLE_CONTRAST_THRESHOLD = 1.15;
 
+/** Every heuristic, in the order `heuristicCoverage` lists them. */
+const HEURISTIC_IDS: readonly HeuristicId[] = [
+  'contrast',
+  'select-dark-mode',
+  'font-size',
+  'touch-target',
+];
+
 /** The smallest touch target, in px on each side. */
 const MIN_TOUCH_TARGET_PX = 44;
 
@@ -442,15 +477,34 @@ function isLikelyLightColor(color: string): boolean {
   return l !== null && l > 0.6;
 }
 
-/** The heuristic findings for one element. */
-function heuristicIssuesOf(input: HeuristicInput): HeuristicDesignAuditIssue[] {
+/**
+ * Per heuristic that applies to an element: `true` when it was read, `false`
+ * when it applies but could not be read (not measured). A heuristic that does
+ * not apply (the touch target of a non-interactive element, the `<select>`
+ * check of anything else) is absent.
+ */
+type HeuristicChecks = Partial<Record<HeuristicId, boolean>>;
+
+/**
+ * The heuristic findings for one element, and which heuristics it was read
+ * for. Anything unreadable — a contrast `contrastOfColors` cannot judge, an
+ * unknown font size, a missing layout — is not measured and never produces an
+ * issue; a font size that is unknown is judged against the normal-text
+ * contrast threshold (4.5:1), the stricter one.
+ */
+function heuristicIssuesOf(input: HeuristicInput): {
+  issues: HeuristicDesignAuditIssue[];
+  checks: HeuristicChecks;
+} {
   const issues: HeuristicDesignAuditIssue[] = [];
   const { id, color: textColor, backgroundColor: bgColor, fontSizePx } = input;
   const large = fontSizePx !== null && fontSizePx >= 18;
+  const checks: HeuristicChecks = {};
 
   // Contrast, WCAG 2.1: only where both colours can be read and the
   // background is opaque (what shows through a transparent one is not known).
   const ratio = contrastOfColors(textColor, bgColor);
+  checks.contrast = ratio !== null;
   if (ratio !== null) {
     if (ratio < NEARLY_INVISIBLE_CONTRAST_THRESHOLD) {
       issues.push({
@@ -466,7 +520,7 @@ function heuristicIssuesOf(input: HeuristicInput): HeuristicDesignAuditIssue[] {
         severity: 'warning',
         fix: `Increase contrast to at least ${large ? '3:1' : '4.5:1'} for WCAG AA compliance`,
       });
-    } else if (ratio < 4.5 && fontSizePx !== null && fontSizePx < 18) {
+    } else if (ratio < 4.5 && !large) {
       issues.push({
         element: id,
         issue: `Insufficient contrast for normal text: ${ratio.toFixed(2)}:1 (${textColor} on ${bgColor}) — WCAG AA requires 4.5:1`,
@@ -478,6 +532,7 @@ function heuristicIssuesOf(input: HeuristicInput): HeuristicDesignAuditIssue[] {
 
   // <select> in dark mode: native <option> dropdowns may be invisible
   if (input.select) {
+    checks['select-dark-mode'] = true;
     const { colorScheme, option } = input.select;
     if (
       isLikelyDarkColor(bgColor) &&
@@ -504,10 +559,14 @@ function heuristicIssuesOf(input: HeuristicInput): HeuristicDesignAuditIssue[] {
     }
   }
 
+  checks['font-size'] = fontSizePx !== null;
   if (fontSizePx !== null && fontSizePx < 12) {
     issues.push({ element: id, issue: `Font size too small: ${fontSizePx}px`, severity: 'info' });
   }
 
+  if (input.touchTarget) {
+    checks['touch-target'] = input.rect !== null;
+  }
   if (input.touchTarget && input.rect !== null) {
     const { width, height } = input.rect;
     if (width < MIN_TOUCH_TARGET_PX || height < MIN_TOUCH_TARGET_PX) {
@@ -519,21 +578,48 @@ function heuristicIssuesOf(input: HeuristicInput): HeuristicDesignAuditIssue[] {
     }
   }
 
-  return issues;
+  return { issues, checks };
 }
 
-/** The heuristic report over the checked elements' inputs, at most `maxResults` issues listed. */
+/** What a transport can run of each heuristic (`DesignAuditAdapter.heuristicCoverage`). */
+export type HeuristicCoverageDeclaration = Readonly<
+  Record<HeuristicId, { status: HeuristicCoverageStatus; note?: string }>
+>;
+
+/**
+ * The heuristic report over the checked elements' inputs, at most
+ * `maxResults` issues listed, with one coverage row per heuristic: the
+ * transport's declared status and note, and the counts the inputs produced.
+ */
 function heuristicAuditReport(
   inputs: HeuristicInput[],
   maxResults: number,
-  bounds: DesignAuditBounds
+  bounds: DesignAuditBounds,
+  declared: HeuristicCoverageDeclaration
 ): HeuristicDesignAuditReport {
-  const issues = inputs.flatMap(heuristicIssuesOf);
+  const issues: HeuristicDesignAuditIssue[] = [];
+  const heuristicCoverage: HeuristicCoverage[] = HEURISTIC_IDS.map((heuristic) => ({
+    heuristic,
+    status: declared[heuristic].status,
+    checked: 0,
+    notMeasured: 0,
+    ...(declared[heuristic].note !== undefined ? { note: declared[heuristic].note } : {}),
+  }));
+  for (const input of inputs) {
+    const result = heuristicIssuesOf(input);
+    issues.push(...result.issues);
+    for (const row of heuristicCoverage) {
+      const read = result.checks[row.heuristic];
+      if (read === true) row.checked += 1;
+      else if (read === false) row.notMeasured += 1;
+    }
+  }
   return {
     mode: 'heuristic',
     reason: NO_STYLE_GUIDE_REASON,
     ...bounds,
     issues: issues.slice(0, maxResults),
+    heuristicCoverage,
     maxResults,
     listableResults: issues.length,
     resultsTruncated: issues.length > maxResults,
@@ -558,6 +644,8 @@ export interface DesignAuditAdapter<T extends { id: string }, R extends T = T> {
   heuristicInput(el: R): HeuristicInput;
   /** The root font size `rem` resolves against when the request names none. */
   defaultRootFontSizePx(): number;
+  /** What the transport can run of each heuristic, reported in `heuristicCoverage`. */
+  heuristicCoverage: HeuristicCoverageDeclaration;
 }
 
 /**
@@ -605,6 +693,7 @@ export function auditDesign<T extends { id: string }, R extends T = T>(
   return heuristicAuditReport(
     kept.map((el) => adapter.heuristicInput(el)),
     parsed.maxResults,
-    bounds
+    bounds,
+    adapter.heuristicCoverage
   );
 }

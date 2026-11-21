@@ -165,7 +165,14 @@ export type {
 // adapter over its registered elements, so both answer with one model. No DOM
 // access.
 export { auditDesign } from './design-audit-core';
-export type { DesignAuditAdapter, HeuristicInput } from './design-audit-core';
+export type {
+  DesignAuditAdapter,
+  HeuristicInput,
+  HeuristicId,
+  HeuristicCoverage,
+  HeuristicCoverageStatus,
+  HeuristicCoverageDeclaration,
+} from './design-audit-core';
 
 // `/design/evaluate*` requests over registered elements — the same shared
 // implementation pattern, exported for the same reason. `parseEvaluateRequest`

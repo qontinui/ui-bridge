@@ -482,7 +482,22 @@ const webAuditAdapter: DesignAuditAdapter<DesignElementSource, LiveSource> = {
   records: (kept, guide) => collectDesignData(kept, undefined, collectOptionsFor(guide)),
   heuristicInput: webHeuristicInput,
   defaultRootFontSizePx: measureRootFontSizePx,
+  heuristicCoverage: {
+    contrast: { status: 'measured' },
+    'select-dark-mode': { status: 'measured' },
+    'font-size': { status: 'measured' },
+    'touch-target': { status: 'measured' },
+  },
 };
+
+/** The element types a person taps, whose box must be 44x44 or larger. */
+const TOUCH_TARGET_TYPES: ReadonlySet<string> = new Set([
+  'button',
+  'link',
+  'checkbox',
+  'radio',
+  'switch',
+]);
 
 /** What the heuristics read of one live element: computed colours and font size, its box, and for a `<select>` its first `<option>`. */
 function webHeuristicInput(el: LiveSource): HeuristicInput {
@@ -492,7 +507,7 @@ function webHeuristicInput(el: LiveSource): HeuristicInput {
   const rect = dom.getBoundingClientRect();
   const input: HeuristicInput = {
     id: el.id,
-    touchTarget: el.type === 'button' || el.type === 'link',
+    touchTarget: el.type !== undefined && TOUCH_TARGET_TYPES.has(el.type),
     color: cs.color,
     backgroundColor: cs.backgroundColor,
     fontSizePx: Number.isFinite(fontSizePx) ? fontSizePx : null,
