@@ -499,6 +499,30 @@ interacting at all. It now returns the HTTP handler's shape,
 applied: `hover`/`active` forced as above, `focus` through `el.focus()`. A held
 agent hover is suspended for the read and re-applied afterwards.
 
+**`focus` vs `focus-visible`.** `el.focus()` sets `:focus`, but whether
+`:focus-visible` follows is the browser's input-modality heuristic. Measured in
+Playwright Chromium (`src/ai/focus-visible.smoke.test.ts`, which asserts each
+reading so a Chromium change turns it red), a programmatic focus matches
+`:focus-visible` with no prior input, after a pointer click on a non-focusable
+area, and after a keyboard `Tab` — but NOT after a pointer click on a focusable
+element, a state the inspector is routinely in. So:
+
+- the `focus` entry carries `focusVisible: true | false | 'unknown'`, the
+  browser's own `el.matches(':focus-visible')` read while the focus was held —
+  it says which focus appearance that entry's styles are. `'unknown'` means
+  the match could not be read (an engine without the selector), never `false`;
+- the `focus-visible` state (in the default set) focuses the element AND forces
+  `:focus-visible` through the same in-place rewrite as `hover`
+  (`:is(:focus-visible,[data-ui-bridge-pseudo-focus-visible])`, the target alone
+  marked), so it always reads the keyboard-focus appearance, and
+  `:focus:not(:focus-visible)` rules stop matching while it is held.
+
+```bash
+curl -s -X POST "$BASE/design/element/save-btn/state-styles" \
+  -H 'Content-Type: application/json' -d '{"states":["focus","focus-visible"]}' \
+  | jq '.data.stateStyles[] | {state, focusVisible, outline: .styles.outline}'
+```
+
 ## 9. Read the styles and attributes a check needs
 
 `computedStyles` on an element's state is a fixed, light set — it rides in

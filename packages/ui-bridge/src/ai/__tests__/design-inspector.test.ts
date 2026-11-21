@@ -5,7 +5,7 @@
  * captures state variations, responsive snapshots, and WCAG contrast checks.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   getExtendedComputedStyles,
   getElementDesignData,
@@ -14,6 +14,7 @@ import {
   computeContrastRatio,
   checkContrastCompliance,
   DEFAULT_VIEWPORTS,
+  readFocusVisible,
   type DesignRegistryLike,
 } from '../design-inspector';
 
@@ -536,15 +537,51 @@ describe('captureStateVariations', () => {
     expect(results[0].diffFromDefault).toEqual([]);
   });
 
-  it('should capture all four default interaction states plus default', async () => {
+  it('should capture all five default interaction states plus default', async () => {
     const results = await captureStateVariations(el);
     const stateNames = results.map((r) => r.state);
-    expect(stateNames).toContain('default');
-    expect(stateNames).toContain('hover');
-    expect(stateNames).toContain('focus');
-    expect(stateNames).toContain('active');
-    expect(stateNames).toContain('disabled');
-    expect(results.length).toBe(5);
+    expect(stateNames).toEqual([
+      'default',
+      'hover',
+      'focus',
+      'focus-visible',
+      'active',
+      'disabled',
+    ]);
+  });
+
+  it('reports focusVisible on the focus entry only', async () => {
+    const results = await captureStateVariations(el, ['hover', 'focus', 'focus-visible']);
+    const byState = Object.fromEntries(results.map((r) => [r.state, r]));
+    expect([true, false, 'unknown']).toContain(byState.focus.focusVisible);
+    expect(byState.default.focusVisible).toBeUndefined();
+    expect(byState.hover.focusVisible).toBeUndefined();
+    expect(byState['focus-visible'].focusVisible).toBeUndefined();
+  });
+
+  it("reports focusVisible 'unknown', never false, when the match cannot be read", async () => {
+    const native = Element.prototype.matches;
+    const spy = vi.spyOn(Element.prototype, 'matches').mockImplementation(function (
+      this: Element,
+      selector: string
+    ) {
+      if (selector.includes(':focus-visible')) throw new SyntaxError('unsupported selector');
+      return native.call(this, selector);
+    });
+    try {
+      expect(readFocusVisible(el)).toBe('unknown');
+      const results = await captureStateVariations(el, ['focus']);
+      expect(results.find((r) => r.state === 'focus')?.focusVisible).toBe('unknown');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('restores focus after the focus-visible state, and leaves nothing forced', async () => {
+    el.blur();
+    await captureStateVariations(el, ['focus-visible']);
+    expect(document.activeElement).not.toBe(el);
+    expect(el.hasAttribute('data-ui-bridge-pseudo-focus-visible')).toBe(false);
   });
 
   it('should accept a custom subset of states', async () => {

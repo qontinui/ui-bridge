@@ -5371,7 +5371,7 @@ export async function executeCommand(
     }
 
     case 'getElementStateStyles': {
-      const { id, states = ['hover', 'focus', 'active'] } = payload as {
+      const { id, states = ['hover', 'focus', 'focus-visible', 'active'] } = payload as {
         id: string;
         states?: string[];
       };
@@ -5381,7 +5381,8 @@ export async function executeCommand(
       // The same implementation the HTTP handler uses: `hover`/`active` are
       // forced through the in-place selector rewrite (`forced-hover.ts`) and released
       // after the read, `focus` through `el.focus()` with the previous focus
-      // restored. Each state is read in its real computed appearance, never
+      // restored (its entry carries `focusVisible`, the browser's own match),
+      // `focus-visible` through `el.focus()` plus the forced rewrite. Each state is read in its real computed appearance, never
       // the placeholder this case used to return without interacting at all.
       const stateStyles = await captureStateVariations(
         dom,

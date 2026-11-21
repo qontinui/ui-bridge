@@ -70,6 +70,21 @@ describe('rewritePseudoSelector — the rewrite grammar', () => {
     );
   });
 
+  it(':focus-visible rewrites to its own attribute, inside :not() too, and leaves :focus and escaped names alone', () => {
+    expect(rewritePseudoSelector('.a:focus:not(:focus-visible)', 'focus-visible')).toBe(
+      '.a:focus:not(:is(:focus-visible,[data-ui-bridge-pseudo-focus-visible]))'
+    );
+    expect(rewritePseudoSelector('.a:focus-visible', 'focus-visible')).toBe(
+      '.a:is(:focus-visible,[data-ui-bridge-pseudo-focus-visible])'
+    );
+    expect(selectorHasPseudo('.a:focus', 'focus-visible')).toBe(false);
+    expect(selectorHasPseudo('.a:focus-visible-ish', 'focus-visible')).toBe(false);
+    expect(selectorHasPseudo(String.raw`.focus-visible\:ring:focus`, 'focus-visible')).toBe(false);
+    expect(selectorHasPseudo(String.raw`.focus-visible\:ring:focus-visible`, 'focus-visible')).toBe(
+      true
+    );
+  });
+
   it('is stateless across calls (a global regex lastIndex never leaks)', () => {
     for (let i = 0; i < 3; i++) expect(selectorHasPseudo('.a:hover', 'hover')).toBe(true);
   });

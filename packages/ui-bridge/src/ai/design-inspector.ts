@@ -9,6 +9,7 @@
 
 import type {
   ExtendedComputedStyles,
+  FocusVisibleMatch,
   InteractionStateName,
   StateStyles,
   StyleDiff,
@@ -125,6 +126,7 @@ const DESIGN_PROPERTIES: (keyof ExtendedComputedStyles)[] = [
 export const INTERACTION_STATES: readonly InteractionStateName[] = [
   'hover',
   'focus',
+  'focus-visible',
   'active',
   'disabled',
 ];
@@ -268,7 +270,9 @@ export function getElementDesignData(
 // ============================================================================
 
 /**
- * Capture style variations across interaction states (hover, focus, active, disabled).
+ * Capture style variations across interaction states (hover, focus,
+ * focus-visible, active, disabled). The `focus` entry carries `focusVisible`:
+ * whether the browser's own `:focus-visible` matched while it was held.
  *
  * Dispatches synthetic events to trigger state changes, reads computed styles,
  * then restores the element to its default state. All wrapped in try/finally.
@@ -333,11 +337,16 @@ async function captureEachState(
       const stateStyles = getExtendedComputedStyles(el);
       const diff = computeStyleDiff(defaultStyles, stateStyles);
 
-      results.push({
+      const entry: StateStyles = {
         state: stateName,
         styles: stateStyles,
         diffFromDefault: diff,
-      });
+      };
+      // Inside the hold: whether the browser's own `:focus-visible` matched
+      // the focus just applied, so a reader knows which focus appearance
+      // the `focus` entry's styles are.
+      if (stateName === 'focus') entry.focusVisible = readFocusVisible(el);
+      results.push(entry);
     } finally {
       // Always restore to default state
       if (restore) await restore();
@@ -879,7 +888,12 @@ function computeStyleDiff(
  * they are FORCED through the in-place selector rewrite of `control/forced-hover.ts` —
  * the same primitive the `hover` action uses — and released (verified) by the
  * restore. `focus` uses the real `el.focus()` and restores the previously
- * focused element. `disabled` restores the element's own prior value.
+ * focused element; whether `:focus-visible` then matches is the browser's
+ * input-modality heuristic (Chromium: `false` when the last focus came from a
+ * pointer), so `focus-visible` focuses the element AND forces
+ * `:focus-visible` through the same rewrite, giving the keyboard-focus
+ * appearance whatever input preceded the read. `disabled` restores the
+ * element's own prior value.
  */
 async function applyInteractionState(
   el: HTMLElement,
@@ -894,15 +908,23 @@ async function applyInteractionState(
         await releaseForcedPseudoStateIfOwner(holdId, 'explicit');
       };
     }
-    case 'focus': {
-      const previous = document.activeElement;
-      el.focus();
-      return async () => {
-        if (previous instanceof HTMLElement && previous !== el && previous !== document.body) {
-          previous.focus();
-        }
-        if (document.activeElement === el) el.blur();
-      };
+    case 'focus':
+      return applyFocus(el);
+    case 'focus-visible': {
+      const restoreFocus = applyFocus(el);
+      try {
+        const { holdId } = await forcePseudoState(el, 'focus-visible', { borrowedFrom });
+        return async () => {
+          try {
+            await releaseForcedPseudoStateIfOwner(holdId, 'explicit');
+          } finally {
+            await restoreFocus();
+          }
+        };
+      } catch (err) {
+        await restoreFocus();
+        throw err;
+      }
     }
     case 'disabled': {
       const control = el as HTMLButtonElement | HTMLInputElement;
@@ -914,6 +936,31 @@ async function applyInteractionState(
     }
     default:
       return async () => undefined;
+  }
+}
+
+/** Focus `el` with the real `el.focus()`; the returned function puts the previous focus back. */
+function applyFocus(el: HTMLElement): () => Promise<void> {
+  const previous = document.activeElement;
+  el.focus();
+  return async () => {
+    if (previous instanceof HTMLElement && previous !== el && previous !== document.body) {
+      previous.focus();
+    }
+    if (document.activeElement === el) el.blur();
+  };
+}
+
+/**
+ * Whether the browser's own `:focus-visible` matches `el` right now.
+ * `'unknown'` when `matches` throws (an engine without the selector): a match
+ * that could not be read is never reported as `false`.
+ */
+export function readFocusVisible(el: Element): FocusVisibleMatch {
+  try {
+    return el.matches(':focus-visible');
+  } catch {
+    return 'unknown';
   }
 }
 
