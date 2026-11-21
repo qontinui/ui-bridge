@@ -7,7 +7,12 @@
 
 import type { NativeUIBridgeRegistry } from '../core/registry';
 import type { APIResponse, HandlerContext } from './types';
-import type { ElementDesignData, StateStyles, ResponsiveSnapshot } from '../design/design-types';
+import type {
+  ElementDesignData,
+  NativeInteractionStateName,
+  StateStyles,
+  ResponsiveSnapshot,
+} from '../design/design-types';
 import {
   mapNativeStyleToExtended,
   getNativeElementDesignData,
@@ -201,6 +206,46 @@ function viewportOf(
     );
   }
   return { width: viewport.width, height: viewport.height };
+}
+
+/** The states native can read, in the order `captureNativeStateVariations` reports them. */
+const NATIVE_INTERACTION_STATES: readonly NativeInteractionStateName[] = [
+  'default',
+  'pressed',
+  'focused',
+  'disabled',
+];
+
+/**
+ * The requested states, or `undefined` (every state) when absent or `null`.
+ *
+ * The web doors' `invalidStatesMessage` (`ai/interaction-states.ts`), over
+ * native's names and with its messages: a value that is not an array, or an
+ * entry that names no native state, is refused rather than dropped, so a
+ * typo or a web-only state (`hover`) is never answered as "no such style".
+ */
+function statesOf(
+  body: Record<string, unknown>,
+  route: string
+): NativeInteractionStateName[] | undefined {
+  const states = body.states;
+  if (!isGiven(states)) return undefined;
+  const accepted = NATIVE_INTERACTION_STATES.join(', ');
+  if (!Array.isArray(states)) {
+    throw new NativeRequestError(`${route}: 'states' must be an array of: ${accepted}`);
+  }
+  const unknown = states
+    .filter(
+      (s) =>
+        !(typeof s === 'string' && (NATIVE_INTERACTION_STATES as readonly string[]).includes(s))
+    )
+    .map((s) => (typeof s === 'string' ? s : (JSON.stringify(s) ?? String(s))));
+  if (unknown.length > 0) {
+    throw new NativeRequestError(
+      `${route}: Unknown interaction state(s): ${unknown.join(', ')}. Accepted: ${accepted}`
+    );
+  }
+  return states as NativeInteractionStateName[];
 }
 
 /** A metric's configuration in a custom context, as `quality-request.ts`'s `isMetricConfig`. */
@@ -447,13 +492,29 @@ export function createDesignHandlers(
     // 2. POST /design/element/:id/state-styles
     getElementStateStyles: async (ctx) => {
       const { id } = ctx.params;
-      const element = registry.getElement(id);
+      const route = '/design/element/:id/state-styles';
 
+      // Checked before the element is looked up, as on web.
+      let states: NativeInteractionStateName[] | undefined;
+      try {
+        states = statesOf(bodyOf(ctx.body, route), route);
+      } catch (err) {
+        return invalidRequest(err);
+      }
+
+      const element = registry.getElement(id);
       if (!element) {
         return error('Element not found: ' + id, 'ELEMENT_NOT_FOUND');
       }
 
-      const stateStyles = captureNativeStateVariations(element.flatStyle, element.stateStyles);
+      // `default` is always read, as on web; a given list reads only its
+      // other states, so `[]` reads only `default`. Unlike web, the order is
+      // capture order (not the request's), a repeated name is returned once,
+      // and a state whose style does not differ from `default` is omitted.
+      const stateStyles = captureNativeStateVariations(
+        element.flatStyle,
+        element.stateStyles
+      ).filter((s) => s.state === 'default' || states === undefined || states.includes(s.state));
 
       return success({ elementId: id, stateStyles });
     },
