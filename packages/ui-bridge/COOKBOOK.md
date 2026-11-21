@@ -527,7 +527,11 @@ element, a state the inspector is routinely in. So:
 
 "Holds focus" is read by walking UP from the element: it must be its own
 tree's `activeElement`, its shadow host must be the next tree's, and so on to
-the document. That works inside open AND closed shadow roots. A host is its
+the document. The document must itself have focus (`document.hasFocus()` is
+not `false`); in a frame, the frame element must hold focus in its parent the
+same way. A cross-origin parent cannot be read, so it does not fail the
+check: there the frame's own document is the last thing read. That works
+inside open AND closed shadow roots. A host is its
 tree's `activeElement` whenever anything inside it has focus, so a host whose
 OPEN shadow root holds the focus is not itself focused, unless that root has
 `delegatesFocus`. A host with a CLOSED shadow root cannot be told apart: it
@@ -538,8 +542,12 @@ The read puts the previous focus back, within limits:
 - only the element's own document is restored. If the element is inside a
   frame, a focus that was in the parent document is not put back;
 - a focus inside an open shadow root is restored to the element that had it;
-- a focus inside a CLOSED shadow root can only be restored to its host (with
-  `delegatesFocus`, that is the host's first focusable element);
+- a focus inside a CLOSED shadow root is restored exactly when the inspected
+  element is in that same closed root (the root's `activeElement` is readable
+  from inside it). Otherwise it can only be restored to the host: with
+  `delegatesFocus` that is the host's first focusable element, and a host
+  without `delegatesFocus` that is not itself focusable takes no focus at
+  all, so the focus falls to the body;
 - an element that was already focused before the read stays focused.
 
 ```bash
