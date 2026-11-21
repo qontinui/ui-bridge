@@ -160,6 +160,13 @@ export type {
   HeuristicDesignAuditIssue,
 } from './design-request';
 
+// The pure core of `/design/audit`: `designAuditOf` above is its web adapter,
+// and the React Native server reaches `auditDesign` through this entry with an
+// adapter over its registered elements, so both answer with one model. No DOM
+// access.
+export { auditDesign } from './design-audit-core';
+export type { DesignAuditAdapter, HeuristicInput } from './design-audit-core';
+
 // `/design/evaluate*` requests over registered elements — the same shared
 // implementation pattern, exported for the same reason. `parseEvaluateRequest`
 // is the pure body parse alone, so a transport with no DOM (the React Native
