@@ -5387,8 +5387,9 @@ export async function executeCommand(
       // previous focus restored (its entry carries `focusVisible`, the
       // browser's own match, or `'not_focused'` / `'document_unfocused'`),
       // `focus-visible` through `el.focus()` plus the forced rewrite (its
-      // entry carries `forced`, `notForcedReason` when not forced, and
-      // `focused`). Each state is read in its real computed appearance, never
+      // entry carries `forced`, `notForcedReason` when not forced,
+      // `focusCaveat` when forced in an unfocused document, and `focused`).
+      // Each state is read in its real computed appearance, never
       // the placeholder this case used to return without interacting at all.
       const stateStyles = await captureStateVariations(
         dom,

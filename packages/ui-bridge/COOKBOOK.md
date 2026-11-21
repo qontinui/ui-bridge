@@ -521,12 +521,16 @@ element, a state the inspector is routinely in. So:
   marked), so it reads the keyboard-focus appearance, and
   `:focus:not(:focus-visible)` rules stop matching while it is held. Its entry
   carries `forced` and `focused`. `forced` is decided at apply time: `false`
-  means nothing was forced, and `notForcedReason` says why — `'not_focused'`
-  (the focus did not land; the element can never draw that ring) or
-  `'document_unfocused'` (it landed, but the document or frame has no focus).
-  `focused` says whether the element still held focus when the styles were
-  read: `forced: true, focused: false` means something moved the focus in
-  between.
+  means the focus did not land (`notForcedReason: 'not_focused'`), nothing was
+  forced, and the element can never draw that ring. When the focus lands but
+  the document or frame has no focus — an agent inspecting a background
+  window — the ring IS forced (the rewrite does not depend on document focus),
+  and the entry carries `focusCaveat: 'document_unfocused'`: rules that also
+  need the real `:focus`, such as `:focus:focus-visible`, could not match.
+  `focused` says whether the element held focus (including document focus)
+  when the styles were read, so it is `false` alongside that caveat; with
+  `forced: true` and no caveat, `focused: false` means something moved the
+  focus in between.
 
 "Holds focus" is read by walking UP from the element: it must be its own
 tree's `activeElement`, its shadow host must be the next tree's, and so on to
@@ -543,7 +547,10 @@ whenever the focus is anywhere in its closed tree.
 The read puts the previous focus back, within limits:
 
 - only the element's own document is restored. If the element is inside a
-  frame, a focus that was in the parent document is not put back;
+  frame, a focus that was in the parent document is not put back, and if the
+  frame was not its parent's active element when the read began, the frame's
+  remembered `activeElement` is not refocused either (that would pull the
+  page's focus into the frame): the element is just blurred;
 - the previous focus is found by walking UP from the inspected element, from
   its own shadow root to its host's root and so on: the first root that holds
   the focus is read, open or CLOSED. So a focus inside any shadow root that
@@ -559,7 +566,7 @@ The read puts the previous focus back, within limits:
 ```bash
 curl -s -X POST "$BASE/design/element/save-btn/state-styles" \
   -H 'Content-Type: application/json' -d '{"states":["focus","focus-visible"]}' \
-  | jq '.data.stateStyles[] | {state, focusVisible, forced, notForcedReason, focused, outline: .styles.outline}'
+  | jq '.data.stateStyles[] | {state, focusVisible, forced, notForcedReason, focusCaveat, focused, outline: .styles.outline}'
 ```
 
 ## 9. Read the styles and attributes a check needs

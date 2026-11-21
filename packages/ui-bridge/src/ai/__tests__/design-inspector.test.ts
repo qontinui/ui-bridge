@@ -557,6 +557,7 @@ describe('captureStateVariations', () => {
     // focused element never matches :focus-visible there.
     expect(byState.focus.focusVisible).toBe(false);
     expect(byState['focus-visible'].forced).toBe(true);
+    expect(byState['focus-visible'].focusCaveat).toBeUndefined();
     expect(byState.focus.forced).toBeUndefined();
     expect(byState['focus-visible'].focused).toBe(true);
     expect(byState.default.focusVisible).toBeUndefined();
@@ -778,15 +779,17 @@ describe('captureStateVariations', () => {
     }
   });
 
-  it("a document without focus: the focus entry reads 'document_unfocused' and nothing is forced", async () => {
+  it("a document without focus: the focus entry reads 'document_unfocused', and the ring is still forced with a caveat", async () => {
     const spy = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
     try {
       const results = await captureStateVariations(el, ['focus', 'focus-visible']);
       const byState = Object.fromEntries(results.map((r) => [r.state, r]));
       expect(byState.focus.focusVisible).toBe('document_unfocused');
-      expect(byState['focus-visible'].forced).toBe(false);
-      expect(byState['focus-visible'].notForcedReason).toBe('document_unfocused');
+      expect(byState['focus-visible'].forced).toBe(true);
+      expect(byState['focus-visible'].focusCaveat).toBe('document_unfocused');
+      expect(byState['focus-visible'].notForcedReason).toBeUndefined();
       expect(byState['focus-visible'].focused).toBe(false);
+      expect(el.hasAttribute('data-ui-bridge-pseudo-focus-visible')).toBe(false);
       // Nothing had focus before, so the restore must blur `el` even though
       // the document has no focus (where `el` is still its activeElement).
       expect(document.activeElement).toBe(document.body);
@@ -795,7 +798,7 @@ describe('captureStateVariations', () => {
     }
   });
 
-  it("a delegatesFocus host in a document without focus reads 'document_unfocused', not focused", async () => {
+  it("a delegatesFocus host in a document without focus reads 'document_unfocused', and its ring is forced with a caveat", async () => {
     const host = document.createElement('div');
     document.body.appendChild(host);
     const shadow = host.attachShadow({ mode: 'open' });
@@ -809,8 +812,9 @@ describe('captureStateVariations', () => {
       expect(readFocusVisible(host)).toBe('document_unfocused');
       const results = await captureStateVariations(host, ['focus-visible']);
       const fv = results.find((r) => r.state === 'focus-visible')!;
-      expect(fv.forced).toBe(false);
-      expect(fv.notForcedReason).toBe('document_unfocused');
+      expect(fv.forced).toBe(true);
+      expect(fv.focusCaveat).toBe('document_unfocused');
+      expect(fv.notForcedReason).toBeUndefined();
       expect(fv.focused).toBe(false);
       // The previous focus (inner) is restored and kept.
       expect(shadow.activeElement).toBe(inner);
@@ -879,6 +883,34 @@ describe('captureStateVariations', () => {
       expect(document.activeElement).toBe(outside);
       expect(doc.hasFocus()).toBe(true);
       expect(readFocusVisible(target)).toBe('document_unfocused');
+    } finally {
+      frame.remove();
+      outside.remove();
+    }
+  });
+
+  it("a frame's remembered focus is not refocused when the frame was not its parent's active element", async () => {
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    const doc = frame.contentDocument!;
+    const remembered = doc.createElement('input');
+    const target = doc.createElement('button');
+    target.textContent = 'in frame';
+    doc.body.append(remembered, target);
+    const outside = document.createElement('input');
+    document.body.appendChild(outside);
+    try {
+      remembered.focus();
+      // The parent's focus moves away; the frame keeps `remembered` as its
+      // activeElement, but it is not holding focus.
+      outside.focus();
+      expect(doc.activeElement).toBe(remembered);
+      expect(readFocusVisible(remembered)).toBe('document_unfocused');
+      await captureStateVariations(target, ['focus']);
+      // Not refocused (that would pull the page's focus into the frame), and
+      // the inspected element is blurred.
+      expect(doc.activeElement).toBe(doc.body);
+      expect(readFocusVisible(target)).toBe('not_focused');
     } finally {
       frame.remove();
       outside.remove();
