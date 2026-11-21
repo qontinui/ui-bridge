@@ -286,9 +286,10 @@ export interface DesignAuditCoreModule {
 }
 
 /**
- * The audit core, when the loaded SDK carries it. The peer range admits
- * releases that load but predate it, so availability is decided by the
- * function's presence, not by the `require`.
+ * The audit core, when the loaded SDK carries it. The declared peer floor is
+ * 0.58.0, but an optional peer can still be satisfied out of range
+ * (`--legacy-peer-deps`, other package managers), so availability is decided
+ * by the function's presence, not by the `require`.
  */
 export function asDesignAuditCore(specs: unknown): DesignAuditCoreModule | null {
   const s = specs as Partial<DesignAuditCoreModule> | null;
