@@ -254,7 +254,7 @@ describe('live relay getScreenshot', () => {
       ],
       [
         CAPTURE_FINAL_PATTERNS[2]!,
-        'Cannot access contents of url "https://example.com/". Extension manifest must request permission to access this host.',
+        'Cannot access contents of the page. Extension manifest must request permission to access the respective host.',
       ],
       [CAPTURE_FINAL_PATTERNS[3]!, 'The extensions gallery cannot be scripted.'],
       [CAPTURE_FINAL_PATTERNS[4]!, 'Cannot access a chrome:// URL'],
@@ -262,6 +262,7 @@ describe('live relay getScreenshot', () => {
         CAPTURE_FINAL_PATTERNS[4]!,
         'Cannot access a chrome-extension:// URL of different extension',
       ],
+      [CAPTURE_FINAL_PATTERNS[5]!, 'Blocked'],
     ];
     // Every pattern is exercised by at least one row.
     expect(new Set(rows.map(([p]) => p)).size).toBe(CAPTURE_FINAL_PATTERNS.length);
@@ -281,6 +282,23 @@ describe('live relay getScreenshot', () => {
         code: 'CAPTURE_FAILED',
         retryable: false,
       });
+    }
+  });
+
+  it("Chrome's transient capture failures match no final pattern", () => {
+    // CaptureResultToErrorMessage (chrome/browser/extensions/api/tabs/tabs_api.cc)
+    // and the no-contents refusal: a later call can succeed.
+    for (const message of [
+      'Failed to capture tab: view is invisible',
+      'Failed to capture tab: image readback failed',
+      'Failed to capture tab: unknown error',
+      'No active web contents to capture',
+      'This request exceeds the MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND quota.',
+    ]) {
+      expect(
+        CAPTURE_FINAL_PATTERNS.filter((p) => p.test(message)),
+        message
+      ).toEqual([]);
     }
   });
 
