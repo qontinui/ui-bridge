@@ -1004,27 +1004,34 @@ async function applyInteractionState(
  * deepest focused element of `el`'s own document, followed down through OPEN
  * shadow roots rather than the document's retargeted `activeElement`.
  * Focusability is duck-typed, so an element of an iframe's realm is restored
- * too. The limits:
- * - only `el`'s own document is restored. When `el` is inside a frame, a focus
- *   that was in the parent document (or another frame) is not put back;
- * - when `el`'s frame was not its parent's active element at the start (see
- *   {@link frameChainIsActive}), the frame's remembered `activeElement` was
- *   not holding focus: it is NOT refocused, since that would pull the page's
- *   focus into the frame, and `el` is just blurred;
- * - a focus inside a CLOSED shadow root that is NOT on `el`'s path up (a
- *   sibling component's closed tree) is unreadable, so it is restored to the
- *   host only. A host without `delegatesFocus` that is not itself focusable
- *   takes no focus, so the focus falls to the body; with `delegatesFocus` it
- *   goes to the host's first focusable element, not necessarily the one it
- *   was on.
+ * too.
  *
- * After the restore, the focus is read again the same way it was recorded. The
- * restore blurs `el` only when that read is not the recorded element and `el`
- * is still the active element of its tree chain, so it never undoes the focus
- * it just restored (a previous focus inside a `delegatesFocus` host), and an
- * `el` that was already focused before the read stays focused. That test is
- * {@link isActiveInTreeChain}, NOT {@link holdsFocus}: in a document or frame
- * without focus `el` is still its `activeElement`, and must still be blurred.
+ * When `el` is inside a frame, `el.focus()` also makes its frame the active
+ * element of every ancestor document — the page's focus moves into the frame.
+ * So the deepest focused element of each same-origin ANCESTOR document is
+ * recorded too (see {@link recordAncestorFocus}), and the restore puts each
+ * one back after `el`'s own document, innermost first and the top document
+ * last, so the page's focus ends where it was. An ancestor that had nothing
+ * focused gets its frame blurred instead. The walk stops at the first
+ * cross-origin parent, which cannot be read or restored.
+ *
+ * The limits:
+ * - a focus inside a CLOSED shadow root that is NOT on `el`'s path up (a
+ *   sibling component's closed tree, in `el`'s document or an ancestor's) is
+ *   unreadable, so it is restored to the host only. A host without
+ *   `delegatesFocus` that is not itself focusable takes no focus, so the focus
+ *   falls to the body; with `delegatesFocus` it goes to the host's first
+ *   focusable element, not necessarily the one it was on;
+ * - documents above a cross-origin frame are not restored.
+ *
+ * After the restore, `el`'s document is read again the same way it was
+ * recorded. The restore blurs `el` only when that read is not the recorded
+ * element and `el` is still the active element of its tree chain, so it never
+ * undoes the focus it just restored (a previous focus inside a
+ * `delegatesFocus` host), and an `el` that was already focused before the
+ * read stays focused. That test is {@link isActiveInTreeChain}, NOT
+ * {@link holdsFocus}: in a document or frame without focus `el` is still its
+ * `activeElement`, and must still be blurred.
  */
 function applyFocus(el: HTMLElement): () => Promise<void> {
   const doc = el.ownerDocument;
@@ -1032,47 +1039,80 @@ function applyFocus(el: HTMLElement): () => Promise<void> {
   const readFocus = (): Element | null =>
     tree ? deepestBelow(tree.activeElement ?? null) : deepestActiveElement(doc);
   const previous = readFocus();
-  // A frame's document remembers its activeElement after the parent moved its
-  // focus elsewhere. That element was not holding focus, and focusing it on
-  // restore would pull the page's focus into the frame: it is not restored.
-  const previousStale = !frameChainIsActive(doc);
+  const ancestors = recordAncestorFocus(doc);
   el.focus();
   return async () => {
     if (previous === el) {
       if (!isActiveInTreeChain(el)) el.focus();
-      return;
+    } else {
+      if (previous && previous !== doc.body && previous.isConnected && isFocusable(previous)) {
+        (previous as HTMLElement).focus();
+      }
+      if (readFocus() !== previous && isActiveInTreeChain(el)) el.blur();
     }
-    if (
-      !previousStale &&
-      previous &&
-      previous !== doc.body &&
-      previous.isConnected &&
-      typeof (previous as Partial<HTMLElement>).focus === 'function'
-    ) {
-      (previous as HTMLElement).focus();
-    }
-    if ((previousStale || readFocus() !== previous) && isActiveInTreeChain(el)) el.blur();
+    restoreAncestorFocus(ancestors);
   };
 }
 
+/** What one ancestor document had focused before `el.focus()`. */
+interface AncestorFocus {
+  doc: Document;
+  /** The frame element in `doc` that leads down to `el`'s document. */
+  frame: Element;
+  /** `doc`'s deepest focused element before the focus (its body when nothing was). */
+  previous: Element | null;
+}
+
 /**
- * Whether every frame element between `doc` and the top is its parent's
- * active element, regardless of whether the window has focus. `true` for a
- * top-level document, and for a parent that cannot be read (cross-origin).
+ * The deepest focused element of each same-origin ancestor document of `doc`,
+ * innermost first, read before `el.focus()` moves the page's focus into the
+ * frame. Stops at the first parent that cannot be read (cross-origin:
+ * `frameElement` is `null`, or a read throws).
  */
-function frameChainIsActive(doc: Document): boolean {
-  let frame: Element | null;
-  try {
-    frame = doc.defaultView?.frameElement ?? null;
-  } catch {
-    return true;
+function recordAncestorFocus(doc: Document): AncestorFocus[] {
+  const out: AncestorFocus[] = [];
+  let current = doc;
+  for (;;) {
+    let frame: Element | null;
+    try {
+      frame = current.defaultView?.frameElement ?? null;
+    } catch {
+      break;
+    }
+    if (!frame) break;
+    const parent = frame.ownerDocument;
+    out.push({ doc: parent, frame, previous: deepestActiveElement(parent) });
+    current = parent;
   }
-  if (!frame) return true;
-  try {
-    return isActiveInTreeChain(frame) && frameChainIsActive(frame.ownerDocument);
-  } catch {
-    return true;
+  return out;
+}
+
+/**
+ * Put each recorded ancestor focus back, innermost first so the top
+ * document's own focus is set last and wins. An ancestor whose recorded focus
+ * was its frame on the chain needs nothing (restoring the inner document left
+ * it there); one that had nothing focused gets that frame blurred, when the
+ * frame is what it now has focused.
+ */
+function restoreAncestorFocus(ancestors: AncestorFocus[]): void {
+  for (const { doc, frame, previous } of ancestors) {
+    try {
+      if (previous === frame) continue;
+      if (previous && previous !== doc.body && previous.isConnected && isFocusable(previous)) {
+        (previous as HTMLElement).focus();
+        continue;
+      }
+      const now = deepestActiveElement(doc);
+      if (now === frame && isFocusable(frame)) (frame as HTMLElement).blur();
+    } catch {
+      // A document that became unreadable mid-read: nothing to restore.
+    }
   }
+}
+
+/** Duck-typed, so an element of another frame's realm counts. */
+function isFocusable(el: Element): boolean {
+  return typeof (el as Partial<HTMLElement>).focus === 'function';
 }
 
 /**
