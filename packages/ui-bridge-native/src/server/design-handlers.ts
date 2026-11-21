@@ -126,6 +126,117 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+// ============================================================================
+// Request validation — the web transports' rules, messages and order
+// ============================================================================
+//
+// The web transports validate every design body at one shared boundary
+// (`design-request.ts` for snapshot/audit, `quality-request.ts` for the
+// evaluate family). These are native's copies of the checks for the fields
+// native reads, with the same messages, so a malformed body is refused for
+// the same field on either transport rather than read loosely here. A field
+// native does not read (`limit`, `includePseudoElements`, ...) is not checked.
+
+/** A malformed request body; answered `INVALID_REQUEST` with its message. */
+class NativeRequestError extends Error {}
+
+function invalidRequest<T = unknown>(err: unknown): APIResponse<T> {
+  if (err instanceof NativeRequestError) return error(err.message, 'INVALID_REQUEST');
+  throw err;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isPositiveNumber(value: unknown): value is number {
+  return isFiniteNumber(value) && value > 0;
+}
+
+/** The body as an object; absent or `null` is `{}`, anything else not an object is refused. */
+function bodyOf(request: unknown, route: string): Record<string, unknown> {
+  if (!isGiven(request)) return {};
+  if (!isObject(request)) {
+    throw new NativeRequestError(`${route}: the request body must be a JSON object`);
+  }
+  return request;
+}
+
+/**
+ * The requested ids, or `undefined` (every element) when absent or `null`.
+ * A given list selects exactly its ids — an empty one selects nothing, as the
+ * web transports' selection does.
+ */
+function elementIdsOf(body: Record<string, unknown>, route: string): string[] | undefined {
+  const ids = body.elementIds;
+  if (!isGiven(ids)) return undefined;
+  if (!Array.isArray(ids) || !ids.every((id) => typeof id === 'string')) {
+    throw new NativeRequestError(`${route}: elementIds must be an array of strings`);
+  }
+  return ids;
+}
+
+function stringOf(body: Record<string, unknown>, key: string, route: string): string | undefined {
+  const value = body[key];
+  if (!isGiven(value)) return undefined;
+  if (typeof value !== 'string') {
+    throw new NativeRequestError(`${route}: ${key} must be a string`);
+  }
+  return value;
+}
+
+function viewportOf(
+  body: Record<string, unknown>,
+  route: string
+): { width: number; height: number } | undefined {
+  const viewport = body.viewport;
+  if (!isGiven(viewport)) return undefined;
+  if (
+    !isObject(viewport) ||
+    !isPositiveNumber(viewport.width) ||
+    !isPositiveNumber(viewport.height)
+  ) {
+    throw new NativeRequestError(
+      `${route}: viewport must be { width, height }, each a finite number greater than 0`
+    );
+  }
+  return { width: viewport.width, height: viewport.height };
+}
+
+/** A metric's configuration in a custom context, as `quality-request.ts`'s `isMetricConfig`. */
+function isMetricConfig(value: unknown): boolean {
+  if (!isObject(value)) return false;
+  if (isGiven(value.enabled) && typeof value.enabled !== 'boolean') return false;
+  if (isGiven(value.weight) && !(isFiniteNumber(value.weight) && value.weight >= 0)) return false;
+  if (isGiven(value.thresholds)) {
+    const t = value.thresholds;
+    if (!isObject(t) || !isFiniteNumber(t.good) || !isFiniteNumber(t.warning)) return false;
+  }
+  return true;
+}
+
+function customContextOf(
+  body: Record<string, unknown>,
+  route: string
+): Record<string, unknown> | undefined {
+  const context = body.customContext;
+  if (!isGiven(context)) return undefined;
+  if (!isObject(context) || typeof context.name !== 'string' || !isObject(context.metrics)) {
+    throw new NativeRequestError(
+      `${route}: customContext must be an object with a string name and a metrics object`
+    );
+  }
+  for (const [metricId, config] of Object.entries(context.metrics)) {
+    if (!isMetricConfig(config)) {
+      throw new NativeRequestError(
+        `${route}: customContext.metrics.${metricId} must be an object whose enabled is a ` +
+          'boolean, weight a finite number >= 0, and thresholds { good, warning } finite numbers'
+      );
+    }
+  }
+  return context;
+}
+
 function success<T>(data: T): APIResponse<T> {
   return { success: true, data, timestamp: Date.now() };
 }
@@ -279,6 +390,22 @@ export function createDesignHandlers(
     return viewportProvider?.() ?? { width: 0, height: 0 };
   }
 
+  /** The registered elements a validated `elementIds` selects (all when absent). */
+  function selectElements(elementIds: readonly string[] | undefined) {
+    const elements = registry.getAllElements();
+    if (!elementIds) return elements;
+    const idSet = new Set(elementIds);
+    return elements.filter((e) => idSet.has(e.id));
+  }
+
+  /** Native design data for the selected elements. */
+  function designDataOf(elementIds: readonly string[] | undefined): ElementDesignData[] {
+    return selectElements(elementIds).map((el) => {
+      const state = el.getState();
+      return getNativeElementDesignData(el.id, el.label, el.type, el.flatStyle, state.layout);
+    });
+  }
+
   return {
     // 1. GET /design/element/:id/styles
     getElementStyles: async (ctx) => {
@@ -317,27 +444,15 @@ export function createDesignHandlers(
 
     // 3. POST /design/snapshot
     getDesignSnapshot: async (ctx) => {
-      const body = ctx.body as
-        | {
-            elementIds?: string[];
-            includePseudoElements?: boolean;
-          }
-        | undefined;
-
-      let elements = registry.getAllElements();
-
-      // Filter to requested IDs if specified
-      if (body?.elementIds && body.elementIds.length > 0) {
-        const idSet = new Set(body.elementIds);
-        elements = elements.filter((e) => idSet.has(e.id));
+      // Validated as the web transports' `designSnapshotOf` does, for the
+      // fields native reads (`includePseudoElements` and `limit` are not).
+      let elementIds: string[] | undefined;
+      try {
+        elementIds = elementIdsOf(bodyOf(ctx.body, '/design/snapshot'), '/design/snapshot');
+      } catch (err) {
+        return invalidRequest(err);
       }
-
-      const designData: ElementDesignData[] = elements.map((el) => {
-        const state = el.getState();
-        return getNativeElementDesignData(el.id, el.label, el.type, el.flatStyle, state.layout);
-      });
-
-      return success({ elements: designData, timestamp: Date.now() });
+      return success({ elements: designDataOf(elementIds), timestamp: Date.now() });
     },
 
     // 4. POST /design/responsive
@@ -367,47 +482,41 @@ export function createDesignHandlers(
       // its messages, so a body wrong in several of them is refused for the
       // same one on either side. Native does not read `limit`,
       // `includePassed` or `maxResults`, so it does not validate them.
-      const rawBody: unknown = ctx.body;
-      if (isGiven(rawBody) && !isObject(rawBody)) {
-        return error('/design/audit: the request body must be a JSON object', 'INVALID_REQUEST');
+      const route = '/design/audit';
+      let body: Record<string, unknown>;
+      try {
+        body = bodyOf(ctx.body, route);
+      } catch (err) {
+        return invalidRequest(err);
       }
-      const body = (rawBody ?? undefined) as
-        | {
-            guide?: unknown;
-            elementIds?: unknown;
-            rootFontSizePx?: unknown;
-          }
-        | undefined;
 
       // Refused, not ignored: the web transports' `designAuditOf` validates
       // it the same way, before the guide is consulted.
-      const root = body?.rootFontSizePx;
-      if (isGiven(root) && !(typeof root === 'number' && Number.isFinite(root) && root > 0)) {
+      const root = body.rootFontSizePx;
+      if (isGiven(root) && !isPositiveNumber(root)) {
         return error(
-          '/design/audit: rootFontSizePx must be a finite number greater than 0',
+          `${route}: rootFontSizePx must be a finite number greater than 0`,
           'INVALID_REQUEST'
         );
       }
 
-      const requestedIds = body?.elementIds;
-      if (
-        isGiven(requestedIds) &&
-        !(Array.isArray(requestedIds) && requestedIds.every((id) => typeof id === 'string'))
-      ) {
-        return error('/design/audit: elementIds must be an array of strings', 'INVALID_REQUEST');
+      let elementIds: string[] | undefined;
+      try {
+        elementIds = elementIdsOf(body, route);
+      } catch (err) {
+        return invalidRequest(err);
       }
-      const elementIds = requestedIds as string[] | null | undefined;
 
       // A guide given in the body must have the shape the web transports'
       // `designAuditOf` requires (an object with a `rules` array); refused
       // with the same message rather than handed to the validator.
-      const requestedGuide = body?.guide;
+      const requestedGuide = body.guide;
       if (
         isGiven(requestedGuide) &&
         !(isObject(requestedGuide) && Array.isArray(requestedGuide.rules))
       ) {
         return error(
-          '/design/audit: guide must be a style guide object with a rules array',
+          `${route}: guide must be a style guide object with a rules array`,
           'INVALID_REQUEST'
         );
       }
@@ -428,11 +537,7 @@ export function createDesignHandlers(
 
       // A given list selects exactly its ids — an empty one selects nothing,
       // as web's `selectElements` does; only an absent list means all.
-      let elements = registry.getAllElements();
-      if (elementIds) {
-        const idSet = new Set(elementIds);
-        elements = elements.filter((e) => idSet.has(e.id));
-      }
+      const elements = selectElements(elementIds);
 
       // Map elements to the format expected by the validator
       const auditElements = elements.map((el) => ({
@@ -492,36 +597,32 @@ export function createDesignHandlers(
         );
       }
 
-      const body = ctx.body as
-        | {
-            context?: string;
-            customContext?: unknown;
-            elementIds?: string[];
-            viewport?: { width: number; height: number };
-          }
-        | undefined;
-
-      let elements = registry.getAllElements();
-      if (body?.elementIds && body.elementIds.length > 0) {
-        const idSet = new Set(body.elementIds);
-        elements = elements.filter((e) => idSet.has(e.id));
+      // Validated in the web transports' `evaluateRegisteredQuality` order
+      // and with its messages: body, elementIds, viewport, customContext,
+      // context. A partial viewport would otherwise score on NaN.
+      const route = '/design/evaluate';
+      let elementIds: string[] | undefined;
+      let viewport: { width: number; height: number };
+      let context: unknown;
+      try {
+        const body = bodyOf(ctx.body, route);
+        elementIds = elementIdsOf(body, route);
+        viewport = viewportOf(body, route) ?? getScreenDimensions();
+        // Resolve context: custom object > style guide context > built-in name
+        context = customContextOf(body, route) ?? stringOf(body, 'context', route) ?? 'general';
+      } catch (err) {
+        return invalidRequest(err);
       }
-
-      const designData: ElementDesignData[] = elements.map((el) => {
-        const state = el.getState();
-        return getNativeElementDesignData(el.id, el.label, el.type, el.flatStyle, state.layout);
-      });
-
-      const viewport = body?.viewport ?? getScreenDimensions();
-
-      // Resolve context: custom object > style guide context > built-in name
-      let context: unknown = body?.customContext ?? body?.context ?? 'general';
       if (typeof context === 'string' && loadedStyleGuide) {
-        const guide = loadedStyleGuide as { qualityContexts?: Record<string, unknown> };
-        if (guide.qualityContexts?.[context]) {
-          context = guide.qualityContexts[context];
+        const declared = (loadedStyleGuide as { qualityContexts?: Record<string, unknown> })
+          .qualityContexts;
+        // Own keys only, so `toString` names no context.
+        if (declared && Object.prototype.hasOwnProperty.call(declared, context)) {
+          context = declared[context];
         }
       }
+
+      const designData = designDataOf(elementIds);
 
       try {
         const report = qualityEvaluator.evaluateQuality(designData, viewport, context);
@@ -554,26 +655,21 @@ export function createDesignHandlers(
         );
       }
 
-      const body = ctx.body as
-        | {
-            label?: string;
-            elementIds?: string[];
-          }
-        | undefined;
-
-      let elements = registry.getAllElements();
-      if (body?.elementIds && body.elementIds.length > 0) {
-        const idSet = new Set(body.elementIds);
-        elements = elements.filter((e) => idSet.has(e.id));
+      // Validated as the web transports' `captureQualityBaseline` does.
+      const route = '/design/evaluate/baseline';
+      let elementIds: string[] | undefined;
+      let label: string | undefined;
+      try {
+        const body = bodyOf(ctx.body, route);
+        elementIds = elementIdsOf(body, route);
+        label = stringOf(body, 'label', route);
+      } catch (err) {
+        return invalidRequest(err);
       }
 
-      const designData: ElementDesignData[] = elements.map((el) => {
-        const state = el.getState();
-        return getNativeElementDesignData(el.id, el.label, el.type, el.flatStyle, state.layout);
-      });
-
+      const designData = designDataOf(elementIds);
       const viewport = getScreenDimensions();
-      savedBaseline = qualityEvaluator.createBaseline(designData, viewport, body?.label);
+      savedBaseline = qualityEvaluator.createBaseline(designData, viewport, label);
       return success({ saved: true, elementCount: designData.length });
     },
 
@@ -590,18 +686,16 @@ export function createDesignHandlers(
         return error('No baseline saved. Call saveBaseline first.', 'NO_BASELINE');
       }
 
-      const body = ctx.body as { elementIds?: string[] } | undefined;
-
-      let elements = registry.getAllElements();
-      if (body?.elementIds && body.elementIds.length > 0) {
-        const idSet = new Set(body.elementIds);
-        elements = elements.filter((e) => idSet.has(e.id));
+      // Validated as the web transports' `diffQualityBaseline` does, after
+      // the baseline check (web's handlers check it first too).
+      const route = '/design/evaluate/diff';
+      let elementIds: string[] | undefined;
+      try {
+        elementIds = elementIdsOf(bodyOf(ctx.body, route), route);
+      } catch (err) {
+        return invalidRequest(err);
       }
-
-      const designData: ElementDesignData[] = elements.map((el) => {
-        const state = el.getState();
-        return getNativeElementDesignData(el.id, el.label, el.type, el.flatStyle, state.layout);
-      });
+      const designData = designDataOf(elementIds);
 
       try {
         const report = qualityEvaluator.diffSnapshots(savedBaseline, designData);
