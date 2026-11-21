@@ -21,6 +21,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { CommandRelay, TabRoutingError } from './command-relay';
 import { createRelayHandlers } from './relay-handlers';
+import { NoLiveAnswer } from './live-answer';
 import { createNextRouteHandlers } from './nextjs';
 
 /** Every relay `freshRelay()` built, destroyed by `destroyRelays()` after each test. */
@@ -588,7 +589,10 @@ describe('relay-handlers · pinned reads never serve the shared snapshot cache (
     await seedCache(relay, handlers, snapshotWith([{ id: 'cached-el', type: 'button' }]));
 
     vi.spyOn(relay, 'queueCommand').mockRejectedValue(
-      new Error('Timeout waiting for browser response')
+      new NoLiveAnswer(
+        'Command find timed out after 8000ms (SSE): no result arrived.',
+        'unanswered'
+      )
     );
     const result = await handlers.find!({ tabId: 'tab-a' } as never);
 

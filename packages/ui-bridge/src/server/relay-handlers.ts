@@ -16,7 +16,12 @@ import { componentActionInvocation } from './component-action-invocation';
 import { scopedCallerRefusal } from './scoped-refusal';
 import { buildComponentNotFoundError } from './handlers';
 import { describeInnerFailure } from './inner-failure';
-import { cacheFallbackMeta, isTabReportedFailure, noLiveAnswerCause } from './live-answer';
+import {
+  cacheFallbackMeta,
+  isNoLiveAnswer,
+  isTabReportedFailure,
+  noLiveAnswerCause,
+} from './live-answer';
 import { fitMediaOverrideBudget } from '../control/media-override-budget';
 import {
   componentCaptureRefusalEnvelope,
@@ -823,11 +828,13 @@ export function createRelayHandlers(
       if (innerFailure) return relayInnerFailureResponse<T>(innerFailure, e.result);
     }
     const hasListeners = relay.hasCommandListeners() || relay.getWebSocketClientCount() > 0;
-    const isTimeout = msg.includes('timeout') || msg.includes('Timeout');
+    // Classified on the relay's typed kind, never on the message text: a
+    // delivered command that no tab answered in time.
+    const isTimeout = isNoLiveAnswer(e) && e.reason === 'unanswered';
     const hint = !hasListeners
       ? ' No browser tab is connected — ensure the app is open and the UI Bridge SDK is loaded.'
       : isTimeout
-        ? ' The browser did not respond in time — the page may be unresponsive or navigating.'
+        ? ' No result reached the relay in time — the page may have run the command, be unresponsive or be navigating.'
         : '';
     const isUnsupported =
       msg.includes('unsupported') || msg.includes('Unsupported') || msg.includes('not supported');
@@ -1967,7 +1974,6 @@ export function createRelayHandlers(
         uptime: typeof process !== 'undefined' ? process.uptime() * 1000 : 0,
         memory: typeof process !== 'undefined' ? process.memoryUsage() : {},
         pendingCommands: relay.getTransportDiagnostics().pendingCommandCount,
-        commandQueueLength: relay.getTransportDiagnostics().commandQueueLength,
       });
     },
 
