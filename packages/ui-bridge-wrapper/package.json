@@ -28,7 +28,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsup && tsc -p tsconfig.build.json",
+    "build": "rimraf dist && tsup && tsc -p tsconfig.build.json",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.vitest.json",
     "test": "vitest run",
