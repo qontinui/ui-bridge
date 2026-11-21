@@ -80,6 +80,7 @@ import {
   type ForcedPseudoReleaseReport,
 } from '../control/forced-hover';
 import { captureStateVariations, INTERACTION_STATES } from '../ai/design-inspector';
+import { invalidStatesMessage } from '../ai/interaction-states';
 import type { InteractionStateName } from '../core/types';
 import { inertAbortSignal } from '../core/abortable';
 import type {
@@ -5379,10 +5380,16 @@ export async function executeCommand(
       // The relay default is the HTTP default minus `disabled` (which writes
       // the element's `disabled` property), derived so a new state reaches
       // both doors.
-      const { id, states = INTERACTION_STATES.filter((s) => s !== 'disabled') } = payload as {
+      const { id, states: requested } = payload as {
         id: string;
-        states?: string[];
+        states?: string[] | null;
       };
+      // Refused, as the HTTP door does, rather than silently dropped: a
+      // caller that asked for a state it misspelled must not get a reply that
+      // looks complete. Omitted and `null` both take the default.
+      const invalid = invalidStatesMessage(requested);
+      if (invalid) return sharedRouteFailure(invalid, 'VALIDATION_ERROR');
+      const states = requested ?? INTERACTION_STATES.filter((s) => s !== 'disabled');
       const el = getElement(id);
       if (!el) return { error: `Element ${id} not found` };
       const dom = el.element as HTMLElement;
@@ -5396,12 +5403,7 @@ export async function executeCommand(
       // `focusCaveat` when forced in an unfocused document, and `focused`).
       // Each state is read in its real computed appearance, never
       // the placeholder this case used to return without interacting at all.
-      const stateStyles = await captureStateVariations(
-        dom,
-        states.filter((s): s is InteractionStateName =>
-          (INTERACTION_STATES as readonly string[]).includes(s)
-        )
-      );
+      const stateStyles = await captureStateVariations(dom, states as InteractionStateName[]);
       return { elementId: id, stateStyles, timestamp: Date.now() };
     }
 
