@@ -28,9 +28,11 @@
  * The package's `src/` imports nothing from the optional peer, and
  * `NativeDesignHandlers` is a public export, so the core's types are mirrored
  * here. `design-audit-native.test-d.ts` pins the mirror to the SDK's own:
- * the response, the heuristic input and coverage types exactly, the adapter
- * member by member, and the SDK's `auditDesign` as assignable to
- * `DesignAuditCoreModule['auditDesign']`.
+ * the response, the heuristic input, the coverage declaration and the style
+ * guide exactly; the adapter member by member (same keys both ways, and
+ * assignable to the SDK's); and the SDK's `auditDesign` as assignable to
+ * `DesignAuditCoreModule['auditDesign']`, a property, so that check is strict
+ * under `strictFunctionTypes` — narrowing any of the SDK's parameters fails it.
  */
 
 import type { NativeUIBridgeRegistry } from '../core/registry';
@@ -44,6 +46,91 @@ import {
 // ============================================================================
 // The core's types, mirrored (`@qontinui/ui-bridge/specs`)
 // ============================================================================
+
+/** Design tokens (mirrors `DesignTokens`). */
+export interface NativeDesignTokens {
+  colors: Record<string, string>;
+  typography: {
+    fontFamilies: Record<string, string>;
+    fontSizes: Record<string, string>;
+    fontWeights: Record<string, string>;
+    lineHeights: Record<string, string>;
+    letterSpacings: Record<string, string>;
+  };
+  spacing: Record<string, string>;
+  borderRadius: Record<string, string>;
+  shadows: Record<string, string>;
+  breakpoints: Record<string, number>;
+}
+
+/** A quality metric id (mirrors `QualityMetricId`). */
+export type NativeQualityMetricId =
+  | 'contentOverflow'
+  | 'aboveFoldRatio'
+  | 'informationDensity'
+  | 'containerEfficiency'
+  | 'viewportUtilization'
+  | 'elementDensity'
+  | 'whitespaceRatio'
+  | 'localDensityBalance'
+  | 'horizontalBalance'
+  | 'verticalBalance'
+  | 'alignmentConsistency'
+  | 'spacingScaleAdherence'
+  | 'spacingConsistency'
+  | 'lineHeightRatio'
+  | 'interGroupSpacingRatio'
+  | 'uniqueColorCount'
+  | 'wcagContrastCompliance'
+  | 'colorHarmony'
+  | 'saturationConsistency'
+  | 'typeScaleAdherence'
+  | 'fontWeightConsistency'
+  | 'headingHierarchy'
+  | 'fontFamilyCount'
+  | 'buttonConsistency'
+  | 'cardConsistency'
+  | 'inputConsistency'
+  | 'touchTargetCompliance'
+  | 'customPropertyConsistency';
+
+/** A quality context a style guide declares (mirrors `QualityContext`). */
+export interface NativeQualityContext {
+  name: string;
+  description: string;
+  metrics: Partial<
+    Record<
+      NativeQualityMetricId,
+      { enabled: boolean; weight: number; thresholds: { good: number; warning: number } }
+    >
+  >;
+}
+
+/** A style rule (mirrors `StyleRule`). */
+export interface NativeStyleRule {
+  id: string;
+  description?: string;
+  selector?: string;
+  elementType?: string;
+  constraints: NativeStyleConstraint[];
+  severity?: 'error' | 'warning' | 'info';
+}
+
+/**
+ * A style guide (mirrors `StyleGuideConfig`). `/design/style-guide/load`
+ * stores the body's guide as this type without validating it, as the web
+ * transports' `loadStyleGuide` does; a guide in an audit request is checked by
+ * the core.
+ */
+export interface NativeStyleGuideConfig {
+  version: string;
+  name: string;
+  description?: string;
+  tokens: NativeDesignTokens;
+  rules: NativeStyleRule[];
+  qualityContexts?: Record<string, NativeQualityContext>;
+  pageOverrides?: Record<string, Partial<NativeStyleGuideConfig>>;
+}
 
 /** A style-guide constraint (mirrors `StyleConstraint`). */
 export type NativeStyleConstraint =
@@ -176,7 +263,7 @@ export type NativeAuditRecord = Omit<ElementDesignData, 'stateVariations'>;
 /** What a transport supplies to the core (mirrors `DesignAuditAdapter`). */
 export interface NativeDesignAuditAdapter<T extends { id: string }, R extends T = T> {
   isReadable(el: T): el is R;
-  records(kept: R[], guide: unknown): NativeAuditRecord[];
+  records(kept: R[], guide: NativeStyleGuideConfig): NativeAuditRecord[];
   heuristicInput(el: R): NativeHeuristicInput;
   defaultRootFontSizePx(): number;
   heuristicCoverage: Readonly<
@@ -186,12 +273,14 @@ export interface NativeDesignAuditAdapter<T extends { id: string }, R extends T 
 
 /** The shared audit core native calls (`@qontinui/ui-bridge/specs`, 0.57.0 or later). */
 export interface DesignAuditCoreModule {
-  auditDesign<T extends { id: string }, R extends T = T>(
+  // A property, not a method, so its parameters are checked strictly against
+  // the SDK's `auditDesign` (`design-audit-native.test-d.ts`).
+  auditDesign: <T extends { id: string }, R extends T = T>(
     elements: readonly T[],
     request: unknown,
-    loadedGuide: unknown,
+    loadedGuide: NativeStyleGuideConfig | null | undefined,
     adapter: NativeDesignAuditAdapter<T, R>
-  ): NativeDesignAuditResponse;
+  ) => NativeDesignAuditResponse;
 }
 
 /**
@@ -298,7 +387,7 @@ const nativeAdapter: NativeDesignAuditAdapter<RegisteredNativeElement> = {
 export function nativeAudit(
   registry: NativeUIBridgeRegistry,
   request: unknown,
-  loadedGuide: unknown,
+  loadedGuide: NativeStyleGuideConfig | null | undefined,
   core: DesignAuditCoreModule
 ): NativeDesignAuditResponse {
   return core.auditDesign(registry.getAllElements(), request, loadedGuide, nativeAdapter);

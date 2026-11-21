@@ -1,10 +1,13 @@
 /**
  * Type-level parity: native's mirror of the shared audit core is pinned to the
- * SDK's own types — the response, the heuristic input and the coverage
- * declaration exactly; the adapter member by member (every member the core
- * requires is declared, and each native member is assignable to the core's);
- * and the SDK's `auditDesign` as assignable to the native module's, which is
- * what the handlers' presence-gate cast relies on. Native `src/` imports nothing
+ * SDK's own types — the response, the heuristic input, the coverage
+ * declaration and the style guide exactly; the adapter member by member (the
+ * same keys in both directions, and assignable to the core's); and the SDK's
+ * `auditDesign` as assignable to `DesignAuditCoreModule['auditDesign']`, which
+ * is what the handlers' presence-gate cast relies on. That module member is a
+ * property, so the assignment is checked strictly (`strictFunctionTypes`):
+ * narrowing any SDK parameter — `request`, `loadedGuide`, the adapter — fails
+ * it. Native `src/` imports nothing
  * from the optional `@qontinui/ui-bridge` peer, so the published handler types
  * carry a local copy (`../design-audit-native.ts`); this file fails
  * `npm run typecheck` the moment the two drift. Vitest does not run it.
@@ -19,12 +22,15 @@ import type {
   NativeDesignAuditAdapter,
   NativeDesignAuditResponse,
   NativeHeuristicInput,
+  NativeStyleGuideConfig,
 } from '../design-audit-native';
 
 type Element = { id: string };
 
 /** The SDK's `ElementDesignData` (the specs entry exports it only through the validator). */
 type SdkElementDesignData = Parameters<typeof specs.runStyleAudit>[0][number];
+
+expectTypeOf<NativeStyleGuideConfig>().toEqualTypeOf<specs.StyleGuideConfig>();
 
 expectTypeOf<NativeDesignAuditResponse>().toEqualTypeOf<specs.DesignAuditResponse>();
 expectTypeOf<NativeHeuristicInput>().toEqualTypeOf<specs.HeuristicInput>();
