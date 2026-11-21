@@ -13,6 +13,7 @@ import type {
 import type { ComponentActionResponse, PageNavigationResponse } from '../control/types';
 import type { ElementDesignData, StateStyles, ResponsiveSnapshot } from '../design/design-types';
 import type { PageHealthObservation } from './page-health';
+import type { NativeDesignAuditResponse } from './design-audit-native';
 import type { PairingStore } from './pairing';
 
 /**
@@ -441,7 +442,8 @@ export const UI_BRIDGE_NATIVE_ROUTES: Record<string, RouteDefinition> = {
   DESIGN_AUDIT: {
     method: 'POST',
     path: '/ui-bridge/design/audit',
-    description: 'Run style guide audit on elements',
+    description:
+      'Audit elements against the requested or loaded style guide, else run the built-in heuristics',
   },
   DESIGN_STYLE_GUIDE_LOAD: {
     method: 'POST',
@@ -855,7 +857,7 @@ export interface NativeServerHandlers {
     { elements: ElementDesignData[]; timestamp: number } & Partial<ElementBoundReport>
   >;
   getResponsiveSnapshots: HandlerFunction<Array<ResponsiveSnapshot & Partial<ElementBoundReport>>>;
-  runDesignAudit: HandlerFunction<unknown>;
+  runDesignAudit: HandlerFunction<NativeDesignAuditResponse>;
   loadStyleGuide: HandlerFunction<{ loaded: boolean }>;
   getStyleGuide: HandlerFunction<unknown>;
   clearStyleGuide: HandlerFunction<{ cleared: boolean }>;

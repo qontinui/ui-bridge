@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import * as specs from '@qontinui/ui-bridge/specs';
 import { NativeUIBridgeRegistry } from '../../core/registry';
 import { createDesignHandlers, type QualityEvaluatorModule } from '../design-handlers';
+import { asDesignAuditCore } from '../design-audit-native';
 import type { HandlerContext } from '../types';
 
 /**
@@ -175,7 +176,6 @@ describe('native /design/evaluate quality context', () => {
     const registry = new NativeUIBridgeRegistry();
     registry.registerElement('a', { current: {} } as never, { type: 'view' });
     registry.registerElement('b', { current: {} } as never, { type: 'view' });
-    const audits: number[] = [];
     const diffed: number[] = [];
     const h = createDesignHandlers(registry, () => ({ width: 400, height: 800 }), {
       qualityEvaluator: {
@@ -185,12 +185,7 @@ describe('native /design/evaluate quality context', () => {
           return evaluator.diffSnapshots(baseline, current as never);
         },
       },
-      styleValidator: {
-        runStyleAudit: (elements: unknown[]) => {
-          audits.push(elements.length);
-          return { results: [] };
-        },
-      } as never,
+      designAudit: asDesignAuditCore(specs),
     });
     const guide = { version: '1', name: 'g', rules: [] };
 
@@ -204,9 +199,10 @@ describe('native /design/evaluate quality context', () => {
     const allResponsive = await h.getResponsiveSnapshots(ctx(undefined));
     expect((allResponsive.data as Array<{ elements: unknown[] }>)[0].elements).toHaveLength(2);
 
-    await h.runDesignAudit(ctx({ guide, elementIds: [] }));
-    await h.runDesignAudit(ctx({ guide }));
-    expect(audits).toEqual([0, 2]);
+    const emptyAudit = await h.runDesignAudit(ctx({ guide, elementIds: [] }));
+    expect(emptyAudit.data?.checkedElements).toBe(0);
+    const allAudit = await h.runDesignAudit(ctx({ guide }));
+    expect(allAudit.data?.checkedElements).toBe(2);
 
     await h.saveBaseline(ctx({}));
     const diff = await h.diffBaseline(ctx({ elementIds: [] }));
@@ -248,8 +244,10 @@ describe('native /design/evaluate quality context', () => {
         '/design/audit: guide must be a style guide object with a rules array'
       );
     }
-    // No guide given and none loaded is a state, not a request error.
+    // No guide given and none loaded is a state, not a request error: the
+    // built-in heuristics run, as on the web transports.
     const none = await handlers().runDesignAudit(ctx({}));
-    expect(none.code).toBe('NO_STYLE_GUIDE');
+    expect(none.success).toBe(true);
+    expect(none.data?.mode).toBe('heuristic');
   });
 });

@@ -39,8 +39,16 @@ describe('namedTypeFamily / answersToNamedType', () => {
     expect(answersToNamedType('listbox', 'select')).toBe(true);
   });
 
+  it('a button is a web button or a React Native pressable or touchable', () => {
+    expect(namedTypeFamily('Button')).toEqual(['button', 'pressable', 'touchable']);
+    expect(answersToNamedType('pressable', 'button')).toBe(true);
+    expect(answersToNamedType('touchable', 'button')).toBe(true);
+    expect(answersToNamedType('button', 'pressable')).toBe(true);
+    expect(answersToNamedType('link', 'button')).toBe(false);
+  });
+
   it('any other name answers for itself only', () => {
-    expect(namedTypeFamily('Button')).toEqual(['button']);
+    expect(namedTypeFamily('Link')).toEqual(['link']);
     expect(answersToNamedType('button', 'button')).toBe(true);
     expect(answersToNamedType('textbox', 'button')).toBe(false);
     expect(answersToNamedType('textarea', 'input')).toBe(false);

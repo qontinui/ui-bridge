@@ -352,18 +352,22 @@ export function impliedAriaRole(type: string): string | undefined {
  * matches a type a caller named — a query, a filter, a criterion, a selector,
  * a style rule — matches the name's whole family; a reader that classifies an
  * element by its own type reads the precise kind.
+ *
+ * The families hold strings, not only `ElementType`s, because a React Native
+ * element answers with the native package's own kinds: a style rule a caller
+ * wrote for a web `button` matches a native `pressable` or `touchable`, which
+ * is what a person means by "the button" on a phone.
  */
-const NAMED_TYPE_FAMILIES: readonly (readonly ElementType[])[] = [
+const NAMED_TYPE_FAMILIES: readonly (readonly string[])[] = [
   ['input', 'textbox'],
   ['select', 'combobox', 'listbox'],
+  ['button', 'pressable', 'touchable'],
 ];
 
 /** The kinds a caller-named type answers to, lower-cased: its family, else itself. */
 export function namedTypeFamily(named: string): readonly string[] {
   const lower = named.toLowerCase();
-  return (
-    NAMED_TYPE_FAMILIES.find((family) => (family as readonly string[]).includes(lower)) ?? [lower]
-  );
+  return NAMED_TYPE_FAMILIES.find((family) => family.includes(lower)) ?? [lower];
 }
 
 /** Whether an element of kind `type` answers to the caller-named type `named`. */

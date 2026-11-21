@@ -7,6 +7,13 @@
 export * from './types';
 export * from './handlers';
 export * from './design-handlers';
+export type {
+  DesignAuditCoreModule,
+  NativeDesignAuditResponse,
+  NativeStyleGuideDesignAuditReport,
+  NativeHeuristicDesignAuditReport,
+  NativeHeuristicCoverage,
+} from './design-audit-native';
 export * from './http-server';
 export * from './pairing';
 export * from './ws-protocol';
