@@ -116,6 +116,16 @@ try {
   // Optional dependency not installed — audit/evaluate endpoints will return an error
 }
 
+/** Absent and JSON `null` both mean "not given", as in the web transports' `design-request.ts`. */
+function isGiven(value: unknown): boolean {
+  return value !== undefined && value !== null;
+}
+
+/** A JSON object (not an array), as the web transports' `isObject`. */
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function success<T>(data: T): APIResponse<T> {
   return { success: true, data, timestamp: Date.now() };
 }
@@ -352,15 +362,13 @@ export function createDesignHandlers(
 
     // 5. POST /design/audit
     runDesignAudit: async (ctx) => {
-      // Validated in the web transports' `designAuditOf` order — body,
-      // rootFontSizePx, elementIds, guide — with the same messages, so a body
-      // wrong in several ways is refused for the same field on either side.
+      // The fields native reads — body, rootFontSizePx, elementIds, guide —
+      // are validated in the web transports' `designAuditOf` order and with
+      // its messages, so a body wrong in several of them is refused for the
+      // same one on either side. Native does not read `limit`,
+      // `includePassed` or `maxResults`, so it does not validate them.
       const rawBody: unknown = ctx.body;
-      if (
-        rawBody !== undefined &&
-        rawBody !== null &&
-        (typeof rawBody !== 'object' || Array.isArray(rawBody))
-      ) {
+      if (isGiven(rawBody) && !isObject(rawBody)) {
         return error('/design/audit: the request body must be a JSON object', 'INVALID_REQUEST');
       }
       const body = (rawBody ?? undefined) as
@@ -374,11 +382,7 @@ export function createDesignHandlers(
       // Refused, not ignored: the web transports' `designAuditOf` validates
       // it the same way, before the guide is consulted.
       const root = body?.rootFontSizePx;
-      if (
-        root !== undefined &&
-        root !== null &&
-        !(typeof root === 'number' && Number.isFinite(root) && root > 0)
-      ) {
+      if (isGiven(root) && !(typeof root === 'number' && Number.isFinite(root) && root > 0)) {
         return error(
           '/design/audit: rootFontSizePx must be a finite number greater than 0',
           'INVALID_REQUEST'
@@ -387,8 +391,7 @@ export function createDesignHandlers(
 
       const requestedIds = body?.elementIds;
       if (
-        requestedIds !== undefined &&
-        requestedIds !== null &&
+        isGiven(requestedIds) &&
         !(Array.isArray(requestedIds) && requestedIds.every((id) => typeof id === 'string'))
       ) {
         return error('/design/audit: elementIds must be an array of strings', 'INVALID_REQUEST');
@@ -400,13 +403,8 @@ export function createDesignHandlers(
       // with the same message rather than handed to the validator.
       const requestedGuide = body?.guide;
       if (
-        requestedGuide !== undefined &&
-        requestedGuide !== null &&
-        !(
-          typeof requestedGuide === 'object' &&
-          !Array.isArray(requestedGuide) &&
-          Array.isArray((requestedGuide as { rules?: unknown }).rules)
-        )
+        isGiven(requestedGuide) &&
+        !(isObject(requestedGuide) && Array.isArray(requestedGuide.rules))
       ) {
         return error(
           '/design/audit: guide must be a style guide object with a rules array',
@@ -428,8 +426,10 @@ export function createDesignHandlers(
         );
       }
 
+      // A given list selects exactly its ids — an empty one selects nothing,
+      // as web's `selectElements` does; only an absent list means all.
       let elements = registry.getAllElements();
-      if (elementIds && elementIds.length > 0) {
+      if (elementIds) {
         const idSet = new Set(elementIds);
         elements = elements.filter((e) => idSet.has(e.id));
       }

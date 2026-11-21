@@ -413,5 +413,22 @@ describe('native review regressions (each threw or answered wrong before its fix
     const all = await handlers.runDesignAudit(ctx({ guide, elementIds: null }));
     expect(all.success).toBe(true);
     expect(audits.pop()).toHaveLength(2);
+    // An empty list selects nothing, as web's selectElements does.
+    const none = await handlers.runDesignAudit(ctx({ guide, elementIds: [] }));
+    expect(none.success).toBe(true);
+    expect(audits.pop()).toEqual([]);
+    // No body at all is not a malformed body: it falls through to the guide.
+    // (The loaded guide is module state an earlier test may have set.)
+    await handlers.clearStyleGuide(ctx(undefined));
+    for (const body of [undefined, null]) {
+      const r = await handlers.runDesignAudit(ctx(body));
+      expect(r, String(body)).toMatchObject({ success: false, code: 'NO_STYLE_GUIDE' });
+    }
+    await handlers.loadStyleGuide(ctx({ guide }));
+    for (const body of [undefined, null]) {
+      const r = await handlers.runDesignAudit(ctx(body));
+      expect(r.success, String(body)).toBe(true);
+      expect(audits.pop()).toHaveLength(2);
+    }
   });
 });
