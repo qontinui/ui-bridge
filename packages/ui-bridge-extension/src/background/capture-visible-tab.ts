@@ -18,8 +18,9 @@
  * what happened between them. If the user switches from the sender's tab A to
  * tab B and back to A while captureVisibleTab is running, both reads see A
  * active and the frame — which may show B — is returned as A's. Chrome offers
- * no capture-by-tab-id that would close this; the window is the capture's own
- * duration (tens of milliseconds) and needs two tab switches inside it.
+ * no capture-by-tab-id that would close this. The window is the time between
+ * the two `tabs.query` reads (the capture itself sits between them), and an
+ * undetected wrong frame needs two tab switches inside it.
  *
  * PERMISSION — PENDING A PROBE. `manifest.json` grants
  * `"host_permissions": ["<all_urls>"]`. Chrome's own `chrome.tabs` page
@@ -60,8 +61,18 @@ const CAPTURE_QUOTA = /MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND/;
  * Every other captureVisibleTab refusal is treated as retryable — a window
  * mid-transition, a tab still loading — since retrying costs one request.
  */
-const CAPTURE_FINAL =
-  /permission is required|Cannot access contents of|cannot be scripted|chrome:\/\/|extensions gallery/i;
+export const CAPTURE_FINAL_PATTERNS: readonly RegExp[] = [
+  /permission is required/i, // "Either the '<all_urls>' or 'activeTab' permission is required."
+  /Cannot access contents of/i, // "Cannot access contents of url "…". Extension manifest must request permission…"
+  /cannot be scripted/i, // "The extensions gallery cannot be scripted."
+  /chrome:\/\//i, // "Cannot access a chrome:// URL"
+  /extensions gallery/i, // the Web Store, in its own wording
+  /Cannot access a /i, // "Cannot access a chrome-extension:// URL of different extension"
+];
+
+function isFinalRefusal(text: string): boolean {
+  return CAPTURE_FINAL_PATTERNS.some((p) => p.test(text));
+}
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -121,7 +132,7 @@ export async function captureSenderTab(
       success: false,
       code: 'CAPTURE_FAILED',
       error: `captureVisibleTab failed: ${text}`,
-      retryable: !CAPTURE_FINAL.test(text),
+      retryable: !isFinalRefusal(text),
     };
   }
 

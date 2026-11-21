@@ -19,6 +19,7 @@ import {
   SCREENSHOT_CAPABILITY,
 } from '../src/content/screenshot-handler';
 import { buildLiveRelayOptions } from '../src/content/live-relay-config';
+import { CAPTURE_FINAL_PATTERNS } from '../src/background/capture-visible-tab';
 import type { ExtensionMessage } from '../src/shared/messages';
 
 const SENDER_TAB = { id: 7, windowId: 3 };
@@ -149,7 +150,7 @@ describe('live relay getScreenshot', () => {
     expect(err.message).toContain('MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND');
   });
 
-  it('any other capture refusal answers CAPTURE_FAILED, not retryable, carrying its message', async () => {
+  it('a known-final capture refusal answers non-retryable CAPTURE_FAILED, carrying its message', async () => {
     chromeMock.tabs.query.mockResolvedValue([{ id: SENDER_TAB.id }]);
     chromeMock.tabs.captureVisibleTab.mockRejectedValue(
       new Error('Cannot access contents of the page.')
@@ -237,6 +238,34 @@ describe('live relay getScreenshot', () => {
     expect(reply).toMatchObject({ success: false, code: 'TAB_NOT_VISIBLE', retryable: false });
     expect(chromeMock.tabs.query).not.toHaveBeenCalled();
     expect(chromeMock.tabs.captureVisibleTab).not.toHaveBeenCalled();
+  });
+
+  it('each known-final pattern matches a real Chrome refusal, which answers non-retryable CAPTURE_FAILED', async () => {
+    // One real Chrome message per CAPTURE_FINAL_PATTERNS entry, in order.
+    const messages = [
+      "Either the '<all_urls>' or 'activeTab' permission is required.",
+      'Cannot access contents of url "chrome://settings/". Extension manifest must request permission to access this host.',
+      'The extensions gallery cannot be scripted.',
+      'Cannot access a chrome:// URL',
+      'The extensions gallery cannot be scripted.',
+      'Cannot access a chrome-extension:// URL of different extension',
+    ];
+    expect(messages).toHaveLength(CAPTURE_FINAL_PATTERNS.length);
+    for (const [i, pattern] of CAPTURE_FINAL_PATTERNS.entries()) {
+      const message = messages[i]!;
+      expect(pattern.test(message), `${pattern} vs ${message}`).toBe(true);
+      chromeMock.tabs.query.mockResolvedValue([{ id: SENDER_TAB.id }]);
+      chromeMock.tabs.captureVisibleTab.mockRejectedValueOnce(new Error(message));
+      const reply = await deliverToServiceWorker(
+        { type: 'CAPTURE_VISIBLE_TAB' },
+        { tab: SENDER_TAB }
+      );
+      expect(reply, message).toMatchObject({
+        success: false,
+        code: 'CAPTURE_FAILED',
+        retryable: false,
+      });
+    }
   });
 
   it('an unrecognised capture refusal is retryable CAPTURE_FAILED', async () => {
@@ -373,10 +402,13 @@ describe('live relay getScreenshot', () => {
       host_permissions: string[];
     };
     // The PROPERTY, not the literal: the grant must cover the origins the live
-    // relay runs on (https pages and http localhost). Today that is
-    // `<all_urls>`, per Chrome's documentation, pending the plan's D6 headed
-    // probe (see src/background/capture-visible-tab.ts); a narrowing the probe
-    // proves sufficient keeps this green.
+    // relay runs on (https pages and http localhost). This test cannot know what
+    // Chrome REQUIRES for a no-gesture capture: Chrome's chrome.tabs page
+    // disagrees with itself (the captureVisibleTab reference names <all_urls>
+    // or activeTab; its Host permissions section says host permissions allow
+    // captureVisibleTab), so the plan's D6 headed probe decides, and it has not
+    // been run (see src/background/capture-visible-tab.ts). A narrowing that
+    // probe proves sufficient keeps this green.
     for (const url of [
       'https://example.com/app',
       'http://localhost:3001/x',
