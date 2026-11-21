@@ -38,6 +38,7 @@ import {
   type ReportedTokens,
 } from './design-tokens';
 import { styleRules, type StyleBlock, type WalkedRule } from './stylesheet-walk';
+import { contrastOfColors } from '../specs/color-utils';
 import {
   graphFor,
   inlineNamesInScope,
@@ -567,21 +568,20 @@ async function captureUnderRootWidthLock(
  *
  * Colors should be in CSS color format (rgb, rgba, hex, or named).
  *
- * Returns `null` (UNKNOWN) when either color cannot be parsed. An unparseable
- * color is never substituted with a default: a made-up black would fabricate a
- * ratio (and a pass or fail) the page does not have.
+ * Returns `null` (UNKNOWN) when either color cannot be parsed, the
+ * foreground paints nothing (alpha 0), or the background is not opaque (what
+ * shows through it is not known here). An
+ * unparseable color is never substituted with a default: a made-up black would
+ * fabricate a ratio (and a pass or fail) the page does not have. A partially
+ * transparent foreground is composited over the background, so 50% black on
+ * white measures as the grey it renders (about 4:1), not 21:1.
  */
 export function computeContrastRatio(fgColor: string, bgColor: string): number | null {
-  const fg = parseColor(fgColor);
-  const bg = parseColor(bgColor);
+  const fg = normalizedColorOf(fgColor);
+  const bg = normalizedColorOf(bgColor);
   if (fg === null || bg === null) return null;
-  const fgLuminance = getRelativeLuminance(fg);
-  const bgLuminance = getRelativeLuminance(bg);
-
-  const lighter = Math.max(fgLuminance, bgLuminance);
-  const darker = Math.min(fgLuminance, bgLuminance);
-
-  return (lighter + 0.05) / (darker + 0.05);
+  // One contrast rule for the package (`specs/color-utils`).
+  return contrastOfColors(fg, bg);
 }
 
 /**
@@ -1314,7 +1314,7 @@ function waitFrame(): Promise<boolean> {
 /** How long `waitFrame` waits for an animation frame before going on without one. */
 const FRAME_FALLBACK_MS = 50;
 
-/** Values that parse as a colour but do not name one (see `parseColor`). */
+/** Values that parse as a colour but do not name one (see `normalizedColorOf`). */
 const NON_COLOR_KEYWORDS = new Set([
   'transparent',
   'currentcolor',
@@ -1325,21 +1325,17 @@ const NON_COLOR_KEYWORDS = new Set([
   'revert-layer',
 ]);
 
-/** `true` for an `rgba(...)` / `rgb(... / a)` value whose alpha is zero. */
-function isFullyTransparent(color: string): boolean {
-  const m = color.trim().match(/^rgba?\(([^)]*)\)$/i);
-  if (!m) return false;
-  // Only a 4th component is alpha; `rgb(0, 0, 0)` has none.
-  const parts = m[1].split(/[\s,/]+/).filter(Boolean);
-  // CSS reads an alpha of `none` as 0.
-  return parts.length >= 4 && (parts[3].toLowerCase() === 'none' || parseFloat(parts[3]) === 0);
-}
-
 /**
- * Parse a CSS color value to [r, g, b] (0-255 range), or `null` when it is not
- * a color this can read. Never defaults: a caller must treat `null` as UNKNOWN.
+ * A CSS color value as the engine computes it (through a probe element), or as
+ * written with no DOM, or `null` when it names no colour of its own. The
+ * result is read by the shared colour grammar (`specs/color-utils`). Chromium
+ * computes an `oklch()` / `lab()` colour to that same function, never to
+ * `rgb()`, so that grammar must read it. Never defaults: a caller must treat
+ * `null` as UNKNOWN.
  */
-function parseColor(color: string): [number, number, number] | null {
+function normalizedColorOf(color: unknown): string | null {
+  // A JavaScript caller can pass anything; a non-string is no colour.
+  if (typeof color !== 'string') return null;
   const keyword = color.trim().toLowerCase();
   // These parse, but name no colour of their own: a CSS-wide keyword or
   // `currentcolor` computes to the probe's INHERITED colour, and `transparent`
@@ -1360,34 +1356,11 @@ function parseColor(color: string): [number, number, number] | null {
     document.body.appendChild(temp);
     const computed = window.getComputedStyle(temp).color;
     document.body.removeChild(temp);
-    if (isFullyTransparent(computed)) return null;
-
-    const match = computed.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
-    if (match) {
-      return [parseInt(match[1], 10), parseInt(match[2], 10), parseInt(match[3], 10)];
-    }
+    return computed;
   }
 
-  // Fallback: try to parse directly
-  if (isFullyTransparent(color)) return null;
-  const rgbMatch = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
-  if (rgbMatch) {
-    return [parseInt(rgbMatch[1], 10), parseInt(rgbMatch[2], 10), parseInt(rgbMatch[3], 10)];
-  }
-
-  return null;
-}
-
-/**
- * Compute relative luminance per WCAG 2.1
- * https://www.w3.org/TR/WCAG21/#dfn-relative-luminance
- */
-function getRelativeLuminance(rgb: [number, number, number]): number {
-  const [r, g, b] = rgb.map((c) => {
-    const sRGB = c / 255;
-    return sRGB <= 0.03928 ? sRGB / 12.92 : Math.pow((sRGB + 0.055) / 1.055, 2.4);
-  });
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  // No DOM: read the value as written.
+  return color;
 }
 
 /**

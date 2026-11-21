@@ -98,6 +98,9 @@ function channel(token: string, percentScale: number): number | null {
     const n = t.slice(0, -1);
     return NUMBER.test(n) ? (parseFloat(n) / 100) * percentScale : null;
   }
+  // An overflowing exponent (`1e999`) reads as ±Infinity. An rgb() channel or
+  // an alpha is clamped by its caller, as CSS does; any other overflow (a hue,
+  // a lab/oklch coordinate) is refused by `parseColor`'s final finite check.
   return NUMBER.test(t) ? parseFloat(t) : null;
 }
 
@@ -253,10 +256,19 @@ function parseHex(hex: string): RgbaColor | null {
 
 /**
  * Parse a CSS colour string. Returns `null` for anything this parser does not
- * understand (`currentcolor`, `display-p3`, system colours, most named colours),
- * which callers keep verbatim rather than guess at.
+ * understand (`currentcolor`, `display-p3`, system colours, CSS-wide keywords),
+ * which callers keep verbatim rather than guess at. Every CSS Color 4 named
+ * colour and `transparent` is read.
  */
 export function parseColor(input: string): RgbaColor | null {
+  const parsed = parseColorChannels(input);
+  // An overflowing hue or lab/oklab coordinate (`1e308`) can turn every channel
+  // NaN; that is no colour, never a colour with NaN channels.
+  if (parsed === null) return null;
+  return [parsed.r, parsed.g, parsed.b, parsed.a].every(Number.isFinite) ? parsed : null;
+}
+
+function parseColorChannels(input: string): RgbaColor | null {
   const value = input.trim().toLowerCase();
   if (value === '') return null;
   if (value.startsWith('#')) return parseHex(value);

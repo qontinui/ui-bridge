@@ -783,6 +783,18 @@ describe('design-inspection routes · relay and server answer the same model', (
     const ok = await serverHandlers().runDesignAudit({ guide: GUIDE, rootFontSizePx: 20 });
     expect(ok.success).toBe(true);
   });
+
+  it('runDesignAudit refuses a bad root before a malformed guide, as the native transport does', async () => {
+    const request = { guide: { rules: 'not-an-array' }, rootFontSizePx: 0 };
+    expect(() => designAuditOf([], request, undefined)).toThrow(
+      /rootFontSizePx must be a finite number greater than 0/
+    );
+    for (const handlers of [serverHandlers(), relayHandlers()]) {
+      const res = await handlers.runDesignAudit(request as never);
+      expect(res.success).toBe(false);
+      expect(res.error).toMatch(/rootFontSizePx must be a finite number greater than 0/);
+    }
+  });
 });
 
 describe('design-inspection routes · the root-width lock', () => {

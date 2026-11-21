@@ -32,20 +32,28 @@ export interface StyleValidatorModule {
 let styleValidator: StyleValidatorModule | null = null;
 
 // Try to load quality evaluator from the web SDK (optional peer dep)
-let qualityEvaluator: {
+/** The quality-evaluator functions native calls (from `@qontinui/ui-bridge/specs`). */
+export type QualityEvaluatorModule = {
   evaluateQuality: (
     elements: ElementDesignData[],
     viewport: { width: number; height: number },
     context?: unknown
   ) => unknown;
   listContexts: () => Array<{ name: string; description: string }>;
+  /**
+   * The SDK's one quality-context shape rule (0.56.0 and later). Absent on an
+   * older SDK, whose `evaluateQuality` checks no context shape; native then
+   * applies its own copy of the web request model's check.
+   */
+  qualityContextProblem?: (value: unknown) => string | null;
   createBaseline: (
     elements: ElementDesignData[],
     viewport: { width: number; height: number },
     label?: string
   ) => unknown;
   diffSnapshots: (baseline: unknown, current: ElementDesignData[]) => unknown;
-} | null = null;
+};
+let qualityEvaluator: QualityEvaluatorModule | null = null;
 
 /**
  * The web SDK's pure style-inference functions (`@qontinui/ui-bridge/specs`,
@@ -215,26 +223,37 @@ function isMetricConfig(value: unknown): boolean {
   return true;
 }
 
-function customContextOf(
-  body: Record<string, unknown>,
-  route: string
-): Record<string, unknown> | undefined {
-  const context = body.customContext;
-  if (!isGiven(context)) return undefined;
+/**
+ * What is wrong with a quality context, or `null` — native's copy of the web
+ * request model's check, for an SDK older than 0.56.0 that carries no
+ * `qualityContextProblem`. The SDK's rule, when present, is stricter (known
+ * metric ids, thresholds in 0-100 with good >= warning) and is used instead.
+ */
+function localContextProblem(context: unknown): string | null {
   if (!isObject(context) || typeof context.name !== 'string' || !isObject(context.metrics)) {
-    throw new NativeRequestError(
-      `${route}: customContext must be an object with a string name and a metrics object`
-    );
+    return ' must be an object with a string name and a metrics object';
   }
   for (const [metricId, config] of Object.entries(context.metrics)) {
     if (!isMetricConfig(config)) {
-      throw new NativeRequestError(
-        `${route}: customContext.metrics.${metricId} must be an object whose enabled is a ` +
-          'boolean, weight a finite number >= 0, and thresholds { good, warning } finite numbers'
+      return (
+        `.metrics.${metricId} must be an object whose enabled is a ` +
+        'boolean, weight a finite number >= 0, and thresholds { good, warning } finite numbers'
       );
     }
   }
-  return context;
+  return null;
+}
+
+function customContextOf(
+  body: Record<string, unknown>,
+  route: string,
+  problemOf: (value: unknown) => string | null
+): Record<string, unknown> | undefined {
+  const context = body.customContext;
+  if (!isGiven(context)) return undefined;
+  const problem = problemOf(context);
+  if (problem !== null) throw new NativeRequestError(`${route}: customContext${problem}`);
+  return context as Record<string, unknown>;
 }
 
 function success<T>(data: T): APIResponse<T> {
@@ -287,6 +306,12 @@ export interface DesignHandlerOptions {
    * `null`: none (`VALIDATOR_NOT_AVAILABLE`). Injectable for the same reason.
    */
   styleValidator?: StyleValidatorModule | null;
+  /**
+   * The quality evaluator the `/design/evaluate` family runs. Absent: the
+   * optional peer's. `null`: none (`EVALUATOR_NOT_AVAILABLE`). Injectable for
+   * the same reason.
+   */
+  qualityEvaluator?: QualityEvaluatorModule | null;
 }
 
 /** A request-validation error from the shared parser (its `code` is `INVALID_REQUEST`). */
@@ -321,6 +346,8 @@ export function createDesignHandlers(
 ): NativeDesignHandlers {
   const inference = 'styleInference' in options ? (options.styleInference ?? null) : styleInference;
   const validator = 'styleValidator' in options ? (options.styleValidator ?? null) : styleValidator;
+  const evaluator =
+    'qualityEvaluator' in options ? (options.qualityEvaluator ?? null) : qualityEvaluator;
 
   /**
    * Style samples for the inference routes: the flattened StyleSheet of each
@@ -390,6 +417,11 @@ export function createDesignHandlers(
     return viewportProvider?.() ?? { width: 0, height: 0 };
   }
 
+  /** The context shape rule: the SDK's when it carries one, else native's copy. */
+  function contextProblemOf(value: unknown): string | null {
+    return (evaluator?.qualityContextProblem ?? localContextProblem)(value);
+  }
+
   /** The registered elements a validated `elementIds` selects (all when absent). */
   function selectElements(elementIds: readonly string[] | undefined) {
     const elements = registry.getAllElements();
@@ -409,8 +441,15 @@ export function createDesignHandlers(
     const name = stringOf(body, 'context', route) ?? 'general';
     const declared = (loadedStyleGuide as { qualityContexts?: Record<string, unknown> } | null)
       ?.qualityContexts;
-    if (declared && Object.prototype.hasOwnProperty.call(declared, name)) return declared[name];
-    const builtIns = qualityEvaluator?.listContexts().map((c) => c.name) ?? [];
+    if (declared && Object.prototype.hasOwnProperty.call(declared, name)) {
+      // A declared context is checked by the same shape rule as a custom one.
+      const problem = contextProblemOf(declared[name]);
+      if (problem !== null) {
+        throw new NativeRequestError(`${route}: quality context "${name}"${problem}`);
+      }
+      return declared[name];
+    }
+    const builtIns = evaluator?.listContexts().map((c) => c.name) ?? [];
     if (builtIns.includes(name)) return name;
     const available = [...builtIns, ...Object.keys(declared ?? {})];
     throw new NativeRequestError(
@@ -476,10 +515,16 @@ export function createDesignHandlers(
     },
 
     // 4. POST /design/responsive
-    getResponsiveSnapshots: async () => {
+    getResponsiveSnapshots: async (ctx) => {
       // Platform limitation: RN cannot constrain screen width at runtime.
       // Returns a single snapshot at current device dimensions.
-      const elements = registry.getAllElements();
+      let elementIds: string[] | undefined;
+      try {
+        elementIds = elementIdsOf(bodyOf(ctx.body, '/design/responsive'), '/design/responsive');
+      } catch (err) {
+        return invalidRequest(err);
+      }
+      const elements = selectElements(elementIds);
       const elementData = elements.map((el) => {
         const state = el.getState();
         return {
@@ -609,7 +654,7 @@ export function createDesignHandlers(
 
     // 9. POST /design/evaluate
     evaluateQuality: async (ctx) => {
-      if (!qualityEvaluator) {
+      if (!evaluator) {
         return error(
           'Install @qontinui/ui-bridge for quality evaluation support. ' +
             'Add it as a dependency: npm install @qontinui/ui-bridge',
@@ -629,7 +674,8 @@ export function createDesignHandlers(
         elementIds = elementIdsOf(body, route);
         viewport = viewportOf(body, route) ?? getScreenDimensions();
         // Resolve context: custom object > style guide context > built-in name
-        context = customContextOf(body, route) ?? requestedContextName(body, route);
+        context =
+          customContextOf(body, route, contextProblemOf) ?? requestedContextName(body, route);
       } catch (err) {
         return invalidRequest(err);
       }
@@ -637,7 +683,7 @@ export function createDesignHandlers(
       const designData = designDataOf(elementIds);
 
       try {
-        const report = qualityEvaluator.evaluateQuality(designData, viewport, context);
+        const report = evaluator.evaluateQuality(designData, viewport, context);
         return success(report);
       } catch (err) {
         return error(
@@ -649,18 +695,18 @@ export function createDesignHandlers(
 
     // 10. GET /design/evaluate/contexts
     getQualityContexts: async () => {
-      if (!qualityEvaluator) {
+      if (!evaluator) {
         return error(
           'Install @qontinui/ui-bridge for quality evaluation support.',
           'EVALUATOR_NOT_AVAILABLE'
         );
       }
-      return success(qualityEvaluator.listContexts());
+      return success(evaluator.listContexts());
     },
 
     // 11. POST /design/evaluate/baseline
     saveBaseline: async (ctx) => {
-      if (!qualityEvaluator) {
+      if (!evaluator) {
         return error(
           'Install @qontinui/ui-bridge for quality evaluation support.',
           'EVALUATOR_NOT_AVAILABLE'
@@ -682,7 +728,7 @@ export function createDesignHandlers(
       try {
         const designData = designDataOf(elementIds);
         const viewport = getScreenDimensions();
-        savedBaseline = qualityEvaluator.createBaseline(designData, viewport, label);
+        savedBaseline = evaluator.createBaseline(designData, viewport, label);
         return success({ saved: true, elementCount: designData.length });
       } catch (err) {
         // Answered, not thrown, as the web transports answer it.
@@ -692,7 +738,7 @@ export function createDesignHandlers(
 
     // 12. POST /design/evaluate/diff
     diffBaseline: async (ctx) => {
-      if (!qualityEvaluator) {
+      if (!evaluator) {
         return error(
           'Install @qontinui/ui-bridge for quality evaluation support.',
           'EVALUATOR_NOT_AVAILABLE'
@@ -715,7 +761,7 @@ export function createDesignHandlers(
       const designData = designDataOf(elementIds);
 
       try {
-        const report = qualityEvaluator.diffSnapshots(savedBaseline, designData);
+        const report = evaluator.diffSnapshots(savedBaseline, designData);
         return success(report);
       } catch (err) {
         return error(

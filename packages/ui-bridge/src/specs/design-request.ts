@@ -40,6 +40,7 @@ import {
 import { indexCustomProperties } from '../ai/design-inspector';
 import { disposeTokenIndex, reportedTokensOf, type ReportedTokens } from '../ai/design-tokens';
 import { runStyleAudit } from './style-validator';
+import { contrastOfColors, parseColor, relativeLuminance } from './color-utils';
 import { measureRootFontSizePx } from './style-inference-request';
 import type { StyleAuditReport, StyleGuideConfig } from './style-types';
 
@@ -697,58 +698,26 @@ export function designAuditOf(
  */
 const NEARLY_INVISIBLE_CONTRAST_THRESHOLD = 1.15;
 
-/** Linearize a single sRGB channel value (0–1) per WCAG 2.1 spec. */
-function srgbToLinear(c: number): number {
-  return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
-}
-
 /**
- * Parse an rgb/rgba or hex color string and return WCAG 2.1 relative luminance (0–1).
- * Supports: rgb(r,g,b), rgba(r,g,b,a), #rgb, #rgba, #rrggbb, #rrggbbaa.
- * Returns -1 if unparseable.
+ * Relative luminance of an opaque colour value, or `null` when it does not
+ * parse or is not opaque (a partly transparent colour's look depends on what
+ * is behind it — the same rule `contrastOfColors` applies to a background).
+ * One colour grammar with the quality metrics (`specs/color-utils`), so an
+ * `oklch()` computed colour is read.
  */
-function parseLuminance(color: string): number {
-  let r: number, g: number, b: number;
-
-  const rgbMatch = color.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-  if (rgbMatch) {
-    r = parseInt(rgbMatch[1]) / 255;
-    g = parseInt(rgbMatch[2]) / 255;
-    b = parseInt(rgbMatch[3]) / 255;
-  } else {
-    const hexMatch = color.match(/^#([0-9a-fA-F]{3,8})$/);
-    if (!hexMatch) return -1;
-    const hex = hexMatch[1];
-    if (hex.length === 3 || hex.length === 4) {
-      r = parseInt(hex[0] + hex[0], 16) / 255;
-      g = parseInt(hex[1] + hex[1], 16) / 255;
-      b = parseInt(hex[2] + hex[2], 16) / 255;
-    } else if (hex.length === 6 || hex.length === 8) {
-      r = parseInt(hex.slice(0, 2), 16) / 255;
-      g = parseInt(hex.slice(2, 4), 16) / 255;
-      b = parseInt(hex.slice(4, 6), 16) / 255;
-    } else {
-      return -1;
-    }
-  }
-
-  return 0.2126 * srgbToLinear(r) + 0.7152 * srgbToLinear(g) + 0.0722 * srgbToLinear(b);
-}
-
-function contrastRatio(fgLum: number, bgLum: number): number {
-  const lighter = Math.max(fgLum, bgLum);
-  const darker = Math.min(fgLum, bgLum);
-  return (lighter + 0.05) / (darker + 0.05);
+function luminanceOf(color: string): number | null {
+  const c = parseColor(color);
+  return c !== null && c.a === 1 ? relativeLuminance(c) : null;
 }
 
 function isLikelyDarkColor(color: string): boolean {
-  const l = parseLuminance(color);
-  return l >= 0 && l < 0.4;
+  const l = luminanceOf(color);
+  return l !== null && l < 0.4;
 }
 
 function isLikelyLightColor(color: string): boolean {
-  const l = parseLuminance(color);
-  return l >= 0 && l > 0.6;
+  const l = luminanceOf(color);
+  return l !== null && l > 0.6;
 }
 
 /** The heuristic findings for one element. */
@@ -763,34 +732,31 @@ function heuristicIssues(
   const bgColor = cs.backgroundColor;
   const fontSize = parseFloat(cs.fontSize);
 
-  // Contrast, WCAG 2.1
-  if (textColor && bgColor && textColor !== 'rgba(0, 0, 0, 0)' && bgColor !== 'rgba(0, 0, 0, 0)') {
-    const fgLum = parseLuminance(textColor);
-    const bgLum = parseLuminance(bgColor);
-    if (fgLum >= 0 && bgLum >= 0) {
-      const ratio = contrastRatio(fgLum, bgLum);
-      if (ratio < NEARLY_INVISIBLE_CONTRAST_THRESHOLD) {
-        issues.push({
-          element: id,
-          issue: `Text nearly invisible: contrast ratio ${ratio.toFixed(2)}:1 (${textColor} on ${bgColor})`,
-          severity: 'error',
-          fix: `Add explicit text color with sufficient contrast against ${bgColor}`,
-        });
-      } else if (ratio < 3.0) {
-        issues.push({
-          element: id,
-          issue: `Low contrast: ${ratio.toFixed(2)}:1 (${textColor} on ${bgColor}) — fails WCAG AA${fontSize >= 18 ? ' for large text (3:1)' : ' (4.5:1)'}`,
-          severity: 'warning',
-          fix: `Increase contrast to at least ${fontSize >= 18 ? '3:1' : '4.5:1'} for WCAG AA compliance`,
-        });
-      } else if (ratio < 4.5 && fontSize < 18) {
-        issues.push({
-          element: id,
-          issue: `Insufficient contrast for normal text: ${ratio.toFixed(2)}:1 (${textColor} on ${bgColor}) — WCAG AA requires 4.5:1`,
-          severity: 'info',
-          fix: `Increase contrast to 4.5:1, or increase font size to 18px+`,
-        });
-      }
+  // Contrast, WCAG 2.1: only where both colours can be read and the
+  // background is opaque (what shows through a transparent one is not known).
+  const ratio = contrastOfColors(textColor, bgColor);
+  if (ratio !== null) {
+    if (ratio < NEARLY_INVISIBLE_CONTRAST_THRESHOLD) {
+      issues.push({
+        element: id,
+        issue: `Text nearly invisible: contrast ratio ${ratio.toFixed(2)}:1 (${textColor} on ${bgColor})`,
+        severity: 'error',
+        fix: `Add explicit text color with sufficient contrast against ${bgColor}`,
+      });
+    } else if (ratio < 3.0) {
+      issues.push({
+        element: id,
+        issue: `Low contrast: ${ratio.toFixed(2)}:1 (${textColor} on ${bgColor}) — fails WCAG AA${fontSize >= 18 ? ' for large text (3:1)' : ' (4.5:1)'}`,
+        severity: 'warning',
+        fix: `Increase contrast to at least ${fontSize >= 18 ? '3:1' : '4.5:1'} for WCAG AA compliance`,
+      });
+    } else if (ratio < 4.5 && fontSize < 18) {
+      issues.push({
+        element: id,
+        issue: `Insufficient contrast for normal text: ${ratio.toFixed(2)}:1 (${textColor} on ${bgColor}) — WCAG AA requires 4.5:1`,
+        severity: 'info',
+        fix: `Increase contrast to 4.5:1, or increase font size to 18px+`,
+      });
     }
   }
 
@@ -808,10 +774,8 @@ function heuristicIssues(
     const firstOption = dom.querySelector('option');
     if (firstOption) {
       const optCs = getComputedStyle(firstOption);
-      const optFgLum = parseLuminance(optCs.color || '');
-      const optBgLum = parseLuminance(optCs.backgroundColor || '');
-      if (optFgLum >= 0 && optBgLum >= 0) {
-        const optRatio = contrastRatio(optFgLum, optBgLum);
+      const optRatio = contrastOfColors(optCs.color, optCs.backgroundColor);
+      if (optRatio !== null) {
         if (optRatio < 3.0) {
           issues.push({
             element: id,
