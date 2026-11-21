@@ -285,7 +285,6 @@ export interface TransportDiagnostics {
   buildId: string;
   wsClientCount: number;
   wsClientIds: string[];
-  commandQueueLength: number;
   tabHeartbeats: Record<string, number>;
   tabMetadata: Record<string, { url: string; title: string; visibility: string; lastSeen: number }>;
   /**
@@ -565,7 +564,6 @@ export class CommandRelay {
   private readonly tabListeners: Map<string, TabListener>;
   private readonly wsClients: Map<string, WebSocketClientEntry>;
   private readonly demotedTabs: Set<string>;
-  private readonly commandQueue: QueuedCommand[];
   private readonly tabHeartbeats: Map<string, number>;
   private readonly tabMetadata: Map<
     string,
@@ -723,7 +721,6 @@ export class CommandRelay {
     if (!g[key('TabListeners')]) g[key('TabListeners')] = new Map();
     if (!g[key('WsClients')]) g[key('WsClients')] = new Map();
     if (!g[key('DemotedTabs')]) g[key('DemotedTabs')] = new Set();
-    if (!g[key('CommandQueue')]) g[key('CommandQueue')] = [];
     if (!g[key('PrimaryTabId')]) g[key('PrimaryTabId')] = null;
     if (!g[key('TabHeartbeats')]) g[key('TabHeartbeats')] = new Map();
     if (!g[key('TabMetadata')]) g[key('TabMetadata')] = new Map();
@@ -751,7 +748,6 @@ export class CommandRelay {
     this.tabListeners = g[key('TabListeners')];
     this.wsClients = g[key('WsClients')];
     this.demotedTabs = g[key('DemotedTabs')];
-    this.commandQueue = g[key('CommandQueue')];
     this.primaryTabId = g[key('PrimaryTabId')];
     this.tabHeartbeats = g[key('TabHeartbeats')];
     this.tabMetadata = g[key('TabMetadata')];
@@ -1339,8 +1335,17 @@ export class CommandRelay {
     for (const peer of group) this.forgetPending(peer);
   }
 
-  /** Delete one pending entry, and withdraw it from the bus's command registry. */
+  /**
+   * Delete one pending entry, drop its bus response subscription and withdraw
+   * it from the bus's command registry.
+   */
   private forgetPending(id: string): void {
+    const pending = this.pendingCommands.get(id);
+    if (pending?.busUnsub) {
+      const unsub = pending.busUnsub;
+      pending.busUnsub = undefined;
+      unsub();
+    }
     this.pendingCommands.delete(id);
     const bus = this.bus;
     if (bus) registryWrite('forgetting a command', () => bus.forgetCommand(id));
@@ -1575,12 +1580,16 @@ export class CommandRelay {
       // the PUBLISH share one connection); a WebSocket or SSE send is not
       // ordered against it. The write is fire-and-forget (a Redis SET not
       // awaited), so it is not confirmed to have landed when a fast tab's
-      // result reaches another instance.
-      this.registerBeforeSend(
-        commandId,
-        fireAndForget,
-        Math.max(this.wsTimeoutMs, this.sseTimeoutMs)
-      );
+      // result reaches another instance. A command that will go over the bus
+      // is registered by the bus path itself, so a dispatch issues one SET.
+      const registered = this.localDeliveryAvailable(targetTabId);
+      if (registered) {
+        this.registerBeforeSend(
+          commandId,
+          fireAndForget,
+          Math.max(this.wsTimeoutMs, this.sseTimeoutMs)
+        );
+      }
 
       // Try WebSocket delivery first
       const sentViaWebSocket = this.sendCommandViaWebSocket(
@@ -1606,7 +1615,16 @@ export class CommandRelay {
         sentViaWebSocket ||
         (targetTabId ? this.tabListeners.has(targetTabId) : this.tabListeners.size > 0);
       if (!deliverableLocally && this.bus) {
-        this.routeViaBus<T>(commandId, action, payload, targetTabId, senderUserId, resolve, reject);
+        this.routeViaBus<T>(
+          commandId,
+          action,
+          payload,
+          targetTabId,
+          senderUserId,
+          resolve,
+          reject,
+          registered
+        );
         return;
       }
 
@@ -1717,6 +1735,12 @@ export class CommandRelay {
         ...this.deliveryBinding(targetTabId, senderUserId),
       };
       this.pendingCommands.set(commandId, pending);
+      // A result POSTed to another instance reaches this one over the bus, so
+      // a command delivered here is subscribed as one dispatched over the bus
+      // is. A fire-and-forget caller is already resolved: nothing awaits it.
+      if (this.bus && !fireAndForget) {
+        pending.busUnsub = this.subscribeBusResponse(commandId, action, targetTabId, senderUserId);
+      }
 
       // If WebSocket failed, push via SSE
       if (!sentViaWebSocket) {
@@ -1744,26 +1768,6 @@ export class CommandRelay {
             );
             return;
           }
-        } else {
-          transport = 'HTTP-poll';
-          this.commandQueue.push(command);
-          while (this.commandQueue.length > 100) {
-            const dropped = this.commandQueue.shift();
-            if (dropped) {
-              const p = this.pendingCommands.get(dropped.commandId);
-              if (p) {
-                clearTimeout(p.timeout);
-                p.reject(
-                  new NoLiveAnswer(
-                    'Command dropped from queue',
-                    'not_delivered',
-                    'it was dropped from the poll queue before a tab fetched it'
-                  )
-                );
-                this.forgetPending(dropped.commandId);
-              }
-            }
-          }
         }
       }
     });
@@ -1783,7 +1787,8 @@ export class CommandRelay {
     targetTabId: string | undefined,
     senderUserId: string | undefined,
     resolve: (value: T) => void,
-    reject: (error: Error) => void
+    reject: (error: Error) => void,
+    registered = false
   ): void {
     if (!DEFAULT_FIRE_AND_FORGET.has(action)) {
       this.dispatchViaBus<T>(
@@ -1793,14 +1798,15 @@ export class CommandRelay {
         targetTabId,
         senderUserId,
         resolve,
-        reject
+        reject,
+        registered
       );
       return;
     }
     const timestamp = Date.now();
     // Nothing here awaits its result; the holder's recorder window is the
     // registry's, as for a fire-and-forget command delivered locally.
-    this.registerAwaited(commandId, this.fireAndForgetRecorderMs(), 0);
+    if (!registered) this.registerAwaited(commandId, this.fireAndForgetRecorderMs(), 0);
     this.bus!.publishCommand({ commandId, action, payload, timestamp, targetTabId, senderUserId });
     resolve({
       success: true,
@@ -1980,7 +1986,17 @@ export class CommandRelay {
         ...(listener.userId ? { streamUserId: listener.userId } : {}),
       };
       group.add(aliasId);
+      // The spread carried the original's subscription: the alias has its own.
+      delete alias.busUnsub;
       this.pendingCommands.set(aliasId, alias);
+      if (this.bus) {
+        alias.busUnsub = this.subscribeBusResponse(
+          aliasId,
+          pending.redeliverable.action,
+          tabId,
+          pending.ownerUserId
+        );
+      }
       this.registerAwaited(aliasId, this.sseTimeoutMs);
       const command: QueuedCommand = {
         commandId: aliasId,
@@ -2042,20 +2058,57 @@ export class CommandRelay {
     targetTabId: string | undefined,
     senderUserId: string | undefined,
     resolve: (value: T) => void,
-    reject: (error: Error) => void
+    reject: (error: Error) => void,
+    registered = false
   ): void {
     const bus = this.bus!;
     const timeoutMs = this.sseTimeoutMs;
 
     const timeout = setTimeout(() => {
-      const pending = this.pendingCommands.get(commandId);
-      if (pending?.busUnsub) pending.busUnsub();
       this.forgetPending(commandId);
       // How many tabs the holder wrote it to is not known on this instance.
       reject(new NoLiveAnswer(noResultArrivedMessage(action, timeoutMs, 'bus'), 'unanswered'));
     }, timeoutMs);
 
-    const busUnsub = bus.subscribeResponse(commandId, (env) => {
+    const busUnsub = this.subscribeBusResponse(commandId, action, targetTabId, senderUserId);
+
+    this.pendingCommands.set(commandId, {
+      resolve: resolve as (value: unknown) => void,
+      reject,
+      timeout,
+      tabsNotified: 1,
+      errorResponseCount: 0,
+      busUnsub,
+      ...this.deliveryBinding(targetTabId, senderUserId),
+    });
+    // `sendCommand` registered a command it expected to deliver locally.
+    if (!registered) this.registerAwaited(commandId, timeoutMs);
+
+    bus.publishCommand({
+      commandId,
+      action,
+      payload,
+      timestamp: Date.now(),
+      targetTabId,
+      senderUserId,
+    });
+  }
+
+  /**
+   * Subscribe to the bus response channel of command `commandId`, which this
+   * instance awaits: dispatched over the bus to a tab another instance holds,
+   * or delivered to a tab this one holds. The result may be POSTed to ANY
+   * instance, which forwards it here (`forwardUnpendingResult`). The returned
+   * unsubscribe is stored on the pending entry; every settle path calls it
+   * through `forgetPending`.
+   */
+  private subscribeBusResponse(
+    commandId: string,
+    action: string,
+    targetTabId: string | undefined,
+    senderUserId: string | undefined
+  ): () => void {
+    return this.bus!.subscribeResponse(commandId, (env) => {
       const pending = this.pendingCommands.get(commandId);
       if (!pending) return;
       // The responder's checks run here, where the command is pending. An
@@ -2065,11 +2118,23 @@ export class CommandRelay {
         env.responderUserId !== undefined || env.streamId !== undefined
           ? { streamId: env.streamId, callerUserId: env.responderUserId }
           : undefined;
+      // A tab's own failure is counted as a local one is: a command that went
+      // to several tabs on this instance waits for the others (or the grace
+      // window) before it fails, and a later success wins.
+      if (!env.ok && env.code !== 'OWNER_MISMATCH' && env.code !== 'NOT_DELIVERED') {
+        void this.rejectCommand(
+          commandId,
+          env.error || `Command ${action} failed`,
+          env.tabId,
+          responder,
+          env.result
+        );
+        return;
+      }
       if (this.responseRefusal(pending, env.tabId, responder)) return;
       clearTimeout(pending.timeout);
       if (pending.graceTimeout) clearTimeout(pending.graceTimeout);
-      if (pending.busUnsub) pending.busUnsub();
-      this.forgetPending(commandId);
+      this.dropPending(commandId);
       if (env.ok) {
         pending.resolve(env.result);
       } else if (env.code === 'OWNER_MISMATCH' && targetTabId !== undefined) {
@@ -2094,26 +2159,6 @@ export class CommandRelay {
               : new TabReportedFailure(message, env.result, env.tabId)
         );
       }
-    });
-
-    this.pendingCommands.set(commandId, {
-      resolve: resolve as (value: unknown) => void,
-      reject,
-      timeout,
-      tabsNotified: 1,
-      errorResponseCount: 0,
-      busUnsub,
-      ...this.deliveryBinding(targetTabId, senderUserId),
-    });
-    this.registerAwaited(commandId, timeoutMs);
-
-    bus.publishCommand({
-      commandId,
-      action,
-      payload,
-      timestamp: Date.now(),
-      targetTabId,
-      senderUserId,
     });
   }
 
@@ -2195,6 +2240,24 @@ export class CommandRelay {
       console.error('[UIBridge] Failed to send WebSocket command:', e);
       return false;
     }
+  }
+
+  /**
+   * Would a local send reach a transport this instance holds: a connected
+   * WebSocket client, or an SSE listener (the target's own, or any)? The
+   * side-effect-free mirror of the gate `sendCommandViaWebSocket` and
+   * `deliverableLocally` apply; `getConnectedClient` cannot serve, as it
+   * drops a dead entry.
+   */
+  private localDeliveryAvailable(targetTabId?: string): boolean {
+    if (targetTabId) {
+      if (this.wsClients.get(targetTabId)?.client.isConnected()) return true;
+      return this.tabListeners.has(targetTabId);
+    }
+    for (const entry of this.wsClients.values()) {
+      if (entry.client.isConnected()) return true;
+    }
+    return this.tabListeners.size > 0;
   }
 
   private getConnectedClient(targetTabId?: string): WebSocketClientEntry | null {
@@ -3178,6 +3241,13 @@ export class CommandRelay {
       if (!pending) continue; // settled meanwhile: timed out or evicted
       clearTimeout(pending.timeout);
       if (pending.graceTimeout) clearTimeout(pending.graceTimeout);
+      // The bus path makes its own entry and subscription; the one the local
+      // send made goes, and the id stays registered (queue time registered it).
+      if (pending.busUnsub) {
+        const unsub = pending.busUnsub;
+        pending.busUnsub = undefined;
+        unsub();
+      }
       this.pendingCommands.delete(command.commandId);
       this.routeViaBus(
         command.commandId,
@@ -3186,7 +3256,8 @@ export class CommandRelay {
         tabId,
         senderUserId,
         pending.resolve,
-        pending.reject
+        pending.reject,
+        true
       );
     }
   }
@@ -3627,7 +3698,6 @@ export class CommandRelay {
       buildId: this.buildId,
       wsClientCount: this.wsClients.size,
       wsClientIds: Array.from(this.wsClients.keys()),
-      commandQueueLength: this.commandQueue.length,
       tabHeartbeats: Object.fromEntries(this.tabHeartbeats),
       tabMetadata: Object.fromEntries(this.tabMetadata),
       tabOwnership: Object.fromEntries(this.tabOwnership),
@@ -3650,7 +3720,6 @@ export class CommandRelay {
       // relay's in-flight work leaks nothing identifying, and ops
       // dashboards read it — keep it global.
       pendingCommandCount: full.pendingCommandCount,
-      commandQueueLength: full.commandQueueLength,
       buildId: full.buildId,
       tabActiveWindowMs: full.tabActiveWindowMs,
       zombieTransportMs: full.zombieTransportMs,
@@ -3681,13 +3750,6 @@ export class CommandRelay {
       tabMetadata: pickOwned(full.tabMetadata),
       tabOwnership: pickOwned(full.tabOwnership),
     };
-  }
-
-  /**
-   * Get pending commands for legacy HTTP polling fallback.
-   */
-  getPendingCommands(): QueuedCommand[] {
-    return this.commandQueue.splice(0, this.commandQueue.length);
   }
 
   // --------------------------------------------------------------------------
@@ -3758,8 +3820,7 @@ export class CommandRelay {
    *   when it resumes, instead of dispatching. A command that fails over
    *   after being settled here does not fail over.
    * - The SSE warm-up timers and the tab-info probe bounds are cleared, and
-   *   the bus deliveries, HTTP-poll queue, tab registries and change-event
-   *   buffer are emptied.
+   *   the bus deliveries, tab registries and change-event buffer are emptied.
    * - The connection gate is closed, so the next command waits for a
    *   transport to connect.
    *
@@ -3817,7 +3878,6 @@ export class CommandRelay {
     this.warmedUpTabs.clear();
     // `tabGenerationSeq` is deliberately left as it is: see its field.
     this.tabGenerations.clear();
-    this.commandQueue.length = 0;
     this.changeEventBuffer.length = 0;
     this.changeEventSubscribers.clear();
     // Every transport is gone, so the next command waits for one to connect.
