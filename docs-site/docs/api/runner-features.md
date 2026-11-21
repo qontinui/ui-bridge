@@ -1557,6 +1557,7 @@ message}` objects) don't have a useful `toString`.
 
 Idiomatic shape that recovers structured errors:
 
+<!-- prettier-ignore -->
 ```js
 "(async () => {                                                 \
   try {                                                          \
@@ -1572,7 +1573,7 @@ Idiomatic shape that recovers structured errors:
       }                                                          \
     };                                                           \
   }                                                              \
-})()";
+})()"
 ```
 
 Tauri error envelopes are stable: every command's `Result<_, E>` Err

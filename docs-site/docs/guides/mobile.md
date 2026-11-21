@@ -634,12 +634,13 @@ curl -X POST http://localhost:8087/ui-bridge/control/element/submit-button/actio
   -d '{"action": "press"}'
 ```
 
+<!-- prettier-ignore -->
 ```jsonc
 // Request body schema
 {
   "action": "press", // required — the action name (press, type, setValue, scroll, …)
   "params": {}, // optional — per-action arguments (see below)
-  "waitOptions": {}, // optional — pre-action wait predicate
+  "waitOptions": {} // optional — pre-action wait predicate
 }
 ```
 
