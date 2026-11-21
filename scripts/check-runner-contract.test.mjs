@@ -385,7 +385,8 @@ fn t() { let runner_only_baseline = runner_only_baseline(); ${SDK_ONLY_LET} ${PR
     );
     const r = spawnSync(process.execPath, [CHECKER, '--runner', path.join(dir, 'runner'), '--types', tmpTypes, '--baseline', path.join(dir, 'none.conf')], { encoding: 'utf8' });
     assert.doesNotMatch(r.stdout + r.stderr, /could not run|not the shape|not found in/);
-    assert.match(r.stdout, /1 runner_only/);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /, 1 runner_only,/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
