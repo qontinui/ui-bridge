@@ -24,8 +24,11 @@ name: Publish to npm
 #     `create-ui-bridge-wrapper-v*` prefix. First publish needs its npm
 #     trusted-publisher OIDC policy set up — see ui-bridge-cli-args.)
 #
-# To release: bump the version in the package.json, commit, then
-#   git tag <package>-v<version> && git push origin <package>-v<version>
+# To release: bump the version in the package.json and land it on the
+# default branch, then tag the LANDED commit. The "Derive package name from
+# tag" step refuses a tag whose version differs from that commit's manifest,
+# or whose commit is not on the default branch:
+#   git tag <package>-v<version> <landed sha> && git push origin <package>-v<version>
 on:
   push:
     tags:
@@ -49,6 +52,11 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Full history and every branch, so the tag step below can prove the
+          # tagged commit is on the default branch. A depth-1 checkout of a tag
+          # has no remote-tracking branch to compare against.
+          fetch-depth: 0
 
       - uses: actions/setup-node@v5
         with:
@@ -75,8 +83,14 @@ jobs:
 
       - name: Derive package name from tag
         id: pkg
+        env:
+          # Bound through the environment, never template-expanded into the
+          # script: `ui-bridge-v$(id)` is a valid tag name matching the
+          # trigger globs, and an expanded `${{ }}` would run its substitution.
+          TAG: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          tag="${{ github.ref_name }}"
+          tag="$TAG"
           # Strip the `-v<version>` suffix to recover the package directory name.
           name="${tag%-v*}"
           if [ -z "$name" ] || [ "$name" = "$tag" ]; then
@@ -87,8 +101,36 @@ jobs:
             echo "::error::No package.json found at packages/$name (derived from tag '$tag')"
             exit 1
           fi
+          # The tag names a version as well as a package, and `npm publish`
+          # ships whatever version the TAGGED COMMIT's manifest carries. A tag
+          # pushed before its version bump has landed would otherwise publish a
+          # different version from the one it names, or fail late at the
+          # registry. Refuse here instead.
+          want="${tag##*-v}"
+          have=$(node -p 'require(process.argv[1]).version' "./packages/$name/package.json")
+          if [ "$want" != "$have" ]; then
+            echo "::error::Tag '$tag' names version $want, but packages/$name/package.json at this commit is $have. Push the tag at the commit that bumps it to $want."
+            exit 1
+          fi
+          # Version agreement alone does not prove the release was landed: a
+          # tag at an unmerged branch head that carries the bump passes it. A
+          # release ships only a commit already on the default branch.
+          if ! git rev-parse -q --verify "refs/remotes/origin/$DEFAULT_BRANCH" >/dev/null; then
+            echo "::error::No remote-tracking ref origin/$DEFAULT_BRANCH in this checkout, so the tagged commit cannot be proven landed."
+            exit 1
+          fi
+          # Exit 1 is "not an ancestor"; any other non-zero exit (128: a commit
+          # git cannot read) decides nothing, and is reported as that.
+          git merge-base --is-ancestor "$GITHUB_SHA" "refs/remotes/origin/$DEFAULT_BRANCH" && rc=0 || rc=$?
+          if [ "$rc" -eq 1 ]; then
+            echo "::error::Tag '$tag' points at $GITHUB_SHA, which is not on $DEFAULT_BRANCH. Tag the commit the release landed as on $DEFAULT_BRANCH."
+            exit 1
+          elif [ "$rc" -ne 0 ]; then
+            echo "::error::Could not decide whether $GITHUB_SHA is on $DEFAULT_BRANCH (git merge-base exit $rc)."
+            exit 1
+          fi
           echo "name=$name" >> "$GITHUB_OUTPUT"
-          echo "Derived package: $name"
+          echo "Derived package: $name@$have (commit $GITHUB_SHA, on $DEFAULT_BRANCH)"
 
       - name: Install dependencies
         run: npm ci
