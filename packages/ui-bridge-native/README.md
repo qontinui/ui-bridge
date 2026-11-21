@@ -308,6 +308,17 @@ An adapter must also pass what the gate reads. Fill each `HTTPRequest` with `rem
 
 **Refuse on headers, then read the body.** Once the header block is complete, call `server.preflightNetworkRequest({ method, rawTarget, headers, remoteAddress, contentLength })`. A non-null result is the response the gate would give (no store configured, a missing or malformed auth header, a timestamp outside the window, a backed-off peer, a declared body no signed body could fit in, or under `allowUnauthenticatedNetwork` a web page or rebindable `Host`): write it and close without buffering the body. **`null` is not admission**: it means the body is needed to decide, so read it and call `handleNetworkRequest`, which still runs the whole gate. Pass `rawBody` and leave `body` unset: the SDK parses it after admission (a body that is not JSON reaches a route as the raw string), so a caller that has proved nothing never costs a parse. A WebSocket adapter must call `onWebSocketUpgrade(req)` before sending the 101 and answer `decision.response` when `decision.admit` is false. Messages are refused on an adapter that never calls `onWebSocketUpgrade`.
 
+### Design audit (`POST /ui-bridge/design/audit`)
+
+The audit runs the web SDK's shared core (`auditDesign` from `@qontinui/ui-bridge/specs`), so a phone answers with the same request fields and report shape as the web transports: `limit`, `includePassed` and `maxResults` are validated and applied, a guide (in the request, or loaded with `/design/style-guide/load`) gives `mode: "style-guide"`, and no guide gives `mode: "heuristic"` with a `heuristicCoverage` row per check. It needs the optional peer `@qontinui/ui-bridge` 0.57.0 or later; without it the route answers `VALIDATOR_NOT_AVAILABLE`. What React Native can and cannot measure (contrast from an element's own style only, no `<select>`, no layout counted as not measured) is described in the docs site's design-tokens page, "React Native".
+
+**Breaking in 0.16.0:**
+
+- The peer range is now `@qontinui/ui-bridge >=0.57.0 <1` (was `>=0.4.0 <1`).
+- No guide answers `success: true, mode: "heuristic"`; the `NO_STYLE_GUIDE` error code is gone.
+- The raw `StyleAuditReport` answer is gone: a style-guide answer is `NativeStyleGuideDesignAuditReport` (`summary` as counts, failures only unless `includePassed`, the selection bounds).
+- `createDesignHandlers`' `styleValidator` option and the `StyleValidatorModule` export are removed; inject the core with the `designAudit` option (`DesignAuditCoreModule`, or `null` for none).
+
 ## Debug Inspector
 
 Built-in visual inspector for development:
