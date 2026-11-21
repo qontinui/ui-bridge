@@ -9,6 +9,7 @@
 
 import type {
   ExtendedComputedStyles,
+  FocusNotHeldReason,
   FocusVisibleMatch,
   InteractionStateName,
   StateStyles,
@@ -355,6 +356,7 @@ async function captureEachState(
       // the frame) — the focus could have moved since `el.focus()`.
       if (stateName === 'focus-visible') {
         entry.forced = applied.forced ?? false;
+        if (applied.notForcedReason) entry.notForcedReason = applied.notForcedReason;
         entry.focused = holdsFocus(el);
       }
       results.push(entry);
@@ -895,6 +897,8 @@ interface AppliedInteractionState {
   restore: () => Promise<void>;
   /** Set by `focus-visible`: whether `:focus-visible` was forced (the focus landed at apply time). */
   forced?: boolean;
+  /** Set by `focus-visible` when `forced` is false: why the focus did not count as held. */
+  notForcedReason?: FocusNotHeldReason;
 }
 
 /**
@@ -913,7 +917,9 @@ interface AppliedInteractionState {
  * appearance whatever input preceded the read. When the focus does not land
  * (a non-focusable, disabled or inert element, or a focus handler that moves
  * focus elsewhere) nothing is forced: the element can never draw that ring.
- * `disabled` restores the element's own prior value.
+ * Nothing is forced either when it lands but the document (or its frame) has
+ * no focus, where the browser draws no ring; `notForcedReason` tells the two
+ * apart. `disabled` restores the element's own prior value.
  */
 async function applyInteractionState(
   el: HTMLElement,
@@ -934,7 +940,8 @@ async function applyInteractionState(
       return { restore: applyFocus(el) };
     case 'focus-visible': {
       const restoreFocus = applyFocus(el);
-      if (!holdsFocus(el)) return { restore: restoreFocus, forced: false };
+      const hold = readFocusHold(el);
+      if (hold !== 'held') return { restore: restoreFocus, forced: false, notForcedReason: hold };
       try {
         const { holdId } = await forcePseudoState(el, 'focus-visible', { borrowedFrom });
         return {
@@ -971,21 +978,26 @@ async function applyInteractionState(
  * Focus `el` with the real `el.focus()`; the returned function puts the
  * previous focus back.
  *
- * The previous focus is read BEFORE focusing, from the tree `el` itself lives
- * in. When `el` is inside a shadow root (open or CLOSED) and that root's
- * `activeElement` is set, the focus is in `el`'s own tree: that element is the
- * previous focus — readable from `el` even inside a closed root, where the
- * document only sees the host. Otherwise the previous focus is the deepest
- * focused element of `el`'s own document, followed down through OPEN shadow
- * roots rather than the document's retargeted `activeElement`. Focusability is
- * duck-typed, so an element of an iframe's realm is restored too. The limits:
+ * The previous focus is read BEFORE focusing, walking UP from `el`: its own
+ * shadow root, then its host's root, and so on (see
+ * {@link focusedShadowTreeOf}). The first shadow root on that path whose
+ * `activeElement` is set holds the focus, and that element (followed down
+ * through open shadow roots) is the previous focus. Every root on the path is
+ * reachable from `el`'s side, so this reads CLOSED roots too — a focus in a
+ * closed tree that encloses `el`, where the document only sees the outermost
+ * host. When no root on the path holds the focus, the previous focus is the
+ * deepest focused element of `el`'s own document, followed down through OPEN
+ * shadow roots rather than the document's retargeted `activeElement`.
+ * Focusability is duck-typed, so an element of an iframe's realm is restored
+ * too. The limits:
  * - only `el`'s own document is restored. When `el` is inside a frame, a focus
  *   that was in the parent document (or another frame) is not put back;
- * - a focus inside a CLOSED shadow root that `el` is not in is unreadable, so
- *   it is restored to the host only. A host without `delegatesFocus` that is
- *   not itself focusable takes no focus, so the focus falls to the body; with
- *   `delegatesFocus` it goes to the host's first focusable element, not
- *   necessarily the one it was on.
+ * - a focus inside a CLOSED shadow root that is NOT on `el`'s path up (a
+ *   sibling component's closed tree) is unreadable, so it is restored to the
+ *   host only. A host without `delegatesFocus` that is not itself focusable
+ *   takes no focus, so the focus falls to the body; with `delegatesFocus` it
+ *   goes to the host's first focusable element, not necessarily the one it
+ *   was on.
  *
  * After the restore, the focus is read again the same way it was recorded. The
  * restore blurs `el` only when that read is not the recorded element and `el`
@@ -995,12 +1007,10 @@ async function applyInteractionState(
  */
 function applyFocus(el: HTMLElement): () => Promise<void> {
   const doc = el.ownerDocument;
-  const tree = el.getRootNode() as FocusRoot;
-  const inShadowTree = tree.nodeType === DOCUMENT_FRAGMENT_NODE && Boolean(tree.host);
-  const readFocus = (sameTree: boolean): Element | null =>
-    sameTree ? deepestBelow(tree.activeElement ?? null) : deepestActiveElement(doc);
-  const sameTree = inShadowTree && Boolean(tree.activeElement);
-  const previous = readFocus(sameTree);
+  const tree = focusedShadowTreeOf(el);
+  const readFocus = (): Element | null =>
+    tree ? deepestBelow(tree.activeElement ?? null) : deepestActiveElement(doc);
+  const previous = readFocus();
   el.focus();
   return async () => {
     if (previous === el) {
@@ -1015,8 +1025,24 @@ function applyFocus(el: HTMLElement): () => Promise<void> {
     ) {
       (previous as HTMLElement).focus();
     }
-    if (readFocus(sameTree) !== previous && holdsFocus(el)) el.blur();
+    if (readFocus() !== previous && holdsFocus(el)) el.blur();
   };
+}
+
+/**
+ * The nearest shadow root on `el`'s way UP (its own root, then its host's
+ * root, and so on) whose `activeElement` is set: the tree that holds the
+ * current focus, read from `el`'s side, so CLOSED roots on that path are
+ * readable. `null` when no shadow root on the path holds the focus (it is in
+ * the document's light tree, or in a tree off `el`'s path).
+ */
+function focusedShadowTreeOf(el: Element): FocusRoot | null {
+  let tree = el.getRootNode() as FocusRoot;
+  while (tree.nodeType === DOCUMENT_FRAGMENT_NODE && tree.host) {
+    if (tree.activeElement) return tree;
+    tree = tree.host.getRootNode() as FocusRoot;
+  }
+  return null;
 }
 
 /** `active`, followed down through each OPEN shadow root's `activeElement`. */
@@ -1064,20 +1090,33 @@ const DOCUMENT_FRAGMENT_NODE = 11;
  * way — its tree is not observable from outside — so it reads as holding
  * focus whenever the focus is inside its closed tree.
  */
-function holdsFocus(el: Element): boolean {
+function readFocusHold(el: Element): FocusHold {
   const own = el.shadowRoot;
-  if (own?.activeElement) return own.delegatesFocus === true;
+  if (own?.activeElement && own.delegatesFocus !== true) return 'not_focused';
   let node: Element = el;
   for (;;) {
     const root = node.getRootNode() as FocusRoot;
-    if (root.activeElement !== node) return false;
+    if (root.activeElement !== node) return 'not_focused';
     if (root.nodeType === DOCUMENT_FRAGMENT_NODE && root.host) {
       node = root.host;
       continue;
     }
-    return root.nodeType === DOCUMENT_NODE && documentHoldsFocus(root as unknown as Document);
+    if (root.nodeType !== DOCUMENT_NODE) return 'not_focused';
+    return documentHoldsFocus(root as unknown as Document) ? 'held' : 'document_unfocused';
   }
 }
+
+/** Whether `el` holds focus: {@link readFocusHold} answers `'held'`. */
+function holdsFocus(el: Element): boolean {
+  return readFocusHold(el) === 'held';
+}
+
+/**
+ * Why {@link readFocusHold} did not answer `'held'`: the element is not the
+ * focused element of its document (`'not_focused'`), or it is, but the
+ * document or its frame does not have focus (`'document_unfocused'`).
+ */
+type FocusHold = 'held' | FocusNotHeldReason;
 
 /**
  * Whether `doc` has focus: `hasFocus()` is not `false`, and, for a frame's
@@ -1109,7 +1148,8 @@ function documentHoldsFocus(doc: Document): boolean {
  * that could not be read is never reported as `false`.
  */
 export function readFocusVisible(el: Element): FocusVisibleMatch {
-  if (!holdsFocus(el)) return 'not_focused';
+  const hold = readFocusHold(el);
+  if (hold !== 'held') return hold;
   try {
     return el.matches(':focus-visible');
   } catch {

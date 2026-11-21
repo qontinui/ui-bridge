@@ -604,6 +604,7 @@ describe('captureStateVariations', () => {
       expect(byState.focus.focusVisible).toBe('not_focused');
       expect(byState['focus-visible'].focused).toBe(false);
       expect(byState['focus-visible'].forced).toBe(false);
+      expect(byState['focus-visible'].notForcedReason).toBe('not_focused');
       for (const r of observer.takeRecords()) written.push(r.attributeName);
       expect(written).not.toContain('data-ui-bridge-pseudo-focus-visible');
     } finally {
@@ -658,6 +659,7 @@ describe('captureStateVariations', () => {
       expect(byState.focus.focusVisible).toBe('not_focused');
       expect(byState['focus-visible'].focused).toBe(false);
       expect(byState['focus-visible'].forced).toBe(false);
+      expect(byState['focus-visible'].notForcedReason).toBe('not_focused');
       expect(written).not.toContain('data-ui-bridge-pseudo-focus-visible');
       expect(shadow.activeElement).toBe(input);
     } finally {
@@ -713,10 +715,14 @@ describe('captureStateVariations', () => {
     }
   });
 
-  it('a delegatesFocus host holds focus while its inner element does, and the restore keeps that inner focus', async () => {
+  it('a delegatesFocus host holds focus while its inner element does (holdsFocus only; the blur decision is guarded in Chromium)', async () => {
     // jsdom implements neither the `delegatesFocus` flag nor the delegation:
-    // the flag is stubbed and the delegated focus is placed by hand, which is
-    // the state the restore must not undo.
+    // the flag is stubbed and the delegated focus is placed by hand. This case
+    // pins the delegatesFocus arm of holdsFocus. It does NOT guard the
+    // restore's blur decision: jsdom's blur() on a host whose focus is inside
+    // its shadow tree is a no-op, so a restore that wrongly blurs passes here.
+    // The Chromium twin in focus-visible.smoke.test.ts ("a previous focus
+    // inside a delegatesFocus host is kept by the restore") guards that.
     const host = document.createElement('div');
     document.body.appendChild(host);
     const shadow = host.attachShadow({ mode: 'open' });
@@ -772,16 +778,66 @@ describe('captureStateVariations', () => {
     }
   });
 
-  it("a document without focus: the focus entry reads 'not_focused' and nothing is forced", async () => {
+  it("a document without focus: the focus entry reads 'document_unfocused' and nothing is forced", async () => {
     const spy = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
     try {
       const results = await captureStateVariations(el, ['focus', 'focus-visible']);
       const byState = Object.fromEntries(results.map((r) => [r.state, r]));
-      expect(byState.focus.focusVisible).toBe('not_focused');
+      expect(byState.focus.focusVisible).toBe('document_unfocused');
       expect(byState['focus-visible'].forced).toBe(false);
+      expect(byState['focus-visible'].notForcedReason).toBe('document_unfocused');
       expect(byState['focus-visible'].focused).toBe(false);
     } finally {
       spy.mockRestore();
+    }
+  });
+
+  it("a delegatesFocus host in a document without focus reads 'document_unfocused', not focused", async () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const shadow = host.attachShadow({ mode: 'open' });
+    Object.defineProperty(shadow, 'delegatesFocus', { value: true });
+    const inner = document.createElement('button');
+    inner.textContent = 'inner';
+    shadow.appendChild(inner);
+    const spy = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+    try {
+      inner.focus();
+      expect(readFocusVisible(host)).toBe('document_unfocused');
+      const results = await captureStateVariations(host, ['focus-visible']);
+      const fv = results.find((r) => r.state === 'focus-visible')!;
+      expect(fv.forced).toBe(false);
+      expect(fv.notForcedReason).toBe('document_unfocused');
+      expect(fv.focused).toBe(false);
+    } finally {
+      spy.mockRestore();
+      host.remove();
+    }
+  });
+
+  it('a focus in a CLOSED tree enclosing the element, outside its own root, comes back and the element is left unfocused', async () => {
+    // C (closed) holds input X and host H; H's closed root holds the target.
+    const outerHost = document.createElement('div');
+    document.body.appendChild(outerHost);
+    const outer = outerHost.attachShadow({ mode: 'closed' });
+    const x = document.createElement('input');
+    const innerHost = document.createElement('div');
+    outer.append(x, innerHost);
+    const inner = innerHost.attachShadow({ mode: 'closed' });
+    const target = document.createElement('button');
+    target.textContent = 'target';
+    inner.appendChild(target);
+    try {
+      x.focus();
+      expect(document.activeElement).toBe(outerHost);
+      const results = await captureStateVariations(target, ['focus', 'focus-visible']);
+      const fv = results.find((r) => r.state === 'focus-visible')!;
+      expect(fv.forced).toBe(true);
+      expect(outer.activeElement).toBe(x);
+      expect(inner.activeElement).toBeNull();
+      expect(readFocusVisible(target)).toBe('not_focused');
+    } finally {
+      outerHost.remove();
     }
   });
 
@@ -831,6 +887,7 @@ describe('captureStateVariations', () => {
     expect(byState.focus.focusVisible).toBe('not_focused');
     expect(byState['focus-visible'].focused).toBe(false);
     expect(byState['focus-visible'].forced).toBe(false);
+    expect(byState['focus-visible'].notForcedReason).toBe('not_focused');
   });
 
   it('restores focus after the focus-visible state, and leaves nothing forced', async () => {

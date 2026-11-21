@@ -679,6 +679,44 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('design inspector focus states (real Chro
     await page.close();
   }, 30_000);
 
+  it('a focus in a CLOSED tree enclosing the element, outside its own root, comes back and the element is left unfocused', async () => {
+    const page = await openPage();
+    const read = await page.evaluate(async () => {
+      // C (closed) holds input X and host H; H's closed root holds the target.
+      const outerHost = document.createElement('div');
+      outerHost.id = 'outer-host';
+      document.body.appendChild(outerHost);
+      const outer = outerHost.attachShadow({ mode: 'closed' });
+      outer.innerHTML = `<input id="nx" aria-label="x"><div id="inner-host"></div>`;
+      const x = outer.getElementById('nx') as HTMLInputElement;
+      const inner = outer.getElementById('inner-host')!.attachShadow({ mode: 'closed' });
+      inner.innerHTML = `<button id="nt">target</button>`;
+      const target = inner.getElementById('nt')!;
+      x.focus();
+      const retargeted = document.activeElement?.id;
+      const states = await window.FV.captureStateVariations(target, ['focus', 'focus-visible']);
+      const fv = states.find((s: { state: string }) => s.state === 'focus-visible');
+      return {
+        retargeted,
+        forced: fv.forced,
+        focused: fv.focused,
+        outerActive: (outer.activeElement as Element | null)?.id ?? null,
+        innerActive: inner.activeElement,
+        target: window.FV.readFocusVisible(target),
+      };
+    });
+    expect(read).toEqual({
+      retargeted: 'outer-host',
+      forced: true,
+      focused: true,
+      outerActive: 'nx',
+      innerActive: null,
+      target: 'not_focused',
+    });
+    expect(await rewritesLeft(page)).toBe(0);
+    await page.close();
+  }, 30_000);
+
   it("a focus whose :focus-visible match cannot be read is 'unknown', never false", async () => {
     const page = await openPage();
     const read = await page.evaluate(async () => {
