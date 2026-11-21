@@ -650,6 +650,35 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('design inspector focus states (real Chro
     await page.close();
   }, 30_000);
 
+  it('inside one CLOSED shadow root, the previous focus in that root comes back and the inspected element is left unfocused', async () => {
+    const page = await openPage();
+    const read = await page.evaluate(async () => {
+      const host = document.createElement('div');
+      document.body.appendChild(host);
+      const closed = host.attachShadow({ mode: 'closed' });
+      closed.innerHTML = `<input id="cb-prev" aria-label="prev"><button id="cb-target">target</button>`;
+      const previous = closed.getElementById('cb-prev') as HTMLInputElement;
+      const target = closed.getElementById('cb-target')!;
+      previous.focus();
+      const states = await window.FV.captureStateVariations(target, ['focus', 'focus-visible']);
+      const fv = states.find((s: { state: string }) => s.state === 'focus-visible');
+      return {
+        forced: fv.forced,
+        focused: fv.focused,
+        closedActive: (closed.activeElement as Element | null)?.id ?? null,
+        targetFocused: window.FV.readFocusVisible(target),
+      };
+    });
+    expect(read).toEqual({
+      forced: true,
+      focused: true,
+      closedActive: 'cb-prev',
+      targetFocused: 'not_focused',
+    });
+    expect(await rewritesLeft(page)).toBe(0);
+    await page.close();
+  }, 30_000);
+
   it("a focus whose :focus-visible match cannot be read is 'unknown', never false", async () => {
     const page = await openPage();
     const read = await page.evaluate(async () => {

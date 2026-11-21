@@ -740,13 +740,88 @@ describe('captureStateVariations', () => {
   });
 
   it('an element already focused before the read is still focused after it', async () => {
-    el.focus();
-    const results = await captureStateVariations(el, ['focus', 'focus-visible']);
-    const byState = Object.fromEntries(results.map((r) => [r.state, r]));
-    expect(byState.focus.focusVisible).toBe(false);
-    expect(byState['focus-visible'].forced).toBe(true);
-    expect(document.activeElement).toBe(el);
-    el.blur();
+    try {
+      el.focus();
+      const results = await captureStateVariations(el, ['focus', 'focus-visible']);
+      const byState = Object.fromEntries(results.map((r) => [r.state, r]));
+      expect(byState.focus.focusVisible).toBe(false);
+      expect(byState['focus-visible'].forced).toBe(true);
+      expect(document.activeElement).toBe(el);
+    } finally {
+      el.blur();
+    }
+  });
+
+  it('inside one CLOSED shadow root, the previous focus in that root comes back and the inspected element is left unfocused', async () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const closed = host.attachShadow({ mode: 'closed' });
+    const previous = document.createElement('input');
+    const target = document.createElement('button');
+    target.textContent = 'target';
+    closed.append(previous, target);
+    try {
+      previous.focus();
+      const results = await captureStateVariations(target, ['focus', 'focus-visible']);
+      const byState = Object.fromEntries(results.map((r) => [r.state, r]));
+      expect(byState['focus-visible'].forced).toBe(true);
+      expect(closed.activeElement).toBe(previous);
+      expect(readFocusVisible(target)).toBe('not_focused');
+    } finally {
+      host.remove();
+    }
+  });
+
+  it("a document without focus: the focus entry reads 'not_focused' and nothing is forced", async () => {
+    const spy = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+    try {
+      const results = await captureStateVariations(el, ['focus', 'focus-visible']);
+      const byState = Object.fromEntries(results.map((r) => [r.state, r]));
+      expect(byState.focus.focusVisible).toBe('not_focused');
+      expect(byState['focus-visible'].forced).toBe(false);
+      expect(byState['focus-visible'].focused).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('forced=true with focused=false: a focus listener moves the focus away before the styles are read', async () => {
+    const elsewhere = document.createElement('input');
+    document.body.appendChild(elsewhere);
+    el.addEventListener('focus', () => setTimeout(() => elsewhere.focus(), 0), { once: true });
+    try {
+      const results = await captureStateVariations(el, ['focus-visible']);
+      const fv = results.find((r) => r.state === 'focus-visible')!;
+      expect(fv.forced).toBe(true);
+      expect(fv.focused).toBe(false);
+      expect(document.activeElement).toBe(elsewhere);
+    } finally {
+      elsewhere.remove();
+    }
+  });
+
+  it('a previous focus removed by a focus handler: the focus ends on the body, and the element is not focused', async () => {
+    const before = document.createElement('input');
+    document.body.appendChild(before);
+    before.focus();
+    el.addEventListener('focus', () => before.remove(), { once: true });
+    await captureStateVariations(el, ['focus']);
+    expect(document.activeElement).toBe(document.body);
+    expect(readFocusVisible(el)).toBe('not_focused');
+  });
+
+  it('a previous focus disabled by a focus handler: the focus ends on the body, and the element is not focused', async () => {
+    const before = document.createElement('input');
+    document.body.appendChild(before);
+    try {
+      before.focus();
+      el.addEventListener('focus', () => (before.disabled = true), { once: true });
+      await captureStateVariations(el, ['focus']);
+      expect(document.activeElement).toBe(document.body);
+      expect(readFocusVisible(el)).toBe('not_focused');
+    } finally {
+      before.remove();
+    }
   });
 
   it('a disabled control reports focused=false on focus-visible', async () => {

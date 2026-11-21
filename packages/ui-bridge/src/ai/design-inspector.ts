@@ -971,24 +971,36 @@ async function applyInteractionState(
  * Focus `el` with the real `el.focus()`; the returned function puts the
  * previous focus back.
  *
- * The previous focus is the deepest focused element of `el`'s OWN document,
- * followed down through OPEN shadow roots, rather than that document's
- * retargeted `activeElement` (an outer shadow host). Focusability is
+ * The previous focus is read BEFORE focusing, from the tree `el` itself lives
+ * in. When `el` is inside a shadow root (open or CLOSED) and that root's
+ * `activeElement` is set, the focus is in `el`'s own tree: that element is the
+ * previous focus — readable from `el` even inside a closed root, where the
+ * document only sees the host. Otherwise the previous focus is the deepest
+ * focused element of `el`'s own document, followed down through OPEN shadow
+ * roots rather than the document's retargeted `activeElement`. Focusability is
  * duck-typed, so an element of an iframe's realm is restored too. The limits:
  * - only `el`'s own document is restored. When `el` is inside a frame, a focus
  *   that was in the parent document (or another frame) is not put back;
- * - a focus inside a CLOSED shadow root is unreadable from outside it, so it
- *   is restored to its host only (which, with `delegatesFocus`, sends it to
- *   the host's first focusable element, not necessarily the one it was on).
+ * - a focus inside a CLOSED shadow root that `el` is not in is unreadable, so
+ *   it is restored to the host only. A host without `delegatesFocus` that is
+ *   not itself focusable takes no focus, so the focus falls to the body; with
+ *   `delegatesFocus` it goes to the host's first focusable element, not
+ *   necessarily the one it was on.
  *
- * The restore blurs `el` only when the recorded focus did not come back and
- * `el` still holds focus, so it never undoes the focus it just restored (a
- * previous focus inside a `delegatesFocus` host), and an `el` that was
- * already focused before the read stays focused.
+ * After the restore, the focus is read again the same way it was recorded. The
+ * restore blurs `el` only when that read is not the recorded element and `el`
+ * still holds focus, so it never undoes the focus it just restored (a previous
+ * focus inside a `delegatesFocus` host), and an `el` that was already focused
+ * before the read stays focused.
  */
 function applyFocus(el: HTMLElement): () => Promise<void> {
   const doc = el.ownerDocument;
-  const previous = deepestActiveElement(doc);
+  const tree = el.getRootNode() as FocusRoot;
+  const inShadowTree = tree.nodeType === DOCUMENT_FRAGMENT_NODE && Boolean(tree.host);
+  const readFocus = (sameTree: boolean): Element | null =>
+    sameTree ? deepestBelow(tree.activeElement ?? null) : deepestActiveElement(doc);
+  const sameTree = inShadowTree && Boolean(tree.activeElement);
+  const previous = readFocus(sameTree);
   el.focus();
   return async () => {
     if (previous === el) {
@@ -1003,8 +1015,15 @@ function applyFocus(el: HTMLElement): () => Promise<void> {
     ) {
       (previous as HTMLElement).focus();
     }
-    if (deepestActiveElement(doc) !== previous && holdsFocus(el)) el.blur();
+    if (readFocus(sameTree) !== previous && holdsFocus(el)) el.blur();
   };
+}
+
+/** `active`, followed down through each OPEN shadow root's `activeElement`. */
+function deepestBelow(active: Element | null): Element | null {
+  let current = active;
+  while (current?.shadowRoot?.activeElement) current = current.shadowRoot.activeElement;
+  return current;
 }
 
 /**
@@ -1014,9 +1033,7 @@ function applyFocus(el: HTMLElement): () => Promise<void> {
  * root cannot be entered from outside, so the walk stops at its host.
  */
 function deepestActiveElement(doc: Document): Element | null {
-  let active: Element | null = doc.activeElement;
-  while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
-  return active;
+  return deepestBelow(doc.activeElement);
 }
 
 /** The `activeElement`/`host` view of a tree root (document or shadow root), realm-independent. */
@@ -1030,9 +1047,13 @@ const DOCUMENT_FRAGMENT_NODE = 11;
  *
  * Walks UP from `el`: `el` must be its own tree's `activeElement`, then that
  * tree's shadow host must be ITS tree's `activeElement`, and so on to the
- * document. Walking up needs no access to a shadow root's internals, so an
- * element inside a CLOSED shadow root is read correctly (its own root is
- * reachable from inside it). Node types and `host` are compared instead of
+ * document — which must itself have focus (`document.hasFocus()` not
+ * `false`), and, when it is a frame's document, the frame element must hold
+ * focus in its parent the same way. A parent that cannot be read (a
+ * cross-origin frame) does not fail the check: it is UNKNOWN, not unfocused.
+ * Walking up needs no access to a shadow root's internals, so an element
+ * inside a CLOSED shadow root is read correctly (its own root is reachable
+ * from inside it). Node types and `host` are compared instead of
  * `instanceof`, so elements of an iframe's realm work too.
  *
  * A host is its tree's `activeElement` whenever anything inside its shadow
@@ -1054,7 +1075,29 @@ function holdsFocus(el: Element): boolean {
       node = root.host;
       continue;
     }
-    return root.nodeType === DOCUMENT_NODE;
+    return root.nodeType === DOCUMENT_NODE && documentHoldsFocus(root as unknown as Document);
+  }
+}
+
+/**
+ * Whether `doc` has focus: `hasFocus()` is not `false`, and, for a frame's
+ * document, the frame element holds focus in its parent. A parent that cannot
+ * be read (cross-origin: `frameElement` is `null`, or a read throws) is
+ * UNKNOWN and does not fail the check.
+ */
+function documentHoldsFocus(doc: Document): boolean {
+  if (doc.hasFocus?.() === false) return false;
+  let frame: Element | null;
+  try {
+    frame = doc.defaultView?.frameElement ?? null;
+  } catch {
+    return true;
+  }
+  if (!frame) return true;
+  try {
+    return holdsFocus(frame);
+  } catch {
+    return true;
   }
 }
 
