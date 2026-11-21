@@ -21,8 +21,9 @@
  * - There is no `<select>`; pickers are platform widgets.
  * - A font size absent from the style is the platform default, which nothing
  *   reads, so that element counts as not measured.
- * - An element with no layout yet has no size, so its touch target is not
- *   measured — never read as 0x0, which would be a confident false finding.
+ * - An element with no layout yet, or a collapsed 0x0 one, has no size to
+ *   judge, so its touch target is not measured — never read as 0x0, which
+ *   would be a confident false finding.
  *
  * The package's `src/` imports nothing from the optional peer, and
  * `NativeDesignHandlers` is a public export, so the core's types are mirrored
@@ -228,7 +229,7 @@ const NATIVE_HEURISTIC_COVERAGE: NativeDesignAuditAdapter<RegisteredNativeElemen
     },
     'touch-target': {
       status: 'measured',
-      note: 'an element with no layout yet counts in notMeasured, never as 0x0',
+      note: 'an element with no layout yet, or a collapsed 0x0 one, counts in notMeasured, never as 0x0',
     },
   };
 
@@ -246,7 +247,12 @@ function nativeHeuristicInput(el: RegisteredNativeElement): NativeHeuristicInput
     color: styles.color,
     backgroundColor: styles.backgroundColor,
     fontSizePx: Number.isFinite(fontSizePx) ? fontSizePx : null,
-    rect: layout ? { width: layout.width, height: layout.height } : null,
+    // No layout yet, or a 0x0 one (collapsed / `display: 'none'`): no size
+    // to judge, so not measured — never a 0x0 touch-target finding.
+    rect:
+      layout && (layout.width > 0 || layout.height > 0)
+        ? { width: layout.width, height: layout.height }
+        : null,
   };
 }
 
