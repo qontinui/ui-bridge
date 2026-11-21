@@ -42,15 +42,25 @@ export type ContentMessage =
 // Responses from content script
 export type ContentResponse = { success: true; data?: unknown } | { success: false; error: string };
 
+/** The typed reasons a `CAPTURE_VISIBLE_TAB` can fail with. */
+export const CAPTURE_FAILURE_CODES = [
+  'TAB_NOT_VISIBLE',
+  'CAPTURE_RATE_LIMITED',
+  'CAPTURE_FAILED',
+] as const;
+export type CaptureFailureCode = (typeof CAPTURE_FAILURE_CODES)[number];
+
 /**
  * Answer to `CAPTURE_VISIBLE_TAB`. `screenshot` is the PNG base64 with the
  * data-URL prefix stripped. `code` is the typed reason the live relay forwards
- * to the runner: `TAB_NOT_VISIBLE` when the sender is not the active tab of its
- * window, `CAPTURE_FAILED` when Chrome refused the capture.
+ * to the runner: `TAB_NOT_VISIBLE` when the sender is not (or stopped being)
+ * the active tab of its window, `CAPTURE_RATE_LIMITED` when Chrome's
+ * per-second capture quota refused it, `CAPTURE_FAILED` for any other refusal.
+ * `retryable` says whether the same request may succeed later.
  */
 export type CaptureVisibleTabResponse =
   | { success: true; data: { screenshot: string } }
-  | { success: false; code: 'TAB_NOT_VISIBLE' | 'CAPTURE_FAILED'; error: string };
+  | { success: false; code: CaptureFailureCode; error: string; retryable: boolean };
 
 // Status response
 export interface StatusResponse {
