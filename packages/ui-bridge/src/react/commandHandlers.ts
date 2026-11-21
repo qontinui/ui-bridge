@@ -5385,10 +5385,11 @@ export async function executeCommand(
       // forced through the in-place selector rewrite (`forced-hover.ts`) and
       // released after the read, `focus` through `el.focus()` with the
       // previous focus restored (its entry carries `focusVisible`, the
-      // browser's own match), `focus-visible` through `el.focus()` plus the
-      // forced rewrite (its entry carries `forced` and `focused`). Each state is read in
-      // its real computed appearance, never the placeholder this case used to
-      // return without interacting at all.
+      // browser's own match, or `'not_focused'` / `'document_unfocused'`),
+      // `focus-visible` through `el.focus()` plus the forced rewrite (its
+      // entry carries `forced`, `notForcedReason` when not forced, and
+      // `focused`). Each state is read in its real computed appearance, never
+      // the placeholder this case used to return without interacting at all.
       const stateStyles = await captureStateVariations(
         dom,
         states.filter((s): s is InteractionStateName =>

@@ -346,14 +346,17 @@ async function captureEachState(
       };
       // Inside the hold: whether the browser's own `:focus-visible` matched
       // the focus just applied, so a reader knows which focus appearance
-      // the `focus` entry's styles are — or `'not_focused'` when the focus
-      // never landed, so there is no focus appearance at all.
+      // the `focus` entry's styles are — or why there is no focus appearance
+      // at all: `'not_focused'` (the focus never landed) or
+      // `'document_unfocused'` (it landed, but the document or frame has no
+      // focus, so no ring is drawn).
       if (stateName === 'focus') entry.focusVisible = readFocusVisible(el);
-      // The focus-visible entry says whether `el` holds focus: when the focus
-      // did not land, nothing was forced and its styles are the unfocused ones.
-      // `forced`: whether the ring was forced at apply time. `focused`: whether
-      // `el` still held focus when the styles were read (after the force and
-      // the frame) — the focus could have moved since `el.focus()`.
+      // The focus-visible entry: `forced` is whether the ring was forced at
+      // apply time, and when it was not, `notForcedReason` says why
+      // (`'not_focused'` or `'document_unfocused'`); nothing was forced and the
+      // styles are the unfocused ones. `focused` is whether `el` still held
+      // focus when the styles were read (after the force and the frame) — the
+      // focus could have moved since `el.focus()`.
       if (stateName === 'focus-visible') {
         entry.forced = applied.forced ?? false;
         if (applied.notForcedReason) entry.notForcedReason = applied.notForcedReason;
@@ -1001,9 +1004,11 @@ async function applyInteractionState(
  *
  * After the restore, the focus is read again the same way it was recorded. The
  * restore blurs `el` only when that read is not the recorded element and `el`
- * still holds focus, so it never undoes the focus it just restored (a previous
- * focus inside a `delegatesFocus` host), and an `el` that was already focused
- * before the read stays focused.
+ * is still the active element of its tree chain, so it never undoes the focus
+ * it just restored (a previous focus inside a `delegatesFocus` host), and an
+ * `el` that was already focused before the read stays focused. That test is
+ * {@link isActiveInTreeChain}, NOT {@link holdsFocus}: in a document or frame
+ * without focus `el` is still its `activeElement`, and must still be blurred.
  */
 function applyFocus(el: HTMLElement): () => Promise<void> {
   const doc = el.ownerDocument;
@@ -1014,7 +1019,7 @@ function applyFocus(el: HTMLElement): () => Promise<void> {
   el.focus();
   return async () => {
     if (previous === el) {
-      if (!holdsFocus(el)) el.focus();
+      if (!isActiveInTreeChain(el)) el.focus();
       return;
     }
     if (
@@ -1025,7 +1030,7 @@ function applyFocus(el: HTMLElement): () => Promise<void> {
     ) {
       (previous as HTMLElement).focus();
     }
-    if (readFocus() !== previous && holdsFocus(el)) el.blur();
+    if (readFocus() !== previous && isActiveInTreeChain(el)) el.blur();
   };
 }
 
@@ -1106,9 +1111,23 @@ function readFocusHold(el: Element): FocusHold {
   }
 }
 
-/** Whether `el` holds focus: {@link readFocusHold} answers `'held'`. */
+/**
+ * Whether `el` holds focus: {@link readFocusHold} answers `'held'`, so it is
+ * the active element of its tree chain AND its document (and frame) has
+ * focus. Used for REPORTING (`focused`, `forced`, `focusVisible`).
+ */
 function holdsFocus(el: Element): boolean {
   return readFocusHold(el) === 'held';
+}
+
+/**
+ * Whether `el` is the active element of its tree chain, whether or not its
+ * document has focus: {@link readFocusHold} answers anything but
+ * `'not_focused'`. Used by the RESTORE, which must undo `el.focus()` even in a
+ * document or frame without focus, where `el` stays its `activeElement`.
+ */
+function isActiveInTreeChain(el: Element): boolean {
+  return readFocusHold(el) !== 'not_focused';
 }
 
 /**
@@ -1142,10 +1161,12 @@ function documentHoldsFocus(doc: Document): boolean {
 
 /**
  * Whether the browser's own `:focus-visible` matches `el` right now.
- * `'not_focused'` when `el` does not hold focus (it has no focus appearance
- * to classify — never `false`, which means the pointer-focus appearance).
- * `'unknown'` when `matches` throws (an engine without the selector): a match
- * that could not be read is never reported as `false`.
+ * When `el` does not hold focus there is no focus appearance to classify, and
+ * the answer says why — never `false`, which means the pointer-focus
+ * appearance: `'not_focused'` (`el` is not the active element of its tree
+ * chain) or `'document_unfocused'` (it is, but its document or frame has no
+ * focus). `'unknown'` when `matches` throws (an engine without the selector):
+ * a match that could not be read is never reported as `false`.
  */
 export function readFocusVisible(el: Element): FocusVisibleMatch {
   const hold = readFocusHold(el);
