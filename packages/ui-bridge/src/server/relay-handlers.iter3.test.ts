@@ -21,6 +21,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { CommandRelay } from './command-relay';
 import { createRelayHandlers } from './relay-handlers';
+import { NoLiveAnswer } from './live-answer';
 
 function freshRelay(): CommandRelay {
   // Each test gets its own globalThis-key prefix so the persisted state
@@ -124,11 +125,37 @@ describe('relay-handlers · iter-3 Item B — staleMeta age-based decay', () => 
     vi.restoreAllMocks();
   });
 
+  // Corrected by plan 2026-11-08-ui-bridge-relay-and-exec-mode-follow-ups-from-pr-329
+  // Phase 5 (D5): a cache no tab ever filled answers a failure, never an empty
+  // snapshot, so each case first has a connected tab fill the cache (at the
+  // mocked `now`) and then reads with no tab connected.
+  async function filledHandlers(cacheTtlMs: number) {
+    const relay = freshRelay();
+    const listeners = vi.spyOn(relay, 'hasCommandListeners').mockReturnValue(true);
+    vi.spyOn(relay, 'queueCommand').mockResolvedValueOnce({
+      timestamp: Date.now(),
+      elements: [{ id: 'a', type: 'button', label: 'A', state: {} }],
+      components: [],
+      workflows: [],
+    } as never);
+    const handlers = createRelayHandlers(relay, { cacheTtlMs });
+    expect((await handlers.getControlSnapshot!({ recency: 'current' })).success).toBe(true);
+    listeners.mockReturnValue(false);
+    return { relay, handlers };
+  }
+
+  it('a fresh server with no tab and no cache answers a failure, never an empty snapshot', async () => {
+    const handlers = createRelayHandlers(freshRelay(), { cacheTtlMs: 1000 });
+    const result = await handlers.getControlSnapshot!({});
+    expect(result.success).toBe(false);
+    expect(result.data).toBeUndefined();
+  });
+
   it('reports stale=false when cache is fresh (age < cacheTtlMs)', async () => {
     const now = 1_000_000;
     vi.spyOn(Date, 'now').mockImplementation(() => now);
 
-    const handlers = createRelayHandlers(freshRelay(), { cacheTtlMs: 1000 });
+    const { handlers } = await filledHandlers(1000);
     // No tab connected → hasListeners=false → returns cached snapshot + meta.
     const result = await handlers.getControlSnapshot!({});
 
@@ -143,7 +170,7 @@ describe('relay-handlers · iter-3 Item B — staleMeta age-based decay', () => 
     vi.spyOn(Date, 'now').mockImplementation(() => now);
 
     const cacheTtlMs = 1000;
-    const handlers = createRelayHandlers(freshRelay(), { cacheTtlMs });
+    const { handlers } = await filledHandlers(cacheTtlMs);
 
     // Fast-forward past 5×TTL — for TTL=1000, that's >5000ms.
     now = start + cacheTtlMs * 5 + 100;
@@ -160,7 +187,7 @@ describe('relay-handlers · iter-3 Item B — staleMeta age-based decay', () => 
     vi.spyOn(Date, 'now').mockImplementation(() => now);
 
     const cacheTtlMs = 1000;
-    const handlers = createRelayHandlers(freshRelay(), { cacheTtlMs });
+    const { handlers } = await filledHandlers(cacheTtlMs);
 
     // Fresh branch
     now = start + 100;
@@ -179,13 +206,14 @@ describe('relay-handlers · iter-3 Item B — staleMeta age-based decay', () => 
     // When a tab IS connected but the relay throws, snapshotStaleSince is
     // set and `staleMeta()` returns stale=true with staleSinceMs. Verify
     // we didn't regress that branch.
-    const relay = freshRelay();
+    const { relay, handlers } = await filledHandlers(1000);
     // Simulate a connected tab so the relay path is taken.
     vi.spyOn(relay, 'hasCommandListeners').mockReturnValue(true);
-    vi.spyOn(relay, 'queueCommand').mockRejectedValue(new Error('relay timeout'));
+    vi.spyOn(relay, 'queueCommand').mockRejectedValue(
+      new NoLiveAnswer('relay timeout', 'unanswered')
+    );
 
-    const handlers = createRelayHandlers(relay, { cacheTtlMs: 1000 });
-    const result = await handlers.getControlSnapshot!({});
+    const result = await handlers.getControlSnapshot!({ recency: 'current' });
 
     expect(result.success).toBe(true);
     expect(result._meta?.stale).toBe(true);

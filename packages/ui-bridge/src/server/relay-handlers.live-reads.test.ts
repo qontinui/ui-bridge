@@ -494,5 +494,10 @@ describe('relay find · the relay arm', () => {
     expect((result.data as { elements: Array<{ id: string }> }).elements.map((e) => e.id)).toEqual([
       'cached-el',
     ]);
+    // Marked as the cache's, with find's own cause.
+    expect(result._meta).toMatchObject({
+      fallback: true,
+      reason: fallbackReason('find', 'the cached snapshot'),
+    });
   });
 });
