@@ -366,6 +366,41 @@ describe('heuristic coverage', () => {
     expect(large.issues).toEqual([]);
   });
 
+  it('a <select> whose colours or option cannot be judged is not measured and produces no issue', () => {
+    const selects = [
+      { color: 'not-a-colour', backgroundColor: '#111111', select: { colorScheme: 'normal' } },
+      { color: '#ffffff', backgroundColor: 'transparent', select: { colorScheme: 'normal' } },
+      {
+        // Unjudgeable own colours: the judgeable (and failing) option is not reported either.
+        color: 'not-a-colour',
+        backgroundColor: '#111111',
+        select: { colorScheme: 'normal', option: { color: '#ffffff', backgroundColor: '#ffffff' } },
+      },
+      {
+        color: '#ffffff',
+        backgroundColor: '#111111',
+        select: {
+          colorScheme: 'normal',
+          option: { color: '#ffffff', backgroundColor: 'transparent' },
+        },
+      },
+    ];
+    for (const heuristicInput of selects) {
+      const report = heuristic(
+        auditDesign([element('pick', { heuristic: heuristicInput })], {}, null, adapter)
+      );
+      const label = JSON.stringify(heuristicInput);
+      expect(coverage(report, 'select-dark-mode'), label).toMatchObject({
+        checked: 0,
+        notMeasured: 1,
+      });
+      expect(
+        report.issues.filter((i) => i.issue.startsWith('Select')),
+        label
+      ).toEqual([]);
+    }
+  });
+
   it('counts each <select> the adapter describes as select-dark-mode checked', () => {
     const report = heuristic(
       auditDesign(

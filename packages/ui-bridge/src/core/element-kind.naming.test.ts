@@ -23,7 +23,10 @@ import { applyCanonicalFindFilter, type FindFilterableElement } from './find-fil
 import { matchesElementSelector, selectorTypeMatches } from '../server/selector-match';
 import { find } from '../ai/find';
 import { SearchEngine } from '../ai/search-engine';
-import type { RegisteredElement } from './types';
+import { findElements } from './find';
+import { UIQuery } from './query-builder';
+import type { UIBridgeRegistry } from './registry';
+import type { ElementType, RegisteredElement } from './types';
 
 describe('namedTypeFamily / answersToNamedType', () => {
   it('a text field is a native input or an ARIA textbox, either way round', () => {
@@ -120,6 +123,12 @@ describe('the canonical find filter', () => {
     expect(ids({ type: 'button' })).toEqual(['save']);
   });
 
+  it('a React Native button name finds a web button, and only a button', () => {
+    expect(ids({ type: 'pressable' })).toEqual(['save']);
+    expect(ids({ type: 'touchable' })).toEqual(['save']);
+    expect(ids({ types: ['pressable'] })).toEqual(['save']);
+  });
+
   it('a role finds a role-less row whose kind implies it', () => {
     expect(ids({ role: 'textbox' })).toEqual(['email', 'notes']);
     expect(ids({ role: 'combobox' })).toEqual(['country', 'size']);
@@ -133,11 +142,61 @@ describe('selector matching', () => {
     expect(matchesElementSelector({ id: 'a', type: 'button' }, { type: 'input' })).toBe(false);
   });
 
+  it('a pressable or touchable selector matches a web button, not a link', () => {
+    expect(matchesElementSelector({ id: 'a', type: 'button' }, { type: 'pressable' })).toBe(true);
+    expect(matchesElementSelector({ id: 'a', type: 'button' }, { type: 'touchable' })).toBe(true);
+    expect(matchesElementSelector({ id: 'a', type: 'link' }, { type: 'pressable' })).toBe(false);
+  });
+
   it("the wait-for selector's substring match runs over the family and the tag", () => {
     expect(selectorTypeMatches('input', 'textbox', 'div')).toBe(true);
     expect(selectorTypeMatches('select', 'combobox', 'button')).toBe(true);
     expect(selectorTypeMatches('input', 'combobox', 'input')).toBe(true);
     expect(selectorTypeMatches('select', 'button', 'button')).toBe(false);
+  });
+
+  it('the substring match takes pressable as the button family, by kind or by tag', () => {
+    expect(selectorTypeMatches('pressable', 'button', 'div')).toBe(true);
+    expect(selectorTypeMatches('pressable', 'generic', 'button')).toBe(true);
+    expect(selectorTypeMatches('button', 'pressable', 'div')).toBe(true);
+    expect(selectorTypeMatches('pressable', 'link', 'a')).toBe(false);
+  });
+});
+
+describe('the scored element find (core/find)', () => {
+  const elements = [
+    { id: 'save', type: 'button', label: 'Save' },
+    { id: 'help', type: 'link', label: 'Save' },
+  ];
+
+  it('a pressable type filter keeps the button and drops the link', () => {
+    expect(findElements(elements, { type: 'pressable' }).map((m) => m.id)).toEqual(['save']);
+  });
+
+  it('a pressable token scores the button on type, not the link', () => {
+    const matches = findElements(elements, 'save pressable');
+    expect(matches[0].id).toBe('save');
+    expect(matches[0].reasons).toContain('type=button');
+    expect(matches.find((m) => m.id === 'help')?.reasons ?? []).not.toContain('type=link');
+  });
+});
+
+describe('the chainable query (withType)', () => {
+  it('withType("pressable") keeps the registered button and drops the link', () => {
+    document.body.innerHTML = '';
+    const button = document.createElement('button');
+    const link = document.createElement('a');
+    document.body.append(button, link);
+    const registry = {
+      getAllElements: () => [
+        { id: 'save', type: 'button', mounted: true, element: button },
+        { id: 'help', type: 'link', mounted: true, element: link },
+      ],
+    } as unknown as UIBridgeRegistry;
+    const dom = UIQuery.from(registry)
+      .withType('pressable' as ElementType)
+      .allDom();
+    expect(dom).toEqual([button]);
   });
 });
 
@@ -198,6 +257,26 @@ describe('natural-language find', () => {
         registered('sel', 'select', 'Country'),
       ])
     ).toEqual(['sel']);
+  });
+
+  it('search scoring takes a named pressable type as the button family, not a link', () => {
+    document.body.innerHTML = '';
+    const engine = new SearchEngine({ fuzzyThreshold: 0.5 });
+    const rows = [registered('btn', 'button', 'Save'), registered('lnk', 'link', 'Save')];
+    const response = engine.search({ text: 'Save', type: 'pressable' }, rows);
+    const typed = response.results
+      .filter((r) => r.matchReasons.includes('type: pressable'))
+      .map((r) => r.element.id);
+    expect(typed).toEqual(['btn']);
+  });
+
+  it('the natural-language find has no "pressable" type word, so the phrase scores on label alone', () => {
+    expect(
+      typeMatched('save pressable', [
+        registered('btn', 'button', 'Save'),
+        registered('lnk', 'link', 'Save'),
+      ])
+    ).toEqual([]);
   });
 
   it('"the notes input" matches an ARIA textbox on type', () => {

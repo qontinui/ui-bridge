@@ -52,7 +52,7 @@ export const NO_STYLE_GUIDE_REASON =
 
 /** What the request selected, and what of it could not be read. */
 export interface DesignSelectionReport {
-  /** Registered elements the request selected that have a live DOM node. */
+  /** Selected registered elements the transport can read (its adapter's `isReadable`). */
   totalElements: number;
   /** The element bound applied: the request's `limit`, else the default. */
   limit: number;
@@ -66,12 +66,13 @@ export interface DesignSelectionReport {
   /** How many requested ids name no registered element. */
   missingElementCount: number;
   /**
-   * Selected registered elements whose node is not an `HTMLElement` (an SVG
-   * element, or none at all), so no design data was read for them, at most
-   * `MAX_ECHOED_ELEMENT_IDS` of them. They are not counted in `totalElements`.
+   * Selected registered elements the transport cannot read (on the web, one
+   * whose node is not an `HTMLElement` — an SVG element, or none at all), so
+   * no design data was read for them, at most `MAX_ECHOED_ELEMENT_IDS` of
+   * them. They are not counted in `totalElements`.
    */
   unreadableElementIds: string[];
-  /** How many selected registered elements had no `HTMLElement` node. */
+  /** How many selected registered elements the transport could not read. */
   unreadableElementCount: number;
 }
 
@@ -151,10 +152,18 @@ export interface HeuristicDesignAuditIssue {
 export type HeuristicId = 'contrast' | 'select-dark-mode' | 'font-size' | 'touch-target';
 
 /**
- * How completely a transport can run a heuristic: `measured` — on every
- * element it applies to; `partial` — only where the transport's data allows
- * (the row's `note` says where); `not-applicable` — the platform has no such
- * thing.
+ * How completely a transport can run a heuristic. One definition, which the
+ * row's counts never contradict:
+ * - `measured` — the transport reads this heuristic's inputs for every element
+ *   it applies to. `notMeasured` then counts only elements whose values were
+ *   unreadable or unjudgeable there (a transparent background, an unparseable
+ *   colour, no layout yet).
+ * - `partial` — the transport structurally cannot read the inputs for some
+ *   class of elements (React Native contrast reads only an element's own
+ *   style; its font size only where the style sets one). Those elements count
+ *   in `notMeasured` too, and the row's `note` names the class.
+ * - `not-applicable` — the platform has no such thing (React Native has no
+ *   `<select>`); both counts are 0.
  */
 export type HeuristicCoverageStatus = 'measured' | 'partial' | 'not-applicable';
 
@@ -467,16 +476,6 @@ function luminanceOf(color: string): number | null {
   return c !== null && c.a === 1 ? relativeLuminance(c) : null;
 }
 
-function isLikelyDarkColor(color: string): boolean {
-  const l = luminanceOf(color);
-  return l !== null && l < 0.4;
-}
-
-function isLikelyLightColor(color: string): boolean {
-  const l = luminanceOf(color);
-  return l !== null && l > 0.6;
-}
-
 /**
  * Per heuristic that applies to an element: `true` when it was read, `false`
  * when it applies but could not be read (not measured). A heuristic that does
@@ -530,15 +529,19 @@ function heuristicIssuesOf(input: HeuristicInput): {
     }
   }
 
-  // <select> in dark mode: native <option> dropdowns may be invisible
+  // <select> in dark mode: native <option> dropdowns may be invisible. Judged
+  // only when the select's own colours are opaque and readable and, where it
+  // has an <option>, that option's contrast is judgeable; otherwise the select
+  // is not measured and produces no issue.
   if (input.select) {
-    checks['select-dark-mode'] = true;
     const { colorScheme, option } = input.select;
-    if (
-      isLikelyDarkColor(bgColor) &&
-      isLikelyLightColor(textColor) &&
-      !colorScheme.includes('dark')
-    ) {
+    const textLuminance = luminanceOf(textColor);
+    const bgLuminance = luminanceOf(bgColor);
+    const optRatio = option ? contrastOfColors(option.color, option.backgroundColor) : null;
+    const judgeable =
+      textLuminance !== null && bgLuminance !== null && (option === undefined || optRatio !== null);
+    checks['select-dark-mode'] = judgeable;
+    if (judgeable && bgLuminance < 0.4 && textLuminance > 0.6 && !colorScheme.includes('dark')) {
       issues.push({
         element: id,
         issue: `Select has light text (${textColor}) on dark bg (${bgColor}) without color-scheme:dark — native <option> dropdowns may be invisible`,
@@ -546,16 +549,13 @@ function heuristicIssuesOf(input: HeuristicInput): {
         fix: `Add style={{ colorScheme: "dark" }} to the <select> element and set option colors explicitly: [&>option]:text-black [&>option]:bg-white`,
       });
     }
-    if (option) {
-      const optRatio = contrastOfColors(option.color, option.backgroundColor);
-      if (optRatio !== null && optRatio < 3.0) {
-        issues.push({
-          element: id,
-          issue: `Select option text has low contrast: ${optRatio.toFixed(2)}:1 (${option.color} on ${option.backgroundColor})`,
-          severity: 'error',
-          fix: `Add explicit option colors: select option { color: #000; background-color: #fff; } or use [&>option]:text-black [&>option]:bg-white`,
-        });
-      }
+    if (judgeable && option && optRatio !== null && optRatio < 3.0) {
+      issues.push({
+        element: id,
+        issue: `Select option text has low contrast: ${optRatio.toFixed(2)}:1 (${option.color} on ${option.backgroundColor})`,
+        severity: 'error',
+        fix: `Add explicit option colors: select option { color: #000; background-color: #fff; } or use [&>option]:text-black [&>option]:bg-white`,
+      });
     }
   }
 

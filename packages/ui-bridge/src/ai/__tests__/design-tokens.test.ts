@@ -546,13 +546,18 @@ describe('design tokens', () => {
 
   it('the heuristic audit lists at most maxResults issues and reports the cut', () => {
     const buttons = [add('button', 'x'), add('button', 'y'), add('button', 'z')];
+    // jsdom lays out nothing: give each button a 30x30 box, under the 44px target.
+    for (const button of buttons) {
+      const box = { x: 0, y: 0, top: 0, left: 0, width: 30, height: 30, right: 30, bottom: 30 };
+      button.getBoundingClientRect = () => box as DOMRect;
+      button.getClientRects = () => [box] as unknown as DOMRectList;
+    }
     const report = designAuditOf(
       buttons.map((element, i) => ({ id: `b${i}`, element, type: 'button' })),
       { maxResults: 2 },
       null
     );
     if (report.mode !== 'heuristic') throw new Error('expected heuristic mode');
-    // jsdom lays out nothing: every button is under the 44px touch target.
     expect(report.issues).toHaveLength(2);
     expect(report).toMatchObject({ maxResults: 2, listableResults: 3, resultsTruncated: true });
   });

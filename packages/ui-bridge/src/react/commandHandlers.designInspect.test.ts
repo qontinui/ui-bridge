@@ -618,10 +618,15 @@ describe('design-inspection routes · the browser path answers the full model', 
     expect(report.reason).toMatch(/no style guide/i);
     expect(report.totalElements).toBe(3);
     expect(report.checkedElements).toBe(3);
-    // jsdom lays nothing out, so the 0x0 button is under the 44px touch target.
-    expect(report.issues).toContainEqual(
-      expect.objectContaining({ element: 'save', severity: 'warning' })
-    );
+    // jsdom lays nothing out, so the button has no box: its touch target is
+    // counted not measured rather than reported as a confident 0x0 finding.
+    expect(report.issues.filter((i) => i.issue.startsWith('Touch target'))).toEqual([]);
+    expect(report.heuristicCoverage).toContainEqual({
+      heuristic: 'touch-target',
+      status: 'measured',
+      checked: 0,
+      notMeasured: 1,
+    });
   });
 });
 
