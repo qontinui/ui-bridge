@@ -344,6 +344,132 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('design inspector focus states (real Chro
     await page.close();
   }, 30_000);
 
+  it('an element inside an open shadow root holds focus, and focus returns to the previous element after', async () => {
+    const page = await openPage();
+    await prime(page, 'pointer click on a focusable element');
+    const read = await page.evaluate(async () => {
+      const host = document.createElement('div');
+      document.body.appendChild(host);
+      const shadow = host.attachShadow({ mode: 'open' });
+      shadow.innerHTML = `<style>button:focus-visible { outline: 5px dashed rgb(255, 0, 0); }</style><button id="sb">inner</button>`;
+      const inner = shadow.getElementById('sb')!;
+      const states = await window.FV.captureStateVariations(inner, ['focus', 'focus-visible']);
+      const by = Object.fromEntries(
+        states.map(
+          (s: {
+            state: string;
+            focusVisible?: unknown;
+            focused?: unknown;
+            styles: Record<string, string>;
+          }) => [
+            s.state,
+            { focusVisible: s.focusVisible, focused: s.focused, outline: s.styles.outline },
+          ]
+        )
+      );
+      return {
+        focusVisible: by.focus.focusVisible,
+        focused: by['focus-visible'].focused,
+        forcedOutline: by['focus-visible'].outline,
+        active: document.activeElement?.id,
+        shadowActive: shadow.activeElement,
+      };
+    });
+    expect(read).toEqual({
+      // Chromium's heuristic after a pointer focus (see the table above).
+      focusVisible: false,
+      focused: true,
+      forcedOutline: 'rgb(255, 0, 0) dashed 5px',
+      active: 'other',
+      shadowActive: null,
+    });
+    await page.close();
+  }, 30_000);
+
+  it('a non-focusable shadow host whose inner input has focus does not hold focus, and the input keeps it', async () => {
+    const page = await openPage();
+    const read = await page.evaluate(async () => {
+      const host = document.createElement('div');
+      host.id = 'host';
+      document.body.appendChild(host);
+      const shadow = host.attachShadow({ mode: 'open' });
+      shadow.innerHTML = `<input id="si" aria-label="inner">`;
+      const input = shadow.getElementById('si') as HTMLInputElement;
+      input.focus();
+      const written: Array<string | null> = [];
+      const observer = new MutationObserver((records) => {
+        for (const r of records) written.push(r.attributeName);
+      });
+      observer.observe(host, { attributes: true });
+      const retargeted = document.activeElement?.id;
+      const states = await window.FV.captureStateVariations(host, ['focus', 'focus-visible']);
+      for (const r of observer.takeRecords()) written.push(r.attributeName);
+      observer.disconnect();
+      const by = Object.fromEntries(
+        states.map((s: { state: string; focusVisible?: unknown; focused?: unknown }) => [
+          s.state,
+          { focusVisible: s.focusVisible, focused: s.focused },
+        ])
+      );
+      return {
+        retargeted,
+        focusVisible: by.focus.focusVisible,
+        focused: by['focus-visible'].focused,
+        marked: written.includes('data-ui-bridge-pseudo-focus-visible'),
+        innerStillFocused: shadow.activeElement === input,
+      };
+    });
+    expect(read).toEqual({
+      retargeted: 'host',
+      focusVisible: 'not_focused',
+      focused: false,
+      marked: false,
+      innerStillFocused: true,
+    });
+    await page.close();
+  }, 30_000);
+
+  it('an element in a same-origin iframe holds focus, and focus returns to its previous element there', async () => {
+    const page = await openPage();
+    const read = await page.evaluate(async () => {
+      const frame = document.createElement('iframe');
+      frame.srcdoc = `<!doctype html><style>#ib:focus-visible { outline: 5px dashed rgb(255, 0, 0); }</style><button id="ib">in frame</button><input id="iprev" aria-label="prev">`;
+      const loaded = new Promise((done) => frame.addEventListener('load', done, { once: true }));
+      document.body.appendChild(frame);
+      await loaded;
+      const doc = frame.contentDocument!;
+      (doc.getElementById('iprev') as HTMLInputElement).focus();
+      const target = doc.getElementById('ib')!;
+      const states = await window.FV.captureStateVariations(target, ['focus', 'focus-visible']);
+      const by = Object.fromEntries(
+        states.map(
+          (s: {
+            state: string;
+            focusVisible?: unknown;
+            focused?: unknown;
+            styles: Record<string, string>;
+          }) => [
+            s.state,
+            { focusVisible: s.focusVisible, focused: s.focused, outline: s.styles.outline },
+          ]
+        )
+      );
+      return {
+        focusVisibleRead: by.focus.focusVisible !== 'not_focused',
+        focused: by['focus-visible'].focused,
+        forcedOutline: by['focus-visible'].outline,
+        frameActive: doc.activeElement?.id,
+      };
+    });
+    expect(read).toEqual({
+      focusVisibleRead: true,
+      focused: true,
+      forcedOutline: 'rgb(255, 0, 0) dashed 5px',
+      frameActive: 'iprev',
+    });
+    await page.close();
+  }, 30_000);
+
   it("a focus whose :focus-visible match cannot be read is 'unknown', never false", async () => {
     const page = await openPage();
     const read = await page.evaluate(async () => {

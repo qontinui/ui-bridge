@@ -507,7 +507,7 @@ reading so a Chromium change turns it red), a programmatic focus matches
 area, and after a keyboard `Tab` — but NOT after a pointer click on a focusable
 element, a state the inspector is routinely in. So:
 
-- the `focus` entry carries `focusVisible: true | false | 'unknown'`, the
+- the `focus` entry carries `focusVisible: true | false | 'not_focused' | 'unknown'`, the
   browser's own `el.matches(':focus-visible')` read while the focus was held —
   it says which focus appearance that entry's styles are. `'not_focused'`
   means the focus never landed (a non-focusable, disabled or inert element, or
@@ -522,6 +522,13 @@ element, a state the inspector is routinely in. So:
   carries `focused`: `false` means the focus did not land, nothing was forced
   (the element can never draw that ring), and the styles are the unfocused
   ones.
+
+"Holds focus" means the element is the DEEPEST focused element of its own
+document, followed down through open shadow roots — not the retargeted
+`activeElement`, which is an outer shadow host whenever anything inside it has
+focus (a host with `delegatesFocus` holds focus when the focus is inside its
+shadow tree). The previous focus is recorded the same way, so the read returns
+focus to the element that really had it, inside a shadow root or an iframe.
 
 ```bash
 curl -s -X POST "$BASE/design/element/save-btn/state-styles" \

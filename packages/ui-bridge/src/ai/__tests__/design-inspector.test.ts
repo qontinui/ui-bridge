@@ -608,6 +608,80 @@ describe('captureStateVariations', () => {
     }
   });
 
+  it('an element inside an open shadow root holds focus, and focus returns to the previous element after', async () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const shadow = host.attachShadow({ mode: 'open' });
+    const inner = document.createElement('button');
+    inner.textContent = 'inner';
+    shadow.appendChild(inner);
+    const before = document.createElement('input');
+    document.body.appendChild(before);
+    try {
+      before.focus();
+      const results = await captureStateVariations(inner, ['focus', 'focus-visible']);
+      const byState = Object.fromEntries(results.map((r) => [r.state, r]));
+      expect(byState.focus.focusVisible).not.toBe('not_focused');
+      expect([true, false, 'unknown']).toContain(byState.focus.focusVisible);
+      expect(byState['focus-visible'].focused).toBe(true);
+      expect(document.activeElement).toBe(before);
+      expect(shadow.activeElement).toBeNull();
+    } finally {
+      host.remove();
+      before.remove();
+    }
+  });
+
+  it('a non-focusable shadow host whose inner input has focus does not hold focus, and the input keeps it', async () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const shadow = host.attachShadow({ mode: 'open' });
+    const input = document.createElement('input');
+    shadow.appendChild(input);
+    const written: Array<string | null> = [];
+    const observer = new MutationObserver((records) => {
+      for (const r of records) written.push(r.attributeName);
+    });
+    observer.observe(host, { attributes: true });
+    try {
+      input.focus();
+      // The document's activeElement is retargeted to the host.
+      expect(document.activeElement).toBe(host);
+      expect(readFocusVisible(host)).toBe('not_focused');
+      const results = await captureStateVariations(host, ['focus', 'focus-visible']);
+      for (const r of observer.takeRecords()) written.push(r.attributeName);
+      const byState = Object.fromEntries(results.map((r) => [r.state, r]));
+      expect(byState.focus.focusVisible).toBe('not_focused');
+      expect(byState['focus-visible'].focused).toBe(false);
+      expect(written).not.toContain('data-ui-bridge-pseudo-focus-visible');
+      expect(shadow.activeElement).toBe(input);
+    } finally {
+      observer.disconnect();
+      host.remove();
+    }
+  });
+
+  it('an element in a same-origin iframe holds focus, and focus returns to its previous element there', async () => {
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    const doc = frame.contentDocument!;
+    const target = doc.createElement('button');
+    target.textContent = 'target';
+    const previous = doc.createElement('input');
+    doc.body.append(target, previous);
+    try {
+      previous.focus();
+      expect(doc.activeElement).toBe(previous);
+      const results = await captureStateVariations(target, ['focus', 'focus-visible']);
+      const byState = Object.fromEntries(results.map((r) => [r.state, r]));
+      expect(byState.focus.focusVisible).not.toBe('not_focused');
+      expect(byState['focus-visible'].focused).toBe(true);
+      expect(doc.activeElement).toBe(previous);
+    } finally {
+      frame.remove();
+    }
+  });
+
   it('a disabled control reports focused=false on focus-visible', async () => {
     el.disabled = true;
     const results = await captureStateVariations(el, ['focus', 'focus-visible']);

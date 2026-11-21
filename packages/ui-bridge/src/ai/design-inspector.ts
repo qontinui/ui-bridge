@@ -348,9 +348,11 @@ async function captureEachState(
       // the `focus` entry's styles are — or `'not_focused'` when the focus
       // never landed, so there is no focus appearance at all.
       if (stateName === 'focus') entry.focusVisible = readFocusVisible(el);
-      // The focus-visible entry says whether the focus landed: when it did
-      // not, nothing was forced and its styles are the unfocused ones.
-      if (stateName === 'focus-visible') entry.focused = applied.focused ?? false;
+      // The focus-visible entry says whether `el` holds focus: when the focus
+      // did not land, nothing was forced and its styles are the unfocused ones.
+      // Read at style-read time, after the force and the frame: the focus
+      // could have moved since `el.focus()`.
+      if (stateName === 'focus-visible') entry.focused = holdsFocus(el);
       results.push(entry);
     } finally {
       // Always restore to default state
@@ -963,27 +965,69 @@ async function applyInteractionState(
   }
 }
 
-/** Focus `el` with the real `el.focus()`; the returned function puts the previous focus back. */
+/**
+ * Focus `el` with the real `el.focus()`; the returned function puts the
+ * previous focus back. The previous focus is the DEEPEST focused element of
+ * `el`'s own document (inside open shadow roots), not the top document's
+ * retargeted `activeElement` (an outer shadow host, or the iframe), so the
+ * restore returns focus to the element that actually had it. Focusability is
+ * duck-typed, so an element from an iframe's realm is restored too.
+ */
 function applyFocus(el: HTMLElement): () => Promise<void> {
-  const previous = document.activeElement;
+  const doc = el.ownerDocument;
+  const previous = deepestActiveElement(doc);
   el.focus();
   return async () => {
-    if (previous instanceof HTMLElement && previous !== el && previous !== document.body) {
-      previous.focus();
+    if (
+      previous &&
+      previous !== el &&
+      previous !== doc.body &&
+      previous.isConnected &&
+      typeof (previous as Partial<HTMLElement>).focus === 'function'
+    ) {
+      (previous as HTMLElement).focus();
     }
     if (holdsFocus(el)) el.blur();
   };
 }
 
 /**
- * Whether `el` is the focused element of its own tree: the document's
- * `activeElement`, or its shadow root's when it lives in one (where the
- * document's `activeElement` is the shadow host).
+ * The element that really has focus in `doc`: its `activeElement`, followed
+ * down through each open shadow root's `activeElement` (the document's own
+ * `activeElement` is retargeted to the outermost shadow host).
+ */
+function deepestActiveElement(doc: Document): Element | null {
+  let active: Element | null = doc.activeElement;
+  while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+  return active;
+}
+
+/** Whether `node` lies inside `host`'s shadow tree, at any depth of nested shadow roots. */
+function isInShadowTreeOf(node: Node, host: Element): boolean {
+  const shadow = host.shadowRoot;
+  if (!shadow) return false;
+  let current: Node | null = node;
+  while (current) {
+    const root = current.getRootNode();
+    if (root === shadow) return true;
+    current = (root as Partial<ShadowRoot>).host ?? null;
+  }
+  return false;
+}
+
+/**
+ * Whether `el` holds focus: it IS the deepest focused element of its own
+ * document (see {@link deepestActiveElement}) — never merely the retargeted
+ * `activeElement` of its tree, which a shadow host is whenever anything inside
+ * its shadow tree has focus. A host whose shadow root has `delegatesFocus`
+ * holds focus when the deepest focused element is inside its shadow tree:
+ * that is where `el.focus()` sends it.
  */
 function holdsFocus(el: Element): boolean {
-  const root = el.getRootNode?.() as Document | ShadowRoot | undefined;
-  const active = root && 'activeElement' in root ? root.activeElement : document.activeElement;
-  return active === el;
+  const deepest = deepestActiveElement(el.ownerDocument);
+  if (!deepest) return false;
+  if (deepest === el) return true;
+  return el.shadowRoot?.delegatesFocus === true && isInShadowTreeOf(deepest, el);
 }
 
 /**
