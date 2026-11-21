@@ -30,6 +30,14 @@
  * duplicated bundle) still matches.
  */
 
+/**
+ * The `noAnswerCause` of a command evicted from a full pending queue. It is
+ * `unanswered` (it may have been delivered) but no timer ran out, so the
+ * HTTP layer tells it apart from a timeout by this cause.
+ */
+export const EVICTED_NO_ANSWER_CAUSE =
+  'it was evicted from the pending queue under load before a tab answered';
+
 /** Why the relay got no live answer: nothing carried it, or nobody answered. */
 export type NoLiveAnswerReason = 'not_delivered' | 'unanswered';
 
