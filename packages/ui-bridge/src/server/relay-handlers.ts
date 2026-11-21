@@ -51,6 +51,7 @@ import { matchesElementSelector, type MatchableElement } from './selector-match'
 import { diagnosePageHealth, pageHealthInputFromSnapshot, pageHealthUnknown } from './page-health';
 import { buildVisibilityReport } from './visibility-report';
 import type { SemanticSnapshot } from '../ai';
+import { invalidStatesMessage } from '../ai/interaction-states';
 import {
   isAssertionRequestError,
   normalizeAssertion,
@@ -2570,7 +2571,20 @@ export function createRelayHandlers(
     },
 
     async getElementStateStyles(id, request, context) {
-      return relayCommand('getElementStateStyles', { id, ...request }, ctxOpts(context));
+      // Refuse a bad state list HERE, before any tab is consulted (as
+      // waitForElementRegistered does): a tab running an older SDK would drop
+      // an unknown name silently, and "no tab connected" would hide the
+      // caller's mistake.
+      const invalid = invalidStatesMessage(request?.states);
+      if (invalid) return error(invalid, 'VALIDATION_ERROR');
+      // A `null` list means the default; it is dropped rather than forwarded,
+      // so a tab on an older SDK applies its own default instead of throwing.
+      const states = request?.states ?? undefined;
+      return relayCommand(
+        'getElementStateStyles',
+        { id, ...(states ? { states } : {}) },
+        ctxOpts(context)
+      );
     },
 
     async getDesignSnapshot(request, context) {

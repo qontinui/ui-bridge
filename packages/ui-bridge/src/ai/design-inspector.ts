@@ -19,6 +19,7 @@ import type {
   ElementDesignData,
   ResponsiveSnapshot,
 } from '../core/types';
+import { INTERACTION_STATES } from './interaction-states';
 import { classString } from '../core/class-name';
 import { REDACTED_VALUE, scrubContent, scrubContentRequired, verdictOf } from '../core/redaction';
 import { withRootWidthLock } from '../core/root-width-lock';
@@ -123,15 +124,11 @@ const DESIGN_PROPERTIES: (keyof ExtendedComputedStyles)[] = [
 ];
 
 /**
- * Interaction states to cycle through for state variation capture
+ * Interaction states to cycle through for state variation capture. Declared
+ * in the DOM-free `./interaction-states`, so the relay server can validate a
+ * request against the same list.
  */
-export const INTERACTION_STATES: readonly InteractionStateName[] = [
-  'hover',
-  'focus',
-  'focus-visible',
-  'active',
-  'disabled',
-];
+export { INTERACTION_STATES };
 
 /**
  * Default viewport breakpoints
