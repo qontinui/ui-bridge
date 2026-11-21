@@ -3291,6 +3291,15 @@ export type InteractionStateName =
 export type FocusNotHeldReason = 'not_focused' | 'document_unfocused';
 
 /**
+ * A caveat on a FORCED `focus-visible` entry. `'document_unfocused'`: the
+ * element was the focused element of its document, but the document (or its
+ * frame) had no focus — typically a background window. The ring was forced and
+ * the rules the rewrite reaches applied, but any rule that also needs the real
+ * `:focus` (for example `:focus:focus-visible`) could not match.
+ */
+export type FocusCaveat = 'document_unfocused';
+
+/**
  * Whether the browser's own `:focus-visible` matched an element while the
  * inspector held it focused. A {@link FocusNotHeldReason} when the element did
  * not hold focus: there is no focus appearance to classify. `'unknown'` when
@@ -3331,17 +3340,23 @@ export interface StateStyles {
   /**
    * Present on the `focus-visible` entry only: whether `:focus-visible` was
    * forced, decided at apply time right after `el.focus()`. `false` means the
-   * element did not hold focus then, and nothing was forced; `notForcedReason`
-   * says why.
+   * focus did not land and nothing was forced (`notForcedReason`). It is
+   * `true` when the focus landed, even in a document or frame without focus;
+   * `focusCaveat` then says so.
    */
   forced?: boolean;
   /**
    * Present on the `focus-visible` entry when `forced` is `false`:
-   * `'not_focused'` (the focus did not land — the element can never draw a
-   * focus ring) or `'document_unfocused'` (it landed, but the document or its
-   * frame has no focus).
+   * `'not_focused'` — the focus did not land, so the element can never draw a
+   * focus ring.
    */
-  notForcedReason?: FocusNotHeldReason;
+  notForcedReason?: 'not_focused';
+  /**
+   * Present on the `focus-visible` entry when it was forced while the document
+   * or its frame had no focus: see {@link FocusCaveat}. `focused` is then
+   * `false`.
+   */
+  focusCaveat?: FocusCaveat;
   /**
    * Present on the `focus-visible` entry only: whether the element held focus
    * when its styles were read (after the force and a frame). `forced: true`

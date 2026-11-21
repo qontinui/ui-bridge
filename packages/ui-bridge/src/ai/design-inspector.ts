@@ -9,6 +9,7 @@
 
 import type {
   ExtendedComputedStyles,
+  FocusCaveat,
   FocusNotHeldReason,
   FocusVisibleMatch,
   InteractionStateName,
@@ -352,14 +353,16 @@ async function captureEachState(
       // focus, so no ring is drawn).
       if (stateName === 'focus') entry.focusVisible = readFocusVisible(el);
       // The focus-visible entry: `forced` is whether the ring was forced at
-      // apply time, and when it was not, `notForcedReason` says why
-      // (`'not_focused'` or `'document_unfocused'`); nothing was forced and the
-      // styles are the unfocused ones. `focused` is whether `el` still held
-      // focus when the styles were read (after the force and the frame) — the
-      // focus could have moved since `el.focus()`.
+      // apply time. When it was not, `notForcedReason` is `'not_focused'` (the
+      // focus never landed) and the styles are the unfocused ones. When it was
+      // forced while the document or frame had no focus, `focusCaveat` is
+      // `'document_unfocused'`: the forced rules applied, but rules that also
+      // need a real `:focus` could not match. `focused` is whether `el` still
+      // held focus when the styles were read (after the force and the frame).
       if (stateName === 'focus-visible') {
         entry.forced = applied.forced ?? false;
         if (applied.notForcedReason) entry.notForcedReason = applied.notForcedReason;
+        if (applied.focusCaveat) entry.focusCaveat = applied.focusCaveat;
         entry.focused = holdsFocus(el);
       }
       results.push(entry);
@@ -900,8 +903,10 @@ interface AppliedInteractionState {
   restore: () => Promise<void>;
   /** Set by `focus-visible`: whether `:focus-visible` was forced (the focus landed at apply time). */
   forced?: boolean;
-  /** Set by `focus-visible` when `forced` is false: why the focus did not count as held. */
-  notForcedReason?: FocusNotHeldReason;
+  /** Set by `focus-visible` when `forced` is false: the focus did not land. */
+  notForcedReason?: 'not_focused';
+  /** Set by `focus-visible` when it forced while the document or frame had no focus. */
+  focusCaveat?: FocusCaveat;
 }
 
 /**
@@ -920,9 +925,13 @@ interface AppliedInteractionState {
  * appearance whatever input preceded the read. When the focus does not land
  * (a non-focusable, disabled or inert element, or a focus handler that moves
  * focus elsewhere) nothing is forced: the element can never draw that ring.
- * Nothing is forced either when it lands but the document (or its frame) has
- * no focus, where the browser draws no ring; `notForcedReason` tells the two
- * apart. `disabled` restores the element's own prior value.
+ * When it lands but the document (or its frame) has no focus — an agent
+ * inspecting a background window — the ring IS forced: the rewrite's
+ * `[data-ui-bridge-pseudo-focus-visible]` arm does not depend on document
+ * focus. The entry then carries `focusCaveat: 'document_unfocused'`, because
+ * rules that also need the real `:focus` (`:focus:focus-visible`) cannot match
+ * while the document lacks focus. `disabled` restores the element's own prior
+ * value.
  */
 async function applyInteractionState(
   el: HTMLElement,
@@ -944,11 +953,14 @@ async function applyInteractionState(
     case 'focus-visible': {
       const restoreFocus = applyFocus(el);
       const hold = readFocusHold(el);
-      if (hold !== 'held') return { restore: restoreFocus, forced: false, notForcedReason: hold };
+      if (hold === 'not_focused') {
+        return { restore: restoreFocus, forced: false, notForcedReason: 'not_focused' };
+      }
       try {
         const { holdId } = await forcePseudoState(el, 'focus-visible', { borrowedFrom });
         return {
           forced: true,
+          ...(hold === 'document_unfocused' ? { focusCaveat: 'document_unfocused' as const } : {}),
           restore: async () => {
             try {
               await releaseForcedPseudoStateIfOwner(holdId, 'explicit');
@@ -995,6 +1007,10 @@ async function applyInteractionState(
  * too. The limits:
  * - only `el`'s own document is restored. When `el` is inside a frame, a focus
  *   that was in the parent document (or another frame) is not put back;
+ * - when `el`'s frame was not its parent's active element at the start (see
+ *   {@link frameChainIsActive}), the frame's remembered `activeElement` was
+ *   not holding focus: it is NOT refocused, since that would pull the page's
+ *   focus into the frame, and `el` is just blurred;
  * - a focus inside a CLOSED shadow root that is NOT on `el`'s path up (a
  *   sibling component's closed tree) is unreadable, so it is restored to the
  *   host only. A host without `delegatesFocus` that is not itself focusable
@@ -1016,6 +1032,10 @@ function applyFocus(el: HTMLElement): () => Promise<void> {
   const readFocus = (): Element | null =>
     tree ? deepestBelow(tree.activeElement ?? null) : deepestActiveElement(doc);
   const previous = readFocus();
+  // A frame's document remembers its activeElement after the parent moved its
+  // focus elsewhere. That element was not holding focus, and focusing it on
+  // restore would pull the page's focus into the frame: it is not restored.
+  const previousStale = !frameChainIsActive(doc);
   el.focus();
   return async () => {
     if (previous === el) {
@@ -1023,6 +1043,7 @@ function applyFocus(el: HTMLElement): () => Promise<void> {
       return;
     }
     if (
+      !previousStale &&
       previous &&
       previous !== doc.body &&
       previous.isConnected &&
@@ -1030,8 +1051,28 @@ function applyFocus(el: HTMLElement): () => Promise<void> {
     ) {
       (previous as HTMLElement).focus();
     }
-    if (readFocus() !== previous && isActiveInTreeChain(el)) el.blur();
+    if ((previousStale || readFocus() !== previous) && isActiveInTreeChain(el)) el.blur();
   };
+}
+
+/**
+ * Whether every frame element between `doc` and the top is its parent's
+ * active element, regardless of whether the window has focus. `true` for a
+ * top-level document, and for a parent that cannot be read (cross-origin).
+ */
+function frameChainIsActive(doc: Document): boolean {
+  let frame: Element | null;
+  try {
+    frame = doc.defaultView?.frameElement ?? null;
+  } catch {
+    return true;
+  }
+  if (!frame) return true;
+  try {
+    return isActiveInTreeChain(frame) && frameChainIsActive(frame.ownerDocument);
+  } catch {
+    return true;
+  }
 }
 
 /**
