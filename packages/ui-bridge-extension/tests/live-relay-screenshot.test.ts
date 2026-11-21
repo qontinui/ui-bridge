@@ -199,6 +199,69 @@ describe('live relay getScreenshot', () => {
     }
   });
 
+  it('a tabs.query that rejects BEFORE the capture answers retryable CAPTURE_FAILED and captures nothing', async () => {
+    chromeMock.tabs.query.mockRejectedValueOnce(new Error('No window with id: 3.'));
+    const reply = await deliverToServiceWorker(
+      { type: 'CAPTURE_VISIBLE_TAB' },
+      { tab: SENDER_TAB }
+    );
+    expect(reply).toMatchObject({ success: false, code: 'CAPTURE_FAILED', retryable: true });
+    expect(chromeMock.tabs.captureVisibleTab).not.toHaveBeenCalled();
+  });
+
+  it('a tabs.query that rejects AFTER the capture discards the frame: retryable CAPTURE_FAILED', async () => {
+    chromeMock.tabs.query
+      .mockResolvedValueOnce([{ id: SENDER_TAB.id }])
+      .mockRejectedValueOnce(new Error('No window with id: 3.'));
+    const reply = await deliverToServiceWorker(
+      { type: 'CAPTURE_VISIBLE_TAB' },
+      { tab: SENDER_TAB }
+    );
+    expect(chromeMock.tabs.captureVisibleTab).toHaveBeenCalledTimes(1);
+    expect(reply).toMatchObject({ success: false, code: 'CAPTURE_FAILED', retryable: true });
+    expect(JSON.stringify(reply)).not.toContain(PNG_B64);
+  });
+
+  it('a capture that is not a PNG data URL answers CAPTURE_FAILED, not a frame', async () => {
+    chromeMock.tabs.query.mockResolvedValue([{ id: SENDER_TAB.id }]);
+    chromeMock.tabs.captureVisibleTab.mockResolvedValue('data:image/jpeg;base64,/9j/4AAQ');
+    const reply = await deliverToServiceWorker(
+      { type: 'CAPTURE_VISIBLE_TAB' },
+      { tab: SENDER_TAB }
+    );
+    expect(reply).toMatchObject({ success: false, code: 'CAPTURE_FAILED', retryable: false });
+  });
+
+  it('a sender with no tab answers TAB_NOT_VISIBLE without reading or capturing any tab', async () => {
+    const reply = await deliverToServiceWorker({ type: 'CAPTURE_VISIBLE_TAB' }, {});
+    expect(reply).toMatchObject({ success: false, code: 'TAB_NOT_VISIBLE', retryable: false });
+    expect(chromeMock.tabs.query).not.toHaveBeenCalled();
+    expect(chromeMock.tabs.captureVisibleTab).not.toHaveBeenCalled();
+  });
+
+  it('an unrecognised capture refusal is retryable CAPTURE_FAILED', async () => {
+    chromeMock.tabs.query.mockResolvedValue([{ id: SENDER_TAB.id }]);
+    chromeMock.tabs.captureVisibleTab.mockRejectedValue(
+      new Error('Failed to capture tab: unknown error')
+    );
+    const reply = await deliverToServiceWorker(
+      { type: 'CAPTURE_VISIBLE_TAB' },
+      { tab: SENDER_TAB }
+    );
+    expect(reply).toMatchObject({ success: false, code: 'CAPTURE_FAILED', retryable: true });
+  });
+
+  it('readCaptureReply names an unrecognised code while falling back to CAPTURE_FAILED', () => {
+    const reply = readCaptureReply({ success: false, code: 'SOMETHING_ELSE', error: 'boom' });
+    expect(reply).toMatchObject({ ok: false, code: 'CAPTURE_FAILED', retryable: false });
+    expect((reply as { error: string }).error).toBe('boom (unrecognised code "SOMETHING_ELSE")');
+    expect(readCaptureReply({ success: false })).toMatchObject({
+      ok: false,
+      code: 'CAPTURE_FAILED',
+      error: 'CAPTURE_VISIBLE_TAB failed',
+    });
+  });
+
   it('readCaptureReply keeps known codes and their retryability', () => {
     expect(
       readCaptureReply({ success: false, code: 'TAB_NOT_VISIBLE', error: 'e', retryable: true })
@@ -229,12 +292,12 @@ describe('live relay getScreenshot', () => {
     expect(SCREENSHOT_ACTION).toBe(wrapper.SCREENSHOT_ACTION);
 
     const sent: string[] = [];
-    let socket: { emit(type: string, ev?: unknown): void } | null = null;
+    const sockets: Array<{ emit(type: string, ev?: unknown): void }> = [];
     class FakeWebSocket {
       readyState = 0;
       private readonly listeners = new Map<string, Array<(ev?: unknown) => void>>();
       constructor() {
-        socket = this;
+        sockets.push(this);
         queueMicrotask(() => {
           this.readyState = 1;
           this.emit('open');
@@ -283,7 +346,8 @@ describe('live relay getScreenshot', () => {
     });
     expect(register['capabilities']).toEqual([SCREENSHOT_CAPABILITY]);
 
-    const deliver = (frame: unknown) => socket!.emit('message', { data: JSON.stringify(frame) });
+    const deliver = (frame: unknown) =>
+      sockets[0]!.emit('message', { data: JSON.stringify(frame) });
     deliver({ type: 'registered', appId: 'example.com', connId: 1, acceptedAt: 0 });
     await ready;
 
@@ -302,7 +366,7 @@ describe('live relay getScreenshot', () => {
     await t.close();
   });
 
-  it('the manifest grants the host permission captureVisibleTab needs without a gesture', () => {
+  it("the manifest's host grant covers the relay's origins", () => {
     const manifest = JSON.parse(
       readFileSync(new URL('../manifest.json', import.meta.url), 'utf8')
     ) as {

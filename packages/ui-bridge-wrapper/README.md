@@ -69,6 +69,14 @@ the app as a capture target by name (`FRAME_SOURCE_UNSUPPORTED`).
 `registerScreenshotCapture(registrar, page)` registers the same handler on any
 other transport that owns a page.
 
+A browser bundle (an extension content script, a page) imports the
+**browser-safe** entry `@qontinui/ui-bridge-wrapper/live` instead of the
+package root: the root re-exports Node-only transports and cannot load where
+there is no `require`. Both entries share one copy of `WrapperTransportError`,
+`HandlerRegistry` and `LiveSessionTransport` within a module format, so they
+may be mixed in one ESM (or one CJS) program — but not a `require` of one with
+an `import` of the other, which load separate copies.
+
 ## Package layout
 
 - `src/index.ts` — public surface (transports, helpers, types).

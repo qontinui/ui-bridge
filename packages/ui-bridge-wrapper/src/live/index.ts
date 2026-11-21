@@ -13,6 +13,15 @@
  * this entry exists so a browser bundle never walks that graph.
  * `ui-bridge-extension`'s `tests/content-bundle-node-free.test.ts` fails the
  * build output if that ever regresses.
+ *
+ * SHARED CLASSES. This entry and the package root are built with code
+ * splitting, so within ONE module format they share a single copy of
+ * `WrapperTransportError`, `HandlerRegistry` and `LiveSessionTransport`: a
+ * `./live` error thrown through a root registry keeps its code
+ * (`tests/live-entry-shared.test.ts`). Across formats they do NOT — the CJS
+ * build (`require`) and the ESM build (`import`) are separate copies, the
+ * usual dual-package hazard — so do not mix a `require` of one entry with an
+ * `import` of the other in one process.
  */
 
 export { WrapperTransportError } from '../types.js';
