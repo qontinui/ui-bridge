@@ -193,6 +193,17 @@ describe('native design request validation', () => {
       expect(await count(undefined)).toBe(4);
     });
 
+    it('baseline answers a capture failure instead of throwing', async () => {
+      const h = createDesignHandlers(registry(), () => {
+        throw new Error('no screen');
+      });
+      expect(await h.saveBaseline(ctx(undefined))).toMatchObject({
+        success: false,
+        code: 'SAVE_BASELINE_ERROR',
+        error: 'no screen',
+      });
+    });
+
     it('diff checks the baseline first, then refuses a malformed body or elementIds', async () => {
       // The saved baseline is module state, so start from a fresh module.
       vi.resetModules();
