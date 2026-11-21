@@ -91,8 +91,17 @@ import { standardActionEffect } from '../core/action-effect';
 // Types
 // ============================================================================
 
-/** The user-action pseudo-classes this module can force. */
-export type ForcedPseudoStateName = 'hover' | 'active';
+/**
+ * The user-action pseudo-classes this module can force.
+ *
+ * `focus-visible` is forced because no page-script API sets it either:
+ * `el.focus()` sets `:focus`, but whether `:focus-visible` follows is the
+ * browser's input-modality heuristic, and Chromium answers `false` to a
+ * programmatic focus that follows a pointer focus (measured by
+ * `ai/focus-visible.smoke.test.ts`). Unlike `:hover`/`:active` it does not
+ * propagate to ancestors, so only the target is marked.
+ */
+export type ForcedPseudoStateName = 'hover' | 'active' | 'focus-visible';
 
 /** Why a forced state ended. */
 export type ForcedPseudoReleaseReason =
@@ -294,6 +303,7 @@ export function pseudoStateAttribute(state: ForcedPseudoStateName): string {
 const PSEUDO_PATTERNS: Record<ForcedPseudoStateName, RegExp> = {
   hover: /(?<!\\):hover(?![\w-])/g,
   active: /(?<!\\):active(?![\w-])/g,
+  'focus-visible': /(?<!\\):focus-visible(?![\w-])/g,
 };
 
 function matchIndices(selector: string, state: ForcedPseudoStateName): number[] {
@@ -1044,7 +1054,9 @@ async function applyNow(
   const scan = scanSheets(target, state);
   const scanMs = now() - scanStart;
 
-  const marked = composedAncestry(target);
+  // `:hover`/`:active` apply along the whole flat-tree chain; `:focus-visible`
+  // applies to the focused element alone (`:focus-within` is the ancestors').
+  const marked = state === 'focus-visible' ? [target] : composedAncestry(target);
   for (const el of marked) el.setAttribute(attribute, '');
 
   const appliedAt = Date.now();

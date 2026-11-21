@@ -3271,7 +3271,20 @@ export interface ExtendedComputedStyles {
 /**
  * Interaction state name for state variation capture
  */
-export type InteractionStateName = 'default' | 'hover' | 'focus' | 'active' | 'disabled';
+export type InteractionStateName =
+  | 'default'
+  | 'hover'
+  | 'focus'
+  | 'focus-visible'
+  | 'active'
+  | 'disabled';
+
+/**
+ * Whether the browser's own `:focus-visible` matched an element while the
+ * inspector held it focused. `'unknown'` when the match could not be read (an
+ * engine without the selector makes `matches` throw) — never `false`.
+ */
+export type FocusVisibleMatch = boolean | 'unknown';
 
 /**
  * Style diff entry: a property that changed from default state
@@ -3289,6 +3302,15 @@ export interface StateStyles {
   state: InteractionStateName;
   styles: ExtendedComputedStyles;
   diffFromDefault: StyleDiff[];
+  /**
+   * Present on the `focus` entry only: whether the browser's own
+   * `:focus-visible` matched while `el.focus()` held the element, read by
+   * `el.matches(':focus-visible')` before the focus was restored. `false`
+   * means the `focus` entry's styles are the `:focus`-without-`:focus-visible`
+   * appearance (Chromium answers `false` to a programmatic focus that follows
+   * a pointer focus); the `focus-visible` entry forces the other appearance.
+   */
+  focusVisible?: FocusVisibleMatch;
 }
 
 /**
