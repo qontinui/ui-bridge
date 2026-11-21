@@ -17,7 +17,7 @@ export declare const REPO_ROOT: string;
 export declare const CLI_ARGS: BuildStep;
 /** `@qontinui/ui-bridge-headless`, which inlines cli-args; build after CLI_ARGS. */
 export declare const HEADLESS: BuildStep;
-/** `@qontinui/ui-bridge`, including its injected runtime bundle; build after HEADLESS. */
+/** `@qontinui/ui-bridge`, including its injected runtime bundle; built after HEADLESS (root build order). */
 export declare const UI_BRIDGE: BuildStep;
 /** The build timeout: QONTINUI_TEST_BUILD_TIMEOUT_MS (clamped to 2147483647) when positive, else 10 min. */
 export declare function buildTimeoutMs(): number;

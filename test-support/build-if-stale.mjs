@@ -84,8 +84,8 @@ export const HEADLESS = {
 
 /**
  * `@qontinui/ui-bridge`: the outputs another package's tests read, including the
- * injected runtime bundle the wrapper's `injected` transport loads. Its build
- * resolves headless types, so build it after HEADLESS.
+ * injected runtime bundle the wrapper's `injected` transport loads. Built after
+ * HEADLESS, matching the root `npm run build` order.
  */
 export const UI_BRIDGE = {
   dir: 'packages/ui-bridge',
