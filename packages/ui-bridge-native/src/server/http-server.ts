@@ -444,7 +444,8 @@ const HANDLER_DESCRIPTIONS: Record<string, string> = {
   pageGoForward: 'router.forward()',
   getScreenshot: 'PNG screenshot of the current screen',
   getElementStyles: 'Computed styles for an element (design review)',
-  getElementStateStyles: 'Computed styles per interaction state (hover/focus/disabled)',
+  getElementStateStyles:
+    'Computed styles per interaction state (default/pressed/focused/disabled). Optional body: { states?: string[] } — absent/null reads every state, a list reads default plus the named states ([] reads only default). States come in that fixed order, once each; a state with no override differing from default is omitted. A non-array, a non-string entry, or any other name (e.g. web-only `hover`) is refused with INVALID_REQUEST',
   getDesignSnapshot: 'Visual + style snapshot for design review',
   getResponsiveSnapshots: 'Screenshots at multiple viewport widths',
   runDesignAudit: 'Accessibility + visual audit',
