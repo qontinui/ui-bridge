@@ -889,7 +889,7 @@ describe('captureStateVariations', () => {
     }
   });
 
-  it("a frame's remembered focus is not refocused when the frame was not its parent's active element", async () => {
+  it("inspecting inside a frame while the parent holds the focus: the parent's focus comes back, and the frame keeps its own", async () => {
     const frame = document.createElement('iframe');
     document.body.appendChild(frame);
     const doc = frame.contentDocument!;
@@ -906,14 +906,36 @@ describe('captureStateVariations', () => {
       outside.focus();
       expect(doc.activeElement).toBe(remembered);
       expect(readFocusVisible(remembered)).toBe('document_unfocused');
-      await captureStateVariations(target, ['focus']);
-      // Not refocused (that would pull the page's focus into the frame), and
-      // the inspected element is blurred.
-      expect(doc.activeElement).toBe(doc.body);
+      await captureStateVariations(target, ['focus', 'focus-visible']);
+      // The page's focus is back on the parent's input, and the frame
+      // remembers its own previous focus again; the target is not focused.
+      // jsdom does not move the parent's focus when a frame element is
+      // refocused, so this case does NOT guard the ancestor restore; the
+      // Chromium twin in focus-visible.smoke.test.ts does.
+      expect(document.activeElement).toBe(outside);
+      expect(doc.activeElement).toBe(remembered);
       expect(readFocusVisible(target)).toBe('not_focused');
     } finally {
       frame.remove();
       outside.remove();
+    }
+  });
+
+  it('inspecting inside a frame when nothing had focus: the frame is blurred out of the parent again', async () => {
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    const doc = frame.contentDocument!;
+    const target = doc.createElement('button');
+    target.textContent = 'in frame';
+    doc.body.appendChild(target);
+    try {
+      (document.activeElement as HTMLElement | null)?.blur();
+      expect(document.activeElement).toBe(document.body);
+      await captureStateVariations(target, ['focus', 'focus-visible']);
+      expect(document.activeElement).toBe(document.body);
+      expect(readFocusVisible(target)).toBe('not_focused');
+    } finally {
+      frame.remove();
     }
   });
 

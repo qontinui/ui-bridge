@@ -3353,8 +3353,12 @@ export interface StateStyles {
   notForcedReason?: 'not_focused';
   /**
    * Present on the `focus-visible` entry when it was forced while the document
-   * or its frame had no focus: see {@link FocusCaveat}. `focused` is then
-   * `false`.
+   * or its frame had no focus: see {@link FocusCaveat}. It is fixed when the
+   * state is applied, while `focused` is read later, with the styles, so the
+   * two can disagree: `focused` is usually `false` alongside the caveat, but
+   * can be `true` if the window gained focus in between (and `focused` can be
+   * `false` without the caveat if the window lost focus, or something moved
+   * the focus, in between).
    */
   focusCaveat?: FocusCaveat;
   /**

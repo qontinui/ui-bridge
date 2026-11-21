@@ -528,9 +528,11 @@ element, a state the inspector is routinely in. So:
   and the entry carries `focusCaveat: 'document_unfocused'`: rules that also
   need the real `:focus`, such as `:focus:focus-visible`, could not match.
   `focused` says whether the element held focus (including document focus)
-  when the styles were read, so it is `false` alongside that caveat; with
-  `forced: true` and no caveat, `focused: false` means something moved the
-  focus in between.
+  when the styles were read. The caveat is fixed when the state is applied
+  and `focused` is read later, so they can disagree: `focused` is usually
+  `false` alongside the caveat, but `true` if the window gained focus in
+  between. With `forced: true` and no caveat, `focused: false` means the
+  window lost focus, or something moved the focus, in between.
 
 "Holds focus" is read by walking UP from the element: it must be its own
 tree's `activeElement`, its shadow host must be the next tree's, and so on to
@@ -546,11 +548,12 @@ whenever the focus is anywhere in its closed tree.
 
 The read puts the previous focus back, within limits:
 
-- only the element's own document is restored. If the element is inside a
-  frame, a focus that was in the parent document is not put back, and if the
-  frame was not its parent's active element when the read began, the frame's
-  remembered `activeElement` is not refocused either (that would pull the
-  page's focus into the frame): the element is just blurred;
+- focusing an element inside a frame moves the page's focus into that frame.
+  So the read also records what each same-origin ancestor document had
+  focused, and puts it back afterwards, innermost first and the top document
+  last: the page's focus ends where it was (an ancestor that had nothing
+  focused gets the frame blurred instead). Documents above a cross-origin
+  frame cannot be read, so they are not restored;
 - the previous focus is found by walking UP from the inspected element, from
   its own shadow root to its host's root and so on: the first root that holds
   the focus is read, open or CLOSED. So a focus inside any shadow root that

@@ -717,6 +717,63 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('design inspector focus states (real Chro
     await page.close();
   }, 30_000);
 
+  it("inspecting inside a frame while a parent input holds the focus: the parent's input is focused again after", async () => {
+    const page = await openPage();
+    const read = await page.evaluate(async () => {
+      const outside = document.createElement('input');
+      outside.id = 'outside';
+      outside.setAttribute('aria-label', 'outside');
+      document.body.appendChild(outside);
+      const frame = document.createElement('iframe');
+      frame.srcdoc = `<!doctype html><style>#fb:focus-visible { outline: 5px dashed rgb(255, 0, 0); }</style><button id="fb">in frame</button>`;
+      const loaded = new Promise((done) => frame.addEventListener('load', done, { once: true }));
+      document.body.appendChild(frame);
+      await loaded;
+      outside.focus();
+      const doc = frame.contentDocument!;
+      const target = doc.getElementById('fb')!;
+      const states = await window.FV.captureStateVariations(target, ['focus', 'focus-visible']);
+      const fv = states.find((s: { state: string }) => s.state === 'focus-visible');
+      return {
+        forced: fv.forced,
+        forcedOutline: fv.styles.outline,
+        active: document.activeElement?.id,
+        frameActive: doc.activeElement === doc.body ? 'body' : doc.activeElement?.id,
+        target: window.FV.readFocusVisible(target),
+      };
+    });
+    expect(read).toEqual({
+      forced: true,
+      forcedOutline: 'rgb(255, 0, 0) dashed 5px',
+      active: 'outside',
+      frameActive: 'body',
+      target: 'not_focused',
+    });
+    await page.close();
+  }, 30_000);
+
+  it('inspecting inside a frame when nothing had focus: the frame is blurred out of the parent again', async () => {
+    const page = await openPage();
+    const read = await page.evaluate(async () => {
+      const frame = document.createElement('iframe');
+      frame.srcdoc = `<!doctype html><button id="fb2">in frame</button>`;
+      const loaded = new Promise((done) => frame.addEventListener('load', done, { once: true }));
+      document.body.appendChild(frame);
+      await loaded;
+      const before = document.activeElement === document.body;
+      const doc = frame.contentDocument!;
+      const target = doc.getElementById('fb2')!;
+      await window.FV.captureStateVariations(target, ['focus', 'focus-visible']);
+      return {
+        before,
+        after: document.activeElement === document.body ? 'body' : document.activeElement?.tagName,
+        target: window.FV.readFocusVisible(target),
+      };
+    });
+    expect(read).toEqual({ before: true, after: 'body', target: 'not_focused' });
+    await page.close();
+  }, 30_000);
+
   it("a focus whose :focus-visible match cannot be read is 'unknown', never false", async () => {
     const page = await openPage();
     const read = await page.evaluate(async () => {
