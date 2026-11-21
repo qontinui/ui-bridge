@@ -224,11 +224,13 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('design inspector focus states (real Chro
         (s: {
           state: string;
           focusVisible?: unknown;
+          forced?: unknown;
           focused?: unknown;
           styles: Record<string, string>;
         }) => ({
           state: s.state,
           focusVisible: s.focusVisible,
+          forced: s.forced,
           focused: s.focused,
           outline: s.styles.outline,
           boxShadow: s.styles.boxShadow,
@@ -249,7 +251,9 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('design inspector focus states (real Chro
     expect(byState.focus.boxShadow).toBe('rgb(0, 0, 255) 0px 0px 0px 2px');
     // Forced: the `:focus-visible` rule applies and the `:not(:focus-visible)` one stops.
     expect(byState['focus-visible'].focusVisible).toBeUndefined();
+    expect(byState['focus-visible'].forced).toBe(true);
     expect(byState['focus-visible'].focused).toBe(true);
+    expect(byState.focus.forced).toBeUndefined();
     expect(byState.focus.focused).toBeUndefined();
     expect(byState['focus-visible'].outline).toBe('rgb(255, 0, 0) dashed 5px');
     expect(byState['focus-visible'].boxShadow).toBe('none');
@@ -320,10 +324,12 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('design inspector focus states (real Chro
       for (const r of observer.takeRecords()) written.push(r.attributeName);
       observer.disconnect();
       const by = Object.fromEntries(
-        states.map((s: { state: string; focusVisible?: unknown; focused?: unknown }) => [
-          s.state,
-          { focusVisible: s.focusVisible, focused: s.focused },
-        ])
+        states.map(
+          (s: { state: string; focusVisible?: unknown; forced?: unknown; focused?: unknown }) => [
+            s.state,
+            { focusVisible: s.focusVisible, forced: s.forced, focused: s.focused },
+          ]
+        )
       );
       return {
         focus: by.focus,
@@ -334,8 +340,8 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('design inspector focus states (real Chro
       };
     });
     expect(read).toEqual({
-      focus: { focusVisible: 'not_focused', focused: undefined },
-      focusVisible: { focusVisible: undefined, focused: false },
+      focus: { focusVisible: 'not_focused', forced: undefined, focused: undefined },
+      focusVisible: { focusVisible: undefined, forced: false, focused: false },
       direct: 'not_focused',
       marked: false,
       active: 'other',
@@ -359,16 +365,23 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('design inspector focus states (real Chro
           (s: {
             state: string;
             focusVisible?: unknown;
+            forced?: unknown;
             focused?: unknown;
             styles: Record<string, string>;
           }) => [
             s.state,
-            { focusVisible: s.focusVisible, focused: s.focused, outline: s.styles.outline },
+            {
+              focusVisible: s.focusVisible,
+              forced: s.forced,
+              focused: s.focused,
+              outline: s.styles.outline,
+            },
           ]
         )
       );
       return {
         focusVisible: by.focus.focusVisible,
+        forced: by['focus-visible'].forced,
         focused: by['focus-visible'].focused,
         forcedOutline: by['focus-visible'].outline,
         active: document.activeElement?.id,
@@ -378,6 +391,7 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('design inspector focus states (real Chro
     expect(read).toEqual({
       // Chromium's heuristic after a pointer focus (see the table above).
       focusVisible: false,
+      forced: true,
       focused: true,
       forcedOutline: 'rgb(255, 0, 0) dashed 5px',
       active: 'other',
@@ -406,14 +420,17 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('design inspector focus states (real Chro
       for (const r of observer.takeRecords()) written.push(r.attributeName);
       observer.disconnect();
       const by = Object.fromEntries(
-        states.map((s: { state: string; focusVisible?: unknown; focused?: unknown }) => [
-          s.state,
-          { focusVisible: s.focusVisible, focused: s.focused },
-        ])
+        states.map(
+          (s: { state: string; focusVisible?: unknown; forced?: unknown; focused?: unknown }) => [
+            s.state,
+            { focusVisible: s.focusVisible, forced: s.forced, focused: s.focused },
+          ]
+        )
       );
       return {
         retargeted,
         focusVisible: by.focus.focusVisible,
+        forced: by['focus-visible'].forced,
         focused: by['focus-visible'].focused,
         marked: written.includes('data-ui-bridge-pseudo-focus-visible'),
         innerStillFocused: shadow.activeElement === input,
@@ -422,6 +439,7 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('design inspector focus states (real Chro
     expect(read).toEqual({
       retargeted: 'host',
       focusVisible: 'not_focused',
+      forced: false,
       focused: false,
       marked: false,
       innerStillFocused: true,
@@ -446,27 +464,189 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('design inspector focus states (real Chro
           (s: {
             state: string;
             focusVisible?: unknown;
+            forced?: unknown;
             focused?: unknown;
             styles: Record<string, string>;
           }) => [
             s.state,
-            { focusVisible: s.focusVisible, focused: s.focused, outline: s.styles.outline },
+            {
+              focusVisible: s.focusVisible,
+              forced: s.forced,
+              focused: s.focused,
+              outline: s.styles.outline,
+            },
           ]
         )
       );
       return {
-        focusVisibleRead: by.focus.focusVisible !== 'not_focused',
+        focusVisible: by.focus.focusVisible,
+        forced: by['focus-visible'].forced,
         focused: by['focus-visible'].focused,
         forcedOutline: by['focus-visible'].outline,
         frameActive: doc.activeElement?.id,
       };
     });
     expect(read).toEqual({
-      focusVisibleRead: true,
+      // No pointer input reached the frame: Chromium's heuristic matches.
+      focusVisible: true,
+      forced: true,
       focused: true,
       forcedOutline: 'rgb(255, 0, 0) dashed 5px',
       frameActive: 'iprev',
     });
+    await page.close();
+  }, 30_000);
+
+  it('an element inside a CLOSED shadow root holds focus, and focus returns to the previous element after', async () => {
+    const page = await openPage();
+    await prime(page, 'pointer click on a focusable element');
+    const read = await page.evaluate(async () => {
+      const host = document.createElement('div');
+      document.body.appendChild(host);
+      const closed = host.attachShadow({ mode: 'closed' });
+      closed.innerHTML = `<style>button:focus-visible { outline: 5px dashed rgb(255, 0, 0); }</style><button id="cb">inner</button>`;
+      const inner = closed.getElementById('cb')!;
+      const states = await window.FV.captureStateVariations(inner, ['focus', 'focus-visible']);
+      const by = Object.fromEntries(
+        states.map(
+          (s: {
+            state: string;
+            focusVisible?: unknown;
+            forced?: unknown;
+            focused?: unknown;
+            styles: Record<string, string>;
+          }) => [
+            s.state,
+            {
+              focusVisible: s.focusVisible,
+              forced: s.forced,
+              focused: s.focused,
+              outline: s.styles.outline,
+            },
+          ]
+        )
+      );
+      return {
+        hostShadowRoot: host.shadowRoot,
+        focusVisible: by.focus.focusVisible,
+        forced: by['focus-visible'].forced,
+        focused: by['focus-visible'].focused,
+        forcedOutline: by['focus-visible'].outline,
+        active: document.activeElement?.id,
+        closedActive: closed.activeElement,
+      };
+    });
+    expect(read).toEqual({
+      hostShadowRoot: null,
+      focusVisible: false,
+      forced: true,
+      focused: true,
+      forcedOutline: 'rgb(255, 0, 0) dashed 5px',
+      active: 'other',
+      closedActive: null,
+    });
+    await page.close();
+  }, 30_000);
+
+  it('a delegatesFocus host: el.focus() delegates inside, the host holds focus and its ring is forced', async () => {
+    const page = await openPage();
+    await prime(page, 'pointer click on a focusable element');
+    const read = await page.evaluate(async () => {
+      const host = document.createElement('div');
+      host.id = 'dhost';
+      document.body.appendChild(host);
+      const shadow = host.attachShadow({ mode: 'open', delegatesFocus: true });
+      shadow.innerHTML = `<button id="db">inner</button>`;
+      const style = document.createElement('style');
+      style.textContent = `#dhost:focus-visible { outline: 5px dashed rgb(255, 0, 0); }`;
+      document.head.appendChild(style);
+      const states = await window.FV.captureStateVariations(host, ['focus', 'focus-visible']);
+      const by = Object.fromEntries(
+        states.map(
+          (s: {
+            state: string;
+            focusVisible?: unknown;
+            forced?: unknown;
+            focused?: unknown;
+            styles: Record<string, string>;
+          }) => [
+            s.state,
+            {
+              focusVisible: s.focusVisible,
+              forced: s.forced,
+              focused: s.focused,
+              outline: s.styles.outline,
+            },
+          ]
+        )
+      );
+      return {
+        focusVisible: by.focus.focusVisible,
+        forced: by['focus-visible'].forced,
+        focused: by['focus-visible'].focused,
+        forcedOutline: by['focus-visible'].outline,
+        active: document.activeElement?.id,
+        shadowActive: shadow.activeElement,
+      };
+    });
+    expect(read).toEqual({
+      // After a pointer focus, as for a light-DOM element.
+      focusVisible: false,
+      forced: true,
+      focused: true,
+      forcedOutline: 'rgb(255, 0, 0) dashed 5px',
+      active: 'other',
+      shadowActive: null,
+    });
+    await page.close();
+  }, 30_000);
+
+  it('a previous focus inside a delegatesFocus host is kept by the restore', async () => {
+    const page = await openPage();
+    const read = await page.evaluate(async () => {
+      const host = document.createElement('div');
+      host.id = 'dhost2';
+      document.body.appendChild(host);
+      const shadow = host.attachShadow({ mode: 'open', delegatesFocus: true });
+      shadow.innerHTML = `<button id="first-in">first</button><input id="second-in" aria-label="second">`;
+      const second = shadow.getElementById('second-in') as HTMLInputElement;
+      second.focus();
+      const states = await window.FV.captureStateVariations(host, ['focus', 'focus-visible']);
+      const by = Object.fromEntries(
+        states.map((s: { state: string; forced?: unknown; focused?: unknown }) => [
+          s.state,
+          { forced: s.forced, focused: s.focused },
+        ])
+      );
+      return {
+        forced: by['focus-visible'].forced,
+        focused: by['focus-visible'].focused,
+        active: document.activeElement?.id,
+        shadowActive: shadow.activeElement?.id,
+      };
+    });
+    expect(read).toEqual({
+      forced: true,
+      focused: true,
+      active: 'dhost2',
+      shadowActive: 'second-in',
+    });
+    expect(await rewritesLeft(page)).toBe(0);
+    await page.close();
+  }, 30_000);
+
+  it('an element already focused before the read is still focused after it', async () => {
+    const page = await openPage();
+    await prime(page, 'pointer click on a focusable element');
+    const read = await page.evaluate(async () => {
+      const el = document.getElementById('t')!;
+      el.focus();
+      const states = await window.FV.captureStateVariations(el, ['focus', 'focus-visible']);
+      const fv = states.find((s: { state: string }) => s.state === 'focus-visible');
+      return { forced: fv.forced, focused: fv.focused, active: document.activeElement?.id };
+    });
+    expect(read).toEqual({ forced: true, focused: true, active: 't' });
+    expect(await rewritesLeft(page)).toBe(0);
     await page.close();
   }, 30_000);
 
