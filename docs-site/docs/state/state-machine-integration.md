@@ -8,13 +8,13 @@ There are two implementations of that idea, and they live in different
 packages. Which one you want depends on whether your app can declare its own
 states.
 
-| | Registry state model | Standalone `StateMachine` |
-| --- | --- | --- |
-| Package | `@qontinui/ui-bridge` | `@qontinui/ui-bridge-auto` |
-| States come from | your app declaring them (`useUIState`, `<State>`) | element queries evaluated against a registry |
-| Active state set | tracked by the registry | tracked by the machine, driven by `StateDetector` |
-| HTTP surface | `/control/states/*`, `/control/transitions` | none — it is a library, not a route |
-| Needs app changes | yes | no |
+|                   | Registry state model                              | Standalone `StateMachine`                         |
+| ----------------- | ------------------------------------------------- | ------------------------------------------------- |
+| Package           | `@qontinui/ui-bridge`                             | `@qontinui/ui-bridge-auto`                        |
+| States come from  | your app declaring them (`useUIState`, `<State>`) | element queries evaluated against a registry      |
+| Active state set  | tracked by the registry                           | tracked by the machine, driven by `StateDetector` |
+| HTTP surface      | `/control/states/*`, `/control/transitions`       | none — it is a library, not a route               |
+| Needs app changes | yes                                               | no                                                |
 
 The rest of this page covers the registry model first, because it is what the
 React hooks and the control API expose. The standalone machine is covered under
@@ -126,7 +126,11 @@ function StatusBar() {
   const active = useActiveStates(); // string[]
   const snapshot = useStateSnapshot(); // StateSnapshot | null
 
-  return <span>{active.join(', ')} ({snapshot?.transitions.length ?? 0} transitions)</span>;
+  return (
+    <span>
+      {active.join(', ')} ({snapshot?.transitions.length ?? 0} transitions)
+    </span>
+  );
 }
 ```
 
@@ -151,7 +155,11 @@ function GoToCheckout() {
     console.log(result.success, result.executedTransitions, result.finalActiveStates);
   };
 
-  return <button onClick={go} disabled={isNavigating}>Checkout</button>;
+  return (
+    <button onClick={go} disabled={isNavigating}>
+      Checkout
+    </button>
+  );
 }
 ```
 
@@ -236,7 +244,12 @@ subscription to the registry and calls `setActiveStates` for it, and
 Its pathfinding and visualisation live on the `/runtime` subpath:
 
 ```typescript
-import { findPath, navigate, getAvailableTransitions, toMermaid } from '@qontinui/ui-bridge-auto/runtime';
+import {
+  findPath,
+  navigate,
+  getAvailableTransitions,
+  toMermaid,
+} from '@qontinui/ui-bridge-auto/runtime';
 
 const transitions = machine.getTransitionDefinitions();
 

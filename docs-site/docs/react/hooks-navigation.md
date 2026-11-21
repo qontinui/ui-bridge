@@ -46,8 +46,8 @@ Takes no arguments.
 
 ```typescript
 interface UseUINavigationReturn {
-  available: boolean;            // a UIBridgeProvider is present
-  isNavigating: boolean;         // a navigateTo() call is in flight
+  available: boolean; // a UIBridgeProvider is present
+  isNavigating: boolean; // a navigateTo() call is in flight
   lastResult: NavigationResult | null;
   findPath: (targetStates: string[]) => PathResult;
   navigateTo: (targetStates: string[]) => Promise<NavigationResult>;
@@ -60,7 +60,7 @@ interface UseUINavigationReturn {
 ```typescript
 interface PathResult {
   found: boolean;
-  transitions: string[];   // transition IDs, in execution order
+  transitions: string[]; // transition IDs, in execution order
   totalCost: number;
   targetStates: string[];
   estimatedSteps: number;
@@ -75,7 +75,7 @@ cleared in a `finally`, so a throw inside the registry cannot leave it stuck on.
 ```typescript
 interface NavigationResult {
   success: boolean;
-  path: PathResult;               // the path that was followed
+  path: PathResult; // the path that was followed
   executedTransitions: string[];
   finalActiveStates: string[];
   error?: string;
@@ -87,7 +87,7 @@ interface NavigationResult {
 
 Unlike the rest of the return value, `activeStates` is memoized on the bridge
 context alone: it is captured on the first render and never recomputed, and this
-hook subscribes to no registry event. It is *not* a live view of the active
+hook subscribes to no registry event. It is _not_ a live view of the active
 states, and after a `navigateTo()` it will still show the pre-navigation set.
 
 Read the fresh set from `result.finalActiveStates` after navigating, or
@@ -109,8 +109,8 @@ function DashboardLink() {
 }
 ```
 
-| Parameter | Type | Meaning |
-|-----------|------|---------|
+| Parameter      | Type       | Meaning                      |
+| -------------- | ---------- | ---------------------------- |
 | `targetStates` | `string[]` | The states you want to reach |
 
 Returns `boolean` — the `found` field of an internal `findPath`, and `false`
@@ -154,8 +154,8 @@ function PathDisplay() {
 }
 ```
 
-| Parameter | Type | Meaning |
-|-----------|------|---------|
+| Parameter      | Type       | Meaning                      |
+| -------------- | ---------- | ---------------------------- |
 | `targetStates` | `string[]` | The states you want to reach |
 
 Returns `PathResult` (shape above). Without a bridge it returns a not-found

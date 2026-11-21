@@ -299,12 +299,12 @@ files plus the field it is complaining about.
 
 Every field that names a built file is read, not just `exports`:
 
-| field | what a missing target breaks |
-|---|---|
-| `exports` | `import '<pkg>/<subpath>'` in an installed copy |
-| `bin` | `npx <pkg>` / the installed command |
+| field                     | what a missing target breaks                                                                  |
+| ------------------------- | --------------------------------------------------------------------------------------------- |
+| `exports`                 | `import '<pkg>/<subpath>'` in an installed copy                                               |
+| `bin`                     | `npx <pkg>` / the installed command                                                           |
 | `main`, `module`, `types` | node10 resolvers, bundlers predating `exports`, and TypeScript under `moduleResolution: node` |
-| `unpkg`, `jsdelivr` | the CDN URL the README hands a reader |
+| `unpkg`, `jsdelivr`       | the CDN URL the README hands a reader                                                         |
 
 A `types` target is asked one question further, because a declared entry does
 not guarantee a declaration: an entry in a `dts: false` tsup block emits the
@@ -316,7 +316,7 @@ published `.d.ts` and the check skips it rather than guessing.
 That gate is also the reason the mistake is worth spelling out: it resolves
 every published target back to `src` — which is exactly where an unbuilt target
 still looks healthy — so before this check an `@example` importing one was
-reported as *verified*. `@qontinui/ui-bridge` shipped `"./discovery"` in
+reported as _verified_. `@qontinui/ui-bridge` shipped `"./discovery"` in
 precisely that state.
 
 ### PR Description

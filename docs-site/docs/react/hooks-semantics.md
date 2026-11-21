@@ -5,7 +5,7 @@ sidebar_position: 2.5
 # Semantic Hooks
 
 Five hooks from `@qontinui/ui-bridge/react` declare knowledge the DOM cannot
-express: what an element is *for*, how elements relate to one another, and what
+express: what an element is _for_, how elements relate to one another, and what
 can be dragged where. All of it surfaces in snapshots, so an agent can reason
 about the page instead of guessing from tag names.
 
@@ -15,7 +15,7 @@ The drag-and-drop model these hooks feed is described in
 ## useUIAnnotation
 
 ```typescript
-function useUIAnnotation(elementId: string, annotation: ElementAnnotation): void
+function useUIAnnotation(elementId: string, annotation: ElementAnnotation): void;
 ```
 
 Attaches human-authored context to an element id.
@@ -48,20 +48,20 @@ annotation for the same id.
 
 ### Parameters
 
-| Parameter | Type | Meaning |
-|-----------|------|---------|
-| `elementId` | `string` | The UI Bridge element id to annotate |
-| `annotation` | `ElementAnnotation` | The annotation payload |
+| Parameter    | Type                | Meaning                              |
+| ------------ | ------------------- | ------------------------------------ |
+| `elementId`  | `string`            | The UI Bridge element id to annotate |
+| `annotation` | `ElementAnnotation` | The annotation payload               |
 
 ```typescript
 interface ElementAnnotation {
-  description?: string;       // what this element is
-  purpose?: string;           // why it exists / what it is for
-  notes?: string;             // behavioural notes, edge cases, caveats
-  tags?: string[];            // searchable categorisation
+  description?: string; // what this element is
+  purpose?: string; // why it exists / what it is for
+  notes?: string; // behavioural notes, edge cases, caveats
+  tags?: string[]; // searchable categorisation
   relatedElements?: string[]; // ids of related elements
   metadata?: Record<string, unknown>;
-  updatedAt?: number;         // set by the store
+  updatedAt?: number; // set by the store
   author?: string;
 }
 ```
@@ -85,7 +85,7 @@ function useUIRelationship(
   targetId: string,
   type: RelationshipType,
   options?: UseUIRelationshipOptions
-): void
+): void;
 ```
 
 Declares one typed relationship between two elements. Declared on mount,
@@ -109,33 +109,33 @@ useUIRelationship('sort-dropdown', 'data-table', 'controls', {
 
 ### Parameters
 
-| Parameter | Type | Meaning |
-|-----------|------|---------|
-| `sourceId` | `string` | Element that *has* the relationship |
-| `targetId` | `string` | Element being related to |
-| `type` | `RelationshipType` | See the vocabulary below |
-| `options.bidirectional` | `boolean` (default `false`) | Declare the reverse edge too |
-| `options.metadata` | `Record<string, unknown>` | Arbitrary extra data |
+| Parameter               | Type                        | Meaning                             |
+| ----------------------- | --------------------------- | ----------------------------------- |
+| `sourceId`              | `string`                    | Element that _has_ the relationship |
+| `targetId`              | `string`                    | Element being related to            |
+| `type`                  | `RelationshipType`          | See the vocabulary below            |
+| `options.bidirectional` | `boolean` (default `false`) | Declare the reverse edge too        |
+| `options.metadata`      | `Record<string, unknown>`   | Arbitrary extra data                |
 
 ### Relationship vocabulary
 
 `RelationshipType` is a union of named types **plus `string`**, so the list is a
 vocabulary, not a closed set — an unrecognised string is accepted.
 
-| Type | Meaning |
-|------|---------|
-| `controls` | A changes B's state (toggle → panel) |
-| `filters` | A narrows B's content (search → list) |
-| `validates` | A shows validation state for B (error → input) |
-| `labels` | A names/titles B (heading → section) |
-| `describes` | A provides detail for B (help text → input) |
-| `submits` | A triggers submission of B (button → form) |
-| `activates` | A makes B the active item (tab → panel) |
-| `toggles` | A shows/hides B (button → dropdown) |
-| `populates` | A provides data for B (source → display) |
-| `navigatesTo` | A navigates to B (link → section) |
-| `dependsOn` | A requires B's value (city → country) |
-| `owns` | A logically contains B (combobox → listbox popup) |
+| Type          | Meaning                                           |
+| ------------- | ------------------------------------------------- |
+| `controls`    | A changes B's state (toggle → panel)              |
+| `filters`     | A narrows B's content (search → list)             |
+| `validates`   | A shows validation state for B (error → input)    |
+| `labels`      | A names/titles B (heading → section)              |
+| `describes`   | A provides detail for B (help text → input)       |
+| `submits`     | A triggers submission of B (button → form)        |
+| `activates`   | A makes B the active item (tab → panel)           |
+| `toggles`     | A shows/hides B (button → dropdown)               |
+| `populates`   | A provides data for B (source → display)          |
+| `navigatesTo` | A navigates to B (link → section)                 |
+| `dependsOn`   | A requires B's value (city → country)             |
+| `owns`        | A logically contains B (combobox → listbox popup) |
 
 Relationships declared this way are recorded with origin `declared`, which is
 how snapshots distinguish them from edges auto-detected from ARIA or HTML
@@ -149,7 +149,7 @@ register.
 ## useUIRelationships
 
 ```typescript
-function useUIRelationships(sourceId: string, relationships: InlineRelationship[]): void
+function useUIRelationships(sourceId: string, relationships: InlineRelationship[]): void;
 ```
 
 Declares many relationships from one source element.
@@ -180,7 +180,7 @@ declaring the new set, and it undeclares the whole set on unmount.
 ## useDragSource
 
 ```typescript
-function useDragSource(elementId: string, options?: UseDragSourceOptions): void
+function useDragSource(elementId: string, options?: UseDragSourceOptions): void;
 ```
 
 Marks an element as draggable so an agent can discover it without inferring drag
@@ -192,11 +192,11 @@ import { useDragSource } from '@qontinui/ui-bridge/react';
 useDragSource('step-3', { dataType: 'workflow-step' });
 ```
 
-| Option | Type | Meaning |
-|--------|------|---------|
-| `dataType` | `string` | The kind of data this source represents |
-| `label` | `string` | Human-readable label |
-| `metadata` | `Record<string, unknown>` | Arbitrary extra data |
+| Option     | Type                      | Meaning                                 |
+| ---------- | ------------------------- | --------------------------------------- |
+| `dataType` | `string`                  | The kind of data this source represents |
+| `label`    | `string`                  | Human-readable label                    |
+| `metadata` | `Record<string, unknown>` | Arbitrary extra data                    |
 
 All options are optional, and the second argument itself may be omitted.
 Declared on mount, undeclared on unmount; a changed `dataType`, `label` or
@@ -209,7 +209,7 @@ the drag; this tells the bridge that it exists.
 ## useDropZone
 
 ```typescript
-function useDropZone(elementId: string, options?: UseDropZoneOptions): void
+function useDropZone(elementId: string, options?: UseDropZoneOptions): void;
 ```
 
 Marks an element as a drop target and says what it accepts.
@@ -223,12 +223,12 @@ useDropZone('step-list', {
 });
 ```
 
-| Option | Type | Meaning |
-|--------|------|---------|
-| `accepts` | `string[]` | The `dataType` values this zone accepts |
-| `effect` | `DragEffect` | What dropping here does |
-| `label` | `string` | Human-readable label |
-| `metadata` | `Record<string, unknown>` | Arbitrary extra data |
+| Option     | Type                      | Meaning                                 |
+| ---------- | ------------------------- | --------------------------------------- |
+| `accepts`  | `string[]`                | The `dataType` values this zone accepts |
+| `effect`   | `DragEffect`              | What dropping here does                 |
+| `label`    | `string`                  | Human-readable label                    |
+| `metadata` | `Record<string, unknown>` | Arbitrary extra data                    |
 
 Same lifecycle as `useDragSource`: declared on mount, undeclared on unmount,
 replaced when any option changes. The `accepts` values are matched against the

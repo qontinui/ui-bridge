@@ -53,19 +53,19 @@ Error responses:
 
 ### Control API
 
-| Method | Endpoint                              | Description              |
-| ------ | ------------------------------------- | ------------------------ |
-| GET    | `/control/elements`                   | List registered elements |
-| GET    | `/control/element/:id`                | Get element details      |
-| GET    | `/control/element/:id/state`          | Get element state        |
-| POST   | `/control/element/:id/action`         | Execute action           |
-| GET    | `/control/element/:id/capture`        | Structural element capture |
-| GET    | `/control/components`                 | List components          |
-| GET    | `/control/component/:id`              | Get component details    |
-| GET    | `/control/component/:id/capture`      | Structural component capture |
-| POST   | `/control/component/:id/action/:actionId` | Execute component action |
-| POST   | `/control/discover`                   | Discover elements        |
-| GET    | `/control/snapshot`                   | Get full snapshot        |
+| Method | Endpoint                                  | Description                  |
+| ------ | ----------------------------------------- | ---------------------------- |
+| GET    | `/control/elements`                       | List registered elements     |
+| GET    | `/control/element/:id`                    | Get element details          |
+| GET    | `/control/element/:id/state`              | Get element state            |
+| POST   | `/control/element/:id/action`             | Execute action               |
+| GET    | `/control/element/:id/capture`            | Structural element capture   |
+| GET    | `/control/components`                     | List components              |
+| GET    | `/control/component/:id`                  | Get component details        |
+| GET    | `/control/component/:id/capture`          | Structural component capture |
+| POST   | `/control/component/:id/action/:actionId` | Execute component action     |
+| POST   | `/control/discover`                       | Discover elements            |
+| GET    | `/control/snapshot`                       | Get full snapshot            |
 
 ### Workflow API
 
@@ -167,10 +167,13 @@ The standalone server treats `cors` as a boolean switch and always answers
 `CORSOptions` object with specific origins:
 
 ```typescript
-app.use('/ui-bridge', uiBridgeMiddleware(handlers, {
-  cors: {
-    origin: ['http://localhost:3000'],
-    credentials: true,
-  },
-}));
+app.use(
+  '/ui-bridge',
+  uiBridgeMiddleware(handlers, {
+    cors: {
+      origin: ['http://localhost:3000'],
+      credentials: true,
+    },
+  })
+);
 ```

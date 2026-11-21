@@ -28,8 +28,7 @@ Surfaced up top so existing scripts can be audited at a glance:
 - **`wait-for-element` predicate/state-form timeouts default to HTTP 200
   with `found:false`.** Pass `?strictTimeout=true` to flip to HTTP 408 +
   flat-error today; `strictTimeout=true` will become the default in a future
-  release. NL-form (`{query}` / `{elementId}`) timeouts already return HTTP
-  408. See "Wait-for-element" below.
+  release. NL-form (`{query}` / `{elementId}`) timeouts already return HTTP 408. See "Wait-for-element" below.
 - **`wait-for-element` duration key is now `durationMs` everywhere.** The
   NL/id happy path still emits `elapsed_ms` for one release of backward
   compatibility (removed after 2026-06); new code should read `durationMs`.
@@ -246,9 +245,23 @@ The bare `/element/:id`:
   "id": "input-foo",
   "type": "input",
   "actions": [
-    "click", "hoverClick", "doubleClick", "rightClick", "middleClick",
-    "type", "sendKeys", "clear", "focus", "blur", "hover", "unhover",
-    "scroll", "scrollIntoView", "setValue", "drag", "autocomplete"
+    "click",
+    "hoverClick",
+    "doubleClick",
+    "rightClick",
+    "middleClick",
+    "type",
+    "sendKeys",
+    "clear",
+    "focus",
+    "blur",
+    "hover",
+    "unhover",
+    "scroll",
+    "scrollIntoView",
+    "setValue",
+    "drag",
+    "autocomplete"
   ],
   "state": {
     "value": "user@example.com",
@@ -328,11 +341,11 @@ Sending the wrong key now returns `success: false` with a descriptive error;
 prior to v0.x.y the action returned silent success, which was an invisible
 failure mode.
 
-| Action     | Required param              | Common mistake                                                               |
-| ---------- | --------------------------- | ---------------------------------------------------------------------------- |
-| `type`     | `text: string`              | Sending `value` (used by `select`/`setValue`)                                |
-| `select`   | `value: string \| string[]` | Sending `text` (used by `type`)                                              |
-| `setValue` | `value: string`             | Sending `text`                                                               |
+| Action     | Required param                                                                                                                                                                                                                                                  | Common mistake                                                     |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `type`     | `text: string`                                                                                                                                                                                                                                                  | Sending `value` (used by `select`/`setValue`)                      |
+| `select`   | `value: string \| string[]`                                                                                                                                                                                                                                     | Sending `text` (used by `type`)                                    |
+| `setValue` | `value: string`                                                                                                                                                                                                                                                 | Sending `text`                                                     |
 | `sendKeys` | `keys: [{key, modifiers?}]` (a bare string element such as `"Enter"`, `"ctrl+a"` or a single character is shorthand for a descriptor, and is checked against the known key names, so an unusual key needs the `{key}` form; any other element fails the action) | Sending `value: "Enter"` (`keys` is an array, not a single string) |
 
 If an action returns `success: false` with `error: "... requires a 'X' parameter ..."`, the param key was wrong or missing. Sending the wrong key for `type` triggers a hint pointing at the correct one.
@@ -513,7 +526,7 @@ event pump.
 > driving the mobile app via UI Bridge will fail with empty snapshots
 > regardless of how the app appears on the phone screen.
 
-`MOBILE_BASE=http://localhost:8087/ui-bridge` only works *after* a
+`MOBILE_BASE=http://localhost:8087/ui-bridge` only works _after_ a
 transport has been established. The mobile app does NOT bind to
 `localhost:8087` on the host machine on its own — it binds on the
 device, and one of the transports below has to bridge that to localhost
@@ -521,12 +534,12 @@ before any UI Bridge endpoint becomes reachable. Skipping this step is
 the #1 cause of "the mobile app is running but I can't reach the
 bridge".
 
-| Transport | Setup | When to use |
-|-----------|-------|-------------|
-| **USB** | `adb forward tcp:8087 tcp:8087` after a USB debug-enabled device is connected. Verify with `adb devices` (must show your device) and `adb forward --list` (must show the forward). | Device is wired in, fastest, most reliable. |
-| **LAN, mDNS** | Mobile app announces over mDNS; the runner's discovery service picks it up. From the host, `POST http://localhost:9876/ui-bridge/devices/<deviceId>/connect` makes it the SDK target, and control goes through the runner's `/ui-bridge/sdk/*` routes. On an app with `@qontinui/ui-bridge-native` 0.11.0 or later, unless it sets `allowUnauthenticatedNetwork`, pair first (`POST /ui-bridge/devices/<deviceId>/pair`, above): the connect then reports `authPath: "device-signed"` and the runner signs every request. Unpaired, the connect fails with `code: "PAIRING_REQUIRED"` and `hint.authPath: "pairing_required"`. Calling the returned `proxyUrl` yourself sends no signature, so such an app refuses it. | Phone on the same Wi-Fi as the dev box. |
-| **LAN, direct IP** | The mobile UI Bridge server binds `0.0.0.0:8087`, so a same-LAN host can reach the phone's LAN IP directly, but from `@qontinui/ui-bridge-native` 0.11.0, unless the app sets `allowUnauthenticatedNetwork`, an unsigned caller gets only `curl http://<phone-lan-ip>:8087/ui-bridge/health` and, with a code armed in the app, `POST /ui-bridge/pair`. Health reports `pairing`, `deviceId` (null until set), and `uiBridge.version` when the app passes `appInfo`. Find the IP via `Get-NetNeighbor` (Windows) / `arp -a`, or fall back to a fast parallel TCP scan (`for ip in 192.168.x.{1..254}: probe :8087`). | Finding a phone and reading its version when adb is dark. It does not drive the app. |
-| **Cloud relay** | Mobile app connected to the relay under the same account. Visible in `GET http://localhost:9876/ui-bridge/devices` with `transports[].kind: "cloud"`. Connect through the runner the same way as LAN; the relay needs no pairing, because the backend has already authenticated the account. A phone also seen on the runner's LAN keeps both transports, and LAN is tried first: when it refuses an unpaired runner, the connect moves on to the relay and makes it the device's active transport. A later pair makes the LAN the active transport again and drops the device's live connections, so connect again afterwards. | Phone is remote (different network); use sparingly — round-trip latency dominates. |
+| Transport          | Setup                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | When to use                                                                          |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| **USB**            | `adb forward tcp:8087 tcp:8087` after a USB debug-enabled device is connected. Verify with `adb devices` (must show your device) and `adb forward --list` (must show the forward).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Device is wired in, fastest, most reliable.                                          |
+| **LAN, mDNS**      | Mobile app announces over mDNS; the runner's discovery service picks it up. From the host, `POST http://localhost:9876/ui-bridge/devices/<deviceId>/connect` makes it the SDK target, and control goes through the runner's `/ui-bridge/sdk/*` routes. On an app with `@qontinui/ui-bridge-native` 0.11.0 or later, unless it sets `allowUnauthenticatedNetwork`, pair first (`POST /ui-bridge/devices/<deviceId>/pair`, above): the connect then reports `authPath: "device-signed"` and the runner signs every request. Unpaired, the connect fails with `code: "PAIRING_REQUIRED"` and `hint.authPath: "pairing_required"`. Calling the returned `proxyUrl` yourself sends no signature, so such an app refuses it. | Phone on the same Wi-Fi as the dev box.                                              |
+| **LAN, direct IP** | The mobile UI Bridge server binds `0.0.0.0:8087`, so a same-LAN host can reach the phone's LAN IP directly, but from `@qontinui/ui-bridge-native` 0.11.0, unless the app sets `allowUnauthenticatedNetwork`, an unsigned caller gets only `curl http://<phone-lan-ip>:8087/ui-bridge/health` and, with a code armed in the app, `POST /ui-bridge/pair`. Health reports `pairing`, `deviceId` (null until set), and `uiBridge.version` when the app passes `appInfo`. Find the IP via `Get-NetNeighbor` (Windows) / `arp -a`, or fall back to a fast parallel TCP scan (`for ip in 192.168.x.{1..254}: probe :8087`).                                                                                                   | Finding a phone and reading its version when adb is dark. It does not drive the app. |
+| **Cloud relay**    | Mobile app connected to the relay under the same account. Visible in `GET http://localhost:9876/ui-bridge/devices` with `transports[].kind: "cloud"`. Connect through the runner the same way as LAN; the relay needs no pairing, because the backend has already authenticated the account. A phone also seen on the runner's LAN keeps both transports, and LAN is tried first: when it refuses an unpaired runner, the connect moves on to the relay and makes it the device's active transport. A later pair makes the LAN the active transport again and drops the device's live connections, so connect again afterwards.                                                                                        | Phone is remote (different network); use sparingly — round-trip latency dominates.   |
 
 **One-shot detection** — which transport is active?
 
@@ -662,7 +675,7 @@ the **VT-parser cell grid** maintained per-session (see the
 `{session_id, lines: string[], total_lines, truncated}` — the last N
 rendered rows post-ANSI-parsing, capped at `MAX_RETURNED_LINES`.
 `/grid` returns the full `GridSnapshot` (cells + cursor + title). Use
-these to assert on what's *visibly rendered* in a terminal pane
+these to assert on what's _visibly rendered_ in a terminal pane
 without screen-scraping or replaying the raw PTY byte stream
 (replay-as-bytes is fundamentally lossy for TUI streams — the parser
 already collapsed cursor-positioning + DEC 2026 sync-output into the
@@ -676,11 +689,11 @@ file locks when their holder has been stdout-idle and another
 session has been waiting (lock-yield-protocol-plan §Open Q4).
 Configured under `settings.lock_yield_policy`:
 
-| Key | Default | Meaning |
-|---|---|---|
-| `enabled` | `false` | Toggle the background task. |
-| `idle_threshold_secs` | `60` | Minimum holder idle (no stdout) before yieldable. |
-| `min_wait_secs` | `30` | Minimum waiter wait before auto-yield fires. |
+| Key                   | Default | Meaning                                           |
+| --------------------- | ------- | ------------------------------------------------- |
+| `enabled`             | `false` | Toggle the background task.                       |
+| `idle_threshold_secs` | `60`    | Minimum holder idle (no stdout) before yieldable. |
+| `min_wait_secs`       | `30`    | Minimum waiter wait before auto-yield fires.      |
 
 Trigger predicate (AND-gated):
 `holder_idle_secs >= idle_threshold_secs && waiter_waited_secs >= min_wait_secs`.
@@ -934,11 +947,11 @@ endpoint accepts. This is a transitional state — pass `?strictTimeout=true`
 to opt every shape into the flat HTTP 408 contract today; that mode will
 become the default in a future release.
 
-| Body shape | Timeout response (current default) |
-|---|---|
-| `{query: "..."}` or `{elementId: "..."}` (NL/id form) | HTTP 408 + `{success: false, error: "wait-for-element: timeout after ..."}`. `data.durationMs` is emitted on the response; `elapsed_ms` is mirrored alongside it for one release of backward compatibility. |
-| `{predicate: {...}}` (predicate form) | HTTP 200 + `{success: true, data: {found: false, durationMs, lastObservedState}}`. Pass `?strictTimeout=true` to get HTTP 408 + `{success: false, error: "wait_for_element_timeout", data: {found: false, durationMs, lastObservedState}}` instead. |
-| `{state: "...", elementId\|selector: "..."}` (state form) | Same default as predicate — HTTP 200 + `{success: true, data: {found: false, durationMs, lastObservedState}}`. `?strictTimeout=true` is supported on this shape too. |
+| Body shape                                                | Timeout response (current default)                                                                                                                                                                                                                  |
+| --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `{query: "..."}` or `{elementId: "..."}` (NL/id form)     | HTTP 408 + `{success: false, error: "wait-for-element: timeout after ..."}`. `data.durationMs` is emitted on the response; `elapsed_ms` is mirrored alongside it for one release of backward compatibility.                                         |
+| `{predicate: {...}}` (predicate form)                     | HTTP 200 + `{success: true, data: {found: false, durationMs, lastObservedState}}`. Pass `?strictTimeout=true` to get HTTP 408 + `{success: false, error: "wait_for_element_timeout", data: {found: false, durationMs, lastObservedState}}` instead. |
+| `{state: "...", elementId\|selector: "..."}` (state form) | Same default as predicate — HTTP 200 + `{success: true, data: {found: false, durationMs, lastObservedState}}`. `?strictTimeout=true` is supported on this shape too.                                                                                |
 
 **Migration window.** New code on predicate / state shapes should pass
 `?strictTimeout=true` and treat HTTP 408 as the timeout signal. Existing
@@ -1033,9 +1046,19 @@ lives at `data.element`; runner-up candidates (if any) live at
       "type": "button",
       "semanticType": "action-button",
       "actions": [
-        "click", "hoverClick", "doubleClick", "rightClick", "middleClick",
-        "sendKeys", "focus", "blur", "hover", "unhover", "scroll",
-        "scrollIntoView", "drag"
+        "click",
+        "hoverClick",
+        "doubleClick",
+        "rightClick",
+        "middleClick",
+        "sendKeys",
+        "focus",
+        "blur",
+        "hover",
+        "unhover",
+        "scroll",
+        "scrollIntoView",
+        "drag"
       ],
       "aliases": ["btn", "home", "main", "click", "start", "button", "dashboard"],
       "description": "\"Home\" button",
@@ -1224,9 +1247,9 @@ Request body:
 
 ```json
 {
-  "timeout": 5000,        // ms — max wall time before resolving (default 5000)
-  "minStableMs": 250,     // ms — signals must stay idle this long to count as settled (default 250)
-  "exclude": []           // optional string[] — signal names to ignore
+  "timeout": 5000, // ms — max wall time before resolving (default 5000)
+  "minStableMs": 250, // ms — signals must stay idle this long to count as settled (default 250)
+  "exclude": [] // optional string[] — signal names to ignore
 }
 ```
 
@@ -1309,19 +1332,19 @@ all.
 
 **The answer is an observation envelope.** Read `data.status` FIRST:
 
-| `data.status` | Meaning |
-|---|---|
-| `measured` | The analyzer looked; the report is in `data.value`. `data.provenance.coverage.unmeasured` counts the elements it could NOT place, by the input that stopped it: `geometry` (visible, but no `normalizedRect`; mobile: no measured layout) or `visibility` (the snapshot carried no boolean `state.visible`, so the element may be on screen — it is never assumed hidden). A non-empty list means the report is degraded, not that the page is empty. |
-| `unknown` | The analyzer could not look. `data.unknown.code` says why; there is no `value` and no severity. Never read this as a healthy page OR a broken one. |
+| `data.status` | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `measured`    | The analyzer looked; the report is in `data.value`. `data.provenance.coverage.unmeasured` counts the elements it could NOT place, by the input that stopped it: `geometry` (visible, but no `normalizedRect`; mobile: no measured layout) or `visibility` (the snapshot carried no boolean `state.visible`, so the element may be on screen — it is never assumed hidden). A non-empty list means the report is degraded, not that the page is empty. |
+| `unknown`     | The analyzer could not look. `data.unknown.code` says why; there is no `value` and no severity. Never read this as a healthy page OR a broken one.                                                                                                                                                                                                                                                                                                    |
 
 `unknown.code` values page-health emits:
 
-| Code | Cause | Next action |
-|---|---|---|
-| `input_missing` | The snapshot carried no `elements` array; or elements exist but **none is both visible and carrying geometry** — the visible ones lack geometry, some never stated `state.visible`, or **every element reports `visible: false`** (`unknown.detail` tallies why — web/server from `state.visibilityReason`: `hidden` / `off-screen` / `occluded` / `no-layout`, e.g. `hidden=1, occluded=2`; mobile: `unmounted=N, off-screen route or otherwise=M`); or (mobile) the viewport is unknown | Re-snapshot once the page has settled; on mobile supply `viewport`. In the all-hidden case whatever IS on screen is not a registered element — on the web SDK, `POST /control/visibility` names the occluder; never read it as a blank page |
-| `producer_not_run` | Zero registered elements and zero registered components — nothing has registered yet | Wait for the page to load / the UI Bridge provider to mount |
-| `app_unreachable` | (Relay) the browser tab could not be reached and nothing is cached | Reconnect the tab |
-| `producer_failed` | The snapshot or the analyzer threw; `unknown.detail` names it | Retry once, then read the detail |
+| Code               | Cause                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Next action                                                                                                                                                                                                                                 |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `input_missing`    | The snapshot carried no `elements` array; or elements exist but **none is both visible and carrying geometry** — the visible ones lack geometry, some never stated `state.visible`, or **every element reports `visible: false`** (`unknown.detail` tallies why — web/server from `state.visibilityReason`: `hidden` / `off-screen` / `occluded` / `no-layout`, e.g. `hidden=1, occluded=2`; mobile: `unmounted=N, off-screen route or otherwise=M`); or (mobile) the viewport is unknown | Re-snapshot once the page has settled; on mobile supply `viewport`. In the all-hidden case whatever IS on screen is not a registered element — on the web SDK, `POST /control/visibility` names the occluder; never read it as a blank page |
+| `producer_not_run` | Zero registered elements and zero registered components — nothing has registered yet                                                                                                                                                                                                                                                                                                                                                                                                      | Wait for the page to load / the UI Bridge provider to mount                                                                                                                                                                                 |
+| `app_unreachable`  | (Relay) the browser tab could not be reached and nothing is cached                                                                                                                                                                                                                                                                                                                                                                                                                        | Reconnect the tab                                                                                                                                                                                                                           |
+| `producer_failed`  | The snapshot or the analyzer threw; `unknown.detail` names it                                                                                                                                                                                                                                                                                                                                                                                                                             | Retry once, then read the detail                                                                                                                                                                                                            |
 
 Response shape:
 
@@ -1374,10 +1397,19 @@ transport error:
   "success": true,
   "data": {
     "status": "unknown",
-    "unknown": { "code": "producer_not_run", "detail": "the bridge reports zero registered elements and zero registered components — …" },
-    "provenance": { "producer": { "id": "sdk/page-health", "version": "0.29.0" }, "observedAt": "…", "evaluatedAt": "…",
-                    "coverage": { "considered": 0, "measured": 0, "unmeasured": [] },
-                    "confidence": null, "cache": null, "source": null }
+    "unknown": {
+      "code": "producer_not_run",
+      "detail": "the bridge reports zero registered elements and zero registered components — …"
+    },
+    "provenance": {
+      "producer": { "id": "sdk/page-health", "version": "0.29.0" },
+      "observedAt": "…",
+      "evaluatedAt": "…",
+      "coverage": { "considered": 0, "measured": 0, "unmeasured": [] },
+      "confidence": null,
+      "cache": null,
+      "source": null
+    }
   }
 }
 ```
@@ -1390,14 +1422,14 @@ findings and a `status: healthy | degraded | unhealthy` roll-up inside
 
 **Heuristics.** Both implementations agree on these thresholds:
 
-| Check | Severity rule |
-|---|---|
-| `spatial_coverage` | CRITICAL when coverage < 15% OR right < 5% with left > 20%; WARNING when coverage < 30%; otherwise OK |
-| `layout_regions`   | CRITICAL when content region is empty; WARNING when < 3 elements there |
-| `element_diversity`| WARNING when > 5 elements present and *all* types are navigation-only (button / heading / badge / status-message) |
-| `text_signals`     | CRITICAL on any error-phrase match; WARNING on loading / empty-state / CSS-class signal matches |
-| `interactive_readiness` | WARNING when > 50% of `category: "interactive"` elements are disabled |
-| `visual_anomalies` | WARNING on any zero-size or off-viewport visible element |
+| Check                   | Severity rule                                                                                                     |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `spatial_coverage`      | CRITICAL when coverage < 15% OR right < 5% with left > 20%; WARNING when coverage < 30%; otherwise OK             |
+| `layout_regions`        | CRITICAL when content region is empty; WARNING when < 3 elements there                                            |
+| `element_diversity`     | WARNING when > 5 elements present and _all_ types are navigation-only (button / heading / badge / status-message) |
+| `text_signals`          | CRITICAL on any error-phrase match; WARNING on loading / empty-state / CSS-class signal matches                   |
+| `interactive_readiness` | WARNING when > 50% of `category: "interactive"` elements are disabled                                             |
+| `visual_anomalies`      | WARNING on any zero-size or off-viewport visible element                                                          |
 
 Smoke test:
 
@@ -1540,7 +1572,7 @@ Idiomatic shape that recovers structured errors:
       }                                                          \
     };                                                           \
   }                                                              \
-})()"
+})()";
 ```
 
 Tauri error envelopes are stable: every command's `Result<_, E>` Err
@@ -1570,10 +1602,10 @@ POST.
 The list endpoint has two URLs (direct + SDK relay) and they now share
 a `data.components` slot. Read from `data.components` in new code.
 
-| URL | Shape (this release) |
-|---|---|
-| `GET /control/components` (direct) | `{success: true, data: {components: [...]}, components: [...]}` — top-level `components` is **deprecated** and will be removed next release. Migrate to `data.components`. |
-| `GET /sdk/control/components` (SDK relay) | `{success: true, data: {components: [...]}}` — now matches the direct path's `data` slot. Previous shape was `{data: {components: [...]}}` with no `success` field. |
+| URL                                       | Shape (this release)                                                                                                                                                       |
+| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /control/components` (direct)        | `{success: true, data: {components: [...]}, components: [...]}` — top-level `components` is **deprecated** and will be removed next release. Migrate to `data.components`. |
+| `GET /sdk/control/components` (SDK relay) | `{success: true, data: {components: [...]}}` — now matches the direct path's `data` slot. Previous shape was `{data: {components: [...]}}` with no `success` field.        |
 
 **Deprecation window: one release.** The top-level `components` mirror on
 the direct path is a compatibility shim for existing readers that grew up
@@ -1649,7 +1681,7 @@ call it.
 All `/ui-bridge/apps/*` and `/ui-bridge/control/*` endpoints use **camelCase**
 JSON field names. The Rust DTOs derive `#[serde(rename_all = "camelCase")]`
 so a typo like `keep_alive_secs` is silently dropped without `deny_unknown_fields`
-— and on the register endpoint, *with* `deny_unknown_fields` (since 2026-05-03)
+— and on the register endpoint, _with_ `deny_unknown_fields` (since 2026-05-03)
 typos return HTTP 400 with the offending field name in the error envelope.
 Example: pass `keepAliveSecs`, not `keep_alive_secs`. `appId`, not `app_id`.
 `baseUrl`, not `base_url`. `pageUrl`, not `page_url`.
@@ -1786,13 +1818,13 @@ an unmatched route. These originate in the axum JSON extractor and the
 router fallback (not in an application handler) but are surfaced through the
 same canonical envelope, so callers branch on `code` uniformly:
 
-| `code` | Meaning | HTTP |
-|---|---|---|
-| `UNSUPPORTED_MEDIA_TYPE` | Body sent with no (or a non-`application/json`) `Content-Type`. | `415` |
-| `INVALID_JSON` | Body not parseable as JSON (syntax error), or unreadable. | `400` |
-| `INVALID_REQUEST` | Body parsed as JSON but failed to deserialize into the target type (missing/unknown field, wrong type). | `422` |
-| `PAYLOAD_TOO_LARGE` | Body exceeded the configured size limit. | `413` |
-| `NOT_FOUND` | No route matched the request method + path (router fallback). | `404` |
+| `code`                   | Meaning                                                                                                 | HTTP  |
+| ------------------------ | ------------------------------------------------------------------------------------------------------- | ----- |
+| `UNSUPPORTED_MEDIA_TYPE` | Body sent with no (or a non-`application/json`) `Content-Type`.                                         | `415` |
+| `INVALID_JSON`           | Body not parseable as JSON (syntax error), or unreadable.                                               | `400` |
+| `INVALID_REQUEST`        | Body parsed as JSON but failed to deserialize into the target type (missing/unknown field, wrong type). | `422` |
+| `PAYLOAD_TOO_LARGE`      | Body exceeded the configured size limit.                                                                | `413` |
+| `NOT_FOUND`              | No route matched the request method + path (router fallback).                                           | `404` |
 
 ## Health (Tauri runner)
 
@@ -1810,7 +1842,7 @@ Returns runner liveness signals. The fields worth knowing:
   `Responsive`. It is not a latch, so it can go back to `false` if the
   frontend stops responding.
 - `frontendState` — the reason string behind `frontendReady`, for when
-  you need to know *why* it is false rather than just that it is.
+  you need to know _why_ it is false rather than just that it is.
 - `uiBridgeIpcObserved` — the raw one-way latch: flips `true` the first
   time any UI Bridge IPC response comes back from the React frontend, and
   stays true for the rest of the process lifetime.
@@ -1823,7 +1855,7 @@ hit the 503 transport-failure path until the React listener attaches.
 
 :::caution Changed contract
 
-`frontendReady` used to *be* the one-way latch now exposed as
+`frontendReady` used to _be_ the one-way latch now exposed as
 `uiBridgeIpcObserved`. That was wrong in both directions: nothing internal
 drove the latch, so it stayed `false` indefinitely on a healthy but idle
 runner, and being one-way it stayed `true` through a dead WebView2. A
@@ -1909,7 +1941,7 @@ The `runners[]` shape mirrors `RunnerInstanceHealth` from
   hook in `@qontinui/ui-bridge/react`
   (`packages/ui-bridge/src/react/useBuildIdWatcher.ts`), which the
   dashboard's `BuildRefreshBanner` mounts at the root. (The dashboard's
-  `BootIdWatcher` is a *different*, unrelated component — it polls
+  `BootIdWatcher` is a _different_, unrelated component — it polls
   `/supervisor-bridge/boot-id` to catch a wiped `boot_id`, and does not
   use this hook.)
 
@@ -1918,6 +1950,7 @@ The `runners[]` shape mirrors `RunnerInstanceHealth` from
   live tab genuinely diverges and a reload genuinely fetches new HTML.
   Do **not** port the pattern to a host where both sides are
   compile-time constants of one process — see the warning on the hook.
+
 - **Live fleet status.** Subscribe to `runners[]` instead of polling
   `GET /runners` every few seconds. The supervisor's background
   health-cache refresher feeds this array, so it carries the same
@@ -1940,8 +1973,11 @@ is **auth-gated**. An unauthenticated call returns:
 
 ```json
 // HTTP 401
-{ "success": false, "code": "UNAUTHENTICATED",
-  "message": "UI Bridge relay requires a valid session token" }
+{
+  "success": false,
+  "code": "UNAUTHENTICATED",
+  "message": "UI Bridge relay requires a valid session token"
+}
 ```
 
 (The gate is `frontend/src/app/api/ui-bridge/[...path]/_auth.ts` in
@@ -1964,13 +2000,13 @@ Mint the operator bearer with Cognito `USER_PASSWORD_AUTH` in
 **`us-east-1`**, using the runner/CI app-client id and the operator
 credentials stored in SSM:
 
-| Parameter | Value / source |
-|---|---|
-| Region | `us-east-1` |
+| Parameter             | Value / source                                                                     |
+| --------------------- | ---------------------------------------------------------------------------------- |
+| Region                | `us-east-1`                                                                        |
 | Cognito app-client id | `67f2a1a0cmgileob23lniud5t7` (the runner/CI client named in the auth-pairing plan) |
-| Auth flow | `USER_PASSWORD_AUTH` |
-| Username | SSM SecureString `/qontinui/operator/email` |
-| Password | SSM SecureString `/qontinui/operator/password` |
+| Auth flow             | `USER_PASSWORD_AUTH`                                                               |
+| Username              | SSM SecureString `/qontinui/operator/email`                                        |
+| Password              | SSM SecureString `/qontinui/operator/password`                                     |
 
 > **Git Bash note.** SSM parameter names start with `/`, which MSYS will
 > rewrite into a Windows path. Prefix the command with `MSYS_NO_PATHCONV=1`
@@ -2071,7 +2107,7 @@ Response shape (`success:true`, tabs under `data.tabs`):
 - `?activeOnly=true` drops tabs whose heartbeat has gone stale, so you pin
   a tab that won't be swept out from under the next command.
 - **Per-user scoping caveat.** The relay filters `/tabs` to the tabs
-  *owned by the authenticated principal* (`X-Caller-User-Id`, spliced by
+  _owned by the authenticated principal_ (`X-Caller-User-Id`, spliced by
   the gate from the verified identity). The minted operator MUST be the
   same operator whose browser session opened the co-pilot tab — otherwise
   `data.tabs` comes back empty even though the gate accepted the token and

@@ -45,22 +45,22 @@ function OpenModalButton() {
 
 `UseUITransitionOptions`:
 
-| Option | Type | Default | Meaning |
-|--------|------|---------|---------|
-| `id` | `string` | — | **Required.** Unique transition identifier |
-| `name` | `string` | — | **Required.** Human-readable name |
-| `fromStates` | `string[]` | — | **Required.** Precondition — at least one must be active |
-| `activateStates` | `string[]` | — | **Required.** States to activate |
-| `exitStates` | `string[]` | — | **Required.** States to deactivate |
-| `activateGroups` | `string[]` | — | Groups to activate |
-| `exitGroups` | `string[]` | — | Groups to deactivate |
-| `actions` | `WorkflowStep[]` | — | Actions executed during the transition |
-| `pathCost` | `number` | — | Cost used by pathfinding |
-| `staysVisible` | `boolean` | — | Whether source states remain visible during the transition |
-| `effect` | `IREffect` | — | Side-effect annotation; see below |
-| `metadata` | `IRMetadata` | — | IR-canonical semantic metadata |
-| `provenance` | `IRProvenance` | — | Where the declaration came from; set by build plugins |
-| `autoRegister` | `boolean` | `true` | Register on mount |
+| Option           | Type             | Default | Meaning                                                    |
+| ---------------- | ---------------- | ------- | ---------------------------------------------------------- |
+| `id`             | `string`         | —       | **Required.** Unique transition identifier                 |
+| `name`           | `string`         | —       | **Required.** Human-readable name                          |
+| `fromStates`     | `string[]`       | —       | **Required.** Precondition — at least one must be active   |
+| `activateStates` | `string[]`       | —       | **Required.** States to activate                           |
+| `exitStates`     | `string[]`       | —       | **Required.** States to deactivate                         |
+| `activateGroups` | `string[]`       | —       | Groups to activate                                         |
+| `exitGroups`     | `string[]`       | —       | Groups to deactivate                                       |
+| `actions`        | `WorkflowStep[]` | —       | Actions executed during the transition                     |
+| `pathCost`       | `number`         | —       | Cost used by pathfinding                                   |
+| `staysVisible`   | `boolean`        | —       | Whether source states remain visible during the transition |
+| `effect`         | `IREffect`       | —       | Side-effect annotation; see below                          |
+| `metadata`       | `IRMetadata`     | —       | IR-canonical semantic metadata                             |
+| `provenance`     | `IRProvenance`   | —       | Where the declaration came from; set by build plugins      |
+| `autoRegister`   | `boolean`        | `true`  | Register on mount                                          |
 
 `fromStates`, `activateStates` and `exitStates` are all required by the type —
 pass `[]` explicitly for the ones that do not apply, as the example above does
@@ -73,7 +73,7 @@ supplied, the hook packs them into the registered transition's `metadata` bag
 under an `__ir` key, which the registry round-trips untouched. Only the build
 plugin and the counterfactual-analysis pipeline read it. In particular, marking
 a transition as destructive via `effect` does not stop this hook from executing
-it — it gates *automatic* walks, not your own `execute()` call.
+it — it gates _automatic_ walks, not your own `execute()` call.
 
 :::
 
@@ -82,7 +82,7 @@ it — it gates *automatic* walks, not your own `execute()` call.
 ```typescript
 interface UseUITransitionReturn {
   registered: boolean;
-  canExecute: boolean;                        // recomputed on every state change
+  canExecute: boolean; // recomputed on every state change
   execute: () => Promise<TransitionResult>;
   register: () => void;
   unregister: () => void;
@@ -111,7 +111,7 @@ interface TransitionResult {
   activatedStates: string[];
   deactivatedStates: string[];
   error?: string;
-  failedPhase?: string;   // which phase failed, when it did
+  failedPhase?: string; // which phase failed, when it did
   durationMs: number;
 }
 ```

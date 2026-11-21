@@ -10,11 +10,11 @@ UI Bridge automatically detects drag sources and drop zones so AI agents know wh
 
 The `DragDropDetector` uses three detection sources, with higher-priority sources taking precedence during deduplication:
 
-| Priority | Source | How |
-|----------|--------|-----|
-| 1 (highest) | **Declared** | Developer hooks: `useDragSource()`, `useDropZone()` |
-| 2 | **ARIA** | `aria-grabbed` (drag source), `aria-dropeffect` (drop zone) |
-| 3 | **DOM/CSS** | `draggable="true"`, `cursor-grab`/`cursor-move` classes, computed cursor styles |
+| Priority    | Source       | How                                                                             |
+| ----------- | ------------ | ------------------------------------------------------------------------------- |
+| 1 (highest) | **Declared** | Developer hooks: `useDragSource()`, `useDropZone()`                             |
+| 2           | **ARIA**     | `aria-grabbed` (drag source), `aria-dropeffect` (drop zone)                     |
+| 3           | **DOM/CSS**  | `draggable="true"`, `cursor-grab`/`cursor-move` classes, computed cursor styles |
 
 A **structural heuristic** also detects sortable containers: any element with 2+ draggable children is automatically identified as a sortable drop zone.
 
@@ -60,20 +60,20 @@ Both hooks register on mount, clean up on unmount, and re-register when paramete
 
 **`UseDragSourceOptions`:**
 
-| Option | Type | Description |
-|--------|------|-------------|
-| `dataType` | `string` | Kind of data (e.g., `'workflow-step'`, `'file'`, `'list-item'`) |
-| `label` | `string` | Human-readable label |
-| `metadata` | `Record<string, unknown>` | Arbitrary metadata |
+| Option     | Type                      | Description                                                     |
+| ---------- | ------------------------- | --------------------------------------------------------------- |
+| `dataType` | `string`                  | Kind of data (e.g., `'workflow-step'`, `'file'`, `'list-item'`) |
+| `label`    | `string`                  | Human-readable label                                            |
+| `metadata` | `Record<string, unknown>` | Arbitrary metadata                                              |
 
 **`UseDropZoneOptions`:**
 
-| Option | Type | Description |
-|--------|------|-------------|
-| `accepts` | `string[]` | Data types this zone accepts (omit for wildcard) |
-| `effect` | `DragEffect` | Drop effect: `'move'`, `'copy'`, `'link'`, `'reorder'` |
-| `label` | `string` | Human-readable label |
-| `metadata` | `Record<string, unknown>` | Arbitrary metadata |
+| Option     | Type                      | Description                                            |
+| ---------- | ------------------------- | ------------------------------------------------------ |
+| `accepts`  | `string[]`                | Data types this zone accepts (omit for wildcard)       |
+| `effect`   | `DragEffect`              | Drop effect: `'move'`, `'copy'`, `'link'`, `'reorder'` |
+| `label`    | `string`                  | Human-readable label                                   |
+| `metadata` | `Record<string, unknown>` | Arbitrary metadata                                     |
 
 ## Auto-Detection
 
@@ -95,6 +95,7 @@ Even without developer hooks, the detector finds drag-drop patterns automaticall
 ### Label Extraction
 
 Auto-detected elements get labels from (in priority order):
+
 1. `aria-label` attribute
 2. `data-testid` attribute
 3. Short text content (≤60 characters)

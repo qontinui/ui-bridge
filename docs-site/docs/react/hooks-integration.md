@@ -11,7 +11,7 @@ reading snapshots, and a deployment that ships new bundles under a running tab.
 ## useCommandRelay
 
 ```typescript
-function useCommandRelay(options?: UseCommandRelayOptions): void
+function useCommandRelay(options?: UseCommandRelayOptions): void;
 ```
 
 Connects the browser to the server's command relay. It opens an SSE stream,
@@ -41,23 +41,23 @@ the other end.
 
 `UseCommandRelayOptions` — every field is optional, as is the argument itself.
 
-| Option | Type | Default | Meaning |
-|--------|------|---------|---------|
-| `enabled` | `boolean` | `true` | Turn the relay off without unmounting |
-| `basePath` | `string` | `'/api/ui-bridge'` | Base path for the three relay routes |
-| `heartbeatInterval` | `number` | `10000` | Heartbeat period in ms |
-| `runnerUrl` | `string` | `'http://127.0.0.1:9876'` | Explicit runner URL for phone-home registration (and passive capture) |
-| `disablePhoneHome` | `boolean` | `false` | Skip phone-home registration entirely — also the only opt-out for [passive capture](#passive-capture) |
-| `appId` | `string` | `location.host` (port-inclusive, e.g. `localhost:3000`) | Stable identity in the runner's registry |
-| `appName` | `string` | `document.title \|\| location.hostname` | Display name |
-| `appType` | `'web' \| 'desktop' \| 'mobile' \| 'dashboard' \| 'other'` | `'web'` | App classification |
-| `framework` | `string` | `'react'` | Framework hint |
-| `capabilities` | `string[]` | `['control']` | Capability tags |
-| `version` | `string` | — | SDK/app version reported on heartbeats (passive capture relays it as `appVersion`) |
-| `authHeader` | `() => string \| null \| undefined` | — | Per-request bearer token source |
-| `registrationMetadata` | `() => { userId, sessionId } \| null \| undefined` | — | Per-user tab scoping; see below |
+| Option                 | Type                                                       | Default                                                 | Meaning                                                                                               |
+| ---------------------- | ---------------------------------------------------------- | ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `enabled`              | `boolean`                                                  | `true`                                                  | Turn the relay off without unmounting                                                                 |
+| `basePath`             | `string`                                                   | `'/api/ui-bridge'`                                      | Base path for the three relay routes                                                                  |
+| `heartbeatInterval`    | `number`                                                   | `10000`                                                 | Heartbeat period in ms                                                                                |
+| `runnerUrl`            | `string`                                                   | `'http://127.0.0.1:9876'`                               | Explicit runner URL for phone-home registration (and passive capture)                                 |
+| `disablePhoneHome`     | `boolean`                                                  | `false`                                                 | Skip phone-home registration entirely — also the only opt-out for [passive capture](#passive-capture) |
+| `appId`                | `string`                                                   | `location.host` (port-inclusive, e.g. `localhost:3000`) | Stable identity in the runner's registry                                                              |
+| `appName`              | `string`                                                   | `document.title \|\| location.hostname`                 | Display name                                                                                          |
+| `appType`              | `'web' \| 'desktop' \| 'mobile' \| 'dashboard' \| 'other'` | `'web'`                                                 | App classification                                                                                    |
+| `framework`            | `string`                                                   | `'react'`                                               | Framework hint                                                                                        |
+| `capabilities`         | `string[]`                                                 | `['control']`                                           | Capability tags                                                                                       |
+| `version`              | `string`                                                   | —                                                       | SDK/app version reported on heartbeats (passive capture relays it as `appVersion`)                    |
+| `authHeader`           | `() => string \| null \| undefined`                        | —                                                       | Per-request bearer token source                                                                       |
+| `registrationMetadata` | `() => { userId, sessionId } \| null \| undefined`         | —                                                       | Per-user tab scoping; see below                                                                       |
 
-`runnerUrl` also changes *when* phone-home fires: with it set, registration is
+`runnerUrl` also changes _when_ phone-home fires: with it set, registration is
 attempted regardless of hostname; without it, phone-home is gated to
 localhost-family hosts.
 
@@ -133,7 +133,11 @@ and a strict server answers 400.
 ## useUIBridgeEcho
 
 ```typescript
-function useUIBridgeEcho<T>(id: string, value: T, options?: UseUIBridgeEchoOptions<T>): ReactElement
+function useUIBridgeEcho<T>(
+  id: string,
+  value: T,
+  options?: UseUIBridgeEchoOptions<T>
+): ReactElement;
 ```
 
 Surfaces arbitrary state in the snapshot by registering a hidden read-only
@@ -172,14 +176,14 @@ mirroring state there is invisible to automation. Registering an input via
 
 ### Parameters
 
-| Parameter | Type | Meaning |
-|-----------|------|---------|
-| `id` | `string` | UI Bridge element id; must be unique on the page |
-| `value` | `T` | JSON-compatible state to echo |
-| `options.label` | `string` | Label exposed via UI Bridge. Default: `` `UI Bridge echo: ${id}` `` |
-| `options.serialize` | `(value: T) => string` | Custom serializer. Default `JSON.stringify` |
-| `options.onNullish` | `'empty' \| 'serialize'` | `null`/`undefined` handling. Default `'empty'` |
-| `options.style` | `React.CSSProperties` | Merged over the default hidden style |
+| Parameter           | Type                     | Meaning                                                             |
+| ------------------- | ------------------------ | ------------------------------------------------------------------- |
+| `id`                | `string`                 | UI Bridge element id; must be unique on the page                    |
+| `value`             | `T`                      | JSON-compatible state to echo                                       |
+| `options.label`     | `string`                 | Label exposed via UI Bridge. Default: `` `UI Bridge echo: ${id}` `` |
+| `options.serialize` | `(value: T) => string`   | Custom serializer. Default `JSON.stringify`                         |
+| `options.onNullish` | `'empty' \| 'serialize'` | `null`/`undefined` handling. Default `'empty'`                      |
+| `options.style`     | `React.CSSProperties`    | Merged over the default hidden style                                |
 
 With `onNullish: 'empty'` (the default) a nullish value echoes `''`; with
 `'serialize'` it goes through the serializer, so `JSON.stringify` yields the
@@ -189,7 +193,7 @@ is caught and echoes `''` rather than breaking the render.
 :::warning Do not make the input invisible
 
 The default style is deliberate: `2×2` pixels at `opacity: 0.01`, absolutely
-positioned, `pointer-events: none`. It is *nearly* invisible while keeping
+positioned, `pointer-events: none`. It is _nearly_ invisible while keeping
 non-zero geometry, because the auto-registrar's visibility filter skips
 zero-area elements — a conventional `sr-only` style with `clip: rect(0 0 0 0)`
 would drop the element from the snapshot and silently defeat the whole hook.
@@ -202,7 +206,7 @@ An `options.style` override is merged over these defaults, so overriding
 ## useBuildIdWatcher
 
 ```typescript
-function useBuildIdWatcher(options?: UseBuildIdWatcherOptions): void
+function useBuildIdWatcher(options?: UseBuildIdWatcherOptions): void;
 ```
 
 Detects when the server has shipped a new bundle while the tab is still running
@@ -246,13 +250,13 @@ source that genuinely moves at runtime — is on the other end.
 
 ### Options
 
-| Option | Type | Default | Meaning |
-|--------|------|---------|---------|
-| `healthStreamUrl` | `string` | `'/health/stream'` | SSE stream emitting a `buildId` field per event |
-| `pollUrl` | `string` | — | URL GET-ed periodically; body must be JSON with a top-level `buildId` |
-| `getCurrentBuildId` | `() => Promise<string> \| string` | — | Custom getter |
-| `pollIntervalMs` | `number` | `30000` | Interval for `pollUrl` / `getCurrentBuildId`; `0` = one-shot on mount |
-| `onBuildIdChange` | `(oldId: string, newId: string) => void` | — | Fires at most once per mount |
+| Option              | Type                                     | Default            | Meaning                                                               |
+| ------------------- | ---------------------------------------- | ------------------ | --------------------------------------------------------------------- |
+| `healthStreamUrl`   | `string`                                 | `'/health/stream'` | SSE stream emitting a `buildId` field per event                       |
+| `pollUrl`           | `string`                                 | —                  | URL GET-ed periodically; body must be JSON with a top-level `buildId` |
+| `getCurrentBuildId` | `() => Promise<string> \| string`        | —                  | Custom getter                                                         |
+| `pollIntervalMs`    | `number`                                 | `30000`            | Interval for `pollUrl` / `getCurrentBuildId`; `0` = one-shot on mount |
+| `onBuildIdChange`   | `(oldId: string, newId: string) => void` | —                  | Fires at most once per mount                                          |
 
 Exactly one source is used, in precedence order: `getCurrentBuildId`, then
 `pollUrl`, then the default SSE stream. `pollIntervalMs` is ignored on the SSE

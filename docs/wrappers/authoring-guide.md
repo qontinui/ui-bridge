@@ -582,7 +582,7 @@ honest upper bound; pin tighter only if you actually depend on something a
 specific minor introduced.
 
 The floors above are illustrative. For the floors a wrapper written against
-*today's* templates should declare, read
+_today's_ templates should declare, read
 `packages/create-ui-bridge-wrapper/src/dep-specs.ts` — the scaffolder emits
 exactly those, and a test asserts each one still admits the package's current
 version, so they cannot go stale the way a number copied into prose can. (The

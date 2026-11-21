@@ -216,13 +216,13 @@ process's memory. It does not survive a server restart.
 Failures arrive as an `error` message, not a `response`, carrying a `code` in
 `payload`:
 
-| Code | Meaning |
-| --- | --- |
-| `RECORDING_UNAVAILABLE` | The server was started without a `recording` registry. Returned by `recording:start` and `recording:stop`. |
-| `RECORDING_START_ERROR` | The session manager threw while starting. Note that starting an already-active session is *not* an error — `start` is idempotent and returns the running session's status. |
-| `RECORDING_STOP_ERROR` | The session manager threw while stopping — most commonly `No active recording session`, i.e. a `recording:stop` with nothing running. |
-| `AUTOSAVE_INVALID` | `recording:autosave` arrived with no `exportData`. |
-| `AUTOSAVE_ERROR` | The autosave payload could not be read. |
+| Code                    | Meaning                                                                                                                                                                    |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `RECORDING_UNAVAILABLE` | The server was started without a `recording` registry. Returned by `recording:start` and `recording:stop`.                                                                 |
+| `RECORDING_START_ERROR` | The session manager threw while starting. Note that starting an already-active session is _not_ an error — `start` is idempotent and returns the running session's status. |
+| `RECORDING_STOP_ERROR`  | The session manager threw while stopping — most commonly `No active recording session`, i.e. a `recording:stop` with nothing running.                                      |
+| `AUTOSAVE_INVALID`      | `recording:autosave` arrived with no `exportData`.                                                                                                                         |
+| `AUTOSAVE_ERROR`        | The autosave payload could not be read.                                                                                                                                    |
 
 ## A Complete Session
 

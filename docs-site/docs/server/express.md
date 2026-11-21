@@ -39,11 +39,11 @@ app.listen(3000, () => {
 
 ## Three entry points
 
-| Export                | Returns          | Use when                                                 |
-| --------------------- | ---------------- | -------------------------------------------------------- |
-| `createExpressRouter` | an Express `Router` | You want to mount the routes yourself                    |
-| `uiBridgeMiddleware`  | an Express `Router` | Same thing, named for the `app.use(...)` call site       |
-| `createExpressApp`    | a complete `app`   | You have no Express app yet and want one made for you    |
+| Export                | Returns             | Use when                                              |
+| --------------------- | ------------------- | ----------------------------------------------------- |
+| `createExpressRouter` | an Express `Router` | You want to mount the routes yourself                 |
+| `uiBridgeMiddleware`  | an Express `Router` | Same thing, named for the `app.use(...)` call site    |
+| `createExpressApp`    | a complete `app`    | You have no Express app yet and want one made for you |
 
 `uiBridgeMiddleware(handlers, config)` is a direct alias for
 `createExpressRouter(handlers, config)` — pick whichever reads better at the
@@ -61,13 +61,13 @@ const app = createExpressApp(handlers, { basePath: '/ui-bridge' });
 
 All three take an `ExpressAdapterConfig`:
 
-| Option          | Type                       | Default          | Description                                                        |
-| --------------- | -------------------------- | ---------------- | ------------------------------------------------------------------ |
-| `basePath`      | `string`                   | `'/ui-bridge'`   | Only read by `createExpressApp` — the router itself is path-agnostic |
-| `cors`          | `boolean \| CORSOptions`   | _(off)_          | Adds a CORS middleware ahead of the routes                          |
-| `authenticate`  | `(req) => boolean \| Promise<boolean>` | _(off)_ | Runs before every route; a falsy result returns 401                 |
-| `useBodyParser` | `boolean`                  | `false`          | Install `express.json()` on the router, tolerating empty POST bodies |
-| `rateLimit`     | `RateLimitOptions`         | _(unimplemented)_| Declared on the config type but not honoured by any adapter         |
+| Option          | Type                                   | Default           | Description                                                          |
+| --------------- | -------------------------------------- | ----------------- | -------------------------------------------------------------------- |
+| `basePath`      | `string`                               | `'/ui-bridge'`    | Only read by `createExpressApp` — the router itself is path-agnostic |
+| `cors`          | `boolean \| CORSOptions`               | _(off)_           | Adds a CORS middleware ahead of the routes                           |
+| `authenticate`  | `(req) => boolean \| Promise<boolean>` | _(off)_           | Runs before every route; a falsy result returns 401                  |
+| `useBodyParser` | `boolean`                              | `false`           | Install `express.json()` on the router, tolerating empty POST bodies |
+| `rateLimit`     | `RateLimitOptions`                     | _(unimplemented)_ | Declared on the config type but not honoured by any adapter          |
 
 ```typescript
 app.use(
@@ -215,10 +215,7 @@ The config type is exported as `ExpressAdapterConfig`:
 
 ```typescript
 import express from 'express';
-import {
-  uiBridgeMiddleware,
-  type ExpressAdapterConfig,
-} from '@qontinui/ui-bridge-server/express';
+import { uiBridgeMiddleware, type ExpressAdapterConfig } from '@qontinui/ui-bridge-server/express';
 
 const options: ExpressAdapterConfig = {
   useBodyParser: true,

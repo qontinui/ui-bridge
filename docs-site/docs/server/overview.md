@@ -85,21 +85,21 @@ export const { GET, POST, DELETE } = createNextRouteHandlers(handlers);
 
 All server options provide the same HTTP API:
 
-| Endpoint                              | Method | Description              |
-| ------------------------------------- | ------ | ------------------------ |
-| `/control/elements`                   | GET    | List registered elements |
-| `/control/element/:id`                | GET    | Get element details      |
-| `/control/element/:id/state`          | GET    | Get element state        |
-| `/control/element/:id/action`         | POST   | Execute action           |
-| `/control/components`                 | GET    | List components          |
+| Endpoint                                  | Method | Description              |
+| ----------------------------------------- | ------ | ------------------------ |
+| `/control/elements`                       | GET    | List registered elements |
+| `/control/element/:id`                    | GET    | Get element details      |
+| `/control/element/:id/state`              | GET    | Get element state        |
+| `/control/element/:id/action`             | POST   | Execute action           |
+| `/control/components`                     | GET    | List components          |
 | `/control/component/:id/action/:actionId` | POST   | Execute component action |
-| `/control/discover`                   | POST   | Discover elements        |
-| `/control/snapshot`                   | GET    | Get full snapshot        |
-| `/control/workflows`                  | GET    | List workflows           |
-| `/control/workflow/:id/run`           | POST   | Run workflow             |
-| `/render-log`                         | GET    | Get render log           |
-| `/render-log/snapshot`                | POST   | Capture snapshot         |
-| `/debug/metrics`                      | GET    | Get metrics              |
+| `/control/discover`                       | POST   | Discover elements        |
+| `/control/snapshot`                       | GET    | Get full snapshot        |
+| `/control/workflows`                      | GET    | List workflows           |
+| `/control/workflow/:id/run`               | POST   | Run workflow             |
+| `/render-log`                             | GET    | Get render log           |
+| `/render-log/snapshot`                    | POST   | Capture snapshot         |
+| `/debug/metrics`                          | GET    | Get metrics              |
 
 ## Communication
 
@@ -138,9 +138,12 @@ runs before every UI Bridge route:
 
 ```typescript
 // Express
-app.use('/ui-bridge', uiBridgeMiddleware(handlers, {
-  authenticate: (req) => isAdmin(req),
-}));
+app.use(
+  '/ui-bridge',
+  uiBridgeMiddleware(handlers, {
+    authenticate: (req) => isAdmin(req),
+  })
+);
 
 // Next.js
 export const { GET, POST, DELETE } = createNextRouteHandlers(handlers, {

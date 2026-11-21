@@ -11,7 +11,7 @@ Given a React component with `<State>` / `<TransitionTo>` annotations:
 ```tsx
 function LoginPage() {
   return (
-    <State id="login-form" elements={["email-input", "password-input", "submit-btn"]}>
+    <State id="login-form" elements={['email-input', 'password-input', 'submit-btn']}>
       <form>
         <input id="email-input" />
         <input id="password-input" type="password" />
@@ -19,8 +19,8 @@ function LoginPage() {
       </form>
       <TransitionTo
         id="open-dashboard"
-        fromStates={["login-form"]}
-        activateStates={["dashboard"]}
+        fromStates={['login-form']}
+        activateStates={['dashboard']}
         effect="write"
       >
         <></>
@@ -48,7 +48,7 @@ Decision: [ADR-001](../../qontinui-dev-notes/ui-bridge-redesign/section-1-founda
 Imports:
 
 ```tsx
-import { State, TransitionTo } from "@qontinui/ui-bridge";
+import { State, TransitionTo } from '@qontinui/ui-bridge';
 ```
 
 Source:
@@ -58,12 +58,12 @@ Source:
 
 Required props:
 
-| Component | Required | Notable optional |
-|-----------|----------|------------------|
-| `<State>` | `id`, one of `elements: string[]` or `requiredElements: ElementCriteria[]` | `name`, `metadata`, `provenance` |
-| `<TransitionTo>` | `id`, `activateStates: string[]` | `fromStates`, `exitStates`, `effect: "read"\|"write"\|"destructive"`, `metadata`, `provenance` |
+| Component        | Required                                                                   | Notable optional                                                                               |
+| ---------------- | -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `<State>`        | `id`, one of `elements: string[]` or `requiredElements: ElementCriteria[]` | `name`, `metadata`, `provenance`                                                               |
+| `<TransitionTo>` | `id`, `activateStates: string[]`                                           | `fromStates`, `exitStates`, `effect: "read"\|"write"\|"destructive"`, `metadata`, `provenance` |
 
-`elements: string[]` is authoring sugar — at IR-emission time the build plugin lifts `["a", "b"]` to `[{ id: "a" }, { id: "b" }]`. `ElementCriteria` is the canonical shape because it survives ID drift (it describes *what to look for*, not *which specific registered element*).
+`elements: string[]` is authoring sugar — at IR-emission time the build plugin lifts `["a", "b"]` to `[{ id: "a" }, { id: "b" }]`. `ElementCriteria` is the canonical shape because it survives ID drift (it describes _what to look for_, not _which specific registered element_).
 
 Decision: [ADR-001 §D7](../../qontinui-dev-notes/ui-bridge-redesign/section-1-foundations/ADR-001-foundations.md) (state shape canonicalization).
 
@@ -75,14 +75,14 @@ The build plugin runs at dev/build time and emits IR.
 
 ```typescript
 // vite.config.ts
-import { uiBridgeIRPlugin } from "@qontinui/ui-bridge-auto/ir-builder";
+import { uiBridgeIRPlugin } from '@qontinui/ui-bridge-auto/ir-builder';
 
 export default {
   plugins: [
     uiBridgeIRPlugin({
       root: __dirname,
-      pagesPattern: "src/pages/**/*.tsx",
-      outDir: "specs/pages",
+      pagesPattern: 'src/pages/**/*.tsx',
+      outDir: 'specs/pages',
     }),
   ],
 };
@@ -140,15 +140,15 @@ import {
   useDiscoveredSpecs,
   loadDiscoveredSpec,
   loadDiscoveredSpecs,
-} from "@/lib/ui-bridge/use-discovered-specs";
+} from '@/lib/ui-bridge/use-discovered-specs';
 
 // Component path
 const { specs, loading, error, refresh } = useDiscoveredSpecs();
-const one = useDiscoveredSpec("login-form");
+const one = useDiscoveredSpec('login-form');
 
 // Non-component path
 const all = await loadDiscoveredSpecs();
-const exact = await loadDiscoveredSpec("login-form");
+const exact = await loadDiscoveredSpec('login-form');
 ```
 
 Both paths share a module-singleton cache. The hook subscribes to `/spec/subscribe` (Server-Sent Events) on first call; on every `spec.changed` broadcast it invalidates the cache and notifies subscribers — components re-render with new data automatically.
@@ -164,30 +164,30 @@ Decision: [ADR-013](../../qontinui-dev-notes/ui-bridge-redesign/section-13-spec-
 `POST /spec/author` is the single write path. The runner persists the IR document, regenerates the projection, and broadcasts `spec.changed` over SSE. Every `useDiscoveredSpecs()` consumer in both the runner and qontinui-web re-renders with the new data — no rebuild, no restart, no regen step.
 
 ```typescript
-import type { IrDocument } from "@qontinui/shared-types/ui-bridge-ir";
+import type { IrDocument } from '@qontinui/shared-types/ui-bridge-ir';
 
 const ir: IrDocument = {
-  id: "my-page",
-  version: "0.1.0",
+  id: 'my-page',
+  version: '0.1.0',
   states: [
     {
-      id: "my-state",
-      requiredElements: [{ id: "submit-btn" }],
+      id: 'my-state',
+      requiredElements: [{ id: 'submit-btn' }],
     },
   ],
   transitions: [
     {
-      id: "my-transition",
-      fromStates: ["my-state"],
-      activateStates: ["next-state"],
-      effect: "read",
+      id: 'my-transition',
+      fromStates: ['my-state'],
+      activateStates: ['next-state'],
+      effect: 'read',
     },
   ],
 };
 
-await fetch("http://localhost:9876/spec/author", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
+await fetch('http://localhost:9876/spec/author', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(ir),
 });
 ```
@@ -203,10 +203,10 @@ Decision: [ADR-001 §D6 + D7](../../qontinui-dev-notes/ui-bridge-redesign/sectio
 `generateRegressionSuite(ir)` in `@qontinui/ui-bridge-auto/regression` produces a deterministic `RegressionSuite` from an IR document. Hand the suite to the runner-side executor; it walks each `RegressionAssertion` against a live UI Bridge registry and produces a `RegressionRunResult`.
 
 ```typescript
-import { generateRegressionSuite, serializeSuite } from "@qontinui/ui-bridge-auto/regression";
-import { runRegressionSuite } from "@/lib/regression-executor";
+import { generateRegressionSuite, serializeSuite } from '@qontinui/ui-bridge-auto/regression';
+import { runRegressionSuite } from '@/lib/regression-executor';
 
-const ir = await loadIr("login-form");
+const ir = await loadIr('login-form');
 const suite = generateRegressionSuite(ir);
 const result = await runRegressionSuite(suite, {
   registry: bridgeRegistry,
@@ -232,15 +232,15 @@ Decision: [ADR-009](../../qontinui-dev-notes/ui-bridge-redesign/section-9-auto-r
 When a regression run produces failures, `diagnose(runResult, driftContext)` from `@qontinui/ui-bridge-auto/diagnosis` builds a `SelfDiagnosis` — the actionable report the AI consumer surfaces.
 
 ```typescript
-import { diagnose, serializeDiagnosis, type MemorySink } from "@qontinui/ui-bridge-auto/diagnosis";
-import { createPgMemorySink } from "@/lib/regression-memory-sink";
+import { diagnose, serializeDiagnosis, type MemorySink } from '@qontinui/ui-bridge-auto/diagnosis';
+import { createPgMemorySink } from '@/lib/regression-memory-sink';
 
 const sink: MemorySink = createPgMemorySink(/* tauri invoke binding */);
 
 const diagnosis = diagnose(runResult, {
-  commits: filteredCommits,        // file-overlap filtered git history
-  fragility: fragilityScore,        // optional Section 7 signal
-  recordings: recentSessions,       // optional Section 5 traces
+  commits: filteredCommits, // file-overlap filtered git history
+  fragility: fragilityScore, // optional Section 7 signal
+  recordings: recentSessions, // optional Section 5 traces
 });
 
 sink.record({ runId: runResult.runId, diagnosis });
@@ -259,13 +259,13 @@ Decision: [ADR-010](../../qontinui-dev-notes/ui-bridge-redesign/section-10-self-
 
 ## Where to go next
 
-| Topic | Reference |
-|-------|-----------|
-| Full SDK + IR API reference | `knowledge-base/qontinui-specific/ui-bridge.md` |
-| AWAS comparison + integration | `ui-bridge/docs/awas-comparison.md` |
-| Decision trail (all ADRs) | `qontinui-dev-notes/ui-bridge-redesign/section-N-*/ADR-NNN-*.md` |
-| Subpath import discipline | `ui-bridge-auto/CLAUDE.md` |
-| Spec API endpoint catalog | `qontinui-runner/CLAUDE.md` |
-| Runtime loading on the web | `qontinui-web/CLAUDE.md` |
+| Topic                         | Reference                                                        |
+| ----------------------------- | ---------------------------------------------------------------- |
+| Full SDK + IR API reference   | `knowledge-base/qontinui-specific/ui-bridge.md`                  |
+| AWAS comparison + integration | `ui-bridge/docs/awas-comparison.md`                              |
+| Decision trail (all ADRs)     | `qontinui-dev-notes/ui-bridge-redesign/section-N-*/ADR-NNN-*.md` |
+| Subpath import discipline     | `ui-bridge-auto/CLAUDE.md`                                       |
+| Spec API endpoint catalog     | `qontinui-runner/CLAUDE.md`                                      |
+| Runtime loading on the web    | `qontinui-web/CLAUDE.md`                                         |
 
 The redesign closes Section 12 with this tutorial as the AI-consumer entry point. Treat it as a contract: every primitive named here is a stable, ADR-backed surface.

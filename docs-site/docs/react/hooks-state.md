@@ -5,7 +5,7 @@ sidebar_position: 2.2
 # State Hooks
 
 Four hooks from `@qontinui/ui-bridge/react` register and observe **UI states** —
-the nodes of the model UI Bridge navigates. What a state *is*, and why an app is
+the nodes of the model UI Bridge navigates. What a state _is_, and why an app is
 modelled as one, is covered in
 [State Machine Integration](../state/state-machine-integration.md). States are
 declared explicitly by the app rather than inferred: `useUIState` and
@@ -50,21 +50,21 @@ function LoginModal() {
 
 `UseUIStateOptions`:
 
-| Option | Type | Default | Meaning |
-|--------|------|---------|---------|
-| `id` | `string` | — | **Required.** Unique state identifier; the registry keys on it |
-| `name` | `string` | — | **Required.** Human-readable name |
-| `elements` | `string[]` | `[]` | Element ids belonging to this state |
-| `activeWhen` | `() => boolean` | — | Predicate the registry can call to detect activity |
-| `blocking` | `boolean` | — | If true, blocks other state activations (modal behaviour) |
-| `blocks` | `string[]` | — | Specific state ids this state blocks |
-| `group` | `string` | — | Group membership |
-| `pathCost` | `number` | `1.0` (registry default) | Cost used by pathfinding |
-| `metadata` | `IRMetadata \| Record<string, unknown>` | — | Custom metadata; see the annotation note below |
-| `requiredElements` | `IRElementCriteria[]` | — | IR-canonical element criteria; **wins over `elements`** when both are given |
-| `provenance` | `IRProvenance` | — | Where the declaration came from; set by build plugins |
-| `autoRegister` | `boolean` | `true` | Register on mount |
-| `initialActive` | `boolean` | `false` | Activate immediately after registering |
+| Option             | Type                                    | Default                  | Meaning                                                                     |
+| ------------------ | --------------------------------------- | ------------------------ | --------------------------------------------------------------------------- |
+| `id`               | `string`                                | —                        | **Required.** Unique state identifier; the registry keys on it              |
+| `name`             | `string`                                | —                        | **Required.** Human-readable name                                           |
+| `elements`         | `string[]`                              | `[]`                     | Element ids belonging to this state                                         |
+| `activeWhen`       | `() => boolean`                         | —                        | Predicate the registry can call to detect activity                          |
+| `blocking`         | `boolean`                               | —                        | If true, blocks other state activations (modal behaviour)                   |
+| `blocks`           | `string[]`                              | —                        | Specific state ids this state blocks                                        |
+| `group`            | `string`                                | —                        | Group membership                                                            |
+| `pathCost`         | `number`                                | `1.0` (registry default) | Cost used by pathfinding                                                    |
+| `metadata`         | `IRMetadata \| Record<string, unknown>` | —                        | Custom metadata; see the annotation note below                              |
+| `requiredElements` | `IRElementCriteria[]`                   | —                        | IR-canonical element criteria; **wins over `elements`** when both are given |
+| `provenance`       | `IRProvenance`                          | —                        | Where the declaration came from; set by build plugins                       |
+| `autoRegister`     | `boolean`                               | `true`                   | Register on mount                                                           |
+| `initialActive`    | `boolean`                               | `false`                  | Activate immediately after registering                                      |
 
 :::note `requiredElements` supersedes `elements`
 
@@ -92,15 +92,15 @@ use [`useUIAnnotation`](./hooks-semantics.md#useuiannotation).
 
 ```typescript
 interface UseUIStateReturn {
-  registered: boolean;          // registration has happened
-  isActive: boolean;            // this state is currently active
-  activate: () => boolean;      // returns whether the registry accepted it
+  registered: boolean; // registration has happened
+  isActive: boolean; // this state is currently active
+  activate: () => boolean; // returns whether the registry accepted it
   deactivate: () => boolean;
-  toggle: () => boolean;        // deactivate() if active, else activate()
-  activeStates: string[];       // all active state ids, as of the last event
-  register: () => void;         // manual registration (for autoRegister: false)
+  toggle: () => boolean; // deactivate() if active, else activate()
+  activeStates: string[]; // all active state ids, as of the last event
+  register: () => void; // manual registration (for autoRegister: false)
   unregister: () => void;
-  state: UIState | undefined;   // the registry's copy of this state
+  state: UIState | undefined; // the registry's copy of this state
 }
 ```
 
@@ -137,20 +137,20 @@ function NavigationSection() {
 
 ### Options
 
-| Option | Type | Default | Meaning |
-|--------|------|---------|---------|
-| `id` | `string` | — | **Required.** Unique group identifier |
-| `name` | `string` | — | **Required.** Human-readable name |
-| `states` | `string[]` | — | **Required.** State ids in this group |
-| `autoRegister` | `boolean` | `true` | Register on mount |
+| Option         | Type       | Default | Meaning                               |
+| -------------- | ---------- | ------- | ------------------------------------- |
+| `id`           | `string`   | —       | **Required.** Unique group identifier |
+| `name`         | `string`   | —       | **Required.** Human-readable name     |
+| `states`       | `string[]` | —       | **Required.** State ids in this group |
+| `autoRegister` | `boolean`  | `true`  | Register on mount                     |
 
 ### Return value
 
 ```typescript
 interface UseUIStateGroupReturn {
   registered: boolean;
-  activate: () => string[];      // ids the registry actually activated
-  deactivate: () => string[];    // ids the registry actually deactivated
+  activate: () => string[]; // ids the registry actually activated
+  deactivate: () => string[]; // ids the registry actually deactivated
   register: () => void;
   unregister: () => void;
   group: UIStateGroup | undefined;

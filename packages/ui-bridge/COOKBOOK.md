@@ -37,11 +37,12 @@ name author data such as `font-family`, `list-style-type`, `grid-area` or
 render-log capture, session recording, and the framework-store adapters
 (Formik / React Hook Form) — **and** the arbitrary-selector reads
 (`/control/page/read-value`, `/control/page/find-by-text`). Search/find paths
-also cannot be used as a *confirmation oracle* — a redacted element's secret
+also cannot be used as a _confirmation oracle_ — a redacted element's secret
 can't be confirmed by matching against it.
 
 **How it's enforced (not best-effort).** Two mechanisms make omission a build
 failure, not a silent leak:
+
 - **Typed projections** carry the content on a branded `Scrubbed<T>` wire
   type; a raw DOM string cannot be assigned into a client-facing field without
   a compile error.
@@ -49,7 +50,7 @@ failure, not a silent leak:
   `.value` / `.textContent` / `getAttribute('aria-label'|…)` reads in every
   projection module — a new ungated read fails `npm run lint`.
 
-**Addressability is preserved.** Redaction hides *content*, not *presence*: a
+**Addressability is preserved.** Redaction hides _content_, not _presence_: a
 redacted element still ships its `id`, `role`, geometry, and `data-testid`, so
 it stays findable and clickable by structural means. A bare password field
 keeps its "Password" label and stays addressable — only its value hides. Match
@@ -82,6 +83,7 @@ and the package root re-exports all of these. `REDACTED_VALUE` is only for
 producing the sentinel. Do not use it to detect redaction (see below).
 
 **What §4.6 does NOT cover** (state these to anyone relying on it):
+
 - **Shadow DOM / React portals.** The boundary walk follows `parentElement`
   only; content portalled to `document.body` from inside a boundary has no
   `data-bridge-redact` ancestor. **Re-declare the attribute on the portal
@@ -91,15 +93,15 @@ producing the sentinel. Do not use it to detect redaction (see below).
 - **Existence & geometry** — a redacted element's id/role/bbox/visibility still
   ship. Content is hidden; presence is not (by design — removing it would break
   addressability).
-- **Developer-set metadata *outside* a boundary survives** — a `label` /
+- **Developer-set metadata _outside_ a boundary survives** — a `label` /
   `description` / `aliases` you set explicitly on a non-redacted element is kept
-  (it isn't scraped DOM). *Inside* a boundary, everything content-derived is
+  (it isn't scraped DOM). _Inside_ a boundary, everything content-derived is
   scrubbed regardless of origin.
 - **`[REDACTED]` is a display convention, not a security oracle** — don't branch
   on the string; it's page-forgeable. Redaction state travels as structured
   data on the element, not as this sentinel.
 - **Not an adversarial control.** §4.6 is a developer-declared boundary against
-  *incidental* exposure of sensitive content to an AI client. A hostile page can
+  _incidental_ exposure of sensitive content to an AI client. A hostile page can
   always read its own DOM; this is not a defense against a malicious page.
 - Media metadata and the `ControlSnapshot` a11y fields are currently scrubbed at
   runtime (correct today) rather than brand-enforced; a follow-up brings them

@@ -15,7 +15,7 @@ provider.
 ## usePageContext
 
 ```typescript
-function usePageContext(context: DeveloperPageContext): void
+function usePageContext(context: DeveloperPageContext): void;
 ```
 
 Names the current page semantically, so a snapshot says "Task Detail" rather
@@ -35,17 +35,17 @@ function TaskDetailPage({ id }: { id: string }) {
 }
 ```
 
-| Field | Type | Meaning |
-|-------|------|---------|
-| `name` | `string` | **Required.** Semantic page name (`"Task Detail"`, `"Dashboard"`) |
-| `section` | `string` | Application area (`"tasks"`, `"settings"`, `"admin"`) |
-| `breadcrumb` | `string[]` | Breadcrumb trail |
-| `meta` | `Record<string, unknown>` | Arbitrary metadata |
+| Field        | Type                      | Meaning                                                           |
+| ------------ | ------------------------- | ----------------------------------------------------------------- |
+| `name`       | `string`                  | **Required.** Semantic page name (`"Task Detail"`, `"Dashboard"`) |
+| `section`    | `string`                  | Application area (`"tasks"`, `"settings"`, `"admin"`)             |
+| `breadcrumb` | `string[]`                | Breadcrumb trail                                                  |
+| `meta`       | `Record<string, unknown>` | Arbitrary metadata                                                |
 
 :::warning One page context exists at a time, and unmount clears it
 
 The tracker holds a single value. Calling this hook from two mounted components
-means the later effect wins, and when *either* unmounts it sets the page context
+means the later effect wins, and when _either_ unmounts it sets the page context
 to `undefined` — clearing the other component's value as well.
 
 Call it from exactly one component per route: the page component itself.
@@ -60,8 +60,8 @@ the serialised `meta`, so inline object literals are safe.
 ```typescript
 function useRouteAwareness(
   info: RouteInfo,
-  options?: { unmatched?: RouteUnmatchedSignal | null },
-): void
+  options?: { unmatched?: RouteUnmatchedSignal | null }
+): void;
 ```
 
 Feeds structured router information into the navigation tracker. This is the
@@ -72,13 +72,13 @@ React Native / Expo: import `useRouteAwareness` from `@qontinui/ui-bridge-native
 instead, not from `@qontinui/ui-bridge/react` — see
 [Route Awareness in the mobile guide](../guides/mobile#route-awareness).
 
-| Field | Type | Meaning |
-|-------|------|---------|
-| `pattern` | `string \| null` | Route pattern — a TEMPLATE such as `"/tasks/[id]"`, never the concrete pathname; `null` when unknown (a 404) |
-| `patternSource` | `'router'` | Asserts the pattern came from the router and carries no user input; consumers that persist templates drop a pattern without it |
-| `params` | `Record<string, string>` | Extracted route params, e.g. `{ id: "123" }` |
-| `queryParams` | `Record<string, string>` | Query string as key/value pairs |
-| `routeStack` | `string[]` | Matched route stack / breadcrumb |
+| Field           | Type                     | Meaning                                                                                                                        |
+| --------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| `pattern`       | `string \| null`         | Route pattern — a TEMPLATE such as `"/tasks/[id]"`, never the concrete pathname; `null` when unknown (a 404)                   |
+| `patternSource` | `'router'`               | Asserts the pattern came from the router and carries no user input; consumers that persist templates drop a pattern without it |
+| `params`        | `Record<string, string>` | Extracted route params, e.g. `{ id: "123" }`                                                                                   |
+| `queryParams`   | `Record<string, string>` | Query string as key/value pairs                                                                                                |
+| `routeStack`    | `string[]`               | Matched route stack / breadcrumb                                                                                               |
 
 Every field is optional, but the argument itself is required — pass `{}` to
 declare nothing.
@@ -157,7 +157,7 @@ export function RouteAwareness({ children }) {
       patternSource: 'router',
       queryParams: Object.fromEntries(searchParams),
     },
-    { unmatched },
+    { unmatched }
   );
 
   return (
@@ -215,7 +215,7 @@ function App() {
       patternSource: 'router',
       queryParams: Object.fromEntries(new URLSearchParams(location.search)),
     },
-    { unmatched },
+    { unmatched }
   );
 
   return (
@@ -255,7 +255,7 @@ function RootError() {
       pattern: routePatternFromParams(location.pathname, params, { matched: !is404 }),
       patternSource: 'router',
     },
-    { unmatched },
+    { unmatched }
   );
   useMarkRouteUnmatched(is404 ? unmatched : null);
 
@@ -269,8 +269,8 @@ function RootError() {
 function routePatternFromParams(
   pathname: string | null | undefined,
   params: Record<string, string | string[] | undefined> | null | undefined,
-  options: { matched: boolean },
-): string | null
+  options: { matched: boolean }
+): string | null;
 ```
 
 Derives the pattern by value substitution:
@@ -309,7 +309,7 @@ The same single-holder caveat as `usePageContext` applies: the tracker stores on
 ## useKeyboardShortcuts
 
 ```typescript
-function useKeyboardShortcuts(shortcuts: ShortcutDef[]): void
+function useKeyboardShortcuts(shortcuts: ShortcutDef[]): void;
 ```
 
 Publishes the shortcuts your app implements so an agent can use them instead of
@@ -328,12 +328,12 @@ useKeyboardShortcuts([
 always fills in as `'developer'` — that is how these are distinguished from
 shortcuts the tracker discovered by scanning the DOM.
 
-| Field | Type | Meaning |
-|-------|------|---------|
-| `combo` | `string` | **Required.** Normalised combo: `"Ctrl+Shift+T"`, `"Alt+N"`, `"Escape"` |
-| `description` | `string` | What the shortcut does |
-| `elementId` | `string` | Associated element id in the registry |
-| `scope` | `string` | Where it applies, e.g. `"global"`, `"editor"` |
+| Field         | Type     | Meaning                                                                 |
+| ------------- | -------- | ----------------------------------------------------------------------- |
+| `combo`       | `string` | **Required.** Normalised combo: `"Ctrl+Shift+T"`, `"Alt+N"`, `"Escape"` |
+| `description` | `string` | What the shortcut does                                                  |
+| `elementId`   | `string` | Associated element id in the registry                                   |
+| `scope`       | `string` | Where it applies, e.g. `"global"`, `"editor"`                           |
 
 :::warning Declaring a shortcut does not implement it
 
@@ -352,7 +352,7 @@ The array is compared by serialised value, so an inline literal is fine.
 ## useUndoRedo
 
 ```typescript
-function useUndoRedo(options: DeclaredUndoState): void
+function useUndoRedo(options: DeclaredUndoState): void;
 ```
 
 Declares your app's real undo/redo state. UI Bridge otherwise guesses at undo
@@ -378,16 +378,16 @@ function MyEditor() {
 }
 ```
 
-| Field | Type | Meaning |
-|-------|------|---------|
-| `canUndo` | `boolean` | **Required.** Undo currently available |
-| `canRedo` | `boolean` | **Required.** Redo currently available |
-| `undoDescription` | `string` | What the next undo would reverse |
-| `redoDescription` | `string` | What the next redo would restore |
-| `undoStack` | `string[]` | Full undo stack descriptions, most recent first |
-| `redoStack` | `string[]` | Full redo stack descriptions, most recent first |
-| `onUndo` | `() => void` | Perform undo programmatically |
-| `onRedo` | `() => void` | Perform redo programmatically |
+| Field             | Type         | Meaning                                         |
+| ----------------- | ------------ | ----------------------------------------------- |
+| `canUndo`         | `boolean`    | **Required.** Undo currently available          |
+| `canRedo`         | `boolean`    | **Required.** Redo currently available          |
+| `undoDescription` | `string`     | What the next undo would reverse                |
+| `redoDescription` | `string`     | What the next redo would restore                |
+| `undoStack`       | `string[]`   | Full undo stack descriptions, most recent first |
+| `redoStack`       | `string[]`   | Full redo stack descriptions, most recent first |
+| `onUndo`          | `() => void` | Perform undo programmatically                   |
+| `onRedo`          | `() => void` | Perform redo programmatically                   |
 
 The declaration is cleared (set to `null`) on unmount.
 

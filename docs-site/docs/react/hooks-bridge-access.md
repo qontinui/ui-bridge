@@ -12,7 +12,7 @@ built on.
 ## useUIBridge
 
 ```typescript
-function useUIBridge(): UseUIBridgeReturn
+function useUIBridge(): UseUIBridgeReturn;
 ```
 
 The main entry point. Takes no arguments; returns a façade over the registry,
@@ -65,8 +65,8 @@ which both throw.
 
 ```typescript
 interface UseUIBridgeReturn {
-  available: boolean;      // a provider is present
-  initialized: boolean;    // the provider finished initialising
+  available: boolean; // a provider is present
+  initialized: boolean; // the provider finished initialising
 
   // Live registry views (subscribed)
   elements: RegisteredElement[];
@@ -81,10 +81,16 @@ interface UseUIBridgeReturn {
   ) => Promise<BridgeSnapshot>;
 
   // Execution
-  executeAction: (elementId: string, request: ControlActionRequest) => Promise<ControlActionResponse>;
-  executeComponentAction: (componentId: string, request: ComponentActionRequest) => Promise<ComponentActionResponse>;
+  executeAction: (
+    elementId: string,
+    request: ControlActionRequest
+  ) => Promise<ControlActionResponse>;
+  executeComponentAction: (
+    componentId: string,
+    request: ComponentActionRequest
+  ) => Promise<ComponentActionResponse>;
   find: (options?: FindRequest) => Promise<FindResponse>;
-  discover: (options?: FindRequest) => Promise<FindResponse>;   // deprecated alias for find
+  discover: (options?: FindRequest) => Promise<FindResponse>; // deprecated alias for find
 
   // Workflows
   runWorkflow: (workflowId: string, request?: WorkflowRunRequest) => Promise<WorkflowRunResponse>;
@@ -129,7 +135,7 @@ Notes drawn from the implementation:
 ## useUIBridgeRequired
 
 ```typescript
-function useUIBridgeRequired(): UseUIBridgeReturn
+function useUIBridgeRequired(): UseUIBridgeReturn;
 ```
 
 Identical to [`useUIBridge`](#useuibridge), except it calls
@@ -146,7 +152,7 @@ fails loudly at mount instead of silently returning `available: false`.
 ## useUIBridgeContext
 
 ```typescript
-function useUIBridgeContext(): UIBridgeContextValue
+function useUIBridgeContext(): UIBridgeContextValue;
 ```
 
 The raw context value. Throws the error above when used outside a provider.
@@ -161,7 +167,7 @@ the façade does not expose.
 ## useUIBridgeOptional
 
 ```typescript
-function useUIBridgeOptional(): UIBridgeContextValue | null
+function useUIBridgeOptional(): UIBridgeContextValue | null;
 ```
 
 The same raw context value, returning `null` outside a provider instead of
@@ -174,7 +180,7 @@ it when writing your own bridge-aware hook that must stay optional.
 ## useUIBridgeWindowLabel
 
 ```typescript
-function useUIBridgeWindowLabel(): string | undefined
+function useUIBridgeWindowLabel(): string | undefined;
 ```
 
 Reads the window label declared by the nearest `UIBridgeWindowProvider`, or

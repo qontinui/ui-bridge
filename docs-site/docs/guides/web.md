@@ -302,11 +302,7 @@ export function InteractiveButton({ id, children, onClick }) {
 Register adapters for accurate form state extraction:
 
 ```tsx
-import {
-  createAdapterRegistry,
-  ReactHookFormAdapter,
-  FormikAdapter,
-} from '@qontinui/ui-bridge';
+import { createAdapterRegistry, ReactHookFormAdapter, FormikAdapter } from '@qontinui/ui-bridge';
 
 const registry = createAdapterRegistry();
 registry.register(new ReactHookFormAdapter());

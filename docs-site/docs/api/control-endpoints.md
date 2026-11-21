@@ -35,9 +35,19 @@ Returns all registered elements.
       "type": "button",
       "label": "Submit Button",
       "actions": [
-        "click", "hoverClick", "doubleClick", "rightClick", "middleClick",
-        "sendKeys", "focus", "blur", "hover", "unhover", "scroll",
-        "scrollIntoView", "drag"
+        "click",
+        "hoverClick",
+        "doubleClick",
+        "rightClick",
+        "middleClick",
+        "sendKeys",
+        "focus",
+        "blur",
+        "hover",
+        "unhover",
+        "scroll",
+        "scrollIntoView",
+        "drag"
       ],
       "state": {
         "visible": true,
@@ -67,9 +77,23 @@ Get details for a specific element.
     "type": "input",
     "label": "Email Input",
     "actions": [
-      "click", "hoverClick", "doubleClick", "rightClick", "middleClick",
-      "type", "sendKeys", "clear", "focus", "blur", "hover", "unhover",
-      "scroll", "scrollIntoView", "setValue", "drag", "autocomplete"
+      "click",
+      "hoverClick",
+      "doubleClick",
+      "rightClick",
+      "middleClick",
+      "type",
+      "sendKeys",
+      "clear",
+      "focus",
+      "blur",
+      "hover",
+      "unhover",
+      "scroll",
+      "scrollIntoView",
+      "setValue",
+      "drag",
+      "autocomplete"
     ],
     "identifier": {
       "uiId": "email-input",
@@ -466,9 +490,9 @@ and one taken in situ on the real page. It compares structure, not pixels.
 
 **Refusals** carry `error` and `reason` at the top level:
 
-| `reason`              | Status | When                                            |
-| --------------------- | ------ | ----------------------------------------------- |
-| `not_found`           | 404    | No registered component or element has this id. |
+| `reason`              | Status | When                                                                                                         |
+| --------------------- | ------ | ------------------------------------------------------------------------------------------------------------ |
+| `not_found`           | 404    | No registered component or element has this id.                                                              |
 | `no_mounted_elements` | 422    | The element is not mounted, or the component has no mounted element (or none sharing a common DOM ancestor). |
 
 ```json
@@ -528,18 +552,18 @@ POST /control/visibility
 Reports **what is covering what**, page-wide.
 
 `/control/page-health` and `/control/find` both report per-element visibility,
-but neither answers the question asked after a layout regression: *is a floating
-widget hiding something?* That needs the **directed** relation — occluder over
+but neither answers the question asked after a layout regression: _is a floating
+widget hiding something?_ That needs the **directed** relation — occluder over
 occluded — rather than a per-element boolean. "These two boxes intersect" does
 not tell you which one the user can actually read.
 
 **Request body** (all fields optional; send `{}` for defaults):
 
-| Field | Type | Default | Meaning |
-|---|---|---|---|
-| `minRatio` | number | `0.02` | Drop occlusions covering less than this fraction of the covered element. Filters hairline overlaps. |
-| `includeExpected` | boolean | `false` | Keep occlusions caused by a tracked modal. See [Expected overlays](#expected-overlays). |
-| `recency` | string | relay cache TTL (5 s) | **Relay transport only.** How fresh the backing snapshot must be: `"any"` (accept any non-empty cache), `"current"` (always refetch), or a max age in ms. Omitted, it falls back to the relay's configured `cacheTtlMs`. Ignored by the in-page handler, which always reads the live registry. |
+| Field             | Type    | Default               | Meaning                                                                                                                                                                                                                                                                                        |
+| ----------------- | ------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `minRatio`        | number  | `0.02`                | Drop occlusions covering less than this fraction of the covered element. Filters hairline overlaps.                                                                                                                                                                                            |
+| `includeExpected` | boolean | `false`               | Keep occlusions caused by a tracked modal. See [Expected overlays](#expected-overlays).                                                                                                                                                                                                        |
+| `recency`         | string  | relay cache TTL (5 s) | **Relay transport only.** How fresh the backing snapshot must be: `"any"` (accept any non-empty cache), `"current"` (always refetch), or a max age in ms. Omitted, it falls back to the relay's configured `cacheTtlMs`. Ignored by the in-page handler, which always reads the live registry. |
 
 **Response:**
 
@@ -581,10 +605,10 @@ geometric z-order model needs to say which probe produced which entry.
 
 #### Verdicts
 
-| `verdict` | Meaning |
-|---|---|
-| `clear` | Elements were swept and nothing (unexpected) is covered. |
-| `occlusions_found` | At least one entry in `occlusions`. |
+| `verdict`                | Meaning                                                   |
+| ------------------------ | --------------------------------------------------------- |
+| `clear`                  | Elements were swept and nothing (unexpected) is covered.  |
+| `occlusions_found`       | At least one entry in `occlusions`.                       |
 | `unknown_empty_registry` | The registry held no elements, so nothing could be swept. |
 
 `unknown_empty_registry` exists so an empty `occlusions` list is never mistaken
@@ -601,14 +625,14 @@ Classification runs against the snapshot's `modalStack`, populated by the
 Matching is deliberately narrow: only identity-bearing forms count — the
 occluder registered under the modal's own id, or an unregistered occluder whose
 DOM id is the modal's. Class and bare-tag descriptors are not identities and
-never match, because an entry marked expected is *removed* from the default
+never match, because an entry marked expected is _removed_ from the default
 response, and a loose rule would hide the very regressions this endpoint exists
 to surface.
 
-| `expectedOverlayDetection` | Meaning |
-|---|---|
-| `modal-stack` | A modal stack was available and used to classify every occluder. An empty stack is still `modal-stack` — that genuinely means no modals are open. |
-| `unavailable` | No `modalDetector` enricher, so nothing could be classified: every `isExpectedOverlay` is `false` and nothing was filtered. |
+| `expectedOverlayDetection` | Meaning                                                                                                                                           |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `modal-stack`              | A modal stack was available and used to classify every occluder. An empty stack is still `modal-stack` — that genuinely means no modals are open. |
+| `unavailable`              | No `modalDetector` enricher, so nothing could be classified: every `isExpectedOverlay` is `false` and nothing was filtered.                       |
 
 `unavailable` is **UNKNOWN, not "no expected overlays"** — the same
 absence-is-not-zero distinction `unknown_empty_registry` draws. `includeExpected`

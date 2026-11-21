@@ -60,11 +60,11 @@ so **they run from any directory once installed** — there is no "must run from
 the ui-bridge repo root" coupling. Run via `npx @qontinui/ui-bridge-wrapper`
 or a global/dev install:
 
-| Bin | What it does |
-| --- | --- |
-| `ui-bridge-inject` | Drive the injected transport against a UI-Bridge-free page (exec one-shot actions, register as a relay tab, or capture frame-and-snapshot pairs — one, or a viewport × DPR × colour-scheme matrix). |
-| `ui-bridge-login-web` | Automated web login via the injected transport — drives the full Cognito OAuth redirect chain in one headless tab. Optionally asserts on-page text (`--expect-text`) and screenshots the authed landing (`--screenshot`/`--scroll-to`). Prints one JSON result line; exit 0 = login confirmed AND all expected text present. |
-| `ui-bridge-capture-specs` | Log in (same flow) then `goto` + snapshot a set of authed pages, writing one `<slug>.snapshot.json` per page. |
+| Bin                       | What it does                                                                                                                                                                                                                                                                                                                 |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ui-bridge-inject`        | Drive the injected transport against a UI-Bridge-free page (exec one-shot actions, register as a relay tab, or capture frame-and-snapshot pairs — one, or a viewport × DPR × colour-scheme matrix).                                                                                                                          |
+| `ui-bridge-login-web`     | Automated web login via the injected transport — drives the full Cognito OAuth redirect chain in one headless tab. Optionally asserts on-page text (`--expect-text`) and screenshots the authed landing (`--screenshot`/`--scroll-to`). Prints one JSON result line; exit 0 = login confirmed AND all expected text present. |
+| `ui-bridge-capture-specs` | Log in (same flow) then `goto` + snapshot a set of authed pages, writing one `<slug>.snapshot.json` per page.                                                                                                                                                                                                                |
 
 Each bin supports `--help`.
 
@@ -162,7 +162,7 @@ ui-bridge-inject --url http://127.0.0.1:3000/ \
   `clear`, `params`, `fromSnapshotId`, …). Two other spellings are accepted:
   `elementId` in place of `id`, and a flat payload such as
   `{"id":"<id>","action":"type","text":"hi"}`, which, minus `id` / `elementId`,
-  *is* the request. No key *beside* a `request` object is silently dropped: a
+  _is_ the request. No key _beside_ a `request` object is silently dropped: a
   top-level `action` or request field there must equal the same field inside
   `request` (an agreeing duplicate is accepted); one that is only at the top
   level, or at both levels with different values, is refused, and so are an
