@@ -94,7 +94,9 @@ export default defineConfig([
     },
     splitting: false,
     sourcemap: true,
-    clean: true,
+    // No `clean`: tsup builds the four configs of this array concurrently
+    // (Promise.all), so a clean here deletes dist while the other three write
+    // into it. The build script empties dist once, before tsup starts.
     treeshake: true,
     // Inject the package.json version as a build-time constant so the SDK
     // can publish itself as `window.__UI_BRIDGE__.version` without pulling
