@@ -509,18 +509,24 @@ element, a state the inspector is routinely in. So:
 
 - the `focus` entry carries `focusVisible: true | false | 'unknown'`, the
   browser's own `el.matches(':focus-visible')` read while the focus was held —
-  it says which focus appearance that entry's styles are. `'unknown'` means
-  the match could not be read (an engine without the selector), never `false`;
+  it says which focus appearance that entry's styles are. `'not_focused'`
+  means the focus never landed (a non-focusable, disabled or inert element, or
+  a focus handler that moved focus elsewhere), so the styles are the unfocused
+  ones; `'unknown'` means the match could not be read (an engine without the
+  selector). Neither is ever reported as `false`;
 - the `focus-visible` state (in the default set) focuses the element AND forces
   `:focus-visible` through the same in-place rewrite as `hover`
   (`:is(:focus-visible,[data-ui-bridge-pseudo-focus-visible])`, the target alone
-  marked), so it always reads the keyboard-focus appearance, and
-  `:focus:not(:focus-visible)` rules stop matching while it is held.
+  marked), so it reads the keyboard-focus appearance, and
+  `:focus:not(:focus-visible)` rules stop matching while it is held. Its entry
+  carries `focused`: `false` means the focus did not land, nothing was forced
+  (the element can never draw that ring), and the styles are the unfocused
+  ones.
 
 ```bash
 curl -s -X POST "$BASE/design/element/save-btn/state-styles" \
   -H 'Content-Type: application/json' -d '{"states":["focus","focus-visible"]}' \
-  | jq '.data.stateStyles[] | {state, focusVisible, outline: .styles.outline}'
+  | jq '.data.stateStyles[] | {state, focusVisible, focused, outline: .styles.outline}'
 ```
 
 ## 9. Read the styles and attributes a check needs

@@ -221,9 +221,15 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('design inspector focus states (real Chro
       const el = document.getElementById('t')!;
       const states = await window.FV.captureStateVariations(el, ['focus', 'focus-visible']);
       return states.map(
-        (s: { state: string; focusVisible?: unknown; styles: Record<string, string> }) => ({
+        (s: {
+          state: string;
+          focusVisible?: unknown;
+          focused?: unknown;
+          styles: Record<string, string>;
+        }) => ({
           state: s.state,
           focusVisible: s.focusVisible,
+          focused: s.focused,
           outline: s.styles.outline,
           boxShadow: s.styles.boxShadow,
         })
@@ -243,6 +249,8 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('design inspector focus states (real Chro
     expect(byState.focus.boxShadow).toBe('rgb(0, 0, 255) 0px 0px 0px 2px');
     // Forced: the `:focus-visible` rule applies and the `:not(:focus-visible)` one stops.
     expect(byState['focus-visible'].focusVisible).toBeUndefined();
+    expect(byState['focus-visible'].focused).toBe(true);
+    expect(byState.focus.focused).toBeUndefined();
     expect(byState['focus-visible'].outline).toBe('rgb(255, 0, 0) dashed 5px');
     expect(byState['focus-visible'].boxShadow).toBe('none');
 
@@ -298,6 +306,44 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('design inspector focus states (real Chro
     await page.close();
   }, 30_000);
 
+  it("a non-focusable element: focus reports 'not_focused', focus-visible reports focused=false and forces nothing", async () => {
+    const page = await openPage();
+    await prime(page, 'pointer click on a focusable element');
+    const read = await page.evaluate(async () => {
+      const pad = document.getElementById('pad')!;
+      const written: Array<string | null> = [];
+      const observer = new MutationObserver((records) => {
+        for (const r of records) written.push(r.attributeName);
+      });
+      observer.observe(pad, { attributes: true });
+      const states = await window.FV.captureStateVariations(pad, ['focus', 'focus-visible']);
+      for (const r of observer.takeRecords()) written.push(r.attributeName);
+      observer.disconnect();
+      const by = Object.fromEntries(
+        states.map((s: { state: string; focusVisible?: unknown; focused?: unknown }) => [
+          s.state,
+          { focusVisible: s.focusVisible, focused: s.focused },
+        ])
+      );
+      return {
+        focus: by.focus,
+        focusVisible: by['focus-visible'],
+        direct: window.FV.readFocusVisible(pad),
+        marked: written.includes('data-ui-bridge-pseudo-focus-visible'),
+        active: document.activeElement?.id,
+      };
+    });
+    expect(read).toEqual({
+      focus: { focusVisible: 'not_focused', focused: undefined },
+      focusVisible: { focusVisible: undefined, focused: false },
+      direct: 'not_focused',
+      marked: false,
+      active: 'other',
+    });
+    expect(await rewritesLeft(page)).toBe(0);
+    await page.close();
+  }, 30_000);
+
   it("a focus whose :focus-visible match cannot be read is 'unknown', never false", async () => {
     const page = await openPage();
     const read = await page.evaluate(async () => {
@@ -311,8 +357,11 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('design inspector focus states (real Chro
       try {
         const el = document.getElementById('t')!;
         const states = await window.FV.captureStateVariations(el, ['focus']);
+        el.focus();
+        const direct = window.FV.readFocusVisible(el);
+        el.blur();
         return {
-          direct: window.FV.readFocusVisible(el),
+          direct,
           entry: states.find((s: { state: string }) => s.state === 'focus').focusVisible,
         };
       } finally {
