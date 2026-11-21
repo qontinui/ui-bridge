@@ -36,7 +36,7 @@ const EVALUATE_PARSER_RELEASE = '0.58.0';
 let loadedStyleGuide: NativeStyleGuideConfig | null = null;
 let savedBaseline: unknown = null;
 
-// The web SDK's shared design-audit core (optional peer dep, 0.58.0 or later)
+// The web SDK's shared design-audit core (optional peer dep, 0.59.0 or later)
 let designAudit: DesignAuditCoreModule | null = null;
 
 // Try to load quality evaluator from the web SDK (optional peer dep)
@@ -685,7 +685,7 @@ export function createDesignHandlers(
       // native adapter and the differences React Native forces.
       if (!auditCore) {
         return error(
-          'Install a @qontinui/ui-bridge release containing the shared design audit (0.58.0 or later).',
+          'Install a @qontinui/ui-bridge release containing the shared design audit (0.59.0 or later).',
           'VALIDATOR_NOT_AVAILABLE'
         );
       }

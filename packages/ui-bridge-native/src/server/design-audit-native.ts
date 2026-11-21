@@ -4,7 +4,7 @@
  *
  * The web transports answer `/design/audit` with `designAuditOf`, a DOM
  * adapter over the pure `auditDesign` (`@qontinui/ui-bridge/specs`,
- * `specs/design-audit-core.ts`, 0.58.0 or later). This file is the second
+ * `specs/design-audit-core.ts`, 0.59.0 or later). This file is the second
  * adapter: the core parses the body, selects and bounds the elements, picks
  * the mode and builds both reports, so a native answer has every field a web
  * answer has and cannot drift from it. Plan:
@@ -273,7 +273,7 @@ export interface NativeDesignAuditAdapter<T extends { id: string }, R extends T 
   >;
 }
 
-/** The shared audit core native calls (`@qontinui/ui-bridge/specs`, 0.58.0 or later). */
+/** The shared audit core native calls (`@qontinui/ui-bridge/specs`, 0.59.0 or later). */
 export interface DesignAuditCoreModule {
   // A property, not a method, so its parameters are checked strictly against
   // the SDK's `auditDesign` (`design-audit-native.test-d.ts`).
@@ -287,7 +287,7 @@ export interface DesignAuditCoreModule {
 
 /**
  * The audit core, when the loaded SDK carries it. The declared peer floor is
- * 0.58.0, but an optional peer can still be satisfied out of range
+ * 0.59.0, but an optional peer can still be satisfied out of range
  * (`--legacy-peer-deps`, other package managers), so availability is decided
  * by the function's presence, not by the `require`.
  */
