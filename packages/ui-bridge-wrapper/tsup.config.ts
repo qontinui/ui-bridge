@@ -22,7 +22,9 @@ export default defineConfig([
     dts: false,
     splitting: false,
     sourcemap: true,
-    clean: true,
+    // No `clean`: tsup builds both configs of this array concurrently
+    // (Promise.all), so a clean here can delete the CLI bins the second config
+    // is writing. The build script empties dist once, before tsup starts.
     treeshake: true,
     outExtension({ format }) {
       return { js: format === 'cjs' ? '.cjs' : '.js' };
@@ -31,10 +33,10 @@ export default defineConfig([
   },
   {
     // CLI binaries. CJS-only with a shebang banner so they run as executables;
-    // DTS not needed for a bin. Does NOT set `clean` — only the main config
-    // cleans, and it runs first. All three bins resolve the engine bundle from
-    // the wrapper package's own module tree (injected transport's
-    // createRequire(import.meta.url)), so they run from any CWD once installed.
+    // DTS not needed for a bin. Neither config sets `clean` (see above). All
+    // three bins resolve the engine bundle from the wrapper package's own
+    // module tree (injected transport's createRequire(import.meta.url)), so
+    // they run from any CWD once installed.
     entry: {
       'inject-cli': 'src/inject-cli.ts',
       'login-web-cli': 'src/login-web-cli.ts',
