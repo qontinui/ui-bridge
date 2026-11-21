@@ -191,9 +191,8 @@ always-green syntax gate.
 
 ## Running the full smoke locally
 
-The full smoke runs from your own dev machine, where the supervisor + backend
-
-- a primary runner already exist — no CI job involved.
+The full smoke runs from your own dev machine, where the supervisor, backend
+and a primary runner already exist — no CI job involved.
 
 Prerequisites:
 
