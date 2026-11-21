@@ -591,17 +591,23 @@ The same rules are enforced for every published package here by
 `npm run deps:check-ranges`.
 
 That check carries one more rule: **a released version is frozen.** Once the
-release tag `<dir>-v<version>` exists, the package's `dependencies`,
-`peerDependencies` and `optionalDependencies` must stay exactly as they were in
-the tagged manifest. Key order does not matter. To change a range after a
+release tag `<dir>-v<version>` exists (`<dir>` is the directory under
+`packages/`, such as `ui-bridge-headless`, not the npm name), the package's
+`dependencies`, `peerDependencies` and `optionalDependencies` must stay exactly
+as they were in the tagged manifest. That covers every entry in those blocks,
+external ones such as `react` or `playwright` included, not only the
+`@qontinui/*` ranges above. Key order does not matter. To change a range after a
 release, raising a floor included, bump the package's version in the same
 change. Otherwise the source describes a version npm already holds with
 metadata it never shipped, and the next publish of that version is refused. This
 happened once: commit `20e7c37` raised the `@qontinui/ui-bridge-cli-args` floor
 in headless 0.7.0 and wrapper 0.12.0 after both were released. "Released" means
 the tag exists, whatever npm holds, so a tag whose publish failed still freezes
-its version. If the tag cannot be read (no local tag, and `origin` unreachable or
-listing no tags), the check fails as UNKNOWN instead of passing.
+its version. If the tag cannot be read, the check fails as UNKNOWN instead of
+passing. For example, there may be no local tag while `origin` is unreachable or
+lists no tags, or the tagged `packages/<dir>/package.json` may be missing. One
+gap remains: run from a fork or mirror whose `origin` carries some tags but not
+this package's, the check reads the version as unreleased and passes.
 
 React is optional so pure-Node daemons (headless / live) skip it. Add
 `playwright` as an optional peer if you support `headless` / `headed`:
