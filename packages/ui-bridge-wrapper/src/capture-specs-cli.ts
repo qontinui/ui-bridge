@@ -24,7 +24,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createTransport } from './create-transport.js';
-import { ArgReader, COMMON_FLAGS, makeLogger, parsePositiveInt } from './cli-args.js';
+import {
+  ArgReader,
+  COMMON_FLAGS,
+  makeLogger,
+  parsePositiveInt,
+} from '@qontinui/ui-bridge-cli-args';
 import type { InjectedContext } from './transports/injected.js';
 import { isAppLoginPath, loginDrive } from './login-drive.js';
 import { returnedFailureError } from './action-outcome.js';

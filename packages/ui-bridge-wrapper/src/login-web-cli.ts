@@ -64,7 +64,7 @@ import {
   makeLogger,
   parsePositiveInt,
   rejectEmptyValue,
-} from './cli-args.js';
+} from '@qontinui/ui-bridge-cli-args';
 import type { InjectedContext } from './transports/injected.js';
 import { isReturnedFailure } from './action-outcome.js';
 import {

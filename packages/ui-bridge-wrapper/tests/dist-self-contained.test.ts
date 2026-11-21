@@ -1,19 +1,23 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ensureBuilt } from '../../../test-support/ensure-built.mjs';
 
 /**
  * Build-output guard: `@qontinui/ui-bridge-cli-args` is INLINED into this
- * package's bundles, never required at runtime.
+ * package's bundles, never required at runtime, and never named by the
+ * published types.
  *
  * cli-args has never reached npm past 0.1.0 (its publish 404s), so a published
  * wrapper whose bins still `require`d it — through a `dependencies` entry tsup
  * externalises by default — would crash `ui-bridge-inject`,
  * `ui-bridge-login-web` and `ui-bridge-capture-specs` on startup for every
- * consumer. It is therefore a devDependency and tsup bundles it. This test
- * fails if a runtime reference to it reappears in `dist/`, or if the manifest
+ * consumer, and a shipped `.d.ts` that re-exports it would name a package the
+ * consumer does not have. It is therefore a devDependency, tsup bundles it,
+ * and the bins import it directly rather than through a re-export module whose
+ * declaration file would ship. This test fails if a reference to it reappears
+ * in any built bundle or declaration file under `dist/`, or if the manifest
  * lists it as a runtime dependency again.
  *
  * The bin roster is read from package.json, so a newly added bin is covered
@@ -27,11 +31,17 @@ const CLI_ARGS = '@qontinui/ui-bridge-cli-args';
 const RUNTIME_BLOCKS = ['dependencies', 'peerDependencies', 'optionalDependencies'] as const;
 /** Any quoted module specifier naming the package (or a subpath of it). */
 const SPECIFIER = /["'`]@qontinui\/ui-bridge-cli-args(?:\/[^"'`]*)?["'`]/;
+/** What ships from dist and is loaded by node or by tsc: bundles and declarations. */
+const SHIPPED = /\.(?:c|m)?js$|\.d\.(?:c|m)?ts$/;
 
 const pkg = JSON.parse(readFileSync(join(PKG_DIR, 'package.json'), 'utf8')) as {
   bin: Record<string, string>;
 } & Record<string, Record<string, string> | undefined>;
 const BIN_PATHS = Object.values(pkg.bin).map((rel) => resolve(PKG_DIR, rel));
+const OUTPUTS = [
+  ...BIN_PATHS,
+  ...['index.js', 'index.cjs', 'index.d.ts'].map((name) => join(DIST_DIR, name)),
+];
 
 function walk(dir: string, keep: (name: string) => boolean): string[] {
   const out: string[] = [];
@@ -43,31 +53,10 @@ function walk(dir: string, keep: (name: string) => boolean): string[] {
   return out;
 }
 
-const isBundle = (name: string) => /\.(c|m)?js$/.test(name);
-
-/** CI builds before it tests, so this is a no-op there; locally it runs the
- * package's own build rather than inventing a second build path. */
-function ensureBuilt(): void {
-  const srcNewest = Math.max(
-    ...walk(join(PKG_DIR, 'src'), (n) => n.endsWith('.ts') || n.endsWith('.tsx')).map(
-      (f) => statSync(f).mtimeMs
-    ),
-    statSync(join(PKG_DIR, 'package.json')).mtimeMs
-  );
-  const stale = BIN_PATHS.some((p) => !existsSync(p) || statSync(p).mtimeMs < srcNewest);
-  if (!stale) return;
-  execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build'], {
-    cwd: PKG_DIR,
-    stdio: 'inherit',
-    timeout: 600_000,
-    shell: process.platform === 'win32',
-  });
-}
-
 describe('cli-args is bundled into dist, not a runtime dependency', () => {
   beforeAll(() => {
-    ensureBuilt();
-  }, 600_000);
+    ensureBuilt(PKG_DIR, OUTPUTS);
+  }, 1_200_000);
 
   it('the manifest does not list cli-args as a runtime dependency', () => {
     for (const block of RUNTIME_BLOCKS) {
@@ -75,12 +64,12 @@ describe('cli-args is bundled into dist, not a runtime dependency', () => {
     }
   });
 
-  it('no built bundle references cli-args as a module specifier', () => {
-    // Every bin and both entry formats must exist, or this check proves nothing.
-    for (const p of [...BIN_PATHS, join(DIST_DIR, 'index.js'), join(DIST_DIR, 'index.cjs')]) {
-      expect(existsSync(p), `${relative(PKG_DIR, p)} missing`).toBe(true);
+  it('no built bundle or declaration file references cli-args as a module specifier', () => {
+    // Every bin, both entry formats and the types must exist, or this proves nothing.
+    for (const out of OUTPUTS) {
+      expect(existsSync(out), `${relative(PKG_DIR, out)} missing`).toBe(true);
     }
-    const offenders = walk(DIST_DIR, isBundle)
+    const offenders = walk(DIST_DIR, (name) => SHIPPED.test(name))
       .filter((f) => SPECIFIER.test(readFileSync(f, 'utf8')))
       .map((f) => relative(PKG_DIR, f));
     expect(offenders).toEqual([]);

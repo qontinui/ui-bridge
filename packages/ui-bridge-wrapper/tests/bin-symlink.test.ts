@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ensureBuilt } from '../../../test-support/ensure-built.mjs';
 
 /**
  * Regression guard for the CLI entry-point guard.
@@ -38,36 +39,6 @@ const BINS = Object.entries(pkg.bin).map(([name, rel]) => ({
   dist: resolve(PKG_DIR, rel),
 }));
 
-/** Newest mtime under `src/` — used to detect a dist built from older sources. */
-function newestSourceMtime(dir: string): number {
-  let newest = 0;
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const abs = join(dir, entry.name);
-    if (entry.isDirectory()) newest = Math.max(newest, newestSourceMtime(abs));
-    else if (entry.name.endsWith('.ts') || entry.name.endsWith('.tsx'))
-      newest = Math.max(newest, statSync(abs).mtimeMs);
-  }
-  return newest;
-}
-
-/**
- * The bins only exist once the package is built. CI builds before it tests
- * (see .github/workflows/ci.yml), so this is a no-op there; locally it runs the
- * package's own `npm run build` rather than inventing a second build path.
- * A dist older than any source file is rebuilt too — a stale bundle would make
- * this test report on code that is no longer in the tree.
- */
-function ensureBuilt(): void {
-  const srcNewest = newestSourceMtime(join(PKG_DIR, 'src'));
-  const stale = BINS.some((b) => !existsSync(b.dist) || statSync(b.dist).mtimeMs < srcNewest);
-  if (!stale) return;
-  execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build'], {
-    cwd: PKG_DIR,
-    stdio: 'inherit',
-    timeout: 600_000,
-  });
-}
-
 /**
  * npm only materialises bins as real symlinks on POSIX; on Windows it writes
  * `.cmd`/`.ps1` shims and creating a symlink usually needs elevation. Probe
@@ -94,8 +65,11 @@ function run(entry: string): { status: number | null; stdout: string; stderr: st
 
 describe.skipIf(!SYMLINKS_AVAILABLE)('bin entry guard survives the bin symlink', () => {
   beforeAll(() => {
-    ensureBuilt();
-  }, 600_000);
+    ensureBuilt(
+      PKG_DIR,
+      BINS.map((b) => b.dist)
+    );
+  }, 1_200_000);
 
   for (const bin of BINS) {
     it(`${bin.name} runs main() when invoked through node_modules/.bin/${bin.name}`, () => {

@@ -34,7 +34,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createTransport } from './create-transport.js';
-import { consumeValue, parseNonNegativeInt, parsePositiveInt } from './cli-args.js';
+import { consumeValue, parseNonNegativeInt, parsePositiveInt } from '@qontinui/ui-bridge-cli-args';
 import { InjectCliArgError } from './inject-cli-errors.js';
 import {
   applyNetworkEmulation,
