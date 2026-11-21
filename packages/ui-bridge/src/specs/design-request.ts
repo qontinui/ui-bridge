@@ -633,15 +633,18 @@ export function designAuditOf(
 ): DesignAuditResponse {
   const route = '/design/audit';
   const body = bodyOf(request, route);
+  // Checked first, before any other field and before the guide is read, so a
+  // body that is wrong in several ways is refused for the root on every
+  // transport — the native server's `runDesignAudit` checks it first too.
+  const requestedRoot = body.rootFontSizePx;
+  if (isGiven(requestedRoot) && !isPositiveNumber(requestedRoot)) {
+    throw new DesignRequestError(`${route}: rootFontSizePx must be a finite number greater than 0`);
+  }
   const elementIds = elementIdsOf(body, route);
   const guide = guideOf(body, route) ?? loadedGuide ?? undefined;
   const limit = limitOf(body, route) ?? DEFAULT_AUDIT_ELEMENT_LIMIT;
   const includePassed = booleanOf(body, 'includePassed', route) ?? false;
   const maxResults = positiveIntegerOf(body, 'maxResults', route) ?? DEFAULT_AUDIT_MAX_RESULTS;
-  const requestedRoot = body.rootFontSizePx;
-  if (isGiven(requestedRoot) && !isPositiveNumber(requestedRoot)) {
-    throw new DesignRequestError(`${route}: rootFontSizePx must be a finite number greater than 0`);
-  }
   const { kept, report } = bounded(selectElements(elements, elementIds), limit);
   const bounds: DesignAuditBounds = { ...report, checkedElements: kept.length };
   if (guide) {
