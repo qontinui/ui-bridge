@@ -37,12 +37,11 @@ name author data such as `font-family`, `list-style-type`, `grid-area` or
 render-log capture, session recording, and the framework-store adapters
 (Formik / React Hook Form) — **and** the arbitrary-selector reads
 (`/control/page/read-value`, `/control/page/find-by-text`). Search/find paths
-also cannot be used as a _confirmation oracle_ — a redacted element's secret
+also cannot be used as a *confirmation oracle* — a redacted element's secret
 can't be confirmed by matching against it.
 
 **How it's enforced (not best-effort).** Two mechanisms make omission a build
 failure, not a silent leak:
-
 - **Typed projections** carry the content on a branded `Scrubbed<T>` wire
   type; a raw DOM string cannot be assigned into a client-facing field without
   a compile error.
@@ -50,7 +49,7 @@ failure, not a silent leak:
   `.value` / `.textContent` / `getAttribute('aria-label'|…)` reads in every
   projection module — a new ungated read fails `npm run lint`.
 
-**Addressability is preserved.** Redaction hides _content_, not _presence_: a
+**Addressability is preserved.** Redaction hides *content*, not *presence*: a
 redacted element still ships its `id`, `role`, geometry, and `data-testid`, so
 it stays findable and clickable by structural means. A bare password field
 keeps its "Password" label and stays addressable — only its value hides. Match
@@ -83,7 +82,6 @@ and the package root re-exports all of these. `REDACTED_VALUE` is only for
 producing the sentinel. Do not use it to detect redaction (see below).
 
 **What §4.6 does NOT cover** (state these to anyone relying on it):
-
 - **Shadow DOM / React portals.** The boundary walk follows `parentElement`
   only; content portalled to `document.body` from inside a boundary has no
   `data-bridge-redact` ancestor. **Re-declare the attribute on the portal
@@ -93,15 +91,15 @@ producing the sentinel. Do not use it to detect redaction (see below).
 - **Existence & geometry** — a redacted element's id/role/bbox/visibility still
   ship. Content is hidden; presence is not (by design — removing it would break
   addressability).
-- **Developer-set metadata _outside_ a boundary survives** — a `label` /
+- **Developer-set metadata *outside* a boundary survives** — a `label` /
   `description` / `aliases` you set explicitly on a non-redacted element is kept
-  (it isn't scraped DOM). _Inside_ a boundary, everything content-derived is
+  (it isn't scraped DOM). *Inside* a boundary, everything content-derived is
   scrubbed regardless of origin.
 - **`[REDACTED]` is a display convention, not a security oracle** — don't branch
   on the string; it's page-forgeable. Redaction state travels as structured
   data on the element, not as this sentinel.
 - **Not an adversarial control.** §4.6 is a developer-declared boundary against
-  _incidental_ exposure of sensitive content to an AI client. A hostile page can
+  *incidental* exposure of sensitive content to an AI client. A hostile page can
   always read its own DOM; this is not a defense against a malicious page.
 - Media metadata and the `ControlSnapshot` a11y fields are currently scrubbed at
   runtime (correct today) rather than brand-enforced; a follow-up brings them
@@ -507,23 +505,28 @@ reading so a Chromium change turns it red), a programmatic focus matches
 area, and after a keyboard `Tab` — but NOT after a pointer click on a focusable
 element, a state the inspector is routinely in. So:
 
-- the `focus` entry carries `focusVisible: true | false | 'not_focused' | 'unknown'`, the
-  browser's own `el.matches(':focus-visible')` read while the focus was held —
-  it says which focus appearance that entry's styles are. `'not_focused'`
-  means the focus never landed (a non-focusable, disabled or inert element, or
-  a focus handler that moved focus elsewhere), so the styles are the unfocused
-  ones; `'unknown'` means the match could not be read (an engine without the
-  selector). Neither is ever reported as `false`;
+- the `focus` entry carries
+  `focusVisible: true | false | 'not_focused' | 'document_unfocused' | 'unknown'`,
+  the browser's own `el.matches(':focus-visible')` read while the focus was
+  held — it says which focus appearance that entry's styles are.
+  `'not_focused'` means the focus never landed (a non-focusable, disabled or
+  inert element, or a focus handler that moved focus elsewhere), so the styles
+  are the unfocused ones. `'document_unfocused'` means it landed, but the
+  document (or its frame) has no focus — another window is in front — so the
+  browser draws no ring. `'unknown'` means the match could not be read (an
+  engine without the selector). None of these is ever reported as `false`;
 - the `focus-visible` state (in the default set) focuses the element AND forces
   `:focus-visible` through the same in-place rewrite as `hover`
   (`:is(:focus-visible,[data-ui-bridge-pseudo-focus-visible])`, the target alone
   marked), so it reads the keyboard-focus appearance, and
   `:focus:not(:focus-visible)` rules stop matching while it is held. Its entry
-  carries `forced` and `focused`. `forced` is decided at apply time:
-  `false` means the focus did not land, nothing was forced (the element can
-  never draw that ring), and the styles are the unfocused ones. `focused`
-  says whether the element still held focus when the styles were read:
-  `forced: true, focused: false` means something moved the focus in between.
+  carries `forced` and `focused`. `forced` is decided at apply time: `false`
+  means nothing was forced, and `notForcedReason` says why — `'not_focused'`
+  (the focus did not land; the element can never draw that ring) or
+  `'document_unfocused'` (it landed, but the document or frame has no focus).
+  `focused` says whether the element still held focus when the styles were
+  read: `forced: true, focused: false` means something moved the focus in
+  between.
 
 "Holds focus" is read by walking UP from the element: it must be its own
 tree's `activeElement`, its shadow host must be the next tree's, and so on to
@@ -531,20 +534,23 @@ the document. The document must itself have focus (`document.hasFocus()` is
 not `false`); in a frame, the frame element must hold focus in its parent the
 same way. A cross-origin parent cannot be read, so it does not fail the
 check: there the frame's own document is the last thing read. That works
-inside open AND closed shadow roots. A host is its
-tree's `activeElement` whenever anything inside it has focus, so a host whose
-OPEN shadow root holds the focus is not itself focused, unless that root has
-`delegatesFocus`. A host with a CLOSED shadow root cannot be told apart: it
-reads as holding focus whenever the focus is anywhere in its closed tree.
+inside open AND closed shadow roots. A host is its tree's `activeElement`
+whenever anything inside it has focus, so a host whose OPEN shadow root holds
+the focus is not itself focused, unless that root has `delegatesFocus`. A host
+with a CLOSED shadow root cannot be told apart: it reads as holding focus
+whenever the focus is anywhere in its closed tree.
 
 The read puts the previous focus back, within limits:
 
 - only the element's own document is restored. If the element is inside a
   frame, a focus that was in the parent document is not put back;
-- a focus inside an open shadow root is restored to the element that had it;
-- a focus inside a CLOSED shadow root is restored exactly when the inspected
-  element is in that same closed root (the root's `activeElement` is readable
-  from inside it). Otherwise it can only be restored to the host: with
+- the previous focus is found by walking UP from the inspected element, from
+  its own shadow root to its host's root and so on: the first root that holds
+  the focus is read, open or CLOSED. So a focus inside any shadow root that
+  encloses the inspected element is restored to the element that had it, and
+  a focus inside an open shadow root anywhere in the document is too;
+- a focus inside a CLOSED shadow root that does NOT enclose the inspected
+  element (a sibling component's) can only be restored to its host: with
   `delegatesFocus` that is the host's first focusable element, and a host
   without `delegatesFocus` that is not itself focusable takes no focus at
   all, so the focus falls to the body;
@@ -553,7 +559,7 @@ The read puts the previous focus back, within limits:
 ```bash
 curl -s -X POST "$BASE/design/element/save-btn/state-styles" \
   -H 'Content-Type: application/json' -d '{"states":["focus","focus-visible"]}' \
-  | jq '.data.stateStyles[] | {state, focusVisible, forced, focused, outline: .styles.outline}'
+  | jq '.data.stateStyles[] | {state, focusVisible, forced, notForcedReason, focused, outline: .styles.outline}'
 ```
 
 ## 9. Read the styles and attributes a check needs

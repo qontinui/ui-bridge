@@ -3280,15 +3280,25 @@ export type InteractionStateName =
   | 'disabled';
 
 /**
+ * Why an element did not count as holding focus.
+ * - `'not_focused'`: `el.focus()` did not land on it (a non-focusable,
+ *   disabled or inert element, or a focus handler that moved focus elsewhere).
+ * - `'document_unfocused'`: it IS the focused element of its document, but the
+ *   document does not have focus (`document.hasFocus()` is `false`: another
+ *   window or app is in front), or, in a frame, the frame element does not
+ *   hold focus in its parent. The browser draws no focus ring then.
+ */
+export type FocusNotHeldReason = 'not_focused' | 'document_unfocused';
+
+/**
  * Whether the browser's own `:focus-visible` matched an element while the
- * inspector held it focused. `'not_focused'` when `el.focus()` did not land
- * (a non-focusable, disabled or inert element, or a focus handler that moved
- * focus elsewhere): there is no focus appearance to classify. `'unknown'` when
+ * inspector held it focused. A {@link FocusNotHeldReason} when the element did
+ * not hold focus: there is no focus appearance to classify. `'unknown'` when
  * the match could not be read (an engine without the selector makes `matches`
- * throw). Neither is ever reported as `false`, which means the
+ * throw). None of these is ever reported as `false`, which means the
  * pointer-focus appearance.
  */
-export type FocusVisibleMatch = boolean | 'not_focused' | 'unknown';
+export type FocusVisibleMatch = boolean | FocusNotHeldReason | 'unknown';
 
 /**
  * Style diff entry: a property that changed from default state
@@ -3314,16 +3324,24 @@ export interface StateStyles {
    * appearance (Chromium answers `false` to a programmatic focus that follows
    * a pointer focus); the `focus-visible` entry forces the other appearance.
    * `'not_focused'`: the focus never landed, so the entry's styles are the
-   * unfocused ones.
+   * unfocused ones. `'document_unfocused'`: the focus landed but the document
+   * (or its frame) has no focus, so no focus ring is drawn.
    */
   focusVisible?: FocusVisibleMatch;
   /**
    * Present on the `focus-visible` entry only: whether `:focus-visible` was
    * forced, decided at apply time right after `el.focus()`. `false` means the
-   * focus did not land — the element cannot hold focus, so it can never draw
-   * a focus ring — and nothing was forced.
+   * element did not hold focus then, and nothing was forced; `notForcedReason`
+   * says why.
    */
   forced?: boolean;
+  /**
+   * Present on the `focus-visible` entry when `forced` is `false`:
+   * `'not_focused'` (the focus did not land — the element can never draw a
+   * focus ring) or `'document_unfocused'` (it landed, but the document or its
+   * frame has no focus).
+   */
+  notForcedReason?: FocusNotHeldReason;
   /**
    * Present on the `focus-visible` entry only: whether the element held focus
    * when its styles were read (after the force and a frame). `forced: true`
