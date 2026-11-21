@@ -15,7 +15,7 @@
   "scripts": {
     "build": "tsup && tsc -p tsconfig.build.json && node scripts/copy-templates.mjs",
     "dev": "tsup --watch",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.vitest.json",
     "test": "vitest run",
     "clean": "rimraf dist"
   },

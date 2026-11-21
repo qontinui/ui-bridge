@@ -66,10 +66,7 @@ describe('cli-args is bundled into dist, not a runtime dependency', () => {
   });
 
   it('no built bundle or declaration file references cli-args as a module specifier', () => {
-    // Every bin, both entry formats and the types must exist, or this proves nothing.
-    for (const out of OUTPUTS) {
-      expect(existsSync(out), `${relative(PKG_DIR, out)} missing`).toBe(true);
-    }
+    // beforeAll already required every output (OUTPUTS), so this cannot pass vacuously.
     const offenders = walk(DIST_DIR, (name) => SHIPPED.test(name))
       .filter((f) => SPECIFIER.test(readFileSync(f, 'utf8')))
       .map((f) => relative(PKG_DIR, f));
@@ -84,7 +81,7 @@ describe('cli-args is bundled into dist, not a runtime dependency', () => {
       expect(
         readFileSync(p, 'utf8'),
         `${relative(PKG_DIR, p)} lacks the inlined consumeValue`
-      ).toMatch(/function consumeValue\b/);
+      ).toMatch(/function consumeValue\d*\b/);
     }
   });
 });

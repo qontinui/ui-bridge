@@ -9,5 +9,7 @@ export default defineConfig({
     // cli-smoke spawns the built CLI and runs it against a tmpdir — that
     // can take a few seconds on Windows for the first run.
     testTimeout: 60_000,
+    // Builds this package once, before any worker starts.
+    globalSetup: ['./vitest.global-setup.ts'],
   },
 });

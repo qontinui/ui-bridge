@@ -8,11 +8,13 @@ const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 
 /**
  * Runs once, in vitest's main process, before any test worker starts: builds
  * cli-args (which tsup inlines here) and then this package when either dist is
- * missing or stale. Test files never build; they only read dist. The bin roster
- * comes from package.json, so a new bin is required automatically.
+ * missing or stale (test-support/build-if-stale.mjs). Test files never build;
+ * they only read dist. The bin roster comes from package.json, so a new bin is
+ * required automatically. Watch mode does not re-run a globalSetup, so after a
+ * source edit under `vitest` (watch) restart it or run `npm run build`.
  */
-export default function setup(): void {
-  buildIfStale([
+export default async function setup(): Promise<void> {
+  await buildIfStale([
     CLI_ARGS,
     {
       dir: 'packages/ui-bridge-wrapper',

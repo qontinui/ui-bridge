@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, statSync, symlinkSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { missingOutputMessage } from '../../../test-support/build-if-stale.mjs';
 
 /**
  * Regression guard for the `create-ui-bridge-wrapper` entry-point guard.
@@ -21,28 +22,6 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const PKG_DIR = resolve(HERE, '..');
 const BIN_NAME = 'create-ui-bridge-wrapper';
 const DIST = join(PKG_DIR, 'dist', 'cli.js');
-
-function newestSourceMtime(dir: string): number {
-  let newest = 0;
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name === 'templates') continue;
-    const abs = join(dir, entry.name);
-    if (entry.isDirectory()) newest = Math.max(newest, newestSourceMtime(abs));
-    else if (entry.name.endsWith('.ts')) newest = Math.max(newest, statSync(abs).mtimeMs);
-  }
-  return newest;
-}
-
-/** CI builds before it tests, so this is a no-op there; locally it runs the
- * package's own build rather than inventing a second build path. */
-function ensureBuilt(): void {
-  if (existsSync(DIST) && statSync(DIST).mtimeMs >= newestSourceMtime(join(PKG_DIR, 'src'))) return;
-  execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build'], {
-    cwd: PKG_DIR,
-    stdio: 'inherit',
-    timeout: 600_000,
-  });
-}
 
 // npm only materialises bins as real symlinks on POSIX; probe rather than assume.
 const SYMLINK_DIR = mkdtempSync(join(tmpdir(), 'create-ui-bridge-wrapper-symlink-'));
@@ -68,8 +47,9 @@ describe.skipIf(!SYMLINKS_AVAILABLE)(
   'create-ui-bridge-wrapper entry guard survives the bin symlink',
   () => {
     beforeAll(() => {
-      ensureBuilt();
-    }, 600_000);
+      // Built once by vitest.global-setup.ts before any worker starts.
+      expect(existsSync(DIST), missingOutputMessage(DIST)).toBe(true);
+    });
 
     it('runs the CLI when invoked through node_modules/.bin/create-ui-bridge-wrapper', () => {
       const link = join(SYMLINK_DIR, BIN_NAME);
