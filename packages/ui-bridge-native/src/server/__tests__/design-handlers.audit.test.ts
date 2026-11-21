@@ -17,7 +17,7 @@ import type { NativeElementRef, NativeLayout, NativeElementType } from '../../co
 
 /**
  * Native `/design/audit` answers through the web SDK's shared core
- * (`auditDesign`, `@qontinui/ui-bridge/specs` 0.57.0 or later), so it takes
+ * (`auditDesign`, `@qontinui/ui-bridge/specs` 0.58.0 or later), so it takes
  * and refuses the web transports' fields and answers their shape: `limit`,
  * `includePassed`, `maxResults`, both modes, the bounds. The real core is
  * injected (as the workspace build serves it), wrapped to record what native
@@ -148,7 +148,7 @@ describe('native /design/audit through the shared core', () => {
       const res = await handlers.runDesignAudit(ctx(body));
       expect(res).toMatchObject({ success: false, code: 'VALIDATOR_NOT_AVAILABLE' });
       expect(res.error).toBe(
-        'Install a @qontinui/ui-bridge release containing the shared design audit (0.57.0 or later).'
+        'Install a @qontinui/ui-bridge release containing the shared design audit (0.58.0 or later).'
       );
     }
   });

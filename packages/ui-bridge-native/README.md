@@ -310,11 +310,11 @@ An adapter must also pass what the gate reads. Fill each `HTTPRequest` with `rem
 
 ### Design audit (`POST /ui-bridge/design/audit`)
 
-The audit runs the web SDK's shared core (`auditDesign` from `@qontinui/ui-bridge/specs`), so a phone answers with the same request fields and report shape as the web transports: `limit`, `includePassed` and `maxResults` are validated and applied, a guide (in the request, or loaded with `/design/style-guide/load`) gives `mode: "style-guide"`, and no guide gives `mode: "heuristic"` with a `heuristicCoverage` row per check. It needs the optional peer `@qontinui/ui-bridge` 0.57.0 or later; without it the route answers `VALIDATOR_NOT_AVAILABLE`. What React Native can and cannot measure (contrast from an element's own style only, no `<select>`, no layout or a collapsed 0x0 one counted as not measured) is described in the docs site's design-tokens page, "React Native".
+The audit runs the web SDK's shared core (`auditDesign` from `@qontinui/ui-bridge/specs`), so a phone answers with the same request fields and report shape as the web transports: `limit`, `includePassed` and `maxResults` are validated and applied, a guide (in the request, or loaded with `/design/style-guide/load`) gives `mode: "style-guide"`, and no guide gives `mode: "heuristic"` with a `heuristicCoverage` row per check. It needs the optional peer `@qontinui/ui-bridge` 0.58.0 or later; without it the route answers `VALIDATOR_NOT_AVAILABLE`. What React Native can and cannot measure (contrast from an element's own style only, no `<select>`, no layout or a collapsed 0x0 one counted as not measured) is described in the docs site's design-tokens page, "React Native".
 
 **Breaking in 0.16.0:**
 
-- The peer range is now `@qontinui/ui-bridge >=0.57.0 <1` (was `>=0.4.0 <1`).
+- The peer range is now `@qontinui/ui-bridge >=0.58.0 <1` (was `>=0.4.0 <1`).
 - No guide answers `success: true, mode: "heuristic"`; the `NO_STYLE_GUIDE` error code is gone.
 - The raw `StyleAuditReport` answer is gone: a style-guide answer is `NativeStyleGuideDesignAuditReport` (`summary` as counts, failures only unless `includePassed`, the selection bounds).
 - `createDesignHandlers`' `styleValidator` option and the `StyleValidatorModule` export are removed; inject the core with the `designAudit` option (`DesignAuditCoreModule`, or `null` for none).
