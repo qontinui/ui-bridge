@@ -116,8 +116,22 @@ const draft = inferStyleGuideFromInventory(inventory, { maxPerCategory: 12 });
 const drift = computeTokenDrift(inventory, { tokens: { colors: { ink: '#111111' } } });
 ```
 
+## `/design/audit` without a guide: heuristic coverage
+
+With no guide in the request and none loaded, `/design/audit` answers `mode: "heuristic"`: four built-in checks (contrast, dark-mode `<select>`, font size, touch target) over the checked elements, with the same `limit` / `maxResults` bounds as a style-guide audit. Every transport — the server handlers, the browser relay and `@qontinui/ui-bridge-native` — answers through one core, `auditDesign`, so the report has one shape everywhere.
+
+`heuristicCoverage` carries one row per check, `{ heuristic, status, checked, notMeasured, note? }`, so an empty `issues` list says whether it means "clean" or "never checked". `status` has one definition, which the counts never contradict:
+
+- `measured` — the transport reads the check's inputs for every element it applies to; `notMeasured` counts only elements whose values were unreadable or unjudgeable (a transparent background, an unparseable colour, an element with no box).
+- `partial` — the transport structurally cannot read the inputs for some class of elements; those count in `notMeasured`, and `note` names the class.
+- `not-applicable` — the platform has no such thing; both counts are 0.
+
+An element that is not measured never produces an issue. The web transports report all four checks `measured`.
+
 ## React Native
 
 `@qontinui/ui-bridge-native` serves both routes over each registered element's flattened StyleSheet, using the same functions through its optional `@qontinui/ui-bridge` peer (a release containing style inference, 0.56.0 or later; otherwise `INFERENCE_NOT_AVAILABLE`). There are no CSS custom properties and no document there, so `scope: "document"` and `pageCustomPropertyPrefix` answer `INVALID_REQUEST`. Numeric style values are stringified (`fontWeight: 700` → `"700"`), an object value such as `PlatformColor` becomes `native(<its JSON>)` (kept verbatim and counted unnormalised), and an iOS `shadowOpacity` is folded into the shadow colour's alpha (`#000` at `0.25` → `rgba(0, 0, 0, 0.25)`; a colour it cannot fold keeps an explicit `opacity(…)` token). React Native has no root font size, so `rem` resolves at 16px unless the request (`/design/audit` included) passes `rootFontSizePx`.
+
+`/design/audit` runs the shared core over the registered elements (a release containing it, 0.57.0 or later; otherwise `VALIDATOR_NOT_AVAILABLE`). No native element is unreadable (`unreadableElementCount` is 0), and a web `elementType: "button"` rule matches a native `pressable` or `touchable`. Its heuristic coverage: contrast is `partial` (React Native has no cascade, so only an element whose own style sets both `color` and `backgroundColor` is checked; one with no `fontSize` is judged against the normal-text threshold, 4.5:1), font size is `partial` (checked only where the style sets `fontSize`), the dark-mode `<select>` check is `not-applicable`, and touch targets (`button`, `touchable`, `pressable`, `switch`, `checkbox`, `radio`) are `measured`, an element with no layout yet counting as not measured rather than 0x0.
 
 A web host with no DOM at all (a bare Node server over `createHandlers`) answers both routes rather than throwing: inference is `empty` and drift `unknown`, with `capture.notes` saying no DOM was available.

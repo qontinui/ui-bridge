@@ -373,6 +373,13 @@ export {
 } from './design/design-inspector-native';
 
 export { createDesignHandlers, type NativeDesignHandlers } from './server/design-handlers';
+export type {
+  DesignAuditCoreModule,
+  NativeDesignAuditResponse,
+  NativeStyleGuideDesignAuditReport,
+  NativeHeuristicDesignAuditReport,
+  NativeHeuristicCoverage,
+} from './server/design-audit-native';
 
 // Debug exports
 export { UIBridgeInspector, type UIBridgeInspectorProps } from './debug/inspector';

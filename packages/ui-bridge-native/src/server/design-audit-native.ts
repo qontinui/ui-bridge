@@ -116,7 +116,14 @@ export interface NativeHeuristicDesignAuditIssue {
 /** The heuristics (mirrors `HeuristicId`). */
 export type NativeHeuristicId = 'contrast' | 'select-dark-mode' | 'font-size' | 'touch-target';
 
-/** How completely a heuristic could run (mirrors `HeuristicCoverageStatus`). */
+/**
+ * How completely a heuristic could run (mirrors `HeuristicCoverageStatus`):
+ * `measured` — the inputs are read for every element the heuristic applies to,
+ * and `notMeasured` counts elements whose values were unreadable or
+ * unjudgeable; `partial` — the inputs cannot be read for some class of
+ * elements (the row's `note` names it); `not-applicable` — the platform has no
+ * such thing.
+ */
 export type NativeHeuristicCoverageStatus = 'measured' | 'partial' | 'not-applicable';
 
 /** What one heuristic checked (mirrors `HeuristicCoverage`). */
@@ -206,8 +213,8 @@ const NATIVE_HEURISTIC_COVERAGE: NativeDesignAuditAdapter<RegisteredNativeElemen
       status: 'partial',
       note:
         "React Native has no cascade: contrast is checked only where the element's own style " +
-        'sets both color and backgroundColor; an element with no fontSize is judged against ' +
-        'the normal-text threshold (4.5:1)',
+        'sets both color and backgroundColor, and every other element counts in notMeasured; ' +
+        'an element with no fontSize is judged against the normal-text threshold (4.5:1)',
     },
     'select-dark-mode': {
       status: 'not-applicable',
@@ -215,11 +222,13 @@ const NATIVE_HEURISTIC_COVERAGE: NativeDesignAuditAdapter<RegisteredNativeElemen
     },
     'font-size': {
       status: 'partial',
-      note: 'checked where the style sets fontSize; the platform default is not read',
+      note:
+        'checked where the style sets fontSize; elsewhere the platform default applies, which ' +
+        'is not read, and the element counts in notMeasured',
     },
     'touch-target': {
       status: 'measured',
-      note: 'an element with no layout yet is not measured',
+      note: 'an element with no layout yet counts in notMeasured, never as 0x0',
     },
   };
 
