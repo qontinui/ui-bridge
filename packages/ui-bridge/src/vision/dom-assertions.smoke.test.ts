@@ -615,6 +615,38 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     await page.close();
   }, 60_000);
 
+  it('contrast_meets_wcag: a colour the parser cannot read is never taken for transparent', async () => {
+    const page = await openPage(`
+      <div style="position:relative;height:50px;background:#fff"><p data-id="pep3" style="margin:0;color:#000">Under a click-through display-p3 scrim</p><div class="pep3" style="position:absolute;inset:0;pointer-events:none;background:color(display-p3 0 0 0 / 0.6)"></div></div>
+      <div style="position:relative;height:50px;background:#fff"><p data-id="peclear" style="margin:0;color:#000">Under a click-through transparent layer</p><div style="position:absolute;inset:0;pointer-events:none;background:rgba(0,0,0,0)"></div></div>
+      <div style="height:50px;background:#fff"><p data-id="fillp3" style="margin:0;color:#000;-webkit-text-fill-color:color(display-p3 1 1 1)">A display-p3 white fill over a black color</p></div>
+      <div style="height:50px;background:#fff"><p data-id="fillrgb" style="margin:0;color:#fff;-webkit-text-fill-color:#000">A readable black fill over a white color</p></div>
+    `);
+    const ids = ['pep3', 'peclear', 'fillp3', 'fillrgb'];
+    const res = await assertOn(
+      page,
+      ids.map((element) => ({ type: 'contrast_meets_wcag', element }))
+    );
+    // Each unreadable row read 21:1 passed before: the p3 scrim was dropped as
+    // painting nothing (the page shows ~3.7:1), and the p3 white fill fell back
+    // to the black `color` (the page shows white on white, 1:1).
+    expect(verdicts(res)).toEqual([
+      ['unknown', 'input_missing'],
+      ['passed', null],
+      ['unknown', 'input_missing'],
+      ['passed', null],
+    ]);
+    expect(res.results[0].detail).toContain(
+      "<div.pep3> paints a background whose colour could not be read at the text's position but computes pointer-events: none"
+    );
+    expect(res.results[1].detail).toContain('contrast ratio 21.00:1');
+    expect(res.results[2].detail).toContain(
+      'its text colour "color(display-p3 1 1 1)" could not be read'
+    );
+    expect(res.results[3].detail).toContain('contrast ratio 21.00:1');
+    await page.close();
+  }, 60_000);
+
   it('contrast_meets_wcag: a pointer-events: none layer that paints a frame or generated content', async () => {
     const page = await openPage(`
       <style>
