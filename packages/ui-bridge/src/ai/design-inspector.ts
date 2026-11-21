@@ -1074,21 +1074,24 @@ interface AncestorFocus {
  * {@link ancestorFocusOf} reads it from the frame on the chain, innermost
  * first, read before `el.focus()` moves the page's focus into the frame.
  * Stops at the first parent that cannot be read (cross-origin:
- * `frameElement` is `null`, or a read throws).
+ * `frameElement` is `null`, or reading the frame or its document's focus
+ * throws).
  */
 function recordAncestorFocus(doc: Document): AncestorFocus[] {
   const out: AncestorFocus[] = [];
   let current = doc;
   for (;;) {
     let frame: Element | null;
+    let previous: Element | null;
     try {
       frame = current.defaultView?.frameElement ?? null;
+      if (!frame) break;
+      previous = ancestorFocusOf(frame.ownerDocument, frame);
     } catch {
       break;
     }
-    if (!frame) break;
     const parent = frame.ownerDocument;
-    out.push({ doc: parent, frame, previous: ancestorFocusOf(parent, frame) });
+    out.push({ doc: parent, frame, previous });
     current = parent;
   }
   return out;

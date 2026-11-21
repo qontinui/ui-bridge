@@ -779,6 +779,30 @@ describe('captureStateVariations', () => {
     }
   });
 
+  it('a frame whose ancestor focus cannot be read stops the ancestor walk instead of failing the read', async () => {
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    const doc = frame.contentDocument!;
+    const target = doc.createElement('button');
+    target.textContent = 'target';
+    doc.body.appendChild(target);
+    // Reading the parent document's focus from this frame throws, as a
+    // document that became unreadable mid-read would.
+    Object.defineProperty(frame, 'getRootNode', {
+      value: () => {
+        throw new Error('unreadable');
+      },
+    });
+    try {
+      const results = await captureStateVariations(target, ['focus', 'focus-visible']);
+      const byState = Object.fromEntries(results.map((r) => [r.state, r]));
+      expect(byState['focus-visible'].forced).toBe(true);
+      expect(byState['focus-visible'].focused).toBe(true);
+    } finally {
+      frame.remove();
+    }
+  });
+
   it("a document without focus: the focus entry reads 'document_unfocused', and the ring is still forced with a caveat", async () => {
     const spy = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
     try {
