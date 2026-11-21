@@ -28,10 +28,15 @@ import {
 interface LiveTransportLike {
   ready(): Promise<void>;
   close(): Promise<void>;
+}
+
+/** The wrapper's handler registry: handlers are registered BEFORE the transport exists. */
+interface HandlerRegistryLike {
   register(actionId: string, fn: (params?: unknown, ctx?: unknown) => unknown): void;
 }
 
 interface WrapperModule {
+  HandlerRegistry: new () => HandlerRegistryLike;
   LiveSessionTransport: new (
     config: {
       kind: 'live';
@@ -108,35 +113,15 @@ async function start(): Promise<void> {
   const appId = deriveAppId();
   const appName = deriveAppName();
 
-  let t: LiveTransportLike;
-  try {
-    t = new mod.LiveSessionTransport(
-      {
-        kind: 'live',
-        runnerUrl,
-        appId,
-        appName,
-        // origin/pageUrl for the registry card, and the `screenshot`
-        // capability for the getScreenshot handler registered below.
-        options: { ...buildLiveRelayOptions(location) },
-      },
-      undefined,
-      // Use the browser's native WebSocket. The wrapper picks this up
-      // from globalThis automatically, but we pass it explicitly to be
-      // robust against bundler-globals quirks in extension-isolated
-      // worlds.
-      { webSocketCtor: WebSocket }
-    );
-  } catch (err) {
-    console.error('[ui-bridge live-relay] failed to construct transport', err);
-    return;
-  }
+  // Handlers go on a registry FIRST, so the register frame can advertise
+  // exactly what was registered (the transport reads its options when it
+  // sends that frame).
+  const registry = new mod.HandlerRegistry();
 
-  // Register a single demo handler so the runner can prove the
-  // round-trip end-to-end without a custom wrapper. Wrappers built on
-  // top of this script are free to register more.
+  // A demo handler so the runner can prove the round-trip end-to-end without
+  // a custom wrapper. Wrappers built on top of this script may register more.
   try {
-    t.register('ping', () => ({
+    registry.register('ping', () => ({
       ok: true,
       href: location.href,
       ts: Date.now(),
@@ -147,11 +132,12 @@ async function start(): Promise<void> {
     console.warn('[ui-bridge live-relay] register("ping") failed', err);
   }
 
-  // Answer the runner's vision capture over this socket (the capability is
-  // advertised in the options above). Refuses with TAB_NOT_VISIBLE while the
-  // tab is hidden; the service worker re-checks the sender is the active tab.
+  // Answer the runner's vision capture over this socket. Refuses with
+  // TAB_NOT_VISIBLE while the tab is hidden; the service worker re-checks the
+  // sender is the active tab before and after it captures.
+  let screenshot = false;
   try {
-    t.register(
+    registry.register(
       SCREENSHOT_ACTION,
       createScreenshotHandler({
         WrapperTransportError: mod.WrapperTransportError,
@@ -160,8 +146,33 @@ async function start(): Promise<void> {
         sendMessage: (message: ExtensionMessage) => chrome.runtime.sendMessage(message),
       })
     );
+    screenshot = true;
   } catch (err) {
     console.warn(`[ui-bridge live-relay] register("${SCREENSHOT_ACTION}") failed`, err);
+  }
+
+  let t: LiveTransportLike;
+  try {
+    t = new mod.LiveSessionTransport(
+      {
+        kind: 'live',
+        runnerUrl,
+        appId,
+        appName,
+        // origin/pageUrl for the registry card; `screenshot` only when its
+        // handler was registered above.
+        options: { ...buildLiveRelayOptions(location, { screenshot }) },
+      },
+      registry,
+      // Use the browser's native WebSocket. The wrapper picks this up
+      // from globalThis automatically, but we pass it explicitly to be
+      // robust against bundler-globals quirks in extension-isolated
+      // worlds.
+      { webSocketCtor: WebSocket }
+    );
+  } catch (err) {
+    console.error('[ui-bridge live-relay] failed to construct transport', err);
+    return;
   }
 
   transport = t;

@@ -47,15 +47,12 @@ copyStatic();
 
 // Build configuration for each entry point.
 //
-// `externals` lets us exclude Node-only / browser-incompatible modules
-// from a given bundle. The wrapper package's barrel statically references
-// HeadlessTransport / HeadedTransport, which dynamic-import
-// `@qontinui/ui-bridge-headless` (which depends on `playwright-core`).
-// Those paths are unreachable from the live-relay content script, but
-// esbuild still tries to resolve dynamic imports with literal paths.
-// Marking them external sidesteps the resolver — if any of those code
-// paths are ever hit at runtime in a browser, they'll fail loudly,
-// which is the correct behavior for a content script.
+// `externals` lets us exclude Node-only / browser-incompatible modules from a
+// given bundle. The live relay imports the wrapper's BROWSER-SAFE entry,
+// `@qontinui/ui-bridge-wrapper/live`, which reaches no Node builtin and none of
+// the Playwright transports; tests/content-bundle-node-free.test.ts fails the
+// built bundle if any Node builtin require appears in it. So the externals list
+// below is a belt-and-braces guard only, not what keeps the bundle loadable.
 const builds = [
   {
     entryPoints: ['src/background/service-worker.ts'],
@@ -71,23 +68,19 @@ const builds = [
     entryPoints: ['src/content/live-relay.ts'],
     outfile: `${outdir}/content/live-relay.js`,
     format: 'iife',
-    // Mark unreachable code paths external so the resolver doesn't try to
-    // bundle Playwright / Node-only modules. Node built-ins (http, https,
-    // fs, net, ...) are reachable through ApiTransport's optional adapter
-    // path that the live transport never invokes; listing them here is a
-    // safety belt for any future dynamic import the wrapper barrel adds.
+    // Belt and braces: the `/live` entry this script imports reaches none of
+    // these, so today nothing is marked external in practice. If a future
+    // import pulls one in, it stays a runtime require that throws in a content
+    // script — and the node-free bundle test fails the build output. Both
+    // spellings of every built-in are listed, because esbuild matches
+    // `external` literally against the specifier (`fs` does not cover
+    // `node:fs`).
     //
-    // Both spellings of every built-in are listed. esbuild matches `external`
-    // literally against the import specifier, so `fs` does NOT cover
-    // `node:fs` — InjectedTransport imports `node:module` for its
-    // `createRequire` bundle lookup, and a bare `module` entry would not have
-    // caught it.
-    //
-    // Without this the build is ORDER-DEPENDENT: `npm run build --workspaces`
-    // runs ui-bridge-extension before ui-bridge-wrapper, so on a clean tree
-    // the wrapper has no dist/ yet and the Node-only graph is never walked.
-    // Build the wrapper first — as any second local build does — and the same
-    // command fails. CI only passes because it always starts clean.
+    // Build order: the root `build` script builds ui-bridge-wrapper before the
+    // `--workspaces` pass, so even a clean first build bundles the wrapper
+    // here. (`npm run build --workspaces` alone runs this package before the
+    // wrapper; the relay's import then stays unbundled — esbuild only warns
+    // inside a try — and the node-free test's positive control catches it.)
     external: [
       '@qontinui/ui-bridge-headless',
       'playwright',

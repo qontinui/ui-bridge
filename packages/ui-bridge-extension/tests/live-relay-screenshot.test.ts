@@ -14,6 +14,7 @@ import * as wrapper from '@qontinui/ui-bridge-wrapper/live';
 import { installChromeMock, type ChromeMock } from './chrome-mock';
 import {
   createScreenshotHandler,
+  readCaptureReply,
   SCREENSHOT_ACTION,
   SCREENSHOT_CAPABILITY,
 } from '../src/content/screenshot-handler';
@@ -25,6 +26,31 @@ const PNG_B64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
 
 let chromeMock: ChromeMock;
+
+/** Chrome match-pattern coverage, enough for host_permissions: `<all_urls>` or scheme://host/path with `*`. */
+function grantCovers(pattern: string, url: string): boolean {
+  if (pattern === '<all_urls>') return /^(https?|wss?|ftp|file):/.test(url);
+  const m = /^(\*|https?|wss?|file|ftp):\/\/([^/]*)(\/.*)$/.exec(pattern);
+  if (!m) return false;
+  const u = new URL(url);
+  const [, scheme, host, path] = m as unknown as [string, string, string, string];
+  const schemeOk =
+    scheme === '*'
+      ? u.protocol === 'http:' || u.protocol === 'https:'
+      : u.protocol === `${scheme}:`;
+  const hostName = host.replace(/:\*$/, '').replace(/:\d+$/, '');
+  const hostOk =
+    hostName === '*' ||
+    u.hostname === hostName ||
+    (hostName.startsWith('*.') && u.hostname.endsWith(hostName.slice(1)));
+  const pathRe = new RegExp(
+    `^${path
+      .split('*')
+      .map((x) => x.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
+      .join('.*')}$`
+  );
+  return schemeOk && hostOk && pathRe.test(u.pathname);
+}
 
 /** Deliver `message` to the service worker's onMessage listener, as from `sender`. */
 function deliverToServiceWorker(message: ExtensionMessage, sender: unknown): Promise<unknown> {
@@ -109,7 +135,7 @@ describe('live relay getScreenshot', () => {
     });
   });
 
-  it('a capture Chrome refuses answers CAPTURE_FAILED carrying its message', async () => {
+  it("Chrome's per-second capture quota answers retryable CAPTURE_RATE_LIMITED", async () => {
     chromeMock.tabs.query.mockResolvedValue([{ id: SENDER_TAB.id }]);
     chromeMock.tabs.captureVisibleTab.mockRejectedValue(
       new Error('This request exceeds the MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND quota.')
@@ -117,8 +143,84 @@ describe('live relay getScreenshot', () => {
     const { handler } = handlerFor('visible');
 
     const err = (await handler().catch((e: unknown) => e)) as wrapper.WrapperTransportError;
-    expect(err.code).toBe('CAPTURE_FAILED');
+    expect(err).toBeInstanceOf(wrapper.WrapperTransportError);
+    expect(err.code).toBe('CAPTURE_RATE_LIMITED');
+    expect(err.retryable).toBe(true);
     expect(err.message).toContain('MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND');
+  });
+
+  it('any other capture refusal answers CAPTURE_FAILED, not retryable, carrying its message', async () => {
+    chromeMock.tabs.query.mockResolvedValue([{ id: SENDER_TAB.id }]);
+    chromeMock.tabs.captureVisibleTab.mockRejectedValue(
+      new Error('Cannot access contents of the page.')
+    );
+    const { handler } = handlerFor('visible');
+
+    const err = (await handler().catch((e: unknown) => e)) as wrapper.WrapperTransportError;
+    expect(err.code).toBe('CAPTURE_FAILED');
+    expect(err.retryable).toBe(false);
+    expect(err.message).toContain('Cannot access contents of the page');
+  });
+
+  it('a tab switched away between the check and the capture gets no frame: TAB_NOT_VISIBLE', async () => {
+    // Active when checked, another tab active by the time the capture returns.
+    chromeMock.tabs.query
+      .mockResolvedValueOnce([{ id: SENDER_TAB.id }])
+      .mockResolvedValueOnce([{ id: 99 }]);
+    const reply = await deliverToServiceWorker(
+      { type: 'CAPTURE_VISIBLE_TAB' },
+      { tab: SENDER_TAB }
+    );
+
+    expect(chromeMock.tabs.captureVisibleTab).toHaveBeenCalledTimes(1);
+    expect(reply).toMatchObject({ success: false, code: 'TAB_NOT_VISIBLE', retryable: true });
+    expect(JSON.stringify(reply)).not.toContain(PNG_B64);
+  });
+
+  it('a malformed service-worker reply is a typed CAPTURE_FAILED, never an undefined code or a TypeError', async () => {
+    for (const bad of [
+      { success: false },
+      { success: false, code: 'SOMETHING_ELSE', error: 'x' },
+      { success: true },
+      { success: true, data: { screenshot: 42 } },
+      'nonsense',
+    ]) {
+      const handler = createScreenshotHandler({
+        WrapperTransportError: wrapper.WrapperTransportError,
+        doc: { visibilityState: 'visible' },
+        win: { innerWidth: 1, innerHeight: 1 },
+        sendMessage: async () => bad,
+      });
+      const err = await handler().catch((e: unknown) => e);
+      expect(err, JSON.stringify(bad)).toBeInstanceOf(wrapper.WrapperTransportError);
+      expect((err as wrapper.WrapperTransportError).code, JSON.stringify(bad)).toBe(
+        'CAPTURE_FAILED'
+      );
+    }
+  });
+
+  it('readCaptureReply keeps known codes and their retryability', () => {
+    expect(
+      readCaptureReply({ success: false, code: 'TAB_NOT_VISIBLE', error: 'e', retryable: true })
+    ).toEqual({ ok: false, code: 'TAB_NOT_VISIBLE', error: 'e', retryable: true });
+    expect(readCaptureReply({ success: false, code: 'CAPTURE_RATE_LIMITED', error: 'q' })).toEqual({
+      ok: false,
+      code: 'CAPTURE_RATE_LIMITED',
+      error: 'q',
+      retryable: true,
+    });
+    expect(readCaptureReply({ success: true, data: { screenshot: 'abc' } })).toEqual({
+      ok: true,
+      screenshot: 'abc',
+    });
+  });
+
+  it('the screenshot capability is advertised only when the handler was registered', () => {
+    const loc = { origin: 'https://example.com', href: 'https://example.com/a' };
+    expect(buildLiveRelayOptions(loc, { screenshot: true }).capabilities).toEqual([
+      SCREENSHOT_CAPABILITY,
+    ]);
+    expect(buildLiveRelayOptions(loc, { screenshot: false })).not.toHaveProperty('capabilities');
   });
 
   it('the register frame carries the screenshot capability, and the command answers over the socket', async () => {
@@ -158,10 +260,10 @@ describe('live relay getScreenshot', () => {
         runnerUrl: 'ws://127.0.0.1:9876/ui-bridge/ws',
         appId: 'example.com',
         options: {
-          ...buildLiveRelayOptions({
-            origin: 'https://example.com',
-            href: 'https://example.com/a',
-          }),
+          ...buildLiveRelayOptions(
+            { origin: 'https://example.com', href: 'https://example.com/a' },
+            { screenshot: true }
+          ),
         },
       },
       undefined,
@@ -206,9 +308,20 @@ describe('live relay getScreenshot', () => {
     ) as {
       host_permissions: string[];
     };
-    // `<all_urls>` per Chrome's captureVisibleTab documentation; the plan's
-    // headed-Chromium probe of `https://*/*` alone has not been run (see
-    // src/background/capture-visible-tab.ts).
-    expect(manifest.host_permissions).toEqual(['<all_urls>']);
+    // The PROPERTY, not the literal: the grant must cover the origins the live
+    // relay runs on (https pages and http localhost). Today that is
+    // `<all_urls>`, per Chrome's documentation, pending the plan's D6 headed
+    // probe (see src/background/capture-visible-tab.ts); a narrowing the probe
+    // proves sufficient keeps this green.
+    for (const url of [
+      'https://example.com/app',
+      'http://localhost:3001/x',
+      'http://127.0.0.1:5173/',
+    ]) {
+      expect(
+        manifest.host_permissions.some((p) => grantCovers(p, url)),
+        url
+      ).toBe(true);
+    }
   });
 });
