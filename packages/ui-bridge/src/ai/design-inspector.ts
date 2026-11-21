@@ -939,11 +939,36 @@ function waitFrame(): Promise<boolean> {
 /** How long `waitFrame` waits for an animation frame before going on without one. */
 const FRAME_FALLBACK_MS = 50;
 
+/** Values that parse as a colour but do not name one (see `parseColor`). */
+const NON_COLOR_KEYWORDS = new Set([
+  'transparent',
+  'currentcolor',
+  'inherit',
+  'initial',
+  'unset',
+  'revert',
+  'revert-layer',
+]);
+
+/** `true` for an `rgba(...)` / `rgb(... / a)` value whose alpha is zero. */
+function isFullyTransparent(color: string): boolean {
+  const m = color.trim().match(/^rgba?\(([^)]*)\)$/i);
+  if (!m) return false;
+  // Only a 4th component is alpha; `rgb(0, 0, 0)` has none.
+  const parts = m[1].split(/[\s,/]+/).filter(Boolean);
+  return parts.length >= 4 && parseFloat(parts[3]) === 0;
+}
+
 /**
  * Parse a CSS color value to [r, g, b] (0-255 range), or `null` when it is not
  * a color this can read. Never defaults: a caller must treat `null` as UNKNOWN.
  */
 function parseColor(color: string): [number, number, number] | null {
+  const keyword = color.trim().toLowerCase();
+  // These parse, but name no colour of their own: a CSS-wide keyword or
+  // `currentcolor` computes to the probe's INHERITED colour, and `transparent`
+  // shows whatever is behind it. Either would fabricate a ratio.
+  if (NON_COLOR_KEYWORDS.has(keyword)) return null;
   // Try to use a temporary element for reliable parsing
   if (typeof document !== 'undefined') {
     const temp = document.createElement('div');
@@ -955,6 +980,7 @@ function parseColor(color: string): [number, number, number] | null {
     document.body.appendChild(temp);
     const computed = window.getComputedStyle(temp).color;
     document.body.removeChild(temp);
+    if (isFullyTransparent(computed)) return null;
 
     const match = computed.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
     if (match) {
@@ -963,6 +989,7 @@ function parseColor(color: string): [number, number, number] | null {
   }
 
   // Fallback: try to parse directly
+  if (isFullyTransparent(color)) return null;
   const rgbMatch = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
   if (rgbMatch) {
     return [parseInt(rgbMatch[1], 10), parseInt(rgbMatch[2], 10), parseInt(rgbMatch[3], 10)];

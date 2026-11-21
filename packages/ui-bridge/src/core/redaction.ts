@@ -346,8 +346,9 @@ export function withBoundaryIndex<T>(root: Element, fn: () => T): T {
 /**
  * The boundary-excluded text of `el`, an element the active index knows has a
  * boundary below it, composed from its children: a text node contributes its
- * data, a boundary the sentinel, an element with a boundary below its own
- * (memoised) text, and any other element its plain `textContent`. Iterative
+ * data, a boundary the sentinel, a non-rendered element nothing, an element
+ * with a boundary below its own (memoised) text, and any other element its
+ * rendered text (`renderedText`). Iterative
  * (an explicit stack), so a deep chain of ancestors does not recurse.
  */
 function indexedTextOutsideBoundaries(index: BoundaryIndex, el: Element): string {
