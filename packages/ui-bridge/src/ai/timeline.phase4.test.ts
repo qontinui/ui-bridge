@@ -229,11 +229,16 @@ describe('timeline default-on', () => {
   });
 
   it('settle waits for the idle detector, not just a quiet registry', async () => {
-    let idle = false;
-    setTimeout(() => (idle = true), 120);
+    // The detector reports busy for its first IDLE_AFTER_POLLS consultations and
+    // idle after. Counting consultations, not wall-clock time, keeps this
+    // deterministic on a loaded box: a timer scheduled before the click had its
+    // margin eaten by any scheduling delay before the action started.
+    const IDLE_AFTER_POLLS = 5;
+    let polls = 0;
+    const isIdle = vi.fn(() => ++polls > IDLE_AFTER_POLLS);
     const tracker = new ChangeTracker(
       fixtureDeps({
-        idleDetector: { isIdle: () => idle } as unknown as ChangeTrackerDeps['idleDetector'],
+        idleDetector: { isIdle } as unknown as ChangeTrackerDeps['idleDetector'],
       })
     );
     const result = await tracker.executeWithDiff({
@@ -244,7 +249,10 @@ describe('timeline default-on', () => {
     });
     const settled = result.timeline!.summary.settleMs;
     expect(settled.status).toBe('measured');
-    if (settled.status === 'measured') expect(settled.value).toBeGreaterThanOrEqual(110);
+    // Settling cannot precede the first idle answer: the quiet registry alone
+    // (settleMinStable 20ms) would have settled without ever asking.
+    expect(isIdle.mock.calls.length).toBeGreaterThan(IDLE_AFTER_POLLS);
+    expect(result.settleTimedOut).toBeFalsy();
   });
 
   it('a timeline that never settles reports settleMs unknown{no_event_before_timeout}', async () => {
@@ -359,7 +367,10 @@ describe('layout shifts', () => {
     expect(after.status).toBe('measured');
     if (after.status === 'measured' && summary.firstResponseMs.status === 'measured') {
       expect(after.value).toBe(shifts[0].offsetMs - summary.firstResponseMs.value);
-      expect(after.value).toBeGreaterThanOrEqual(250);
+      // `firstResponseMs` is when a poll OBSERVED the response, which a loaded
+      // box can delay arbitrarily; only the ordering bound is load-independent.
+      // The shift's own >=299ms floor (above) is pinned to the 300ms timer.
+      expect(after.value).toBeLessThanOrEqual(shifts[0].offsetMs);
     }
     // Events are ordered by offset.
     const offsets = timeline.events.map((e) => e.offsetMs);

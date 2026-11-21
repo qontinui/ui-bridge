@@ -388,7 +388,8 @@ function indexedTextOutsideBoundaries(index: BoundaryIndex, el: Element): string
       if (node.nodeType === ELEMENT_NODE) {
         const child = node as Element;
         if (child.getAttribute(BRIDGE_REDACT_ATTR) === 'true') out += REDACTED_VALUE;
-        else out += index.text.get(child) ?? child.textContent ?? '';
+        else if (isNonRenderedElement(child)) out += '';
+        else out += index.text.get(child) ?? renderedText(child);
       } else if (node.nodeType === TEXT_NODE || node.nodeType === CDATA_SECTION_NODE) {
         out += node.nodeValue ?? '';
       }
@@ -411,21 +412,48 @@ const ELEMENT_NODE = 1;
 const TEXT_NODE = 3;
 const CDATA_SECTION_NODE = 4;
 
+/** Elements whose text content is never rendered to a reader of the page. */
+const NON_RENDERED_TAGS = new Set(['SCRIPT', 'STYLE', 'TEMPLATE', 'NOSCRIPT']);
+
 /**
- * `textContent` of `el` with every `data-bridge-redact="true"` DESCENDANT
- * subtree replaced by one `REDACTED_VALUE` (the outermost boundary wins; its
- * subtree is not entered). When no boundary sits below `el` this is exactly
- * `textContent`. Iterative (a TreeWalker), so deep trees do not recurse.
- *
- * Note an EMPTY boundary still reads as the sentinel: the reader reveals THAT a
- * redacted region is there, never what it holds.
+ * `true` when `el`'s subtree is not rendered text: a `<script>`, `<style>`,
+ * `<template>` or `<noscript>`, an element carrying `hidden`, or one whose
+ * (inline or computed) `display` is `none`. Its `textContent` is source code,
+ * rules or markup, not what the page shows, so a text reader skips it. Skipping
+ * only ever REMOVES text, so this cannot weaken redaction: a boundary inside a
+ * skipped subtree contributes nothing, not even the sentinel.
  */
-export function textOutsideBoundaries(el: Element): string | null {
-  if (!hasRedactionBoundaryBelow(el)) return el.textContent;
-  const index = activeBoundaryIndex;
-  if (index !== null && index.root.contains(el)) return indexedTextOutsideBoundaries(index, el);
+function isNonRenderedElement(el: Element): boolean {
+  if (NON_RENDERED_TAGS.has(el.tagName.toUpperCase())) return true;
+  if (el.hasAttribute('hidden')) return true;
+  const inline = (el as HTMLElement).style;
+  if (inline && inline.display === 'none') return true;
+  try {
+    // A computed-style read costs a cascade per element, so it is made only
+    // where a stylesheet exists that could hide something; inline and attribute
+    // signals above already cover a page with none.
+    const doc = el.ownerDocument;
+    const view = doc?.defaultView;
+    if (view && doc.styleSheets.length > 0 && view.getComputedStyle(el).display === 'none') {
+      return true;
+    }
+  } catch {
+    // No computable style (detached realm): fall back to the static signals.
+  }
+  return false;
+}
+
+/**
+ * The rendered text of `el`: its `textContent` minus every non-rendered
+ * descendant subtree and with every redaction boundary below replaced by one
+ * `REDACTED_VALUE` (the outermost boundary wins; its subtree is not entered).
+ * `el` itself is never judged. Iterative (a TreeWalker), so deep trees do not
+ * recurse. A childless element is exactly its `textContent`.
+ */
+function renderedText(el: Element): string {
+  if (el.firstElementChild === null) return el.textContent ?? '';
   const doc = el.ownerDocument;
-  if (!doc) return null;
+  if (!doc) return '';
   let out = '';
   const walker = doc.createTreeWalker(el, SHOW_ELEMENT | SHOW_TEXT | SHOW_CDATA_SECTION, {
     acceptNode(node: Node): number {
@@ -434,6 +462,7 @@ export function textOutsideBoundaries(el: Element): string | null {
           out += REDACTED_VALUE;
           return FILTER_REJECT; // do not enter the boundary
         }
+        if (isNonRenderedElement(node as Element)) return FILTER_REJECT;
         return FILTER_SKIP; // descend, emit nothing for the element itself
       }
       out += node.nodeValue ?? '';
@@ -444,6 +473,24 @@ export function textOutsideBoundaries(el: Element): string | null {
     // acceptNode accumulates `out` in document order.
   }
   return out;
+}
+
+/**
+ * The rendered text of `el` (see `renderedText`) with every
+ * `data-bridge-redact="true"` DESCENDANT subtree replaced by one
+ * `REDACTED_VALUE`. Text of `<script>`, `<style>`, `<template>`, `<noscript>`,
+ * `hidden` and `display:none` descendants is not included. When nothing below
+ * `el` is a boundary or non-rendered this is exactly `textContent`.
+ *
+ * Note an EMPTY boundary still reads as the sentinel: the reader reveals THAT a
+ * redacted region is there, never what it holds.
+ */
+export function textOutsideBoundaries(el: Element): string | null {
+  const index = activeBoundaryIndex;
+  if (hasRedactionBoundaryBelow(el) && index !== null && index.root.contains(el)) {
+    return indexedTextOutsideBoundaries(index, el);
+  }
+  return renderedText(el);
 }
 
 /**
