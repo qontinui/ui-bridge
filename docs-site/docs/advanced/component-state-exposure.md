@@ -38,8 +38,8 @@ function Counter() {
 ```
 
 `state` is a **function**, not a value — it is called at read time, so the
-driver always sees the current render's values rather than a snapshot taken at
-registration.
+driver always sees the values of the latest committed render rather than a
+snapshot taken at registration.
 
 There is no `useExposeState` hook. State exposure is a property of a registered
 component, which is what gives it an id, a name, actions and a lifecycle.
