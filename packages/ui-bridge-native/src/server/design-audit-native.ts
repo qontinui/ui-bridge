@@ -27,7 +27,10 @@
  *
  * The package's `src/` imports nothing from the optional peer, and
  * `NativeDesignHandlers` is a public export, so the core's types are mirrored
- * here. `design-audit-native.test-d.ts` pins the mirror to the SDK's own.
+ * here. `design-audit-native.test-d.ts` pins the mirror to the SDK's own:
+ * the response, the heuristic input and coverage types exactly, the adapter
+ * member by member, and the SDK's `auditDesign` as assignable to
+ * `DesignAuditCoreModule['auditDesign']`.
  */
 
 import type { NativeUIBridgeRegistry } from '../core/registry';
@@ -162,10 +165,18 @@ export interface NativeHeuristicInput {
   select?: { colorScheme: string; option?: { color: string; backgroundColor: string } };
 }
 
+/**
+ * What native hands the core's style-guide audit: its design data without
+ * `stateVariations`. Native interaction states are React Native's (`focused`
+ * where the web says `focus`), the style validator never reads them, and
+ * without them a native record is a web `ElementDesignData`.
+ */
+export type NativeAuditRecord = Omit<ElementDesignData, 'stateVariations'>;
+
 /** What a transport supplies to the core (mirrors `DesignAuditAdapter`). */
 export interface NativeDesignAuditAdapter<T extends { id: string }, R extends T = T> {
   isReadable(el: T): el is R;
-  records(kept: R[], guide: unknown): ElementDesignData[];
+  records(kept: R[], guide: unknown): NativeAuditRecord[];
   heuristicInput(el: R): NativeHeuristicInput;
   defaultRootFontSizePx(): number;
   heuristicCoverage: Readonly<
@@ -238,8 +249,15 @@ const NATIVE_HEURISTIC_COVERAGE: Readonly<
   },
 };
 
-function nativeDesignData(el: RegisteredNativeElement): ElementDesignData {
-  return getNativeElementDesignData(el.id, el.label, el.type, el.flatStyle, el.getState().layout);
+function nativeAuditRecord(el: RegisteredNativeElement): NativeAuditRecord {
+  const { stateVariations: _states, ...record } = getNativeElementDesignData(
+    el.id,
+    el.label,
+    el.type,
+    el.flatStyle,
+    el.getState().layout
+  );
+  return record;
 }
 
 function nativeHeuristicInput(el: RegisteredNativeElement): NativeHeuristicInput {
@@ -266,7 +284,7 @@ const nativeAdapter: NativeDesignAuditAdapter<RegisteredNativeElement> = {
   // The element's own `type` travels unchanged: the core's style validator
   // matches a rule's `elementType` through the SDK's named-type families, so
   // a web `button` rule matches a native `pressable` or `touchable`.
-  records: (kept) => kept.map(nativeDesignData),
+  records: (kept) => kept.map(nativeAuditRecord),
   heuristicInput: nativeHeuristicInput,
   defaultRootFontSizePx: () => 16,
   heuristicCoverage: NATIVE_HEURISTIC_COVERAGE,
