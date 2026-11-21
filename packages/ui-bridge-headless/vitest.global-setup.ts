@@ -1,4 +1,4 @@
-import { CLI_ARGS, buildIfStale } from '../../test-support/build-if-stale.mjs';
+import { CLI_ARGS, HEADLESS, buildIfStale } from '../../test-support/build-if-stale.mjs';
 
 /**
  * Runs once, in vitest's main process, before any test worker starts: builds
@@ -8,19 +8,5 @@ import { CLI_ARGS, buildIfStale } from '../../test-support/build-if-stale.mjs';
  * source edit under `vitest` (watch) restart it or run `npm run build`.
  */
 export default async function setup(): Promise<void> {
-  await buildIfStale([
-    CLI_ARGS,
-    {
-      dir: 'packages/ui-bridge-headless',
-      outputs: [
-        'dist/cli.js',
-        'dist/cli.cjs',
-        'dist/cli.d.ts',
-        'dist/index.js',
-        'dist/index.cjs',
-        'dist/index.d.ts',
-      ],
-      inlines: [CLI_ARGS.dir],
-    },
-  ]);
+  await buildIfStale([CLI_ARGS, HEADLESS]);
 }

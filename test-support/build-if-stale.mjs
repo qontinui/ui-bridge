@@ -68,6 +68,31 @@ export const CLI_ARGS = {
   inlines: [],
 };
 
+/** `@qontinui/ui-bridge-headless`, which inlines cli-args. Build after CLI_ARGS. */
+export const HEADLESS = {
+  dir: 'packages/ui-bridge-headless',
+  outputs: [
+    'dist/cli.js',
+    'dist/cli.cjs',
+    'dist/cli.d.ts',
+    'dist/index.js',
+    'dist/index.cjs',
+    'dist/index.d.ts',
+  ],
+  inlines: [CLI_ARGS.dir],
+};
+
+/**
+ * `@qontinui/ui-bridge`: the outputs another package's tests read, including the
+ * injected runtime bundle the wrapper's `injected` transport loads. Its build
+ * resolves headless types, so build it after HEADLESS.
+ */
+export const UI_BRIDGE = {
+  dir: 'packages/ui-bridge',
+  outputs: ['dist/index.js', 'dist/index.d.ts', 'dist/injected/bundle.global.js'],
+  inlines: [],
+};
+
 function isSourceInput(name) {
   return !/\.test\.tsx?$/.test(name);
 }
