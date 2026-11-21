@@ -366,7 +366,7 @@ describe('heuristic coverage', () => {
     expect(large.issues).toEqual([]);
   });
 
-  it('a <select> whose colours or option cannot be judged is not measured and produces no issue', () => {
+  it('a <select> whose own colours cannot be read is not measured and produces no issue', () => {
     const selects = [
       { color: 'not-a-colour', backgroundColor: '#111111', select: { colorScheme: 'normal' } },
       { color: '#ffffff', backgroundColor: 'transparent', select: { colorScheme: 'normal' } },
@@ -375,14 +375,6 @@ describe('heuristic coverage', () => {
         color: 'not-a-colour',
         backgroundColor: '#111111',
         select: { colorScheme: 'normal', option: { color: '#ffffff', backgroundColor: '#ffffff' } },
-      },
-      {
-        color: '#ffffff',
-        backgroundColor: '#111111',
-        select: {
-          colorScheme: 'normal',
-          option: { color: '#ffffff', backgroundColor: 'transparent' },
-        },
       },
     ];
     for (const heuristicInput of selects) {
@@ -399,6 +391,35 @@ describe('heuristic coverage', () => {
         label
       ).toEqual([]);
     }
+  });
+
+  it('an unjudgeable <option> does not suppress the select-level warning, and raises no option error', () => {
+    // A browser-default <option> has a transparent background: its contrast
+    // cannot be judged, but the select's own light-on-dark colours can.
+    const report = heuristic(
+      auditDesign(
+        [
+          element('pick', {
+            heuristic: {
+              color: '#ffffff',
+              backgroundColor: '#111111',
+              select: {
+                colorScheme: 'normal',
+                option: { color: '#ffffff', backgroundColor: 'transparent' },
+              },
+            },
+          }),
+        ],
+        {},
+        null,
+        adapter
+      )
+    );
+    expect(coverage(report, 'select-dark-mode')).toMatchObject({ checked: 1, notMeasured: 0 });
+    expect(report.issues.filter((i) => i.issue.startsWith('Select'))).toEqual([
+      expect.objectContaining({ element: 'pick', severity: 'warning' }),
+    ]);
+    expect(report.issues[0].issue).toMatch(/^Select has light text/);
   });
 
   it('counts each <select> the adapter describes as select-dark-mode checked', () => {
