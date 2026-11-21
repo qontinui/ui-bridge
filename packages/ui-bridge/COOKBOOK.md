@@ -583,18 +583,31 @@ one of `default`, `hover`, `focus`, `focus-visible`, `active`, `disabled` with
 `success: false` and code `UB-VALIDATION-ERROR`, and the message lists the
 accepted names. The status is still HTTP 200, as for the other refusals a
 handler makes (a body that does not parse is a 400). A `states` value that is
-not an array is refused the same way. Before this change a typo such as
-`focus_visible` came back as the DEFAULT styles labelled `focus_visible`. The relay server checks before it queues the command,
-so the refusal arrives even when no tab is connected. Omitting `states`, or
-sending `null`, reads the default set: every state on the HTTP door, and every
-state except `disabled` over the relay. An empty list, `"states": []`, reads
-only `default`.
+not an array is refused the same way. Without the check, a typo such as
+`focus_visible` would come back as the DEFAULT styles labelled
+`focus_visible`. The relay server checks before it queues the command, so the
+refusal arrives even when no tab is connected. Omitting `states`, or sending
+`null`, reads the default set: every state on the HTTP door, and every state
+except `disabled` over the relay. An empty list, `"states": []`, reads only
+`default`.
 
 ```bash
 curl -s -X POST "$BASE/design/element/save-btn/state-styles" \
   -H 'Content-Type: application/json' -d '{"states":["focus","focus-visible"]}' \
   | jq '.data.stateStyles[] | {state, focusVisible, forced, notForcedReason, focusCaveat, focused, outline: .styles.outline}'
 ```
+
+React Native (`@qontinui/ui-bridge-native`) checks `states` against its own
+state names: `default`, `pressed`, `focused` and `disabled`. Any other name is
+refused, and that includes a web-only name such as `hover`, so the request
+above would be refused there. The refusal has code `INVALID_REQUEST` and HTTP
+status 400: native maps its validation refusals to 400, where web answers 200.
+Omitting `states`, or sending `null`, reads every native state, and `[]` reads
+only `default`. For a given list the answer is `default`, then each named
+state whose declared style differs from the default. The states come in
+native's fixed order, not the order requested, and a name listed twice is
+returned once. A named state with no differing style is left out. It is not
+returned as a copy of `default`, as it would be on web.
 
 ## 9. Read the styles and attributes a check needs
 

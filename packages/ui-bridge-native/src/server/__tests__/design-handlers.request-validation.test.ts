@@ -240,4 +240,96 @@ describe('native design request validation', () => {
       expect(await removed(null)).toBe(0);
     });
   });
+
+  describe('/design/element/:id/state-styles', () => {
+    const route = '/design/element/:id/state-styles';
+    const accepted = 'default, pressed, focused, disabled';
+
+    function stateCtx(body: unknown, id = 'btn'): HandlerContext {
+      return { params: { id }, query: {}, body } as unknown as HandlerContext;
+    }
+
+    function stateRegistry(): NativeUIBridgeRegistry {
+      const r = new NativeUIBridgeRegistry();
+      r.registerElement('btn', makeRef(), { type: 'button' });
+      r.updateElementStyle(
+        'btn',
+        { backgroundColor: '#000000', opacity: 1 },
+        {
+          pressed: { backgroundColor: '#111111' },
+          focused: { backgroundColor: '#222222' },
+          disabled: { opacity: 0.5 },
+        }
+      );
+      return r;
+    }
+
+    const states = async (body: unknown) => {
+      const r = await createDesignHandlers(stateRegistry()).getElementStateStyles(stateCtx(body));
+      expect(r.success, JSON.stringify(r)).toBe(true);
+      return (r.data as { stateStyles: Array<{ state: string }> }).stateStyles.map((s) => s.state);
+    };
+
+    it('refuses a non-object body, a non-array states and an unknown state name', async () => {
+      const h = createDesignHandlers(stateRegistry());
+      for (const body of NOT_AN_OBJECT) {
+        expect(await h.getElementStateStyles(stateCtx(body))).toMatchObject(
+          refusal(`${route}: the request body must be a JSON object`)
+        );
+      }
+      for (const bad of ['pressed', 3, { pressed: true }]) {
+        expect(await h.getElementStateStyles(stateCtx({ states: bad }))).toMatchObject(
+          refusal(`${route}: 'states' must be an array of: ${accepted}`)
+        );
+      }
+      // A typo, a web-only state and a non-string are each named in the refusal.
+      expect(
+        await h.getElementStateStyles(stateCtx({ states: ['pressed', 'focus_ed', 'hover', 7] }))
+      ).toMatchObject(
+        refusal(`${route}: Unknown interaction state(s): focus_ed, hover, 7. Accepted: ${accepted}`)
+      );
+    });
+
+    it('checks the body before the element lookup, as web does', async () => {
+      const h = createDesignHandlers(stateRegistry());
+      expect(
+        await h.getElementStateStyles(stateCtx({ states: ['hover'] }, 'missing'))
+      ).toMatchObject({ success: false, code: 'INVALID_REQUEST' });
+      expect(await h.getElementStateStyles(stateCtx({}, 'missing'))).toMatchObject({
+        success: false,
+        code: 'ELEMENT_NOT_FOUND',
+      });
+    });
+
+    // Selection is web's (absent/null every state, `[]` only `default`), but
+    // the order is native's capture order, a repeated name is returned once,
+    // and a named state with no differing style is omitted.
+    it('selects: absent/null every state, a list default plus its states in capture order, [] default', async () => {
+      const every = ['default', 'pressed', 'focused', 'disabled'];
+      expect(await states(undefined)).toEqual(every);
+      expect(await states(null)).toEqual(every);
+      expect(await states({ states: null })).toEqual(every);
+      expect(await states({ states: ['disabled', 'pressed'] })).toEqual([
+        'default',
+        'pressed',
+        'disabled',
+      ]);
+      expect(await states({ states: ['default'] })).toEqual(['default']);
+      expect(await states({ states: [] })).toEqual(['default']);
+      expect(await states({ states: ['pressed', 'pressed'] })).toEqual(['default', 'pressed']);
+    });
+
+    it('omits a named state the element declares no differing style for', async () => {
+      const r = new NativeUIBridgeRegistry();
+      r.registerElement('plain', makeRef(), { type: 'view' });
+      r.updateElementStyle('plain', { opacity: 1 }, { focused: { opacity: 1 } });
+      const res = await createDesignHandlers(r).getElementStateStyles(
+        stateCtx({ states: ['pressed', 'focused'] }, 'plain')
+      );
+      expect(res.success, JSON.stringify(res)).toBe(true);
+      expect(
+        (res.data as { stateStyles: Array<{ state: string }> }).stateStyles.map((s) => s.state)
+      ).toEqual(['default']);
+    });
+  });
 });
