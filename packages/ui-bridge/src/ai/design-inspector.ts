@@ -1008,8 +1008,9 @@ async function applyInteractionState(
  *
  * When `el` is inside a frame, `el.focus()` also makes its frame the active
  * element of every ancestor document — the page's focus moves into the frame.
- * So the deepest focused element of each same-origin ANCESTOR document is
- * recorded too (see {@link recordAncestorFocus}), and the restore puts each
+ * So the focus of each same-origin ANCESTOR document is recorded too, read
+ * from the frame's side the same way (so a closed tree enclosing the frame is
+ * read; see {@link recordAncestorFocus}), and the restore puts each
  * one back after `el`'s own document, innermost first and the top document
  * last, so the page's focus ends where it was. An ancestor that had nothing
  * focused gets its frame blurred instead. The walk stops at the first
@@ -1061,14 +1062,18 @@ interface AncestorFocus {
   doc: Document;
   /** The frame element in `doc` that leads down to `el`'s document. */
   frame: Element;
-  /** `doc`'s deepest focused element before the focus (its body when nothing was). */
+  /**
+   * What {@link ancestorFocusOf} read in `doc` before the focus (its body when
+   * nothing was focused).
+   */
   previous: Element | null;
 }
 
 /**
- * The deepest focused element of each same-origin ancestor document of `doc`,
- * innermost first, read before `el.focus()` moves the page's focus into the
- * frame. Stops at the first parent that cannot be read (cross-origin:
+ * The focus of each same-origin ancestor document of `doc`, as
+ * {@link ancestorFocusOf} reads it from the frame on the chain, innermost
+ * first, read before `el.focus()` moves the page's focus into the frame.
+ * Stops at the first parent that cannot be read (cross-origin:
  * `frameElement` is `null`, or a read throws).
  */
 function recordAncestorFocus(doc: Document): AncestorFocus[] {
@@ -1092,11 +1097,16 @@ function recordAncestorFocus(doc: Document): AncestorFocus[] {
 /**
  * What `doc` has focused, as seen from the frame on the chain: the frame
  * itself when it is the active element of its tree chain (read by walking UP
- * from it, so a frame inside a CLOSED shadow root is recognised), else the
- * deepest focused element of `doc` (which stops at a closed host).
+ * from it, so a frame inside a CLOSED shadow root is recognised). Otherwise it
+ * is read the way `applyFocus` reads `el`'s own document: the nearest shadow
+ * root on the frame's way UP that holds the focus (so a focus in a CLOSED tree
+ * that encloses the frame is read, not just its host), else the deepest
+ * focused element of `doc` (which stops at a closed host off that path).
  */
 function ancestorFocusOf(doc: Document, frame: Element): Element | null {
-  return isActiveInTreeChain(frame) ? frame : deepestActiveElement(doc);
+  if (isActiveInTreeChain(frame)) return frame;
+  const tree = focusedShadowTreeOf(frame);
+  return tree ? deepestBelow(tree.activeElement ?? null) : deepestActiveElement(doc);
 }
 
 /**
@@ -1107,10 +1117,10 @@ function ancestorFocusOf(doc: Document, frame: Element): Element | null {
  * One that had nothing focused gets that frame blurred, when the frame is the
  * active element of its tree chain (read by walking up from the frame, so a
  * frame inside a closed shadow root counts). So does one whose recorded
- * element took no focus back (a non-focusable host of a closed shadow root:
- * its real focus inside cannot be read or restored), so the page focus never
- * stays in the frame. Focus calls pass
- * `preventScroll`, so a restore never scrolls the page.
+ * element took no focus back (a non-focusable host of a closed shadow root
+ * off the frame's path: its real focus inside cannot be read or restored), so
+ * the page focus never stays in the frame. Focus calls pass `preventScroll`,
+ * so a restore never scrolls the page.
  */
 function restoreAncestorFocus(ancestors: AncestorFocus[]): void {
   for (const { doc, frame, previous } of ancestors) {
@@ -1120,8 +1130,9 @@ function restoreAncestorFocus(ancestors: AncestorFocus[]): void {
       if (previous && previous !== doc.body && previous.isConnected && isFocusable(previous)) {
         (previous as HTMLElement).focus({ preventScroll: true });
         // A recorded element that takes no focus (a non-focusable host of a
-        // closed shadow root, whose real focus inside cannot be read) leaves
-        // the page focus in the frame: take it out, as the own document does.
+        // closed shadow root off the frame's path, whose real focus inside
+        // cannot be read) leaves the page focus in the frame: take it out, as
+        // the own document does.
         if (ancestorFocusOf(doc, frame) !== frame) continue;
       }
       if (isActiveInTreeChain(frame) && isFocusable(frame)) (frame as HTMLElement).blur();

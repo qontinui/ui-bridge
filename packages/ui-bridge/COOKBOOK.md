@@ -560,18 +560,22 @@ The read puts the previous focus back, within limits:
   its own shadow root to its host's root and so on: the first root that holds
   the focus is read, open or CLOSED. So a focus inside any shadow root that
   encloses the inspected element is restored to the element that had it, and
-  a focus inside an open shadow root anywhere in the document is too;
+  a focus inside an open shadow root anywhere in the document is too. Each
+  ancestor document of a frame is read the same way, walking up from the
+  frame, so a focus in a closed tree that encloses the frame comes back too;
 - a focus inside a CLOSED shadow root that does NOT enclose the inspected
   element (a sibling component's) can only be restored to its host: with
   `delegatesFocus` that is the host's first focusable element, and a host
   without `delegatesFocus` that is not itself focusable takes no focus at
   all, so the focus falls to the body;
 - an element that was already focused before the read stays focused;
-- if an ancestor document's recorded focus is a non-focusable closed host
-  (its real focus inside cannot be read), that focus is lost, but the frame
-  is still blurred, so the page focus does not stay in the frame;
-- the read never scrolls the page: its own focus and every restore pass
-  `preventScroll`.
+- in an ancestor document, a focus inside a closed shadow root that does NOT
+  enclose the frame is recorded as its host, as above. If that host takes no
+  focus back (it is not focusable and has no `delegatesFocus`), the focus is
+  lost, but the frame is still blurred, so the page focus does not stay in
+  the frame;
+- the read itself never scrolls the page: its own focus and every restore
+  pass `preventScroll`.
 
 ```bash
 curl -s -X POST "$BASE/design/element/save-btn/state-styles" \
