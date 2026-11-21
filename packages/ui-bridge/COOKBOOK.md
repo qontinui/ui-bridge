@@ -577,6 +577,19 @@ The read puts the previous focus back, within limits:
 - the read itself never scrolls the page: its own focus and every restore
   pass `preventScroll`.
 
+**An unknown state name is refused.** Every door (the HTTP handler, the
+relay server, and the browser relay case) answers a `states` entry that is not
+one of `default`, `hover`, `focus`, `focus-visible`, `active`, `disabled` with
+`success: false` and code `UB-VALIDATION-ERROR`, and the message lists the
+accepted names. The status is still HTTP 200, as for the other refusals a
+handler makes (a body that does not parse is a 400). A `states` value that is
+not an array is refused the same way. Before this change a typo such as
+`focus_visible` came back as the DEFAULT styles labelled `focus_visible`. The relay server checks before it queues the command,
+so the refusal arrives even when no tab is connected. Omitting `states`, or
+sending `null`, reads the default set: every state on the HTTP door, and every
+state except `disabled` over the relay. An empty list, `"states": []`, reads
+only `default`.
+
 ```bash
 curl -s -X POST "$BASE/design/element/save-btn/state-styles" \
   -H 'Content-Type: application/json' -d '{"states":["focus","focus-visible"]}' \

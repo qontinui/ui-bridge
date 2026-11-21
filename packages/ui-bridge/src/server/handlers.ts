@@ -5382,7 +5382,7 @@ export function createHandlers(
 
     getElementStateStyles: async (
       id: string,
-      request: { states?: InteractionStateName[] }
+      request: { states?: InteractionStateName[] | null }
     ): Promise<APIResponse<{ elementId: string; stateStyles: StateStyles[] }>> => {
       try {
         // An unknown state name would come back as the default styles under
