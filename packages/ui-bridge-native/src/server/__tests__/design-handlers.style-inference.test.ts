@@ -316,8 +316,13 @@ describe('native review regressions (each threw or answered wrong before its fix
       Number.NEGATIVE_INFINITY,
       '16',
     ]) {
-      // With a guide and without one: the value is refused before either is read.
-      for (const body of [{ guide, rootFontSizePx }, { rootFontSizePx }]) {
+      // With a guide, without one, and with a malformed one: the value is
+      // refused before the guide is read, as on the web transports.
+      for (const body of [
+        { guide, rootFontSizePx },
+        { rootFontSizePx },
+        { guide: { rules: 'not-an-array' }, rootFontSizePx },
+      ]) {
         const r = await handlers.runDesignAudit(ctx(body));
         expect(r, String(rootFontSizePx)).toMatchObject({
           success: false,
@@ -328,5 +333,38 @@ describe('native review regressions (each threw or answered wrong before its fix
     }
     // Nothing reached the validator.
     expect(audits).toEqual([]);
+  });
+
+  it('the audit refuses a body guide without a rules array, as the web transports do', async () => {
+    const audits: unknown[] = [];
+    const real = specs as unknown as StyleValidatorModule;
+    const validator: StyleValidatorModule = {
+      runStyleAudit: (elements, guide, options) => {
+        audits.push(options);
+        return real.runStyleAudit(elements, guide, options);
+      },
+    };
+    const registry = new NativeUIBridgeRegistry();
+    registry.registerElement('box', makeRef(), { type: 'view' });
+    const loaded = { version: '1.0', name: 'loaded', tokens: {}, rules: [] };
+    const handlers = createDesignHandlers(registry, undefined, { styleValidator: validator });
+    await handlers.loadStyleGuide(ctx({ guide: loaded }));
+    for (const guide of ['g', 42, [], {}, { rules: 'not-an-array' }]) {
+      // Refused even with a loaded guide to fall back on, and with a valid root.
+      for (const body of [{ guide }, { guide, rootFontSizePx: 20 }]) {
+        const r = await handlers.runDesignAudit(ctx(body));
+        expect(r, JSON.stringify(guide)).toMatchObject({
+          success: false,
+          code: 'INVALID_REQUEST',
+        });
+        expect(r.error).toMatch(/guide must be a style guide object with a rules array/);
+      }
+    }
+    expect(audits).toEqual([]);
+    // Absent and null still fall back to the loaded guide.
+    for (const body of [{}, { guide: null }]) {
+      const r = await handlers.runDesignAudit(ctx(body));
+      expect(r.success).toBe(true);
+    }
   });
 });
