@@ -366,15 +366,18 @@ describe('heuristic coverage', () => {
     expect(large.issues).toEqual([]);
   });
 
-  it('a <select> whose own colours cannot be read is not measured and produces no issue', () => {
+  it('a <select> with neither judgment possible is not measured and produces no issue', () => {
     const selects = [
       { color: 'not-a-colour', backgroundColor: '#111111', select: { colorScheme: 'normal' } },
       { color: '#ffffff', backgroundColor: 'transparent', select: { colorScheme: 'normal' } },
       {
-        // Unjudgeable own colours: the judgeable (and failing) option is not reported either.
+        // Neither judgment can be made: own colours unreadable, option pair unjudgeable.
         color: 'not-a-colour',
         backgroundColor: '#111111',
-        select: { colorScheme: 'normal', option: { color: '#ffffff', backgroundColor: '#ffffff' } },
+        select: {
+          colorScheme: 'normal',
+          option: { color: '#ffffff', backgroundColor: 'transparent' },
+        },
       },
     ];
     for (const heuristicInput of selects) {
@@ -391,6 +394,35 @@ describe('heuristic coverage', () => {
         label
       ).toEqual([]);
     }
+  });
+
+  it('unreadable select colours do not suppress a judgeable option error', () => {
+    // A transparent select background: the select-level check cannot be made,
+    // but white-on-white options can be judged, and fail.
+    const report = heuristic(
+      auditDesign(
+        [
+          element('pick', {
+            heuristic: {
+              color: '#ffffff',
+              backgroundColor: 'transparent',
+              select: {
+                colorScheme: 'normal',
+                option: { color: '#ffffff', backgroundColor: '#ffffff' },
+              },
+            },
+          }),
+        ],
+        {},
+        null,
+        adapter
+      )
+    );
+    expect(coverage(report, 'select-dark-mode')).toMatchObject({ checked: 1, notMeasured: 0 });
+    expect(report.issues.filter((i) => i.issue.startsWith('Select'))).toEqual([
+      expect.objectContaining({ element: 'pick', severity: 'error' }),
+    ]);
+    expect(report.issues[0].issue).toMatch(/^Select option text has low contrast/);
   });
 
   it('an unjudgeable <option> does not suppress the select-level warning, and raises no option error', () => {
@@ -448,5 +480,37 @@ describe('heuristic coverage', () => {
       ['pick', 'warning'],
       ['pick', 'error'],
     ]);
+  });
+});
+
+describe('a transport that does not declare every heuristic', () => {
+  it('reports an undeclared heuristic as partial, not declared, and does not crash', () => {
+    const { 'touch-target': _omitted, ...threeDeclared } = adapter.heuristicCoverage;
+    const older: DesignAuditAdapter<PlainElement> = {
+      ...adapter,
+      heuristicCoverage: threeDeclared,
+    };
+    const report = heuristic(
+      auditDesign(
+        [element('tap', { heuristic: { touchTarget: true, rect: { width: 30, height: 30 } } })],
+        {},
+        null,
+        older
+      )
+    );
+    expect(report.heuristicCoverage.map((r) => r.heuristic)).toEqual([
+      'contrast',
+      'select-dark-mode',
+      'font-size',
+      'touch-target',
+    ]);
+    expect(report.heuristicCoverage[3]).toEqual({
+      heuristic: 'touch-target',
+      status: 'partial',
+      checked: 1,
+      notMeasured: 0,
+      note: 'not declared by this transport',
+    });
+    expect(report.heuristicCoverage[2]).toMatchObject({ status: 'measured' });
   });
 });

@@ -169,7 +169,7 @@ export interface NativeDesignAuditAdapter<T extends { id: string }, R extends T 
   heuristicInput(el: R): NativeHeuristicInput;
   defaultRootFontSizePx(): number;
   heuristicCoverage: Readonly<
-    Record<NativeHeuristicId, { status: NativeHeuristicCoverageStatus; note?: string }>
+    Partial<Record<NativeHeuristicId, { status: NativeHeuristicCoverageStatus; note?: string }>>
   >;
 }
 
@@ -207,31 +207,36 @@ const TOUCH_TARGET_TYPES: ReadonlySet<string> = new Set([
   'radio',
 ]);
 
-/** What each heuristic can read on React Native (see the file header). */
-const NATIVE_HEURISTIC_COVERAGE: NativeDesignAuditAdapter<RegisteredNativeElement>['heuristicCoverage'] =
-  {
-    contrast: {
-      status: 'partial',
-      note:
-        "React Native has no cascade: contrast is checked only where the element's own style " +
-        'sets both color and backgroundColor, and every other element counts in notMeasured; ' +
-        'an element with no fontSize is judged against the normal-text threshold (4.5:1)',
-    },
-    'select-dark-mode': {
-      status: 'not-applicable',
-      note: 'React Native has no <select>; pickers are platform widgets',
-    },
-    'font-size': {
-      status: 'partial',
-      note:
-        'checked where the style sets fontSize; elsewhere the platform default applies, which ' +
-        'is not read, and the element counts in notMeasured',
-    },
-    'touch-target': {
-      status: 'measured',
-      note: 'an element with no layout yet, or a collapsed 0x0 one, counts in notMeasured, never as 0x0',
-    },
-  };
+/**
+ * What each heuristic can read on React Native (see the file header). Every
+ * heuristic the mirror names is declared, so none falls to the core's
+ * undeclared default.
+ */
+const NATIVE_HEURISTIC_COVERAGE: Readonly<
+  Record<NativeHeuristicId, { status: NativeHeuristicCoverageStatus; note: string }>
+> = {
+  contrast: {
+    status: 'partial',
+    note:
+      "React Native has no cascade: contrast is checked only where the element's own style " +
+      'sets both color and backgroundColor, and every other element counts in notMeasured; ' +
+      'an element with no fontSize is judged against the normal-text threshold (4.5:1)',
+  },
+  'select-dark-mode': {
+    status: 'not-applicable',
+    note: 'React Native has no <select>; pickers are platform widgets',
+  },
+  'font-size': {
+    status: 'partial',
+    note:
+      'checked where the style sets fontSize; elsewhere the platform default applies, which ' +
+      'is not read, and the element counts in notMeasured',
+  },
+  'touch-target': {
+    status: 'measured',
+    note: 'an element with no layout yet, or a collapsed 0x0 one, counts in notMeasured, never as 0x0',
+  },
+};
 
 function nativeDesignData(el: RegisteredNativeElement): ElementDesignData {
   return getNativeElementDesignData(el.id, el.label, el.type, el.flatStyle, el.getState().layout);

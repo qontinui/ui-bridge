@@ -9,7 +9,14 @@
 
 import { expectTypeOf } from 'vitest';
 import type * as specs from '@qontinui/ui-bridge/specs';
-import type { NativeDesignAuditResponse, NativeHeuristicInput } from '../design-audit-native';
+import type {
+  NativeDesignAuditAdapter,
+  NativeDesignAuditResponse,
+  NativeHeuristicInput,
+} from '../design-audit-native';
 
 expectTypeOf<NativeDesignAuditResponse>().toEqualTypeOf<specs.DesignAuditResponse>();
 expectTypeOf<NativeHeuristicInput>().toEqualTypeOf<specs.HeuristicInput>();
+expectTypeOf<
+  NativeDesignAuditAdapter<{ id: string }>['heuristicCoverage']
+>().toEqualTypeOf<specs.HeuristicCoverageDeclaration>();
