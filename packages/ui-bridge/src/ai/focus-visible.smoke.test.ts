@@ -950,6 +950,82 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('design inspector focus states (real Chro
     await page.close();
   }, 30_000);
 
+  it('an ancestor focus inside a CLOSED delegatesFocus host that encloses the frame: the input that had the focus gets it back', async () => {
+    const page = await openPage();
+    const read = await page.evaluate(async () => {
+      const host = document.createElement('div');
+      host.id = 'closed-delegating-host';
+      document.body.appendChild(host);
+      const closed = host.attachShadow({ mode: 'closed', delegatesFocus: true });
+      closed.innerHTML = `<input id="df" aria-label="df"><input id="di" aria-label="di">`;
+      const frame = document.createElement('iframe');
+      frame.srcdoc = `<!doctype html><button id="fb6">in frame</button>`;
+      const loaded = new Promise((done) => frame.addEventListener('load', done, { once: true }));
+      closed.appendChild(frame);
+      await loaded;
+      (closed.getElementById('di') as HTMLInputElement).focus();
+      const before = document.activeElement?.id;
+      const beforeInner = closed.activeElement?.id;
+      await window.FV.captureStateVariations(frame.contentDocument!.getElementById('fb6')!, [
+        'focus',
+        'focus-visible',
+      ]);
+      return {
+        before,
+        beforeInner,
+        after: document.activeElement === document.body ? 'body' : document.activeElement?.id,
+        innerAfter:
+          closed.activeElement === null
+            ? null
+            : closed.activeElement === frame
+              ? 'frame'
+              : closed.activeElement.id,
+      };
+    });
+    // The closed tree encloses the frame, so its focus is read from the
+    // frame's side and the input itself is restored. (Reading it from the
+    // document only would record the host, and host.focus() would delegate to
+    // its FIRST focusable element, df, instead.)
+    expect(read).toEqual({
+      before: 'closed-delegating-host',
+      beforeInner: 'di',
+      after: 'closed-delegating-host',
+      innerAfter: 'di',
+    });
+    await page.close();
+  }, 30_000);
+
+  it('an ancestor focus inside a NON-focusable CLOSED host that encloses the frame: the input that had the focus gets it back', async () => {
+    const page = await openPage();
+    const read = await page.evaluate(async () => {
+      const host = document.createElement('div');
+      host.id = 'closed-plain-host';
+      document.body.appendChild(host);
+      const closed = host.attachShadow({ mode: 'closed' });
+      closed.innerHTML = `<input id="pf" aria-label="pf"><input id="pi" aria-label="pi">`;
+      const frame = document.createElement('iframe');
+      frame.srcdoc = `<!doctype html><button id="fb7">in frame</button>`;
+      const loaded = new Promise((done) => frame.addEventListener('load', done, { once: true }));
+      closed.appendChild(frame);
+      await loaded;
+      (closed.getElementById('pi') as HTMLInputElement).focus();
+      const before = closed.activeElement?.id;
+      await window.FV.captureStateVariations(frame.contentDocument!.getElementById('fb7')!, [
+        'focus',
+        'focus-visible',
+      ]);
+      return {
+        before,
+        after: document.activeElement === document.body ? 'body' : document.activeElement?.id,
+        innerAfter: closed.activeElement === frame ? 'frame' : (closed.activeElement?.id ?? null),
+      };
+    });
+    // Read from the document alone, the recorded focus would be the host,
+    // which takes no focus, so the input's focus would be lost to the body.
+    expect(read).toEqual({ before: 'pi', after: 'closed-plain-host', innerAfter: 'pi' });
+    await page.close();
+  }, 30_000);
+
   it('a target below the fold: the read does not scroll the page', async () => {
     const page = await openPage();
     const read = await page.evaluate(async () => {
