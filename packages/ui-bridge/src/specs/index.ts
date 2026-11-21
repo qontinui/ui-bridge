@@ -128,6 +128,8 @@ export {
   elementStylesOf,
   designSnapshotOf,
   responsiveSnapshotsOf,
+  parseDesignSnapshotRequest,
+  parseResponsiveSnapshotsRequest,
   designAuditOf,
   viewportConstraintsOf,
   DesignRequestError,
@@ -149,6 +151,8 @@ export type {
   DesignSnapshotResponse,
   ResponsiveSnapshotsRequest,
   ResponsiveSnapshotsResponse,
+  ParsedDesignSnapshotRequest,
+  ParsedResponsiveSnapshotsRequest,
   DesignAuditRequest,
   DesignAuditResponse,
   StyleGuideDesignAuditReport,
@@ -157,9 +161,12 @@ export type {
 } from './design-request';
 
 // `/design/evaluate*` requests over registered elements — the same shared
-// implementation pattern, exported for the same reason.
+// implementation pattern, exported for the same reason. `parseEvaluateRequest`
+// is the pure body parse alone, so a transport with no DOM (the React Native
+// server) refuses with the same rules.
 export {
   evaluateRegisteredQuality,
+  parseEvaluateRequest,
   captureQualityBaseline,
   diffQualityBaseline,
   collectDesignData as collectRegisteredDesignData,
@@ -171,6 +178,7 @@ export type {
   QualityBaselineRequest,
   QualityDiffRequest,
   DesignCollectOptions,
+  ParsedEvaluateRequest,
 } from './quality-request';
 
 // Style inference (draft style guide + token drift from computed styles).

@@ -5,8 +5,9 @@ import { createDesignHandlers, type QualityEvaluatorModule } from '../design-han
 import type { HandlerContext } from '../types';
 
 /**
- * Native `/design/evaluate` applies the SDK's one quality-context shape rule
- * (`qualityContextProblem`) and refuses a malformed context as a request error
+ * Native `/design/evaluate` runs the SDK's request parser
+ * (`parseEvaluateRequest`), and with it the one quality-context shape rule
+ * (`qualityContextProblem`), and refuses a malformed context as a request error
  * (INVALID_REQUEST), as the web transports refuse it as UB-VALIDATION-ERROR —
  * never as an evaluation failure. The real specs functions are injected
  * because `vi.mock` does not intercept this file's CJS `require`.
@@ -30,8 +31,8 @@ describe('native /design/evaluate quality context', () => {
     await handlers().clearStyleGuide(ctx(undefined));
   });
 
-  it('the published specs entry carries the shape rule native calls', () => {
-    expect(typeof (specs as Record<string, unknown>).qualityContextProblem).toBe('function');
+  it('the published specs entry carries the request parser native calls', () => {
+    expect(typeof (specs as Record<string, unknown>).parseEvaluateRequest).toBe('function');
   });
 
   it('refuses a malformed customContext as INVALID_REQUEST', async () => {
@@ -118,24 +119,12 @@ describe('native /design/evaluate quality context', () => {
     }
   });
 
-  it('on an SDK without qualityContextProblem, still refuses a context with no metrics or a declared null', async () => {
-    const { qualityContextProblem: _omit, ...older } = evaluator as QualityEvaluatorModule & {
-      qualityContextProblem?: unknown;
-    };
-    const h = createDesignHandlers(
-      new NativeUIBridgeRegistry(),
-      () => ({ width: 400, height: 800 }),
-      {
-        qualityEvaluator: older as QualityEvaluatorModule,
-      }
-    );
-    const custom = await h.evaluateQuality(ctx({ customContext: { name: 'x' } }));
-    expect(custom.code).toBe('INVALID_REQUEST');
-    // Native's own check runs, not the bundled SDK's: an unknown metric id,
-    // which the SDK rule refuses, passes the older check and reaches the
-    // evaluator (stubbed here, as an older SDK's checks no shape).
+  it('on an SDK without parseEvaluateRequest, refuses a malformed body and answers EVALUATOR_NOT_AVAILABLE for a well-formed one', async () => {
+    // An older SDK (0.57.0 and earlier) loads but carries no request parser:
+    // native never evaluates under a looser copy of the rules.
+    const { parseEvaluateRequest: _omit, ...older } = evaluator;
     const reached: unknown[] = [];
-    const stubbed = createDesignHandlers(
+    const h = createDesignHandlers(
       new NativeUIBridgeRegistry(),
       () => ({ width: 400, height: 800 }),
       {
@@ -148,16 +137,23 @@ describe('native /design/evaluate quality context', () => {
         },
       }
     );
-    const typoContext = { name: 'x', metrics: { contentOverlow: {} } };
-    const typo = await stubbed.evaluateQuality(ctx({ customContext: typoContext }));
-    expect(typo.success, JSON.stringify(typo)).toBe(true);
-    expect(reached).toEqual([typoContext]);
-    await h.loadStyleGuide(
-      ctx({ guide: { version: '1', name: 'g', rules: [], qualityContexts: { nothing: null } } })
-    );
-    const declared = await h.evaluateQuality(ctx({ context: 'nothing' }));
-    expect(declared.code).toBe('INVALID_REQUEST');
-    expect(declared.error).toContain('quality context "nothing" must be an object');
+    const malformed = await h.evaluateQuality(ctx({ viewport: { width: 0 } }));
+    expect(malformed).toMatchObject({
+      success: false,
+      code: 'INVALID_REQUEST',
+      error:
+        '/design/evaluate: viewport must be { width, height }, each a finite number greater than 0',
+    });
+    for (const body of [{}, { customContext: { name: 'x', metrics: { contentOverlow: {} } } }]) {
+      const res = await h.evaluateQuality(ctx(body));
+      expect(res, JSON.stringify(body)).toMatchObject({
+        success: false,
+        code: 'EVALUATOR_NOT_AVAILABLE',
+        error:
+          'Install a @qontinui/ui-bridge release containing parseEvaluateRequest (0.58.0 or later).',
+      });
+    }
+    expect(reached).toEqual([]);
   });
 
   it('an empty elementIds selects no element, as on the web transports', async () => {

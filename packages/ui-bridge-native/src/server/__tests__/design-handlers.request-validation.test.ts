@@ -5,9 +5,9 @@ import type { HandlerContext } from '../types';
 import type { NativeElementRef } from '../../core/types';
 
 /**
- * Native `/design/snapshot`, `/design/evaluate`, `/design/evaluate/baseline`
- * and `/design/evaluate/diff` validate the body fields they read with the web
- * transports' rules and messages (`design-request.ts`, `quality-request.ts`),
+ * Native `/design/snapshot`, `/design/responsive`, `/design/evaluate`,
+ * `/design/evaluate/baseline` and `/design/evaluate/diff` validate their body
+ * fields with the web transports' rules and messages (`design-request.ts`, `quality-request.ts`),
  * and select by `elementIds` the way web does: absent or `null` is every
  * element, a given list exactly its ids, `[]` none. `/design/audit` has its
  * own tests in `design-handlers.style-inference.test.ts`.
@@ -61,12 +61,109 @@ describe('native design request validation', () => {
       }
     });
 
+    it('refuses includePseudoElements and limit as web does, in web order', async () => {
+      const h = createDesignHandlers(registry());
+      for (const includePseudoElements of ['yes', 1, {}]) {
+        // includePseudoElements is checked before limit.
+        expect(await h.getDesignSnapshot(ctx({ includePseudoElements, limit: 0 }))).toMatchObject(
+          refusal('/design/snapshot: includePseudoElements must be a boolean')
+        );
+      }
+      for (const limit of [0, -1, 1.5, '3', true]) {
+        expect(await h.getDesignSnapshot(ctx({ limit }))).toMatchObject(
+          refusal('/design/snapshot: limit must be an integer >= 1')
+        );
+      }
+      // elementIds is checked before includePseudoElements.
+      expect(
+        await h.getDesignSnapshot(ctx({ elementIds: 'x', includePseudoElements: 'x' }))
+      ).toMatchObject(refusal('/design/snapshot: elementIds must be an array of strings'));
+    });
+
+    it('applies a given limit and reports the cut as web does; none leaves it unbounded', async () => {
+      const h = createDesignHandlers(registry());
+      const cut = await h.getDesignSnapshot(ctx({ limit: 2, includePseudoElements: true }));
+      expect(cut.success).toBe(true);
+      expect(cut.data?.elements.map((e) => e.elementId)).toEqual(['b', 'o']);
+      expect(cut.data).toMatchObject({ totalElements: 4, returned: 2, limit: 2, truncated: true });
+      const uncut = await h.getDesignSnapshot(ctx({ limit: 10 }));
+      expect(uncut.data?.elements).toHaveLength(4);
+      expect(uncut.data).toMatchObject({
+        totalElements: 4,
+        returned: 4,
+        limit: 10,
+        truncated: false,
+      });
+      const unbounded = await h.getDesignSnapshot(ctx({ elementIds: ['box', 'x'] }));
+      expect(unbounded.data?.elements.map((e) => e.elementId)).toEqual(['x', 'box']);
+      expect(unbounded.data).not.toHaveProperty('limit');
+      expect(unbounded.data).not.toHaveProperty('truncated');
+    });
+
     it('selects as web does: absent/null all, a list exactly its ids, [] none', async () => {
       expect(await ids(undefined)).toEqual(['b', 'o', 'x', 'box']);
       expect(await ids(null)).toEqual(['b', 'o', 'x', 'box']);
       expect(await ids({ elementIds: null })).toEqual(['b', 'o', 'x', 'box']);
       expect(await ids({ elementIds: ['box'] })).toEqual(['box']);
       expect(await ids({ elementIds: [] })).toEqual([]);
+    });
+  });
+
+  describe('/design/responsive', () => {
+    const route = '/design/responsive';
+    const VIEWPORTS =
+      `${route}: viewports must be a non-empty { label: width } object or width array, ` +
+      'each width a finite number greater than 0';
+
+    it('refuses each malformed field with the web message, in the web order', async () => {
+      const h = createDesignHandlers(registry());
+      for (const body of NOT_AN_OBJECT) {
+        expect(await h.getResponsiveSnapshots(ctx(body))).toMatchObject(
+          refusal(`${route}: the request body must be a JSON object`)
+        );
+      }
+      for (const elementIds of BAD_IDS) {
+        expect(await h.getResponsiveSnapshots(ctx({ elementIds, viewports: [] }))).toMatchObject(
+          refusal(`${route}: elementIds must be an array of strings`)
+        );
+      }
+      for (const viewports of [[], {}, [0], [320, -1], { phone: '375' }, 'phone', 375]) {
+        // viewports is checked before budgetMs.
+        expect(await h.getResponsiveSnapshots(ctx({ viewports, budgetMs: 0 }))).toMatchObject(
+          refusal(VIEWPORTS)
+        );
+      }
+      const seventeen = Array.from({ length: 17 }, (_, i) => 300 + i);
+      expect(await h.getResponsiveSnapshots(ctx({ viewports: seventeen }))).toMatchObject(
+        refusal(`${route}: at most 16 viewports per request (got 17)`)
+      );
+      for (const budgetMs of [0, -5, '100', Number.POSITIVE_INFINITY]) {
+        // budgetMs is checked before limit.
+        expect(await h.getResponsiveSnapshots(ctx({ budgetMs, limit: 0 }))).toMatchObject(
+          refusal(`${route}: budgetMs must be a finite number greater than 0`)
+        );
+      }
+      for (const limit of [0, 2.5, 'all']) {
+        expect(await h.getResponsiveSnapshots(ctx({ limit }))).toMatchObject(
+          refusal(`${route}: limit must be an integer >= 1`)
+        );
+      }
+    });
+
+    it('accepts valid viewports and budgetMs, applies a given limit and reports the cut', async () => {
+      const h = createDesignHandlers(registry(), () => ({ width: 390, height: 844 }));
+      const all = await h.getResponsiveSnapshots(
+        ctx({ viewports: { phone: 375, desktop: 1280 }, budgetMs: 500 })
+      );
+      expect(all.success, JSON.stringify(all)).toBe(true);
+      expect(all.data).toHaveLength(1);
+      expect(all.data?.[0].viewportWidth).toBe(390);
+      expect(all.data?.[0].elements).toHaveLength(4);
+      expect(all.data?.[0]).not.toHaveProperty('truncated');
+      const cut = await h.getResponsiveSnapshots(ctx({ viewports: [375], limit: 3 }));
+      const snapshot = cut.data?.[0];
+      expect(snapshot?.elements.map((e) => e.elementId)).toEqual(['b', 'o', 'x']);
+      expect(snapshot).toMatchObject({ totalElements: 4, returned: 3, limit: 3, truncated: true });
     });
   });
 
@@ -165,6 +262,61 @@ describe('native design request validation', () => {
       expect(await count({ elementIds: ['box'], context: 'general' })).toBe(1);
       expect(await count({ elementIds: [] })).toBe(0);
       expect(await count({ elementIds: null })).toBe(4);
+    });
+  });
+
+  describe('request errors come before EVALUATOR_NOT_AVAILABLE on a host with no SDK', () => {
+    const noSdk = () => createDesignHandlers(registry(), undefined, { qualityEvaluator: null });
+
+    it('/design/evaluate refuses a malformed body, and answers a well-formed one with the release it needs', async () => {
+      const h = noSdk();
+      expect(await h.evaluateQuality(ctx({ viewport: { width: 0 } }))).toMatchObject(
+        refusal(
+          '/design/evaluate: viewport must be { width, height }, each a finite number greater than 0'
+        )
+      );
+      expect(await h.evaluateQuality(ctx('x'))).toMatchObject(
+        refusal('/design/evaluate: the request body must be a JSON object')
+      );
+      expect(await h.evaluateQuality(ctx({ elementIds: [1] }))).toMatchObject(
+        refusal('/design/evaluate: elementIds must be an array of strings')
+      );
+      expect(await h.evaluateQuality(ctx({ viewport: { width: 10, height: 10 } }))).toMatchObject({
+        success: false,
+        code: 'EVALUATOR_NOT_AVAILABLE',
+        error:
+          'Install a @qontinui/ui-bridge release containing parseEvaluateRequest (0.58.0 or later).',
+      });
+    });
+
+    it('/design/evaluate/baseline refuses a malformed body before EVALUATOR_NOT_AVAILABLE', async () => {
+      const h = noSdk();
+      expect(await h.saveBaseline(ctx({ label: 3 }))).toMatchObject(
+        refusal('/design/evaluate/baseline: label must be a string')
+      );
+      expect(await h.saveBaseline(ctx({ elementIds: 'box' }))).toMatchObject(
+        refusal('/design/evaluate/baseline: elementIds must be an array of strings')
+      );
+      expect(await h.saveBaseline(ctx({ label: 'before' }))).toMatchObject({
+        success: false,
+        code: 'EVALUATOR_NOT_AVAILABLE',
+      });
+    });
+
+    it('/design/evaluate/diff refuses a malformed body, then answers EVALUATOR_NOT_AVAILABLE — never NO_BASELINE', async () => {
+      vi.resetModules();
+      const fresh = await import('../design-handlers');
+      const h = fresh.createDesignHandlers(registry(), undefined, { qualityEvaluator: null });
+      expect(await h.diffBaseline(ctx({ elementIds: 'box' }))).toMatchObject(
+        refusal('/design/evaluate/diff: elementIds must be an array of strings')
+      );
+      expect(await h.diffBaseline(ctx(7))).toMatchObject(
+        refusal('/design/evaluate/diff: the request body must be a JSON object')
+      );
+      expect(await h.diffBaseline(ctx({}))).toMatchObject({
+        success: false,
+        code: 'EVALUATOR_NOT_AVAILABLE',
+      });
     });
   });
 

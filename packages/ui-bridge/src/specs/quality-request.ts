@@ -23,6 +23,11 @@
  * `UB-VALIDATION-ERROR`. That is `domain_spec/ui-bridge` behaviour (8),
  * "degrade loudly". A field that is absent or JSON `null` is not given; a key
  * this module does not read (the adapters add `tabId`) is ignored.
+ *
+ * The `/design/evaluate` parse is exported on its own as `parseEvaluateRequest`
+ * — pure, with no DOM access — so a transport that cannot read the live DOM
+ * (the React Native server) validates with these same rules rather than a copy
+ * of them, and answers the same `INVALID_REQUEST` messages.
  */
 
 import type { ElementDesignData } from '../core/types';
@@ -191,6 +196,44 @@ function requestedContext(
   );
 }
 
+/** A `/design/evaluate` request, validated. */
+export interface ParsedEvaluateRequest {
+  /** The elements to evaluate; absent means every registered element. */
+  elementIds?: string[];
+  /**
+   * The viewport the request names. Absent when the request names none, so
+   * each transport supplies its own default (the window on web, the screen on
+   * React Native).
+   */
+  viewport?: ViewportDimensions;
+  /** The context the request resolves to (see `requestedContext`). */
+  context: QualityContext;
+}
+
+/**
+ * Validate a `/design/evaluate` request body and resolve its quality context,
+ * checking body, `elementIds`, `viewport`, `customContext` then `context`, so a
+ * body wrong in two fields is refused for the first. Throws
+ * `QualityRequestError` (`INVALID_REQUEST`) on a malformed body or an unknown
+ * context name. Pure: it reads neither `window` nor `document`, so every
+ * transport — including one with no DOM — runs this one rule set.
+ */
+export function parseEvaluateRequest(
+  request: unknown,
+  styleGuide: Pick<StyleGuideConfig, 'qualityContexts'> | null | undefined
+): ParsedEvaluateRequest {
+  const route = '/design/evaluate';
+  const body = bodyOf(request, route);
+  const elementIds = elementIdsOf(body, route);
+  const viewport = viewportOf(body, route);
+  const context = requestedContext(body, route, styleGuide);
+  return {
+    ...(elementIds !== undefined ? { elementIds } : {}),
+    ...(viewport !== undefined ? { viewport } : {}),
+    context,
+  };
+}
+
 // ============================================================================
 // The /design/evaluate family
 // ============================================================================
@@ -273,8 +316,8 @@ function windowViewport(): ViewportDimensions {
 
 /**
  * Answer `/design/evaluate`: the 28 metrics as values, under the requested
- * context (see `requestedContext`). Throws `QualityRequestError` on a
- * malformed body or an unknown context name. The stylesheets are walked for
+ * context (see `requestedContext`), parsed by `parseEvaluateRequest`. Throws
+ * `QualityRequestError` on a malformed body or an unknown context name. The stylesheets are walked for
  * custom properties only when the context enables a metric that reads them.
  */
 export function evaluateRegisteredQuality(
@@ -282,15 +325,11 @@ export function evaluateRegisteredQuality(
   request: unknown,
   styleGuide: Pick<StyleGuideConfig, 'qualityContexts'> | null | undefined
 ): QualityEvaluationReport {
-  const route = '/design/evaluate';
-  const body = bodyOf(request, route);
-  const elementIds = elementIdsOf(body, route);
-  const viewport = viewportOf(body, route) ?? windowViewport();
-  const context = requestedContext(body, route, styleGuide);
+  const { elementIds, viewport, context } = parseEvaluateRequest(request, styleGuide);
   const designData = collectDesignData(elements, elementIds, {
     customProperties: CUSTOM_PROPERTY_METRICS.some((id) => isMetricEnabled(context, id)),
   });
-  return evaluateQuality(designData, viewport, context);
+  return evaluateQuality(designData, viewport ?? windowViewport(), context);
 }
 
 /**

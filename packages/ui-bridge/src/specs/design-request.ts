@@ -503,19 +503,78 @@ export function elementStylesOf(
   }
 }
 
+/** A `/design/snapshot` request, validated. */
+export interface ParsedDesignSnapshotRequest {
+  elementIds?: string[];
+  includePseudoElements?: boolean;
+  /** As given; the caller applies its default. */
+  limit?: number;
+}
+
+/**
+ * Validate a `/design/snapshot` request body: body, `elementIds`,
+ * `includePseudoElements` then `limit`, so a body wrong in two fields is
+ * refused for the first. Throws `DesignRequestError` (`INVALID_REQUEST`).
+ * Pure: no DOM access, so a transport with no DOM (the React Native server)
+ * can hold its own refusals to these.
+ */
+export function parseDesignSnapshotRequest(request: unknown): ParsedDesignSnapshotRequest {
+  const route = '/design/snapshot';
+  const body = bodyOf(request, route);
+  const elementIds = elementIdsOf(body, route);
+  const includePseudoElements = booleanOf(body, 'includePseudoElements', route);
+  const limit = limitOf(body, route);
+  return {
+    ...(elementIds !== undefined ? { elementIds } : {}),
+    ...(includePseudoElements !== undefined ? { includePseudoElements } : {}),
+    ...(limit !== undefined ? { limit } : {}),
+  };
+}
+
+/** A `/design/responsive` request, validated. */
+export interface ParsedResponsiveSnapshotsRequest {
+  elementIds?: string[];
+  /** The requested widths, or `DEFAULT_VIEWPORTS` when none are given. */
+  viewports: Record<string, number> | number[];
+  budgetMs?: number;
+  /** As given; the caller applies its default (it depends on the viewport count). */
+  limit?: number;
+}
+
+/**
+ * Validate a `/design/responsive` request body: body, `elementIds`,
+ * `viewports` (at most `MAX_RESPONSIVE_VIEWPORTS`), `budgetMs` then `limit`.
+ * Throws `DesignRequestError` (`INVALID_REQUEST`). Pure: no DOM access.
+ */
+export function parseResponsiveSnapshotsRequest(
+  request: unknown
+): ParsedResponsiveSnapshotsRequest {
+  const route = '/design/responsive';
+  const body = bodyOf(request, route);
+  const elementIds = elementIdsOf(body, route);
+  const viewports = viewportsOf(body, route);
+  const budgetMs = rootWidthBudgetOf(body, route);
+  const limit = limitOf(body, route);
+  return {
+    ...(elementIds !== undefined ? { elementIds } : {}),
+    viewports,
+    ...(budgetMs !== undefined ? { budgetMs } : {}),
+    ...(limit !== undefined ? { limit } : {}),
+  };
+}
+
 /**
  * Answer `/design/snapshot`: design data for the selected elements, up to
  * `limit` (default `DEFAULT_DESIGN_RECORD_BUDGET`), with the cut reported.
+ * The body is validated by `parseDesignSnapshotRequest`.
  */
 export function designSnapshotOf(
   elements: readonly DesignElementSource[],
   request: unknown
 ): DesignSnapshotResponse {
-  const route = '/design/snapshot';
-  const body = bodyOf(request, route);
-  const elementIds = elementIdsOf(body, route);
-  const includePseudoElements = booleanOf(body, 'includePseudoElements', route);
-  const limit = limitOf(body, route) ?? DEFAULT_DESIGN_RECORD_BUDGET;
+  const parsed = parseDesignSnapshotRequest(request);
+  const { elementIds, includePseudoElements } = parsed;
+  const limit = parsed.limit ?? DEFAULT_DESIGN_RECORD_BUDGET;
   const { kept, report } = bounded(selectElements(elements, elementIds), limit);
   const batch = collectDesignBatch(kept, undefined, { includePseudoElements });
   const { elements: designData, ...reported } = batch;
@@ -543,14 +602,11 @@ export async function responsiveSnapshotsOf(
   elements: readonly DesignElementSource[] | (() => readonly DesignElementSource[]),
   request: unknown
 ): Promise<ResponsiveSnapshotsResponse> {
-  const route = '/design/responsive';
-  const body = bodyOf(request, route);
-  const elementIds = elementIdsOf(body, route);
-  const viewports = viewportsOf(body, route);
-  const budgetMs = rootWidthBudgetOf(body, route);
+  const parsed = parseResponsiveSnapshotsRequest(request);
+  const { elementIds, viewports, budgetMs } = parsed;
   const viewportCount = Array.isArray(viewports) ? viewports.length : Object.keys(viewports).length;
   const limit =
-    limitOf(body, route) ?? Math.max(1, Math.floor(DEFAULT_DESIGN_RECORD_BUDGET / viewportCount));
+    parsed.limit ?? Math.max(1, Math.floor(DEFAULT_DESIGN_RECORD_BUDGET / viewportCount));
   let selected: { kept: LiveSource[]; report: DesignSelectionReport } | undefined;
   const capture = await captureResponsiveSnapshots(
     {

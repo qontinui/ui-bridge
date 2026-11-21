@@ -32,6 +32,21 @@ export interface NavigationProvider {
 }
 
 /**
+ * The element bound a request's `limit` applies, reported with the same four
+ * fields the web transports' `designSnapshotOf` reports for its cut:
+ * `totalElements` selected, `returned`, the `limit`, and whether it
+ * `truncated` the selection. It is a SUBSET of web's report: native carries
+ * none of web's `missingElement*` / `unreadable*` fields, and with no `limit`
+ * native applies no default bound, so nothing is cut and nothing is reported.
+ */
+export interface ElementBoundReport {
+  totalElements: number;
+  returned: number;
+  limit: number;
+  truncated: boolean;
+}
+
+/**
  * Screenshot provider for React Native apps.
  *
  * Apps supply this to enable screen capture via the UI Bridge
@@ -836,8 +851,10 @@ export interface NativeServerHandlers {
   // Design Review
   getElementStyles: HandlerFunction<ElementDesignData>;
   getElementStateStyles: HandlerFunction<{ elementId: string; stateStyles: StateStyles[] }>;
-  getDesignSnapshot: HandlerFunction<{ elements: ElementDesignData[]; timestamp: number }>;
-  getResponsiveSnapshots: HandlerFunction<ResponsiveSnapshot[]>;
+  getDesignSnapshot: HandlerFunction<
+    { elements: ElementDesignData[]; timestamp: number } & Partial<ElementBoundReport>
+  >;
+  getResponsiveSnapshots: HandlerFunction<Array<ResponsiveSnapshot & Partial<ElementBoundReport>>>;
   runDesignAudit: HandlerFunction<unknown>;
   loadStyleGuide: HandlerFunction<{ loaded: boolean }>;
   getStyleGuide: HandlerFunction<unknown>;

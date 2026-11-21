@@ -277,6 +277,7 @@ export {
   type HandlerContext,
   type HandlerFunction,
   type NativeServerHandlers,
+  type ElementBoundReport,
   type NavigationProvider,
   type ScreenshotProvider,
   type KeepAwakeProvider,

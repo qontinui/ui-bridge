@@ -451,3 +451,34 @@ describe('measure-on-snapshot refresh (read-time geometry)', () => {
     expect(miss.success).toBe(false);
   });
 });
+
+describe('design request validation through createServerHandlers', () => {
+  // The route table NativeUIBridgeServer serves is createServerHandlers'
+  // spread of createDesignHandlers; these enter where the server does.
+  it("/design/snapshot refuses limit: 0 with web's INVALID_REQUEST message", async () => {
+    const handlers = createServerHandlers(new NativeUIBridgeRegistry(), makeStubExecutor());
+    const response = await handlers.getDesignSnapshot({
+      params: {},
+      query: {},
+      body: { limit: 0 },
+    });
+    expect(response.success).toBe(false);
+    expect(response.code).toBe('INVALID_REQUEST');
+    expect(response.error).toBe('/design/snapshot: limit must be an integer >= 1');
+  });
+
+  it('/design/responsive refuses an empty viewports list with INVALID_REQUEST', async () => {
+    const handlers = createServerHandlers(new NativeUIBridgeRegistry(), makeStubExecutor());
+    const response = await handlers.getResponsiveSnapshots({
+      params: {},
+      query: {},
+      body: { viewports: [] },
+    });
+    expect(response.success).toBe(false);
+    expect(response.code).toBe('INVALID_REQUEST');
+    expect(response.error).toBe(
+      '/design/responsive: viewports must be a non-empty { label: width } object or width array, ' +
+        'each width a finite number greater than 0'
+    );
+  });
+});

@@ -6,7 +6,7 @@
  */
 
 import type { NativeUIBridgeRegistry } from '../core/registry';
-import type { APIResponse, HandlerContext } from './types';
+import type { APIResponse, ElementBoundReport, HandlerContext } from './types';
 import type {
   ElementDesignData,
   NativeInteractionStateName,
@@ -19,6 +19,12 @@ import {
   captureNativeStateVariations,
   captureNativeResponsiveSnapshot,
 } from '../design/design-inspector-native';
+
+/**
+ * The first `@qontinui/ui-bridge` release whose `./specs` entry carries
+ * `parseEvaluateRequest`, which native `/design/evaluate` requires.
+ */
+const EVALUATE_PARSER_RELEASE = '0.58.0';
 
 // Style guide and baseline stored in closure (same pattern as web SDK)
 let loadedStyleGuide: unknown = null;
@@ -46,11 +52,17 @@ export type QualityEvaluatorModule = {
   ) => unknown;
   listContexts: () => Array<{ name: string; description: string }>;
   /**
-   * The SDK's one quality-context shape rule (0.56.0 and later). Absent on an
-   * older SDK, whose `evaluateQuality` checks no context shape; native then
-   * applies its own copy of the web request model's check.
+   * The web transports' `/design/evaluate` body parse (0.58.0 and later):
+   * validates body, `elementIds`, `viewport`, `customContext` and `context`,
+   * resolving the context against the loaded style guide, and throws an
+   * error whose `code` is `INVALID_REQUEST`. Absent on an older SDK, whose
+   * `/design/evaluate` native then refuses with `EVALUATOR_NOT_AVAILABLE`
+   * rather than evaluate under a looser copy of the rules.
    */
-  qualityContextProblem?: (value: unknown) => string | null;
+  parseEvaluateRequest?: (
+    request: unknown,
+    styleGuide: unknown
+  ) => { elementIds?: string[]; viewport?: { width: number; height: number }; context: unknown };
   createBaseline: (
     elements: ElementDesignData[],
     viewport: { width: number; height: number },
@@ -144,11 +156,24 @@ function isObject(value: unknown): value is Record<string, unknown> {
 // ============================================================================
 //
 // The web transports validate every design body at one shared boundary
-// (`design-request.ts` for snapshot/audit, `quality-request.ts` for the
-// evaluate family). These are native's copies of the checks for the fields
-// native reads, with the same messages, so a malformed body is refused for
-// the same field on either transport rather than read loosely here. A field
-// native does not read (`limit`, `includePseudoElements`, ...) is not checked.
+// (`design-request.ts` for snapshot/responsive/audit, `quality-request.ts`
+// for the evaluate family).
+//
+// - `/design/evaluate` runs the SDK's own parse (`parseEvaluateRequest`), so
+//   its context rules exist once. Without it native checks only the
+//   structural fields below (body, `elementIds`, `viewport`) and then answers
+//   `EVALUATOR_NOT_AVAILABLE`: a request error is reported ahead of a host
+//   capability error, and nothing is evaluated under looser rules.
+// - `/design/snapshot`, `/design/responsive` and the baseline routes must work
+//   with no SDK installed (the peer is optional), so native carries these
+//   copies of their checks, with web's messages and order. A request web
+//   refuses is refused here too, even for a field React Native cannot act on
+//   (`includePseudoElements`, `viewports`, `budgetMs`). The parity test
+//   (`__tests__/design-handlers.request-parity.test.ts`) holds every message
+//   equal to the shared parser's, so drift fails CI.
+
+/** Mirrors `MAX_RESPONSIVE_VIEWPORTS` in the SDK's `design-request.ts`. */
+const MAX_RESPONSIVE_VIEWPORTS = 16;
 
 /** A malformed request body; answered `INVALID_REQUEST` with its message. */
 class NativeRequestError extends Error {}
@@ -256,49 +281,86 @@ function statesOf(
   return states as NativeInteractionStateName[];
 }
 
-/** A metric's configuration in a custom context, as `quality-request.ts`'s `isMetricConfig`. */
-function isMetricConfig(value: unknown): boolean {
-  if (!isObject(value)) return false;
-  if (isGiven(value.enabled) && typeof value.enabled !== 'boolean') return false;
-  if (isGiven(value.weight) && !(isFiniteNumber(value.weight) && value.weight >= 0)) return false;
-  if (isGiven(value.thresholds)) {
-    const t = value.thresholds;
-    if (!isObject(t) || !isFiniteNumber(t.good) || !isFiniteNumber(t.warning)) return false;
+function booleanOf(body: Record<string, unknown>, key: string, route: string): boolean | undefined {
+  const value = body[key];
+  if (!isGiven(value)) return undefined;
+  if (typeof value !== 'boolean') {
+    throw new NativeRequestError(`${route}: ${key} must be a boolean`);
   }
-  return true;
+  return value;
+}
+
+function positiveIntegerOf(
+  body: Record<string, unknown>,
+  key: string,
+  route: string
+): number | undefined {
+  const value = body[key];
+  if (!isGiven(value)) return undefined;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+    throw new NativeRequestError(`${route}: ${key} must be an integer >= 1`);
+  }
+  return value;
+}
+
+function limitOf(body: Record<string, unknown>, route: string): number | undefined {
+  return positiveIntegerOf(body, 'limit', route);
 }
 
 /**
- * What is wrong with a quality context, or `null` — native's copy of the web
- * request model's check, for an SDK older than 0.56.0 that carries no
- * `qualityContextProblem`. The SDK's rule, when present, is stricter (known
- * metric ids, thresholds in 0-100 with good >= warning) and is used instead.
+ * Checks a responsive request's `viewports` as the SDK's `viewportsOf` does:
+ * a non-empty `{ label: width }` object or width array, each width a positive
+ * finite number, at most `MAX_RESPONSIVE_VIEWPORTS`. React Native cannot
+ * constrain its width, so native only validates it.
  */
-function localContextProblem(context: unknown): string | null {
-  if (!isObject(context) || typeof context.name !== 'string' || !isObject(context.metrics)) {
-    return ' must be an object with a string name and a metrics object';
+function checkViewports(body: Record<string, unknown>, route: string): void {
+  const viewports = body.viewports;
+  if (!isGiven(viewports)) return;
+  const valid = Array.isArray(viewports)
+    ? viewports.length > 0 && viewports.every(isPositiveNumber)
+    : isObject(viewports) &&
+      Object.keys(viewports).length > 0 &&
+      Object.values(viewports).every(isPositiveNumber);
+  if (!valid) {
+    throw new NativeRequestError(
+      `${route}: viewports must be a non-empty { label: width } object or width array, ` +
+        'each width a finite number greater than 0'
+    );
   }
-  for (const [metricId, config] of Object.entries(context.metrics)) {
-    if (!isMetricConfig(config)) {
-      return (
-        `.metrics.${metricId} must be an object whose enabled is a ` +
-        'boolean, weight a finite number >= 0, and thresholds { good, warning } finite numbers'
-      );
-    }
+  const count = Array.isArray(viewports)
+    ? viewports.length
+    : Object.keys(viewports as Record<string, unknown>).length;
+  if (count > MAX_RESPONSIVE_VIEWPORTS) {
+    throw new NativeRequestError(
+      `${route}: at most ${MAX_RESPONSIVE_VIEWPORTS} viewports per request (got ${count})`
+    );
   }
-  return null;
 }
 
-function customContextOf(
-  body: Record<string, unknown>,
-  route: string,
-  problemOf: (value: unknown) => string | null
-): Record<string, unknown> | undefined {
-  const context = body.customContext;
-  if (!isGiven(context)) return undefined;
-  const problem = problemOf(context);
-  if (problem !== null) throw new NativeRequestError(`${route}: customContext${problem}`);
-  return context as Record<string, unknown>;
+/** Checks `budgetMs` as the SDK's `rootWidthBudgetOf` does (native has no capture to bound). */
+function checkBudgetMs(body: Record<string, unknown>, route: string): void {
+  const budget = body.budgetMs;
+  if (isGiven(budget) && !isPositiveNumber(budget)) {
+    throw new NativeRequestError(`${route}: budgetMs must be a finite number greater than 0`);
+  }
+}
+
+/** `items` cut to `limit` with the cut reported; uncut and unreported when `limit` is absent. */
+function boundedBy<T>(
+  items: T[],
+  limit: number | undefined
+): { kept: T[]; report: ElementBoundReport | undefined } {
+  if (limit === undefined) return { kept: items, report: undefined };
+  const kept = items.slice(0, limit);
+  return {
+    kept,
+    report: {
+      totalElements: items.length,
+      returned: kept.length,
+      limit,
+      truncated: kept.length < items.length,
+    },
+  };
 }
 
 function success<T>(data: T): APIResponse<T> {
@@ -319,8 +381,12 @@ export interface NativeDesignHandlers {
   ) => Promise<APIResponse<{ elementId: string; stateStyles: StateStyles[] }>>;
   getDesignSnapshot: (
     ctx: HandlerContext
-  ) => Promise<APIResponse<{ elements: ElementDesignData[]; timestamp: number }>>;
-  getResponsiveSnapshots: (ctx: HandlerContext) => Promise<APIResponse<ResponsiveSnapshot[]>>;
+  ) => Promise<
+    APIResponse<{ elements: ElementDesignData[]; timestamp: number } & Partial<ElementBoundReport>>
+  >;
+  getResponsiveSnapshots: (
+    ctx: HandlerContext
+  ) => Promise<APIResponse<Array<ResponsiveSnapshot & Partial<ElementBoundReport>>>>;
   runDesignAudit: (ctx: HandlerContext) => Promise<APIResponse<unknown>>;
   loadStyleGuide: (ctx: HandlerContext) => Promise<APIResponse<{ loaded: boolean }>>;
   getStyleGuide: (ctx: HandlerContext) => Promise<APIResponse<unknown>>;
@@ -458,11 +524,6 @@ export function createDesignHandlers(
     return viewportProvider?.() ?? { width: 0, height: 0 };
   }
 
-  /** The context shape rule: the SDK's when it carries one, else native's copy. */
-  function contextProblemOf(value: unknown): string | null {
-    return (evaluator?.qualityContextProblem ?? localContextProblem)(value);
-  }
-
   /** The registered elements a validated `elementIds` selects (all when absent). */
   function selectElements(elementIds: readonly string[] | undefined) {
     const elements = registry.getAllElements();
@@ -471,39 +532,33 @@ export function createDesignHandlers(
     return elements.filter((e) => idSet.has(e.id));
   }
 
-  /**
-   * The context a named `/design/evaluate` request resolves to, as the web
-   * transports' `requestedContext`: a context the loaded style guide declares
-   * under that name (own keys only, so `toString` names none), else the
-   * built-in of that name. Any other name — `""` included — is refused with
-   * web's message rather than left to the evaluator.
-   */
-  function requestedContextName(body: Record<string, unknown>, route: string): unknown {
-    const name = stringOf(body, 'context', route) ?? 'general';
-    const declared = (loadedStyleGuide as { qualityContexts?: Record<string, unknown> } | null)
-      ?.qualityContexts;
-    if (declared && Object.prototype.hasOwnProperty.call(declared, name)) {
-      // A declared context is checked by the same shape rule as a custom one.
-      const problem = contextProblemOf(declared[name]);
-      if (problem !== null) {
-        throw new NativeRequestError(`${route}: quality context "${name}"${problem}`);
-      }
-      return declared[name];
-    }
-    const builtIns = evaluator?.listContexts().map((c) => c.name) ?? [];
-    if (builtIns.includes(name)) return name;
-    const available = [...builtIns, ...Object.keys(declared ?? {})];
-    throw new NativeRequestError(
-      `Unknown quality context: "${name}". Available: ${available.join(', ')}`
-    );
+  /** Native design data for the given elements. */
+  function designDataFor(elements: ReturnType<typeof selectElements>): ElementDesignData[] {
+    return elements.map((el) => {
+      const state = el.getState();
+      return getNativeElementDesignData(el.id, el.label, el.type, el.flatStyle, state.layout);
+    });
   }
 
   /** Native design data for the selected elements. */
   function designDataOf(elementIds: readonly string[] | undefined): ElementDesignData[] {
-    return selectElements(elementIds).map((el) => {
-      const state = el.getState();
-      return getNativeElementDesignData(el.id, el.label, el.type, el.flatStyle, state.layout);
-    });
+    return designDataFor(selectElements(elementIds));
+  }
+
+  /** `/design/evaluate` on a host whose SDK cannot parse its request. */
+  function evaluateUnavailable<T>(): APIResponse<T> {
+    return error(
+      `Install a @qontinui/ui-bridge release containing parseEvaluateRequest (${EVALUATE_PARSER_RELEASE} or later).`,
+      'EVALUATOR_NOT_AVAILABLE'
+    );
+  }
+
+  /** The contexts and baseline routes on a host with no SDK. */
+  function qualitySdkUnavailable<T>(): APIResponse<T> {
+    return error(
+      'Install @qontinui/ui-bridge for quality evaluation support.',
+      'EVALUATOR_NOT_AVAILABLE'
+    );
   }
 
   return {
@@ -559,29 +614,53 @@ export function createDesignHandlers(
     },
 
     // 3. POST /design/snapshot
+    //
+    // Validated in the web transports' `parseDesignSnapshotRequest` order and
+    // with its messages: body, elementIds, includePseudoElements, limit. A
+    // given `limit` is applied and the cut reported as web reports it
+    // (`totalElements`, `returned`, `limit`, `truncated`); with none the list
+    // is unbounded. `includePseudoElements` has no React Native meaning (there
+    // are no pseudo-elements), so it is validated and otherwise ignored.
     getDesignSnapshot: async (ctx) => {
-      // Validated as the web transports' `designSnapshotOf` does, for the
-      // fields native reads (`includePseudoElements` and `limit` are not).
+      const route = '/design/snapshot';
       let elementIds: string[] | undefined;
+      let limit: number | undefined;
       try {
-        elementIds = elementIdsOf(bodyOf(ctx.body, '/design/snapshot'), '/design/snapshot');
+        const body = bodyOf(ctx.body, route);
+        elementIds = elementIdsOf(body, route);
+        booleanOf(body, 'includePseudoElements', route);
+        limit = limitOf(body, route);
       } catch (err) {
         return invalidRequest(err);
       }
-      return success({ elements: designDataOf(elementIds), timestamp: Date.now() });
+      const { kept, report } = boundedBy(selectElements(elementIds), limit);
+      return success({ elements: designDataFor(kept), ...report, timestamp: Date.now() });
     },
 
     // 4. POST /design/responsive
+    //
+    // Platform limitation: RN cannot constrain screen width at runtime, so
+    // this returns a single snapshot at the current device dimensions.
+    // Validated in the web transports' `parseResponsiveSnapshotsRequest` order
+    // and with its messages: body, elementIds, viewports, budgetMs, limit.
+    // `viewports` and `budgetMs` have no React Native meaning, so they are
+    // validated and otherwise ignored. A given `limit` is applied and the cut
+    // reported on the snapshot (`totalElements`, `returned`, `limit`,
+    // `truncated`); with none the list is unbounded.
     getResponsiveSnapshots: async (ctx) => {
-      // Platform limitation: RN cannot constrain screen width at runtime.
-      // Returns a single snapshot at current device dimensions.
+      const route = '/design/responsive';
       let elementIds: string[] | undefined;
+      let limit: number | undefined;
       try {
-        elementIds = elementIdsOf(bodyOf(ctx.body, '/design/responsive'), '/design/responsive');
+        const body = bodyOf(ctx.body, route);
+        elementIds = elementIdsOf(body, route);
+        checkViewports(body, route);
+        checkBudgetMs(body, route);
+        limit = limitOf(body, route);
       } catch (err) {
         return invalidRequest(err);
       }
-      const elements = selectElements(elementIds);
+      const { kept: elements, report } = boundedBy(selectElements(elementIds), limit);
       const elementData = elements.map((el) => {
         const state = el.getState();
         return {
@@ -594,7 +673,9 @@ export function createDesignHandlers(
       });
 
       const snapshots = captureNativeResponsiveSnapshot(elementData, getScreenDimensions());
-      return success(snapshots);
+      return success(
+        report ? snapshots.map((snapshot) => ({ ...snapshot, ...report })) : snapshots
+      );
     },
 
     // 5. POST /design/audit
@@ -711,30 +792,35 @@ export function createDesignHandlers(
 
     // 9. POST /design/evaluate
     evaluateQuality: async (ctx) => {
-      if (!evaluator) {
-        return error(
-          'Install @qontinui/ui-bridge for quality evaluation support. ' +
-            'Add it as a dependency: npm install @qontinui/ui-bridge',
-          'EVALUATOR_NOT_AVAILABLE'
-        );
+      // The SDK's own parse when it carries one — the web transports' rules,
+      // messages and order (body, elementIds, viewport, customContext,
+      // context) — so the context rules exist once. Without it, native checks
+      // the structural fields it owns and then answers EVALUATOR_NOT_AVAILABLE:
+      // a malformed request is reported as the caller's error, ahead of the
+      // host's missing capability.
+      const route = '/design/evaluate';
+      if (!evaluator?.parseEvaluateRequest) {
+        try {
+          const body = bodyOf(ctx.body, route);
+          elementIdsOf(body, route);
+          viewportOf(body, route);
+        } catch (err) {
+          return invalidRequest(err);
+        }
+        return evaluateUnavailable();
       }
 
-      // Validated in the web transports' `evaluateRegisteredQuality` order
-      // and with its messages: body, elementIds, viewport, customContext,
-      // context. A partial viewport would otherwise score on NaN.
-      const route = '/design/evaluate';
       let elementIds: string[] | undefined;
       let viewport: { width: number; height: number };
       let context: unknown;
       try {
-        const body = bodyOf(ctx.body, route);
-        elementIds = elementIdsOf(body, route);
-        viewport = viewportOf(body, route) ?? getScreenDimensions();
-        // Resolve context: custom object > style guide context > built-in name
-        context =
-          customContextOf(body, route, contextProblemOf) ?? requestedContextName(body, route);
+        const parsed = evaluator.parseEvaluateRequest(ctx.body, loadedStyleGuide);
+        elementIds = parsed.elementIds;
+        viewport = parsed.viewport ?? getScreenDimensions();
+        context = parsed.context;
       } catch (err) {
-        return invalidRequest(err);
+        if (isInvalidRequest(err)) return error(err.message, 'INVALID_REQUEST');
+        throw err;
       }
 
       const designData = designDataOf(elementIds);
@@ -752,25 +838,14 @@ export function createDesignHandlers(
 
     // 10. GET /design/evaluate/contexts
     getQualityContexts: async () => {
-      if (!evaluator) {
-        return error(
-          'Install @qontinui/ui-bridge for quality evaluation support.',
-          'EVALUATOR_NOT_AVAILABLE'
-        );
-      }
+      if (!evaluator) return qualitySdkUnavailable();
       return success(evaluator.listContexts());
     },
 
     // 11. POST /design/evaluate/baseline
     saveBaseline: async (ctx) => {
-      if (!evaluator) {
-        return error(
-          'Install @qontinui/ui-bridge for quality evaluation support.',
-          'EVALUATOR_NOT_AVAILABLE'
-        );
-      }
-
-      // Validated as the web transports' `captureQualityBaseline` does.
+      // Validated as the web transports' `captureQualityBaseline` does, before
+      // the evaluator check, so a malformed request is the caller's error.
       const route = '/design/evaluate/baseline';
       let elementIds: string[] | undefined;
       let label: string | undefined;
@@ -781,6 +856,8 @@ export function createDesignHandlers(
       } catch (err) {
         return invalidRequest(err);
       }
+
+      if (!evaluator) return qualitySdkUnavailable();
 
       try {
         const designData = designDataOf(elementIds);
@@ -795,26 +872,22 @@ export function createDesignHandlers(
 
     // 12. POST /design/evaluate/diff
     diffBaseline: async (ctx) => {
-      if (!evaluator) {
-        return error(
-          'Install @qontinui/ui-bridge for quality evaluation support.',
-          'EVALUATOR_NOT_AVAILABLE'
-        );
-      }
-
-      if (!savedBaseline) {
+      // With an evaluator: the baseline check, then the web transports'
+      // `diffQualityBaseline` validation — web's handlers check the baseline
+      // first too. With none: validation, then EVALUATOR_NOT_AVAILABLE, never
+      // NO_BASELINE, because on such a host `saveBaseline` cannot succeed
+      // either, so "call saveBaseline first" would send the caller nowhere.
+      const route = '/design/evaluate/diff';
+      if (evaluator && !savedBaseline) {
         return error('No baseline saved. Call saveBaseline first.', 'NO_BASELINE');
       }
-
-      // Validated as the web transports' `diffQualityBaseline` does, after
-      // the baseline check (web's handlers check it first too).
-      const route = '/design/evaluate/diff';
       let elementIds: string[] | undefined;
       try {
         elementIds = elementIdsOf(bodyOf(ctx.body, route), route);
       } catch (err) {
         return invalidRequest(err);
       }
+      if (!evaluator) return qualitySdkUnavailable();
       const designData = designDataOf(elementIds);
 
       try {
