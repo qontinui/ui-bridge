@@ -20,6 +20,7 @@ import {
   NO_STYLE_GUIDE_REASON,
   type DesignAuditAdapter,
   type DesignAuditResponse,
+  type HeuristicCoverage,
   type HeuristicDesignAuditReport,
   type HeuristicInput,
   type StyleGuideDesignAuditReport,
@@ -77,6 +78,12 @@ const adapter: DesignAuditAdapter<PlainElement> = {
   defaultRootFontSizePx: () => {
     roots.push(16);
     return 16;
+  },
+  heuristicCoverage: {
+    contrast: { status: 'partial', note: 'own style only' },
+    'select-dark-mode': { status: 'not-applicable' },
+    'font-size': { status: 'measured' },
+    'touch-target': { status: 'measured' },
   },
 };
 
@@ -264,5 +271,126 @@ describe('design-audit-core under Node', () => {
       expect((thrown as DesignRequestError).code).toBe('INVALID_REQUEST');
       expect((thrown as Error).message).toMatch(message);
     }
+  });
+});
+
+describe('heuristic coverage', () => {
+  function coverage(report: HeuristicDesignAuditReport, id: HeuristicCoverage['heuristic']) {
+    const row = report.heuristicCoverage.find((r) => r.heuristic === id);
+    if (!row) throw new Error(`no coverage row for ${id}`);
+    return row;
+  }
+
+  it('lists one row per heuristic, with the adapter-declared status and note', () => {
+    const report = heuristic(auditDesign([element('a')], {}, null, adapter));
+    expect(report.heuristicCoverage).toEqual([
+      {
+        heuristic: 'contrast',
+        status: 'partial',
+        checked: 1,
+        notMeasured: 0,
+        note: 'own style only',
+      },
+      { heuristic: 'select-dark-mode', status: 'not-applicable', checked: 0, notMeasured: 0 },
+      { heuristic: 'font-size', status: 'measured', checked: 1, notMeasured: 0 },
+      { heuristic: 'touch-target', status: 'measured', checked: 0, notMeasured: 0 },
+    ]);
+  });
+
+  it('an unjudgeable contrast is not measured and produces no issue', () => {
+    for (const colours of [
+      { color: '#000000', backgroundColor: 'transparent' },
+      { color: '#000000', backgroundColor: '' },
+      { color: '', backgroundColor: '#ffffff' },
+      { color: 'not-a-colour', backgroundColor: '#ffffff' },
+    ]) {
+      const report = heuristic(
+        auditDesign([element('a', { heuristic: colours })], {}, null, adapter)
+      );
+      expect(report.issues, JSON.stringify(colours)).toEqual([]);
+      expect(coverage(report, 'contrast')).toMatchObject({ checked: 0, notMeasured: 1 });
+    }
+  });
+
+  it('a null rect is a touch target not measured, never a 0x0 finding', () => {
+    const report = heuristic(
+      auditDesign(
+        [element('tap', { heuristic: { touchTarget: true, rect: null } })],
+        {},
+        null,
+        adapter
+      )
+    );
+    expect(report.issues).toEqual([]);
+    expect(coverage(report, 'touch-target')).toMatchObject({ checked: 0, notMeasured: 1 });
+  });
+
+  it('counts a touch target only for an interactive element', () => {
+    const report = heuristic(
+      auditDesign(
+        [
+          element('tap', { heuristic: { touchTarget: true, rect: { width: 30, height: 30 } } }),
+          element('big', { heuristic: { touchTarget: true, rect: { width: 50, height: 50 } } }),
+          element('box', { heuristic: { touchTarget: false, rect: null } }),
+        ],
+        {},
+        null,
+        adapter
+      )
+    );
+    expect(report.issues.map((i) => i.element)).toEqual(['tap']);
+    expect(coverage(report, 'touch-target')).toMatchObject({ checked: 2, notMeasured: 0 });
+  });
+
+  it('an unknown font size is not measured, and its contrast is judged as normal text', () => {
+    // #888888 on white is about 3.54:1: under 4.5 (normal text), over 3 (large).
+    const report = heuristic(
+      auditDesign(
+        [element('grey', { heuristic: { color: '#888888', fontSizePx: null } })],
+        {},
+        null,
+        adapter
+      )
+    );
+    expect(coverage(report, 'font-size')).toMatchObject({ checked: 0, notMeasured: 1 });
+    expect(report.issues).toEqual([expect.objectContaining({ element: 'grey', severity: 'info' })]);
+    expect(report.issues[0].issue).toMatch(/Insufficient contrast for normal text/);
+    const large = heuristic(
+      auditDesign(
+        [element('grey', { heuristic: { color: '#888888', fontSizePx: 24 } })],
+        {},
+        null,
+        adapter
+      )
+    );
+    expect(large.issues).toEqual([]);
+  });
+
+  it('counts each <select> the adapter describes as select-dark-mode checked', () => {
+    const report = heuristic(
+      auditDesign(
+        [
+          element('pick', {
+            heuristic: {
+              color: '#ffffff',
+              backgroundColor: '#111111',
+              select: {
+                colorScheme: 'normal',
+                option: { color: '#ffffff', backgroundColor: '#ffffff' },
+              },
+            },
+          }),
+          element('plain'),
+        ],
+        {},
+        null,
+        adapter
+      )
+    );
+    expect(coverage(report, 'select-dark-mode')).toMatchObject({ checked: 1, notMeasured: 0 });
+    expect(report.issues.map((i) => [i.element, i.severity])).toEqual([
+      ['pick', 'warning'],
+      ['pick', 'error'],
+    ]);
   });
 });

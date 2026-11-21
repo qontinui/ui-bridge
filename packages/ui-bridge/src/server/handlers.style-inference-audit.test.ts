@@ -79,3 +79,49 @@ describe('createHandlers style routes', () => {
     expect(report.data!.failedCount).toBe(1);
   });
 });
+
+describe('createHandlers heuristic audit coverage', () => {
+  function styled<K extends keyof HTMLElementTagNameMap>(
+    tag: K,
+    style: Partial<CSSStyleDeclaration>
+  ): HTMLElementTagNameMap[K] {
+    const el = document.createElement(tag);
+    Object.assign(el.style, { fontSize: '16px', ...style });
+    document.body.appendChild(el);
+    return el;
+  }
+
+  it('reports one measured row per heuristic, and counts what it could not judge', async () => {
+    const see = styled('div', { color: 'rgb(0, 0, 0)', backgroundColor: 'rgb(255, 255, 255)' });
+    const through = styled('div', { color: 'rgb(0, 0, 0)', backgroundColor: 'transparent' });
+    const pick = styled('select', { color: 'rgb(0, 0, 0)', backgroundColor: 'rgb(255, 255, 255)' });
+    const tick = styled('input', { color: 'rgb(0, 0, 0)', backgroundColor: 'rgb(255, 255, 255)' });
+    const registry = {
+      getAllElements: () => [
+        { id: 'see', element: see, type: 'div', label: 'see' },
+        { id: 'through', element: through, type: 'div', label: 'through' },
+        { id: 'pick', element: pick, type: 'select', label: 'pick' },
+        { id: 'tick', element: tick, type: 'checkbox', label: 'tick' },
+      ],
+    } as unknown as RegistryLike;
+    const res = await createHandlers(registry, {} as never).runDesignAudit!({});
+    expect(res.success).toBe(true);
+    const report = res.data!;
+    if (report.mode !== 'heuristic') throw new Error('expected heuristic mode');
+    expect(report.heuristicCoverage).toEqual([
+      { heuristic: 'contrast', status: 'measured', checked: 3, notMeasured: 1 },
+      { heuristic: 'select-dark-mode', status: 'measured', checked: 1, notMeasured: 0 },
+      { heuristic: 'font-size', status: 'measured', checked: 4, notMeasured: 0 },
+      { heuristic: 'touch-target', status: 'measured', checked: 1, notMeasured: 0 },
+    ]);
+    // The transparent background produced no contrast finding; the checkbox,
+    // a touch target since the web adapter widened past button/link, is laid
+    // out at 0x0 under jsdom and is reported.
+    expect(report.issues).toEqual([
+      expect.objectContaining({
+        element: 'tick',
+        issue: 'Touch target too small: 0x0px (min 44x44)',
+      }),
+    ]);
+  });
+});
