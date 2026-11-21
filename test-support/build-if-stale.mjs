@@ -3,9 +3,10 @@
  *
  * A globalSetup runs ONCE, in vitest's main process, before any test worker
  * starts. So within one `vitest run` the build happens serially and exactly
- * once, and no test file ever builds (or wipes, through tsup's `clean: true`) a
- * dist that a parallel test file is reading: nothing races inside one run, and
- * test files only assert that the outputs exist. Two CONCURRENT vitest runs in
+ * once, and no test file ever builds (or wipes, through the build's emptying of
+ * dist) a dist that a parallel test file is reading: nothing races inside one
+ * run, and test files only assert that the outputs exist. Two CONCURRENT
+ * vitest runs in
  * one checkout are not guarded against each other: both may judge a dist stale
  * and rebuild it at the same time. A build that exits non-zero always fails
  * setup, whatever it left in dist. Watch mode does not re-run a globalSetup, so
