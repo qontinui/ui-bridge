@@ -41,7 +41,13 @@ import {
   type ListenerState,
   type ParkedCommand,
 } from './stream-slot';
-import { NoLiveAnswer, TabReportedFailure, noResultArrivedMessage } from './live-answer';
+import {
+  NoLiveAnswer,
+  TabReportedFailure,
+  isNoLiveAnswer,
+  mayFailOver,
+  noResultArrivedMessage,
+} from './live-answer';
 import {
   commandRegistryTtlSeconds,
   registryWrite,
@@ -565,6 +571,14 @@ export class CommandRelay {
   private readonly tabListeners: Map<string, TabListener>;
   private readonly wsClients: Map<string, WebSocketClientEntry>;
   private readonly demotedTabs: Set<string>;
+  /**
+   * When each tab in `demotedTabs` was demoted (`Date.now()`), so only a
+   * heartbeat NEWER than its demotion re-promotes it (`getPrimaryTabId`; plan
+   * 2026-11-08-ui-bridge-relay-and-exec-mode-follow-ups-from-pr-329, D4).
+   * Every removal from `demotedTabs` goes through `forgetDemotion`, which
+   * drops the entry here too.
+   */
+  private readonly tabDemotedAt: Map<string, number>;
   private readonly commandQueue: QueuedCommand[];
   private readonly tabHeartbeats: Map<string, number>;
   private readonly tabMetadata: Map<
@@ -723,6 +737,7 @@ export class CommandRelay {
     if (!g[key('TabListeners')]) g[key('TabListeners')] = new Map();
     if (!g[key('WsClients')]) g[key('WsClients')] = new Map();
     if (!g[key('DemotedTabs')]) g[key('DemotedTabs')] = new Set();
+    if (!g[key('TabDemotedAt')]) g[key('TabDemotedAt')] = new Map();
     if (!g[key('CommandQueue')]) g[key('CommandQueue')] = [];
     if (!g[key('PrimaryTabId')]) g[key('PrimaryTabId')] = null;
     if (!g[key('TabHeartbeats')]) g[key('TabHeartbeats')] = new Map();
@@ -751,6 +766,7 @@ export class CommandRelay {
     this.tabListeners = g[key('TabListeners')];
     this.wsClients = g[key('WsClients')];
     this.demotedTabs = g[key('DemotedTabs')];
+    this.tabDemotedAt = g[key('TabDemotedAt')];
     this.commandQueue = g[key('CommandQueue')];
     this.primaryTabId = g[key('PrimaryTabId')];
     this.tabHeartbeats = g[key('TabHeartbeats')];
@@ -897,7 +913,7 @@ export class CommandRelay {
       this.tabMetadata.delete(tabId);
       this.tabLastSuccess.delete(tabId);
       this.tabOwnership.delete(tabId);
-      this.demotedTabs.delete(tabId);
+      this.forgetDemotion(tabId);
 
       // If this was the primary, demote and pick a successor below.
       if (this.primaryTabId === tabId) {
@@ -942,10 +958,11 @@ export class CommandRelay {
   /**
    * Pick a new primary: the best candidate under `compareByLiveness`
    * (tab-liveness.ts), so a live tab before a stale one. Returns `null` if no
-   * candidate is connected.
+   * candidate is connected. `exclude` is left out of the candidates: the
+   * failover's retry never goes back to the tab that failed.
    */
-  private selectPrimarySuccessor(): string | null {
-    const candidates = this.primaryCandidates();
+  private selectPrimarySuccessor(exclude?: string): string | null {
+    const candidates = this.primaryCandidates().filter((id) => id !== exclude);
     if (candidates.length === 0) return null;
     candidates.sort(compareByLiveness(this.freshness(candidates)));
     return candidates[0]!;
@@ -1032,7 +1049,7 @@ export class CommandRelay {
         // Tab is no longer connected — remove if heartbeat is stale
         if (now - lastBeat > this.tabDemotionTtlMs) {
           this.tabHeartbeats.delete(tabId);
-          this.demotedTabs.delete(tabId);
+          this.forgetDemotion(tabId);
           this.tabLastSuccess.delete(tabId);
           this.tabMetadata.delete(tabId);
           // Ownership tracks the *transport* — once the transport is gone
@@ -1049,7 +1066,7 @@ export class CommandRelay {
         !this.wsClients.has(tabId) &&
         !this.tabHeartbeats.has(tabId)
       ) {
-        this.demotedTabs.delete(tabId);
+        this.forgetDemotion(tabId);
       }
     }
   }
@@ -1077,13 +1094,18 @@ export class CommandRelay {
   // --------------------------------------------------------------------------
 
   private getPrimaryTabId(): string | null {
-    // Re-promote demoted tabs whose heartbeat is fresh AND still have an active connection
+    // Re-promote demoted tabs that have heartbeated SINCE their demotion, while
+    // that heartbeat is fresh and they still have an active connection. A
+    // heartbeat sent before the demotion proves nothing the demotion did not
+    // already know, so it does not undo it (D4).
     const now = Date.now();
     for (const tabId of Array.from(this.demotedTabs)) {
       const lastBeat = this.tabHeartbeats.get(tabId);
-      if (lastBeat && now - lastBeat < this.tabActiveWindowMs) {
+      const demotedAt = this.tabDemotedAt.get(tabId);
+      const beatSinceDemotion = demotedAt === undefined || (lastBeat ?? 0) > demotedAt;
+      if (lastBeat && now - lastBeat < this.tabActiveWindowMs && beatSinceDemotion) {
         if (this.tabListeners.has(tabId) || this.wsClients.has(tabId)) {
-          this.demotedTabs.delete(tabId);
+          this.forgetDemotion(tabId);
           console.log(`[ui-bridge] Re-promoted tab with fresh heartbeat: ${tabId}`);
         }
       }
@@ -1166,6 +1188,12 @@ export class CommandRelay {
     console.log(`[ui-bridge] Primary tab: ${tabId}`);
   }
 
+  /** Undo `tabId`'s demotion: out of `demotedTabs`, and its demotion time with it. */
+  private forgetDemotion(tabId: string): void {
+    this.demotedTabs.delete(tabId);
+    this.tabDemotedAt.delete(tabId);
+  }
+
   private persistPrimaryTab(): void {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (globalThis as any)[`${this.prefix}PrimaryTabId`] = this.primaryTabId;
@@ -1173,6 +1201,7 @@ export class CommandRelay {
 
   private demotePrimaryTab(tabId: string): void {
     this.demotedTabs.add(tabId);
+    this.tabDemotedAt.set(tabId, Date.now());
     if (this.primaryTabId === tabId) {
       this.primaryTabId = null;
       this.persistPrimaryTab();
@@ -1235,41 +1264,49 @@ export class CommandRelay {
               'Open the web app in a browser tab, or launch a headless one with ' +
               '`npx @qontinui/ui-bridge-headless --url <your-app-url>`. ' +
               'Use `GET /tabs/wait?timeoutMs=<ms>` to block until the tab registers.',
-            'not_delivered'
+            'not_delivered',
+            undefined,
+            { noTransport: true }
           )
       );
       this.throwIfDestroyedSince(epoch);
     }
 
-    // Attempt the command — if SDK_DISCONNECTED, wait for reconnection and retry once
+    // Attempt the command. If it was not delivered because no transport is
+    // connected at all (`SDK_DISCONNECTED`), wait for one and retry once.
+    let disconnected: NoLiveAnswer;
     try {
       return await this.queueCommandInner<T>(action, payload, options, epoch);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
       // Ownership mismatch surfaces as TAB_NOT_FOUND at the HTTP layer.
       // Re-throw without a retry — the caller is not addressing a tab
       // they own, no reconnect will fix that.
       if (err instanceof OwnerMismatchError) throw err;
-      if (msg.includes('SDK_DISCONNECTED') || msg.includes('No browser connected')) {
-        // Owner-scoped misses don't retry — the reconnection branch
-        // waits on the GLOBAL connection-ready gate, which would block
-        // a per-user dispatch on a tab belonging to a different user.
-        if (hasOwnerCheck) throw err;
-        console.log(`[ui-bridge] ${action} failed (disconnected), waiting for reconnection...`);
-        try {
-          await this.waitForConnection(2000, () => new Error('Reconnection timeout'));
-          this.throwIfDestroyedSince(epoch);
-          console.log(`[ui-bridge] Reconnected, retrying ${action}`);
-          return await this.queueCommandInner<T>(action, payload, options, epoch);
-        } catch (retryErr) {
-          // A relay destroyed mid-wait says so; any other retry failure
-          // throws the original error.
-          if (retryErr instanceof RelayDestroyedError) throw retryErr;
-          throw err;
-        }
-      }
-      throw err;
+      // Owner-scoped misses don't retry — the reconnection branch
+      // waits on the GLOBAL connection-ready gate, which would block
+      // a per-user dispatch on a tab belonging to a different user.
+      if (hasOwnerCheck) throw err;
+      // Classified by TYPE, never by the message: the relay's own
+      // `SDK_DISCONNECTED` refusal, a command nothing carried because no
+      // transport was connected at all.
+      if (!isNoLiveAnswer(err) || !err.noTransport) throw err;
+      disconnected = err;
     }
+
+    console.log(`[ui-bridge] ${action} failed (disconnected), waiting for reconnection...`);
+    try {
+      await this.waitForConnection(2000, () => new Error('Reconnection timeout'));
+    } catch (waitErr) {
+      // A relay destroyed mid-wait says so. Only a wait that timed out answers
+      // with the original SDK_DISCONNECTED: no tab came to run the command.
+      if (waitErr instanceof RelayDestroyedError) throw waitErr;
+      throw disconnected;
+    }
+    this.throwIfDestroyedSince(epoch);
+    console.log(`[ui-bridge] Reconnected, retrying ${action}`);
+    // OUTSIDE the catches above, so the retry's own answer — a tab's reported
+    // failure, a timeout, a routing refusal — is what the caller gets.
+    return this.queueCommandInner<T>(action, payload, options, epoch);
   }
 
   /**
@@ -1486,7 +1523,8 @@ export class CommandRelay {
     // Owner-scoped unscoped fanout: the caller's own tabs, best first under
     // `compareByLiveness` (a live tab before a stale one, then the most
     // recently successful), with one failover to the best of the others at
-    // retry time. Never touches another user's tabs. If the user has zero
+    // retry time, only when the first tab provably did not run the command
+    // (`mayFailOver`). Never touches another user's tabs. If the user has zero
     // tabs, surface SDK_DISCONNECTED — the no-leak fallback.
     if (ownerCheck) {
       const owned = this.rankOwnedTabs(ownerCheck.userId);
@@ -1497,7 +1535,9 @@ export class CommandRelay {
             'Open the web app in a browser tab, or launch a headless one with ' +
             '`npx @qontinui/ui-bridge-headless --url <your-app-url>`. ' +
             'Use `GET /tabs/wait?timeoutMs=<ms>` to block until the tab registers.',
-          'not_delivered'
+          'not_delivered',
+          undefined,
+          { noTransport: true }
         );
       }
       const ownedPrimary = owned[0]!;
@@ -1507,10 +1547,14 @@ export class CommandRelay {
       }).catch((firstError: Error) => {
         // A command settled by `destroy()` fails over to nothing.
         this.throwIfDestroyedSince(epoch);
+        // A tab that answered (a failure included) is the answer, and a write
+        // that timed out may have run: neither is re-sent (D3).
+        if (!mayFailOver(action, firstError)) throw firstError;
         // One automatic failover across the user's other tabs, ranked again
         // now: the first attempt can have waited out its whole timeout, and a
         // tab the earlier ranking named may since have closed or gone stale.
-        // Mirrors the global primary-tab failover, bounded to this user.
+        // Never back to the tab that failed. Mirrors the global primary-tab
+        // failover, bounded to this user.
         const fallback = this.rankOwnedTabs(ownerCheck.userId).find((id) => id !== ownedPrimary);
         if (!fallback) throw firstError;
         console.log(
@@ -1520,22 +1564,27 @@ export class CommandRelay {
       });
     }
 
-    // Primary tab routing with automatic failover
+    // Primary tab routing with automatic failover (D3): re-sent once, to the
+    // best OTHER tab, only when the primary provably did not run the command
+    // or, for a declared read, did not answer in time (`mayFailOver`).
     const primaryId = this.getPrimaryTabId();
     if (primaryId) {
       return this.sendCommand<T>(action, payload, { targetTabId: primaryId }).catch(
         (firstError: Error) => {
           // A command settled by `destroy()` fails over to nothing.
           this.throwIfDestroyedSince(epoch);
-          this.demotePrimaryTab(primaryId);
-          const newPrimaryId = this.getPrimaryTabId();
-          if (newPrimaryId) {
-            console.log(
-              `[ui-bridge] Primary tab ${primaryId} failed for ${action}, retrying on ${newPrimaryId}`
-            );
-            return this.sendCommand<T>(action, payload, { targetTabId: newPrimaryId });
-          }
-          throw firstError;
+          // A primary that gave no live answer is demoted, so the NEXT command
+          // routes elsewhere until it heartbeats again (D4), whether or not
+          // this one is re-sent. A tab that answered is live, and keeps its
+          // standing.
+          if (isNoLiveAnswer(firstError)) this.demotePrimaryTab(primaryId);
+          if (!mayFailOver(action, firstError)) throw firstError;
+          const retryId = this.selectPrimarySuccessor(primaryId);
+          if (!retryId) throw firstError;
+          console.log(
+            `[ui-bridge] Primary tab ${primaryId} failed for ${action}, retrying on ${retryId}`
+          );
+          return this.sendCommand<T>(action, payload, { targetTabId: retryId });
         }
       );
     }
@@ -1625,7 +1674,9 @@ export class CommandRelay {
               'Open the web app in a browser tab, or launch a headless one with ' +
               '`npx @qontinui/ui-bridge-headless --url <your-app-url>`. ' +
               'Use `GET /tabs/wait?timeoutMs=<ms>` to block until the tab registers.',
-            'not_delivered'
+            'not_delivered',
+            undefined,
+            { noTransport: true }
           )
         );
         return;
@@ -1701,7 +1752,8 @@ export class CommandRelay {
             new NoLiveAnswer(
               'Command evicted: too many pending commands',
               'unanswered',
-              'it was evicted from the pending queue under load before a tab answered'
+              'it was evicted from the pending queue under load before a tab answered',
+              { evicted: true }
             )
           );
         }
@@ -2486,7 +2538,7 @@ export class CommandRelay {
     // Track per-tab command success and remove from demoted set
     if (tabId) {
       this.tabLastSuccess.set(tabId, Date.now());
-      this.demotedTabs.delete(tabId);
+      this.forgetDemotion(tabId);
     }
 
     return 'settled';
@@ -2702,7 +2754,7 @@ export class CommandRelay {
     // A new tab becomes primary: the most-recently-registered rule the
     // nextjs.ts header documents. A returning tab keeps whatever standing it
     // had, so a reconnect or a rotation cannot take the primary from a live tab.
-    this.demotedTabs.delete(id);
+    this.forgetDemotion(id);
     if (!returning) this.setPrimaryTab(id);
     // A stream that does not resume the same page — a new tab, or a reload of
     // one under another `cid` — starts the tab's next generation, a value no
@@ -3089,7 +3141,7 @@ export class CommandRelay {
 
   /** Forget the tab state an SSE listener carried: its demotion, metadata and owner. */
   private forgetTabState(tabId: string): void {
-    this.demotedTabs.delete(tabId);
+    this.forgetDemotion(tabId);
     this.tabMetadata.delete(tabId);
     // Drop ownership when the transport closes. A future tab with the
     // SAME id must re-register before authenticated dispatch sees it.
@@ -3804,6 +3856,7 @@ export class CommandRelay {
     this.tabLastSuccess.clear();
     this.tabOwnership.clear();
     this.demotedTabs.clear();
+    this.tabDemotedAt.clear();
     for (const listener of this.tabListeners.values()) {
       // A failing bus must not stop the teardown.
       try {
