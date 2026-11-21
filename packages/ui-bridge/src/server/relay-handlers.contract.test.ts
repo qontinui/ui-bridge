@@ -81,6 +81,7 @@ const RELAYED_ACTION_COUNT = 154;
 
 /** The relay wrappers in the SDK — functions that forward their first parameter to `queueCommand`. */
 const RELAY_WRAPPERS = [
+  'server/relay-handlers.ts:liveRelayRead',
   'server/relay-handlers.ts:relayCommand',
   'server/relay-handlers.ts:relayWithFallback',
 ];
@@ -127,7 +128,7 @@ const isQueueCommand = (callee: ts.Expression): boolean =>
  * Every action literal relayed to a browser: the first argument of each
  * `<x>.queueCommand(…)` call, and of each call to a relay wrapper — a function
  * whose first parameter it passes as the action of a `queueCommand` call
- * (`relayCommand`, `relayWithFallback`). Read from the AST, so generics of any
+ * (`relayCommand`, `relayWithFallback`, `liveRelayRead`). Read from the AST, so generics of any
  * depth, comments and strings cannot hide or fake a call site.
  *
  * What it cannot read it reports as `unreadable` (an action that is not a

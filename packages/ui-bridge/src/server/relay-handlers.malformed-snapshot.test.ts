@@ -45,16 +45,18 @@ describe('relay handlers · a malformed snapshot is never cached', () => {
     const first = await handlers.getElements!();
     const second = await handlers.getElements!();
 
-    expect(first.success).toBe(true);
-    // The very first malformed answer is already reported as stale.
-    expect(first._meta?.stale).toBe(true);
-    expect(second.success).toBe(true);
-    expect(second.data).toEqual([]);
-    // "Could not see" must not render as a fresh, healthy empty registry.
-    expect(second._meta?.stale).toBe(true);
-    // The other cache readers survive too.
-    await expect(handlers.getComponents!()).resolves.toMatchObject({ success: true });
-    await expect(handlers.getWorkflows!()).resolves.toMatchObject({ success: true });
+    // Corrected by plan 2026-11-08-ui-bridge-relay-and-exec-mode-follow-ups-from-pr-329
+    // Phase 5 (D5): no live answer over a cache no tab ever filled is a failure,
+    // never an empty success.
+    // "Could not see" must not render as a fresh, healthy empty registry: with
+    // no good snapshot ever cached, each answer is the malformed refusal.
+    for (const res of [first, second]) {
+      expect(res.success).toBe(false);
+      expect(res.error).toMatch(/malformed control snapshot/);
+    }
+    // The other cache readers survive too: an answer, not a rejection.
+    await expect(handlers.getComponents!()).resolves.toMatchObject({ success: false });
+    await expect(handlers.getWorkflows!()).resolves.toMatchObject({ success: false });
   });
 
   it('keeps the last good snapshot when a forced refresh answers malformed', async () => {
@@ -81,11 +83,13 @@ describe('relay handlers · a malformed snapshot is never cached', () => {
 
     const snap = await handlers.getControlSnapshot!({ recency: 'current' });
 
-    expect(snap.success).toBe(true);
-    expect(Array.isArray((snap.data as { elements: unknown }).elements)).toBe(true);
-    expect(snap._meta?.stale).toBe(true);
-    // And the cache it left behind still serves later readers.
-    await expect(handlers.getElements!()).resolves.toMatchObject({ success: true });
+    // Corrected by plan 2026-11-08-ui-bridge-relay-and-exec-mode-follow-ups-from-pr-329
+    // Phase 5 (D5): no live answer over a cache no tab ever filled is a failure,
+    // never an empty success.
+    expect(snap.success).toBe(false);
+    expect(snap.error).toMatch(/malformed control snapshot/);
+    // And later readers still answer (never a rejection).
+    await expect(handlers.getElements!()).resolves.toMatchObject({ success: false });
   });
 
   it('a snapshot with no numeric timestamp is refused, not reported fresh', async () => {
@@ -96,9 +100,11 @@ describe('relay handlers · a malformed snapshot is never cached', () => {
 
     const res = await handlers.getElements!();
 
-    expect(res.success).toBe(true);
-    expect(res.data).toEqual([]);
-    expect(res._meta?.stale).toBe(true);
+    // Corrected by plan 2026-11-08-ui-bridge-relay-and-exec-mode-follow-ups-from-pr-329
+    // Phase 5 (D5): no live answer over a cache no tab ever filled is a failure,
+    // never an empty success.
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/malformed control snapshot/);
   });
 
   it('a pinned (per-tab) read of a malformed answer is a typed failure', async () => {

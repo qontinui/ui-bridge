@@ -24,6 +24,7 @@ import { DefaultActionExecutor } from './action-executor';
 import { createHandlers, type RegistryLike } from '../server/handlers';
 import { createRelayHandlers } from '../server/relay-handlers';
 import { CommandRelay } from '../server/command-relay';
+import { NoLiveAnswer } from '../server/live-answer';
 import { executeCommand, type BridgeAccess } from '../react/commandHandlers';
 import { isFindRefusalError } from '../core/find-filter';
 import { isMediaObservation } from '../core/media-observation';
@@ -92,7 +93,7 @@ const ARMS: Record<string, (req: FindRequest) => Promise<ArmAnswer>> = {
     const relay = new CommandRelay({ globalPrefix: `__uiBridgeMediaArms_${Math.random()}` });
     vi.spyOn(relay, 'queueCommand').mockImplementation((async (action: string) => {
       if (action === 'getControlSnapshot') return getGlobalRegistry().createSnapshot();
-      throw new Error('timeout: no browser answered');
+      throw new NoLiveAnswer('timeout: no browser answered', 'unanswered');
     }) as never);
     const res = await createRelayHandlers(relay).find({ ...req, skipSettle: true });
     return res.success
@@ -343,7 +344,7 @@ describe('arm-specific behaviour', () => {
   it('the cached arm refuses a media-fact filter over rows that carry no observation', async () => {
     const relay = new CommandRelay({ globalPrefix: `__uiBridgeLegacy_${Math.random()}` });
     vi.spyOn(relay, 'queueCommand').mockImplementation((async (action: string) => {
-      if (action !== 'getControlSnapshot') throw new Error('timeout');
+      if (action !== 'getControlSnapshot') throw new NoLiveAnswer('timeout', 'unanswered');
       // A snapshot from an SDK build that predates the envelope.
       return {
         timestamp: Date.now(),
@@ -396,7 +397,10 @@ describe('arm-specific behaviour', () => {
     // undefined, so it could not fail.)
     expect(queue.mock.calls.map(([action]) => action)).toEqual(['find']);
   });
-  it('a browser failure that is NOT a typed refusal still falls back to the cache', async () => {
+  // Corrected by plan 2026-11-08-ui-bridge-relay-and-exec-mode-follow-ups-from-pr-329
+  // Phase 4 (D5): this case pinned the old catch-all, under which any failure the
+  // tab reported fell back to the cache. A live answer is now the answer.
+  it('a browser failure that is NOT a typed refusal is that failure — never replaced by the cache', async () => {
     const relay = new CommandRelay({ globalPrefix: `__uiBridgeInnerFail_${Math.random()}` });
     const queue = vi.spyOn(relay, 'queueCommand').mockImplementation((async (action: string) => {
       // A page-side handler that threw: an inner failure with no `refusal`.
@@ -405,8 +409,9 @@ describe('arm-specific behaviour', () => {
     }) as never);
 
     const res = await createRelayHandlers(relay).find({ mediaOnly: true });
-    expect(res.success).toBe(true);
-    expect(queue.mock.calls.map(([action]) => action)).toEqual(['find', 'getControlSnapshot']);
-    expect((res.data?.elements ?? []).length).toBeGreaterThan(0);
+    expect(res.success).toBe(false);
+    expect(res.error).toBe('handler crashed');
+    expect(res.data).toEqual({ success: false, error: 'handler crashed' });
+    expect(queue.mock.calls.map(([action]) => action)).toEqual(['find']);
   });
 });
