@@ -31,7 +31,68 @@ function resolveContext(context?: QualityContext | string): QualityContext {
       );
     return found;
   }
+  assertUsableContext(context);
   return context;
+}
+
+const isObjectLike = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
+/** `null` and `undefined` are "not given": the evaluator uses its default. */
+const isGivenValue = (v: unknown): boolean => v !== undefined && v !== null;
+const isScore = (n: unknown): boolean =>
+  typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= 100;
+
+/**
+ * What is wrong with a quality context, or `null` when the evaluator can use
+ * it. The ONE shape rule for every transport: the web request model (custom
+ * and style-guide-declared contexts) and the native server both apply it. The
+ * answer is a suffix to the caller's own name for the value, e.g.
+ * `" must be an object …"` or `".metrics.contentOverflow must be …"`.
+ *
+ * A metric's fields may each be left out (or `null`) — the evaluator supplies
+ * the default — but a given one must be usable: `enabled` a boolean (a string
+ * "false" would otherwise run the metric), `weight` a finite number >= 0 (it
+ * orders `topIssues`), and `thresholds` `{ good, warning }` in 0-100 (scores
+ * run 0-100, so an out-of-range threshold would raise the findings of a metric
+ * that scored 100).
+ */
+export function qualityContextProblem(value: unknown): string | null {
+  if (!isObjectLike(value) || typeof value.name !== 'string' || !isObjectLike(value.metrics)) {
+    return ' must be an object with a string name and a metrics object';
+  }
+  for (const [metricId, config] of Object.entries(value.metrics)) {
+    // A metric id the evaluator does not run (a typo) would be ignored while
+    // the real metric ran at its defaults.
+    if (!Object.prototype.hasOwnProperty.call(METRIC_FUNCTIONS, metricId)) {
+      return `.metrics.${metricId} is not a quality metric (known: ${Object.keys(METRIC_FUNCTIONS).join(', ')})`;
+    }
+    const usable =
+      isObjectLike(config) &&
+      (!isGivenValue(config.enabled) || typeof config.enabled === 'boolean') &&
+      (!isGivenValue(config.weight) ||
+        (typeof config.weight === 'number' &&
+          Number.isFinite(config.weight) &&
+          config.weight >= 0)) &&
+      (!isGivenValue(config.thresholds) ||
+        (isObjectLike(config.thresholds) &&
+          isScore(config.thresholds.good) &&
+          isScore(config.thresholds.warning) &&
+          // A good bar below the warning bar would leave no warning band.
+          (config.thresholds.good as number) >= (config.thresholds.warning as number)));
+    if (!usable) {
+      return (
+        `.metrics.${metricId} must be an object whose enabled is a boolean, weight a finite ` +
+        'number >= 0, and thresholds { good, warning } numbers from 0 to 100 with good >= warning'
+      );
+    }
+  }
+  return null;
+}
+
+/** Throw when `context` is not a usable quality context (`qualityContextProblem`). */
+export function assertUsableContext(context: unknown): void {
+  const problem = qualityContextProblem(context);
+  if (problem !== null) throw new Error(`Quality context${problem}`);
 }
 
 /**
@@ -53,9 +114,10 @@ export function isMetricEnabled(context: QualityContext, metricId: QualityMetric
  * @param elements - Design data for all elements to evaluate
  * @param viewport - Viewport dimensions
  * @param context - Context name (string) or custom context object. Defaults to 'general'.
- * @returns Complete evaluation report: per-metric scores, the weighted overall and UX
- *   scores, and actionable findings. Values, not verdicts — the report carries no grade;
- *   the standard a score is judged against belongs to the caller.
+ * @returns Complete evaluation report: per-metric scores and weights, and actionable
+ *   findings. Values, not verdicts — the report carries no grade and no aggregate score
+ *   (no weighted overall, no UX sub-score): the standard a score is judged against, and
+ *   any combination of scores, belongs to the caller.
  */
 export function evaluateQuality(
   elements: ElementDesignData[],
@@ -66,8 +128,6 @@ export function evaluateQuality(
   const ctx = resolveContext(context);
 
   const metricResults: MetricResult[] = [];
-  let weightedSum = 0;
-  let totalWeight = 0;
 
   const metricIds = Object.keys(METRIC_FUNCTIONS) as QualityMetricId[];
 
@@ -108,26 +168,9 @@ export function evaluateQuality(
     }
 
     metricResults.push(result);
-    weightedSum += result.score * weight;
-    totalWeight += weight;
   }
 
-  // Normalize weighted score
-  const overallScore = totalWeight > 0 ? Math.round(weightedSum / totalWeight) : 100;
-
-  // Compute UX sub-score
-  const uxMetrics = metricResults.filter(
-    (r) => r.enabled && getCategoryForMetric(r.metricId) === 'ux'
-  );
-  let uxWeightedSum = 0;
-  let uxTotalWeight = 0;
-  for (const r of uxMetrics) {
-    uxWeightedSum += r.score * r.weight;
-    uxTotalWeight += r.weight;
-  }
-  const uxScore = uxTotalWeight > 0 ? Math.round(uxWeightedSum / uxTotalWeight) : 100;
-
-  // Collect top issues: findings from non-good metrics, sorted by weight
+  // Collect top issues: findings from enabled metrics, ordered by severity then metric weight
   const allFindings: Array<MetricFinding & { _weight: number }> = [];
   for (const result of metricResults) {
     if (!result.enabled) continue;
@@ -149,8 +192,6 @@ export function evaluateQuality(
     .map(({ _weight, ...finding }) => finding);
 
   return {
-    overallScore,
-    uxScore,
     contextName: ctx.name,
     metrics: metricResults,
     topIssues,

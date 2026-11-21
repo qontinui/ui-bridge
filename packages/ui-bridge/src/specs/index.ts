@@ -234,7 +234,8 @@ export type {
   TokenDriftResponse,
 } from './style-inference-request';
 export type { StyleSampleScope } from './style-inference-body';
-// Wider than color-utils' parseColor (hsl, oklch, oklab, color(srgb), all named colours).
+// color-utils' parseColor delegates to style-color's: the quality metrics, the audit
+// heuristics and computeContrastRatio read colour through it.
 export { canonicalColor, deltaE2000 } from './style-color';
 
 // Quality evaluator types
@@ -263,6 +264,9 @@ export {
   rgbToHsl,
   relativeLuminance,
   contrastRatio,
+  contrastOfColors,
+  isVisibleColor,
+  VISIBLE_ALPHA,
   colorDistance,
   clusterColors,
   isGrayscale,
@@ -277,7 +281,7 @@ export { METRIC_FUNCTIONS } from './quality-metrics';
 export { BUILT_IN_CONTEXTS, getContext, listContexts, mergeContext } from './quality-contexts';
 
 // Quality evaluator
-export { evaluateQuality } from './quality-evaluator';
+export { evaluateQuality, qualityContextProblem } from './quality-evaluator';
 
 // Snapshot diff
 export { createBaseline, diffSnapshots } from './quality-diff';

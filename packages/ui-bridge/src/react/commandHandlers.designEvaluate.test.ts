@@ -213,6 +213,61 @@ describe('/design/evaluate family · relay and server answer with one model', ()
     await relay.clearStyleGuide();
   });
 
+  it('evaluateQuality: a declared context with an unusable threshold is a request error on both', async () => {
+    const broken: QualityContext = {
+      name: 'broken',
+      description: 'A declared context whose threshold is out of range',
+      metrics: { contentOverflow: { thresholds: { good: 150, warning: 50 } } },
+    };
+    const guide = {
+      version: '1',
+      name: 'tenant guide',
+      rules: [],
+      qualityContexts: { broken },
+    } as unknown as StyleGuideConfig;
+    const server = serverHandlers();
+    const relay = relayHandlers();
+    await server.loadStyleGuide({ guide });
+    await relay.loadStyleGuide({ guide });
+    const request = { context: 'broken', viewport: VIEWPORT };
+    for (const response of [
+      await server.evaluateQuality(request),
+      await relay.evaluateQuality(request),
+    ]) {
+      expect(response.success).toBe(false);
+      expect(response.code).toBe('UB-VALIDATION-ERROR');
+      expect(response.error).toMatch(/from 0 to 100/);
+    }
+    await relay.clearStyleGuide();
+    await server.clearStyleGuide();
+  });
+
+  it('evaluateQuality: a declared context that is null or has no metrics is a request error on both', async () => {
+    const guide = {
+      version: '1',
+      name: 'tenant guide',
+      rules: [],
+      qualityContexts: { nothing: null, bare: { name: 'bare', description: '' } },
+    } as unknown as StyleGuideConfig;
+    const server = serverHandlers();
+    const relay = relayHandlers();
+    await server.loadStyleGuide({ guide });
+    await relay.loadStyleGuide({ guide });
+    for (const context of ['nothing', 'bare']) {
+      const request = { context, viewport: VIEWPORT };
+      for (const response of [
+        await server.evaluateQuality(request),
+        await relay.evaluateQuality(request),
+      ]) {
+        expect(response.success).toBe(false);
+        expect(response.code).toBe('UB-VALIDATION-ERROR');
+        expect(response.error).toContain(`quality context "${context}" must be an object`);
+      }
+    }
+    await relay.clearStyleGuide();
+    await server.clearStyleGuide();
+  });
+
   it('getQualityContexts: the same list, and every listed context evaluates', async () => {
     const relay = relayHandlers();
     const contexts = await relay.getQualityContexts();
@@ -306,6 +361,39 @@ describe('/design/evaluate family · relay and server answer with one model', ()
       'a string metric weight',
       { customContext: { name: 'mine', metrics: { contentOverflow: { weight: 'heavy' } } } },
       'customContext.metrics.contentOverflow must be an object',
+    ],
+    [
+      'evaluateQuality',
+      'a good threshold above 100',
+      {
+        customContext: {
+          name: 'mine',
+          metrics: { contentOverflow: { thresholds: { good: 101, warning: 50 } } },
+        },
+      },
+      'customContext.metrics.contentOverflow must be an object whose enabled is a boolean, weight a finite number >= 0, and thresholds { good, warning } numbers from 0 to 100',
+    ],
+    [
+      'evaluateQuality',
+      'a good threshold below the warning threshold',
+      {
+        customContext: {
+          name: 'mine',
+          metrics: { contentOverflow: { thresholds: { good: 40, warning: 80 } } },
+        },
+      },
+      'customContext.metrics.contentOverflow must be an object whose enabled is a boolean, weight a finite number >= 0, and thresholds { good, warning } numbers from 0 to 100',
+    ],
+    [
+      'evaluateQuality',
+      'a negative threshold',
+      {
+        customContext: {
+          name: 'mine',
+          metrics: { contentOverflow: { thresholds: { good: 90, warning: -1 } } },
+        },
+      },
+      'customContext.metrics.contentOverflow must be an object whose enabled is a boolean, weight a finite number >= 0, and thresholds { good, warning } numbers from 0 to 100',
     ],
     ['saveBaseline', 'elementIds as a string', { elementIds: 'save' }, IDS],
     ['saveBaseline', 'a numeric label', { label: 3 }, 'label must be a string'],

@@ -33,7 +33,7 @@ import {
   reportedTokensOf,
   type ReportedTokens,
 } from '../ai/design-tokens';
-import { evaluateQuality, isMetricEnabled } from './quality-evaluator';
+import { evaluateQuality, isMetricEnabled, qualityContextProblem } from './quality-evaluator';
 import { BUILT_IN_CONTEXTS, getContext } from './quality-contexts';
 import { CUSTOM_PROPERTY_METRICS } from './quality-metrics';
 import { createBaseline, diffSnapshots } from './quality-diff';
@@ -150,38 +150,12 @@ function stringOf(body: RequestBody, key: string, route: string): string | undef
   return value;
 }
 
-/**
- * A metric's configuration in a custom context. Each field may be left out,
- * because the evaluator supplies the default, but a given one must be usable:
- * a non-numeric weight would turn the overall score into NaN.
- */
-function isMetricConfig(value: unknown): boolean {
-  if (!isObject(value)) return false;
-  if (isGiven(value.enabled) && typeof value.enabled !== 'boolean') return false;
-  if (isGiven(value.weight) && !(isFiniteNumber(value.weight) && value.weight >= 0)) return false;
-  if (isGiven(value.thresholds)) {
-    const t = value.thresholds;
-    if (!isObject(t) || !isFiniteNumber(t.good) || !isFiniteNumber(t.warning)) return false;
-  }
-  return true;
-}
-
 function customContextOf(body: RequestBody, route: string): QualityContext | undefined {
   const context = body.customContext;
   if (!isGiven(context)) return undefined;
-  if (!isObject(context) || typeof context.name !== 'string' || !isObject(context.metrics)) {
-    throw new QualityRequestError(
-      `${route}: customContext must be an object with a string name and a metrics object`
-    );
-  }
-  for (const [metricId, config] of Object.entries(context.metrics)) {
-    if (!isMetricConfig(config)) {
-      throw new QualityRequestError(
-        `${route}: customContext.metrics.${metricId} must be an object whose enabled is a ` +
-          'boolean, weight a finite number >= 0, and thresholds { good, warning } finite numbers'
-      );
-    }
-  }
+  // The evaluator's own shape rule, so every transport refuses the same bodies.
+  const problem = qualityContextProblem(context);
+  if (problem !== null) throw new QualityRequestError(`${route}: customContext${problem}`);
   return context as unknown as QualityContext;
 }
 
@@ -199,7 +173,16 @@ function requestedContext(
   if (custom) return custom;
   const name = stringOf(body, 'context', route) ?? 'general';
   const declared = styleGuide?.qualityContexts;
-  if (declared && Object.prototype.hasOwnProperty.call(declared, name)) return declared[name];
+  if (declared && Object.prototype.hasOwnProperty.call(declared, name)) {
+    // A context the loaded style guide declares is request input too: refuse an
+    // unusable one as a request error, before any design data is collected.
+    const context: unknown = declared[name];
+    const problem = qualityContextProblem(context);
+    if (problem !== null) {
+      throw new QualityRequestError(`${route}: quality context "${name}"${problem}`);
+    }
+    return context as QualityContext;
+  }
   const builtIn = getContext(name);
   if (builtIn) return builtIn;
   const available = [...Object.keys(BUILT_IN_CONTEXTS), ...Object.keys(declared ?? {})];

@@ -94,7 +94,9 @@ describe('root entry: quality-request runtime', () => {
   it('evaluates, baselines and diffs registered elements', () => {
     const source = mount();
     const report = root.evaluateRegisteredQuality([source], {}, null);
-    expect(report).toHaveProperty('overallScore');
+    expect(Array.isArray(report.metrics)).toBe(true);
+    expect(report.metrics.length).toBeGreaterThan(0);
+    expect(report).not.toHaveProperty('overallScore');
     const baseline = root.captureQualityBaseline([source], { label: 'before' });
     expect(baseline.label).toBe('before');
     const diff = root.diffQualityBaseline(baseline, [source], {});

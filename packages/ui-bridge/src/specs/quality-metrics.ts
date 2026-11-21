@@ -16,6 +16,8 @@ import {
   clusterColors,
   isGrayscale,
   hueDistance,
+  isVisibleColor,
+  compositeOver,
   type RGBA,
 } from './color-utils';
 
@@ -116,7 +118,9 @@ function isContentBearing(el: ElementDesignData): boolean {
 }
 
 function isContainerElement(el: ElementDesignData): boolean {
-  const hasBg = parseColor(el.styles.backgroundColor) !== null;
+  // A computed transparent background is `rgba(0, 0, 0, 0)`, which parses:
+  // only a VISIBLE background counts.
+  const hasBg = isVisibleColor(parseColor(el.styles.backgroundColor));
   const hasRadius = parsePx(el.styles.borderRadius) > 0;
   const hasPadding = parsePx(el.styles.paddingTop) > 0 || parsePx(el.styles.paddingLeft) > 0;
   const largeEnough = el.rect.width >= 100 && el.rect.height >= 80;
@@ -794,7 +798,7 @@ export const uniqueColorCount: MetricFunction = (elements) => {
   for (const el of elements) {
     for (const prop of ['color', 'backgroundColor'] as const) {
       const parsed = parseColor(el.styles[prop]);
-      if (parsed && parsed.a > 0.1) colors.push(parsed);
+      if (isVisibleColor(parsed)) colors.push(parsed);
     }
   }
 
@@ -834,20 +838,46 @@ export const uniqueColorCount: MetricFunction = (elements) => {
 export const wcagContrastCompliance: MetricFunction = (elements) => {
   let passing = 0;
   let total = 0;
+  let assumedWhiteBackdrop = 0;
+  let unreadableBackground = 0;
   const failingElements: string[] = [];
 
   for (const el of elements) {
     const fg = parseColor(el.styles.color);
-    let bg = parseColor(el.styles.backgroundColor);
+    const rawBgValue: unknown = el.styles.backgroundColor;
+    const rawBg = typeof rawBgValue === 'string' ? rawBgValue.trim().toLowerCase() : '';
+    let bg = parseColor(rawBg);
 
-    // Skip non-text elements (no foreground color)
-    if (!fg) continue;
+    // Skip elements with no readable foreground, or one that paints nothing
+    // (alpha 0: a transparent colour, or gradient text clipped to its
+    // background). Any other foreground is composited below, so faint text
+    // measures as faint and fails.
+    if (fg === null || fg.a === 0) continue;
+    // A background that is present but outside the colour grammar (a computed
+    // `color(display-p3 …)`, a system colour) is a real backdrop of unknown
+    // colour: the element is not measured, rather than measured against a
+    // white page it may not have.
+    // `currentcolor` is such a backdrop too: opaque, in the text's own colour.
+    if (bg === null && (!NON_COLOR_VALUES.has(rawBg) || rawBg === 'currentcolor')) {
+      unreadableBackground++;
+      continue;
+    }
 
-    // Default background: white
-    if (!bg || bg.a < 0.1) bg = { r: 255, g: 255, b: 255, a: 1 };
+    // What is behind an element with no background, or a transparent or partly
+    // transparent one, is not in its own styles. This metric ASSUMES a white page there (most text sits
+    // on a transparent background, so refusing would leave nothing to
+    // measure): a missing background is white, a partly transparent one is
+    // composited over white, and the foreground over the result. The count of
+    // such elements is reported in rawData so a caller on a dark page can
+    // discount it. `contrastOfColors` / `computeContrastRatio` make no such
+    // assumption and answer UNKNOWN instead.
+    const white: RGBA = { r: 255, g: 255, b: 255, a: 1 };
+    if (bg === null || bg.a < 1) assumedWhiteBackdrop++;
+    if (bg === null) bg = white;
+    else if (bg.a < 1) bg = compositeOver(bg, white);
 
     total++;
-    const ratio = contrastRatio(fg, bg);
+    const ratio = contrastRatio(compositeOver(fg, bg), bg);
 
     if (ratio >= 4.5) {
       passing++;
@@ -856,8 +886,28 @@ export const wcagContrastCompliance: MetricFunction = (elements) => {
     }
   }
 
-  if (total === 0)
-    return makeResult('wcagContrastCompliance', 'WCAG Contrast Compliance', 'color', 100, []);
+  if (total === 0) {
+    // Nothing measured is not a perfect score: say so. The score stays 100
+    // (no element failed), and rawData.total is 0 so a caller can tell.
+    return makeResult(
+      'wcagContrastCompliance',
+      'WCAG Contrast Compliance',
+      'color',
+      100,
+      [
+        {
+          severity: 'info',
+          message:
+            unreadableBackground > 0
+              ? `No contrast was measured: ${unreadableBackground} text element(s) sit over a background that could not be read, and no other had a readable, painted foreground colour.`
+              : 'No text element had a readable, painted foreground colour, so no contrast was measured.',
+          recommendation:
+            'Treat this metric as not measured for this page (rawData.total is 0), not as a pass.',
+        },
+      ],
+      { passing: 0, total: 0, assumedWhiteBackdrop: 0, unreadableBackground }
+    );
+  }
 
   const score = (passing / total) * 100;
   const findings: MetricFinding[] = [];
@@ -877,7 +927,11 @@ export const wcagContrastCompliance: MetricFunction = (elements) => {
     'color',
     score,
     findings,
-    { passing, total }
+    // `assumedWhiteBackdrop`: how many of `total` were measured against an
+    // assumed white page (no opaque background of their own).
+    // `unreadableBackground`: elements NOT measured because their background
+    // is present but unreadable (not counted in `total`).
+    { passing, total, assumedWhiteBackdrop, unreadableBackground }
   );
 };
 
@@ -887,7 +941,7 @@ export const colorHarmony: MetricFunction = (elements) => {
   for (const el of elements) {
     for (const prop of ['color', 'backgroundColor'] as const) {
       const parsed = parseColor(el.styles[prop]);
-      if (parsed && parsed.a > 0.1 && !isGrayscale(parsed)) {
+      if (isVisibleColor(parsed) && !isGrayscale(parsed)) {
         const hsl = rgbToHsl(parsed);
         hues.push(hsl.h);
       }
@@ -998,7 +1052,7 @@ export const saturationConsistency: MetricFunction = (elements) => {
   for (const el of elements) {
     for (const prop of ['color', 'backgroundColor'] as const) {
       const parsed = parseColor(el.styles[prop]);
-      if (parsed && parsed.a > 0.1 && !isGrayscale(parsed)) {
+      if (isVisibleColor(parsed) && !isGrayscale(parsed)) {
         const hsl = rgbToHsl(parsed);
         saturations.push(hsl.s);
       }
@@ -1319,7 +1373,9 @@ export const buttonConsistency: MetricFunction = (elements) => {
 export const cardConsistency: MetricFunction = (elements) => {
   // Heuristic: elements with background + borderRadius + padding + area > 100x80
   const cards = elements.filter((el) => {
-    const hasBg = parseColor(el.styles.backgroundColor) !== null;
+    // A computed transparent background is `rgba(0, 0, 0, 0)`, which parses:
+    // only a VISIBLE background counts.
+    const hasBg = isVisibleColor(parseColor(el.styles.backgroundColor));
     const hasRadius = parsePx(el.styles.borderRadius) > 0;
     const hasPadding = parsePx(el.styles.paddingTop) > 0 || parsePx(el.styles.paddingLeft) > 0;
     const largeEnough = el.rect.width >= 100 && el.rect.height >= 80;
@@ -1434,8 +1490,34 @@ export const touchTargetCompliance: MetricFunction = (elements) => {
 
 const COLOR_PROPERTIES = ['color', 'backgroundColor'] as const;
 
-/** Colour values that are not a colour choice: nothing painted, or not resolved. */
-const NON_COLOR_VALUES = new Set(['', 'transparent', 'rgba(0, 0, 0, 0)', 'inherit', 'initial']);
+/**
+ * Colour values that are not a colour choice: not resolved, a CSS-wide
+ * keyword, or a reference to another colour (`currentcolor`). Compared
+ * lower-cased.
+ */
+const NON_COLOR_VALUES = new Set([
+  '',
+  'none',
+  'inherit',
+  'initial',
+  'unset',
+  'revert',
+  'revert-layer',
+  'currentcolor',
+]);
+
+/**
+ * Whether a colour value is no colour choice: not resolved, or a colour that
+ * parses but is not shown (alpha below `VISIBLE_ALPHA`, the cut-off every
+ * colour metric uses). A value the parser cannot read (`color(display-p3 …)`,
+ * a system colour) is still a colour choice and stays counted.
+ */
+function isNonColorChoice(value: string): boolean {
+  const v = value.trim().toLowerCase();
+  if (NON_COLOR_VALUES.has(v)) return true;
+  const parsed = parseColor(v);
+  return parsed !== null && !isVisibleColor(parsed);
+}
 
 /** `customPropertyConsistency`'s `rawData`: every input of its score. */
 export interface CustomPropertyConsistencyRawData {
@@ -1614,7 +1696,7 @@ export const customPropertyConsistency: MetricFunction = (elements) => {
       }
       const derived = attributed ? ownDerived(attribution) : customVals.has(val);
       // A declared var() counts even when the engine left the value unresolved.
-      if (NON_COLOR_VALUES.has(val.trim()) && !derived) continue;
+      if (isNonColorChoice(val) && !derived) continue;
       totalColorProps++;
       if (derived) tokenDerivedColors++;
       else if (attribution?.matches?.length) valueMatchedColors++;

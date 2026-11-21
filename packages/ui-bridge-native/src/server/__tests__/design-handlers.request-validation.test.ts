@@ -100,11 +100,13 @@ describe('native design request validation', () => {
           )
         );
       }
-      const badMetric = { name: 'c', metrics: { contrast: { weight: 'heavy' } } };
+      const badMetric = { name: 'c', metrics: { wcagContrastCompliance: { weight: 'heavy' } } };
       expect(await h.evaluateQuality(ctx({ customContext: badMetric }))).toMatchObject({
         success: false,
         code: 'INVALID_REQUEST',
-        error: expect.stringContaining(`${route}: customContext.metrics.contrast must be`),
+        error: expect.stringContaining(
+          `${route}: customContext.metrics.wcagContrastCompliance must be`
+        ),
       });
       expect(await h.evaluateQuality(ctx({ context: 3 }))).toMatchObject(
         refusal(`${route}: context must be a string`)
@@ -131,7 +133,9 @@ describe('native design request validation', () => {
       const declared = {
         name: 'brand',
         description: 'brand',
-        metrics: { contrast: { enabled: true, weight: 1, thresholds: { good: 1, warning: 0 } } },
+        metrics: {
+          wcagContrastCompliance: { enabled: true, weight: 1, thresholds: { good: 1, warning: 0 } },
+        },
       };
       const guide = {
         version: '1.0',

@@ -23,6 +23,18 @@ import {
 // ============================================================================
 
 describe('computeContrastRatio', () => {
+  it("reads the probe element's computed colour through the shared parser (DOM branch)", () => {
+    // jsdom computes these to rgb()/rgba(); a faint colour is composited and
+    // measures close to 1:1, as it renders.
+    // The probe element is used: each colour is appended to the document once.
+    const append = vi.spyOn(document.body, 'appendChild');
+    expect(computeContrastRatio('#000', '#fff')).toBeCloseTo(21, 0);
+    expect(append).toHaveBeenCalledTimes(2);
+    append.mockRestore();
+    expect(computeContrastRatio('rgba(0, 0, 0, 0.05)', '#fff')!).toBeLessThan(1.15);
+    expect(computeContrastRatio('rgba(0, 0, 0, 0.5)', '#fff')).toBeCloseTo(3.98, 1);
+  });
+
   it('should return 21:1 for black on white', () => {
     const ratio = computeContrastRatio('rgb(0, 0, 0)', 'rgb(255, 255, 255)');
     expect(ratio).toBeCloseTo(21, 0);
@@ -48,10 +60,14 @@ describe('computeContrastRatio', () => {
     expect(ratio).toBeCloseTo(1, 1);
   });
 
-  it('should handle rgba format (ignoring alpha)', () => {
+  it('composites a partly transparent foreground over the background', () => {
     const ratio = computeContrastRatio('rgba(0, 0, 0, 0.5)', 'rgba(255, 255, 255, 1)');
-    // parseColor extracts the RGB values, ignoring alpha
-    expect(ratio).toBeCloseTo(21, 0);
+    // 50% black on white renders as grey 127.5: about 3.98:1, not 21:1.
+    expect(ratio).toBeCloseTo(3.98, 1);
+  });
+
+  it('answers UNKNOWN over a background that is not opaque', () => {
+    expect(computeContrastRatio('#000', 'rgba(255, 255, 255, 0.5)')).toBeNull();
   });
 
   it('should calculate contrast for mid-range colors', () => {
@@ -1301,8 +1317,8 @@ describe('edge cases', () => {
       expect(computeContrastRatio('rgb(255, 255, 255)', value)).toBeNull();
     });
 
-    it('still reads a partly transparent colour by its rgb (alpha ignored)', () => {
-      expect(computeContrastRatio('rgba(0, 0, 0, 0.5)', 'rgb(255, 255, 255)')).toBeCloseTo(21, 0);
+    it('reads a partly transparent colour as it renders over the background', () => {
+      expect(computeContrastRatio('rgba(0, 0, 0, 0.5)', 'rgb(255, 255, 255)')).toBeCloseTo(3.98, 1);
     });
 
     it('checkContrastCompliance reports unknown, not pass or fail', () => {

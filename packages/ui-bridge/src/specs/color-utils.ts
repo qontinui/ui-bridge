@@ -5,15 +5,35 @@
  * No DOM or browser APIs — works in any JavaScript runtime.
  */
 
+import { parseColor as parseCssColor } from './style-color';
+
 // ============================================================================
 // Types
 // ============================================================================
 
+/**
+ * An sRGB colour. Channels are 0-255 and UNROUNDED (an `oklch()` or `hsl()`
+ * value rarely lands on an integer); `rgb()` percentages scale to 255. Alpha
+ * is 0-1.
+ */
 export interface RGBA {
-  r: number; // 0-255
-  g: number; // 0-255
-  b: number; // 0-255
+  r: number; // 0-255, unrounded
+  g: number; // 0-255, unrounded
+  b: number; // 0-255, unrounded
   a: number; // 0-1
+}
+
+/**
+ * The alpha below which a colour is treated as not shown — a background that
+ * faint is not a background, and a colour that faint is no colour choice. One
+ * cut-off for every colour metric. Contrast does not use it: it composites any
+ * foreground with alpha above 0, so faint text measures as faint.
+ */
+export const VISIBLE_ALPHA = 0.1;
+
+/** Whether `color` is opaque enough to count as shown (`a >= VISIBLE_ALPHA`). */
+export function isVisibleColor(color: RGBA | null): color is RGBA {
+  return color !== null && color.a >= VISIBLE_ALPHA;
 }
 
 export interface HSL {
@@ -23,121 +43,29 @@ export interface HSL {
 }
 
 // ============================================================================
-// Named Colors (CSS Level 1 + common)
-// ============================================================================
-
-const NAMED_COLORS: Record<string, string> = {
-  black: '#000000',
-  white: '#ffffff',
-  red: '#ff0000',
-  green: '#008000',
-  blue: '#0000ff',
-  yellow: '#ffff00',
-  cyan: '#00ffff',
-  magenta: '#ff00ff',
-  gray: '#808080',
-  grey: '#808080',
-  silver: '#c0c0c0',
-  maroon: '#800000',
-  olive: '#808000',
-  lime: '#00ff00',
-  aqua: '#00ffff',
-  teal: '#008080',
-  navy: '#000080',
-  fuchsia: '#ff00ff',
-  purple: '#800080',
-  orange: '#ffa500',
-  transparent: '#00000000',
-};
-
-// ============================================================================
 // Parsing
 // ============================================================================
 
 /**
- * Parse a CSS color string to RGBA.
- * Supports: hex (#RGB, #RRGGBB, #RRGGBBAA), rgb(), rgba(), named colors.
- * Returns null for unparseable values.
+ * Parse a CSS color value to RGBA, or `null` for anything that is not a
+ * colour this package reads (a missing value, `none`, a CSS-wide keyword,
+ * `currentcolor`, `var()`, `display-p3`).
+ *
+ * The quality metrics, the `/design/audit` heuristics and `computeContrastRatio`
+ * share ONE colour grammar: this delegates to `style-color`'s parser (which
+ * style inference and token drift use too; `ai/css-color.ts` token
+ * normalisation is separate), which reads hex, `rgb()`/`rgba()`, `hsl()`/`hsla()`, `oklch()`, `oklab()`,
+ * `lab()`, `lch()`, `color(srgb …)` and every CSS named colour.
+ * A wide-gamut colour is clamped into sRGB. Channels are unrounded 0-255;
+ * alpha is 0-1; the result carries exactly the four `RGBA` fields. Tailwind v4
+ * computes its palette to `oklch(…)`, so a parser without it skipped every
+ * such element.
  */
-export function parseColor(str: string): RGBA | null {
-  if (!str || typeof str !== 'string') return null;
-
-  const trimmed = str.trim().toLowerCase();
-  if (!trimmed || trimmed === 'none' || trimmed === 'initial' || trimmed === 'inherit') return null;
-
-  // Named color
-  if (NAMED_COLORS[trimmed]) {
-    return parseColor(NAMED_COLORS[trimmed]);
-  }
-
-  // Hex
-  if (trimmed.startsWith('#')) {
-    return parseHex(trimmed);
-  }
-
-  // rgb() / rgba()
-  if (trimmed.startsWith('rgb')) {
-    return parseRgbFunction(trimmed);
-  }
-
-  return null;
-}
-
-function parseHex(hex: string): RGBA | null {
-  const h = hex.slice(1);
-  if (h.length === 3) {
-    return {
-      r: parseInt(h[0] + h[0], 16),
-      g: parseInt(h[1] + h[1], 16),
-      b: parseInt(h[2] + h[2], 16),
-      a: 1,
-    };
-  }
-  if (h.length === 4) {
-    return {
-      r: parseInt(h[0] + h[0], 16),
-      g: parseInt(h[1] + h[1], 16),
-      b: parseInt(h[2] + h[2], 16),
-      a: parseInt(h[3] + h[3], 16) / 255,
-    };
-  }
-  if (h.length === 6) {
-    return {
-      r: parseInt(h.slice(0, 2), 16),
-      g: parseInt(h.slice(2, 4), 16),
-      b: parseInt(h.slice(4, 6), 16),
-      a: 1,
-    };
-  }
-  if (h.length === 8) {
-    return {
-      r: parseInt(h.slice(0, 2), 16),
-      g: parseInt(h.slice(2, 4), 16),
-      b: parseInt(h.slice(4, 6), 16),
-      a: parseInt(h.slice(6, 8), 16) / 255,
-    };
-  }
-  return null;
-}
-
-function parseRgbFunction(str: string): RGBA | null {
-  // Match rgb(R, G, B) or rgba(R, G, B, A) or rgb(R G B / A)
-  const match = str.match(
-    /rgba?\(\s*(\d+(?:\.\d+)?)[,%\s]+(\d+(?:\.\d+)?)[,%\s]+(\d+(?:\.\d+)?)(?:[,/\s]+(\d+(?:\.\d+)?%?))?\s*\)/
-  );
-  if (!match) return null;
-
-  const r = Math.min(255, Math.max(0, Math.round(parseFloat(match[1]))));
-  const g = Math.min(255, Math.max(0, Math.round(parseFloat(match[2]))));
-  const b = Math.min(255, Math.max(0, Math.round(parseFloat(match[3]))));
-  let a = 1;
-  if (match[4] !== undefined) {
-    const aStr = match[4];
-    a = aStr.endsWith('%') ? parseFloat(aStr) / 100 : parseFloat(aStr);
-    a = Math.min(1, Math.max(0, a));
-  }
-
-  return { r, g, b, a };
+export function parseColor(str: unknown): RGBA | null {
+  if (typeof str !== 'string') return null;
+  const parsed = parseCssColor(str);
+  if (parsed === null) return null;
+  return { r: parsed.r, g: parsed.g, b: parsed.b, a: parsed.a };
 }
 
 // ============================================================================
@@ -195,7 +123,39 @@ export function relativeLuminance(color: RGBA): number {
 }
 
 /**
- * Compute WCAG contrast ratio between two colors.
+ * `top` painted over `under` (source-over): channels blended by `top.a`, alpha
+ * 1. Only meaningful when `under` is opaque (`a === 1`).
+ */
+export function compositeOver(top: RGBA, under: RGBA): RGBA {
+  const a = top.a;
+  return {
+    r: top.r * a + under.r * (1 - a),
+    g: top.g * a + under.g * (1 - a),
+    b: top.b * a + under.b * (1 - a),
+    a: 1,
+  };
+}
+
+/**
+ * WCAG contrast of foreground `fg` drawn on background `bg`, both CSS colour
+ * values, or `null` (UNKNOWN) when it cannot be read: either value does not
+ * parse, the foreground's alpha is 0 (nothing is painted — gradient text with
+ * `background-clip: text` computes to that), or the background is not opaque
+ * (what shows through it is not known here). Any other foreground is
+ * composited over the background first, so 50% black on white measures as the
+ * grey it renders (about 4:1), not 21:1, and very faint text measures close to
+ * 1:1 — reported, not hidden.
+ */
+export function contrastOfColors(fg: unknown, bg: unknown): number | null {
+  const f = parseColor(fg);
+  const b = parseColor(bg);
+  if (f === null || f.a === 0 || b === null || b.a < 1) return null;
+  return contrastRatio(compositeOver(f, b), b);
+}
+
+/**
+ * Compute WCAG contrast ratio between two colors, by their channels alone
+ * (alpha is not read: composite first, as `contrastOfColors` does).
  * Returns a value between 1 and 21.
  */
 export function contrastRatio(fg: RGBA, bg: RGBA): number {

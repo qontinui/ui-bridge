@@ -114,13 +114,12 @@ export interface QualityContext {
 
 /**
  * The `/design/evaluate` report. Values, not verdicts: scores and findings only.
- * There is deliberately no letter grade — a grade is a judgment, and the standard
- * a score is judged against belongs to the caller (`domain_spec/ui-bridge`
- * behaviour (3)).
+ * There is deliberately no letter grade and no aggregate score (no weighted
+ * overall, no UX sub-score) — a grade or a total is a judgment, and the standard a
+ * score is judged against belongs to the caller (`domain_spec/ui-bridge`
+ * behaviour (3)). Judge the per-metric `score`, `weight` and `findings`.
  */
 export interface QualityEvaluationReport {
-  overallScore: number; // 0-100 weighted average
-  uxScore: number; // 0-100 UX sub-score
   contextName: string;
   metrics: MetricResult[];
   topIssues: MetricFinding[];

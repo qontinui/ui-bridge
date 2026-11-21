@@ -3,7 +3,8 @@
  *
  * Tests for the 5 UX metrics: contentOverflow, aboveFoldRatio,
  * informationDensity, containerEfficiency, viewportUtilization.
- * Plus integration test for UX sub-score in the evaluator.
+ * Plus the evaluator report's shape (per-metric values, no aggregate), and
+ * oklch colours reaching the colour metrics through the one colour parser.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -13,9 +14,15 @@ import {
   informationDensity,
   containerEfficiency,
   viewportUtilization,
+  wcagContrastCompliance,
+  uniqueColorCount,
+  cardConsistency,
+  customPropertyConsistency,
   METRIC_FUNCTIONS,
 } from '../quality-metrics';
-import { evaluateQuality } from '../quality-evaluator';
+import { parseColor } from '../color-utils';
+import { evaluateQuality, qualityContextProblem } from '../quality-evaluator';
+import { BUILT_IN_CONTEXTS } from '../quality-contexts';
 import type { ElementDesignData, ExtendedComputedStyles } from '../../core/types';
 import type { ViewportDimensions } from '../quality-types';
 
@@ -308,26 +315,30 @@ describe('viewportUtilization', () => {
 });
 
 // ============================================================================
-// UX Sub-Score in Evaluator
+// Evaluator report: values, not aggregates
 // ============================================================================
 
-describe('evaluateQuality UX sub-score', () => {
-  it('reports uxScore as the weighted mean of the enabled UX metrics, and no grade', () => {
+describe('evaluateQuality report', () => {
+  it('reports per-metric values and no aggregate score or grade', () => {
     const elements = [
       makeContentElement('h', 'heading', { x: 0, y: 0, width: 400, height: 50 }),
       makeContentElement('p', 'paragraph', { x: 0, y: 60, width: 400, height: 200 }),
     ];
     const report = evaluateQuality(elements, DEFAULT_VIEWPORT, 'general');
-    const ux = report.metrics.filter((m) => m.enabled && m.category === 'ux');
-    const totalWeight = ux.reduce((sum, m) => sum + m.weight, 0);
-    expect(totalWeight).toBeGreaterThan(0);
-    const expected = Math.round(ux.reduce((sum, m) => sum + m.score * m.weight, 0) / totalWeight);
-    expect(report.uxScore).toBe(expected);
-    // Values, not verdicts: the report carries scores, never a letter grade.
-    // The standard a score is judged against belongs to the caller
-    // (domain_spec/ui-bridge behaviour (3)).
+    // Values, not verdicts: no weighted total, no UX sub-score, no letter grade.
+    // Combining scores, and the standard a score is judged against, belong to
+    // the caller (domain_spec/ui-bridge behaviour (3)).
+    expect(report).not.toHaveProperty('overallScore');
+    expect(report).not.toHaveProperty('uxScore');
     expect(report).not.toHaveProperty('grade');
     expect(report).not.toHaveProperty('uxGrade');
+    const enabled = report.metrics.filter((m) => m.enabled);
+    expect(enabled.length).toBeGreaterThan(0);
+    for (const m of enabled) {
+      expect(typeof m.score).toBe('number');
+      expect(m.weight).toBeGreaterThan(0);
+      expect(Array.isArray(m.findings)).toBe(true);
+    }
   });
 
   it('UX metrics appear with category "ux" in results', () => {
@@ -430,5 +441,376 @@ describe('METRIC_FUNCTIONS registry', () => {
     expect(METRIC_FUNCTIONS).toHaveProperty('cardConsistency');
     expect(METRIC_FUNCTIONS).toHaveProperty('inputConsistency');
     expect(METRIC_FUNCTIONS).toHaveProperty('touchTargetCompliance');
+  });
+});
+
+// ============================================================================
+// oklch colours reach the colour metrics (one colour grammar)
+// ============================================================================
+
+describe('colour metrics read oklch', () => {
+  // Tailwind v4 computes its palette to oklch(); a parser without it skipped
+  // every such element, so a page full of low-contrast text scored 100.
+  it('parseColor reads oklch and refuses non-strings', () => {
+    const red = parseColor('oklch(0.628 0.2577 29.23)');
+    expect(red).not.toBeNull();
+    expect(red!.r).toBeGreaterThan(250);
+    expect(red!.g).toBeLessThan(5);
+    expect(red!.b).toBeLessThan(5);
+    expect(red!.a).toBe(1);
+    expect(parseColor(undefined)).toBeNull();
+    expect(parseColor('')).toBeNull();
+    expect(parseColor('none')).toBeNull();
+    // An overflowing hue or lab coordinate is no colour, never NaN channels.
+    expect(parseColor('hsl(1e999 50% 50%)')).toBeNull();
+    expect(parseColor('hsl(1e307rad 50% 50%)')).toBeNull();
+    expect(parseColor('oklch(0.5 0.1 1e308grad)')).toBeNull();
+    expect(parseColor('lab(1e308 1e308 0)')).toBeNull();
+    // An overflowing rgb channel or alpha clamps, as CSS does.
+    expect(parseColor('rgb(1e999 0 0)')).toMatchObject({ r: 255, g: 0, b: 0, a: 1 });
+    expect(parseColor('rgb(0 0 0 / 1e999)')).toMatchObject({ a: 1 });
+  });
+
+  it('wcagContrastCompliance counts an oklch-coloured text element', () => {
+    const elements = [
+      // near-white on white: fails AA, and must be COUNTED, not skipped
+      makeElement(
+        'faint',
+        'paragraph',
+        { x: 0, y: 0, width: 200, height: 20 },
+        {
+          color: 'oklch(0.95 0 0)',
+          backgroundColor: 'oklch(1 0 0)',
+        }
+      ),
+      makeElement(
+        'ok',
+        'paragraph',
+        { x: 0, y: 30, width: 200, height: 20 },
+        {
+          color: '#000000',
+          backgroundColor: '#ffffff',
+        }
+      ),
+    ];
+    const result = wcagContrastCompliance(elements, DEFAULT_VIEWPORT);
+    expect(result.score).toBe(50);
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].elementIds).toEqual(['faint']);
+  });
+
+  it('uniqueColorCount clusters oklch colours with their hex twins', () => {
+    const elements = [
+      makeElement(
+        'a',
+        'generic',
+        { x: 0, y: 0, width: 10, height: 10 },
+        {
+          color: 'oklch(0.628 0.2577 29.23)',
+          backgroundColor: '#ff0000',
+        }
+      ),
+    ];
+    const result = uniqueColorCount(elements, DEFAULT_VIEWPORT);
+    // Both values are red: one cluster, read from two spellings.
+    expect(result.rawData).toMatchObject({ count: 1, totalSampled: 2 });
+  });
+
+  it('parseColor returns exactly the four RGBA fields, even out of gamut', () => {
+    const wide = parseColor('oklch(0.7 0.4 150)');
+    expect(wide).not.toBeNull();
+    expect(Object.keys(wide!).sort()).toEqual(['a', 'b', 'g', 'r']);
+  });
+
+  it('wcagContrastCompliance does not score a transparent foreground', () => {
+    const elements = [
+      makeElement(
+        'clear',
+        'paragraph',
+        { x: 0, y: 0, width: 200, height: 20 },
+        {
+          color: 'rgba(0, 0, 0, 0)',
+          backgroundColor: 'rgba(0, 0, 0, 0)',
+        }
+      ),
+      makeElement(
+        'named',
+        'paragraph',
+        { x: 0, y: 30, width: 200, height: 20 },
+        {
+          color: 'transparent',
+          backgroundColor: '#000000',
+        }
+      ),
+    ];
+    const result = wcagContrastCompliance(elements, DEFAULT_VIEWPORT);
+    // Neither is text anyone can read: no fabricated pass, no fabricated fail,
+    // and the result says nothing was measured rather than reading as a pass.
+    expect(result.rawData).toMatchObject({ passing: 0, total: 0 });
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].severity).toBe('info');
+    expect(result.findings[0].message).toMatch(/no contrast was measured/i);
+  });
+
+  it('a computed transparent background does not make an element a card', () => {
+    const card = (id: string, radius: string, y: number) =>
+      makeElement(
+        id,
+        'generic',
+        { x: 0, y, width: 300, height: 200 },
+        {
+          backgroundColor: 'rgba(0, 0, 0, 0)',
+          borderRadius: radius,
+          paddingTop: '16px',
+          paddingLeft: '16px',
+        }
+      );
+    const result = cardConsistency(
+      [card('a', '2px', 0), card('b', '40px', 210), card('c', '8px', 420)],
+      DEFAULT_VIEWPORT
+    );
+    expect(result.findings).toEqual([]);
+    expect(result.score).toBe(100);
+  });
+
+  it('wcagContrastCompliance measures a partly transparent foreground as it renders', () => {
+    // 50% black on white renders as grey (~3.98:1): it fails AA.
+    const elements = [
+      makeElement(
+        'half',
+        'paragraph',
+        { x: 0, y: 0, width: 200, height: 20 },
+        {
+          color: 'rgba(0, 0, 0, 0.5)',
+          backgroundColor: '#ffffff',
+        }
+      ),
+    ];
+    const result = wcagContrastCompliance(elements, DEFAULT_VIEWPORT);
+    expect(result.score).toBe(0);
+    expect(result.findings[0].elementIds).toEqual(['half']);
+  });
+
+  it('a computed transparent background does not make an element a container', () => {
+    const box = makeElement(
+      'box',
+      'generic',
+      { x: 0, y: 0, width: 600, height: 400 },
+      {
+        backgroundColor: 'rgba(0, 0, 0, 0)',
+        borderRadius: '8px',
+        paddingTop: '16px',
+        paddingLeft: '16px',
+      }
+    );
+    const solid = makeElement(
+      'solid',
+      'generic',
+      { x: 0, y: 0, width: 600, height: 400 },
+      {
+        backgroundColor: '#f5f5f5',
+        borderRadius: '8px',
+        paddingTop: '16px',
+        paddingLeft: '16px',
+      }
+    );
+    // A tiny child in a big container is inefficient; a non-container is not
+    // judged at all.
+    const child = makeElement('child', 'paragraph', { x: 10, y: 10, width: 20, height: 10 });
+    const transparent = containerEfficiency([box, child], DEFAULT_VIEWPORT);
+    const painted = containerEfficiency([solid, child], DEFAULT_VIEWPORT);
+    expect(transparent.score).toBe(100);
+    expect(transparent.findings).toEqual([]);
+    expect(painted.score).toBeLessThan(100);
+  });
+
+  it('wcagContrastCompliance composites a partly transparent background over its assumed white page, and counts the assumption', () => {
+    const elements = [
+      // A dark translucent background over white renders mid grey, and #767676
+      // on that grey fails (~1.1:1). On the raw channels (#767676 on black,
+      // ~4.6:1) it would pass, so the composite is what decides.
+      makeElement(
+        'veil',
+        'paragraph',
+        { x: 0, y: 0, width: 200, height: 20 },
+        {
+          color: '#767676',
+          backgroundColor: 'rgba(0, 0, 0, 0.5)',
+        }
+      ),
+      makeElement(
+        'own',
+        'paragraph',
+        { x: 0, y: 30, width: 200, height: 20 },
+        {
+          color: '#000000',
+          backgroundColor: '#ffffff',
+        }
+      ),
+    ];
+    const result = wcagContrastCompliance(elements, DEFAULT_VIEWPORT);
+    expect(result.findings[0].elementIds).toEqual(['veil']);
+    expect(result.rawData).toMatchObject({ passing: 1, total: 2, assumedWhiteBackdrop: 1 });
+  });
+
+  it('customPropertyConsistency drops a parsed colour that is not shown, and keeps an unreadable one', () => {
+    const el = (id: string, color: string, backgroundColor: string) =>
+      makeElement(id, 'generic', { x: 0, y: 0, width: 10, height: 10 }, { color, backgroundColor });
+    const result = customPropertyConsistency(
+      [
+        el('a', 'rgb(0 0 0 / 0)', 'rgba(255, 255, 255, 0.05)'),
+        el('b', 'color(display-p3 1 0 0)', ''),
+      ],
+      DEFAULT_VIEWPORT
+    );
+    // Only the display-p3 value is a colour choice (hardcoded: no var()).
+    expect(result.rawData).toMatchObject({ totalColorProps: 1, hardcodedColors: 1 });
+  });
+
+  it('wcagContrastCompliance measures very faint text (it fails) instead of skipping it', () => {
+    const elements = [
+      makeElement(
+        'ghost',
+        'paragraph',
+        { x: 0, y: 0, width: 200, height: 20 },
+        {
+          color: 'rgba(0, 0, 0, 0.05)',
+          backgroundColor: '#ffffff',
+        }
+      ),
+    ];
+    const result = wcagContrastCompliance(elements, DEFAULT_VIEWPORT);
+    expect(result.rawData).toMatchObject({ passing: 0, total: 1 });
+    expect(result.findings[0].elementIds).toEqual(['ghost']);
+  });
+
+  it('wcagContrastCompliance does not measure text over a present but unreadable background', () => {
+    const elements = [
+      makeElement(
+        'p3',
+        'paragraph',
+        { x: 0, y: 0, width: 200, height: 20 },
+        {
+          color: '#ffffff',
+          backgroundColor: 'color(display-p3 0.1 0.1 0.1)',
+        }
+      ),
+      makeElement(
+        'own',
+        'paragraph',
+        { x: 0, y: 30, width: 200, height: 20 },
+        {
+          color: '#000000',
+          backgroundColor: '#ffffff',
+        }
+      ),
+    ];
+    const result = wcagContrastCompliance(elements, DEFAULT_VIEWPORT);
+    // White text on a dark p3 panel is not scored as white-on-white.
+    expect(result.findings).toEqual([]);
+    expect(result.rawData).toMatchObject({ passing: 1, total: 1, unreadableBackground: 1 });
+  });
+
+  it('evaluateQuality refuses a custom context threshold outside 0-100 (every transport)', () => {
+    const ctx = (thresholds: { good: number; warning: number }) => ({
+      name: 'mine',
+      description: '',
+      metrics: { contentOverflow: { thresholds } },
+    });
+    // good above 100; warning below 0; good below warning (a warning above 100
+    // is implied by the other two, so it has no case of its own).
+    for (const t of [
+      { good: 101, warning: 50 },
+      { good: 90, warning: -1 },
+      { good: 40, warning: 80 },
+    ]) {
+      expect(() => evaluateQuality([], DEFAULT_VIEWPORT, ctx(t))).toThrow(/from 0 to 100/);
+    }
+    expect(() =>
+      evaluateQuality([], DEFAULT_VIEWPORT, ctx({ good: 90, warning: 70 }))
+    ).not.toThrow();
+  });
+
+  it('evaluateQuality reads a null weight or threshold as not given, and refuses an unusable weight', () => {
+    const ctx = (config: Record<string, unknown>) => ({
+      name: 'mine',
+      description: '',
+      metrics: { contentOverflow: config },
+    });
+    expect(() =>
+      evaluateQuality([], DEFAULT_VIEWPORT, ctx({ thresholds: null }) as never)
+    ).not.toThrow();
+    expect(() =>
+      evaluateQuality([], DEFAULT_VIEWPORT, ctx({ weight: null }) as never)
+    ).not.toThrow();
+    for (const weight of [-1, Number.POSITIVE_INFINITY, Number.NaN, 'heavy']) {
+      expect(() => evaluateQuality([], DEFAULT_VIEWPORT, ctx({ weight }) as never)).toThrow(
+        /weight a finite number >= 0/
+      );
+    }
+    expect(() =>
+      evaluateQuality([], DEFAULT_VIEWPORT, ctx({ thresholds: 'high' }) as never)
+    ).toThrow(/from 0 to 100/);
+  });
+
+  it('wcagContrastCompliance reads a CSS-wide keyword background as no background', () => {
+    const elements = ['unset', 'REVERT', 'Inherit', 'none'].map((backgroundColor, i) =>
+      makeElement(
+        `k${i}`,
+        'paragraph',
+        { x: 0, y: i * 30, width: 200, height: 20 },
+        {
+          color: '#000000',
+          backgroundColor,
+        }
+      )
+    );
+    const result = wcagContrastCompliance(elements, DEFAULT_VIEWPORT);
+    expect(result.rawData).toMatchObject({
+      total: 4,
+      unreadableBackground: 0,
+      assumedWhiteBackdrop: 4,
+    });
+  });
+
+  it('wcagContrastCompliance does not measure a currentcolor background against a white page', () => {
+    const elements = [
+      makeElement(
+        'cc',
+        'paragraph',
+        { x: 0, y: 0, width: 200, height: 20 },
+        {
+          color: '#ffffff',
+          backgroundColor: 'currentcolor',
+        }
+      ),
+    ];
+    const result = wcagContrastCompliance(elements, DEFAULT_VIEWPORT);
+    expect(result.rawData).toMatchObject({ total: 0, unreadableBackground: 1 });
+    // The note names the real reason nothing was measured.
+    expect(result.findings[0].message).toMatch(
+      /1 text element\(s\) sit over a background that could not be read/
+    );
+  });
+
+  it('evaluateQuality refuses a malformed custom context shape (the native path has no other check)', () => {
+    const bad: unknown[] = [
+      { name: 'x' },
+      { name: 'x', metrics: { contentOverflow: 5 } },
+      { name: 'x', metrics: { contentOverflow: null } },
+      { name: 'x', metrics: { contentOverflow: { enabled: 'false' } } },
+      // a typo'd metric id, and a good bar below the warning bar
+      { name: 'x', metrics: { contentOverlow: { enabled: false } } },
+      { name: 'x', metrics: { contentOverflow: { thresholds: { good: 40, warning: 80 } } } },
+    ];
+    for (const ctx of bad) {
+      expect(() => evaluateQuality([], DEFAULT_VIEWPORT, ctx as never)).toThrow(/Quality context/);
+    }
+  });
+
+  it('every built-in quality context passes the shape rule', () => {
+    for (const context of Object.values(BUILT_IN_CONTEXTS)) {
+      expect(qualityContextProblem(context), context.name).toBeNull();
+    }
   });
 });
