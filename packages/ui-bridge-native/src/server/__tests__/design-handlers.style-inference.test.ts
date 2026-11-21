@@ -126,6 +126,21 @@ describe('native style inference', () => {
     expect((typo.data as InferData).capture.notes).toContain(
       'elementIds matched no registered element'
     );
+    // An empty list selects nothing on both inference routes, as the web
+    // transports' collectSamples does (only an absent list means all), and
+    // carries the same no-match note.
+    calls.samples.length = 0;
+    const emptyInfer = await handlers.inferStyleGuide(ctx({ elementIds: [] }));
+    const emptyDrift = await handlers.diffDesignTokens(
+      ctx({ elementIds: [], tokens: { colors: { paper: '#ffffff' } } })
+    );
+    expect(calls.samples).toEqual([[], []]);
+    for (const res of [emptyInfer, emptyDrift]) {
+      expect(res.success).toBe(true);
+      const capture = (res.data as InferData).capture;
+      expect(capture).toMatchObject({ elementsAvailable: 0, elementsSampled: 0 });
+      expect(capture.notes).toContain('elementIds matched no registered element');
+    }
     const capped = await handlers.inferStyleGuide(ctx({ maxElements: 1 }));
     expect((capped.data as InferData).capture).toMatchObject({
       elementsAvailable: 2,
