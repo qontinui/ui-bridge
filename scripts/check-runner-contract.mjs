@@ -721,9 +721,23 @@ export function parseRunnerBaselines(modSrc, modPath) {
   // runner_only_baseline so a second test could assert every entry is served.
   // Any other fn body is refused: harvesting tuples from a body we do not
   // understand could lift routes that are not baseline entries at all.
+  // Both shapes must end in exactly `.into_iter().collect()`: a `.filter(..)`
+  // or `.chain(..)` would make the Rust set differ from the bracket contents,
+  // and reading the brackets anyway would excuse routes the runner does not.
+  const COLLECT_TAIL = String.raw`\s*\.\s*into_iter\s*\(\s*\)\s*\.\s*collect\s*\(\s*\)`;
   const list = (name) => {
     const m = new RegExp(String.raw`let\s+` + name + String.raw`\s*:[^=]*=\s*\[`).exec(modSrc);
-    if (m) return tuples(balancedBody(modSrc, m.index + m[0].length, '[', ']', name));
+    if (m) {
+      const arr = balancedBody(modSrc, m.index + m[0].length, '[', ']', name);
+      const rest = modSrc.slice(m.index + m[0].length + arr.length + 1);
+      if (!new RegExp('^' + COLLECT_TAIL + String.raw`\s*;`).test(rest)) {
+        throw new ExtractionError(
+          `let ${name} in ${modPath} is not followed by exactly \`.into_iter().collect();\` — ` +
+            'teach this script the new shape rather than reading the bracket contents as the set.',
+        );
+      }
+      return tuples(arr);
+    }
 
     const fnBody = rustFnBody(modSrc, name, 'mod.rs');
     if (fnBody !== null) {
@@ -731,7 +745,7 @@ export function parseRunnerBaselines(modSrc, modPath) {
       if (open) {
         const arr = balancedBody(fnBody, open[0].length, '[', ']', name);
         const rest = fnBody.slice(open[0].length + arr.length + 1);
-        if (/^\s*\.\s*into_iter\s*\(\s*\)\s*\.\s*collect\s*\(\s*\)\s*$/.test(rest)) return tuples(arr);
+        if (new RegExp('^' + COLLECT_TAIL + String.raw`\s*$`).test(rest)) return tuples(arr);
       }
       throw new ExtractionError(
         `fn ${name}() in ${modPath} is not the shape this checker reads ` +

@@ -287,13 +287,6 @@ test('the tripwire fires if the guard ever misses a flagged invocation', () => {
   assert.match(r.stdout, /tripped/);
 });
 
-// -- text encoding of the files this gate is made of ------------------------
-//
-// Not really a provenance test, but it lives here because this suite is the
-// ONLY CI gate that reaches scripts/ and .github/. `package.json`'s lint,
-// format and format:check all scope to packages/*/src/**, so nothing else
-// looks at these files at all.
-//
 // ── The runner's accepted-divergence lists ──────────────────────────────────
 //
 // qontinui-runner 786329ddb hoisted runner_only_baseline out of the test into
@@ -326,7 +319,7 @@ test('fn form (runner 786329ddb) reads, rustfmt-wrapped tuples included', () => 
     }
     fn t() { let runner_only_baseline = runner_only_baseline(); ${SDK_ONLY_LET} ${PREFIXES} }`;
   const b = parseRunnerBaselines(src, 'mod.rs');
-  assert.equal(b.runnerOnly.size, 2);
+  assert.deepEqual([...b.runnerOnly].sort(), ['GET /ui-bridge/r2/{id}', 'POST /ui-bridge/r1']);
   assert.equal(b.sdkOnly.size, 1);
 });
 test('a fn body of any other shape -> REFUSED, never harvested', () =>
@@ -349,7 +342,62 @@ test('a fn array with extra chained calls -> REFUSED', () =>
   ));
 test('absent list -> REFUSED', () =>
   assert.throws(() => parseRunnerBaselines(`${SDK_ONLY_LET}\n${PREFIXES}`, 'mod.rs'), /runner_only_baseline not found/));
+test('a let list followed by anything but .into_iter().collect() -> REFUSED', () =>
+  assert.throws(
+    () =>
+      parseRunnerBaselines(
+        `let runner_only_baseline: HashSet<(&str, &str)> = [("GET", "/ui-bridge/x")].into_iter().filter(|_| true).collect();\n${SDK_ONLY_LET}\n${PREFIXES}`,
+        'mod.rs',
+      ),
+    /not followed by exactly/,
+  ));
+test('the CLI reads a fn-form runner tree whose baseline body opens with comments', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-fnform-'));
+  try {
+    const real = path.join(REPO_ROOT, 'packages/ui-bridge/src/server/types.ts');
+    const tmpTypes = path.join(dir, 'types.ts');
+    fs.copyFileSync(real, tmpTypes);
+    // Build a runner tree whose ONE family serves every SDK route, with a
+    // comment-led fn-form runner_only_baseline: comments must be stripped
+    // before the shape check, as they are in the real runner's mod.rs.
+    const sdk = fs.readFileSync(real, 'utf8');
+    const routes = [...sdk.matchAll(/method:\s*'([A-Z]+)'[^}]*?path:\s*'([^']+)'/g)].map(
+      (m) => `("${m[1]}", "${m[2].startsWith('/ui-bridge') ? m[2] : '/ui-bridge' + m[2]}"),`,
+    );
+    const ui = path.join(dir, 'runner/src-tauri/src/mcp/ui_bridge');
+    fs.mkdirSync(ui, { recursive: true });
+    const fams = [];
+    for (let i = 0; i < 26; i++) {
+      fams.push(`f${i}`);
+      fs.writeFileSync(
+        path.join(ui, `f${i}.rs`),
+        `pub fn route_entries() -> &'static [(&'static str, &'static str)] { &[${i === 0 ? routes.join('') : ''}] }`,
+      );
+    }
+    fs.writeFileSync(
+      path.join(ui, 'mod.rs'),
+      `fn route_manifest() { ${fams.map((f) => `all.extend_from_slice(${f}::route_entries());`).join(' ')} }
+fn runner_only_baseline() -> HashSet<(&'static str, &'static str)> {
+    // a comment that opens the body, as in the real runner
+    [ ("GET", "/ui-bridge/runner-only") ].into_iter().collect()
+}
+fn t() { let runner_only_baseline = runner_only_baseline(); ${SDK_ONLY_LET} ${PREFIXES} }`,
+    );
+    const r = spawnSync(process.execPath, [CHECKER, '--runner', path.join(dir, 'runner'), '--types', tmpTypes, '--baseline', path.join(dir, 'none.conf')], { encoding: 'utf8' });
+    assert.doesNotMatch(r.stdout + r.stderr, /could not run|not the shape|not found in/);
+    assert.match(r.stdout, /1 runner_only/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
+// -- text encoding of the files this gate is made of ------------------------
+//
+// Not really a provenance test, but it lives here because this suite is the
+// ONLY CI gate that reaches scripts/ and .github/. `package.json`'s lint,
+// format and format:check all scope to packages/*/src/**, so nothing else
+// looks at these files at all.
+//
 // The specific defect: this very file was committed once with a UTF-8 BOM and
 // 374 mojibake sequences, from a PowerShell `Set-Content` round-trip through
 // cp1252. Nothing caught it. A BOM before `#!/usr/bin/env node` also silently
