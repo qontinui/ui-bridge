@@ -494,6 +494,7 @@ ui-bridge-headless         — leaf
 ui-bridge                  — imports headless types
 ui-bridge-server           — imports ui-bridge types
 ui-bridge-wrapper          — imports headless types (dynamic)
+ui-bridge-extension        — bundles ui-bridge-wrapper/live (needs its dist/)
 ```
 
 The root `build` script builds the deps explicitly first, then the catch-all

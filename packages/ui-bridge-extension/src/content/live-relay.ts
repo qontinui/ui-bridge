@@ -93,10 +93,13 @@ async function start(): Promise<void> {
 
   const runnerUrl = await loadRunnerUrl();
 
-  // Lazy-load the wrapper. Bundled via esbuild — see build.mjs.
+  // Lazy-load the wrapper's BROWSER-SAFE entry. Bundled via esbuild — see
+  // build.mjs. Never the package root: it re-exports Node-only transports, and
+  // its bundle initialises with `require("module")`-style calls that throw in
+  // a content script (tests/content-bundle-node-free.test.ts guards this).
   let mod: WrapperModule;
   try {
-    mod = (await import('@qontinui/ui-bridge-wrapper')) as unknown as WrapperModule;
+    mod = (await import('@qontinui/ui-bridge-wrapper/live')) as unknown as WrapperModule;
   } catch (err) {
     console.error('[ui-bridge live-relay] failed to load wrapper module', err);
     return;

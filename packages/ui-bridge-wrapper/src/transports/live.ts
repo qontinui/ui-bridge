@@ -28,11 +28,8 @@ import { BaseTransport } from '../base-transport.js';
 import { HandlerRegistry } from '../handler-registry.js';
 import type { TransportConfig, WrapperTransportKind } from '../types.js';
 import { WrapperTransportError } from '../types.js';
-import {
-  registerScreenshotCapture,
-  SCREENSHOT_CAPABILITY,
-  type FramePage,
-} from '../frame-capture.js';
+import { registerScreenshotCapture, SCREENSHOT_CAPABILITY } from '../screenshot-capture.js';
+import type { FramePage } from '../frame-page.js';
 
 /** Options extracted from `TransportConfig.options` for the live transport. */
 export interface LiveTransportOptions {
@@ -60,7 +57,7 @@ export interface LiveTransportOptions {
   /**
    * A page this process owns (a Playwright `Page` satisfies it). When set, the
    * transport registers a `getScreenshot` handler that captures it (see
-   * `registerScreenshotCapture` in `frame-capture.ts`) and appends
+   * `registerScreenshotCapture` in `screenshot-capture.ts`) and appends
    * `"screenshot"` to the register frame's `capabilities`, so the runner's
    * vision routes can frame this app over its socket. Unset: no handler, no
    * capability, and the runner refuses this app as a capture target by name.

@@ -14,6 +14,8 @@ export default defineConfig([
     entry: {
       index: 'src/index.ts',
       'react/index': 'src/react/index.ts',
+      // Browser-safe: no Node builtin is reachable from it (see the file).
+      'live/index': 'src/live/index.ts',
     },
     format: ['cjs', 'esm'],
     // DTS generation is handled by `tsc -p tsconfig.build.json` in the build
