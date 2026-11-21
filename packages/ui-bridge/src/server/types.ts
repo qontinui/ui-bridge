@@ -1233,7 +1233,13 @@ export interface UIBridgeServerHandlers {
   ) => Promise<APIResponse<ElementStylesResponse>>;
   getElementStateStyles: (
     id: string,
-    request: { states?: InteractionStateName[] },
+    /**
+     * `states` omitted or `null` reads the door's default set. A name that is
+     * not an interaction state is refused with `UB-VALIDATION-ERROR` on every
+     * door (see `ai/interaction-states.ts`), never answered with the default
+     * styles under that name.
+     */
+    request: { states?: InteractionStateName[] | null },
     context?: HandlerContext
   ) => Promise<APIResponse<{ elementId: string; stateStyles: StateStyles[] }>>;
   getDesignSnapshot: (
