@@ -29,7 +29,7 @@
   ],
   "scripts": {
     "build": "rimraf dist && tsup && tsc -p tsconfig.build.json",
-    "dev": "tsup --watch",
+    "dev": "rimraf dist && tsup --watch",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.vitest.json",
     "test": "vitest run",
     "test:smoke": "vitest run smoke --reporter=default --reporter=json --outputFile.json=.smoke-report.json && node ../../test-support/assert-no-skipped-tests.mjs .smoke-report.json",
