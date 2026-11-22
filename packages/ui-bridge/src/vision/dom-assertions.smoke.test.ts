@@ -1797,6 +1797,65 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     expect(got[3][3]).toContain('contrast ratio 21.00:1');
   }, 60_000);
 
+  it('contrast_meets_wcag: a taller line is read only where it can reach the line a ::after sits on', async () => {
+    // A paragraph wraps to six lines and ends in a block ::after (navy), under
+    // which no badge sits: each badge is on the first line, inside the box and
+    // far above the ::after. A `<code>` or `<sup>` on the FIRST line cannot
+    // move the last line, so the ::after is where the band puts it, away from
+    // the badge, and the badge reads exact (black on white 21:1; #ccc on white
+    // fails). The same offenders on the LAST line, an unbounded shift (a
+    // `vertical-align` length, a relative offset) and an atomic inline on the
+    // last line can move it, and the ::after is bounded by the whole box,
+    // which holds the badge: unknown.
+    const words = 'alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike ';
+    const text = words.repeat(4);
+    const rows: Array<[string, string, string, string]> = [
+      ['codefirst', `<code>fn()</code> ${text}`, 'color:#000', 'passed'],
+      ['codefirstfail', `<code>fn()</code> ${text}`, 'color:#ccc', 'failed'],
+      ['supfirst', `x<sup>2</sup> ${text}`, 'color:#000', 'passed'],
+      ['codelast', `${text}<code>fn()</code>`, 'color:#000', 'unknown'],
+      ['suplast', `${text}x<sup>2</sup>`, 'color:#000', 'unknown'],
+      ['valength', `<span style="vertical-align:-30px">x</span> ${text}`, 'color:#000', 'unknown'],
+      [
+        'relative',
+        `<span style="position:relative;top:2px">x</span> ${text}`,
+        'color:#000',
+        'unknown',
+      ],
+      [
+        'inlineblocklast',
+        `${text}<span style="display:inline-block;width:10px;height:10px;background:#ccc"></span>`,
+        'color:#000',
+        'unknown',
+      ],
+    ];
+    const got: Array<[string, string, string | null]> = [];
+    for (const [id, content, badge] of rows) {
+      const page = await openPage(
+        `<style>
+          .para { width: 200px; font: 16px/20px sans-serif; color: #000 }
+          .para code { font: 13px monospace }
+          .para::after { content: ""; display: block; height: 24px; background: rgb(20, 30, 90) }
+        </style>
+        <div class="para" id="host">${content}</div>
+        <span data-id="${id}" style="position:absolute;left:10px;top:10px;${badge}">PRO</span>`,
+        { width: 800, height: 700 }
+      );
+      // Precondition: the text wraps to at least five lines above the ::after,
+      // so the offender and the ::after's line are far apart.
+      const h = await page.evaluate(
+        () => (document.getElementById('host') as HTMLElement).offsetHeight
+      );
+      expect(h - 24).toBeGreaterThanOrEqual(100);
+      const r = await assertOn(page, [{ type: 'contrast_meets_wcag', element: id }]);
+      got.push([id, r.results[0].outcome, r.results[0].code ?? null]);
+      await page.close();
+    }
+    expect(got).toEqual(
+      rows.map(([id, , , outcome]) => [id, outcome, outcome === 'unknown' ? 'input_missing' : null])
+    );
+  }, 90_000);
+
   it('contrast_meets_wcag: the 512-element walk of a ::after never copies a container’s children', async () => {
     // A container of 600 plain spans (past the walk's 512 budget) and one of
     // 200 each end in a block ::after; a black badge sits on the first line,

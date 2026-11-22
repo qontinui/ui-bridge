@@ -2936,8 +2936,14 @@ class TabMeasurement {
     // line-height, font size or vertical-align, can be taller than the
     // container's line-height sets it, or hold its text higher: how far down
     // a ::after (or an inline ::before) such a line places lies is not read.
+    // Only inline content that can reach the line `edge` is on counts.
     // A block ::before is laid out above the lines, and its band stands.
-    if (edge && !edge.block && (which === '::after' || inline) && this.lineMayGrow(layer)) {
+    if (
+      edge &&
+      !edge.block &&
+      (which === '::after' || inline) &&
+      this.lineMayGrow(layer, edge, m.d)
+    ) {
       return null;
     }
     // A block after inline content starts at the bottom of that content's
@@ -2957,16 +2963,40 @@ class TabMeasurement {
   }
 
   /**
-   * Whether a line of `layer` may be taller, or hold its text higher, than
-   * `layer`'s own line-height sets it: its in-flow inline content, at any
-   * depth, holds an atomic inline (an inline-block, a replaced element, a
-   * form control, ruby), or an inline box whose line-height, font size or
-   * vertical-align differs from `layer`'s, or that a relative offset moves.
-   * True, too, past 512 elements, which are not all read.
+   * Whether a line of `layer` that can reach the line `edge` is on (the first
+   * line for an inline `::before`, the last for `::after`) may be taller, or
+   * hold its text higher, than `layer`'s own line-height sets it: its in-flow
+   * inline content, at any depth, holds an atomic inline (an inline-block, a
+   * replaced element, a form control, ruby), or an inline box whose
+   * line-height or font size differs from `layer`'s, or whose vertical-align
+   * is not `baseline`, or that a relative offset moves. Such content is passed
+   * over when every client rect of it lies wholly outside `edge`, widened by
+   * `layer`'s line-height and the content's own font size (a generous bound
+   * on a keyword `vertical-align` such as `super`): no line it makes taller
+   * can be the one `edge` is on. It is never passed over when it has a
+   * `vertical-align` length or percentage or a `position` other than
+   * `static` (an unbounded shift), when it has no client rect, or when
+   * `layer`'s line-height is not a length. True, too, past 512 elements,
+   * which are not all read. `scale` is `layer`'s vertical scale to viewport
+   * pixels.
    */
-  private lineMayGrow(layer: Element): boolean {
+  private lineMayGrow(
+    layer: Element,
+    edge: { top: number; bottom: number },
+    scale: number
+  ): boolean {
     const st = this.style(layer);
     let budget = 512;
+    const reaches = (child: Element, cst: CSSStyleDeclaration): boolean => {
+      if (cst.position !== 'static' || !/^[a-z-]+$/.test(cst.verticalAlign)) return true;
+      const slack = (pxValue(st.lineHeight) + pxValue(cst.fontSize)) * scale;
+      const rects = child.getClientRects();
+      if (!Number.isFinite(slack) || rects.length === 0) return true;
+      for (const r of Array.from(rects)) {
+        if (!(r.bottom < edge.top - slack || r.top > edge.bottom + slack)) return true;
+      }
+      return false;
+    };
     const grows = (el: Element): boolean => {
       // Sibling by sibling: a collection of every child is never built, so the
       // cost before the budget bites does not grow with the child count.
@@ -2985,12 +3015,19 @@ class TabMeasurement {
         if (cst.display !== 'inline') {
           // An inline-level box that is not a plain inline one is atomic;
           // a block lays out lines of its own.
-          if (/^(inline|ruby)/.test(cst.display)) return true;
+          if (/^(inline|ruby)/.test(cst.display) && reaches(child, cst)) return true;
           continue;
         }
-        if (isReplaced(child) || FORM_CONTROL_TAGS.has(child.tagName.toUpperCase())) return true;
-        if (cst.position !== 'static' || cst.verticalAlign !== 'baseline') return true;
-        if (cst.lineHeight !== st.lineHeight || cst.fontSize !== st.fontSize) return true;
+        if (isReplaced(child) || FORM_CONTROL_TAGS.has(child.tagName.toUpperCase())) {
+          if (reaches(child, cst)) return true;
+          continue;
+        }
+        if (cst.position !== 'static') return true;
+        const differs =
+          cst.verticalAlign !== 'baseline' ||
+          cst.lineHeight !== st.lineHeight ||
+          cst.fontSize !== st.fontSize;
+        if (differs && reaches(child, cst)) return true;
         if (grows(child)) return true;
       }
       return false;
