@@ -17,6 +17,7 @@ import {
   validateTextVisibilityRequest,
   type TextVisibilityFailure,
   type TextVisibilityHideSuccess,
+  type TextVisibilityRestore,
   type TextVisibilityShowSuccess,
 } from './text-visibility';
 
@@ -39,7 +40,66 @@ function hide(extra: Record<string, unknown> = {}): TextVisibilityHideSuccess {
 function show(): TextVisibilityShowSuccess {
   const res = setTextVisibility({ hidden: false });
   if (!res.success || res.hidden) throw new Error(`show failed: ${JSON.stringify(res)}`);
+  if (res.restore) expectVerdictFromCauses(res.restore, res.changed);
   return res;
+}
+
+/**
+ * Whether every cause field of a restore is present. A restore another copy
+ * of the SDK in the page made (an older one, under the same state schema) can
+ * lack some, and this copy hands that one out as it is when nothing is hidden.
+ */
+function causeFieldsPresent(r: TextVisibilityRestore): boolean {
+  return (
+    typeof r.driftCount === 'number' &&
+    typeof r.mismatchCount === 'number' &&
+    typeof r.sheetStillAdopted === 'boolean' &&
+    typeof r.sheetStillHasRules === 'boolean' &&
+    typeof r.untrustedMarkers === 'number' &&
+    typeof r.unrestorableMarkers === 'number'
+  );
+}
+
+/** Every cause clear; `null` (unknown, never clear) when a cause field is absent. */
+function causesClear(r: TextVisibilityRestore): boolean | null {
+  if (!causeFieldsPresent(r)) return null;
+  return (
+    r.driftCount === 0 &&
+    r.mismatchCount === 0 &&
+    !r.sheetStillAdopted &&
+    !r.sheetStillHasRules &&
+    r.untrustedMarkers === 0 &&
+    r.unrestorableMarkers === 0
+  );
+}
+
+/**
+ * Drift alone, read as a consumer tolerating drift must: drift, and every
+ * OTHER cause field present and clear. `null` (unknown) when one is absent.
+ */
+function driftOnly(r: TextVisibilityRestore): boolean | null {
+  if (!causeFieldsPresent(r)) return null;
+  return (
+    r.driftCount > 0 &&
+    r.mismatchCount === 0 &&
+    !r.sheetStillAdopted &&
+    !r.sheetStillHasRules &&
+    r.untrustedMarkers === 0 &&
+    r.unrestorableMarkers === 0
+  );
+}
+
+/**
+ * A restore's verdict is its cause fields and nothing else (finding
+ * feaccb18). Checked on every show in this file, so no scenario here makes a
+ * restore unverified for a reason the reply does not name. A restore this
+ * call made (`changed`) must carry every cause field; a last restore handed
+ * out again may not, and then nothing can be concluded from its fields.
+ */
+function expectVerdictFromCauses(r: TextVisibilityRestore, madeByThisCall: boolean): void {
+  const clear = causesClear(r);
+  if (madeByThisCall) expect(clear, `cause fields missing: ${JSON.stringify(r)}`).not.toBeNull();
+  if (clear !== null) expect(r.verified, JSON.stringify(r)).toBe(clear);
 }
 
 /** Every element's full computed style, as a comparable value. */
@@ -751,6 +811,235 @@ describe('a repeated hide', () => {
     document.documentElement.replaceChild(fresh, document.body);
     await flushObservers();
     expect(hide().coverage.shadowRoots).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Which cause made a restore unverified (finding feaccb18)
+// ---------------------------------------------------------------------------
+
+/**
+ * jsdom has no constructable stylesheets, so it never gets the pseudo-element
+ * sheet (`coverage.pseudoStyleSheets: 0`). This installs the two platform
+ * pieces the control reads — a `CSSStyleSheet` with `replaceSync` and
+ * `cssRules` on the document's window, and `document.adoptedStyleSheets` —
+ * behaving as the page a test describes. Returns the uninstall.
+ */
+function constructableSheets(
+  page: { readoptsSheets?: boolean; refusesEmptySheet?: boolean } = {}
+): () => void {
+  const view = document.defaultView as unknown as Record<string, unknown>;
+  const savedSheet = Object.getOwnPropertyDescriptor(view, 'CSSStyleSheet');
+  class FakeSheet {
+    cssRules: string[] = [];
+    replaceSync(text: string): void {
+      if (text === '' && page.refusesEmptySheet) throw new Error('NotAllowedError');
+      this.cssRules = text.split('\n').filter((rule) => rule.trim() !== '');
+    }
+  }
+  let adopted: unknown[] = [];
+  Object.defineProperty(view, 'CSSStyleSheet', {
+    configurable: true,
+    writable: true,
+    value: FakeSheet,
+  });
+  Object.defineProperty(document, 'adoptedStyleSheets', {
+    configurable: true,
+    get: () => adopted,
+    // A page that re-adopts every sheet it was given (a design system
+    // re-applying its own copy of the list) keeps the ones taken out.
+    set: (next: unknown[]) => {
+      adopted = page.readoptsSheets
+        ? [...adopted.filter((sheet) => !next.includes(sheet)), ...next]
+        : [...next];
+    },
+  });
+  return () => {
+    delete (document as unknown as Record<string, unknown>).adoptedStyleSheets;
+    if (savedSheet) Object.defineProperty(view, 'CSSStyleSheet', savedSheet);
+    else delete view.CSSStyleSheet;
+  };
+}
+
+describe('which cause made a restore unverified', () => {
+  let uninstall: (() => void) | null = null;
+  afterEach(() => {
+    uninstall?.();
+    uninstall = null;
+  });
+
+  it('drift alone: driftCount is the only cause set, the sheet fields are clear', () => {
+    uninstall = constructableSheets();
+    document.body.innerHTML = '<p style="color: red">x</p>';
+    const p = document.querySelector('p')!;
+    // The sheet really was made and adopted, so "clear" below is measured.
+    expect(hide().coverage.pseudoStyleSheets).toBe(1);
+    p.style.setProperty('color', 'green', 'important');
+    const res = show();
+    expect(res.restore).toEqual(
+      expect.objectContaining({
+        driftCount: 1,
+        drift: [{ tag: 'p', properties: ['color'] }],
+        mismatchCount: 0,
+        sheetStillAdopted: false,
+        sheetStillHasRules: false,
+        untrustedMarkers: 0,
+        unrestorableMarkers: 0,
+        verified: false,
+      })
+    );
+    expect(driftOnly(res.restore!)).toBe(true);
+    expect(document.adoptedStyleSheets).toEqual([]);
+  });
+
+  it('a last restore another same-schema copy made, without the new cause fields, reads as unknown', () => {
+    // An older copy of the SDK in the page (same state schema, say an app
+    // bundle beside the injected runtime) restored by its TTL, before these
+    // fields existed: drift is the only cause it can name.
+    // Typed, not cast: a restore without them is a valid TextVisibilityRestore.
+    const older: TextVisibilityRestore = {
+      trigger: 'ttl',
+      elements: 3,
+      exact: 2,
+      propertyLevel: 1,
+      detached: 0,
+      drift: [{ tag: 'p', properties: ['color'] }],
+      driftCount: 1,
+      untrustedMarkers: 0,
+      unrestorableMarkers: 0,
+      verified: false,
+      restoredAt: 1,
+    };
+    expect(textHidden()).toBe(false);
+    const sl = (globalThis as unknown as Record<symbol, { schema: number; lastRestore: unknown }>)[
+      Symbol.for('@qontinui/ui-bridge/text-visibility')
+    ]!;
+    expect(sl.schema).toBe(1);
+    sl.lastRestore = older;
+    const res = show();
+    expect(res.changed).toBe(false);
+    // Handed out as it is: nothing is filled in on its behalf.
+    expect(res.restore).toBe(older);
+    for (const field of ['mismatchCount', 'sheetStillAdopted', 'sheetStillHasRules']) {
+      expect(res.restore, field).not.toHaveProperty(field);
+    }
+    // Only driftCount is non-zero, yet it is not drift alone: the sheet and
+    // mismatch causes are unknown, and unknown is never clear.
+    expect(driftOnly(res.restore!)).toBeNull();
+    expect(causesClear(res.restore!)).toBeNull();
+  });
+
+  it('sheetStillAdopted: a page that puts the pseudo-element sheet back', () => {
+    uninstall = constructableSheets({ readoptsSheets: true });
+    document.body.innerHTML = '<p style="color: red">x</p>';
+    const domBefore = document.body.innerHTML;
+    expect(hide().coverage.pseudoStyleSheets).toBe(1);
+    const res = show();
+    expect(res.restore).toEqual(
+      expect.objectContaining({
+        sheetStillAdopted: true,
+        sheetStillHasRules: false,
+        driftCount: 0,
+        mismatchCount: 0,
+        verified: false,
+      })
+    );
+    // Every inline style is back, which is why only the field tells this
+    // restore apart from a drift-only one.
+    expect(document.body.innerHTML).toBe(domBefore);
+    expect(document.adoptedStyleSheets).toHaveLength(1);
+  });
+
+  it('sheetStillHasRules: a pseudo-element sheet the restore could not empty', () => {
+    uninstall = constructableSheets({ refusesEmptySheet: true });
+    document.body.innerHTML = '<p style="color: red">x</p>';
+    expect(hide().coverage.pseudoStyleSheets).toBe(1);
+    const res = show();
+    expect(res.restore).toEqual(
+      expect.objectContaining({
+        sheetStillHasRules: true,
+        sheetStillAdopted: false,
+        driftCount: 0,
+        mismatchCount: 0,
+        verified: false,
+      })
+    );
+    expect(document.adoptedStyleSheets).toEqual([]);
+  });
+
+  it('mismatchCount: an exact restore whose attribute does not read back', () => {
+    // Page code that rewrites its own style attribute, synchronously, when it
+    // is given this value back.
+    class Restyling extends HTMLElement {
+      static observedAttributes = ['style'];
+      armed = false;
+      attributeChangedCallback(_name: string, _old: string | null, value: string | null): void {
+        if (this.armed && value === 'color: red') {
+          this.setAttribute('style', 'color: red; outline-color: red');
+        }
+      }
+    }
+    customElements.define('tv-restyling', Restyling);
+    document.body.innerHTML = '<tv-restyling style="color: red">x</tv-restyling>';
+    const el = document.querySelector('tv-restyling') as Restyling;
+    const hidden = hide();
+    el.armed = true;
+    const res = show();
+    expect(res.restore).toEqual(
+      expect.objectContaining({
+        exact: hidden.coverage.elements,
+        propertyLevel: 0,
+        mismatchCount: 1,
+        driftCount: 0,
+        drift: [],
+        sheetStillAdopted: false,
+        sheetStillHasRules: false,
+        verified: false,
+      })
+    );
+    expect(el.getAttribute('style')).toBe('color: red; outline-color: red');
+  });
+
+  it('mismatchCount: a property-level restore whose owned property does not take', async () => {
+    document.body.innerHTML = '<p style="color: red">x</p>';
+    const p = document.querySelector('p')!;
+    hide();
+    // The app restyles it while hidden, so it is restored property by property.
+    p.style.setProperty('padding', '3px');
+    await flushObservers();
+    // From here on, page code swallows inline writes of `color` on it.
+    const setProperty = p.style.setProperty.bind(p.style);
+    p.style.setProperty = (prop: string, value: string | null, priority?: string): void => {
+      if (prop !== 'color') setProperty(prop, value, priority);
+    };
+    const res = show();
+    expect(res.restore).toEqual(
+      expect.objectContaining({
+        propertyLevel: 1,
+        mismatchCount: 1,
+        driftCount: 0,
+        drift: [],
+        verified: false,
+      })
+    );
+    expect(inline(p, 'color')).toEqual(['transparent', 'important']);
+  });
+
+  it('a clean restore has every cause clear', () => {
+    uninstall = constructableSheets();
+    document.body.innerHTML = PAGE;
+    expect(hide().coverage.pseudoStyleSheets).toBe(1);
+    expect(show().restore).toEqual(
+      expect.objectContaining({
+        driftCount: 0,
+        mismatchCount: 0,
+        sheetStillAdopted: false,
+        sheetStillHasRules: false,
+        untrustedMarkers: 0,
+        unrestorableMarkers: 0,
+        verified: true,
+      })
+    );
   });
 });
 
