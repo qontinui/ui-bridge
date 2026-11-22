@@ -1797,6 +1797,82 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     expect(got[3][3]).toContain('contrast ratio 21.00:1');
   }, 60_000);
 
+  it('contrast_meets_wcag: the 512-element walk of a ::after never copies a container’s children', async () => {
+    // A container of 600 plain spans (past the walk's 512 budget) and one of
+    // 200 each end in a block ::after; a black badge sits on the first line,
+    // far above the ::after. The 600-span one is unknown (the budget is
+    // spent, not all read, so the ::after is bounded by the whole box); the
+    // 200-span one is exact: the band puts the ::after at the last line, away
+    // from the badge, and the badge reads black on white. A spy on the `children` and `childNodes` getters records
+    // the length of every collection read from inside the line walk
+    // (`lineMayGrow`) or the edge read (`flowEdge`): the walk goes sibling by
+    // sibling, and a collection sized to the child count is never built.
+    const spans = (n: number): string => '<span>x </span>'.repeat(n);
+    const fixture = `
+      <style>
+        .big { font: 16px/20px sans-serif; color: #000; width: 300px }
+        .big::after { content: ""; display: block; height: 24px; background: rgb(20, 30, 90) }
+      </style>
+      <div class="big" id="host">${spans(600)}</div>
+      <span data-id="badge" style="position:absolute;left:10px;top:0;color:#000">PRO</span>`;
+    const results: Array<{
+      n: number;
+      outcome: string;
+      code: string | null;
+      children: number[];
+      nodes: number[];
+    }> = [];
+    for (const n of [600, 200]) {
+      const page = await openPage(fixture.replace(spans(600), spans(n)), {
+        width: 800,
+        height: 900,
+      });
+      const pre = await page.evaluate(() => {
+        const host = document.getElementById('host') as HTMLElement;
+        const r = host.getBoundingClientRect();
+        // The badge sits on the first line, far above the ::after.
+        (document.querySelector('[data-id="badge"]') as HTMLElement).style.top =
+          `${r.top + 2 + window.scrollY}px`;
+        return host.childNodes.length * (r.height > 150 ? 1 : 0);
+      });
+      // Precondition: the host really holds the children the row counts.
+      expect(pre).toBe(n);
+      await page.evaluate(() => {
+        const seen: { children: number[]; nodes: number[] } = { children: [], nodes: [] };
+        (window as unknown as { __seen: typeof seen }).__seen = seen;
+        const wrap = (proto: object, name: string, into: number[], tag: string): void => {
+          const d = Object.getOwnPropertyDescriptor(proto, name) as PropertyDescriptor;
+          Object.defineProperty(proto, name, {
+            ...d,
+            get(this: unknown) {
+              const v = (d.get as () => { length: number }).call(this);
+              if ((new Error().stack ?? '').includes(tag)) into.push(v.length);
+              return v;
+            },
+          });
+        };
+        wrap(Element.prototype, 'children', seen.children, 'lineMayGrow');
+        wrap(Node.prototype, 'childNodes', seen.nodes, 'flowEdge');
+      });
+      const r = await assertOn(page, [{ type: 'contrast_meets_wcag', element: 'badge' }]);
+      const seen = await page.evaluate(
+        () => (window as unknown as { __seen: { children: number[]; nodes: number[] } }).__seen
+      );
+      results.push({
+        n,
+        outcome: r.results[0].outcome,
+        code: r.results[0].code ?? null,
+        children: seen.children,
+        nodes: seen.nodes,
+      });
+      await page.close();
+    }
+    expect(results).toEqual([
+      { n: 600, outcome: 'unknown', code: 'input_missing', children: [], nodes: [] },
+      { n: 200, outcome: 'passed', code: null, children: [], nodes: [] },
+    ]);
+  }, 60_000);
+
   it('contrast_meets_wcag: a page backdrop the body draws under a footer fixed below its box', async () => {
     // The body is 40px tall; its fixed ::before backdrop fills the viewport,
     // under a footer fixed at the bottom (the page shows white on navy). The

@@ -2968,7 +2968,9 @@ class TabMeasurement {
     const st = this.style(layer);
     let budget = 512;
     const grows = (el: Element): boolean => {
-      for (const child of Array.from(el.children)) {
+      // Sibling by sibling: a collection of every child is never built, so the
+      // cost before the budget bites does not grow with the child count.
+      for (let child = el.firstElementChild; child; child = child.nextElementSibling) {
         if (--budget < 0) return true;
         const cst = this.style(child);
         if (cst.display === 'none' || cst.position === 'absolute' || cst.position === 'fixed') {
@@ -3008,9 +3010,13 @@ class TabMeasurement {
     end: 'first' | 'last',
     scale: number
   ): { top: number; bottom: number; block: boolean } | null | undefined {
-    const nodes = Array.from(layer.childNodes);
-    if (end === 'last') nodes.reverse();
-    for (const node of nodes) {
+    // Node by node from the wanted end, stopping at the first piece: a copy of
+    // every child node is never built.
+    for (
+      let node = end === 'first' ? layer.firstChild : layer.lastChild;
+      node;
+      node = end === 'first' ? node.nextSibling : node.previousSibling
+    ) {
       if (node.nodeType === 3) {
         if (!/\S/.test(node.nodeValue ?? '')) continue;
         const range = document.createRange();
