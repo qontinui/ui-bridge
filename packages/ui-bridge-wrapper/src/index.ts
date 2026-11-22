@@ -64,6 +64,7 @@ export {
 } from './transports/injected.js';
 export {
   LiveSessionTransport,
+  DEFAULT_LIVE_APP_NAME,
   type LiveContext,
   type LiveTransportOptions,
 } from './transports/live.js';

@@ -98,11 +98,23 @@ interface MinimalWebSocket {
 
 type WebSocketCtor = new (url: string, protocols?: string | string[]) => MinimalWebSocket;
 
+/**
+ * The `appName` sent when the caller configured neither `appName` nor
+ * `appId`. The runner's `RegisterFrame` REQUIRES `appName` (a frame without it
+ * is refused with `missing field appName` and the socket closed before the
+ * ack), so the frame never omits it.
+ */
+export const DEFAULT_LIVE_APP_NAME = 'ui-bridge-wrapper';
+
 interface RegisterFrame {
   type: 'register';
   transport: 'websocket';
   appId?: string;
-  appName?: string;
+  /**
+   * Required by the runner's `RegisterFrame` deserializer; defaults to
+   * `appId`, else {@link DEFAULT_LIVE_APP_NAME}, when the caller set none.
+   */
+  appName: string;
   /**
    * Required by the runner's `RegisterFrame` deserializer; defaults to
    * `"wrapper"` if the caller did not configure `options.appType`.
@@ -224,7 +236,7 @@ export class LiveSessionTransport extends BaseTransport {
             type: 'register',
             transport: 'websocket',
             appId: this.appId,
-            appName: this.appName,
+            appName: this.appName ?? this.appId ?? DEFAULT_LIVE_APP_NAME,
             appType: this.opts.appType ?? 'wrapper',
           };
           if (this.opts.framework !== undefined) frame.framework = this.opts.framework;

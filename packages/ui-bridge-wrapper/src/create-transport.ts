@@ -38,6 +38,7 @@ export function createTransport(config: TransportConfig): WrapperTransport {
       //     kind: 'live',
       //     runnerUrl: 'ws://127.0.0.1:9876/ui-bridge/ws',
       //     appId: 'my-app',
+      //     appName: 'My app', // the runner requires one; defaults to appId
       //     options: { webSocketCtor: WebSocket, screenshotPage: page },
       //   });
       //   await transport.ready();
