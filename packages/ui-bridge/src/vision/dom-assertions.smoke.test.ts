@@ -1770,6 +1770,14 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
         'passed',
       ],
       [
+        // The same, with the ::after placed by its flow: exact.
+        'rootfits2',
+        `<style>html { height: 100px; overflow: hidden } html::after { content: ""; display: block; height: 14px; background: ${navy} }</style>
+         <div style="height:30px">Title</div>
+         <span data-id="rootfits2" style="position:absolute;left:10px;top:110px;color:#000">PRO</span>`,
+        'passed',
+      ],
+      [
         'clipdiv',
         `<style>.c { height: 30px; overflow: hidden; margin-bottom: 60px } .c::after { content: ""; display: block; height: 40px; background: ${navy} }</style>
          <div class="c">Title</div>
@@ -1795,7 +1803,7 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       }));
       if (id === 'bodyhidden') expect(lay.body).toBeGreaterThanOrEqual(30);
       if (id === 'roothidden') expect(lay.rootH).toBe(60);
-      if (id === 'rootfits') expect(lay.rootH).toBe(100);
+      if (id === 'rootfits' || id === 'rootfits2') expect(lay.rootH).toBe(100);
       const r = await assertOn(page, [{ type: 'contrast_meets_wcag', element: id }]);
       got.push([id, r.results[0].outcome, r.results[0].code ?? null, r.results[0].detail ?? '']);
       await page.close();
@@ -1808,6 +1816,7 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     expect(got[2][3]).toContain('contrast ratio 21.00:1');
     expect(got[3][3]).toContain('contrast ratio 21.00:1');
     expect(got[4][3]).toContain('contrast ratio 21.00:1');
+    expect(got[5][3]).toContain('contrast ratio 21.00:1');
   }, 60_000);
 
   it('contrast_meets_wcag: a root ::after whose extent the root’s children do not give is unknown', async () => {
@@ -1819,45 +1828,73 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     // child's rect without moving its layout. The ::after is bounded by the
     // viewport, which holds the badge: unknown.
     const navy = 'rgb(20, 30, 90)';
-    const rows: Array<[string, string, boolean]> = [
+    const rows: Array<[string, string, string | null]> = [
       [
         'padded',
         `<style>html { height: 100px; overflow: hidden } html::after { content: ""; display: block; height: 4px; padding: 40px 0; background: ${navy} }</style>
          <div style="height:30px">Title</div>
          <span data-id="padded" style="position:absolute;left:10px;top:115px;color:#000">PRO</span>`,
-        false,
+        null,
       ],
       [
         'wide',
         `<style>html { width: 400px; height: 100px; overflow: hidden } html::after { content: ""; display: block; width: 700px; height: 20px; background: ${navy} }</style>
          <div style="height:30px">Title</div>
          <span data-id="wide" style="position:absolute;left:500px;top:50px;color:#000">PRO</span>`,
-        false,
+        null,
       ],
       [
         'contents',
         `<style>html { height: 60px; overflow: hidden } body { display: contents } html::after { content: ""; display: block; height: 20px; background: ${navy} }</style>
          <div style="height:80px">Title</div>
          <span data-id="contents" style="position:absolute;left:10px;top:85px;color:#000">PRO</span>`,
-        false,
+        null,
       ],
       [
         'translated',
         `<style>html { height: 60px; overflow: hidden } html::after { content: ""; display: block; height: 40px; background: ${navy} }</style>
          <div style="height:30px">Title</div>
          <span data-id="translated" style="position:absolute;left:10px;top:100px;color:#000">PRO</span>`,
-        true,
+        'translate: 0 -100px; height: 30px',
+      ],
+      [
+        'relshift',
+        `<style>html { height: 60px; overflow: hidden } html::after { content: ""; display: block; height: 40px; background: ${navy} }</style>
+         <div style="height:30px">Title</div>
+         <span data-id="relshift" style="position:absolute;left:10px;top:100px;color:#000">PRO</span>`,
+        'position: relative; top: -100px; height: 30px',
+      ],
+      [
+        'inlinepseudo',
+        `<style>html { height: 60px; overflow: hidden; line-height: 60px } html::after { content: ""; display: inline-block; width: 50px; height: 20px; background: ${navy} }</style>
+         <div style="height:30px;line-height:20px">Title</div>
+         <span data-id="inlinepseudo" style="position:absolute;left:10px;top:72px;font:4px/4px sans-serif;color:#000">PRO</span>`,
+        null,
+      ],
+      [
+        'zoomed',
+        `<style>html { height: 100px; overflow: hidden } html::after { content: ""; display: block; height: 20px; zoom: 3; background: ${navy} }</style>
+         <div style="height:30px">Title</div>
+         <span data-id="zoomed" style="position:absolute;left:10px;top:102px;font:4px/4px sans-serif;color:#000">PRO</span>`,
+        null,
+      ],
+      [
+        'rtl',
+        `<style>html { direction: rtl; margin-left: 600px; width: 400px; height: 100px; overflow: hidden } html::after { content: ""; display: block; width: 700px; height: 20px; background: ${navy} }</style>
+         <div style="height:30px">Title</div>
+         <span data-id="rtl" style="position:absolute;left:350px;top:50px;color:#000">PRO</span>`,
+        null,
       ],
     ];
     const got: Array<[string, string, string | null]> = [];
     for (const [id, body, translate] of rows) {
       const page = await openPage(body, { width: 1400, height: 700 });
       if (translate) {
-        await page.evaluate(() => {
+        await page.evaluate((translate) => {
           const div = document.createElement('div');
-          div.setAttribute('style', 'translate: 0 -100px; height: 30px');
+          div.setAttribute('style', translate);
           document.documentElement.appendChild(div);
-        });
+        }, translate);
       }
       const r = await assertOn(page, [{ type: 'contrast_meets_wcag', element: id }]);
       got.push([id, r.results[0].outcome, r.results[0].code ?? null]);

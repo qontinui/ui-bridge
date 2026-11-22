@@ -2918,6 +2918,19 @@ class TabMeasurement {
     const at = root.getBoundingClientRect();
     let bottom = 0;
     let right = 0;
+    // Only a root on horizontal, left-to-right lines, and a pseudo-element
+    // that is a block at its own zoom of one, are measured here: an inline one
+    // sits on a line box of at least the line-height, a zoomed one draws a
+    // multiple of its size.
+    const rootst = this.style(root);
+    if (
+      !['', 'horizontal-tb'].includes(rootst.writingMode) ||
+      !['', 'ltr'].includes(rootst.direction)
+    ) {
+      return null;
+    }
+    if (/^(inline|list-item)/.test(ps.display) || zoomOf(ps) !== 1) return null;
+    let boxes = 0;
     // Text laid out in the root itself is not a child box to measure.
     for (let t = root.firstChild; t; t = t.nextSibling) {
       if (t.nodeType === 3 && /\S/.test(t.nodeValue ?? '')) return null;
@@ -2928,7 +2941,16 @@ class TabMeasurement {
       // A child laid out in its parent's place, moved by any transform
       // property or by a zoom, or an inline one, is not a box this measures.
       if (cst.display === 'contents' || cst.display.startsWith('inline')) return null;
-      if (cst.zoom !== '1' && cst.zoom !== '') return null;
+      if (zoomOf(cst) !== 1) return null;
+      // A relative or sticky child's rect holds its visual offset, not its
+      // place in the flow.
+      if (cst.position === 'relative' || cst.position === 'sticky') {
+        for (const side of ['top', 'left', 'right', 'bottom']) {
+          const v = cst.getPropertyValue(side);
+          if (v !== 'auto' && v !== '' && pxValue(v) !== 0) return null;
+        }
+      }
+      boxes += 1;
       for (const prop of ['transform', 'translate', 'rotate', 'scale', 'offset-path']) {
         const v = cst.getPropertyValue(prop);
         if (v !== 'none' && v !== '') return null;
@@ -2943,11 +2965,12 @@ class TabMeasurement {
         (r.left - at.left) / sx + c.clientLeft + c.scrollWidth + (pxValue(cst.marginRight) || 0)
       );
     }
+    // No child box: the root's own padding and border are not in `bottom`.
+    if (boxes === 0) return null;
     const height = pxValue(ps.height);
     const width = pxValue(ps.width);
     if (!Number.isFinite(height) || !Number.isFinite(width)) return null;
     const margins = Math.abs(pxValue(ps.marginTop) || 0) + Math.abs(pxValue(ps.marginBottom) || 0);
-    const rootst = this.style(root);
     // The pseudo's own box: its height and width with padding and border, and
     // its margins, from the root's content box's left edge.
     const own = height + this.pseudoExtra(ps, 'top', 'bottom') + margins;
