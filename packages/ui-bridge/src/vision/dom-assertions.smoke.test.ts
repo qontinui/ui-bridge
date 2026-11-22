@@ -1810,6 +1810,62 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     expect(got[4][3]).toContain('contrast ratio 21.00:1');
   }, 60_000);
 
+  it('contrast_meets_wcag: a root ::after whose extent the root’s children do not give is unknown', async () => {
+    // Each page shows black on navy under the badge, which lies past the
+    // root's box (overflow hidden on the root clips nothing of its own). What
+    // the root's children say of its content cannot bound the ::after here:
+    // padding and border add to its height, its own width can overflow, a
+    // display: contents body has no box, an individual `translate` moves a
+    // child's rect without moving its layout. The ::after is bounded by the
+    // viewport, which holds the badge: unknown.
+    const navy = 'rgb(20, 30, 90)';
+    const rows: Array<[string, string, boolean]> = [
+      [
+        'padded',
+        `<style>html { height: 100px; overflow: hidden } html::after { content: ""; display: block; height: 4px; padding: 40px 0; background: ${navy} }</style>
+         <div style="height:30px">Title</div>
+         <span data-id="padded" style="position:absolute;left:10px;top:115px;color:#000">PRO</span>`,
+        false,
+      ],
+      [
+        'wide',
+        `<style>html { width: 400px; height: 100px; overflow: hidden } html::after { content: ""; display: block; width: 700px; height: 20px; background: ${navy} }</style>
+         <div style="height:30px">Title</div>
+         <span data-id="wide" style="position:absolute;left:500px;top:50px;color:#000">PRO</span>`,
+        false,
+      ],
+      [
+        'contents',
+        `<style>html { height: 60px; overflow: hidden } body { display: contents } html::after { content: ""; display: block; height: 20px; background: ${navy} }</style>
+         <div style="height:80px">Title</div>
+         <span data-id="contents" style="position:absolute;left:10px;top:85px;color:#000">PRO</span>`,
+        false,
+      ],
+      [
+        'translated',
+        `<style>html { height: 60px; overflow: hidden } html::after { content: ""; display: block; height: 40px; background: ${navy} }</style>
+         <div style="height:30px">Title</div>
+         <span data-id="translated" style="position:absolute;left:10px;top:100px;color:#000">PRO</span>`,
+        true,
+      ],
+    ];
+    const got: Array<[string, string, string | null]> = [];
+    for (const [id, body, translate] of rows) {
+      const page = await openPage(body, { width: 1400, height: 700 });
+      if (translate) {
+        await page.evaluate(() => {
+          const div = document.createElement('div');
+          div.setAttribute('style', 'translate: 0 -100px; height: 30px');
+          document.documentElement.appendChild(div);
+        });
+      }
+      const r = await assertOn(page, [{ type: 'contrast_meets_wcag', element: id }]);
+      got.push([id, r.results[0].outcome, r.results[0].code ?? null]);
+      await page.close();
+    }
+    expect(got).toEqual(rows.map(([id]) => [id, 'unknown', 'input_missing']));
+  }, 90_000);
+
   it('contrast_meets_wcag: a ::after below a line another font makes taller, or a line-height of normal', async () => {
     // The fonts are `local()` faces with their metrics overridden, so the line
     // a face makes does not depend on which of the listed fonts the machine
@@ -1865,6 +1921,10 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
           ['italicspan', 'font-style: italic'],
           ['capsspan', 'font-variant: small-caps'],
           ['adjustspan', 'font-size-adjust: 0.6'],
+          ['stretchspan', 'font-stretch: 150%'],
+          ['variationspan', "font-variation-settings: 'wght' 700"],
+          ['opticalspan', 'font-optical-sizing: none'],
+          ['synthspan', 'font-synthesis: none'],
         ] as const
       ).map(
         ([id, css]): Row => ({

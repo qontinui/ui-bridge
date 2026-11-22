@@ -1056,8 +1056,17 @@ type HitHidden = {
 /** What an element does to its content's overflow on one axis. */
 type Overflow = 'clip' | 'scroll' | null;
 
-/** Font properties besides family and size that change the line a face makes. */
-const FONT_METRIC_PROPS = ['font-weight', 'font-style', 'font-variant', 'font-size-adjust'];
+/** Font properties besides family and size that can change the line a face makes. */
+const FONT_METRIC_PROPS = [
+  'font-weight',
+  'font-style',
+  'font-variant',
+  'font-size-adjust',
+  'font-stretch',
+  'font-variation-settings',
+  'font-optical-sizing',
+  'font-synthesis',
+];
 
 /** The edge a scroll container scrolls from, per axis: `start` is left or top. */
 type ScrollEdge = 'start' | 'end';
@@ -2909,10 +2918,21 @@ class TabMeasurement {
     const at = root.getBoundingClientRect();
     let bottom = 0;
     let right = 0;
+    // Text laid out in the root itself is not a child box to measure.
+    for (let t = root.firstChild; t; t = t.nextSibling) {
+      if (t.nodeType === 3 && /\S/.test(t.nodeValue ?? '')) return null;
+    }
     for (let c = root.firstElementChild; c; c = c.nextElementSibling) {
       const cst = this.style(c);
       if (cst.display === 'none') continue;
-      if (cst.transform !== 'none' && cst.transform !== '') return null;
+      // A child laid out in its parent's place, moved by any transform
+      // property or by a zoom, or an inline one, is not a box this measures.
+      if (cst.display === 'contents' || cst.display.startsWith('inline')) return null;
+      if (cst.zoom !== '1' && cst.zoom !== '') return null;
+      for (const prop of ['transform', 'translate', 'rotate', 'scale', 'offset-path']) {
+        const v = cst.getPropertyValue(prop);
+        if (v !== 'none' && v !== '') return null;
+      }
       const r = c.getBoundingClientRect();
       bottom = Math.max(
         bottom,
@@ -2924,9 +2944,22 @@ class TabMeasurement {
       );
     }
     const height = pxValue(ps.height);
-    if (!Number.isFinite(height)) return null;
+    const width = pxValue(ps.width);
+    if (!Number.isFinite(height) || !Number.isFinite(width)) return null;
     const margins = Math.abs(pxValue(ps.marginTop) || 0) + Math.abs(pxValue(ps.marginBottom) || 0);
-    const down = bottom + height + margins - root.offsetHeight;
+    const rootst = this.style(root);
+    // The pseudo's own box: its height and width with padding and border, and
+    // its margins, from the root's content box's left edge.
+    const own = height + this.pseudoExtra(ps, 'top', 'bottom') + margins;
+    const wide =
+      root.clientLeft +
+      (pxValue(rootst.paddingLeft) || 0) +
+      Math.max(0, pxValue(ps.marginLeft) || 0) +
+      width +
+      this.pseudoExtra(ps, 'left', 'right') +
+      Math.max(0, pxValue(ps.marginRight) || 0);
+    right = Math.max(right, wide);
+    const down = bottom + own - root.offsetHeight;
     const across = right - root.offsetWidth;
     return { down: down > 1 ? down : 0, across: across > 1 ? across : 0 };
   }
