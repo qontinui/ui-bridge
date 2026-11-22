@@ -189,6 +189,7 @@ describe('LiveSessionTransport getScreenshot', () => {
           {
             kind: 'live',
             runnerUrl: 'ws://127.0.0.1:9876/ui-bridge/ws',
+            appId: 'shot-app',
             options: { screenshotPage: {} as FramePage },
           },
           undefined,

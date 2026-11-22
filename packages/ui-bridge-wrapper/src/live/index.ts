@@ -35,7 +35,6 @@ export type {
 export { HandlerRegistry, type WrapperHandler } from '../handler-registry.js';
 export {
   LiveSessionTransport,
-  DEFAULT_LIVE_APP_NAME,
   type LiveContext,
   type LiveTransportOptions,
 } from '../transports/live.js';

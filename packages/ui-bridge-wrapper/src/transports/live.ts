@@ -98,21 +98,13 @@ interface MinimalWebSocket {
 
 type WebSocketCtor = new (url: string, protocols?: string | string[]) => MinimalWebSocket;
 
-/**
- * The `appName` sent when the caller configured neither `appName` nor
- * `appId`. The runner's `RegisterFrame` REQUIRES `appName` (a frame without it
- * is refused with `missing field appName` and the socket closed before the
- * ack), so the frame never omits it.
- */
-export const DEFAULT_LIVE_APP_NAME = 'ui-bridge-wrapper';
-
 interface RegisterFrame {
   type: 'register';
   transport: 'websocket';
   appId?: string;
   /**
    * Required by the runner's `RegisterFrame` deserializer; defaults to
-   * `appId`, else {@link DEFAULT_LIVE_APP_NAME}, when the caller set none.
+   * `appId` when the caller set none (or a blank one).
    */
   appName: string;
   /**
@@ -185,6 +177,16 @@ export class LiveSessionTransport extends BaseTransport {
     if (!config.runnerUrl) {
       throw new WrapperTransportError('INVALID_CONFIG', `Transport kind 'live' requires runnerUrl`);
     }
+    // The runner's RegisterFrame requires a non-blank appId and appName
+    // (qontinui-runner src-tauri/src/mcp/ws_relay.rs): a frame missing either
+    // is refused and the socket closed before the ack. Refuse here, where the
+    // caller can see why, rather than as DISCONNECTED "WebSocket closed before ack".
+    if (!config.appId?.trim()) {
+      throw new WrapperTransportError(
+        'INVALID_CONFIG',
+        `Transport kind 'live' requires a non-blank appId (the runner refuses a register frame without one)`
+      );
+    }
     this.url = config.runnerUrl;
     this.appId = config.appId;
     this.appName = config.appName;
@@ -236,7 +238,8 @@ export class LiveSessionTransport extends BaseTransport {
             type: 'register',
             transport: 'websocket',
             appId: this.appId,
-            appName: this.appName ?? this.appId ?? DEFAULT_LIVE_APP_NAME,
+            // appName defaults to appId: the runner requires a non-blank one.
+            appName: this.appName?.trim() || this.appId!,
             appType: this.opts.appType ?? 'wrapper',
           };
           if (this.opts.framework !== undefined) frame.framework = this.opts.framework;

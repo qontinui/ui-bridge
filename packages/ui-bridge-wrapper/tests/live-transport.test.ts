@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { DEFAULT_LIVE_APP_NAME, LiveSessionTransport } from '../src/transports/live.js';
+import { LiveSessionTransport } from '../src/transports/live.js';
 import { WrapperTransportError } from '../src/types.js';
 
 type Listener = (ev?: unknown) => void;
@@ -120,11 +120,10 @@ describe('LiveSessionTransport handshake refusal', () => {
 });
 
 /**
- * The runner's RegisterFrame REQUIRES `appName`: a frame without it is refused
- * (`missing field appName`) and the socket closed before the ack, which the
- * caller sees as DISCONNECTED "WebSocket closed before ack". Measured on a temp
- * runner by plan 2026-11-21-vision-capture-cannot-frame-a-websocket-transport-app's
- * e2e, following the documented createTransport example that omitted it.
+ * The runner's RegisterFrame requires a non-blank `appId` and `appName`
+ * (qontinui-runner src-tauri/src/mcp/ws_relay.rs): a frame missing either is
+ * refused and the socket closed before the ack, which the caller would see as
+ * DISCONNECTED "WebSocket closed before ack".
  */
 describe('LiveSessionTransport register frame always carries appName', () => {
   async function registerFrameFor(config: { appId?: string; appName?: string }) {
@@ -154,9 +153,21 @@ describe('LiveSessionTransport register frame always carries appName', () => {
     expect(frame['appId']).toBe('my-app');
   });
 
-  it('defaults appName to DEFAULT_LIVE_APP_NAME when neither is configured', async () => {
-    const frame = await registerFrameFor({});
-    expect(frame['appName']).toBe(DEFAULT_LIVE_APP_NAME);
-    expect(DEFAULT_LIVE_APP_NAME).toBe('ui-bridge-wrapper');
+  it('defaults a blank appName to appId', async () => {
+    const frame = await registerFrameFor({ appId: 'my-app', appName: '  ' });
+    expect(frame['appName']).toBe('my-app');
+  });
+
+  it('refuses a missing or blank appId with INVALID_CONFIG', () => {
+    for (const appId of [undefined, '', '   ']) {
+      expect(
+        () =>
+          new LiveSessionTransport(
+            { kind: 'live', runnerUrl: 'ws://127.0.0.1:9876/ui-bridge/ws', appId },
+            undefined,
+            { webSocketCtor: FakeWebSocket as never }
+          )
+      ).toThrow(expect.objectContaining({ code: 'INVALID_CONFIG' }));
+    }
   });
 });
