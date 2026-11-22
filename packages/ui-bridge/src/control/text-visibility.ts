@@ -103,6 +103,14 @@
  *    of the app's write is left alone; that restore is reported as
  *    property-level, and a property the app changed after the last re-assert
  *    is left as the app set it and reported as `drift`, never verified.
+ *  - A restore that is not verified says why: every reason has a field of
+ *    its own in the reply (`driftCount`, `mismatchCount`, `sheetStillAdopted`,
+ *    `sheetStillHasRules`, `untrustedMarkers`, `unrestorableMarkers`), and
+ *    `verified` is computed from those fields alone. A caller can therefore
+ *    tolerate drift (the app's own change) without also tolerating a hide
+ *    this control failed to take back. A cause field missing from a reply is
+ *    unknown, not clear ({@link TextVisibilityRestore.verified} says when one
+ *    is missing).
  *  - An element that left the document while text was hidden (a closed modal,
  *    a pooled list row, a kept-alive panel) is restored and verified all the
  *    same, and counted as `detached`: re-inserted later, it shows its own
@@ -248,7 +256,42 @@ export interface TextVisibilityRestore {
   detached: number;
   /** Elements with drift, at most {@link DRIFT_REPORT_LIMIT} listed. */
   drift: TextVisibilityDrift[];
+  /**
+   * Elements with drift: a property this control owns that the app changed
+   * after the last re-assert, left as the app set it. Any makes `verified`
+   * false.
+   */
   driftCount: number;
+  /**
+   * Elements whose style did not read back as recorded after the restore
+   * wrote it: an exact restore whose `style` attribute is not byte-identical
+   * to the original, or a property-level one with an owned, undrifted
+   * property not back to its original value and priority. Not drift: the
+   * restore wrote these and they did not take (page code that rewrote them
+   * synchronously, say). Any makes `verified` false. Optional: see
+   * {@link TextVisibilityRestore.verified} for when a reply lacks it.
+   */
+  mismatchCount?: number;
+  /**
+   * The pseudo-element stylesheet is still in the `adoptedStyleSheets` of a
+   * root it was adopted into after the restore took it out (page code that
+   * put it back). With `sheetStillHasRules` too, that root's pseudo-elements
+   * still carry what the sheet holds. `true` makes `verified` false. Always
+   * false where the engine has no constructable stylesheets
+   * (`coverage.pseudoStyleSheets: 0`). Optional, as `mismatchCount` is.
+   */
+  sheetStillAdopted?: boolean;
+  /**
+   * The pseudo-element stylesheet still holds rules after the restore emptied
+   * it (the empty write threw): its transition hold, or the hide itself when
+   * the restore's earlier shrink threw too. Every root still listing it — one
+   * `sheetStillAdopted` names, or one this control never saw that copied it
+   * (a design system copying `document.adoptedStyleSheets` into a new shadow
+   * root) — keeps applying them. `true` makes `verified` false. Always false
+   * where the engine has no constructable stylesheets. Optional, as
+   * `mismatchCount` is.
+   */
+  sheetStillHasRules?: boolean;
   /**
    * Copies that arrived carrying a well-formed marker this page did not issue
    * (forged, or from a hide it cannot vouch for). Their carried original was
@@ -265,8 +308,24 @@ export interface TextVisibilityRestore {
   /**
    * True only when every recorded element — in the document or not — reads
    * back exactly as recorded: a byte-identical attribute, or every owned
-   * property back with nothing drifted — and no copy carried an untrusted
-   * or unrestorable marker.
+   * property back with nothing drifted — no copy carried an untrusted or
+   * unrestorable marker, and the pseudo-element stylesheet is gone.
+   *
+   * It is derived from the cause fields above and from nothing else: true
+   * exactly when `driftCount`, `mismatchCount`, `untrustedMarkers` and
+   * `unrestorableMarkers` are 0 and `sheetStillAdopted` and
+   * `sheetStillHasRules` are false. So a reply with `driftCount` non-zero and
+   * every other cause field PRESENT and clear is drift alone: what the app
+   * changed after the hide last re-asserted it, with everything this control
+   * wrote taken back.
+   *
+   * `mismatchCount`, `sheetStillAdopted` and `sheetStillHasRules` are absent
+   * from a restore an SDK copy that predates them made — and this copy can
+   * hand one out: a show with nothing hidden answers the page's last restore
+   * as it is, and that slot is shared with every copy of the SDK in the page
+   * under the same state schema (an older app bundle beside the injected
+   * runtime, whose TTL restore it was, say). Read an absent field as
+   * unknown, never as clear.
    */
   verified: boolean;
   restoredAt: number;
@@ -277,7 +336,11 @@ export interface TextVisibilityShowSuccess {
   hidden: false;
   /** False when text was not hidden: nothing was written. */
   changed: boolean;
-  /** This call's restore; when `changed` is false, the last restore (a TTL one, say), or null. */
+  /**
+   * This call's restore; when `changed` is false, the last restore (a TTL one,
+   * say), or null. That last restore may have been made by another copy of
+   * the SDK in the page, so it can lack fields this copy's restores carry.
+   */
   restore: TextVisibilityRestore | null;
   timestamp: number;
 }
@@ -1294,39 +1357,49 @@ function restore(trigger: TextVisibilityRestore['trigger']): TextVisibilityResto
     }
   }
 
-  // Verify by reading back — every element, in the document or not.
+  // Verify by reading back — every element, in the document or not. Each
+  // reason a restore is not verified is counted in a field of its own, and
+  // `verified` is computed from those fields alone, so a reply can always say
+  // which reason applied.
   let exact = 0;
   let propertyLevel = 0;
   let detached = 0;
-  let verified = true;
   const drift: TextVisibilityDrift[] = [];
   let driftCount = 0;
+  let mismatchCount = 0;
   for (const d of decisions) {
     if (!d.connected) detached += 1;
     if (d.kind === 'exact') {
       exact += 1;
-      if (d.record.el.getAttribute('style') !== d.original) verified = false;
+      if (d.record.el.getAttribute('style') !== d.original) mismatchCount += 1;
       continue;
     }
     propertyLevel += 1;
+    let mismatched = false;
     for (const [prop, original] of d.record.originals) {
       if (d.drifted.has(prop)) continue;
-      if (!sameInline(readInline(d.record.style, prop), original)) verified = false;
+      if (!sameInline(readInline(d.record.style, prop), original)) mismatched = true;
     }
+    if (mismatched) mismatchCount += 1;
     if (d.drifted.size > 0) {
-      verified = false;
       driftCount += 1;
       if (drift.length < DRIFT_REPORT_LIMIT) {
         drift.push({ tag: d.record.el.localName, properties: Array.from(d.drifted).sort() });
       }
     }
   }
-  for (const root of s.sheetRoots) {
-    if (adoptable(root) && s.sheet && root.adoptedStyleSheets.includes(s.sheet)) verified = false;
-  }
-  if (s.sheet && s.sheet.cssRules.length > 0) verified = false;
-  if (s.untrustedMarkers > 0) verified = false;
-  if (s.unrestorableMarkers > 0) verified = false;
+  const sheet = s.sheet;
+  const sheetStillAdopted =
+    sheet !== null &&
+    s.sheetRoots.some((root) => adoptable(root) && root.adoptedStyleSheets.includes(sheet));
+  const sheetStillHasRules = sheet !== null && sheet.cssRules.length > 0;
+  const verified =
+    driftCount === 0 &&
+    mismatchCount === 0 &&
+    !sheetStillAdopted &&
+    !sheetStillHasRules &&
+    s.untrustedMarkers === 0 &&
+    s.unrestorableMarkers === 0;
 
   const result: TextVisibilityRestore = {
     trigger,
@@ -1336,6 +1409,9 @@ function restore(trigger: TextVisibilityRestore['trigger']): TextVisibilityResto
     detached,
     drift,
     driftCount,
+    mismatchCount,
+    sheetStillAdopted,
+    sheetStillHasRules,
     untrustedMarkers: s.untrustedMarkers,
     unrestorableMarkers: s.unrestorableMarkers,
     verified,

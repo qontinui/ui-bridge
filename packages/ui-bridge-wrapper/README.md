@@ -398,6 +398,26 @@ writes every `style` attribute back byte for byte (`restore.verified: true`),
 without the text fading back in; a TTL (`ttlMs`, default 30000) restores the
 page by itself if the run dies.
 
+A restore that is not verified says why, with one field per cause, and
+`verified` is computed from those fields alone:
+
+| Field                                      | Set when                                                                                                                                                                                             |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `driftCount`                               | the app changed a property this control owns after the hide last re-asserted it; it is left as the app set it (a change the hide already re-asserted over is adopted and restored, and is not drift) |
+| `mismatchCount`                            | a style the restore wrote did not read back as recorded                                                                                                                                              |
+| `sheetStillAdopted`                        | the pseudo-element stylesheet is still adopted in a root the hide put it into                                                                                                                        |
+| `sheetStillHasRules`                       | the pseudo-element stylesheet could not be emptied, so every root still listing it keeps its rules                                                                                                   |
+| `untrustedMarkers` / `unrestorableMarkers` | a copy of a hidden element carried a marker the control cannot vouch for, or one with no usable original                                                                                             |
+
+So a restore with `driftCount` non-zero and every other cause field present
+and clear is drift alone: the page's own change, with everything the hide wrote
+taken back. `mismatchCount`, `sheetStillAdopted` and `sheetStillHasRules` can
+be missing from a reply. An SDK version that predates them does not send them,
+and the current one can pass such a restore on: a show with nothing hidden
+hands back the page's last restore as it is, and another copy of the SDK in the
+same page (an older app bundle beside the injected runtime, say) may have made
+it. Treat a missing field as unknown, not as clear.
+
 #### Sourcing credentials from SSM (qontinui operators)
 
 The bins read credentials from env / flags only — they intentionally do **not**

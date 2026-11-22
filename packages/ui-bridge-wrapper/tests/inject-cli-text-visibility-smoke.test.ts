@@ -330,7 +330,18 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('text visibility (real Chromium)', () => 
       success: true,
       hidden: false,
       changed: true,
-      restore: { verified: true, propertyLevel: 0, drift: [], detached: 1 },
+      restore: {
+        verified: true,
+        propertyLevel: 0,
+        drift: [],
+        detached: 1,
+        // Every cause of an unverified restore reads clear, the sheet ones
+        // over a real constructable stylesheet (finding feaccb18).
+        driftCount: 0,
+        mismatchCount: 0,
+        sheetStillAdopted: false,
+        sheetStillHasRules: false,
+      },
     });
     // The copy of a hidden element has the source's original style, not the
     // hide it arrived carrying.
@@ -474,7 +485,11 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('text visibility (real Chromium)', () => 
     expect(sheetsAdopted).toBe(1);
     // L-C: the root this control never saw still lists the sheet, but it is empty.
     expect(rulesAfter).toBe(0);
-    expect(lines[1]!.result).toMatchObject({ restore: { verified: true } });
+    // `sheetStillAdopted` reads the roots this control adopted into, which no
+    // longer list it; the emptied sheet is what covers the root it never saw.
+    expect(lines[1]!.result).toMatchObject({
+      restore: { verified: true, sheetStillAdopted: false, sheetStillHasRules: false },
+    });
     // L-D: the copy that outlived its hide is restored exactly.
     expect(keptColour).toBe('transparent');
     expect(lines[2]!.result).toMatchObject({ coverage: { clones: 2 } });

@@ -246,7 +246,18 @@ Exec (Variant A — one-shot; presence of any --exec/--exec-stdin selects this m
         (default 30000 ms) restores the page if the run dies.
       textVisibility {"hidden":false}
         Restore exactly (the style attributes read back byte for byte);
-        "restore":{"verified":true} is a clean restore.
+        "restore":{"verified":true} is a clean restore. When it is false the
+        restore says why, one field per cause, and verified is computed from
+        these alone: driftCount (the app changed an owned property after the
+        hide last re-asserted it; a change already re-asserted over is
+        restored, not drift), mismatchCount (a style the restore wrote did not
+        read back), sheetStillAdopted and sheetStillHasRules (the sheet that
+        hid ::before/::after text is still adopted, or still holds rules), and
+        untrustedMarkers / unrestorableMarkers (copies it cannot vouch for).
+        Drift alone is driftCount non-zero with every OTHER cause field
+        present and clear. A field can be missing (an older SDK, or another
+        copy's last restore handed back by a show with nothing hidden): read
+        a missing field as unknown, never as clear.
 
   Exec output & exit code:
     One JSON line per action, in order, on stdout — ALWAYS one line per action,
