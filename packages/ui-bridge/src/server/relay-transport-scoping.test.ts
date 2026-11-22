@@ -10,7 +10,8 @@
  *     command went to, presents that stream's id, and is posted by the tab's
  *     owner;
  *   - closing or activating a tab requires owning it;
- *   - a tab cannot be taken over while its owner's session is live.
+ *   - a tab cannot be taken over while its owner's stream is held, and a
+ *     claim made while the owner's stream reconnects does not lock it out.
  * With no identity (single-user mode) each route behaves as before.
  *
  * Everything goes through the adapters exactly as a multi-user consumer mounts
@@ -132,7 +133,9 @@ interface Rig {
   tabB: Stream;
 }
 
-async function rig(options: { tabActiveWindowMs?: number } = {}): Promise<Rig> {
+async function rig(
+  options: { tabActiveWindowMs?: number; reconnectGraceMs?: number } = {}
+): Promise<Rig> {
   const relay = new CommandRelay({
     globalPrefix: `__uiBridgeTransport_${Math.random().toString(36).slice(2, 10)}`,
     sseTimeoutMs: 1500,
@@ -195,10 +198,19 @@ describe('the command stream opens only for a tab the caller may hold', () => {
     unregistered.close();
   });
 
-  it('with no identity, any stream opens as before', async () => {
+  it('with no identity, a stream opens for a tab no verified caller streams', async () => {
     const admin = await openStream(r.routes, 'tab-x');
     expect(admin.response.status).toBe(200);
     admin.close();
+  });
+
+  it("with no identity, a stream cannot replace a verified user's stream", async () => {
+    const res = await call(r.routes, 'GET', '/commands/stream?tabId=tab-a');
+    expect(res.status).toBe(404);
+    expect((await json(res)).code).toBe('TAB_NOT_FOUND');
+    // tab-a's commands still go down its owner's stream.
+    void call(r.routes, 'POST', '/tabs/tab-a/activate', { caller: 'user-a' });
+    await r.tabA.command('tabActivate');
   });
 });
 
@@ -369,7 +381,15 @@ describe('closing or activating a tab requires owning it', () => {
   });
 });
 
-describe("a tab cannot be taken over while its owner's session is live", () => {
+/** Wait until `tabId` has no ownership record (its stream ended and was forgotten). */
+async function untilUnowned(relay: CommandRelay, tabId: string): Promise<void> {
+  for (let i = 0; i < 200 && relay.getOwnership(tabId); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  expect(relay.getOwnership(tabId)).toBeNull();
+}
+
+describe("a tab cannot be taken over while its owner's stream is held", () => {
   // Reviewer probe S20.
   it("a verified heartbeat claiming another user's live tab is refused and changes nothing", async () => {
     const r = await rig();
@@ -378,7 +398,7 @@ describe("a tab cannot be taken over while its owner's session is live", () => {
       data: { ownershipAssigned?: boolean; ownerChangeRejected?: string };
     };
     expect(body.data.ownershipAssigned).toBe(false);
-    expect(body.data.ownerChangeRejected).toBe('OWNER_SESSION_LIVE');
+    expect(body.data.ownerChangeRejected).toBe('OWNER_CHANGE_UNVERIFIED');
     expect(r.relay.getOwnership('tab-a')?.userId).toBe('user-a');
     // Nothing the refused heartbeat carried reached the tab's record.
     const tabs = (await json(await call(r.routes, 'GET', '/tabs', { caller: 'user-a' }))) as {
@@ -396,21 +416,145 @@ describe("a tab cannot be taken over while its owner's session is live", () => {
     r.relay.destroy();
   });
 
-  it('a re-login in the same tab takes over once the previous owner has gone quiet', async () => {
+  it("a quiet owner's open stream keeps the tab, so another user's close never reaches it", async () => {
     const r = await rig({ tabActiveWindowMs: 60 });
-    const early = await heartbeat(r.routes, 'tab-a', 'user-c', 'user-c');
-    expect(
-      ((await json(early)) as { data: { ownershipAssigned?: boolean } }).data.ownershipAssigned
-    ).toBe(false);
     await new Promise((resolve) => setTimeout(resolve, 90));
+    const takeover = await heartbeat(r.routes, 'tab-a', 'user-b', 'user-b');
+    expect(
+      ((await json(takeover)) as { data: { ownershipAssigned?: boolean } }).data.ownershipAssigned
+    ).toBe(false);
+    expect(r.relay.getOwnership('tab-a')?.userId).toBe('user-a');
+    const close = await call(r.routes, 'POST', '/tabs/tab-a/close', { caller: 'user-b' });
+    expect(close.status).toBe(404);
+    expect(r.tabA.events.some((e) => e.action === 'tabClose')).toBe(false);
+    r.tabA.close();
+    r.tabB.close();
+    r.relay.destroy();
+  });
+
+  it('a re-login reopens the stream under the new identity, then registers the tab', async () => {
+    const r = await rig({ reconnectGraceMs: 20 });
+    for (let i = 0; i < 50 && !r.tabA.streamId(); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    // The page holding tab-a's stream now runs as user-c, and says which
+    // stream it holds: it is told that stream is bound to another identity.
+    const early = await call(r.routes, 'POST', '/heartbeat', {
+      caller: 'user-c',
+      body: {
+        tabId: 'tab-a',
+        streamId: r.tabA.streamId(),
+        registrationMetadata: { userId: 'user-c', sessionId: 'session-c' },
+      },
+    });
+    expect(
+      (
+        (await json(early)) as {
+          data: { ownershipAssigned?: boolean; ownerChangeRejected?: string };
+        }
+      ).data
+    ).toMatchObject({ ownershipAssigned: false, ownerChangeRejected: 'STREAM_IDENTITY_CHANGED' });
+    // Without the stream id, the same claim is an ordinary refusal.
+    const blind = await heartbeat(r.routes, 'tab-a', 'user-c', 'user-c');
+    expect(
+      ((await json(blind)) as { data: { ownerChangeRejected?: string } }).data.ownerChangeRejected
+    ).toBe('OWNER_CHANGE_UNVERIFIED');
+    r.tabA.close();
+    await untilUnowned(r.relay, 'tab-a');
+    const reopened = await openStream(r.routes, 'tab-a', 'user-c');
+    expect(reopened.response.status).toBe(200);
     const late = await heartbeat(r.routes, 'tab-a', 'user-c', 'user-c');
     expect(
       ((await json(late)) as { data: { ownershipAssigned?: boolean } }).data.ownershipAssigned
     ).toBeUndefined();
     expect(r.relay.getOwnership('tab-a')?.userId).toBe('user-c');
-    r.tabA.close();
+    reopened.close();
     r.tabB.close();
     r.relay.destroy();
+  });
+
+  it("a tab id claimed while its owner's stream reconnects does not lock the owner out", async () => {
+    const r = await rig({ reconnectGraceMs: 20 });
+    r.tabA.close();
+    await untilUnowned(r.relay, 'tab-a');
+    await heartbeat(r.routes, 'tab-a', 'user-b', 'user-b');
+    expect(r.relay.getOwnership('tab-a')?.userId).toBe('user-b');
+    const reopened = await openStream(r.routes, 'tab-a', 'user-a');
+    expect(reopened.response.status).toBe(200);
+    const beat = await heartbeat(r.routes, 'tab-a', 'user-a', 'user-a');
+    expect(
+      ((await json(beat)) as { data: { ownershipAssigned?: boolean } }).data.ownershipAssigned
+    ).toBeUndefined();
+    const squat = await heartbeat(r.routes, 'tab-a', 'user-b', 'user-b');
+    expect(
+      ((await json(squat)) as { data: { ownershipAssigned?: boolean } }).data.ownershipAssigned
+    ).toBe(false);
+    expect(r.relay.getOwnership('tab-a')?.userId).toBe('user-a');
+    reopened.close();
+    r.tabB.close();
+    r.relay.destroy();
+  });
+
+  it('with a bus, the stream route asks it whether a heartbeat-only record holds the tab', async () => {
+    const hub = new InMemoryBusHub();
+    const instance = (name: string) => {
+      const relay = new CommandRelay({
+        globalPrefix: `__uiBridgeTransportBus${name}_${Math.random().toString(36).slice(2, 10)}`,
+        bus: hub.bus(name),
+        sseTimeoutMs: 1500,
+        proactiveSnapshot: false,
+        pruneSweepIntervalMs: 60_000,
+      });
+      return { relay, routes: createNextRouteHandlers(createRelayHandlers(relay), { relay }) };
+    };
+    const a = instance('A');
+    const b = instance('B');
+    // user-b claims tab-free on A by heartbeat alone; no instance streams it,
+    // so user-a's stream opens there and binds it.
+    await heartbeat(a.routes, 'tab-free', 'user-b', 'user-b');
+    const owned = await openStream(a.routes, 'tab-free', 'user-a');
+    expect(owned.response.status).toBe(200);
+    // user-a's tab-held streams on B; a heartbeat-only record for user-a on A
+    // holds it against user-b, because the bus says B holds the stream.
+    const held = await openStream(b.routes, 'tab-held', 'user-a');
+    await heartbeat(a.routes, 'tab-held', 'user-a', 'user-a');
+    const refused = await call(a.routes, 'GET', '/commands/stream?tabId=tab-held', {
+      caller: 'user-b',
+    });
+    expect(refused.status).toBe(404);
+    expect(a.relay.getOwnership('tab-held')?.userId).toBe('user-a');
+    owned.close();
+    held.close();
+    a.relay.destroy();
+    b.relay.destroy();
+  });
+
+  it('a stream request aborted while the route asks the bus opens no listener', async () => {
+    const hub = new InMemoryBusHub();
+    const bus = hub.bus('A');
+    const relay = new CommandRelay({
+      globalPrefix: `__uiBridgeTransportAbort_${Math.random().toString(36).slice(2, 10)}`,
+      bus,
+      sseTimeoutMs: 1500,
+      proactiveSnapshot: false,
+      pruneSweepIntervalMs: 60_000,
+    });
+    const routes = createNextRouteHandlers(createRelayHandlers(relay), { relay });
+    await heartbeat(routes, 'tab-x', 'user-b', 'user-b');
+    let answer!: (held: boolean) => void;
+    bus.holdsElsewhere = () => new Promise<boolean>((resolve) => (answer = resolve));
+    const controller = new AbortController();
+    const pending = call(routes, 'GET', '/commands/stream?tabId=tab-x', {
+      caller: 'user-a',
+      signal: controller.signal,
+    });
+    for (let i = 0; i < 100 && !answer; i++) await new Promise((r) => setTimeout(r, 2));
+    controller.abort();
+    answer(false);
+    const res = await pending;
+    expect(res.status).toBe(499);
+    expect(relay.getTransportDiagnostics().connectedTabs).not.toContain('tab-x');
+    relay.destroy();
   });
 
   it('with no identity, a transfer is refused as before', async () => {

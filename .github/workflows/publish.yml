@@ -87,8 +87,17 @@ jobs:
             echo "::error::No package.json found at packages/$name (derived from tag '$tag')"
             exit 1
           fi
+          # The tag names a version as well as a package. npm publishes
+          # whatever package.json says, so a tag pushed on the wrong commit
+          # would otherwise ship a version the tag never named.
+          tag_version="${tag#"$name"-v}"
+          pkg_version="$(node -p "require('./packages/$name/package.json').version")"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "::error::Tag '$tag' names version $tag_version but packages/$name/package.json is $pkg_version"
+            exit 1
+          fi
           echo "name=$name" >> "$GITHUB_OUTPUT"
-          echo "Derived package: $name"
+          echo "Derived package: $name@$pkg_version"
 
       - name: Install dependencies
         run: npm ci

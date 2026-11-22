@@ -61,6 +61,7 @@ export { SSEManager } from './sse-handler';
 export {
   CommandRelay,
   TabRoutingError,
+  OwnerMismatchError,
   RelayDestroyedError,
   type QueuedCommand,
   type CommandListener,
