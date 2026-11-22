@@ -94,6 +94,12 @@ jobs:
         run: npm ci
 
       - name: Build
+        env:
+          # The ui-bridge tsup DTS/worker build outgrew node's default heap:
+          # the ui-bridge-v0.58.0 publish run died with
+          # ERR_WORKER_OUT_OF_MEMORY (the same tree published at 0.57.0), so
+          # 0.58.0 never reached npm. ubuntu-latest has 16 GB; give node 6.
+          NODE_OPTIONS: --max-old-space-size=6144
         # Build packages in topological dep order so each workspace's
         # tsc step can resolve sibling-workspace types from their dist/.
         # npm workspaces uses filesystem-alphabetical order by default,
