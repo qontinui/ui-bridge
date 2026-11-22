@@ -2896,6 +2896,7 @@ class TabMeasurement {
    * or an `align-content` that lays the content lower, for a `::after` or
    * an inline `::before` a line that may be taller than the container's
    * line-height sets it ({@link lineMayGrow}), a `vertical-align` length, a
+   * `line-height: normal` (the font's own, which the DOM does not give), a
    * size not read — where `spill` bounds it.
    */
   private flowBand(
@@ -2920,14 +2921,19 @@ class TabMeasurement {
     const px = (v: string): number => pxValue(v) || 0;
     const inline = ps.display.startsWith('inline');
     if (inline && !/^[a-z-]+$/.test(ps.verticalAlign)) return null;
-    const lineOf = (of: CSSStyleDeclaration): number => {
+    // A line-height that is `normal` comes from the font's own metrics, which
+    // the DOM does not offer: it is not read (null), never guessed.
+    const lineOf = (of: CSSStyleDeclaration): number | null => {
       const line = pxValue(of.lineHeight);
-      return Number.isFinite(line) ? line : pxValue(of.fontSize) * 1.5;
+      return Number.isFinite(line) ? line : null;
     };
-    const own = ps.display === 'inline' ? lineOf(ps) : pxValue(ps.height);
+    const ownLine = ps.display === 'inline' ? lineOf(ps) : 0;
+    const stLine = lineOf(st);
+    if (ownLine === null || (inline && stLine === null)) return null;
+    const own = ps.display === 'inline' ? ownLine : pxValue(ps.height);
     const margins = Math.abs(px(ps.marginTop)) + Math.abs(px(ps.marginBottom));
     const deep = (own + this.pseudoExtra(ps, 'top', 'bottom') + margins) * m.d;
-    const line = (inline ? lineOf(st) : 0) * m.d;
+    const line = (inline ? (stLine as number) : 0) * m.d;
     if (!Number.isFinite(deep) || !Number.isFinite(line)) return null;
     const contentTop = box.y + (px(st.borderTopWidth) + px(st.paddingTop)) * m.d;
     const edge = this.flowEdge(layer, which === '::before' ? 'first' : 'last', m.d);
@@ -2948,7 +2954,11 @@ class TabMeasurement {
     }
     // A block after inline content starts at the bottom of that content's
     // last line box: half the line's leading below its last fragment.
-    const leading = edge ? Math.max(0, lineOf(st) * m.d - (edge.bottom - edge.top)) / 2 + 1 : 0;
+    const below = which === '::after' && !inline && edge && !edge.block ? edge : null;
+    if (below && stLine === null) return null;
+    const leading = below
+      ? Math.max(0, (stLine as number) * m.d - (below.bottom - below.top)) / 2 + 1
+      : 0;
     let top = contentTop - Math.abs(px(ps.marginTop)) * m.d;
     let bottom = contentTop + deep + line;
     if (which === '::before' && edge && inline && !edge.block) {
@@ -2968,7 +2978,7 @@ class TabMeasurement {
    * hold its text higher, than `layer`'s own line-height sets it: its in-flow
    * inline content, at any depth, holds an atomic inline (an inline-block, a
    * replaced element, a form control, ruby), or an inline box whose
-   * line-height or font size differs from `layer`'s, or whose vertical-align
+   * line-height, font size or font family differs from `layer`'s, or whose vertical-align
    * is not `baseline`, or that a relative offset moves. Such content is passed
    * over when every client rect of it lies wholly outside `edge`, widened by
    * `layer`'s line-height and the content's own font size (a generous bound
@@ -2976,7 +2986,7 @@ class TabMeasurement {
    * can be the one `edge` is on. It is never passed over when it has a
    * `vertical-align` length or percentage or a `position` other than
    * `static` (an unbounded shift), when it has no client rect, or when
-   * `layer`'s line-height is not a length. True, too, past 512 elements,
+   * `layer`'s line-height is not a length (`normal`, which the font sets). True, too, past 512 elements,
    * which are not all read. `scale` is `layer`'s vertical scale to viewport
    * pixels.
    */
@@ -3026,7 +3036,8 @@ class TabMeasurement {
         const differs =
           cst.verticalAlign !== 'baseline' ||
           cst.lineHeight !== st.lineHeight ||
-          cst.fontSize !== st.fontSize;
+          cst.fontSize !== st.fontSize ||
+          cst.fontFamily !== st.fontFamily;
         if (differs && reaches(child, cst)) return true;
         if (grows(child)) return true;
       }

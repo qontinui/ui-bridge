@@ -1797,6 +1797,113 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     expect(got[3][3]).toContain('contrast ratio 21.00:1');
   }, 60_000);
 
+  it('contrast_meets_wcag: a ::after below a line another font makes taller, or a line-height of normal', async () => {
+    // The fonts are `local()` faces with their metrics overridden, so the line
+    // a face makes does not depend on which of the listed fonts the machine
+    // has. RTall has an ascent of 2em: a span in it, at the same explicit
+    // line-height, lifts its half of the line and makes the line box taller,
+    // so a block ::after after it lies lower than the container's line-height
+    // puts it. RGap has a normal line-height of 2.4em, not the 1.5em the
+    // evaluator once assumed. Each badge is set in the last pixels of the
+    // ::after the band would not reach (its true position read from a clone
+    // with a real block in its place), the page showing black on navy there:
+    // a passed was a false pass, and the verdict is unknown. A container all in
+    // RTall at an explicit line-height is not made taller by it: exact.
+    const face = (name: string, metrics: string): string =>
+      `@font-face { font-family: ${name}; src: local("Liberation Sans"), local("DejaVu Sans"), local("Arial"); ${metrics} }`;
+    const style = `<style>
+      ${face('RTall', 'ascent-override: 200%; descent-override: 0%; line-gap-override: 0%')}
+      ${face('RGap', 'ascent-override: 90%; descent-override: 30%; line-gap-override: 120%')}
+      .c { width: 400px; height: 120px; color: #000 }
+      .c::after { content: ""; display: block; height: 24px; background: rgb(20, 30, 90) }
+      .probe::after { display: none }
+    </style>`;
+    type Row = {
+      id: string;
+      host: string; // the container's inline style
+      content: string;
+      plain: string; // the same content with the offending font taken out
+      family: string;
+      slice: boolean; // badge in the slice the band would miss, else far below the ::after
+      outcome: string;
+    };
+    const rows: Row[] = [
+      {
+        id: 'tallspan',
+        host: 'font: 16px/30px sans-serif',
+        content: 'Some text <span style="font-family: RTall">Tall</span>',
+        plain: 'Some text <span>Tall</span>',
+        family: 'RTall',
+        slice: true,
+        outcome: 'unknown',
+      },
+      {
+        id: 'normalgap',
+        host: 'font: 16px/normal RGap',
+        content: 'Some text here',
+        plain: 'Some text here',
+        family: 'RGap',
+        slice: true,
+        outcome: 'unknown',
+      },
+      {
+        id: 'samefamily',
+        host: 'font: 16px/30px RTall',
+        content: 'Some text <span style="font-family: RTall">more</span>',
+        plain: 'Some text <span>more</span>',
+        family: 'RTall',
+        slice: false,
+        outcome: 'passed',
+      },
+    ];
+    const got: Array<[string, string, string | null]> = [];
+    for (const row of rows) {
+      const page = await openPage(
+        `${style}<div class="c" id="host" style="${row.host}">${row.content}</div>
+         <span data-id="${row.id}" style="position:absolute;left:10px;top:0;font:4px/4px sans-serif;color:#000">PRO</span>`,
+        { width: 800, height: 700 }
+      );
+      const read = await page.evaluate(
+        async ({ family, plain, slice, content }) => {
+          // Precondition: the face really loaded (`check` alone is not a load).
+          const loaded = await document.fonts.load(`16px ${family}`);
+          const ok = loaded.length > 0 && document.fonts.check(`16px ${family}`);
+          const host = document.getElementById('host') as HTMLElement;
+          // Where a real block put after this content lies, relative to the
+          // container's top: with the content, and with the offender taken out.
+          const blockTop = (html: string, hostStyle: string): number => {
+            const probe = document.createElement('div');
+            probe.className = 'c probe';
+            probe.setAttribute('style', hostStyle);
+            probe.innerHTML = `${html}<div style="height:24px"></div>`;
+            document.body.appendChild(probe);
+            const top = (probe.lastElementChild as HTMLElement).getBoundingClientRect().top;
+            const rel = top - probe.getBoundingClientRect().top;
+            probe.remove();
+            return rel;
+          };
+          const style = host.getAttribute('style') as string;
+          const real = blockTop(content, style);
+          const control = blockTop(plain, style.replace(/RTall|RGap/, 'sans-serif'));
+          const hostTop = host.getBoundingClientRect().top + window.scrollY;
+          const badge = document.querySelector('[data-id]:not(#host)') as HTMLElement;
+          badge.style.top = `${slice ? hostTop + real + 24 - 5 : hostTop + 100}px`;
+          return { ok, differs: Math.abs(real - control), slice };
+        },
+        { family: row.family, plain: row.plain, slice: row.slice, content: row.content }
+      );
+      expect(read.ok).toBe(true);
+      // Precondition: without the font, the block would not be where it is.
+      if (row.id !== 'samefamily') expect(read.differs).toBeGreaterThanOrEqual(1);
+      const r = await assertOn(page, [{ type: 'contrast_meets_wcag', element: row.id }]);
+      got.push([row.id, r.results[0].outcome, r.results[0].code ?? null]);
+      await page.close();
+    }
+    expect(got).toEqual(
+      rows.map((row) => [row.id, row.outcome, row.outcome === 'unknown' ? 'input_missing' : null])
+    );
+  }, 90_000);
+
   it('contrast_meets_wcag: a taller line is read only where it can reach the line a ::after sits on', async () => {
     // A paragraph wraps to six lines and ends in a block ::after (navy), under
     // which no badge sits: each badge is on the first line, inside the box and
