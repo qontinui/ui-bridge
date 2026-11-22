@@ -1735,6 +1735,68 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     await page.close();
   }, 60_000);
 
+  it('contrast_meets_wcag: a ::after past a box whose overflow is the viewport’s, and past boxes that really clip', async () => {
+    // A block ::after overflows its box under a badge placed past it; the page
+    // shows black on navy there, where white read beneath it would pass at
+    // 21:1. A body whose `overflow: hidden` propagates to the viewport, and a
+    // root with `overflow: hidden`, clip nothing of their own: unknown. A
+    // plain div that clips, and one that scrolls, stay exact: the ::after is
+    // cut off or reachable only by scrolling, the badge reads black on white.
+    const navy = 'rgb(20, 30, 90)';
+    const rows: Array<[string, string, string]> = [
+      [
+        'bodyhidden',
+        `<style>body { height: 40px; overflow: hidden } body::after { content: ""; display: block; height: 40px; background: ${navy} }</style>
+         <div style="height:30px">Title</div>
+         <span data-id="bodyhidden" style="position:absolute;left:10px;top:60px;color:#000">PRO</span>`,
+        'unknown',
+      ],
+      [
+        'roothidden',
+        `<style>html { height: 60px; overflow: hidden } html::after { content: ""; display: block; height: 40px; background: ${navy} }</style>
+         <div style="height:30px">Title</div>
+         <span data-id="roothidden" style="position:absolute;left:10px;top:60px;color:#000">PRO</span>`,
+        'unknown',
+      ],
+      [
+        'clipdiv',
+        `<style>.c { height: 30px; overflow: hidden; margin-bottom: 60px } .c::after { content: ""; display: block; height: 40px; background: ${navy} }</style>
+         <div class="c">Title</div>
+         <span data-id="clipdiv" style="position:absolute;left:10px;top:50px;color:#000">PRO</span>`,
+        'passed',
+      ],
+      [
+        'scrolldiv',
+        `<style>.c { height: 30px; overflow: auto; margin-bottom: 60px } .c::after { content: ""; display: block; height: 40px; background: ${navy} }</style>
+         <div class="c">Title</div>
+         <span data-id="scrolldiv" style="position:absolute;left:10px;top:50px;color:#000">PRO</span>`,
+        'passed',
+      ],
+    ];
+    const got: Array<[string, string, string | null, string]> = [];
+    for (const [id, body] of rows) {
+      const page = await openPage(body, { width: 800, height: 700 });
+      // Precondition: the fixture really overflows (or clips) as described, so
+      // a pass cannot come from a ::after that never reached the badge.
+      const lay = await page.evaluate(() => ({
+        body: document.body.scrollHeight - document.body.clientHeight,
+        rootH: document.documentElement.offsetHeight,
+      }));
+      if (id === 'bodyhidden') expect(lay.body).toBeGreaterThanOrEqual(30);
+      if (id === 'roothidden') expect(lay.rootH).toBe(60);
+      const r = await assertOn(page, [{ type: 'contrast_meets_wcag', element: id }]);
+      got.push([id, r.results[0].outcome, r.results[0].code ?? null, r.results[0].detail ?? '']);
+      await page.close();
+    }
+    expect(got.map(([id, o]) => [id, o])).toEqual(rows.map(([id, , o]) => [id, o]));
+    expect(got[0][2]).toBe('input_missing');
+    expect(got[0][3]).toContain('<body>::after is laid out in normal flow inside');
+    expect(got[1][2]).toBe('input_missing');
+    expect(got[1][3]).toContain('<html>::after is laid out in normal flow inside');
+    expect(got[2][3]).toContain('contrast ratio 21.00:1');
+    expect(got[3][3]).toContain('contrast ratio 21.00:1');
+  }, 60_000);
+
   it('contrast_meets_wcag: a page backdrop the body draws under a footer fixed below its box', async () => {
     // The body is 40px tall; its fixed ::before backdrop fills the viewport,
     // under a footer fixed at the bottom (the page shows white on navy). The

@@ -2850,10 +2850,19 @@ class TabMeasurement {
   ): VisionRegion | null {
     if (!(layer instanceof HTMLElement)) return box;
     const st = this.style(layer);
-    const past = (scroll: number, client: number, overflow: string): number =>
-      overflow === 'visible' && scroll - client > 1 ? scroll - client : 0;
-    const down = past(layer.scrollHeight, layer.clientHeight, st.overflowY);
-    const across = past(layer.scrollWidth, layer.clientWidth, st.overflowX);
+    // Where the box clips nothing of its own — the root, a body whose overflow
+    // is the viewport's, an inline box, or `overflow: visible` — its content
+    // paints past it. The computed `overflow` is not the test: a `hidden` on
+    // the root or on a propagating body is the viewport's, not the box's.
+    const axes = this.overflowAxes(layer, st);
+    // The root's client size is the viewport's, and its scroll height is at
+    // least the viewport's, so neither says how far its content overflows the
+    // root's own box: read that against its layout box.
+    const root = layer === document.documentElement;
+    const past = (scroll: number, size: number, clipped: Overflow): number =>
+      clipped === null && scroll - size > 1 ? scroll - size : 0;
+    const down = past(layer.scrollHeight, root ? layer.offsetHeight : layer.clientHeight, axes.y);
+    const across = past(layer.scrollWidth, root ? layer.offsetWidth : layer.clientWidth, axes.x);
     const pulled = (v: string): number => Math.max(0, -(pxValue(v) || 0));
     const up = pulled(ps.marginTop);
     const aside = Math.max(pulled(ps.marginLeft), pulled(ps.marginRight));
