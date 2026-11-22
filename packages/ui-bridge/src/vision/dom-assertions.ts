@@ -1056,6 +1056,9 @@ type HitHidden = {
 /** What an element does to its content's overflow on one axis. */
 type Overflow = 'clip' | 'scroll' | null;
 
+/** Font properties besides family and size that change the line a face makes. */
+const FONT_METRIC_PROPS = ['font-weight', 'font-style', 'font-variant', 'font-size-adjust'];
+
 /** The edge a scroll container scrolls from, per axis: `start` is left or top. */
 type ScrollEdge = 'start' | 'end';
 
@@ -2855,14 +2858,21 @@ class TabMeasurement {
     // paints past it. The computed `overflow` is not the test: a `hidden` on
     // the root or on a propagating body is the viewport's, not the box's.
     const axes = this.overflowAxes(layer, st);
-    // The root's client size is the viewport's, and its scroll height is at
-    // least the viewport's, so neither says how far its content overflows the
-    // root's own box: read that against its layout box.
-    const root = layer === document.documentElement;
     const past = (scroll: number, size: number, clipped: Overflow): number =>
       clipped === null && scroll - size > 1 ? scroll - size : 0;
-    const down = past(layer.scrollHeight, root ? layer.offsetHeight : layer.clientHeight, axes.y);
-    const across = past(layer.scrollWidth, root ? layer.offsetWidth : layer.clientWidth, axes.x);
+    let down: number;
+    let across: number;
+    if (layer === document.documentElement) {
+      // The root's client size is the viewport's and its scroll size is at
+      // least the viewport's, so neither says how far its content overflows
+      // the root's own box: read its content's extent instead.
+      const reach = this.rootOverflow(layer, ps, box);
+      if (!reach) return null;
+      ({ down, across } = reach);
+    } else {
+      down = past(layer.scrollHeight, layer.clientHeight, axes.y);
+      across = past(layer.scrollWidth, layer.clientWidth, axes.x);
+    }
     const pulled = (v: string): number => Math.max(0, -(pxValue(v) || 0));
     const up = pulled(ps.marginTop);
     const aside = Math.max(pulled(ps.marginLeft), pulled(ps.marginRight));
@@ -2877,6 +2887,48 @@ class TabMeasurement {
     const right = box.x + box.w + aside * m.a + across * sx;
     const bottom = box.y + box.h + down * sy;
     return { x, y, w: right - x, h: bottom - y };
+  }
+
+  /**
+   * How far the content of the root element `root` extends past its own box,
+   * in layout pixels, down and across: its in-flow children (each to the far
+   * edge of its scrollable overflow and its far margin) and, below them, the
+   * pseudo-element `ps`'s own height. The viewport's size is no part of it.
+   * Null when that is not known: a child a transform moves, a pseudo-element
+   * whose height is not a length, a box with no size.
+   */
+  private rootOverflow(
+    root: HTMLElement,
+    ps: CSSStyleDeclaration,
+    box: VisionRegion
+  ): { down: number; across: number } | null {
+    if (!(root.offsetWidth > 0 && root.offsetHeight > 0)) return null;
+    const sx = box.w / root.offsetWidth;
+    const sy = box.h / root.offsetHeight;
+    if (!(sx > 0 && sy > 0)) return null;
+    const at = root.getBoundingClientRect();
+    let bottom = 0;
+    let right = 0;
+    for (let c = root.firstElementChild; c; c = c.nextElementSibling) {
+      const cst = this.style(c);
+      if (cst.display === 'none') continue;
+      if (cst.transform !== 'none' && cst.transform !== '') return null;
+      const r = c.getBoundingClientRect();
+      bottom = Math.max(
+        bottom,
+        (r.top - at.top) / sy + c.clientTop + c.scrollHeight + (pxValue(cst.marginBottom) || 0)
+      );
+      right = Math.max(
+        right,
+        (r.left - at.left) / sx + c.clientLeft + c.scrollWidth + (pxValue(cst.marginRight) || 0)
+      );
+    }
+    const height = pxValue(ps.height);
+    if (!Number.isFinite(height)) return null;
+    const margins = Math.abs(pxValue(ps.marginTop) || 0) + Math.abs(pxValue(ps.marginBottom) || 0);
+    const down = bottom + height + margins - root.offsetHeight;
+    const across = right - root.offsetWidth;
+    return { down: down > 1 ? down : 0, across: across > 1 ? across : 0 };
   }
 
   /**
@@ -3037,7 +3089,12 @@ class TabMeasurement {
           cst.verticalAlign !== 'baseline' ||
           cst.lineHeight !== st.lineHeight ||
           cst.fontSize !== st.fontSize ||
-          cst.fontFamily !== st.fontFamily;
+          cst.fontFamily !== st.fontFamily ||
+          // Weight, style, variant and size-adjust each change a face's
+          // metrics, and so the line it makes.
+          FONT_METRIC_PROPS.some(
+            (prop) => cst.getPropertyValue(prop) !== st.getPropertyValue(prop)
+          );
         if (differs && reaches(child, cst)) return true;
         if (grows(child)) return true;
       }

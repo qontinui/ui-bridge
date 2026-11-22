@@ -1759,6 +1759,17 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
         'unknown',
       ],
       [
+        // The root clips nothing and its ::after fits: the badge past the box
+        // is exact. align-content bounds the ::after by the box (its place in
+        // the flow is not read), so a spill that carried the viewport's size
+        // past the box would reach the badge and read unknown.
+        'rootfits',
+        `<style>html { height: 100px; overflow: hidden; align-content: center } html::after { content: ""; display: block; height: 14px; background: ${navy} }</style>
+         <div style="height:30px">Title</div>
+         <span data-id="rootfits" style="position:absolute;left:10px;top:110px;color:#000">PRO</span>`,
+        'passed',
+      ],
+      [
         'clipdiv',
         `<style>.c { height: 30px; overflow: hidden; margin-bottom: 60px } .c::after { content: ""; display: block; height: 40px; background: ${navy} }</style>
          <div class="c">Title</div>
@@ -1784,6 +1795,7 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       }));
       if (id === 'bodyhidden') expect(lay.body).toBeGreaterThanOrEqual(30);
       if (id === 'roothidden') expect(lay.rootH).toBe(60);
+      if (id === 'rootfits') expect(lay.rootH).toBe(100);
       const r = await assertOn(page, [{ type: 'contrast_meets_wcag', element: id }]);
       got.push([id, r.results[0].outcome, r.results[0].code ?? null, r.results[0].detail ?? '']);
       await page.close();
@@ -1795,6 +1807,7 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     expect(got[1][3]).toContain('<html>::after is laid out in normal flow inside');
     expect(got[2][3]).toContain('contrast ratio 21.00:1');
     expect(got[3][3]).toContain('contrast ratio 21.00:1');
+    expect(got[4][3]).toContain('contrast ratio 21.00:1');
   }, 60_000);
 
   it('contrast_meets_wcag: a ::after below a line another font makes taller, or a line-height of normal', async () => {
@@ -1846,6 +1859,24 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
         slice: true,
         outcome: 'unknown',
       },
+      ...(
+        [
+          ['weightspan', 'font-weight: 700'],
+          ['italicspan', 'font-style: italic'],
+          ['capsspan', 'font-variant: small-caps'],
+          ['adjustspan', 'font-size-adjust: 0.6'],
+        ] as const
+      ).map(
+        ([id, css]): Row => ({
+          id,
+          host: 'font: 16px/30px RTall',
+          content: `Some text <span style="${css}">more</span>`,
+          plain: 'Some text <span>more</span>',
+          family: 'RTall',
+          slice: false,
+          outcome: 'unknown',
+        })
+      ),
       {
         id: 'samefamily',
         host: 'font: 16px/30px RTall',
@@ -1894,7 +1925,7 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       );
       expect(read.ok).toBe(true);
       // Precondition: without the font, the block would not be where it is.
-      if (row.id !== 'samefamily') expect(read.differs).toBeGreaterThanOrEqual(1);
+      if (row.slice) expect(read.differs).toBeGreaterThanOrEqual(1);
       const r = await assertOn(page, [{ type: 'contrast_meets_wcag', element: row.id }]);
       got.push([row.id, r.results[0].outcome, r.results[0].code ?? null]);
       await page.close();
@@ -2020,6 +2051,23 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
         wrap(Element.prototype, 'children', seen.children, 'lineMayGrow');
         wrap(Node.prototype, 'childNodes', seen.nodes, 'flowEdge');
       });
+      // Positive control: a read made from a frame named lineMayGrow / flowEdge
+      // IS recorded, so the empty arrays below mean no such read, not a spy
+      // that cannot see.
+      const control = await page.evaluate(() => {
+        const seen = (window as unknown as { __seen: { children: number[]; nodes: number[] } })
+          .__seen;
+        const host = document.getElementById('host') as HTMLElement;
+        const lineMayGrow = (): number => host.children.length;
+        const flowEdge = (): number => host.childNodes.length;
+        lineMayGrow();
+        flowEdge();
+        const recorded = { children: [...seen.children], nodes: [...seen.nodes] };
+        seen.children.length = 0;
+        seen.nodes.length = 0;
+        return recorded;
+      });
+      expect(control).toEqual({ children: [n], nodes: [n] });
       const r = await assertOn(page, [{ type: 'contrast_meets_wcag', element: 'badge' }]);
       const seen = await page.evaluate(
         () => (window as unknown as { __seen: { children: number[]; nodes: number[] } }).__seen
