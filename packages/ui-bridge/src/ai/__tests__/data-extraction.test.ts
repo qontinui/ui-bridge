@@ -94,6 +94,14 @@ describe('normalizeValue', () => {
     ['12/31/26', 'date', '2026-12-31'],
     ['16.10.26', 'date', '2026-10-16'],
     ['Sept 16, 2026', 'date', '2026-09-16'],
+    // a leading zero keeps a digit run an id or a phone, zeros intact
+    ['0301234567', 'phone', '0301234567'],
+    // `0,` cannot start a thousands group, so this is a decimal comma
+    ['0,123', 'number', '0.123'],
+    // a minus sign before the currency symbol
+    ['-$5.00', 'currency', '-5'],
+    // a slash date whose first field cannot be a month reads day-first
+    ['25/12/2026', 'date', '2026-12-25'],
     // Indian (lakh) grouping
     ['1,23,456', 'number', '123456'],
     ['₹12,34,567.50', 'currency', '1234567.5'],
@@ -116,6 +124,8 @@ describe('normalizeValue', () => {
     ['approx. 5', 'number', '5'],
     ['1,234 (est.)', 'number', '1234'],
     ['USD 12,50', 'currency', '12.5'],
+    ['- 5', 'number', '-5'],
+    ['approx. -3,5', 'number', '-3.5'],
   ];
 
   it.each(CALLER_TYPED)('normalises caller-typed %j (%s) to %j', (value, type, expected) => {

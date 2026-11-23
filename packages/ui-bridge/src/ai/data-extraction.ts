@@ -64,15 +64,22 @@ export function parseNumberForm(text: string): NumberForm | null {
     return { value, thousands, decimal, decimals: fraction.length };
   };
 
-  // A double holds 15 significant digits exactly. Past that, two different
-  // long ids would read as one number, so such a run is no number.
+  // 15 significant digits is the most a double is guaranteed to round-trip.
+  // Past that, two different long ids may read as one number, so such a run
+  // is no number.
   if (body.replace(/\D/g, '').length > 15) return null;
+
+  // A leading zero before another digit (0301234567, 0001234567) is an id or
+  // a phone, not a number: reading it as one would drop the zeros and merge
+  // distinct ids.
+  if (/^0\d/.test(body)) return null;
 
   // Plain digits.
   if (/^\d+$/.test(body)) return read(body, '', null, null);
 
-  // A lone `,` before exactly three digits: a thousands separator.
-  let f = /^(\d+),(\d{3})$/.exec(body);
+  // A lone `,` before exactly three digits: a thousands separator (`0,123`
+  // has no thousands and reads as a decimal comma below).
+  let f = /^([1-9]\d*),(\d{3})$/.exec(body);
   if (f) return read(`${f[1]},${f[2]}`, '', ',', null);
 
   // A lone `.`: a decimal point.
@@ -80,15 +87,15 @@ export function parseNumberForm(text: string): NumberForm | null {
   if (f) return read(f[1], f[2], null, '.');
 
   // `,` thousands, optional `.` decimal: 1,234,567 / 1,234.56.
-  f = /^(\d{1,3}(?:,\d{3})+)(?:\.(\d+))?$/.exec(body);
+  f = /^([1-9]\d{0,2}(?:,\d{3})+)(?:\.(\d+))?$/.exec(body);
   if (f) return read(f[1], f[2] ?? '', ',', f[2] !== undefined ? '.' : null);
 
   // Indian (lakh) grouping, optional `.` decimal: 1,23,456 / 12,34,567.50.
-  f = /^(\d{1,2}(?:,\d{2})+,\d{3})(?:\.(\d+))?$/.exec(body);
+  f = /^([1-9]\d?(?:,\d{2})+,\d{3})(?:\.(\d+))?$/.exec(body);
   if (f) return read(f[1], f[2] ?? '', ',', f[2] !== undefined ? '.' : null);
 
   // `.` thousands, optional `,` decimal: 1.234.567 / 1.234,56.
-  f = /^(\d{1,3}(?:\.\d{3})+)(?:,(\d+))?$/.exec(body);
+  f = /^([1-9]\d{0,2}(?:\.\d{3})+)(?:,(\d+))?$/.exec(body);
   if (f) return read(f[1], f[2] ?? '', '.', f[2] !== undefined ? ',' : null);
 
   // A `,` decimal with no thousands: 1234,56 / 12,5.
@@ -98,14 +105,16 @@ export function parseNumberForm(text: string): NumberForm | null {
   return null;
 }
 
-const LEADING_CURRENCY = /^[£$€¥₹]\s?(.+)$/;
+/** A leading symbol, optionally after a minus sign: $5, € 12,50, -$5.00. */
+const LEADING_CURRENCY = /^(-?)\s?[£$€¥₹]\s?(.+)$/;
 const TRAILING_CURRENCY = /^(.+?)\s?[£$€¥₹]$/;
 const PERCENTAGE = /^(.+?)\s?%$/;
 
 /** The numeric body of a currency amount, or `null` when it is not one. */
 function currencyBody(text: string): string | null {
   const lead = LEADING_CURRENCY.exec(text);
-  if (lead && parseNumberForm(lead[1])) return lead[1];
+  if (lead && !lead[2].startsWith('-') && parseNumberForm(lead[2])) return lead[1] + lead[2];
+  if (lead && !lead[1] && parseNumberForm(lead[2])) return lead[2];
   const trail = TRAILING_CURRENCY.exec(text);
   if (trail && parseNumberForm(trail[1])) return trail[1];
   return null;
@@ -213,7 +222,11 @@ function isoDateFromParts(text: string): string | null {
     [day, month, year] = [Number(m[1]), Number(m[2]), Number(m[3])];
     if (year < HYPHEN_YEAR_MIN || year > HYPHEN_YEAR_MAX) return null;
   } else if ((m = SLASH_DATE.exec(text))) {
-    [month, day, year] = [Number(m[1]), Number(m[2]), fullYear(m[3])];
+    // Month first, unless the first field cannot be a month and the second
+    // can: 25/12/2026 has only the day-first reading.
+    const [a, b] = [Number(m[1]), Number(m[2])];
+    [month, day] = a > 12 && b <= 12 ? [b, a] : [a, b];
+    year = fullYear(m[3]);
   } else if ((m = MONTH_NAME_DATE.exec(text))) {
     const index = monthIndex(m[1]);
     if (index < 0) return null;
@@ -299,6 +312,14 @@ export function classifyDataType(value: string): { type: DataType; confidence: n
   return { type: 'text', confidence: 0.5 };
 }
 
+/** The first digit run in free text, signed by any minus sign before it. */
+function firstNumericRun(text: string): string {
+  const run = /\d[\d.,]*/.exec(text);
+  if (!run) return '';
+  const sign = /[-−]/.test(text.slice(0, run.index)) ? '-' : '';
+  return sign + run[0].replace(/[.,]+$/, '');
+}
+
 /**
  * Normalize a value for comparison by stripping formatting differences.
  */
@@ -311,14 +332,12 @@ export function normalizeValue(value: string, dataType: DataType): string {
     case 'percentage': {
       // Read the numeric body in whichever decimal convention it was written.
       // A caller may pass a type for text it classified itself (`approx. 5`,
-      // `1,234 (est.)`): read the first numeric run in it, without trailing
-      // separators.
+      // `1,234 (est.)`, `- 5`): read the first numeric run in it, without
+      // trailing separators, negative when a minus sign comes before it.
       const body =
         currencyBody(trimmed) ??
         percentageBody(trimmed) ??
-        (parseNumberForm(trimmed)
-          ? trimmed
-          : (/-?\d[\d.,]*/.exec(trimmed)?.[0] ?? '').replace(/[.,]+$/, ''));
+        (parseNumberForm(trimmed) ? trimmed : firstNumericRun(trimmed));
       const form = parseNumberForm(body);
       return form ? form.value.toString() : trimmed.toLowerCase();
     }
