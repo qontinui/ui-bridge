@@ -174,6 +174,8 @@ function isInteractive(element: HTMLElement): boolean {
 /**
  * Get the accessible name of an element
  */
+// A second accessible-name algorithm beside `core/a11y`'s: recorded as plan-library
+// follow-up edge 322eade0-cff6-460b-9011-4e0e781c712d.
 function getAccessibleName(element: HTMLElement): string | undefined {
   // aria-label takes precedence
   const ariaLabel = readAriaLabelAttr(element);
@@ -256,14 +258,21 @@ function captureElement(
   // §4.6: route the content fields + attribute record through the choke point
   // (`CAPTURE_ATTRIBUTES` literally lists value/alt/title/placeholder/aria-label).
   const verdict = verdictOf(element);
+  const scrubbedText = scrubContent(textContent, element);
+  // The capture is bounded: the canonical state's `textContent` is the whole
+  // subtree's text (`<body>` carries the page), and the render log retains up
+  // to 1000 entries in memory — so the projected state carries the SAME
+  // truncated text as the top-level field, not the untruncated read.
+  const capturedState: ElementState =
+    textContent !== state.textContent ? { ...state, textContent: scrubbedText } : state;
   return {
     identifier,
     bestId: getBestIdentifier(element),
     tagName: element.tagName.toLowerCase(),
     role: element.getAttribute('role') || undefined,
     accessibleName: scrubContent(getAccessibleName(element), element),
-    textContent: scrubContent(textContent, element),
-    state,
+    textContent: scrubbedText,
+    state: capturedState,
     attributes: scrubRecord(captureAttributes(element), verdict),
     childCount: element.children.length,
     depth,
