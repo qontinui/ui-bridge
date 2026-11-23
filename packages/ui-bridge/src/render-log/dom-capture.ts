@@ -8,25 +8,19 @@ import type { ElementIdentifier, ElementState } from '../core/types';
 import type { Scrubbed } from '../core/redaction';
 import {
   BRIDGE_REDACT_ATTR,
-  elementRedaction,
   scrubContent,
   scrubRecord,
-  scrubSelectState,
   verdictFailClosed,
   verdictOf,
-  readScrubbedValue,
   readScrubbedText,
 } from '../core/redaction';
-import {
-  readAriaLabelAttr,
-  readAriaLabelledbyAttr,
-  readTitleAttr,
-  isInteractionBlocked,
-  readInteractionBlockers,
-} from '../core/a11y';
+import { readAriaLabelAttr, readAriaLabelledbyAttr, readTitleAttr } from '../core/a11y';
+// The ONE `ElementState` reader (plan
+// `2026-11-08-ui-bridge-element-state-has-two-readers-and-no-aria-busy`, D1):
+// a captured element's `state` is the same state the registry snapshot reports.
+import { getElementState } from '../core/element-state';
 import { createElementIdentifier, getBestIdentifier } from '../core/element-identifier';
 import { truncateCodePoints } from '../core/text';
-import { projectComputedStyles } from '../core/computed-styles';
 import { pageViewportContext } from '../control/page-scroll-container';
 
 /**
@@ -226,95 +220,6 @@ function getAccessibleName(element: HTMLElement): string | undefined {
 }
 
 /**
- * Get element state
- */
-function getElementState(element: HTMLElement): ElementState {
-  const rect = element.getBoundingClientRect();
-  const style = window.getComputedStyle(element);
-
-  // The interaction blockers, unfolded once (`enabled` below is the derived
-  // fold). Same helper in every serializer AND in the click-path pre-check —
-  // see `core/a11y`.
-  const disabledSignals = readInteractionBlockers(element, style);
-
-  const state: ElementState = {
-    visible: isVisible(element, rect, style),
-    enabled: !isInteractionBlocked(disabledSignals),
-    disabled: disabledSignals.disabled,
-    ariaDisabled: disabledSignals.ariaDisabled,
-    focused: document.activeElement === element,
-    rect: {
-      x: rect.x,
-      y: rect.y,
-      width: rect.width,
-      height: rect.height,
-      top: rect.top,
-      right: rect.right,
-      bottom: rect.bottom,
-      left: rect.left,
-    },
-    computedStyles: projectComputedStyles(style),
-  };
-
-  // Normalized 0–1 viewport coordinates for resolution-independent targeting
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
-  if (vw > 0 && vh > 0) {
-    state.normalizedRect = {
-      x: rect.x / vw,
-      y: rect.y / vh,
-      width: rect.width / vw,
-      height: rect.height / vh,
-    };
-  }
-
-  // Input-specific state. §4.6 VALUE axis — this render-log capture is a
-  // debugging projection and must not persist a boundary/password value.
-  const verdict = verdictOf(element);
-  if (element instanceof HTMLInputElement) {
-    state.value = readScrubbedValue(element, verdict);
-    if (element.type === 'checkbox' || element.type === 'radio') {
-      state.checked = element.checked;
-    }
-  } else if (element instanceof HTMLTextAreaElement) {
-    state.value = readScrubbedValue(element, verdict);
-  } else if (element instanceof HTMLSelectElement) {
-    // §4.6: shared option-list scrub — uniform COUNT-collapse-when-redacted
-    // (was: preserved count + selected index on this render-log path).
-    const sel = scrubSelectState(element, verdict);
-    state.value = sel.value;
-    state.selectedOptions = sel.selectedOptions;
-    state.availableOptions = sel.availableOptions;
-  }
-
-  // §4.6 provenance stamp — the shared `elementRedaction` marker every
-  // `getElementState`-shaped builder sets (mirrors `core/registry.ts` and
-  // `control/action-executor.ts`). Without it, a DOM-less consumer that later
-  // calls `verdictFromState` on a render-log `state` reads "not redacted" on
-  // both axes even for a boundary/password element. Omitted when neither axis
-  // applies (absent === not redacted).
-  const redaction = elementRedaction(element);
-  if (redaction) state.redaction = redaction;
-
-  return state;
-}
-
-function isVisible(element: HTMLElement, rect: DOMRect, style: CSSStyleDeclaration): boolean {
-  if (rect.width === 0 || rect.height === 0) return false;
-  if (style.display === 'none') return false;
-  if (style.visibility === 'hidden') return false;
-  if (parseFloat(style.opacity) === 0) return false;
-  if (element.getAttribute('aria-hidden') === 'true') return false;
-
-  return (
-    rect.top < window.innerHeight &&
-    rect.bottom > 0 &&
-    rect.left < window.innerWidth &&
-    rect.right > 0
-  );
-}
-
-/**
  * Capture attributes from an element
  */
 function captureAttributes(element: HTMLElement): Record<string, string> {
@@ -333,6 +238,7 @@ function captureAttributes(element: HTMLElement): Record<string, string> {
  */
 function captureElement(
   element: HTMLElement,
+  state: ElementState,
   depth: number,
   maxTextLength: number
 ): CapturedElement {
@@ -352,7 +258,7 @@ function captureElement(
     role: element.getAttribute('role') || undefined,
     accessibleName: scrubContent(getAccessibleName(element), element),
     textContent: scrubContent(textContent, element),
-    state: getElementState(element),
+    state,
     attributes: scrubRecord(captureAttributes(element), verdict),
     childCount: element.children.length,
     depth,
@@ -413,13 +319,6 @@ export function captureDOMSnapshot(options: CaptureOptions = {}): DOMSnapshot {
     // Check interactive only
     if (interactiveOnly && !isInteractive(element)) return false;
 
-    // Check visibility
-    if (!includeHidden) {
-      const rect = element.getBoundingClientRect();
-      const style = window.getComputedStyle(element);
-      if (!isVisible(element, rect, style)) return false;
-    }
-
     return true;
   }
 
@@ -429,7 +328,15 @@ export function captureDOMSnapshot(options: CaptureOptions = {}): DOMSnapshot {
     totalNodeCount++;
 
     if (shouldCapture(element)) {
-      elements.push(captureElement(element, depth, maxTextLength));
+      // The state is read ONCE per element, by the canonical reader, and the
+      // visibility filter reads its `visible` — so a captured element's
+      // `state.visible` and the reason it was captured cannot disagree, and
+      // both match the registry snapshot (occlusion-aware, `opacity: 0` is
+      // hidden; `aria-hidden` is an a11y-tree fact, not a visibility one).
+      const state = getElementState(element);
+      if (includeHidden || state.visible) {
+        elements.push(captureElement(element, state, depth, maxTextLength));
+      }
     }
 
     // Traverse children

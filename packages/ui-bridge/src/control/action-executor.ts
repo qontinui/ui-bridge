@@ -15,10 +15,17 @@ import {
   scrollIntoViewVerified,
   noScrollIntoViewMessage,
 } from './scroll-visibility';
-import { projectComputedStyles } from '../core/computed-styles';
 import type { UIBridgeRegistry } from '../core/registry';
 import { serializeRegisteredElement, serializeRegisteredComponent } from '../core/registry';
 import { serializeElementCustomActions } from '../core/element-actions';
+// The ONE `ElementState` reader — the same one behind every registry snapshot
+// entry. This file used to carry a private copy whose `visible` was
+// occlusion-blind and counted `opacity: 0` as visible, so an action response
+// or a wait could contradict the snapshot taken a moment earlier (plan
+// `2026-11-08-ui-bridge-element-state-has-two-readers-and-no-aria-busy`, D1).
+// It reads the LIVE element, not the registry's action overlay: a wait must
+// observe fields change, and the overlay freezes the ones an action wrote.
+import { getElementState } from '../core/element-state';
 import type {
   WaitOptions,
   ElementState,
@@ -90,15 +97,11 @@ import {
   normalizeKeyDescriptors,
 } from '../core/key-events';
 import {
-  elementRedaction,
   verdictOf,
   scrubContent,
-  scrubContentByVerdict,
-  scrubSelectState,
   scrubReactProps,
   scrubMediaMetadata,
   isContentRedacted,
-  readScrubbedValue,
   readScrubbedText,
   isValueRedacted,
   verdictFailClosed,
@@ -318,163 +321,6 @@ const DEFAULT_WAIT_OPTIONS: Required<WaitOptions> = {
   timeout: 10000,
   interval: 100,
 };
-
-/**
- * Get element state for an HTML element
- */
-function getElementState(element: HTMLElement): ElementState {
-  const rect = element.getBoundingClientRect();
-  const style = window.getComputedStyle(element);
-
-  // The interaction blockers, unfolded once (`enabled` below is the derived
-  // fold). Same helper in every serializer AND in `getClickRefusal`
-  // below — see `core/a11y` — so this reader publishes exactly the verdict the
-  // click path will reach.
-  const disabledSignals = readInteractionBlockers(element, style);
-
-  const state: ElementState = {
-    visible: isVisible(element, rect, style),
-    enabled: !isInteractionBlocked(disabledSignals),
-    disabled: disabledSignals.disabled,
-    ariaDisabled: disabledSignals.ariaDisabled,
-    focused: document.activeElement === element,
-    rect: {
-      x: rect.x,
-      y: rect.y,
-      width: rect.width,
-      height: rect.height,
-      top: rect.top,
-      right: rect.right,
-      bottom: rect.bottom,
-      left: rect.left,
-    },
-    computedStyles: projectComputedStyles(style),
-  };
-
-  // Normalized 0–1 viewport coordinates for resolution-independent targeting
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
-  if (vw > 0 && vh > 0) {
-    state.normalizedRect = {
-      x: rect.x / vw,
-      y: rect.y / vh,
-      width: rect.width / vw,
-      height: rect.height / vh,
-    };
-  }
-
-  // §4.6 two-axis verdict, computed once — this control-side builder (#5 in
-  // the plan) now SCRUBS through the choke point, not just stamps.
-  const verdict = verdictOf(element);
-
-  // Populate textContent from the element's visible text (CONTENT axis).
-  // Reads textContent internally, trims, collapses whitespace, truncates to 500,
-  // then scrubs the CONTENT axis through the choke point.
-  state.textContent = readScrubbedText(element, verdict, {
-    normalizeWhitespace: true,
-    maxLen: 500,
-  });
-
-  // Fallback for icon-only elements (no textContent but has aria-label/title).
-  // §4.6: re-reads raw aria-label/title — must scrub or the boundary's secret
-  // is resurrected here.
-  if (!state.textContent) {
-    state.textContent = scrubContentByVerdict(
-      readAriaLabelAttr(element) || readTitleAttr(element) || undefined,
-      verdict
-    );
-  }
-
-  // Opacity hidden detection
-  const opacityVal = parseFloat(style.opacity);
-  if (opacityVal === 0) {
-    state.opacityHidden = true;
-  }
-
-  // ARIA state attributes
-  const ariaSelected = element.getAttribute('aria-selected');
-  if (ariaSelected !== null) {
-    state.ariaSelected = ariaSelected === 'true';
-  }
-  const ariaPressed = element.getAttribute('aria-pressed');
-  if (ariaPressed !== null) {
-    state.ariaPressed = ariaPressed === 'mixed' ? 'mixed' : ariaPressed === 'true';
-  }
-  const ariaCurrent = element.getAttribute('aria-current');
-  if (ariaCurrent !== null && ariaCurrent !== 'false') {
-    state.ariaCurrent = ariaCurrent;
-  }
-  const ariaExpanded = element.getAttribute('aria-expanded');
-  if (ariaExpanded !== null) {
-    state.ariaExpanded = ariaExpanded === 'true';
-  } else if (element instanceof HTMLDetailsElement) {
-    state.ariaExpanded = element.open;
-  } else if (element.tagName === 'SUMMARY') {
-    const parentDetails = element.closest('details');
-    if (parentDetails instanceof HTMLDetailsElement) {
-      state.ariaExpanded = parentDetails.open;
-    }
-  }
-  // Capture aria-checked for role="switch" and similar toggle elements
-  const ariaCheckedAttr = element.getAttribute('aria-checked');
-  if (ariaCheckedAttr !== null) {
-    state.ariaChecked = ariaCheckedAttr === 'mixed' ? 'mixed' : ariaCheckedAttr === 'true';
-    // Also populate checked for switch/checkbox roles so callers get a consistent boolean
-    const role = element.getAttribute('role');
-    if (
-      role === 'switch' ||
-      role === 'checkbox' ||
-      role === 'menuitemcheckbox' ||
-      role === 'menuitemradio' ||
-      role === 'radio'
-    ) {
-      state.checked = ariaCheckedAttr === 'true';
-    }
-  }
-
-  if (element instanceof HTMLInputElement) {
-    state.value = readScrubbedValue(element, verdict);
-    if (element.type === 'checkbox' || element.type === 'radio') {
-      state.checked = element.checked;
-    }
-  } else if (element instanceof HTMLTextAreaElement) {
-    state.value = readScrubbedValue(element, verdict);
-  } else if (element instanceof HTMLSelectElement) {
-    // §4.6: shared option-list scrub — uniform COUNT-collapse-when-redacted
-    // across all three builders (was: preserved count + selected index here,
-    // under-redacting cardinality on the /control/discover path).
-    const sel = scrubSelectState(element, verdict);
-    state.value = sel.value;
-    state.selectedOptions = sel.selectedOptions;
-    state.availableOptions = sel.availableOptions;
-  }
-
-  // §4.6 provenance — stamp the redaction verdict as DATA (behaviour-neutral;
-  // an optional field). NOTE: this control-side `getElementState` does not yet
-  // SCRUB `state.value`/`state.textContent` — that is builder #5 in the plan
-  // and is closed in Phase 3. Stamping the verdict now is what lets the Phase-3
-  // brand/`verdictFromState` wiring see this producer at all; it does not
-  // change any wire bytes today.
-  const redaction = elementRedaction(element);
-  if (redaction) state.redaction = redaction;
-
-  return state;
-}
-
-function isVisible(element: HTMLElement, rect: DOMRect, style: CSSStyleDeclaration): boolean {
-  if (rect.width === 0 || rect.height === 0) return false;
-  if (style.display === 'none') return false;
-  if (style.visibility === 'hidden') return false;
-  // Note: opacity: 0 elements are NOT excluded. They are interactive elements
-  // (e.g., close buttons revealed on hover) that should be discoverable.
-  // They are marked with opacityHidden: true in getElementState() instead.
-  return (
-    rect.top < window.innerHeight &&
-    rect.bottom > 0 &&
-    rect.left < window.innerWidth &&
-    rect.right > 0
-  );
-}
 
 /**
  * The folded "anything blocks interaction" predicate, for the interactability
@@ -1646,6 +1492,10 @@ export class DefaultActionExecutor implements ActionExecutor {
           return {
             success: false,
             error: message,
+            // The state the last poll read — the canonical reading, so a caller
+            // sees WHY the wait failed (`visibilityReason: 'occluded'`, …)
+            // rather than only that it did.
+            elementState: waitResult.state,
             failureDetails: buildActionFailureDetails('UB-ACTION-TIMEOUT', message, {
               elementId,
               waitCondition,

@@ -7,10 +7,12 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import type { RegisteredElement, ElementState, ElementIdentifier } from '../core/types';
 import { createElementIdentifier, getBestIdentifier } from '../core/element-identifier';
-import { isInteractionBlocked, readInteractionBlockers } from '../core/a11y';
 import { getGlobalAnnotationStore } from '../annotations';
-import { verdictOf, scrubValueByVerdict } from '../core/redaction';
-import { projectComputedStyles } from '../core/computed-styles';
+// The ONE `ElementState` reader (plan
+// `2026-11-08-ui-bridge-element-state-has-two-readers-and-no-aria-busy`, D1):
+// the inspector shows the state the registry snapshot reports, not a private
+// reading whose `visible` had no viewport, visibility or occlusion arm.
+import { getElementState } from '../core/element-state';
 
 /**
  * Inspector state
@@ -102,63 +104,6 @@ const labelKeyStyles: React.CSSProperties = {
 const valueStyles: React.CSSProperties = {
   color: '#60a5fa',
 };
-
-/**
- * Get element state
- */
-function getElementState(element: HTMLElement): ElementState {
-  const rect = element.getBoundingClientRect();
-  const style = window.getComputedStyle(element);
-
-  // The interaction blockers, unfolded once (`enabled` below is the derived
-  // fold). Same helper in every serializer AND in the click-path pre-check —
-  // see `core/a11y`.
-  // NOTE: this previously ignored `aria-disabled` entirely, so the inspector
-  // showed "enabled" for ARIA-disabled controls the other serializers called
-  // disabled.
-  const disabledSignals = readInteractionBlockers(element, style);
-
-  const state: ElementState = {
-    visible: rect.width > 0 && rect.height > 0 && style.display !== 'none',
-    enabled: !isInteractionBlocked(disabledSignals),
-    disabled: disabledSignals.disabled,
-    ariaDisabled: disabledSignals.ariaDisabled,
-    focused: document.activeElement === element,
-    rect: {
-      x: rect.x,
-      y: rect.y,
-      width: rect.width,
-      height: rect.height,
-      top: rect.top,
-      right: rect.right,
-      bottom: rect.bottom,
-      left: rect.left,
-    },
-    computedStyles: projectComputedStyles(style),
-  };
-
-  // Normalized 0–1 viewport coordinates for resolution-independent targeting
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
-  if (vw > 0 && vh > 0) {
-    state.normalizedRect = {
-      x: rect.x / vw,
-      y: rect.y / vh,
-      width: rect.width / vw,
-      height: rect.height / vh,
-    };
-  }
-
-  if (element instanceof HTMLInputElement) {
-    // §4.6: even the debug inspector must not surface a boundary/password value.
-    state.value = scrubValueByVerdict(element.value, verdictOf(element));
-    if (element.type === 'checkbox' || element.type === 'radio') {
-      state.checked = element.checked;
-    }
-  }
-
-  return state;
-}
 
 /**
  * Inspector overlay component
