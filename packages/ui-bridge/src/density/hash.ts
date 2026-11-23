@@ -163,10 +163,11 @@ export function sha256DensityHex(text: string): string {
  * it — a parsed JSON document never holds one.
  */
 export function canonicalDensityJson(value: unknown): string {
-  return serialize(value, '$');
+  return serialize(value, '$', new Set<object>());
 }
 
-function serialize(value: unknown, path: string): string {
+/** Only what JSON.parse can produce has a canonical form: plain objects and dense arrays. */
+function serialize(value: unknown, path: string, open: Set<object>): string {
   if (value === null) return 'null';
   switch (typeof value) {
     case 'boolean':
@@ -182,28 +183,47 @@ function serialize(value: unknown, path: string): string {
       utf8Bytes(value);
       return JSON.stringify(value);
     case 'object': {
-      if (Array.isArray(value)) {
-        return '[' + value.map((v, i) => serialize(v, `${path}[${i}]`)).join(',') + ']';
+      if (open.has(value)) throw new DensityHashError(`${path}: a cycle has no JSON form`);
+      open.add(value);
+      try {
+        if (Array.isArray(value)) {
+          const parts: string[] = [];
+          for (let i = 0; i < value.length; i++) {
+            if (!(i in value))
+              throw new DensityHashError(`${path}[${i}]: an array hole has no JSON form`);
+            parts.push(serialize(value[i], `${path}[${i}]`, open));
+          }
+          return '[' + parts.join(',') + ']';
+        }
+        const proto = Object.getPrototypeOf(value) as unknown;
+        if (proto !== Object.prototype && proto !== null) {
+          throw new DensityHashError(`${path}: only a plain object has a canonical JSON form`);
+        }
+        return serializeRecord(value as Record<string, unknown>, path, open);
+      } finally {
+        open.delete(value);
       }
-      const record = value as Record<string, unknown>;
-      // Default sort compares UTF-16 code units, which is exactly RFC 8785 §3.2.3.
-      const keys = Object.keys(record)
-        .filter((k) => record[k] !== undefined)
-        .sort();
-      return (
-        '{' +
-        keys
-          .map((k) => {
-            utf8Bytes(k);
-            return JSON.stringify(k) + ':' + serialize(record[k], `${path}.${k}`);
-          })
-          .join(',') +
-        '}'
-      );
     }
     default:
       throw new DensityHashError(`${path}: a ${typeof value} has no JSON form`);
   }
+}
+
+function serializeRecord(record: Record<string, unknown>, path: string, open: Set<object>): string {
+  // Default sort compares UTF-16 code units, which is exactly RFC 8785 section 3.2.3.
+  const keys = Object.keys(record)
+    .filter((k) => record[k] !== undefined)
+    .sort();
+  return (
+    '{' +
+    keys
+      .map((k) => {
+        utf8Bytes(k);
+        return JSON.stringify(k) + ':' + serialize(record[k], `${path}.${k}`, open);
+      })
+      .join(',') +
+    '}'
+  );
 }
 
 /** SHA-256 hex of the RFC 8785 form of `value` — the hash every density id-by-content uses. */

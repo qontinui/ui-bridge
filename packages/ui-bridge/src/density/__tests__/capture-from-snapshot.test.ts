@@ -78,6 +78,26 @@ const BUYER_TARGETS = () =>
     ],
   });
 
+const TEXT_ONLY_TARGETS = () =>
+  targets({
+    roles: [
+      {
+        role: 'buyer',
+        asks: [
+          {
+            id: 'B1',
+            rank: 1,
+            weight: 1,
+            kind: 'lookup',
+            question: 'Where is x?',
+            source: { doc: 'audience_profile/synthetic@1', quote: 'Buyers look for x.' },
+            answer: { text: 'x' },
+          },
+        ],
+      },
+    ],
+  });
+
 describe('captureDensityFromSnapshot', () => {
   it('runs with no DOM', () => {
     expect(typeof document).toBe('undefined');
@@ -223,6 +243,104 @@ describe('captureDensityFromSnapshot', () => {
     expect(one({ id: 'app.total', ...extra }).authorId).toBe(true);
   });
 
+  it('an auto-registered element is not author-identified by the stamp the registrar writes', () => {
+    expect(one({ id: 'button-save', origin: 'auto', uiBridgeId: 'button-save' }).authorId).toBe(
+      false
+    );
+    expect(one({ id: 'x', origin: 'auto', dataset: { uiBridgeId: 'x' } }).authorId).toBe(false);
+  });
+
+  it('an auto-registered element with an author-only attribute is author-identified', () => {
+    expect(
+      one({ id: 'app.total', origin: 'auto', dataset: { uiBridgeContent: 'app.total' } }).authorId
+    ).toBe(true);
+    expect(
+      one({ id: 'app.t', origin: 'auto', dataset: { uiBridgeTestId: 'app.t' } }).authorId
+    ).toBe(true);
+  });
+
+  it('a hook registration is author-identified by construction', () => {
+    expect(one({ id: 'app.orders', origin: 'hook' }).authorId).toBe(true);
+  });
+
+  it('a stamp with no origin falls back to the stamp, and the coverage says so', () => {
+    const obs = capture(densityTestSnapshot({ elements: [{ id: 'app.a', uiBridgeId: 'app.a' }] }));
+    if (obs.status !== 'measured') throw new Error(obs.status);
+    expect(obs.value.items[0].authorId).toBe(true);
+    expect(obs.provenance.coverage.unmeasured).toEqual([
+      { dimension: 'origin', count: 1, code: 'input_missing' },
+    ]);
+  });
+
+  it('an element with no state: its text is unknown, never empty', () => {
+    const snapshot = densityTestSnapshot({ elements: [{ id: 'app.a', text: 'x' }] });
+    delete (snapshot.elements[0] as { state?: unknown }).state;
+    const obs = capture(snapshot, { role: 'buyer', targets: TEXT_ONLY_TARGETS() });
+    if (obs.status !== 'measured') throw new Error(obs.status);
+    expect(obs.value.items[0].chars).toBeNull();
+    expect(obs.provenance.coverage.unmeasured).toContainEqual({
+      dimension: 'text',
+      count: 1,
+      code: 'input_missing',
+    });
+    expect(Object.values(obs.value.textMatches)).toEqual([{ ids: [], unevaluated: 1 }]);
+  });
+
+  it('a timestamp outside the Date range is no sample time, not a throw', () => {
+    const obs = capture(densityTestSnapshot({ elements: [{ id: 'app.a' }], takenAtMs: 1e20 }));
+    expect(obs.status).toBe('measured');
+    if (obs.status !== 'measured') return;
+    expect(obs.value.observedAt).toBeNull();
+    expect(obs.provenance.observedAt).toBeNull();
+  });
+
+  it('an adapter that throws answers unknown{producer_failed}, never an exception', () => {
+    // A hand-built targets value the parser would refuse: a lone surrogate has no hash.
+    const bad = { ...TEXT_ONLY_TARGETS(), surface: String.fromCharCode(0xd800) };
+    const obs = capture(densityTestSnapshot({ elements: [{ id: 'app.a' }] }), { targets: bad });
+    expect(obs.status).toBe('unknown');
+    if (obs.status !== 'unknown') return;
+    expect(obs.unknown.code).toBe('producer_failed');
+    expect(obs.provenance.observedAt).toBeNull();
+  });
+
+  it('a throw after the sample time was read still answers producer_failed, with no sample time', () => {
+    const snapshot = densityTestSnapshot({ elements: [{ id: 'app.a' }] });
+    Object.defineProperty(snapshot.elements[0], 'state', {
+      get: () => {
+        throw new Error('synthetic getter failure');
+      },
+    });
+    const obs = capture(snapshot);
+    expect(obs.status).toBe('unknown');
+    if (obs.status !== 'unknown') return;
+    expect(obs.unknown.code).toBe('producer_failed');
+    expect(obs.unknown.detail).toContain('synthetic getter failure');
+    expect(obs.provenance.observedAt).toBeNull();
+  });
+
+  it('a role probe whose item is redacted: unknown{input_missing}', () => {
+    const obs = capture(
+      densityTestSnapshot({ elements: [{ id: 'app.header.role', text: 'Buyer', redacted: true }] }),
+      { role: 'buyer', targets: BUYER_TARGETS() }
+    );
+    expect(obs.status).toBe('unknown');
+    if (obs.status !== 'unknown') return;
+    expect(obs.unknown.code).toBe('input_missing');
+    expect(obs.unknown.detail).toContain('redacted');
+  });
+
+  it('a duplicate element id becomes one item, and the duplicate is counted', () => {
+    const obs = capture(densityTestSnapshot({ elements: [{ id: 'app.a' }, { id: 'app.a' }] }));
+    if (obs.status !== 'measured') throw new Error(obs.status);
+    expect(obs.value.items.map((i) => i.id)).toEqual(['app.a']);
+    expect(obs.provenance.coverage).toEqual({
+      considered: 2,
+      measured: 1,
+      unmeasured: [{ dimension: 'id', count: 1, code: 'input_missing' }],
+    });
+  });
+
   it('an element with no author-id carrier has authorId false', () => {
     expect(one({ id: 'auto-17', dataset: { testid: 'x' } }).authorId).toBe(false);
   });
@@ -360,6 +478,12 @@ describe('captureDensityFromSnapshot', () => {
       one({ id: 'app.a', scrollWidth: 122, clientWidth: 120, styles: { overflow: 'hidden' } })
         .truncated
     ).toBe(true);
+  });
+
+  it('a blank computed overflow is unmeasurable truncation, not a verdict', () => {
+    expect(
+      one({ id: 'app.a', scrollWidth: 400, clientWidth: 120, styles: { overflow: '' } }).truncated
+    ).toBeNull();
   });
 
   it('overflow visible is never truncation, however wide the content', () => {
@@ -552,6 +676,18 @@ describe('captureDensityFromSnapshot', () => {
       considered: 2,
       measured: 1,
       unmeasured: [{ dimension: 'id', count: 1, code: 'input_missing' }],
+    });
+  });
+
+  it('the capture parser refuses an impossible observedAt', () => {
+    const c = measured(densityTestSnapshot({ elements: [{ id: 'app.a' }] }));
+    const r = parseDensityCapture({
+      ...JSON.parse(JSON.stringify(c)),
+      observedAt: '2026-02-30T09:00:00Z',
+    });
+    expect(r).toEqual({
+      ok: false,
+      problems: [{ path: '$.observedAt', message: 'must be an RFC 3339 date-time or null' }],
     });
   });
 

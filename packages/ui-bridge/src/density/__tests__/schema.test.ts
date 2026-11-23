@@ -132,6 +132,16 @@ describe('parseDensityTargets', () => {
     ]);
   });
 
+  it('refuses a lone surrogate, which would have no hash', () => {
+    const r = parseDensityTargets({ ...TARGETS, surface: 'x' + String.fromCharCode(0xd800) });
+    expect(r).toEqual({
+      ok: false,
+      problems: [
+        { path: '$.surface', message: 'must not hold a lone surrogate (it has no UTF-8 form)' },
+      ],
+    });
+  });
+
   it('refuses a non-object', () => {
     expect(parseDensityTargets([])).toEqual({
       ok: false,

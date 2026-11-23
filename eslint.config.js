@@ -403,7 +403,21 @@ export default tseslint.config(
     rules: {
       'no-restricted-globals': [
         'error',
-        ...['document', 'window', 'navigator', 'getComputedStyle'].map((name) => ({
+        ...[
+          'document',
+          'window',
+          'self',
+          'globalThis',
+          'navigator',
+          'location',
+          'localStorage',
+          'sessionStorage',
+          'getComputedStyle',
+          'fetch',
+          'TextEncoder',
+          'TextDecoder',
+          'crypto',
+        ].map((name) => ({
           name,
           message: `The density core is pure: no DOM (${name}). Code that touches the page lives in src/density-dom/ (plan D-F).`,
         })),
@@ -411,6 +425,20 @@ export default tseslint.config(
           name,
           message: `The density core is pure: no Node (${name}). It is copied into ui-bridge-headless and must run anywhere.`,
         })),
+      ],
+      // A core file imports only its siblings and the envelope (the copy into
+      // headless resolves nothing else); a package or Node builtin is refused.
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              regex: '^(?!\\./[a-z-]+$|\\.\\./observation/observation$)',
+              message:
+                'The density core imports only its siblings (./x) and ../observation/observation: the directory is copied verbatim into ui-bridge-headless.',
+            },
+          ],
+        },
       ],
     },
   }

@@ -132,6 +132,20 @@ describe('density hash', () => {
     expect(() => canonicalDensityJson(() => 1)).toThrow(DensityHashError);
   });
 
+  it('canonical JSON refuses what JSON.parse cannot produce: cycles, holes, non-plain objects', () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    expect(() => canonicalDensityJson(cyclic)).toThrow(DensityHashError);
+    // eslint-disable-next-line no-sparse-arrays
+    expect(() => canonicalDensityJson([1, , 3])).toThrow(DensityHashError);
+    expect(() => canonicalDensityJson({ at: new Date(0) })).toThrow(DensityHashError);
+    expect(() => canonicalDensityJson(new Map())).toThrow(DensityHashError);
+    // A shared (non-cyclic) reference is fine.
+    const shared = { a: 1 };
+    expect(canonicalDensityJson({ x: shared, y: shared })).toBe('{"x":{"a":1},"y":{"a":1}}');
+    expect(canonicalDensityJson(Object.create(null) as object)).toBe('{}');
+  });
+
   it('a hash does not depend on key order', () => {
     expect(hashDensityCanonical({ a: 1, b: 2 })).toBe(hashDensityCanonical({ b: 2, a: 1 }));
     expect(hashDensityCanonical({ a: 1, b: 2 })).toBe(sha256DensityHex('{"a":1,"b":2}'));
