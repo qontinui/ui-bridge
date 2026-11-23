@@ -25,6 +25,15 @@
 //      is refused, however its `files` are written.
 //   3. The SDK files the whole config ignores are returned, so the caller can
 //      ratchet them against the committed manifest.
+//   4. What actually RUNS is observed, not inferred: for every SDK file the
+//      sanctioned Layer-1 (or projection) block reaches, a canary carrying one
+//      violation per selector is linted with `lintText` through the same
+//      config lookup the CLI uses (so a nested `eslint.config.*`, a processor,
+//      a parser or a language override that blanks the code is seen), and
+//      every one of that block's selector messages must come back.
+//   5. The sanctioned blocks' selector lists are returned, so the caller can
+//      ratchet them (dropping a selector family from both blocks at once
+//      would otherwise pass every structural check above).
 //
 // Plan 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change
 // (follow-up 0df8fd16; coord finding 9e2ca54a).
@@ -39,6 +48,32 @@ const SANCTIONED_KEYS = new Set(['files', 'ignores', 'rules', 'name']);
 const MATCH_KEYS = ['files', 'ignores', 'basePath'];
 const PROBE_MESSAGE = 'redaction-guard-reach probe';
 const MAX_EXAMPLES = 3;
+
+/**
+ * One violation of every §4.6 Layer-1 selector (and, at the end, the two
+ * Layer-2 reads). Linted as each guarded file's text, never written to disk.
+ * A selector added to the sanctioned blocks without a matching line here makes
+ * every guarded file miss it: extend this canary.
+ */
+const CANARY = [
+  'declare const el: any;',
+  'declare const x: unknown;',
+  'type Scrubbed = string;',
+  "el.className.split(' ');",
+  'el?.className.trim();',
+  "el.getAttribute('aria-label');",
+  'void el.innerText;',
+  'void (x as Scrubbed);',
+  'void el.__reactProps$canary;',
+  "void ('disabled' in el);",
+  'void (el as HTMLButtonElement).disabled;',
+  'void el.ariaDisabled;',
+  "el.getAttribute('aria-disabled');",
+  'void getComputedStyle(el).pointerEvents;',
+  'void el.value;',
+  'void el.textContent;',
+  '',
+].join('\n');
 
 function isPlainObject(v) {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -72,11 +107,45 @@ function setsRule(block) {
   return isPlainObject(block.rules) && Object.prototype.hasOwnProperty.call(block.rules, RULE);
 }
 
-/** `[severity, ...selectors]` of a rule value, or null when it is not an enabled error. */
-function errorSelectors(value) {
+/** The selector entries of a rule value, or null when it is not an enabled error. */
+function errorEntries(value) {
   if (!Array.isArray(value) || value.length === 0) return null;
   if (value[0] !== 'error' && value[0] !== 2) return null;
-  return value.slice(1).map((s) => (isPlainObject(s) ? s.selector : s));
+  return value.slice(1);
+}
+/** `[severity, ...selectors]` of a rule value as selector strings, or null. */
+function errorSelectors(value) {
+  const entries = errorEntries(value);
+  return entries && entries.map((s) => (isPlainObject(s) ? s.selector : s));
+}
+/** The messages a block's selectors report: what the canary must see come back. */
+function selectorMessages(block) {
+  const entries = errorEntries(block.rules && block.rules[RULE]) || [];
+  return [...new Set(entries.map((s) => (isPlainObject(s) && s.message) || null))];
+}
+
+/** Repo-relative files among `abs` that `block` reaches (a marker-rule probe). */
+async function probeReach(Eslint, cwd, globalIgnores, block, abs, rel) {
+  const probe = {};
+  for (const k of MATCH_KEYS) if (k in block) probe[k] = block[k];
+  probe.rules = { [RULE]: ['error', { selector: 'Program', message: PROBE_MESSAGE }] };
+  const eslint = new Eslint({
+    cwd,
+    overrideConfigFile: true,
+    overrideConfig: [{ files: ['**/*.ts', '**/*.tsx'] }, ...globalIgnores, probe],
+  });
+  const reached = [];
+  for (const f of abs) {
+    const cfg = await eslint.calculateConfigForFile(f);
+    const value = cfg && cfg.rules && cfg.rules[RULE];
+    if (
+      Array.isArray(value) &&
+      value.some((s) => isPlainObject(s) && s.message === PROBE_MESSAGE)
+    ) {
+      reached.push(rel(f));
+    }
+  }
+  return reached;
 }
 
 /** Problems with one sanctioned block's shape; `[]` when it is sound. */
@@ -119,20 +188,22 @@ function findUnique(configs, predicate, what, problems) {
  * @param {string}    opts.cwd       the repo root (the base path of every pattern)
  * @param {string[]}  opts.sdkFiles  repo-relative SDK source files (tracked .ts/.tsx under packages/ui-bridge/src)
  * @param {{layer1Files: string[], layer1Ignores: string[], projectionFiles: string[], projectionIgnores: string[]}} opts.sanctioned
+ * @param {object} [opts.lintOptions]  ESLint constructor options for what actually RUNS (the
+ *   canary and the ignore census). The CLI passes `{ cwd }`, i.e. ESLint's own per-file config
+ *   lookup, nested `eslint.config.*` files included; a self-test passes an in-memory override.
+ *   Default: the `configs` array itself.
  * @param {typeof import('eslint').ESLint} [opts.ESLint]
- * @returns {Promise<{problems: string[], ignoredSdkFiles: string[]}>}
+ * @returns {Promise<{problems: string[], ignoredSdkFiles: string[], layer1Selectors: string[], projectionSelectors: string[]}>}
  */
-async function guardReachProblems({ configs, cwd, sdkFiles, sanctioned, ESLint }) {
+async function guardReachProblems({ configs, cwd, sdkFiles, sanctioned, lintOptions, ESLint }) {
   const Eslint = ESLint || require('eslint').ESLint;
   const problems = [];
+  const empty = { ignoredSdkFiles: [], layer1Selectors: [], projectionSelectors: [] };
   if (!Array.isArray(configs)) {
-    return { problems: ['eslint.config.js does not export a config array'], ignoredSdkFiles: [] };
+    return { problems: ['eslint.config.js does not export a config array'], ...empty };
   }
   if (!Array.isArray(sdkFiles) || sdkFiles.length === 0) {
-    return {
-      problems: ['no SDK source files to check against (fail closed)'],
-      ignoredSdkFiles: [],
-    };
+    return { problems: ['no SDK source files to check against (fail closed)'], ...empty };
   }
   configs.forEach((b, i) => {
     if (!isPlainObject(b)) problems.push(`config block #${i} is not a plain object`);
@@ -156,6 +227,7 @@ async function guardReachProblems({ configs, cwd, sdkFiles, sanctioned, ESLint }
     problems
   );
   let l1Selectors = null;
+  let projSelectorList = [];
   if (l1 !== -1) {
     problems.push(...sanctionedShapeProblems(configs[l1], 'sanctioned Layer-1 block'));
     l1Selectors = errorSelectors(configs[l1].rules && configs[l1].rules[RULE]);
@@ -167,6 +239,7 @@ async function guardReachProblems({ configs, cwd, sdkFiles, sanctioned, ESLint }
   if (proj !== -1) {
     problems.push(...sanctionedShapeProblems(configs[proj], 'sanctioned projection block'));
     const projSelectors = errorSelectors(configs[proj].rules && configs[proj].rules[RULE]);
+    if (projSelectors) projSelectorList = projSelectors;
     if (!projSelectors) {
       problems.push(
         `the sanctioned projection block must set \`${RULE}\` to ['error', ...selectors]`
@@ -196,7 +269,7 @@ async function guardReachProblems({ configs, cwd, sdkFiles, sanctioned, ESLint }
   const globalIgnores = configs.filter(
     (b) =>
       isPlainObject(b) &&
-      Object.keys(b).every((k) => k === 'ignores' || k === 'name') &&
+      Object.keys(b).every((k) => k === 'ignores' || k === 'name' || k === 'basePath') &&
       'ignores' in b
   );
 
@@ -204,37 +277,14 @@ async function guardReachProblems({ configs, cwd, sdkFiles, sanctioned, ESLint }
   for (let i = 0; i < configs.length; i++) {
     const block = configs[i];
     if (i === l1 || i === proj || !isPlainObject(block) || !setsRule(block)) continue;
-    const probe = {};
-    for (const k of MATCH_KEYS) if (k in block) probe[k] = block[k];
-    probe.rules = { [RULE]: ['error', { selector: 'Program', message: PROBE_MESSAGE }] };
-    let eslint;
+    let reached;
     try {
-      eslint = new Eslint({
-        cwd,
-        overrideConfigFile: true,
-        overrideConfig: [{ files: ['**/*.ts', '**/*.tsx'] }, ...globalIgnores, probe],
-      });
+      reached = await probeReach(Eslint, cwd, globalIgnores, block, abs, rel);
     } catch (e) {
       problems.push(
         `${describeBlock(block, i)} sets \`${RULE}\` and could not be resolved: ${e.message}`
       );
       continue;
-    }
-    const reached = [];
-    for (const f of abs) {
-      let cfg;
-      try {
-        cfg = await eslint.calculateConfigForFile(f);
-      } catch (e) {
-        problems.push(
-          `${describeBlock(block, i)} could not be resolved for ${rel(f)}: ${e.message}`
-        );
-        break;
-      }
-      const value = cfg && cfg.rules && cfg.rules[RULE];
-      const hit =
-        Array.isArray(value) && value.some((s) => isPlainObject(s) && s.message === PROBE_MESSAGE);
-      if (hit) reached.push(rel(f));
     }
     if (reached.length) {
       // Name guarded source before tests in the examples: it is what the
@@ -250,15 +300,84 @@ async function guardReachProblems({ configs, cwd, sdkFiles, sanctioned, ESLint }
     }
   }
 
-  // 3. SDK files the whole config ignores (linted by nothing).
+  // 3. SDK files the config ignores (linted by nothing), through the lookup
+  // that actually runs.
   const ignoredSdkFiles = [];
+  let whole = null;
   try {
-    const whole = new Eslint({ cwd, overrideConfigFile: true, overrideConfig: configs });
+    whole = new Eslint(lintOptions || { cwd, overrideConfigFile: true, overrideConfig: configs });
     for (const f of abs) if (await whole.isPathIgnored(f)) ignoredSdkFiles.push(rel(f));
   } catch (e) {
     problems.push(`could not resolve which SDK files the config ignores: ${e.message}`);
+    whole = null;
   }
-  return { problems, ignoredSdkFiles: ignoredSdkFiles.sort() };
+
+  // 4. The canary: every selector of the sanctioned block that reaches a file
+  // must actually report on that file, through the lookup that runs. A nested
+  // config file, a processor, a parser or a language override that switches
+  // the guard off shows up here as missing messages, whatever its shape.
+  if (whole && l1 !== -1) {
+    const ignored = new Set(ignoredSdkFiles);
+    const targets = new Map(); // rel file -> messages it must report
+    let resolved = true;
+    try {
+      const l1Messages = selectorMessages(configs[l1]);
+      for (const f of await probeReach(Eslint, cwd, globalIgnores, configs[l1], abs, rel)) {
+        targets.set(f, l1Messages);
+      }
+      if (proj !== -1) {
+        const projMessages = selectorMessages(configs[proj]);
+        for (const f of await probeReach(Eslint, cwd, globalIgnores, configs[proj], abs, rel)) {
+          targets.set(f, projMessages);
+        }
+      }
+    } catch (e) {
+      resolved = false;
+      problems.push(`could not resolve which SDK files the sanctioned blocks reach: ${e.message}`);
+    }
+    if (resolved && targets.size === 0) {
+      problems.push('the sanctioned Layer-1 block reaches no SDK source file (fail closed)');
+    }
+    const unguarded = [];
+    for (const [f, required] of targets) {
+      if (ignored.has(f)) continue; // ratcheted as globallyIgnoredSources
+      let reported;
+      try {
+        const [result] = await whole.lintText(CANARY, { filePath: path.resolve(cwd, f) });
+        if (!result) throw new Error('no lint result');
+        const fatal = result.messages.find((m) => m.fatal);
+        if (fatal) throw new Error(`the canary did not parse: ${fatal.message}`);
+        reported = new Set(result.messages.filter((m) => m.ruleId === RULE).map((m) => m.message));
+      } catch (e) {
+        problems.push(`could not lint the §4.6 canary as ${f}: ${e.message}`);
+        break;
+      }
+      const missing = required.filter((m) => !reported.has(m));
+      if (missing.length) unguarded.push({ f, missing });
+    }
+    if (unguarded.length) {
+      const first = unguarded[0];
+      const examples = unguarded
+        .slice(0, MAX_EXAMPLES)
+        .map((u) => u.f)
+        .join(', ');
+      problems.push(
+        `${unguarded.length} guarded SDK file(s) do not report every §4.6 selector when the ` +
+          `canary is linted as them (e.g. ${examples}; ${first.f} misses ${first.missing.length}, ` +
+          `first: ${JSON.stringify(String(first.missing[0]).slice(0, 80))}). Something switches ` +
+          `the guard off for them (a nested eslint.config.*, a processor, a parser or a language ` +
+          `override). If EVERY file misses the same new selector, extend CANARY in ` +
+          `scripts/lib/redaction-guard-reach.cjs`
+      );
+    }
+  }
+
+  return {
+    problems,
+    ignoredSdkFiles: ignoredSdkFiles.sort(),
+    layer1Selectors: [...new Set(l1Selectors || [])].sort(),
+    projectionSelectors: [...new Set(projSelectorList)].sort(),
+  };
 }
 
-module.exports = { guardReachProblems, PROBE_MESSAGE };
+module.exports = { guardReachProblems, PROBE_MESSAGE, CANARY };
