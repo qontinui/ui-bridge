@@ -186,26 +186,47 @@ describe('the match-based guard-reach check of the redaction-surface ratchet', (
           `const ts = { files: ['**/*.ts', '**/*.tsx'], languageOptions: { parser } };\n` +
           `export default [ts, ...${JSON.stringify(BASE.slice(1))}];\n`
       );
-      // The bypass: a nested config with the parser and no rules at all.
+      const run = () =>
+        guardReachProblems({
+          configs: BASE,
+          cwd: dir,
+          sdkFiles: SDK,
+          sanctioned: SANCTIONED,
+          lintOptions: { cwd: dir },
+          rootConfigFile: join(dir, 'eslint.config.mjs'),
+        });
+      // Control: the temp tree's root config alone passes.
+      expect((await run()).problems).toEqual([]);
       const nested = join(dir, SRC, 'density');
       mkdirSync(nested, { recursive: true });
-      writeFileSync(
-        join(nested, 'eslint.config.mjs'),
-        importParser + `export default [{ files: ['**/*.ts'], languageOptions: { parser } }];\n`
-      );
-      const result = await guardReachProblems({
-        configs: BASE,
-        cwd: dir,
-        sdkFiles: SDK,
-        sanctioned: SANCTIONED,
-        lintOptions: { cwd: dir },
-      });
-      const out = result.problems.join('\n');
-      expect(out).toContain('1 guarded SDK file(s) do not report every §4.6 selector');
-      expect(out).toContain(`${SRC}density/reach.ts`);
+      // The bypass, three ways: the parser and no rules; `[{}]` and `[]`,
+      // which leave the files matched by nothing (read as ignored, not linted).
+      for (const body of [
+        importParser + `export default [{ files: ['**/*.ts'], languageOptions: { parser } }];\n`,
+        'export default [{}];\n',
+        'export default [];\n',
+      ]) {
+        writeFileSync(join(nested, 'eslint.config.mjs'), body);
+        const out = (await run()).problems.join('\n');
+        expect(out).toContain('1 SDK source file(s) resolve a config file other than');
+        expect(out).toContain(`${SRC}density/reach.ts -> ${SRC}density/eslint.config.mjs`);
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it('refuses a resolved rule that re-emits the sanctioned messages from weaker selectors', async () => {
+    const out = await problemsOf([
+      ...BASE,
+      {
+        files: ['**/density/**/*.ts'],
+        rules: { 'no-restricted-syntax': ['error', { selector: 'Program', message: 'L1' }] },
+      },
+    ]);
+    // The message `L1` comes back, so only the resolved-selector half sees it.
+    expect(out).toContain('do not report every §4.6 selector');
+    expect(out).toContain(`first: ${JSON.stringify(`selector ${L1_SEL[0].selector}`)}`);
   });
 
   it('reports the sanctioned selector lists, so dropping a family from both blocks moves the ratchet', async () => {
