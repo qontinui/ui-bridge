@@ -161,32 +161,6 @@ jobs:
           # documentation reserves this flag for.
           accept-trailing-sibling: 'true'
 
-      - name: Action-vocabulary doc check
-        # docs-site/docs/wrappers/action-vocabulary.md is GENERATED from the
-        # runner's `/// METHOD /path — description` comments in
-        # src-tauri/src/mcp/sdk_client.rs by the runner's
-        # scripts/validate-ws-actions.mjs. Until this step nothing in CI ran
-        # `--check-doc`, so the table drifted silently (coord finding
-        # 782fdac2; plan 2026-10-13-image-generation-and-visual-judgment
-        # Phase 6 step 5).
-        #
-        # PATH RESOLUTION, verified by a dry run in this exact layout: the
-        # script resolves its sdk_client.rs and a RELATIVE doc path against
-        # `<its own dir>/../..`. Node realpaths the main module, so that is
-        # $GITHUB_WORKSPACE whatever symlinks are staged — and this job checks
-        # ui-bridge out AT $GITHUB_WORKSPACE, not at a `ui-bridge/` subdir. The
-        # sdk_client.rs lookup therefore lands on the sibling checkout above,
-        # and the doc is passed ABSOLUTE (`path.resolve` returns an absolute
-        # argument unchanged), so no staged root is needed.
-        #
-        # Same split as the contract check: gating on pull_request, advisory
-        # elsewhere — on push/nightly the runner side is the peer, and the
-        # nightly compares against the runner's floating main.
-        continue-on-error: ${{ github.event_name != 'pull_request' }}
-        run: |
-          node "${{ github.workspace }}/qontinui-runner/scripts/validate-ws-actions.mjs" \
-            --check-doc "${{ github.workspace }}/docs-site/docs/wrappers/action-vocabulary.md"
-
       - name: Contract check
         env:
           # WHICH answer the resolver gave — a declared adaptation PR, the pin,
@@ -215,3 +189,34 @@ jobs:
             --expect-sibling "${{ steps.mode.outputs.expect_sibling }}" \
             --pins "${{ steps.mode.outputs.pins_file }}" \
             ${{ github.event_name != 'pull_request' && '--advisory' || '' }}
+
+      - name: Action-vocabulary doc check
+        # docs-site/docs/wrappers/action-vocabulary.md is GENERATED from the
+        # runner's `/// METHOD /path — description` comments in
+        # src-tauri/src/mcp/sdk_client.rs by the runner's
+        # scripts/validate-ws-actions.mjs. Until this step nothing in CI ran
+        # `--check-doc`, so the table drifted silently (coord finding
+        # 782fdac2; plan 2026-10-13-image-generation-and-visual-judgment
+        # Phase 6 step 5).
+        #
+        # PATH RESOLUTION, verified by a dry run in this exact layout: the
+        # script resolves its sdk_client.rs and a RELATIVE doc path against
+        # `<its own dir>/../..`. Node realpaths the main module, so that is
+        # $GITHUB_WORKSPACE whatever symlinks are staged — and this job checks
+        # ui-bridge out AT $GITHUB_WORKSPACE, not at a `ui-bridge/` subdir. The
+        # sdk_client.rs lookup therefore lands on the sibling checkout above,
+        # and the doc is passed ABSOLUTE (`path.resolve` returns an absolute
+        # argument unchanged), so no staged root is needed.
+        #
+        # Same split as the contract check, for consistency with it: gating on
+        # pull_request, advisory elsewhere. (Only the nightly / dispatch radar
+        # floats on the runner's main; push uses the same pin as a PR.)
+        #
+        # Placed AFTER `Contract check` so the pin/provenance assertion runs
+        # first on the tree this step reads, and `if:` runs it even when the
+        # contract check failed, so both verdicts always report.
+        if: ${{ !cancelled() && steps.sibling.outcome == 'success' }}
+        continue-on-error: ${{ github.event_name != 'pull_request' }}
+        run: |
+          node "${{ github.workspace }}/qontinui-runner/scripts/validate-ws-actions.mjs" \
+            --check-doc "${{ github.workspace }}/docs-site/docs/wrappers/action-vocabulary.md"
