@@ -243,9 +243,10 @@ ui-bridge-density measure --snapshot snapshot.json --role buyer \
   `sdk/density`, and `next[]`.
 - `--capture-out` writes the text-free `ui-bridge/density-capture@1` capture.
 - Exit codes: 0 for an answer (an `unknown` observation is an answer), 2 for a
-  usage error, 1 for an internal error. On SIGHUP, SIGINT or SIGTERM it prints
-  an `interrupted` document naming the step it had reached and exits 129, 130
-  or 143.
+  usage error, 1 for an internal error. On SIGHUP, SIGINT or SIGTERM before it
+  has answered, it prints an `interrupted` document naming the step it had
+  reached and exits 129, 130 or 143. A signal after the answer is printed
+  exits 0 and prints nothing more.
 
 It runs a generated copy of the density core and does not load
 `@qontinui/ui-bridge`. A capture holds no page text, but its text hashes are

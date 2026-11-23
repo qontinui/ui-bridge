@@ -19,8 +19,12 @@
  *
  * Exit: 0 an answer (an `unknown` observation IS an answer), 1 an internal
  * error (a bug, with its stack on stderr), 2 a usage error,
- * 129 / 130 / 143 interrupted by SIGHUP / SIGINT / SIGTERM, after printing a
- * typed `interrupted` document naming the step it reached.
+ * 129 / 130 / 143 interrupted by SIGHUP / SIGINT / SIGTERM before any answer
+ * was printed, after printing a typed `interrupted` document naming the step
+ * it reached. A signal that arrives after the answer is on stdout exits 0 with
+ * nothing more. The steps after reading the snapshot are synchronous, so a
+ * signal is delivered while the run waits for input (`--snapshot -`) or once
+ * it has answered. A closed stdout (EPIPE, e.g. `| head`) ends the run quietly.
  *
  * The density core is the generated copy under `./density/` (scripts/sync-density.mjs),
  * never `@qontinui/ui-bridge`: the SDK depends on this package, not the reverse.
@@ -422,20 +426,30 @@ async function main(): Promise<void> {
   // still flushing prints nothing more and exits at once (a flush to a reader
   // that stopped reading may never complete).
   let interrupting = false;
+  const argv = process.argv.slice(2);
+  // The verb named on the command line, when it is one; `null` before any.
+  const command = argv[0] === 'measure' ? 'measure' : null;
+  process.stdout.on('error', (err: NodeJS.ErrnoException) => {
+    // The reader went away (`| head`): nothing left to tell it.
+    if (err.code === 'EPIPE')
+      process.exit(typeof process.exitCode === 'number' ? process.exitCode : 0);
+    throw err;
+  });
   for (const signal of Object.keys(SIGNAL_EXIT) as Array<keyof typeof SIGNAL_EXIT>) {
     process.on(signal, () => {
       const code = SIGNAL_EXIT[signal];
       if (interrupting) process.exit(code);
       interrupting = true;
-      if (printed) process.exit(code);
-      const doc = `${JSON.stringify({ command: 'measure', interrupted: { signal, step } }, null, 2)}\n`;
+      // The answer is already out: the run is complete, so it ends as one.
+      if (printed) process.exit(0);
+      const doc = `${JSON.stringify({ command, interrupted: { signal, step } }, null, 2)}\n`;
       // Exit only once the document is flushed: on a pipe, a write followed
       // at once by process.exit can drop it.
       process.stdout.write(doc, () => process.exit(code));
     });
   }
   const code = await runDensityCli(
-    process.argv.slice(2),
+    argv,
     {
       readFile: (p) => readFileSync(p, 'utf8'),
       readStdin,

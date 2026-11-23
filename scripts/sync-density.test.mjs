@@ -201,6 +201,11 @@ test('a source file that is not .ts is refused, never skipped', () => {
   assert.equal(main(['--check'], root, silent), 1);
 });
 
+test('a subdirectory of the source dir other than __tests__/ is refused, never skipped', () => {
+  const root = fixture({ extraSource: { name: 'nested/d.ts', text: 'export const d = 1;\n' } });
+  assert.throws(() => expectedDensityCopies(root), /found: nested\//);
+});
+
 test('an unknown argument exits 2 and writes nothing (a typo never runs the writing sync)', () => {
   const root = fixture();
   assert.equal(main(['--chek'], root, silent), 2);

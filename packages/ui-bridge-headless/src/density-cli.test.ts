@@ -452,7 +452,8 @@ describe.skipIf(process.platform === 'win32')('ui-bridge-density interrupted', (
         if (stderr.includes('ui-bridge-density: step read-snapshot\n')) ready();
       });
     });
-    const exited = new Promise<number | null>((r) => child.on('exit', (code) => r(code)));
+    // 'close', not 'exit': stdio is drained only by then.
+    const exited = new Promise<number | null>((r) => child.on('close', (code) => r(code)));
     child.kill('SIGTERM');
     expect(await exited).toBe(143);
     expect(JSON.parse(stdout)).toEqual({
