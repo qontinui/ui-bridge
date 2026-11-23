@@ -163,7 +163,6 @@
     "POST /ai/wait-for-element-condition -> waitForElementByCondition",
     "POST /ai/wait-for-route-change -> waitForRouteChange",
     "POST /annotations/import -> importAnnotations",
-    "POST /control/actions/batch -> executeBatchAction",
     "POST /control/annotation/:id -> setAnnotation",
     "POST /control/annotations/import -> importAnnotations",
     "POST /control/batch-execute -> controlBatch",

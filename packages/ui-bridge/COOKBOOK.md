@@ -373,34 +373,58 @@ curl -s -X POST "$BASE/control/batch-execute" \
   }'
 ```
 
-Supported step types:
+The step array is `actions` (alias `steps`); the stop flag is
+`stop_on_error` (also `stopOnError` / `stopOnFailure`), default `true`. The
+same body is served by the page (relay, `ui-bridge-inject --exec`) and
+in-process, through one implementation (`src/control/control-batch.ts`).
 
-- `action` — `{ type:"action", element_id, action, params? }`. Dispatched
-  through the same executor as `POST /control/element/:id/action`.
+Supported step types, each with an optional string `label` echoed on its
+result:
+
+- `action` — an element-action payload: `{ type:"action", id, request:{action, …} }`,
+  or `elementId` / the historical `element_id` in place of `id`, or a flat
+  `{ type:"action", element_id, action, params? }`. Dispatched through the same
+  path as `POST /control/element/:id/action`.
 - `wait` — `{ type:"wait", ms }`. Plain `setTimeout`.
 - `snapshot` — `{ type:"snapshot" }`. Captures the current registry snapshot
   and returns it as that step's `data`.
 
-Response:
+A malformed step fails as that step (`INVALID_REQUEST` in its `data`, code
+`UB-VALIDATION-ERROR`); it never fails the request. A body with neither
+`actions` nor `steps` is refused.
+
+Response — a batch with a failed or skipped step is a FAILURE envelope, the
+full batch kept under `data`:
 
 ```json
 {
-  "success": true,
+  "success": false,
+  "error": "controlBatch: 1 of 5 steps failed (first: step 2 (action): Element login-submit is disabled); 2 skipped after it (stop_on_error)",
+  "code": "UB-ELEM-NOT-ENABLED",
   "data": {
+    "success": false,
     "results": [
-      { "index": 0, "success": true, "data": { "...": "..." } },
-      { "index": 1, "success": true, "data": { "...": "..." } },
-      { "index": 2, "success": false, "error": "Element disabled" }
+      { "index": 0, "type": "action", "success": true, "durationMs": 12, "data": { "...": "..." } },
+      { "index": 1, "type": "action", "success": true, "durationMs": 9, "data": { "...": "..." } },
+      { "index": 2, "type": "action", "success": false, "durationMs": 3,
+        "error": "Element login-submit is disabled", "code": "UB-ELEM-NOT-ENABLED",
+        "data": { "success": false, "failureDetails": { "...": "..." } } }
     ],
     "completed": 3,
-    "total": 5
+    "total": 5,
+    "succeededCount": 2,
+    "failedCount": 1,
+    "skippedCount": 2,
+    "durationMs": 24
   }
 }
 ```
 
-With `stop_on_error: true` (the default) the loop halts on the first
-failure and `completed < total`. Set it to `false` to power through and get
-a full per-step report.
+A failed step's `data` is its full answer. With `stop_on_error: true` (the
+default) the loop halts on the first failure and the rest count in
+`skippedCount` (`completed + skippedCount === total`). Set it to `false` to
+power through and get a full per-step report; the batch is still a failure
+if any step failed.
 
 ---
 

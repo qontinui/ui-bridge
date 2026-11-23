@@ -234,7 +234,7 @@ const BODY_PROBES: Array<[string, string, string, Opts]> = [
   [
     'B15 batch array body',
     'POST',
-    '/control/actions/batch',
+    '/control/batch-execute',
     { body: JSON.stringify([{ __callerUserId: 'user-a' }]) },
   ],
   ['B16 string body', 'POST', '/control/find', { body: JSON.stringify('user-a') }],

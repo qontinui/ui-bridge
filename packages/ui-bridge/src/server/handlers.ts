@@ -18,7 +18,6 @@ import type {
   WaitForElementSuccessResponse,
   ControlBatchRequest,
   ControlBatchResponse,
-  ControlBatchStepResult,
   StateSummary,
   ElementExpectRequest,
   ElementExpectResponse,
@@ -48,8 +47,6 @@ import type {
   FillFormRequest,
   ActionChanges,
   ElementFieldChange,
-  BatchActionRequest,
-  BatchActionResponse,
   EffectRecordEntry,
   ComponentActionPredictRequest,
   ComponentActionPredictResponse,
@@ -84,6 +81,7 @@ import {
 import { answersToNamedType } from '../core/element-kind';
 import { buildComponentNotFoundError } from './component-not-found';
 import { describeInnerFailure } from './inner-failure';
+import { readControlBatchRequest, runControlBatch } from '../control/control-batch';
 import {
   readValuePrimitive,
   findByTextPrimitive,
@@ -553,7 +551,6 @@ export interface ActionExecutorLike {
     request?: ComponentActionPredictRequest
   ): Promise<ComponentActionPredictResponse>;
   fillForm?(request: FillFormRequest): Promise<FillResult>;
-  executeBatch?(request: BatchActionRequest): Promise<BatchActionResponse>;
 }
 
 /**
@@ -2299,71 +2296,6 @@ export function createHandlers(
         httpStatus: 422,
       };
       return failureBody;
-    },
-
-    executeBatchAction: async (
-      request: BatchActionRequest
-    ): Promise<APIResponse<BatchActionResponse>> => {
-      try {
-        if (!request?.steps || !Array.isArray(request.steps) || request.steps.length === 0) {
-          return error('Batch request must include a non-empty "steps" array', 'VALIDATION_ERROR');
-        }
-
-        if (actionExecutor.executeBatch) {
-          const result = await actionExecutor.executeBatch(request);
-          return success(result);
-        }
-
-        // Fallback: execute steps sequentially if executor doesn't support native batch
-        const startTime = performance.now();
-        const results: BatchActionResponse['results'] = [];
-        let succeededCount = 0;
-        let failedCount = 0;
-        let skippedCount = 0;
-        let stopped = false;
-        const stopOnFailure = request.stopOnFailure ?? true;
-        const delayBetweenMs = request.delayBetweenMs ?? 0;
-
-        for (let i = 0; i < request.steps.length; i++) {
-          if (stopped) {
-            skippedCount++;
-            continue;
-          }
-
-          const step = request.steps[i];
-          if (i > 0 && delayBetweenMs > 0) {
-            await new Promise((resolve) => setTimeout(resolve, delayBetweenMs));
-          }
-
-          refreshElements();
-          const response = await actionExecutor.executeAction(step.elementId, step.action);
-          results.push({
-            index: i,
-            label: step.label,
-            elementId: step.elementId,
-            response: response as ControlActionResponse,
-          });
-
-          if ((response as ControlActionResponse).success) {
-            succeededCount++;
-          } else {
-            failedCount++;
-            if (stopOnFailure) stopped = true;
-          }
-        }
-
-        return success({
-          success: failedCount === 0,
-          results,
-          succeededCount,
-          failedCount,
-          skippedCount,
-          durationMs: performance.now() - startTime,
-          timestamp: Date.now(),
-        });
-      } catch (err) {
-        return error((err as Error).message, 'BATCH_ACTION_ERROR');
-      }
     },
 
     // =========================================================================
@@ -6050,8 +5982,8 @@ export function createHandlers(
                 },
                 {
                   method: 'POST',
-                  path: '/control/actions/batch',
-                  description: 'Execute batch actions on multiple elements',
+                  path: '/control/batch-execute',
+                  description: 'Execute an ordered batch of action, wait and snapshot steps',
                 },
               ],
             },
@@ -7599,75 +7531,34 @@ export function createHandlers(
     controlBatch: async (
       request: ControlBatchRequest
     ): Promise<APIResponse<ControlBatchResponse>> => {
-      const { actions = [], stop_on_error = true } = request;
-      const results: ControlBatchStepResult[] = [];
-      let completed = 0;
-
-      for (let i = 0; i < actions.length; i++) {
-        const step = actions[i];
-        let stepResult: ControlBatchStepResult;
-
-        try {
-          if (step.type === 'wait') {
-            await new Promise<void>((r) => setTimeout(r, step.ms));
-            stepResult = { index: i, success: true, data: { waited_ms: step.ms } };
-          } else if (step.type === 'snapshot') {
-            // Capture a snapshot directly from the registry to avoid circular deps.
-            try {
-              const snap = registry.createSnapshot();
-              stepResult = { index: i, success: true, data: snap };
-            } catch (snapErr) {
-              stepResult = {
-                index: i,
-                success: false,
-                error: (snapErr as Error).message ?? 'Snapshot failed',
-              };
-            }
-          } else if (step.type === 'action') {
-            // Dispatch via the action executor directly — same as executeElementAction.
-            refreshElements();
-            const actionResult = await actionExecutor.executeAction(step.element_id, {
-              action: step.action,
-              params: step.params,
-            });
-            const resultAny = actionResult as { success?: boolean; error?: string };
-            if (resultAny?.success !== false) {
-              stepResult = { index: i, success: true, data: actionResult };
-            } else {
-              stepResult = {
-                index: i,
-                success: false,
-                error: resultAny.error ?? 'Action failed',
-              };
-            }
-          } else {
-            stepResult = {
-              index: i,
-              success: false,
-              error: `Unknown step type: ${(step as { type: string }).type}`,
-            };
-          }
-        } catch (err) {
-          stepResult = {
-            index: i,
-            success: false,
-            error: (err as Error).message ?? String(err),
-          };
-        }
-
-        results.push(stepResult);
-        completed++;
-
-        if (!stepResult.success && stop_on_error) {
-          break;
-        }
-      }
-
-      return success<ControlBatchResponse>({
-        results,
-        completed,
-        total: actions.length,
+      // The one batch contract (`../control/control-batch.ts`), run over this
+      // transport's own `executeElementAction` handler — settle, rediscovery,
+      // undo recording and failure enrichment included — and the registry's
+      // snapshot. A failed or skipped step makes the BATCH a failure, with the
+      // full batch answer kept under `data`; it used to be returned as
+      // `success({ results, completed, total })` whatever its steps did.
+      const batch = await runControlBatch(readControlBatchRequest(request), {
+        runAction: async ({ id, request: actionRequest }) => {
+          const answer = await handlers.executeElementAction(
+            id,
+            actionRequest as ControlActionRequest
+          );
+          // A step's answer is the action's own response: the envelope's
+          // `data` (the enriched failure carries `failureDetails` there), or
+          // the envelope itself when it carries none.
+          return answer.data !== undefined ? answer.data : answer;
+        },
+        snapshot: () => registry.createSnapshot(),
+        now: () => performance.now(),
       });
+      if (batch.success) return success(batch);
+      return {
+        success: false,
+        error: batch.error,
+        code: batch.code as UiBridgeErrorCode,
+        data: batch,
+        timestamp: Date.now(),
+      } as APIResponse<ControlBatchResponse>;
     },
   };
 
