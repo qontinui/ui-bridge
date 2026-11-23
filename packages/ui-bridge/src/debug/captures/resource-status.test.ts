@@ -343,6 +343,34 @@ describe('resource-status capture', () => {
     expect(report.breakdown).toEqual({ crashes: 0, errors: 1, warnings: 0 });
   });
 
+  it('a fetch 429 the network capture reported still reaches the next document, once', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('', { status: 429 }))
+    );
+    const url = 'https://app.example.com/api/ui-bridge/relay/poll';
+    const first = install({
+      ...WITH_NETWORK_AND_RESOURCE_ERRORS,
+      networkOptions: { ignorePatterns: [] },
+    });
+    await settle();
+    await window.fetch(url);
+    FakePerformanceObserver.record('resource', [liveEntry(url, 429)]);
+    // Live: one event for one failure (the network capture's).
+    expect(first.getByType('network')).toHaveLength(1);
+    expect(statusFor(first, url)).toHaveLength(0);
+    window.dispatchEvent(new Event('pagehide'));
+    first.uninstall();
+
+    // The network buffer died with the page; the carry did not.
+    newDocument();
+    const second = install(WITH_NETWORK_AND_RESOURCE_ERRORS);
+    await settle();
+    const carried = statusFor(second, url);
+    expect(carried).toHaveLength(1);
+    expect(carried[0]).toMatchObject({ responseStatus: 429, fromPreviousDocument: true });
+  });
+
   it('a failure observed before the network report is emitted by both (documented residual)', async () => {
     vi.stubGlobal(
       'fetch',
