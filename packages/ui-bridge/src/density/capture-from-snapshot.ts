@@ -188,8 +188,9 @@ function buildItem(
     gaps.add(dimension, code);
     complete = false;
   };
-  const state: Rec = isRecord(el.state) ? el.state : {};
-  if (!isRecord(el.state)) miss('state');
+  const hasState = isRecord(el.state);
+  const state: Rec = hasState ? (el.state as Rec) : {};
+  if (!hasState) miss('state');
 
   // ---- geometry: viewport space → document space ----
   let rect: DensityRect | null = null;
@@ -215,6 +216,9 @@ function buildItem(
   let shape: DensityItem['shape'] = null;
   if (redaction && redaction.content === true) {
     miss('text', 'not_attempted_by_policy');
+  } else if (!hasState) {
+    // No state at all: the text is unknown, not empty.
+    miss('text');
   } else {
     // The serializer omits `textContent` when the element has no text (and no
     // aria-label or title to fall back on), so an absent field is empty text.
@@ -246,7 +250,9 @@ function buildItem(
   let truncated: boolean | null = null;
   const scrollWidth = finite(state.scrollWidth);
   const clientWidth = finite(state.clientWidth);
-  const overflow = styles ? str(styles.overflow) : null;
+  // An empty computed `overflow` (some engines leave the shorthand blank) is not a value.
+  const overflowRaw = styles ? str(styles.overflow) : null;
+  const overflow = overflowRaw !== null && overflowRaw.trim() !== '' ? overflowRaw : null;
   if (scrollWidth !== null && clientWidth !== null && overflow !== null) {
     // `overflow` may be the two-value shorthand `x y`; horizontal truncation is the x half.
     const overflowX = overflow.trim().split(/\s+/)[0];
@@ -258,11 +264,28 @@ function buildItem(
   const recoverable = nameSource === 'title' ? true : null;
 
   // ---- identity ----
+  // `data-ui-bridge-content` and `data-ui-bridge-test-id` are only ever
+  // written by an author. `data-ui-bridge-id` is NOT evidence on its own: the
+  // auto-registrar stamps it on every element it registers
+  // (`react/useAutoRegister.ts`, `writeStableAttribute`), so on an
+  // `origin: 'auto'` row an author's stamp cannot be told from the
+  // registrar's, and it is not counted (an undercount, never a flood). A
+  // `hook` registration's id is the author's by construction. A row with no
+  // `origin` (an older serializer) falls back to the stamp, and says so.
   const dataset = isRecord(state.dataset) ? state.dataset : {};
-  const authorId =
-    typeof el.uiBridgeId === 'string' ||
-    typeof dataset.uiBridgeId === 'string' ||
-    typeof dataset.uiBridgeContent === 'string';
+  const origin = str(el.origin);
+  const stamped = typeof el.uiBridgeId === 'string' || typeof dataset.uiBridgeId === 'string';
+  const authorOnly =
+    typeof dataset.uiBridgeContent === 'string' || typeof dataset.uiBridgeTestId === 'string';
+  let authorId: boolean;
+  if (origin === 'hook') {
+    authorId = true;
+  } else if (origin === 'auto') {
+    authorId = authorOnly;
+  } else {
+    authorId = authorOnly || stamped;
+    if (stamped && !authorOnly) miss('origin');
+  }
 
   const category = str(el.category) ?? str(el.kind);
   if (category === null) miss('category');
@@ -359,7 +382,7 @@ export function captureDensityFromSnapshot(
   const evaluatedAt = options.evaluatedAt ?? new Date();
   const role = options.role ?? null;
   const targets = options.targets ?? null;
-  const targetsHash = targets ? densityTargetsHash(targets) : null;
+  let targetsHash: string | null = null;
 
   let observedAt: number | null = null;
   let snapshotId: string | null = null;
@@ -382,6 +405,7 @@ export function captureDensityFromSnapshot(
     });
 
   try {
+    targetsHash = targets ? densityTargetsHash(targets) : null;
     let snapshot: unknown = input;
     if (isRecord(input) && 'success' in input && ('data' in input || 'error' in input)) {
       if (input.success !== true) {
@@ -410,7 +434,9 @@ export function captureDensityFromSnapshot(
       );
     }
     const takenAt = finite(snapshot.snapshotTakenAtMs) ?? finite(snapshot.timestamp);
-    observedAt = takenAt;
+    // A timestamp outside the Date range would make the provenance builder
+    // throw; it is an unreadable sample time, so the answer carries none.
+    observedAt = takenAt !== null && Number.isFinite(new Date(takenAt).getTime()) ? takenAt : null;
     snapshotId = str(snapshot.snapshotId);
 
     if (!Array.isArray(snapshot.elements)) {
@@ -527,6 +553,8 @@ export function captureDensityFromSnapshot(
     return Observation.measured(capture, prov(coverage));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    // Nothing read so far is trusted here: the failure may have come from it.
+    observedAt = null;
     return Observation.unknown(
       'producer_failed',
       `the density capture adapter threw: ${message}`,

@@ -60,6 +60,12 @@ describe('resolveDensityMatcher', () => {
     ]);
   });
 
+  it('a glob ? is one character, even outside the BMP', () => {
+    const c = base();
+    const astral = { ...c, items: [{ ...c.items[0], id: 'tag-' + String.fromCodePoint(0x1f600) }] };
+    expect(resolveDensityMatcher(astral, { idGlob: 'tag-?' }).status).toBe('resolved');
+  });
+
   it('every given field must hold', () => {
     const r = resolveDensityMatcher(base(), {
       idPrefix: 'app.orders.',

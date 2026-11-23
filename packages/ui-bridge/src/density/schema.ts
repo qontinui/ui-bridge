@@ -374,6 +374,8 @@ class Reader {
       return '';
     }
     if (opts.nonEmpty && value === '') this.fail(path, 'must not be empty');
+    if (hasLoneSurrogate(value))
+      this.fail(path, 'must not hold a lone surrogate (it has no UTF-8 form)');
     return value;
   }
 
@@ -464,7 +466,40 @@ class Reader {
   }
 }
 
-const RFC3339_SHAPE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+/**
+ * `JSON.parse` accepts a lone surrogate (`"\ud800"`); the hash refuses one. A
+ * parsed document must always be hashable, so the parser refuses it first.
+ */
+function hasLoneSurrogate(text: string): boolean {
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c >= 0xd800 && c <= 0xdbff) {
+      const next = i + 1 < text.length ? text.charCodeAt(i + 1) : -1;
+      if (next < 0xdc00 || next > 0xdfff) return true;
+      i++;
+    } else if (c >= 0xdc00 && c <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
+}
+
+const RFC3339 =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/;
+
+/** An RFC 3339 date-time that is also a calendar-valid instant (no Feb 30, no hour 24). */
+function isDensityRfc3339(text: string): boolean {
+  const m = RFC3339.exec(text);
+  if (!m) return false;
+  const [y, mo, d, h, mi, s] = [m[1], m[2], m[3], m[4], m[5], m[6]].map(Number);
+  if (mo < 1 || mo > 12 || d < 1 || h > 23 || mi > 59 || s > 60) return false;
+  const leap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][mo - 1];
+  if (d > days) return false;
+  if (m[7] !== undefined && (Number(m[7]) > 23 || Number(m[8]) > 59)) return false;
+  return true;
+}
+
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 
 function readRect(r: Reader, value: unknown, path: string): DensityRect | null {
@@ -711,8 +746,8 @@ export function parseDensityCapture(value: unknown): DensityParseResult<DensityC
   };
 
   const observedAt = r.stringOrNull(o.observedAt, '$.observedAt');
-  if (observedAt !== null && !RFC3339_SHAPE.test(observedAt)) {
-    r.fail('$.observedAt', 'must be an RFC 3339 UTC date-time or null');
+  if (observedAt !== null && !isDensityRfc3339(observedAt)) {
+    r.fail('$.observedAt', 'must be an RFC 3339 date-time or null');
   }
 
   const by = r.object(o.capturedBy, '$.capturedBy', ['package', 'version']);

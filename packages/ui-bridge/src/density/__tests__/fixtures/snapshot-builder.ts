@@ -15,6 +15,7 @@ import type { ElementRelationship } from '../../../relationships/types';
 /** A snapshot row, plus the fields the registry serializer emits beyond `ControlSnapshot`'s declared row. */
 export type DensityTestSnapshotElement = ControlSnapshot['elements'][number] & {
   uiBridgeId?: string;
+  origin?: 'hook' | 'auto';
 };
 
 /** A snapshot, plus the identity fields `BridgeSnapshot` adds. */
@@ -42,6 +43,7 @@ export interface DensityTestElementSpec {
   href?: string;
   dataset?: Record<string, string>;
   uiBridgeId?: string;
+  origin?: 'hook' | 'auto';
   redacted?: boolean;
   scrollInfo?: NonNullable<ElementState['scrollInfo']>;
   xpath?: string;
@@ -118,6 +120,7 @@ export function densityTestElement(spec: DensityTestElementSpec): DensityTestSna
   };
   if (spec.role !== undefined) row.role = spec.role;
   if (spec.uiBridgeId !== undefined) row.uiBridgeId = spec.uiBridgeId;
+  if (spec.origin !== undefined) row.origin = spec.origin;
   return row;
 }
 

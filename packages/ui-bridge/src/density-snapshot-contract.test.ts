@@ -9,7 +9,9 @@
  * attach (`pageViewportContext`, as `server/handlers.ts` does), hands the
  * result to `captureDensityFromSnapshot`, and asserts both that every field
  * path the adapter reads is present and that the adapter's output was derived
- * from it. Renaming any one of those paths on either side turns this red.
+ * from it. Renaming any one of the paths asserted here, on either side, turns
+ * this red. `state.visibilityReason` is read but not asserted: whether jsdom
+ * yields one is incidental, and Phase 2's real-browser smoke reads it.
  *
  * jsdom lays nothing out, so geometry and computed sizes here are what jsdom
  * reports (zero rects, inline styles); Phase 2's real-browser smoke proves
@@ -21,7 +23,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { UIBridgeRegistry } from './core/registry';
 import { pageViewportContext } from './control/page-scroll-container';
-import { captureDensityFromSnapshot, type DensityCapture } from './density';
+import { RelationshipTracker } from './relationships/relationship-tracker';
+import { captureDensityFromSnapshot, sha256DensityHex, type DensityCapture } from './density';
 
 const PRODUCER = {
   id: 'sdk/density',
@@ -42,13 +45,18 @@ describe('density adapter reads the fields the registry serializer writes', () =
   beforeEach(() => {
     document.body.innerHTML = `
       <main id="main">
-        <button id="b" data-ui-bridge-id="app.orders.refresh" aria-expanded="false"
-          style="font-size: 13px; line-height: 18px; position: sticky;">Refresh orders</button>
+        <button id="b" data-ui-bridge-id="app.orders.refresh" aria-expanded="false" aria-controls="p"
+          style="font-size: 13px; line-height: 18px; position: sticky; overflow: hidden;">Refresh orders</button>
         <span id="t" data-ui-bridge-content="app.orders.total"
           style="font-size: 15px; line-height: 20px; position: static;">Total 1.234,56 €</span>
         <section data-bridge-redact="true"><span id="s">Synthetic secret 42</span></section>
+        <div id="p" role="region">Order details</div>
+        <a id="l" href="/orders/1" data-ui-bridge-id="link-orders">Orders</a>
+        <div id="pane" style="overflow-x: auto; overflow-y: auto;">A long synthetic list</div>
       </main>`;
     registry = new UIBridgeRegistry();
+    // The provider wires a tracker the same way (react/UIBridgeProviderInit.ts).
+    registry.setEnrichers({ relationshipTracker: new RelationshipTracker() });
     registry.registerElement('app.orders.refresh', document.getElementById('b')!, {
       type: 'button',
       actions: ['click'],
@@ -60,6 +68,34 @@ describe('density adapter reads the fields the registry serializer writes', () =
       category: 'content',
     });
     registry.registerElement('app.secret', document.getElementById('s')!, {
+      type: 'custom',
+      actions: [],
+      category: 'content',
+    });
+    registry.registerElement('app.panel', document.getElementById('p')!, {
+      type: 'custom',
+      actions: [],
+      category: 'content',
+    });
+    // What the auto-registrar does: register with origin 'auto' and stamp
+    // data-ui-bridge-id (react/useAutoRegister.ts).
+    registry.registerElement('link-orders', document.getElementById('l')!, {
+      type: 'link',
+      actions: ['click'],
+      category: 'interactive',
+      origin: 'auto',
+    });
+    // jsdom lays nothing out; give the pane the extent a scroll container has.
+    const pane = document.getElementById('pane')!;
+    for (const [key, value] of [
+      ['scrollHeight', 3000],
+      ['clientHeight', 700],
+      ['clientWidth', 1024],
+      ['scrollWidth', 1024],
+    ] as const) {
+      Object.defineProperty(pane, key, { get: () => value, configurable: true });
+    }
+    registry.registerElement('app.pane', pane, {
       type: 'custom',
       actions: [],
       category: 'content',
@@ -111,6 +147,27 @@ describe('density adapter reads the fields the registry serializer writes', () =
     const tState = total.state as Record<string, unknown>;
     expect((tState.dataset as Record<string, unknown>).uiBridgeContent).toBe('app.orders.total');
     expect((secret.state as Record<string, unknown>).redaction).toMatchObject({ content: true });
+
+    expect(button.role).toBe('button');
+    expect(styles.overflow).toBe('hidden');
+    const link = byId['link-orders'];
+    expect(link.origin).toBe('auto');
+    expect(link.uiBridgeId).toBe('link-orders');
+    expect(typeof (link.state as Record<string, unknown>).href).toBe('string');
+    const pane = byId['app.pane'].state as Record<string, unknown>;
+    expect(pane.scrollInfo).toMatchObject({
+      scrollHeight: 3000,
+      clientHeight: 700,
+      clientWidth: 1024,
+    });
+    const relationships = (snapshot.relationships as Record<string, unknown>).relationships;
+    expect(relationships).toContainEqual(
+      expect.objectContaining({
+        source: 'app.orders.refresh',
+        target: 'app.panel',
+        type: 'controls',
+      })
+    );
   });
 
   it('the adapter derives each item field from those paths', () => {
@@ -149,6 +206,17 @@ describe('density adapter reads the fields the registry serializer writes', () =
       lineHeightPx: 20,
       position: 'static',
     });
+
+    expect(button.role).toBe('button');
+    expect(button.controls).toBe('app.panel');
+    const rawLink = (snapshotOf(registry).elements as Array<Record<string, unknown>>).find(
+      (r) => r.id === 'link-orders'
+    )!;
+    const link = byId['link-orders'];
+    expect(link.authorId).toBe(false);
+    expect(link.href).toBe(sha256DensityHex((rawLink.state as { href: string }).href));
+    expect(capture.bases.scrollBasis).toBe('inner-scroller');
+    expect(capture.bases.scroller).toEqual({ by: 'scroll-info', id: 'app.pane' });
 
     const secret = byId['app.secret'];
     expect([secret.chars, secret.textHash, secret.shape]).toEqual([null, null, null]);

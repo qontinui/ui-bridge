@@ -117,7 +117,8 @@ function globToRegExp(glob: string): RegExp {
     else if (ch === '?') source += '.';
     else source += ch.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
   }
-  return new RegExp(source + '$', 's');
+  // `u`: `?` is one character (code point), not one UTF-16 unit.
+  return new RegExp(source + '$', 'su');
 }
 
 /** Apply `matcher` to `capture`. */
@@ -140,7 +141,8 @@ export function resolveDensityMatcher(
       return { status: 'unresolved', reason: 'structure-not-resolved', textUnevaluated };
     }
     const inner = resolveDensityMatcher(capture, matcher.within);
-    textUnevaluated += inner.textUnevaluated;
+    // Both counts are over the same items, so the larger bounds what is unread.
+    textUnevaluated = Math.max(textUnevaluated, inner.textUnevaluated);
     if (inner.status === 'unresolved') {
       return { status: 'unresolved', reason: inner.reason, textUnevaluated };
     }
