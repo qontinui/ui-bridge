@@ -14,9 +14,10 @@
  *     relative path outside the set, `node:fs`, a dynamic `import()`, a
  *     `require()`, and any import at all in the envelope)
  *
- * and the shapes that must NOT be refused (a sibling with or without `.js`,
- * the envelope import, `import type`, a multi-line import, `export … from`, and
- * `require(` / `import(` inside a comment, a string or a regex).
+ * and the shapes that must NOT be refused (a sibling `./x` with no extension,
+ * the envelope import, `import type`, a multi-line import, `export … from`,
+ * `require(` / `import(` inside a comment, a string or a regex, and a property
+ * that is merely named `require` or `module`).
  *
  * Usage:  node scripts/sync-density.test.mjs
  * Exit:   0 all passed / 1 one or more failed
@@ -194,6 +195,12 @@ test('a *.test.ts beside the sources is not a source and is not copied', () => {
   ]);
 });
 
+test('a source file that is not .ts is refused, never skipped', () => {
+  const root = fixture({ extraSource: { name: 'c.tsx', text: 'export const c = 1;\n' } });
+  assert.throws(() => expectedDensityCopies(root), /may hold only \.ts sources .*found: c\.tsx/);
+  assert.equal(main(['--check'], root, silent), 1);
+});
+
 test('an unknown argument exits 2 and writes nothing (a typo never runs the writing sync)', () => {
   const root = fixture();
   assert.equal(main(['--chek'], root, silent), 2);
@@ -304,6 +311,13 @@ const FORBIDDEN = [
     "import fs = require('node:fs');\nexport {};\n",
     "'node:fs' is a Node builtin",
   ],
+  ['require.resolve()', "export const p = require.resolve('fs');\n", 'require() is not allowed'],
+  ['module.require()', "export const fs = module.require('fs');\n", 'require() is not allowed'],
+  [
+    'an aliased require',
+    "const r = require;\nexport const fs = r('fs');\n",
+    'x.ts:1: require() is not allowed',
+  ],
   [
     'a sibling with a .js extension',
     "import { a } from './a.js';\n",
@@ -350,6 +364,13 @@ console.log('sync-density: allowed shapes are not refused');
 
 const ALLOWED = [
   ['a sibling', "import { a } from './a';\n"],
+  [
+    'properties and members merely named require or module',
+    'interface L { require(): void; module: string }\n' +
+      'export const o = { require: 1, module: 2 };\n' +
+      'export const f = (l: L) => l.require() + l.module;\n' +
+      'export const { require: q } = o;\n',
+  ],
   [
     'a regex after a negated keyword',
     'export const f = (s: string) => {\n  return !/[\'"]/.test(s);\n};\n',
