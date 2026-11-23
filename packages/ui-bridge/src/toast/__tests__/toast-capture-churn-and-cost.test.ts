@@ -452,7 +452,7 @@ describe('ToastCapture churn budget and re-read gate', () => {
     });
 
     // R3 (A3)
-    it('a budget below 1 is clamped to 1 and a window below 1 ms falls back to the default', async () => {
+    it('the budget clamps below 1 to 1, floors fractions, and maps non-finite values to the default; a window below 1 ms or non-finite means the default', async () => {
       install({ pollInterval: 500, maxAnnouncementsPerWindow: 0 });
       const one = addStatus('one', 'First');
       await flushAndScan();
@@ -474,20 +474,33 @@ describe('ToastCapture churn budget and re-read gate', () => {
       document.body.innerHTML = '';
       events = [];
 
-      install({ pollInterval: 500, maxAnnouncementsPerWindow: Infinity });
-      const inf = addStatus('inf', '0:00');
-      await flushAndScan();
-      await tick(inf, 1, 10);
-      expect(appearedFor('inf')).toHaveLength(4);
-      capture.uninstall();
-      document.body.innerHTML = '';
-      events = [];
+      for (const budget of [Infinity, NaN]) {
+        install({ pollInterval: 500, maxAnnouncementsPerWindow: budget });
+        const el = addStatus('nonfinite', '0:00');
+        await flushAndScan();
+        await tick(el, 1, 10);
+        expect(appearedFor('nonfinite'), `budget ${budget}`).toHaveLength(4);
+        capture.uninstall();
+        document.body.innerHTML = '';
+        events = [];
+      }
 
-      install({ pollInterval: 500, announcementWindowMs: 0 });
-      const timer = addStatus('timer', '0:00');
-      await flushAndScan();
-      await tick(timer, 1, 10);
-      expect(appearedFor('timer')).toHaveLength(4);
+      // A window of 0 would disable the budget, Infinity would never release
+      // and NaN would empty it: each means the default 10 s, so a ticker is
+      // held to 4 and its settled text is released after 10 s of quiet.
+      for (const window of [0, Infinity, NaN]) {
+        install({ pollInterval: 500, announcementWindowMs: window });
+        const timer = addStatus('timer', '0:00');
+        await flushAndScan();
+        await tick(timer, 1, 10);
+        expect(appearedFor('timer'), `window ${window}`).toHaveLength(4);
+        await vi.advanceTimersByTimeAsync(10_000);
+        await vi.advanceTimersByTimeAsync(500);
+        expect(appearedFor('timer'), `window ${window} release`).toHaveLength(5);
+        capture.uninstall();
+        document.body.innerHTML = '';
+        events = [];
+      }
     });
 
     // R5 (A5)
