@@ -435,14 +435,13 @@ describe('live relay getScreenshot', () => {
     ) as {
       host_permissions: string[];
     };
-    // The PROPERTY, not the literal: the grant must cover the origins the live
-    // relay runs on (https pages and http localhost). This test cannot know what
-    // Chrome REQUIRES for a no-gesture capture: Chrome's chrome.tabs page
-    // disagrees with itself (the captureVisibleTab reference names <all_urls>
-    // or activeTab; its Host permissions section says host permissions allow
-    // captureVisibleTab), so the plan's D6 headed probe decides, and it has not
-    // been run (see src/background/capture-visible-tab.ts). A narrowing that
-    // probe proves sufficient keeps this green.
+    // The grant must cover the origins the live relay runs on (https pages and
+    // http localhost), AND it must be <all_urls>: the plan's D6 headed probe
+    // (2026-11-23, Chromium 147) showed a no-gesture captureVisibleTab is
+    // refused under the narrower https + localhost patterns ("Either the
+    // '<all_urls>' or 'activeTab' permission is required.") and succeeds only
+    // under <all_urls> (see src/background/capture-visible-tab.ts).
+    expect(manifest.host_permissions).toContain('<all_urls>');
     for (const url of [
       'https://example.com/app',
       'http://localhost:3001/x',
