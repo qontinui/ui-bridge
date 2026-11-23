@@ -14,6 +14,7 @@ import type { AnyCapturedEvent } from './browser-capture-types';
 import type { ErrorSeverity } from './error-severity';
 import { classifyEvent } from './error-severity';
 import { computeFingerprint } from './error-fingerprint';
+import { describeResourceStatus } from './shared-utils';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -84,6 +85,7 @@ function extractMessage(event: AnyCapturedEvent): string {
   if (event.type === 'network')
     return `${event.method} ${event.requestUrl} ${event.status ?? event.kind}`;
   if (event.type === 'resource-error') return `${event.tagName} load failed: ${event.resourceUrl}`;
+  if (event.type === 'resource-status') return describeResourceStatus(event);
   return event.type;
 }
 

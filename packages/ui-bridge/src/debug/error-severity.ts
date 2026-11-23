@@ -203,6 +203,29 @@ function classifyReactError(_event: AnyCapturedEvent & { type: 'react-error' }):
   return { severity: 'crash', reason: 'React error boundary' };
 }
 
+function classifyResourceStatus(event: AnyCapturedEvent & { type: 'resource-status' }): {
+  severity: ErrorSeverity;
+  reason: string;
+} {
+  switch (event.kind) {
+    case 'status': {
+      const status = event.responseStatus;
+      // Unknown is not a failure and not a pass; it does not score.
+      if (status === null) return { severity: 'noise', reason: 'resource status unknown' };
+      if (status === 404 && isCommonAsset404(event.resourceUrl)) {
+        return { severity: 'noise', reason: '404 for common asset' };
+      }
+      return { severity: 'error', reason: `${event.initiatorType} HTTP ${status}` };
+    }
+    case 'observer-unavailable':
+      return { severity: 'warning', reason: 'resource statuses unobservable' };
+    case 'buffer-full':
+      return { severity: 'warning', reason: 'resource timing buffer full' };
+    case 'unknown-status-capped':
+      return { severity: 'warning', reason: 'unknown resource statuses capped' };
+  }
+}
+
 function classifyResourceError(event: AnyCapturedEvent & { type: 'resource-error' }): {
   severity: ErrorSeverity;
   reason: string;
@@ -286,11 +309,14 @@ function classifyLoaf(event: AnyCapturedEvent & { type: 'long-animation-frame' }
  *
  * Classification rules:
  * - **crash**: React error boundary, unhandled rejection, network errors on critical endpoints
- * - **error**: console.error (not noise), network 5xx, script/stylesheet load failures, HMR errors
+ * - **error**: console.error (not noise), network 5xx, script/stylesheet load failures, HMR errors,
+ *   resource-status 4xx/5xx
  * - **warning**: console.warn (not noise), network 4xx, image load failures, WS disconnection,
- *   long tasks >= 500ms, long animation frames with high blocking duration
+ *   long tasks >= 500ms, long animation frames with high blocking duration, resource-status
+ *   observer unavailable / buffer full / unknown statuses capped
  * - **noise**: Noise-pattern matches, long tasks < 100ms, navigation, memory, web vitals,
- *   HMR reconnect messages, aborted requests, WS reconnect attempts
+ *   HMR reconnect messages, aborted requests, WS reconnect attempts, resource-status with an
+ *   unknown (null) status
  */
 export function classifyEvent(event: AnyCapturedEvent): {
   severity: ErrorSeverity;
@@ -305,6 +331,8 @@ export function classifyEvent(event: AnyCapturedEvent): {
       return classifyReactError(event);
     case 'resource-error':
       return classifyResourceError(event);
+    case 'resource-status':
+      return classifyResourceStatus(event);
     case 'hmr':
       return classifyHmr(event);
     case 'ws-disconnection':

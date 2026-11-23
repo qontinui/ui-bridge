@@ -249,6 +249,17 @@ function fingerprintReactError(event: AnyCapturedEvent & { type: 'react-error' }
 }
 
 /**
+ * Compute a fingerprint for a resource-status event. A status entry keys on
+ * initiator, normalized path and status; the "could not look" kinds have one
+ * fingerprint each.
+ */
+function fingerprintResourceStatus(event: AnyCapturedEvent & { type: 'resource-status' }): string {
+  if (event.kind !== 'status') return `resource-status:${event.kind}`;
+  const path = normalizeUrlPath(event.resourceUrl);
+  return `resource-status:${event.initiatorType}|${path}|${event.responseStatus ?? 'unknown'}`;
+}
+
+/**
  * Compute a fingerprint for a resource error event.
  */
 function fingerprintResourceError(event: AnyCapturedEvent & { type: 'resource-error' }): string {
@@ -288,6 +299,8 @@ export function computeFingerprint(event: AnyCapturedEvent): string {
       return fingerprintReactError(event);
     case 'resource-error':
       return fingerprintResourceError(event);
+    case 'resource-status':
+      return fingerprintResourceStatus(event);
     case 'hmr':
       return fingerprintHmr(event);
     case 'ws-disconnection':

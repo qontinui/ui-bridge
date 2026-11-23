@@ -18,6 +18,7 @@ import { installNetworkCapture } from './captures/network';
 import { installNavigationCapture } from './captures/navigation';
 import { installLongTaskCapture } from './captures/long-tasks';
 import { installResourceErrorCapture } from './captures/resource-errors';
+import { installResourceStatusCapture } from './captures/resource-status';
 import { installWebVitalsCapture } from './captures/web-vitals';
 import { installMemoryCapture } from './captures/memory';
 import { installHmrCapture } from './captures/hmr';
@@ -174,6 +175,9 @@ export class BrowserEventCapture {
     }
     if (cfg.resourceErrors) {
       this.cleanups.push(installResourceErrorCapture(emit));
+    }
+    if (cfg.resourceStatus) {
+      this.cleanups.push(installResourceStatusCapture(emit));
     }
     if (cfg.webVitals) {
       this.cleanups.push(installWebVitalsCapture(emit));

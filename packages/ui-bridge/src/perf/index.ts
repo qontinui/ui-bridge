@@ -1,11 +1,11 @@
 /**
  * Shared PerformanceObserver plumbing.
  *
- * One home for the `layout-shift` and `longtask` observers, imported by BOTH
- * the debug captures (`debug/captures/web-vitals.ts`, `long-tasks.ts`) and the
- * change tracker's interaction timeline (`ai/timeline-recorder.ts`), so the two
- * never disagree on what a layout shift is or on whether this webview can see
- * one.
+ * One home for the `layout-shift`, `longtask` and `resource` observers,
+ * imported by BOTH the debug captures (`debug/captures/web-vitals.ts`,
+ * `long-tasks.ts`, `resource-status.ts`) and the change tracker's interaction
+ * timeline (`ai/timeline-recorder.ts`), so the two never disagree on what a
+ * layout shift is or on whether this webview can see one.
  *
  * Support is PROBED, never assumed. `PerformanceObserver.supportedEntryTypes`
  * is the primary signal: an engine that lists the type supports it, and an
@@ -22,7 +22,7 @@
  */
 
 /** The entry types this module observes. */
-export type PerfEntryKind = 'layout-shift' | 'longtask';
+export type PerfEntryKind = 'layout-shift' | 'longtask' | 'resource';
 
 /** What this webview's PerformanceObserver can observe. */
 export interface PerfEntrySupport {
@@ -30,6 +30,8 @@ export interface PerfEntrySupport {
   layoutShift: boolean;
   /** `longtask` is in the static `supportedEntryTypes` list. */
   longTask: boolean;
+  /** `resource` is in the static `supportedEntryTypes` list. */
+  resource: boolean;
   /**
    * The raw `PerformanceObserver.supportedEntryTypes` list, or `null` when it
    * could not be read (no `PerformanceObserver`, or an engine predating the
@@ -59,6 +61,7 @@ export function probePerfEntrySupport(): PerfEntrySupport {
   return {
     layoutShift: types !== null && types.includes('layout-shift'),
     longTask: types !== null && types.includes('longtask'),
+    resource: types !== null && types.includes('resource'),
     supportedEntryTypes: types,
     observerAvailable,
   };
@@ -87,6 +90,47 @@ export interface LongTaskSample {
   startTime: number;
   /** Task duration (ms). */
   duration: number;
+}
+
+/** One `resource` entry (Resource Timing), reduced to what consumers read. */
+export interface ResourceSample {
+  /** The resource URL as the browser recorded it — UNREDACTED; redact before reporting. */
+  name: string;
+  /** What initiated the fetch (`fetch`, `xmlhttprequest`, `script`, `img`, …). */
+  initiatorType: string;
+  /**
+   * The HTTP status the browser recorded, or `null` when it reported none: an
+   * engine without `PerformanceResourceTiming.responseStatus`, or `0` for a
+   * cross-origin response with no `Timing-Allow-Origin`. `null` is UNKNOWN,
+   * never a success.
+   */
+  responseStatus: number | null;
+  /** `performance.now()`-clock time the fetch started. */
+  startTime: number;
+  /** `performance.now()`-clock time the response finished. */
+  responseEnd: number;
+}
+
+/**
+ * Reduce a Resource Timing (or Navigation Timing) entry to a
+ * {@link ResourceSample}. A status the browser did not report — absent, not a
+ * number, or `0` — becomes `null`.
+ */
+export function toResourceSample(entry: PerformanceEntry): ResourceSample {
+  const e = entry as PerformanceEntry & {
+    initiatorType?: unknown;
+    responseStatus?: unknown;
+    responseEnd?: unknown;
+  };
+  const status = e.responseStatus;
+  return {
+    name: e.name,
+    initiatorType: typeof e.initiatorType === 'string' ? e.initiatorType : e.entryType,
+    responseStatus:
+      typeof status === 'number' && Number.isFinite(status) && status > 0 ? status : null,
+    startTime: e.startTime,
+    responseEnd: typeof e.responseEnd === 'number' ? e.responseEnd : e.startTime + e.duration,
+  };
 }
 
 /** How a handle's entry-type support was established. */
@@ -196,6 +240,27 @@ export function observeLongTasks(
     support.longTask,
     support,
     (entries) => onBatch(entries.map((e) => ({ startTime: e.startTime, duration: e.duration }))),
+    options.buffered ?? false
+  );
+}
+
+/**
+ * Observe `resource` entries, one callback per observer batch. With
+ * `buffered: true` the browser replays entries already in its Resource Timing
+ * buffer — requests made before the observer was installed, whatever
+ * initiated them. Returns `null` when this webview cannot observe them — the
+ * caller must report that as unknown, never as zero.
+ */
+export function observeResources(
+  onBatch: (samples: ResourceSample[]) => void,
+  options: ObservePerfOptions = {}
+): PerfObserverHandle | null {
+  const support = options.support ?? probePerfEntrySupport();
+  return observeEntries(
+    'resource',
+    support.resource,
+    support,
+    (entries) => onBatch(entries.map(toResourceSample)),
     options.buffered ?? false
   );
 }
