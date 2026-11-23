@@ -7,6 +7,7 @@ semantic snapshots, and assertion capabilities.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -15,6 +16,7 @@ if TYPE_CHECKING:
 
 from .ai_types import (
     AIDiscoveredElement,
+    AssertionRange,
     AssertionRequest,
     AssertionResult,
     AssertionType,
@@ -273,6 +275,14 @@ class AsyncAIClient:
         *,
         timeout: int | None = None,
         message: str | None = None,
+        fuzzy: bool | None = None,
+        attribute_name: str | None = None,
+        property_name: str | None = None,
+        allowed_values: list[str] | None = None,
+        range: AssertionRange | dict[str, float] | None = None,
+        token_path: str | None = None,
+        related_target: str | SearchCriteria | None = None,
+        min_gap: float | None = None,
     ) -> AssertionResult:
         """
         Make an assertion about an element.
@@ -283,6 +293,16 @@ class AsyncAIClient:
             expected: Expected value (for hasText, hasValue, count, etc.)
             timeout: Wait timeout in milliseconds
             message: Custom failure message
+            fuzzy: Use fuzzy matching for the element search
+            attribute_name: Attribute to read (``attribute``)
+            property_name: CSS property to read (``cssProperty``,
+                ``cssPropertyInSet``, ``cssPropertyRange``, ``tokenCompliance``)
+            allowed_values: Allowed values (``cssPropertyInSet``)
+            range: ``{"min": ..., "max": ...}`` bounds (``cssPropertyRange``)
+            token_path: Design-token path (``tokenCompliance``)
+            related_target: The element a spatial check compares with
+                (``noOverlap``, ``minSpacing``; required for both)
+            min_gap: Minimum gap in pixels (``minSpacing``)
 
         Returns:
             AssertionResult with pass/fail status
@@ -298,6 +318,14 @@ class AsyncAIClient:
             expected=expected,
             timeout=timeout,
             message=message,
+            fuzzy=fuzzy,
+            attribute_name=attribute_name,
+            property_name=property_name,
+            allowed_values=allowed_values,
+            range=AssertionRange.model_validate(range) if range is not None else None,
+            token_path=token_path,
+            related_target=related_target,
+            min_gap=min_gap,
         )
         data = await self._client._request(
             "POST",
@@ -360,7 +388,7 @@ class AsyncAIClient:
 
     async def assert_batch(
         self,
-        assertions: list[tuple[str, str, Any] | tuple[str, str]],
+        assertions: Sequence[AssertionRequest | tuple[str, str, Any] | tuple[str, str]],
         *,
         mode: str = "all",
         stop_on_failure: bool = False,
@@ -369,15 +397,20 @@ class AsyncAIClient:
         Execute multiple assertions.
 
         Args:
-            assertions: List of (target, assertion_type) or (target, assertion_type, expected) tuples
+            assertions: ``AssertionRequest`` objects (which carry every request field,
+                e.g. ``related_target`` for ``noOverlap``), or (target, assertion_type) /
+                (target, assertion_type, expected) tuples
             mode: "all" requires all to pass, "any" requires at least one
             stop_on_failure: Stop on first failure
 
         Returns:
             BatchAssertionResult with all results
         """
-        requests = []
+        requests: list[AssertionRequest] = []
         for item in assertions:
+            if isinstance(item, AssertionRequest):
+                requests.append(item)
+                continue
             if len(item) == 2:
                 target, assertion_type = item
                 expected = None

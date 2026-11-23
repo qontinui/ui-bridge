@@ -268,6 +268,18 @@ class AssertionType(str, Enum):
     COUNT = "count"
     ATTRIBUTE = "attribute"
     CSS_PROPERTY = "cssProperty"
+    CSS_PROPERTY_IN_SET = "cssPropertyInSet"
+    CSS_PROPERTY_RANGE = "cssPropertyRange"
+    TOKEN_COMPLIANCE = "tokenCompliance"
+    NO_OVERLAP = "noOverlap"
+    MIN_SPACING = "minSpacing"
+
+
+class AssertionRange(BaseModel):
+    """Range bounds for a ``cssPropertyRange`` assertion (TS ``{ min?, max? }``)."""
+
+    min: float | None = None
+    max: float | None = None
 
 
 class AssertionRequest(BaseModel):
@@ -278,9 +290,23 @@ class AssertionRequest(BaseModel):
     expected: Any | None = None
     attribute_name: str | None = Field(default=None, alias="attributeName")
     property_name: str | None = Field(default=None, alias="propertyName")
+    allowed_values: list[str] | None = Field(default=None, alias="allowedValues")
+    """Allowed values (for ``cssPropertyInSet``)."""
+    range: AssertionRange | None = None
+    """Range bounds (for ``cssPropertyRange``)."""
+    token_path: str | None = Field(default=None, alias="tokenPath")
+    """Design-token path (for ``tokenCompliance``, e.g. ``"colors.primary"``)."""
     timeout: int | None = None
     message: str | None = None
     fuzzy: bool | None = None
+    related_target: str | SearchCriteria | None = Field(default=None, alias="relatedTarget")
+    """The second element a spatial check (``noOverlap``, ``minSpacing``) compares with.
+
+    Required for those two: the SDK refuses a spatial check without one (or with
+    search criteria that select nothing) as ``unmeasured`` / ``UB-VALIDATION-ERROR``.
+    """
+    min_gap: float | None = Field(default=None, alias="minGap")
+    """Minimum gap in pixels between the two elements (for ``minSpacing``)."""
 
     model_config = {"populate_by_name": True}
 
