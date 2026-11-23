@@ -203,7 +203,27 @@ function classifyReactError(_event: AnyCapturedEvent & { type: 'react-error' }):
   return { severity: 'crash', reason: 'React error boundary' };
 }
 
+/** One step down: error → warning, warning → noise; crash and noise stay. */
+function demoteSeverity(severity: ErrorSeverity): ErrorSeverity {
+  if (severity === 'error') return 'warning';
+  if (severity === 'warning') return 'noise';
+  return severity;
+}
+
 function classifyResourceStatus(event: AnyCapturedEvent & { type: 'resource-status' }): {
+  severity: ErrorSeverity;
+  reason: string;
+} {
+  const own = classifyOwnResourceStatus(event);
+  // A previous document's failure is evidence about the navigation that led
+  // here, not about this page: it scores one step down.
+  if (event.fromPreviousDocument) {
+    return { severity: demoteSeverity(own.severity), reason: `${own.reason} (previous document)` };
+  }
+  return own;
+}
+
+function classifyOwnResourceStatus(event: AnyCapturedEvent & { type: 'resource-status' }): {
   severity: ErrorSeverity;
   reason: string;
 } {
@@ -214,6 +234,14 @@ function classifyResourceStatus(event: AnyCapturedEvent & { type: 'resource-stat
       if (status === null) return { severity: 'noise', reason: 'resource status unknown' };
       if (status === 404 && isCommonAsset404(event.resourceUrl)) {
         return { severity: 'noise', reason: '404 for common asset' };
+      }
+      // A fetch/XHR 4xx is also a `network` warning when the network capture
+      // saw it; grading it the same keeps one failure from scoring as an error.
+      if (
+        status < 500 &&
+        (event.initiatorType === 'fetch' || event.initiatorType === 'xmlhttprequest')
+      ) {
+        return { severity: 'warning', reason: `${event.initiatorType} HTTP ${status}` };
       }
       return { severity: 'error', reason: `${event.initiatorType} HTTP ${status}` };
     }
@@ -310,10 +338,11 @@ function classifyLoaf(event: AnyCapturedEvent & { type: 'long-animation-frame' }
  * Classification rules:
  * - **crash**: React error boundary, unhandled rejection, network errors on critical endpoints
  * - **error**: console.error (not noise), network 5xx, script/stylesheet load failures, HMR errors,
- *   resource-status 4xx/5xx
+ *   resource-status 5xx and non-fetch/XHR 4xx
  * - **warning**: console.warn (not noise), network 4xx, image load failures, WS disconnection,
  *   long tasks >= 500ms, long animation frames with high blocking duration, resource-status
- *   observer unavailable / buffer full / unknown statuses capped
+ *   fetch/XHR 4xx and observer unavailable / buffer full / unknown statuses capped
+ *   (a previous document's resource-status event scores one step lower)
  * - **noise**: Noise-pattern matches, long tasks < 100ms, navigation, memory, web vitals,
  *   HMR reconnect messages, aborted requests, WS reconnect attempts, resource-status with an
  *   unknown (null) status
