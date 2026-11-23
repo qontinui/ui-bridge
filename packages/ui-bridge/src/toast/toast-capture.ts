@@ -329,13 +329,14 @@ export class ToastCapture {
 
   private observer: MutationObserver | null = null;
   private pollTimerId: ReturnType<typeof setInterval> | null = null;
-  /** The message each element was last captured or parked with. */
-  private lastMessage = new WeakMap<Element, string>();
   /**
-   * Elements dismissed while still connected (emptied text, hidden, or past
-   * max-age), with the message they were dismissed with. `reconcile` re-reads
-   * them, captures one again when its text changes, and drops it once it
-   * disconnects.
+   * Elements dismissed while still connected, with the message they were
+   * dismissed with: `''` for emptied text or a hidden element (so becoming
+   * visible with any text is a new announcement), the unchanged text for one
+   * past max-age. `reconcile` re-reads them (an extractMessage clone and a
+   * style check per poll and per read, for as long as they stay connected),
+   * captures one again when its text changes, and drops it once it
+   * disconnects. `uninstall` clears it, since nothing prunes it afterwards.
    */
   private parked: Map<Element, string> = new Map();
   /** Guards `reconcile` against re-entry from a synchronous event listener. */
@@ -405,6 +406,9 @@ export class ToastCapture {
 
     this.onToastEvent = undefined;
     this.scanScheduled = false;
+    // Parked elements are tracking state, not captured data: with no poll left
+    // to prune disconnected ones, holding them would retain detached subtrees.
+    this.parked.clear();
     // Intentionally do NOT clear captured data — let it be readable after uninstall
   }
 
@@ -468,14 +472,13 @@ export class ToastCapture {
       elements = this.querySelectorsFallback();
     }
 
-    const activeElements = new Set<Element>();
-    for (const entry of this.activeToasts.values()) activeElements.add(entry.element);
-
     for (let i = 0; i < elements.length; i++) {
       const el = elements[i];
       // A text change on an active element belongs to `reconcile`, which
-      // dismisses the old announcement before capturing the new one.
-      if (activeElements.has(el)) continue;
+      // dismisses the old announcement before capturing the new one. Read the
+      // live state per element: a synchronous `onToastEvent` listener may run a
+      // read (and with it `reconcile`) between two iterations of this loop.
+      if (this.isActiveElement(el)) continue;
       if (!isElementVisible(el)) continue;
 
       // Skip elements with no meaningful text
@@ -483,10 +486,17 @@ export class ToastCapture {
       if (!message) continue;
 
       // A parked element is captured again only when its text has changed.
-      if (this.parked.has(el) && this.lastMessage.get(el) === message) continue;
+      if (this.parked.has(el) && this.parked.get(el) === message) continue;
 
       this.captureToast(el, message);
     }
+  }
+
+  private isActiveElement(el: Element): boolean {
+    for (const entry of this.activeToasts.values()) {
+      if (entry.element === el) return true;
+    }
+    return false;
   }
 
   private querySelectorsFallback(): NodeListOf<Element> {
@@ -506,13 +516,17 @@ export class ToastCapture {
   }
 
   /**
-   * The single owner of the "element becomes active" transition: unparks the
-   * element and records its message before inserting, so a scan capture and a
-   * reconcile capture of the same element cannot both happen.
+   * The single owner of the "element becomes active" transition: it unparks
+   * the element before inserting, and the scan re-checks the live active set
+   * per element, so a scan capture and a reconcile capture of the same element
+   * cannot both happen.
+   *
+   * `id` names the ELEMENT (its `id` or `data-testid`, which agents query by),
+   * not the announcement: `recent` can hold several entries with one id.
+   * Elements with neither get a fresh `toast-<n>` per announcement.
    */
   private captureToast(el: Element, message: string, now: number = Date.now()): void {
     this.parked.delete(el);
-    this.lastMessage.set(el, message);
 
     const id = this.resolveId(el, now);
     const level = inferLevel(el);
@@ -587,7 +601,9 @@ export class ToastCapture {
     const el = entry.element;
     if (!isElementVisible(el)) {
       this.dismissToast(id, now);
-      if (el.isConnected) this.park(el, extractMessage(el));
+      // Parked with '' — the same rule as emptied text: becoming visible again
+      // with any text is a new announcement.
+      if (el.isConnected) this.park(el, '');
       return;
     }
 
@@ -619,7 +635,6 @@ export class ToastCapture {
   }
 
   private park(el: Element, message: string): void {
-    this.lastMessage.set(el, message);
     this.parked.set(el, message);
   }
 
@@ -636,7 +651,7 @@ export class ToastCapture {
 
     if (!isElementVisible(holder.element)) {
       this.dismissToast(base, now);
-      if (holder.element.isConnected) this.park(holder.element, extractMessage(holder.element));
+      if (holder.element.isConnected) this.park(holder.element, '');
       return base;
     }
 

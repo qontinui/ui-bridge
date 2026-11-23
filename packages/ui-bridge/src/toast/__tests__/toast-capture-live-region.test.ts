@@ -273,4 +273,62 @@ describe('ToastCapture live-region text', () => {
     expect(capture.getSnapshot().totalCaptured).toBe(2);
     expect(capture.getActive().map((t) => t.id)).toEqual(['health']);
   });
+
+  // 12
+  it('a read made by a synchronous listener during a scan does not capture one element twice', async () => {
+    capture = new ToastCapture({ pollInterval: 500, maxToastAgeMs: 1_000 });
+    let reading = false;
+    capture.install((data) => {
+      events.push(data);
+      // A host listener that reads the snapshot inside the event, as a
+      // registry `onEvent` hook may.
+      if (data.action === 'appeared' && !reading) {
+        reading = true;
+        capture.getSnapshot();
+        reading = false;
+      }
+    });
+    const a = addStatus('a', 'A1');
+    await flushAndScan();
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(capture.getActive()).toHaveLength(0); // A is parked by max-age
+    const eventsBefore = events.length;
+
+    // A's text changes in place (no scan), then B is inserted BEFORE A (a
+    // scan). The scan captures B first; B's listener reads, which reconciles
+    // and captures A; the scan must then skip A.
+    setTextInPlace(a, 'A2');
+    const b = document.createElement('div');
+    b.setAttribute('role', 'status');
+    b.setAttribute('data-testid', 'b');
+    b.textContent = 'B1';
+    document.body.insertBefore(b, a);
+    await flushAndScan();
+
+    const appeared = events.slice(eventsBefore).filter((e) => e.action === 'appeared');
+    expect(appeared.map((e) => e.toast.id).sort()).toEqual(['a', 'b']);
+    expect(
+      capture
+        .getActive()
+        .map((t) => t.id)
+        .sort()
+    ).toEqual(['a', 'b']);
+  });
+
+  // 13
+  it('an element hidden and shown again is a new announcement, whatever its text', async () => {
+    install({ pollInterval: 500 });
+    const el = addStatus('saved', 'Saved');
+    await flushAndScan();
+    expect(capture.getActive().map((t) => t.message)).toEqual(['Saved']);
+
+    el.style.display = 'none';
+    expect(capture.getActive()).toHaveLength(0);
+
+    el.style.display = '';
+    const active = capture.getActive();
+    expect(active.map((t) => [t.id, t.message])).toEqual([['saved', 'Saved']]);
+    expect(capture.getSnapshot().totalCaptured).toBe(2);
+    expect(events.map((e) => e.action)).toEqual(['appeared', 'dismissed', 'appeared']);
+  });
 });
