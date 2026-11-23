@@ -19,16 +19,21 @@
  *   are not lost with it.
  *
  * Every "could not look" is an event, never silence: an engine with no
- * resource observer emits `observerUnavailable`, a full Resource Timing buffer
- * (the pre-install window may be incomplete) emits `bufferFull`, and a status
+ * resource observer emits `observerUnavailable`, a Resource Timing buffer
+ * already full at install (the pre-install window may be incomplete) emits
+ * `bufferFull`, and a status
  * the browser did not report is `responseStatus: null` (UNKNOWN). Unknown
  * statuses are bounded per document ({@link UNKNOWN_STATUS_BUDGET}) — on an
  * engine without `responseStatus` (WebKit) every resource is unknown, and
  * unbounded they would evict every other captured event — and spending the
  * budget is itself one event.
  *
- * URLs are redacted with `redactRequestUrl`: origin + path and `hasQuery`,
- * never the query.
+ * URLs — the resource's and the page's — are redacted with
+ * `redactRequestUrl`: origin + path, never the query or fragment (a page URL
+ * routinely carries an OAuth `?code=` or `#access_token=`).
+ *
+ * A carry older than {@link PREVIOUS_DOCUMENT_MAX_AGE_MS} is dropped: it no
+ * longer describes the navigation that led here.
  */
 
 import type {
@@ -51,16 +56,29 @@ export const PREVIOUS_DOCUMENT_LIMIT = 50;
 /** How many `responseStatus: null` events one document reports individually. */
 export const UNKNOWN_STATUS_BUDGET = 25;
 
+/** A previous document's carry older than this is dropped unread. */
+export const PREVIOUS_DOCUMENT_MAX_AGE_MS = 5 * 60_000;
+
+const RESOURCE_STATUS_KINDS: ReadonlySet<string> = new Set<ResourceStatusCapturedEvent['kind']>([
+  'status',
+  'observer-unavailable',
+  'buffer-full',
+  'unknown-status-capped',
+]);
+
 /** The browser's default Resource Timing buffer size. */
 const DEFAULT_RESOURCE_TIMING_BUFFER_SIZE = 250;
 
 interface StoredEvents {
   v: number;
+  /** `Date.now()` when the previous document wrote the carry. */
+  writtenAt: number;
   events: ResourceStatusCapturedEvent[];
 }
 
+/** The page URL, redacted: origin + path only. */
 function pageUrl(): string {
-  return window.location.href;
+  return redactRequestUrl(window.location.href).url;
 }
 
 function timeOrigin(): number | null {
@@ -93,12 +111,26 @@ function getSessionStorage(): Storage | null {
 
 function isStoredEvent(value: unknown): value is ResourceStatusCapturedEvent {
   if (typeof value !== 'object' || value === null) return false;
-  const v = value as { type?: unknown; kind?: unknown; timestamp?: unknown; url?: unknown };
+  const v = value as {
+    type?: unknown;
+    kind?: unknown;
+    timestamp?: unknown;
+    url?: unknown;
+    resourceUrl?: unknown;
+    initiatorType?: unknown;
+  };
+  if (
+    v.type !== 'resource-status' ||
+    typeof v.kind !== 'string' ||
+    !RESOURCE_STATUS_KINDS.has(v.kind) ||
+    typeof v.timestamp !== 'number' ||
+    typeof v.url !== 'string'
+  ) {
+    return false;
+  }
   return (
-    v.type === 'resource-status' &&
-    typeof v.kind === 'string' &&
-    typeof v.timestamp === 'number' &&
-    typeof v.url === 'string'
+    v.kind !== 'status' ||
+    (typeof v.resourceUrl === 'string' && typeof v.initiatorType === 'string')
   );
 }
 
@@ -117,6 +149,8 @@ function takePreviousDocumentEvents(): ResourceStatusCapturedEvent[] {
   try {
     const parsed = JSON.parse(raw) as Partial<StoredEvents>;
     if (parsed.v !== STORAGE_VERSION || !Array.isArray(parsed.events)) return [];
+    const age = typeof parsed.writtenAt === 'number' ? Date.now() - parsed.writtenAt : NaN;
+    if (!(age >= 0 && age <= PREVIOUS_DOCUMENT_MAX_AGE_MS)) return [];
     return parsed.events.filter(isStoredEvent).slice(-PREVIOUS_DOCUMENT_LIMIT);
   } catch {
     return [];
@@ -198,19 +232,12 @@ export function installResourceStatusCapture(emit: Emit): () => void {
     onSample(toResourceSample(navigation[0]!));
   }
 
-  // 3. Buffer fullness: a full buffer means the buffered replay below may be
-  //    missing pre-install entries.
+  // 3. Buffer fullness at install: a buffer already full means the buffered
+  //    replay below may be missing pre-install entries. A buffer that fills
+  //    later is no gap — the live observer receives every entry regardless.
   const preInstall = getEntries('resource');
   if (preInstall && preInstall.length >= DEFAULT_RESOURCE_TIMING_BUFFER_SIZE) {
     emitBufferFull(preInstall.length);
-  }
-  const onBufferFull = () => {
-    emitBufferFull(getEntries('resource')?.length ?? DEFAULT_RESOURCE_TIMING_BUFFER_SIZE);
-  };
-  const canListenToPerformance =
-    typeof performance !== 'undefined' && typeof performance.addEventListener === 'function';
-  if (canListenToPerformance) {
-    performance.addEventListener('resourcetimingbufferfull', onBufferFull);
   }
 
   // 4. Every resource, including those recorded before install.
@@ -237,9 +264,16 @@ export function installResourceStatusCapture(emit: Emit): () => void {
     const storage = getSessionStorage();
     if (!storage) return;
     try {
-      const payload: StoredEvents = { v: STORAGE_VERSION, events: recent.slice() };
+      const payload: StoredEvents = {
+        v: STORAGE_VERSION,
+        writtenAt: Date.now(),
+        events: recent.slice(),
+      };
       storage.setItem(STORAGE_KEY, JSON.stringify(payload));
       wroteStorage = true;
+      // Carried once: a back/forward-cache restore and a second pagehide must
+      // not hand the same events to the next document again.
+      recent.length = 0;
     } catch {
       // Quota or a blocked storage: the carry-over is lost, the live events were emitted.
     }
@@ -260,9 +294,6 @@ export function installResourceStatusCapture(emit: Emit): () => void {
 
   return () => {
     handle?.disconnect();
-    if (canListenToPerformance) {
-      performance.removeEventListener('resourcetimingbufferfull', onBufferFull);
-    }
     window.removeEventListener('pagehide', onPageHide);
     window.removeEventListener('pageshow', onPageShow);
   };

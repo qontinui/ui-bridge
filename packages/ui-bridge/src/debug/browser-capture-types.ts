@@ -83,15 +83,17 @@ export interface ResourceErrorCapturedEvent extends BrowserCapturedEvent {
 
 /**
  * Fields shared by every `resource-status` event. The base `url` is the page
- * the event was observed on — for a `fromPreviousDocument` event, the page of
- * the document that drew the failure, not the current one.
+ * the event was observed on, redacted to origin + path (no query, no
+ * fragment) — for a `fromPreviousDocument` event, the page of the document
+ * that drew the failure, not the current one.
  */
 interface ResourceStatusEventBase extends BrowserCapturedEvent {
   type: 'resource-status';
   /**
    * Observed by the previous same-tab document and carried across its
-   * navigation through `sessionStorage`. Absent on events observed by this
-   * document.
+   * navigation through `sessionStorage` (dropped when older than 5 minutes).
+   * Scored one severity step lower than this document's own events. Absent on
+   * events observed by this document.
    */
   fromPreviousDocument?: true;
 }
@@ -129,8 +131,10 @@ export interface ResourceStatusObserverUnavailableEvent extends ResourceStatusEv
 }
 
 /**
- * The Resource Timing buffer was full, so failures from before the capture was
- * installed may be missing: the pre-install window is UNKNOWN.
+ * The Resource Timing buffer was already full when the capture was installed,
+ * so failures from before install may be missing: the pre-install window is
+ * UNKNOWN. A buffer that fills after install is not reported — the live
+ * observer still receives every entry.
  */
 export interface ResourceStatusBufferFullEvent extends ResourceStatusEventBase {
   kind: 'buffer-full';

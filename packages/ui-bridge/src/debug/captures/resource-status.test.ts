@@ -246,7 +246,7 @@ describe('resource-status capture', () => {
     expect(carried[49]).toMatchObject({ resourceUrl: 'https://app.example.com/r/59' });
   });
 
-  it('(f) a full resource-timing buffer emits bufferFull: true', async () => {
+  it('(f) a buffer already full at install emits bufferFull: true, once', async () => {
     FakePerformanceObserver.record(
       'resource',
       Array.from({ length: 250 }, (_, i) => resourceEntry(`https://app.example.com/a/${i}`, 200))
@@ -270,10 +270,122 @@ describe('resource-status capture', () => {
       resourceEntryCount: 250,
     });
 
-    expect(listeners).toHaveLength(1);
-    listeners[0]!();
+    // A buffer that fills AFTER install is no gap: the live observer still
+    // receives every entry, so no listener is registered and nothing is emitted.
+    expect(listeners).toHaveLength(0);
+    FakePerformanceObserver.record('resource', [resourceEntry('https://app.example.com/z', 429)]);
     events = statusEvents(capture);
-    expect(events.filter((e) => e.kind === 'buffer-full')).toHaveLength(2);
+    expect(events.filter((e) => e.kind === 'buffer-full')).toHaveLength(1);
+    expect(events.at(-1)).toMatchObject({ kind: 'status', responseStatus: 429 });
+  });
+
+  it('pageshow from the back/forward cache withdraws the carry it wrote', async () => {
+    const capture = install();
+    await settle();
+    FakePerformanceObserver.record('resource', [resourceEntry('https://app.example.com/q', 429)]);
+    window.dispatchEvent(new Event('pagehide'));
+    expect(sessionStorage.getItem(STORAGE_KEY)).not.toBeNull();
+    window.dispatchEvent(Object.assign(new Event('pageshow'), { persisted: true }));
+    expect(sessionStorage.getItem(STORAGE_KEY)).toBeNull();
+    capture.uninstall();
+  });
+
+  it('a back/forward-cache round trip does not re-carry already-carried events', async () => {
+    const first = install();
+    await settle();
+    FakePerformanceObserver.record('resource', [resourceEntry('https://app.example.com/q', 429)]);
+    window.dispatchEvent(new Event('pagehide'));
+    window.dispatchEvent(Object.assign(new Event('pageshow'), { persisted: true }));
+    // Leaving the restored document again: nothing new happened on it.
+    window.dispatchEvent(new Event('pagehide'));
+    first.uninstall();
+
+    newDocument();
+    const second = install();
+    await settle();
+    expect(statusEvents(second)).toHaveLength(0);
+  });
+
+  it('redacts the page url: no query or fragment in events or in the carry', async () => {
+    const original = window.location.href;
+    window.history.replaceState({}, '', '/auth/callback?code=s3cretcode#access_token=s3crettoken');
+    try {
+      const capture = install();
+      await settle();
+      FakePerformanceObserver.record('resource', [resourceEntry('https://app.example.com/q', 429)]);
+      const [event] = statusEvents(capture);
+      expect(event!.url).toBe(`${window.location.origin}/auth/callback`);
+      window.dispatchEvent(new Event('pagehide'));
+      const stored = sessionStorage.getItem(STORAGE_KEY) ?? '';
+      expect(stored).toContain('/auth/callback');
+      for (const text of [JSON.stringify(statusEvents(capture)), stored]) {
+        expect(text).not.toContain('s3cretcode');
+        expect(text).not.toContain('s3crettoken');
+      }
+    } finally {
+      window.history.replaceState({}, '', original);
+    }
+  });
+
+  it('drops tampered stored entries and keeps the valid one', async () => {
+    const valid = {
+      type: 'resource-status',
+      timestamp: 1,
+      url: 'https://app.example.com/',
+      kind: 'status',
+      resourceUrl: 'https://app.example.com/ok',
+      hasQuery: false,
+      initiatorType: 'fetch',
+      responseStatus: 429,
+      startTime: 1,
+      responseEnd: 2,
+    };
+    sessionStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        v: 1,
+        writtenAt: Date.now(),
+        events: [
+          { ...valid, kind: 'bogus' },
+          {
+            type: 'resource-status',
+            timestamp: 1,
+            url: 'https://app.example.com/',
+            kind: 'status',
+          },
+          { ...valid, initiatorType: 7 },
+          valid,
+        ],
+      })
+    );
+    const capture = install();
+    await settle();
+    const carried = statusEvents(capture);
+    expect(carried).toHaveLength(1);
+    expect(carried[0]).toMatchObject({
+      resourceUrl: 'https://app.example.com/ok',
+      fromPreviousDocument: true,
+    });
+  });
+
+  it('drops a carry written more than 5 minutes ago', async () => {
+    const first = install();
+    await settle();
+    FakePerformanceObserver.record('resource', [resourceEntry('https://app.example.com/q', 429)]);
+    window.dispatchEvent(new Event('pagehide'));
+    first.uninstall();
+    const stored = JSON.parse(sessionStorage.getItem(STORAGE_KEY)!) as { writtenAt: number };
+    expect(typeof stored.writtenAt).toBe('number');
+    sessionStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ ...stored, writtenAt: Date.now() - 5 * 60_000 - 1 })
+    );
+
+    newDocument();
+    const second = install();
+    await settle();
+    expect(statusEvents(second)).toHaveLength(0);
+    expect(sessionStorage.getItem(STORAGE_KEY)).toBeNull();
   });
 
   it('emits observerUnavailable when the webview cannot observe resources', async () => {
@@ -356,9 +468,32 @@ describe('resource-status classification', () => {
     responseEnd: 2,
   });
 
-  it('classifies 4xx and 5xx as error and an unknown status as noise', () => {
-    expect(classifyEvent(entry(429)).severity).toBe('error');
+  it('grades a fetch/XHR 4xx as warning (the network capture also sees it), 5xx as error', () => {
+    expect(classifyEvent(entry(429)).severity).toBe('warning');
+    expect(classifyEvent({ ...entry(429), initiatorType: 'xmlhttprequest' }).severity).toBe(
+      'warning'
+    );
     expect(classifyEvent(entry(503)).severity).toBe('error');
+    expect(classifyEvent({ ...entry(429), initiatorType: 'script' }).severity).toBe('error');
+    expect(classifyEvent({ ...entry(403), initiatorType: 'navigation' }).severity).toBe('error');
+  });
+
+  it('grades a previous document’s event one step down', () => {
+    const carried = { fromPreviousDocument: true as const };
+    expect(classifyEvent({ ...entry(503), ...carried }).severity).toBe('warning');
+    expect(classifyEvent({ ...entry(429), ...carried }).severity).toBe('noise');
+    expect(
+      classifyEvent({
+        ...base,
+        ...carried,
+        kind: 'buffer-full',
+        bufferFull: true,
+        resourceEntryCount: 250,
+      }).severity
+    ).toBe('noise');
+  });
+
+  it('classifies an unknown status as noise and a blind spot as warning', () => {
     expect(classifyEvent(entry(null)).severity).toBe('noise');
     expect(
       classifyEvent({ ...base, kind: 'buffer-full', bufferFull: true, resourceEntryCount: 250 })
