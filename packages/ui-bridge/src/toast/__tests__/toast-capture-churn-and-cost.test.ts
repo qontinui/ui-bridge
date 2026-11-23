@@ -368,7 +368,7 @@ describe('ToastCapture churn budget and re-read gate', () => {
 
       capture.uninstall();
       // Two still-tracked elements plus the document observer.
-      expect(disconnect.mock.calls.length - 2).toBeGreaterThanOrEqual(3);
+      expect(disconnect.mock.calls.length - 2).toBe(3);
     });
 
     // B8
