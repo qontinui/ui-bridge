@@ -39,6 +39,9 @@
     "packages/ui-bridge/src/density/**/*.ts",
     "packages/ui-bridge/src/density/__tests__/**"
   ],
+  "globallyIgnoredSources": [
+    "packages/ui-bridge/src/diagnostics/codes.generated.ts"
+  ],
   "routes": [
     "DELETE /ai/bookmark/:name -> deleteBookmark",
     "DELETE /ai/bookmarks/:name -> deleteBookmark",
