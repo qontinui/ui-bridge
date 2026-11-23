@@ -48,6 +48,13 @@ export interface NumberForm {
  * public surface (`ai/index.ts` does not re-export it).
  */
 export function parseNumberForm(text: string): NumberForm | null {
+  // A bare leading decimal point ($.99, .5%) is the fraction of zero.
+  const bare = /^(-?)\.(\d+)$/.exec(text);
+  if (bare) {
+    const value = Number(`${bare[1]}0.${bare[2]}`);
+    return { value, thousands: null, decimal: '.', decimals: bare[2].length };
+  }
+
   const m = /^(-?)(\d[\d.,]*)$/.exec(text);
   if (!m) return null;
   const sign = m[1];
@@ -135,7 +142,7 @@ function percentageBody(text: string): string | null {
  * begins with a date (2024-01-15-0042) is not one.
  */
 const ISO_DATE =
-  /^(\d{4})-(\d{2})-(\d{2})(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
+  /^(\d{4})-(\d{2})-(\d{2})(?:[T ]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:\s?[AaPp][Mm])?(?:\s?(?:Z|UTC|GMT|[+-]\d{2}:?\d{2}))?)?$/;
 /** Slash form, read month first (`MM/DD/YYYY`, as `detectFormatPattern` names it). */
 const SLASH_DATE = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/;
 /** Dotted form, day first: 16.10.2026. */

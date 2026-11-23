@@ -26,7 +26,7 @@ export function detectFormatPattern(value: string, dataType: DataType): string {
   switch (dataType) {
     case 'currency': {
       // Detect currency symbol position and thousand/decimal separators
-      const hasLeadingSymbol = /^[£$€¥₹]/.test(trimmed);
+      const hasLeadingSymbol = /^-?\s?[£$€¥₹]/.test(trimmed);
       const hasTrailingSymbol = /[£$€¥₹]$/.test(trimmed);
       const usesCommaThousands = /\d{1,3}(,\d{3})+/.test(trimmed);
       const usesPeriodThousands = /\d{1,3}(\.\d{3})+,/.test(trimmed);
