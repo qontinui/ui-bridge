@@ -64,6 +64,10 @@ export function parseNumberForm(text: string): NumberForm | null {
     return { value, thousands, decimal, decimals: fraction.length };
   };
 
+  // A double holds 15 significant digits exactly. Past that, two different
+  // long ids would read as one number, so such a run is no number.
+  if (body.replace(/\D/g, '').length > 15) return null;
+
   // Plain digits.
   if (/^\d+$/.test(body)) return read(body, '', null, null);
 
@@ -77,6 +81,10 @@ export function parseNumberForm(text: string): NumberForm | null {
 
   // `,` thousands, optional `.` decimal: 1,234,567 / 1,234.56.
   f = /^(\d{1,3}(?:,\d{3})+)(?:\.(\d+))?$/.exec(body);
+  if (f) return read(f[1], f[2] ?? '', ',', f[2] !== undefined ? '.' : null);
+
+  // Indian (lakh) grouping, optional `.` decimal: 1,23,456 / 12,34,567.50.
+  f = /^(\d{1,2}(?:,\d{2})+,\d{3})(?:\.(\d+))?$/.exec(body);
   if (f) return read(f[1], f[2] ?? '', ',', f[2] !== undefined ? '.' : null);
 
   // `.` thousands, optional `,` decimal: 1.234.567 / 1.234,56.
@@ -114,9 +122,11 @@ function percentageBody(text: string): string | null {
  * normal form is the calendar date AS WRITTEN: an offset in a following time
  * is not applied, so 2026-10-16T23:30:00-05:00 normalises to 2026-10-16, not
  * to the UTC date. A page shows the date its author meant, and that is what a
- * cross-app comparison must compare.
+ * cross-app comparison must compare. Anchored at both ends, so an id that only
+ * begins with a date (2024-01-15-0042) is not one.
  */
-const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})/;
+const ISO_DATE =
+  /^(\d{4})-(\d{2})-(\d{2})(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
 /** Slash form, read month first (`MM/DD/YYYY`, as `detectFormatPattern` names it). */
 const SLASH_DATE = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/;
 /** Dotted form, day first: 16.10.2026. */
@@ -167,17 +177,22 @@ function fullYear(digits: string): number | null {
   return yy < 50 ? 2000 + yy : 1900 + yy;
 }
 
+/**
+ * A value is a date exactly when its normal form can be built: a recognised
+ * form that names a real calendar day. So the classifier and `normalizeValue`
+ * never disagree, and digit groups that only look like a date (`31.02.2026`,
+ * `2026-13-45`, `12-34-5678`) fall through to the number and phone branches.
+ */
 function isDateShaped(text: string): boolean {
-  return (
-    ISO_DATE.test(text) ||
-    SLASH_DATE.test(text) ||
-    DOTTED_DATE.test(text) ||
-    // The day-first hyphen form is new, and it overlaps phone shapes such as
-    // 12-34-5678; it is a date only when it names a calendar day.
-    (HYPHEN_DATE.test(text) && isoDateFromParts(text) !== null) ||
-    MONTH_NAME_DATE.test(text)
-  );
+  return isoDateFromParts(text) !== null;
 }
+
+/**
+ * The day-first hyphen form overlaps phone shapes (`11-12-2345`), so its year
+ * must be a plausible calendar year.
+ */
+const HYPHEN_YEAR_MIN = 1900;
+const HYPHEN_YEAR_MAX = 2199;
 
 /**
  * `YYYY-MM-DD` built from the parts of a recognised date form, with no `Date`
@@ -192,8 +207,11 @@ function isoDateFromParts(text: string): string | null {
 
   if ((m = ISO_DATE.exec(text))) {
     [year, month, day] = [Number(m[1]), Number(m[2]), Number(m[3])];
-  } else if ((m = DOTTED_DATE.exec(text) ?? HYPHEN_DATE.exec(text))) {
+  } else if ((m = DOTTED_DATE.exec(text))) {
     [day, month, year] = [Number(m[1]), Number(m[2]), fullYear(m[3])];
+  } else if ((m = HYPHEN_DATE.exec(text))) {
+    [day, month, year] = [Number(m[1]), Number(m[2]), Number(m[3])];
+    if (year < HYPHEN_YEAR_MIN || year > HYPHEN_YEAR_MAX) return null;
   } else if ((m = SLASH_DATE.exec(text))) {
     [month, day, year] = [Number(m[1]), Number(m[2]), fullYear(m[3])];
   } else if ((m = MONTH_NAME_DATE.exec(text))) {

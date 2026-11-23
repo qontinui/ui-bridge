@@ -50,8 +50,16 @@ describe('classifyDataType', () => {
     ['(555) 123-4567', 'phone'],
     ['555-123-4567', 'phone'],
     ['555.123.4567', 'phone'],
-    // day-first hyphen digits that name no calendar day stay a phone
+    // digit groups that only look like a date stay a phone, as before
     ['12-34-5678', 'phone'],
+    ['11-12-2345', 'phone'],
+    ['31.02.2026', 'phone'],
+    ['2026-13-45', 'phone'],
+    ['2024-01-15-0042', 'phone'],
+    // a word that names no month is no date
+    ['Mayo 3, 2026', 'text'],
+    // more digits than a double holds exactly is no number
+    ['12345678901234567', 'text'],
     // the rest
     ['true', 'boolean'],
     ['a@b.co', 'email'],
@@ -86,6 +94,14 @@ describe('normalizeValue', () => {
     ['12/31/26', 'date', '2026-12-31'],
     ['16.10.26', 'date', '2026-10-16'],
     ['Sept 16, 2026', 'date', '2026-09-16'],
+    // Indian (lakh) grouping
+    ['1,23,456', 'number', '123456'],
+    ['₹12,34,567.50', 'currency', '1234567.5'],
+    // distinct ids that begin with the same date stay distinct
+    ['2024-01-15-0042', 'phone', '202401150042'],
+    // the locale-ambiguous single separators are pinned as a choice: a lone
+    // `,` before three digits is thousands, a lone `.` is a decimal point
+    // (see 1,234 and 1.234 above), so en-US 1,234 and de-DE 1.234 differ
     // the calendar date as written; a following offset is not applied
     ['2026-10-16T23:30:00-05:00', 'date', '2026-10-16'],
   ];
