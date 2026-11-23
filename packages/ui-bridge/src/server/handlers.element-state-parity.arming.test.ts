@@ -124,3 +124,61 @@ describe('POST /control/element/:id/action waitOptions read the canonical Elemen
     expect(data.elementState?.occludedBy).toBeUndefined();
   });
 });
+
+describe('POST /control/element/:id/action waitOptions on state.ariaBusy terminate', () => {
+  function busyButton(): HTMLButtonElement {
+    // Not under the overlay, so only the ariaBusy condition can hold the wait.
+    overlay.remove();
+    const el = document.createElement('button');
+    el.textContent = 'Saving';
+    el.setAttribute('aria-busy', 'true');
+    document.body.appendChild(withBox(el, 300, 300, 80, 24));
+    registry.registerElement('saving', el, { type: 'button', actions: ['blur'] });
+    return el;
+  }
+
+  it('ariaBusy arming: waitOptions { state: { ariaBusy: false } } succeeds once a timer clears aria-busy', async () => {
+    const el = busyButton();
+    // The handler settles the DOM before the executor's wait starts, for an
+    // unknown time. So the timer is armed by the FIRST read of aria-busy (the
+    // wait's first poll), and clears the attribute 50 ms after it: the wait
+    // must observe busy and then poll again.
+    const reads: Array<string | null> = [];
+    const realGetAttribute = el.getAttribute.bind(el);
+    el.getAttribute = (name: string) => {
+      const value = realGetAttribute(name);
+      if (name === 'aria-busy') {
+        if (reads.length === 0) setTimeout(() => el.removeAttribute('aria-busy'), 50);
+        reads.push(value);
+      }
+      return value;
+    };
+
+    const response = await handlers.executeElementAction('saving', {
+      action: 'blur',
+      waitOptions: { visible: false, enabled: false, state: { ariaBusy: false }, timeout: 5000 },
+    });
+    const data = response.data as ControlActionResponse;
+
+    expect(data.success, data.error).toBe(true);
+    expect(data.waitDurationMs).toBeGreaterThanOrEqual(40);
+    expect(data.elementState?.ariaBusy).toBe(false);
+    expect(reads[0]).toBe('true');
+    expect(reads[reads.length - 1]).toBeNull();
+  });
+
+  it('ariaBusy arming: waitOptions { state: { ariaBusy: false } } times out while aria-busy stays "true"', async () => {
+    busyButton();
+
+    const response = await handlers.executeElementAction('saving', {
+      action: 'blur',
+      waitOptions: { visible: false, enabled: false, state: { ariaBusy: false }, timeout: 200 },
+    });
+    const data = response.data as ControlActionResponse;
+
+    expect(data.success).toBe(false);
+    expect(data.error).toBe('Timeout waiting for conditions after 200ms');
+    expect(data.failureDetails?.errorCode).toBe('UB-ACTION-TIMEOUT');
+    expect(data.elementState?.ariaBusy).toBe(true);
+  });
+});

@@ -219,9 +219,13 @@ async function readAll(id: string): Promise<{
   registry.refreshElement(id, undefined);
   const entry = registry.createSnapshot().elements.find((e) => e.id === id);
   if (!entry) throw new Error(`no snapshot entry for ${id}`);
-  const captured = captureDOMSnapshot({ includeHidden: true }).elements.find(
-    (e) => e.identifier.testId === id
-  );
+  // A text cap above every fixture's text, so the render-log's bounded
+  // `state.textContent` (truncated to `maxTextLength`) is the untruncated
+  // reading here; the truncation itself is pinned in dom-capture's own test.
+  const captured = captureDOMSnapshot({
+    includeHidden: true,
+    maxTextLength: 100_000,
+  }).elements.find((e) => e.identifier.testId === id);
   if (!captured) throw new Error(`no render-log capture for ${id}`);
   return { executor: response.elementState!, snapshot: entry.state, renderLog: captured.state };
 }

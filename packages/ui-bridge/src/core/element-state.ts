@@ -13,7 +13,10 @@
  *
  * ONE divergent builder remains: `server/dom-fallback.ts` (the un-registered
  * fallback scan) builds its own narrower state, with an `offsetParent`-based
- * `visible`. It is a known follow-up, not a sanctioned second algorithm.
+ * `visible`. It is recorded as plan-library follow-up edge
+ * a6fec76c-8233-40cd-8313-82c06c479ac5 (plan
+ * `2026-11-08-ui-bridge-element-state-has-two-readers-and-no-aria-busy`), not
+ * a sanctioned second algorithm.
  *
  * Moved out of `core/registry.ts`. §4.6: every DOM-derived TEXT field —
  * `accessibleName`, `textContent`, `value`, the option lists, `href`,
