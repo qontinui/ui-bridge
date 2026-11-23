@@ -31,6 +31,11 @@
 //      config lookup the CLI uses (so a nested `eslint.config.*`, a processor,
 //      a parser or a language override that blanks the code is seen), and
 //      every one of that block's selector messages must come back.
+//      Every SDK file must also resolve the ROOT config file: a nested config
+//      exporting `[]` leaves its files matched by nothing, which reads as
+//      ignored rather than unguarded. And the rule value each guarded file
+//      resolves must carry exactly the sanctioned selectors, so the messages
+//      cannot be re-emitted by weaker ones.
 //   5. The sanctioned blocks' selector lists are returned, so the caller can
 //      ratchet them (dropping a selector family from both blocks at once
 //      would otherwise pass every structural check above).
@@ -192,10 +197,20 @@ function findUnique(configs, predicate, what, problems) {
  *   canary and the ignore census). The CLI passes `{ cwd }`, i.e. ESLint's own per-file config
  *   lookup, nested `eslint.config.*` files included; a self-test passes an in-memory override.
  *   Default: the `configs` array itself.
+ * @param {string} [opts.rootConfigFile]  with a lookup `lintOptions`, the config file every SDK
+ *   file must resolve (absolute); any other — a nested `eslint.config.*` — is refused.
  * @param {typeof import('eslint').ESLint} [opts.ESLint]
  * @returns {Promise<{problems: string[], ignoredSdkFiles: string[], layer1Selectors: string[], projectionSelectors: string[]}>}
  */
-async function guardReachProblems({ configs, cwd, sdkFiles, sanctioned, lintOptions, ESLint }) {
+async function guardReachProblems({
+  configs,
+  cwd,
+  sdkFiles,
+  sanctioned,
+  lintOptions,
+  rootConfigFile,
+  ESLint,
+}) {
   const Eslint = ESLint || require('eslint').ESLint;
   const problems = [];
   const empty = { ignoredSdkFiles: [], layer1Selectors: [], projectionSelectors: [] };
@@ -312,23 +327,57 @@ async function guardReachProblems({ configs, cwd, sdkFiles, sanctioned, lintOpti
     whole = null;
   }
 
+  // 3b. Every SDK file must resolve the ROOT config file. A nested
+  // `eslint.config.*` replaces the root config for the files under it, and
+  // one exporting `[]` or `[{}]` leaves them matched by nothing — which reads
+  // as "ignored" above and so would never reach the canary.
+  if (whole && rootConfigFile) {
+    const foreign = [];
+    try {
+      for (const f of abs) {
+        const found = await whole.findConfigFile(f);
+        if (!found || path.resolve(found) !== path.resolve(rootConfigFile)) {
+          foreign.push({ f: rel(f), found: found ? rel(found) : 'none' });
+        }
+      }
+    } catch (e) {
+      problems.push(`could not resolve which config file each SDK file uses: ${e.message}`);
+    }
+    if (foreign.length) {
+      const examples = foreign
+        .slice(0, MAX_EXAMPLES)
+        .map((x) => `${x.f} -> ${x.found}`)
+        .join(', ');
+      problems.push(
+        `${foreign.length} SDK source file(s) resolve a config file other than ` +
+          `${rel(rootConfigFile)} (e.g. ${examples}). A nested eslint.config.* REPLACES the root ` +
+          `config, §4.6 guards included, for every file under it — remove it`
+      );
+    }
+  }
+
   // 4. The canary: every selector of the sanctioned block that reaches a file
   // must actually report on that file, through the lookup that runs. A nested
   // config file, a processor, a parser or a language override that switches
   // the guard off shows up here as missing messages, whatever its shape.
   if (whole && l1 !== -1) {
     const ignored = new Set(ignoredSdkFiles);
-    const targets = new Map(); // rel file -> messages it must report
+    // rel file -> the messages it must report and the selectors it must resolve
+    const targets = new Map();
+    const expect = (block) => ({
+      messages: selectorMessages(block),
+      selectors: [...new Set(errorSelectors(block.rules && block.rules[RULE]) || [])],
+    });
     let resolved = true;
     try {
-      const l1Messages = selectorMessages(configs[l1]);
+      const l1Expect = expect(configs[l1]);
       for (const f of await probeReach(Eslint, cwd, globalIgnores, configs[l1], abs, rel)) {
-        targets.set(f, l1Messages);
+        targets.set(f, l1Expect);
       }
       if (proj !== -1) {
-        const projMessages = selectorMessages(configs[proj]);
+        const projExpect = expect(configs[proj]);
         for (const f of await probeReach(Eslint, cwd, globalIgnores, configs[proj], abs, rel)) {
-          targets.set(f, projMessages);
+          targets.set(f, projExpect);
         }
       }
     } catch (e) {
@@ -342,17 +391,31 @@ async function guardReachProblems({ configs, cwd, sdkFiles, sanctioned, lintOpti
     for (const [f, required] of targets) {
       if (ignored.has(f)) continue; // ratcheted as globallyIgnoredSources
       let reported;
+      let resolvedSelectors;
       try {
-        const [result] = await whole.lintText(CANARY, { filePath: path.resolve(cwd, f) });
+        const file = path.resolve(cwd, f);
+        const [result] = await whole.lintText(CANARY, { filePath: file });
         if (!result) throw new Error('no lint result');
         const fatal = result.messages.find((m) => m.fatal);
         if (fatal) throw new Error(`the canary did not parse: ${fatal.message}`);
         reported = new Set(result.messages.filter((m) => m.ruleId === RULE).map((m) => m.message));
+        // The messages alone could be re-emitted by weaker selectors; the rule
+        // value the file resolves must carry exactly the sanctioned selectors.
+        const cfg = await whole.calculateConfigForFile(file);
+        resolvedSelectors = new Set(errorSelectors(cfg && cfg.rules && cfg.rules[RULE]) || []);
       } catch (e) {
         problems.push(`could not lint the §4.6 canary as ${f}: ${e.message}`);
         break;
       }
-      const missing = required.filter((m) => !reported.has(m));
+      const missing = [
+        ...required.messages.filter((m) => !reported.has(m)),
+        ...required.selectors.filter((s) => !resolvedSelectors.has(s)).map((s) => `selector ${s}`),
+      ];
+      if (resolvedSelectors.size !== required.selectors.length) {
+        missing.push(
+          `the resolved rule carries ${resolvedSelectors.size} selector(s), not ${required.selectors.length}`
+        );
+      }
       if (missing.length) unguarded.push({ f, missing });
     }
     if (unguarded.length) {

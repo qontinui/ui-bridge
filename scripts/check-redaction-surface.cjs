@@ -48,8 +48,9 @@
 // spread copy of another block — fails the check in both modes.
 // It then lints a canary (one violation per selector) as every guarded SDK
 // file through ESLint's own per-file config lookup and requires every selector
-// to report, so a nested eslint.config.*, a processor, or a parser / language
-// override that blanks the code fails too; and it ratchets the two sanctioned
+// to report, and requires every SDK file to resolve the root config file, so a
+// nested eslint.config.* (even one exporting `[]`), a processor, or a parser /
+// language override that blanks the code fails too; and it ratchets the two sanctioned
 // blocks' selector lists (`layer1Selectors`, `projectionSelectors`) so that
 // dropping a selector family from both blocks at once is a manifest change.
 //
@@ -333,6 +334,7 @@ async function liveGuardReach(lists) {
     // What actually runs: ESLint's own per-file config lookup, exactly as
     // `npm run lint` resolves it, so a nested eslint.config.* is seen too.
     lintOptions: { cwd: REPO_ROOT },
+    rootConfigFile: ESLINT_CONFIG,
   });
 }
 
