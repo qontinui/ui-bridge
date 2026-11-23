@@ -103,10 +103,15 @@ describe('cli-args is bundled into dist, not a runtime dependency', () => {
 
   it('the density bundle carries the core itself', () => {
     // Positive control for the test above: with no SDK import, the core's code
-    // must be inside the bundle — its capture schema id is a literal of it.
+    // must be inside the bundle. The token is a message only the snapshot
+    // adapter's body holds (density/capture-from-snapshot.ts), so the CLI's own
+    // text cannot satisfy it — the schema id, by contrast, is also in USAGE.
+    const ADAPTER_ONLY = 'the snapshot has no `elements` array';
+    const cli = readFileSync(join(PKG_DIR, 'src', 'density-cli.ts'), 'utf8');
+    expect(cli, 'the token must not occur in the CLI itself').not.toContain(ADAPTER_ONLY);
     for (const bundle of ['density-cli.js', 'density-cli.cjs']) {
       expect(readFileSync(join(DIST_DIR, bundle), 'utf8'), `dist/${bundle}`).toContain(
-        'ui-bridge/density-capture@1'
+        ADAPTER_ONLY
       );
     }
   });
