@@ -249,9 +249,15 @@ function classifyResourceStatus(event: AnyCapturedEvent & { type: 'resource-stat
 } {
   const own = classifyOwnResourceStatus(event);
   // A previous document's failure is evidence about the navigation that led
-  // here, not about this page: it scores one step down.
+  // here, not about this page: it scores one step down — but a failing status
+  // never below warning, the floor of the event stream's default subscription.
   if (event.fromPreviousDocument) {
-    return { severity: demoteSeverity(own.severity), reason: `${own.reason} (previous document)` };
+    const demoted = demoteSeverity(own.severity);
+    const failing =
+      event.kind === 'status' && (event.responseStatus ?? 0) >= 400 && own.severity !== 'noise';
+    const severity =
+      failing && SEVERITY_RANK[demoted] > SEVERITY_RANK.warning ? 'warning' : demoted;
+    return { severity, reason: `${own.reason} (previous document)` };
   }
   return own;
 }
@@ -375,7 +381,8 @@ function classifyLoaf(event: AnyCapturedEvent & { type: 'long-animation-frame' }
  * - **noise**: Noise-pattern matches, long tasks < 100ms, navigation, memory, web vitals,
  *   HMR reconnect messages, aborted requests, WS reconnect attempts, resource-status with an
  *   unknown (null) status or the unknown-status cap
- * A previous document's resource-status event scores one step lower.
+ * A previous document's resource-status event scores one step lower (a failing status
+ * never below warning).
  */
 export function classifyEvent(event: AnyCapturedEvent): {
   severity: ErrorSeverity;

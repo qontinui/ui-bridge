@@ -35,9 +35,10 @@
  *
  * What this capture has seen is document state, not install state: an
  * install → uninstall → install on one document does not replay the entries
- * an earlier install already observed: a live observer sees every entry, so
- * an entry that ended before the last uninstall was observed then (a
- * watermark, so no per-entry memory grows with the page). One capture runs
+ * an earlier install already delivered: a watermark (the latest `responseEnd`
+ * delivered to an owner, so no per-entry memory grows with the page) hides
+ * them from the next install's buffered replay. Uninstalling flushes the
+ * observer to the last owner first, so nothing undelivered is watermarked. One capture runs
  * per document, reference-counted by its installs: it stays armed until the
  * last one uninstalls. A framed document (not `window.top`) neither takes nor
  * writes a carry: the carry belongs to the tab's top-level navigation.
@@ -124,11 +125,12 @@ interface DocumentState {
   owners: Set<Emit>;
   /** Stops the running capture; `null` when none runs. */
   teardown: (() => void) | null;
-  /**
-   * `performance.now()` at the last uninstall: an entry that ended by then was
-   * observed by that install. `null` before any uninstall.
-   */
+  /** The latest `responseEnd` the running capture delivered to an owner. */
+  deliveredUntil: number | null;
+  /** `deliveredUntil` at the last uninstall; a re-install skips entries up to it. */
   observedUntil: number | null;
+  /** Whether a throwing owner was already logged. */
+  warnedOwnerThrew: boolean;
   /** Whether the document's own navigation entry was read. */
   navigationRead: boolean;
   /** The blind-spot and cap events already emitted (at most one of each). */
@@ -147,7 +149,9 @@ function freshDocumentState(): DocumentState {
     sequence: 0,
     owners: new Set(),
     teardown: null,
+    deliveredUntil: null,
     observedUntil: null,
+    warnedOwnerThrew: false,
     navigationRead: false,
     blindSpots: new Set(),
     recent: [],
@@ -403,14 +407,31 @@ export function installResourceStatusCapture(ownerEmit: Emit): () => void {
   const doc = documentState;
   doc.owners.add(ownerEmit);
   const release = () => {
-    if (!doc.owners.delete(ownerEmit) || doc.owners.size > 0) return;
-    doc.teardown?.();
-    doc.teardown = null;
+    if (!doc.owners.has(ownerEmit)) return;
+    if (doc.owners.size === 1) {
+      // The last owner still receives what the teardown flush delivers.
+      doc.teardown?.();
+      doc.teardown = null;
+    }
+    doc.owners.delete(ownerEmit);
   };
   if (doc.teardown !== null) return release;
 
+  /** Fan out to every owner; one that throws does not cost the others the event. */
   const emit = (event: AnyCapturedEvent) => {
-    for (const owner of [...doc.owners]) owner(event);
+    for (const owner of [...doc.owners]) {
+      try {
+        owner(event);
+      } catch (err) {
+        if (!doc.warnedOwnerThrew) {
+          doc.warnedOwnerThrew = true;
+          console.warn(
+            '[ui-bridge] resource-status: an event owner threw; others still receive events',
+            err
+          );
+        }
+      }
+    }
   };
   const carries = isTopLevelDocument();
 
@@ -457,8 +478,9 @@ export function installResourceStatusCapture(ownerEmit: Emit): () => void {
   const onSample = (sample: ResourceSample, isNavigation = false) => {
     const status = sample.responseStatus;
     if (status !== null && status < 400) return;
-    if (!isNavigation && doc.observedUntil !== null && sample.responseEnd <= doc.observedUntil) {
-      return;
+    if (!isNavigation) {
+      if (doc.observedUntil !== null && sample.responseEnd <= doc.observedUntil) return;
+      doc.deliveredUntil = Math.max(doc.deliveredUntil ?? sample.responseEnd, sample.responseEnd);
     }
     if (status === null) {
       if (doc.unknownCapped) return;
@@ -614,7 +636,7 @@ export function installResourceStatusCapture(ownerEmit: Emit): () => void {
     clearTimeout(deferred);
     handle?.flush();
     handle?.disconnect();
-    if (typeof performance !== 'undefined') doc.observedUntil = performance.now();
+    doc.observedUntil = doc.deliveredUntil;
     window.removeEventListener('pagehide', onPageHide);
     window.removeEventListener('pageshow', onPageShow);
   };
