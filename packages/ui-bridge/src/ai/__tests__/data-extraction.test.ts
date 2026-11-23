@@ -104,6 +104,10 @@ describe('normalizeValue', () => {
     ['2026-10-16 08:00 UTC', 'date', '2026-10-16'],
     ['2026-10-16 8:00 AM', 'date', '2026-10-16'],
     ['2026-10-16 08:00:00 +0000', 'date', '2026-10-16'],
+    ['2026-10-16 08:00 PST', 'date', '2026-10-16'],
+    // a short zero-padded value is still a number
+    ['05', 'number', '5'],
+    ['$05.00', 'currency', '5'],
     // a minus sign before the currency symbol
     ['-$5.00', 'currency', '-5'],
     // a slash date whose first field cannot be a month reads day-first
@@ -132,6 +136,8 @@ describe('normalizeValue', () => {
     ['USD 12,50', 'currency', '12.5'],
     ['- 5', 'number', '-5'],
     ['approx. -3,5', 'number', '-3.5'],
+    // a hyphen inside a word is no minus sign
+    ['Year-to-date 1,234', 'number', '1234'],
   ];
 
   it.each(CALLER_TYPED)('normalises caller-typed %j (%s) to %j', (value, type, expected) => {
