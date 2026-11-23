@@ -5,6 +5,18 @@
  * matching against known toast library selectors. Tracks appearance and
  * dismissal, infers severity level, and maintains a ring buffer of recent
  * toasts for snapshot integration.
+ *
+ * A captured element's text is LIVE state, not a copy taken at capture. A
+ * live region (`role="status"`) announces by changing its text in place, so
+ * each entry is one ANNOUNCEMENT: `reconcile` re-reads every tracked element
+ * on the poll AND at every public read, and
+ *  - a changed text dismisses the old entry into `recent` and captures the new
+ *    text as a new entry (a `dismissed` then an `appeared` event);
+ *  - an emptied or hidden element is dismissed and "parked" — kept on a short
+ *    list and re-read, so a later different text is captured again;
+ *  - the max-age guard applies per announcement, and parks the element too.
+ * Reading at snapshot time means a backgrounded tab, whose interval timer the
+ * browser throttles, never serves text the page stopped showing.
  */
 
 import type {
@@ -66,12 +78,14 @@ const BUILT_IN_SELECTORS: string[] = [
 // ============================================================================
 
 /**
- * Defense-in-depth ceiling on how long a captured "toast" can stay in the
- * active set before being auto-dismissed. Real toast notifications are
- * transient (seconds). Anything tracked for longer than this is almost
- * certainly a persistent UI surface that was mis-classified (status bar,
- * banner, form-validation region, sticky modal toast, etc.). Auto-dismissing
- * prevents `durationMs` from drifting into hours/days in `/control/snapshot`.
+ * Defense-in-depth ceiling on how long ONE announcement (one text of a
+ * captured element) can stay in the active set before being auto-dismissed.
+ * Real toast notifications are transient (seconds). An unchanged text tracked
+ * for longer than this is almost certainly a persistent UI surface that was
+ * mis-classified (status bar, banner, form-validation region, sticky modal
+ * toast, etc.). Auto-dismissing prevents `durationMs` from drifting into
+ * hours/days in `/control/snapshot`. The element is parked, not forgotten: if
+ * its text later changes, the new text is captured as a new announcement.
  *
  * Covers two failure modes:
  *  1. A user app uses a library with greedy selectors (e.g. bare aria-live).
@@ -315,7 +329,17 @@ export class ToastCapture {
 
   private observer: MutationObserver | null = null;
   private pollTimerId: ReturnType<typeof setInterval> | null = null;
-  private capturedElements = typeof WeakSet !== 'undefined' ? new WeakSet<Element>() : null;
+  /** The message each element was last captured or parked with. */
+  private lastMessage = new WeakMap<Element, string>();
+  /**
+   * Elements dismissed while still connected (emptied text, hidden, or past
+   * max-age), with the message they were dismissed with. `reconcile` re-reads
+   * them, captures one again when its text changes, and drops it once it
+   * disconnects.
+   */
+  private parked: Map<Element, string> = new Map();
+  /** Guards `reconcile` against re-entry from a synchronous event listener. */
+  private reconciling = false;
   private activeToasts: Map<string, { toast: CapturedToast; element: Element }> = new Map();
   private recentToasts: CapturedToast[] = [];
   private totalCaptured = 0;
@@ -385,7 +409,7 @@ export class ToastCapture {
   }
 
   getSnapshot(): ToastSnapshot {
-    this.pruneRecent();
+    this.reconcile(Date.now());
     return {
       active: this.getActiveList(),
       recent: [...this.recentToasts],
@@ -403,11 +427,12 @@ export class ToastCapture {
   }
 
   getActive(): CapturedToast[] {
+    this.reconcile(Date.now());
     return this.getActiveList();
   }
 
   getRecent(count?: number): CapturedToast[] {
-    this.pruneRecent();
+    this.reconcile(Date.now());
     if (count !== undefined && count >= 0) {
       return this.recentToasts.slice(0, count);
     }
@@ -443,14 +468,22 @@ export class ToastCapture {
       elements = this.querySelectorsFallback();
     }
 
+    const activeElements = new Set<Element>();
+    for (const entry of this.activeToasts.values()) activeElements.add(entry.element);
+
     for (let i = 0; i < elements.length; i++) {
       const el = elements[i];
-      if (this.capturedElements?.has(el)) continue;
+      // A text change on an active element belongs to `reconcile`, which
+      // dismisses the old announcement before capturing the new one.
+      if (activeElements.has(el)) continue;
       if (!isElementVisible(el)) continue;
 
       // Skip elements with no meaningful text
       const message = extractMessage(el);
       if (!message) continue;
+
+      // A parked element is captured again only when its text has changed.
+      if (this.parked.has(el) && this.lastMessage.get(el) === message) continue;
 
       this.captureToast(el, message);
     }
@@ -472,11 +505,16 @@ export class ToastCapture {
     return results as unknown as NodeListOf<Element>;
   }
 
-  private captureToast(el: Element, message: string): void {
-    this.capturedElements?.add(el);
+  /**
+   * The single owner of the "element becomes active" transition: unparks the
+   * element and records its message before inserting, so a scan capture and a
+   * reconcile capture of the same element cannot both happen.
+   */
+  private captureToast(el: Element, message: string, now: number = Date.now()): void {
+    this.parked.delete(el);
+    this.lastMessage.set(el, message);
 
-    const now = Date.now();
-    const id = el.id || el.getAttribute('data-testid') || `toast-${++this.idCounter}`;
+    const id = this.resolveId(el, now);
     const level = inferLevel(el);
     const source = detectSource(el);
     const action = detectAction(el);
@@ -504,32 +542,107 @@ export class ToastCapture {
   // ==========================================================================
 
   private checkDismissals(): void {
-    const now = Date.now();
-    const toDismiss: string[] = [];
+    this.reconcile(Date.now());
+  }
 
-    for (const [id, entry] of this.activeToasts) {
-      if (!isElementVisible(entry.element)) {
-        toDismiss.push(id);
-        continue;
+  /**
+   * Re-derive every tracked element's state from the DOM. Run by the poll and
+   * by every public read, so a read never depends on a (possibly throttled)
+   * timer having fired.
+   */
+  private reconcile(now: number): void {
+    if (this.reconciling) return;
+    this.reconciling = true;
+    try {
+      for (const [id, entry] of [...this.activeToasts]) {
+        // An earlier step may already have dismissed or replaced this entry.
+        if (this.activeToasts.get(id) !== entry) continue;
+        this.reconcileActive(id, entry, now);
       }
-      // Update durationMs for still-visible toasts
-      const age = now - entry.toast.appearedAt;
-      entry.toast.durationMs = age;
-      // Max-age guard: a still-visible "toast" that has been tracked longer
-      // than maxToastAgeMs is almost certainly a persistent UI surface that
-      // was mis-classified. Auto-dismiss to keep durationMs bounded and to
-      // stop it from polluting `/control/snapshot.toasts.active` indefinitely.
-      if (age > this.config.maxToastAgeMs) {
-        toDismiss.push(id);
+
+      for (const [el, parkedMessage] of [...this.parked]) {
+        if (!this.parked.has(el)) continue;
+        if (!el.isConnected) {
+          this.parked.delete(el);
+          continue;
+        }
+        if (!isElementVisible(el)) continue;
+        const message = extractMessage(el);
+        if (message && message !== parkedMessage) {
+          this.captureToast(el, message, now);
+        }
       }
+
+      this.pruneRecent();
+    } finally {
+      this.reconciling = false;
     }
+  }
 
-    for (const id of toDismiss) {
+  private reconcileActive(
+    id: string,
+    entry: { toast: CapturedToast; element: Element },
+    now: number
+  ): void {
+    const el = entry.element;
+    if (!isElementVisible(el)) {
       this.dismissToast(id, now);
+      if (el.isConnected) this.park(el, extractMessage(el));
+      return;
     }
 
-    // Prune old recent toasts
-    this.pruneRecent();
+    const message = extractMessage(el);
+    if (!message) {
+      this.dismissToast(id, now);
+      this.park(el, '');
+      return;
+    }
+    if (message !== entry.toast.message) {
+      // A changed text is a new announcement: the old one goes to `recent`.
+      this.dismissToast(id, now);
+      this.captureToast(el, message, now);
+      return;
+    }
+
+    // Update durationMs for a still-visible, unchanged announcement
+    const age = now - entry.toast.appearedAt;
+    entry.toast.durationMs = age;
+    // Max-age guard: an unchanged text tracked longer than maxToastAgeMs is
+    // almost certainly a persistent UI surface that was mis-classified.
+    // Auto-dismiss to keep durationMs bounded and to stop it from polluting
+    // `/control/snapshot.toasts.active` indefinitely; park the element so a
+    // later text change is still announced.
+    if (age > this.config.maxToastAgeMs) {
+      this.dismissToast(id, now);
+      this.park(el, message);
+    }
+  }
+
+  private park(el: Element, message: string): void {
+    this.lastMessage.set(el, message);
+    this.parked.set(el, message);
+  }
+
+  /**
+   * One id per element in `active`. If the element's own id is held by a
+   * DIFFERENT element (a React remount the scan saw before the poll saw the old
+   * node go), the old entry is dismissed when it is no longer visible;
+   * otherwise both are visible and the new entry gets `${id}#<n>`.
+   */
+  private resolveId(el: Element, now: number): string {
+    const base = el.id || el.getAttribute('data-testid') || `toast-${++this.idCounter}`;
+    const holder = this.activeToasts.get(base);
+    if (!holder || holder.element === el) return base;
+
+    if (!isElementVisible(holder.element)) {
+      this.dismissToast(base, now);
+      if (holder.element.isConnected) this.park(holder.element, extractMessage(holder.element));
+      return base;
+    }
+
+    let n = 2;
+    while (this.activeToasts.has(`${base}#${n}`)) n++;
+    return `${base}#${n}`;
   }
 
   private dismissToast(id: string, now: number): void {

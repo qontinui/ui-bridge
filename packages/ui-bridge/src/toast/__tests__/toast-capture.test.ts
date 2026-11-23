@@ -338,8 +338,10 @@ describe('ToastCapture', () => {
     await flushAndScan();
     expect(capture.getSnapshot().totalCaptured).toBe(1);
 
-    // Trigger another mutation on the same element
-    el.textContent = 'Updated text';
+    // Trigger another mutation on the same element that leaves its text
+    // unchanged (a changed text is a new announcement — see
+    // toast-capture-live-region.test.ts).
+    el.appendChild(document.createElement('span'));
     await flushAndScan();
 
     expect(capture.getSnapshot().totalCaptured).toBe(1);
