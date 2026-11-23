@@ -31,7 +31,9 @@ export function installResourceErrorCapture(emit: Emit): () => void {
     if (!resourceUrl) return;
 
     // Reported here, so resource-status does not report it again.
-    recordObservedReport(elementReportKey(resourceUrl, target.tagName));
+    // Keyed on the source actually loaded: a responsive img loads `currentSrc`.
+    const loaded = (target as HTMLImageElement).currentSrc || resourceUrl;
+    recordObservedReport(elementReportKey(loaded, target.tagName));
     emit({
       type: 'resource-error',
       timestamp: Date.now(),

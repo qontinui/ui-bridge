@@ -123,12 +123,19 @@ export interface ResourceStatusEntryEvent extends ResourceStatusEventBase {
   /** `performance.now()`-clock end of the response, in the observing document's clock. */
   responseEnd: number;
   /**
-   * Stable identity of this failure: a per-document nonce plus the entry's
-   * identity. A carried copy (`fromPreviousDocument`) keeps the id of the
-   * event its own document emitted, so COUNT DISTINCT `failureId`s — not
-   * events — when a consumer may see both documents.
+   * Stable identity of this failure: a per-document nonce plus a sequence
+   * number. A carried copy (`fromPreviousDocument`) keeps the id of the event
+   * its own document emitted, so COUNT DISTINCT `failureId`s — not events —
+   * when a consumer may see both documents.
    */
   failureId: string;
+  /**
+   * Set only on a carried copy (`fromPreviousDocument`) whose live event was
+   * suppressed because this capture already reported the same failure. A
+   * consumer that saw that capture's event on the previous document
+   * excludes this one, as it excludes a repeated `failureId`.
+   */
+  reportedLiveAs?: 'network' | 'resource-error';
 }
 
 /** This webview cannot observe Resource Timing: every status is UNKNOWN. */
