@@ -134,8 +134,9 @@ export interface ResourceStatusEntryEvent extends ResourceStatusEventBase {
    * reported the same failure: on a carried copy (`fromPreviousDocument`), and
    * on the copy replayed to a capture that joined later (a remount). Such an
    * event is listed and streamed; excluded from scoring (health score, error
-   * impact); stream consumers that also see the reporting capture dedupe on
-   * `reportedLiveAs`.
+   * impact) only for same-document replays; a carried copy is scored, since
+   * the reporting capture's event did not survive the navigation. Stream
+   * consumers that also see the reporting capture dedupe on `reportedLiveAs`.
    */
   reportedLiveAs?: 'network' | 'resource-error';
 }

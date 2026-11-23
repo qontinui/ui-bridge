@@ -157,8 +157,14 @@ export class ErrorImpactAssessor {
     const results: ErrorImpact[] = [];
 
     for (const event of events) {
-      // Not assessed: the reporting capture's own event is.
-      if (event.type === 'resource-status' && event.kind === 'status' && event.reportedLiveAs) {
+      // A same-document replay is not assessed: the reporting capture's own event
+      // is. A carried copy is: that event did not survive the navigation.
+      if (
+        event.type === 'resource-status' &&
+        event.kind === 'status' &&
+        event.reportedLiveAs &&
+        !event.fromPreviousDocument
+      ) {
         continue;
       }
       const { severity } = classifyEvent(event);

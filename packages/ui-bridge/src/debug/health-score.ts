@@ -160,8 +160,14 @@ export function computeHealthReport(
   let topIssueRank = SEVERITY_RANK.noise + 1; // Start worse than any real severity
 
   for (const event of events) {
-    // Listed and streamed, never scored: the reporting capture's event counts.
-    if (event.type === 'resource-status' && event.kind === 'status' && event.reportedLiveAs) {
+    // A same-document replay is listed and streamed, not scored: the reporting
+    // capture's event counts. A carried copy is scored: that event died with its page.
+    if (
+      event.type === 'resource-status' &&
+      event.kind === 'status' &&
+      event.reportedLiveAs &&
+      !event.fromPreviousDocument
+    ) {
       continue;
     }
     const { severity } = classifyEvent(event);

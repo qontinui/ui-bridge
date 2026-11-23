@@ -1466,6 +1466,27 @@ describe('resource-status classification', () => {
     expect(assessor.assessEvents([entry(503)])).toHaveLength(1);
   });
 
+  it('a carried reportedLiveAs copy IS scored: its live counterpart died with its page', () => {
+    const carried = {
+      ...entry(503),
+      reportedLiveAs: 'network' as const,
+      fromPreviousDocument: true as const,
+    };
+    const report = computeHealthReport({
+      getSince: () => [{ ...carried, timestamp: Date.now() }],
+      getRecent: () => [],
+      getByType: () => [],
+    } as unknown as Parameters<typeof computeHealthReport>[0]);
+    // A carried 503 is demoted one step: a warning.
+    expect(report.breakdown).toEqual({ crashes: 0, errors: 0, warnings: 1 });
+    const critical = { ...carried, resourceUrl: 'https://app.example.com/api/v1/auth/login' };
+    const assessor = new ErrorImpactAssessor({
+      captureUIState: () => ({ elementCount: 0, visibleElements: [], url: '' }) as never,
+    });
+    // assessEvents assesses error and crash; a carried critical 5xx is an error.
+    expect(assessor.assessEvents([critical])).toHaveLength(1);
+  });
+
   it('a carried 429 reaches a minSeverity-warning stream subscriber', () => {
     const stream = new BrowserEventStream();
     stream.subscribe({ minSeverity: 'warning', deduplicate: true });
