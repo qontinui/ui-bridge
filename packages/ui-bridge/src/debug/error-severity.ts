@@ -214,8 +214,9 @@ function classifyReactError(_event: AnyCapturedEvent & { type: 'react-error' }):
   return { severity: 'crash', reason: 'React error boundary' };
 }
 
-/** One step down: error → warning, warning → noise; crash and noise stay. */
+/** One step down: crash → error, error → warning, warning → noise; noise stays. */
 function demoteSeverity(severity: ErrorSeverity): ErrorSeverity {
+  if (severity === 'crash') return 'error';
   if (severity === 'error') return 'warning';
   if (severity === 'warning') return 'noise';
   return severity;
@@ -235,6 +236,8 @@ const REQUEST_INITIATORS = new Set(['fetch', 'xmlhttprequest', 'beacon', 'ping',
  * link (stylesheet), the document itself and anything else, error.
  */
 function resourceStatusSeverity(initiatorType: string, status: number, url: string): ErrorSeverity {
+  // A fetch 4xx — the plan's 429 included — grades warning, consistent with
+  // how classifyNetwork grades the same failure from the network capture.
   if (REQUEST_INITIATORS.has(initiatorType)) {
     if (status >= 500) return isCriticalEndpoint(url) ? 'crash' : 'error';
     return 'warning';
@@ -249,14 +252,16 @@ function classifyResourceStatus(event: AnyCapturedEvent & { type: 'resource-stat
 } {
   const own = classifyOwnResourceStatus(event);
   // A previous document's failure is evidence about the navigation that led
-  // here, not about this page: it scores one step down — but a failing status
-  // never below warning, the floor of the event stream's default subscription.
+  // here, not about this page: it scores one step down — but never below
+  // warning, the floor of the event stream's default subscription.
   if (event.fromPreviousDocument) {
     const demoted = demoteSeverity(own.severity);
-    const failing =
-      event.kind === 'status' && (event.responseStatus ?? 0) >= 400 && own.severity !== 'noise';
+    // Anything not noise on its own page (a failing status, a blind spot) is
+    // floored at warning.
     const severity =
-      failing && SEVERITY_RANK[demoted] > SEVERITY_RANK.warning ? 'warning' : demoted;
+      own.severity !== 'noise' && SEVERITY_RANK[demoted] > SEVERITY_RANK.warning
+        ? 'warning'
+        : demoted;
     return { severity, reason: `${own.reason} (previous document)` };
   }
   return own;
@@ -381,7 +386,7 @@ function classifyLoaf(event: AnyCapturedEvent & { type: 'long-animation-frame' }
  * - **noise**: Noise-pattern matches, long tasks < 100ms, navigation, memory, web vitals,
  *   HMR reconnect messages, aborted requests, WS reconnect attempts, resource-status with an
  *   unknown (null) status or the unknown-status cap
- * A previous document's resource-status event scores one step lower (a failing status
+ * A previous document's resource-status event scores one step lower (anything not noise
  * never below warning).
  */
 export function classifyEvent(event: AnyCapturedEvent): {

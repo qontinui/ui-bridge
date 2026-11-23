@@ -38,7 +38,12 @@
  * an earlier install already delivered: a watermark (the latest `responseEnd`
  * delivered to an owner, so no per-entry memory grows with the page) hides
  * them from the next install's buffered replay. Uninstalling flushes the
- * observer to the last owner first, so nothing undelivered is watermarked. One capture runs
+ * observer to the last owner first, so nothing undelivered is watermarked.
+ * The watermark ASSUMES entries are added in roughly `responseEnd` order; an
+ * entry added late with an early `responseEnd` — an iframe's, recorded at the
+ * iframe's load — that lands after an uninstall could fall under it and be
+ * skipped by the next install. Events already emitted are not lost to a new
+ * owner: they are replayed from a bounded per-document store. One capture runs
  * per document, reference-counted by its installs: it stays armed until the
  * last one uninstalls. A framed document (not `window.top`) neither takes nor
  * writes a carry: the carry belongs to the tab's top-level navigation.
@@ -98,7 +103,11 @@ export const UNKNOWN_STATUS_BUDGET = 25;
 /** A previous document's carry older than this is dropped unread. */
 export const PREVIOUS_DOCUMENT_MAX_AGE_MS = 5 * 60_000;
 
-/** The Resource Timing spec's recommended initial buffer size (250 or greater). */
+/**
+ * The Resource Timing buffer's initial size: the spec
+ * (https://w3c.github.io/resource-timing/, "resource timing buffer") recommends
+ * 250 or greater.
+ */
 const DEFAULT_RESOURCE_TIMING_BUFFER_SIZE = 250;
 
 interface StoredEvents {
@@ -112,6 +121,18 @@ interface StoredEvents {
   events: ResourceStatusCapturedEvent[];
 }
 
+/** One install of the capture: where its events go, and who it is. */
+interface Owner {
+  emit: Emit;
+  /** Identity across installs (the capture instance): a re-install is not replayed to. */
+  key: object;
+  /** The pending replay of earlier events to this owner. */
+  replay: ReturnType<typeof setTimeout> | null;
+}
+
+/** How many emitted events a document keeps to replay to a late-joining owner. */
+export const EMITTED_REPLAY_LIMIT = 100;
+
 /**
  * What this document has seen, kept at module scope — module state lives and
  * dies with the document — so a re-install does not replay it.
@@ -122,7 +143,17 @@ interface DocumentState {
   /** The next `failureId` sequence number on this document. */
   sequence: number;
   /** The installs currently owning the capture; it runs while any remain. */
-  owners: Set<Emit>;
+  owners: Set<Owner>;
+  /**
+   * The last {@link EMITTED_REPLAY_LIMIT} events emitted on this document, by
+   * emission index, replayed to an owner that joins later — a remounted
+   * provider's new capture, or a second install while armed.
+   */
+  emitted: { index: number; event: AnyCapturedEvent }[];
+  /** The next emission index. */
+  nextIndex: number;
+  /** The highest emission index each owner identity (a capture instance) received. */
+  deliveredIndex: WeakMap<object, number>;
   /** Stops the running capture; `null` when none runs. */
   teardown: (() => void) | null;
   /** The latest `responseEnd` the running capture delivered to an owner. */
@@ -148,6 +179,9 @@ function freshDocumentState(): DocumentState {
     nonce: randomToken(),
     sequence: 0,
     owners: new Set(),
+    emitted: [],
+    nextIndex: 0,
+    deliveredIndex: new WeakMap(),
     teardown: null,
     deliveredUntil: null,
     observedUntil: null,
@@ -394,44 +428,71 @@ function isTopLevelDocument(): boolean {
   }
 }
 
+/** Deliver one event to one owner; an owner that throws is logged once, never rethrown. */
+function deliver(doc: DocumentState, owner: Owner, index: number, event: AnyCapturedEvent): void {
+  try {
+    owner.emit(event);
+  } catch (err) {
+    if (!doc.warnedOwnerThrew) {
+      doc.warnedOwnerThrew = true;
+      console.warn(
+        '[ui-bridge] resource-status: an event owner threw; others still receive events',
+        err
+      );
+    }
+  }
+  doc.deliveredIndex.set(owner.key, index);
+}
+
+/** Replay to an owner the stored events its identity has not received. */
+function replayTo(doc: DocumentState, owner: Owner): void {
+  const seen = doc.deliveredIndex.get(owner.key) ?? -1;
+  for (const { index, event } of doc.emitted) {
+    if (index > seen) deliver(doc, owner, index, event);
+  }
+}
+
 /**
  * Install the capture. One capture runs per document; every install is an
  * owner of it, events go to every current owner, and it stays armed until the
- * last owner uninstalls. An owner that joins late does not receive the
- * install-time events already emitted.
+ * last owner uninstalls. An owner that joins later — a remounted provider's
+ * new capture, or a second install while armed — is replayed, on the next
+ * tick, the document's last {@link EMITTED_REPLAY_LIMIT} events its identity
+ * (`ownerKey`, the capture instance) has not received; a re-install of the
+ * same instance receives nothing twice.
  */
-export function installResourceStatusCapture(ownerEmit: Emit): () => void {
+export function installResourceStatusCapture(
+  ownerEmit: Emit,
+  ownerKey: object = ownerEmit
+): () => void {
   if (typeof window === 'undefined') {
     return () => {};
   }
   const doc = documentState;
-  doc.owners.add(ownerEmit);
+  const owner: Owner = { emit: ownerEmit, key: ownerKey, replay: null };
+  doc.owners.add(owner);
+  owner.replay = setTimeout(() => {
+    owner.replay = null;
+    replayTo(doc, owner);
+  }, 0);
   const release = () => {
-    if (!doc.owners.has(ownerEmit)) return;
+    if (!doc.owners.has(owner)) return;
+    if (owner.replay !== null) clearTimeout(owner.replay);
     if (doc.owners.size === 1) {
       // The last owner still receives what the teardown flush delivers.
       doc.teardown?.();
       doc.teardown = null;
     }
-    doc.owners.delete(ownerEmit);
+    doc.owners.delete(owner);
   };
   if (doc.teardown !== null) return release;
 
-  /** Fan out to every owner; one that throws does not cost the others the event. */
+  /** Fan out to every owner, and keep the event for owners that join later. */
   const emit = (event: AnyCapturedEvent) => {
-    for (const owner of [...doc.owners]) {
-      try {
-        owner(event);
-      } catch (err) {
-        if (!doc.warnedOwnerThrew) {
-          doc.warnedOwnerThrew = true;
-          console.warn(
-            '[ui-bridge] resource-status: an event owner threw; others still receive events',
-            err
-          );
-        }
-      }
-    }
+    const index = doc.nextIndex++;
+    doc.emitted.push({ index, event });
+    if (doc.emitted.length > EMITTED_REPLAY_LIMIT) doc.emitted.shift();
+    for (const current of [...doc.owners]) deliver(doc, current, index, event);
   };
   const carries = isTopLevelDocument();
 
@@ -533,7 +594,11 @@ export function installResourceStatusCapture(ownerEmit: Emit): () => void {
     { buffered: true }
   );
 
-  const deferred = setTimeout(() => {
+  // Install-time work, deferred so a host wiring its callback right after
+  // install() receives it; run early by a pagehide that comes first.
+  let deferredPending = true;
+  const runDeferred = () => {
+    deferredPending = false;
     // 1. The previous same-tab document's failures, re-emitted once per document.
     if (carries && !doc.carryTaken) {
       doc.carryTaken = true;
@@ -576,12 +641,19 @@ export function installResourceStatusCapture(ownerEmit: Emit): () => void {
         observerUnavailable: true,
       });
     }
-  }, 0);
+  };
+  const deferred = setTimeout(runDeferred, 0);
 
   // 5. Carry this document's events across a same-tab navigation.
   /** What the last pagehide wrote, so a back/forward-cache restore can take it back. */
   let written: { token: string; events: ResourceStatusCapturedEvent[] } | null = null;
   const onPageHide = () => {
+    // Hidden before the deferred tick: its status and the previous carry must
+    // still be emitted (and carried), not lost.
+    if (deferredPending) {
+      clearTimeout(deferred);
+      runDeferred();
+    }
     handle?.flush();
     if (!carries || doc.recent.length === 0) return;
     const storage = getSessionStorage();
