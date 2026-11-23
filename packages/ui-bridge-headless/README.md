@@ -58,9 +58,9 @@ programmatically, `--quiet` on the CLI) writes **only to stderr**:
   (`[browser.log]`, `[browser.info]`, `[browser.debug]`, `[browser.warning]`,
   `[browser.error]`, …), followed by ` @ <url>` when the message carries a
   source location — for `Failed to load resource: ... status of 429` that is
-  the URL of the resource that failed, which the message text never names. Chromium
-  attaches a location to almost every console call, so most lines carry the
-  calling script's URL;
+  the URL of the resource that failed, which the message text never names. A
+  `console.*` call made from a page script is usually reported with a location
+  too, in which case its line ends with that script's URL;
 - every uncaught page error as `[browser.pageerror] <message>`.
 
 The launcher never writes to stdout. stdout is reserved for the embedding
