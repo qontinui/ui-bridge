@@ -35,8 +35,14 @@ const ADD_PADDING = 'Increase padding and margins between elements.';
 
 const AREA_METRICS = ['elementDensity', 'whitespaceRatio'] as const;
 
+/**
+ * Plain block styles. The two area metrics read only rects; these styles exist
+ * so the other metrics have something to read. The set mirrors the one
+ * `quality-metrics.test.ts` uses, which includes a few legacy keys the type no
+ * longer declares, hence the cast.
+ */
 function makeStyles(): ExtendedComputedStyles {
-  return {
+  const styles: Record<string, string> = {
     display: 'block',
     visibility: 'visible',
     opacity: '1',
@@ -75,6 +81,7 @@ function makeStyles(): ExtendedComputedStyles {
     boxShadow: 'none',
     cursor: 'default',
   };
+  return styles as unknown as ExtendedComputedStyles;
 }
 
 function denseFixture(): ElementDesignData[] {
@@ -153,10 +160,10 @@ describe('data-dense quality context', () => {
     });
   });
 
-  it('the description no longer claims data-dense is lenient on density', () => {
+  it('the description no longer claims data-dense is lenient on density, and names what it disables', () => {
     const { description } = BUILT_IN_CONTEXTS['data-dense'];
     expect(description).not.toMatch(/lenient on density/i);
-    expect(description).toMatch(/no area-density metric/);
+    for (const id of AREA_METRICS) expect(description).toContain(id);
   });
 });
 
@@ -199,7 +206,7 @@ describe('POST /design/evaluate with context data-dense, on both transports', ()
     const registry = getGlobalRegistry();
     return createHandlers(
       registry as unknown as RegistryLike,
-      new DefaultActionExecutor(registry) as never,
+      new DefaultActionExecutor(registry) as unknown as Parameters<typeof createHandlers>[1],
       { idleDetection: false }
     );
   }

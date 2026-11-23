@@ -213,7 +213,9 @@ export const aboveFoldRatio: MetricFunction = (elements, viewport) => {
  * subpath), which reports reach per role against declared asks.
  *
  * The id `informationDensity` is kept: it is part of the evaluator's report
- * contract, and renaming it is tracked as a separate follow-up.
+ * contract. Renaming it is recorded as plan-library follow-up edge
+ * 1df890f7-d2b3-4566-86f6-339198475f7b on plan
+ * 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change.
  */
 export const informationDensity: MetricFunction = (elements, _viewport) => {
   const contentElements = elements.filter(isContentBearing);
