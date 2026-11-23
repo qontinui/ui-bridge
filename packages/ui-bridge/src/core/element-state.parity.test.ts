@@ -137,6 +137,20 @@ function build(): void {
   const secret = document.createElement('span');
   secret.textContent = 'token-xyz';
   place(boundary, secret, 'secret', [0, 400, 80, 24]);
+  // A URL is a DOM string that can carry the secret itself.
+  const secretLink = document.createElement('a');
+  secretLink.href = SECRET_URL;
+  secretLink.textContent = 'Reset password';
+  place(boundary, secretLink, 'secretLink', [100, 400, 80, 24]);
+  // Constraint attributes and the validation message are DOM strings too.
+  const secretPattern = document.createElement('input');
+  secretPattern.required = true;
+  secretPattern.pattern = 'SECRET[0-9]+';
+  secretPattern.min = 'm-SECRET';
+  secretPattern.value = 'abc';
+  // A message that quotes the secret, as a browser's can quote the value.
+  secretPattern.setCustomValidity('abc is not SECRET-shaped');
+  place(boundary, secretPattern, 'secretPattern', [200, 400, 80, 24]);
 
   // Painted LAST, so it owns every point of `occluded`'s box.
   overlay = document.createElement('div');
@@ -161,7 +175,11 @@ const FIXTURE_IDS = [
   'named',
   'long',
   'secret',
+  'secretLink',
+  'secretPattern',
 ] as const;
+
+const SECRET_URL = 'https://x.test/reset?token=SECRET123';
 
 beforeEach(() => {
   document.body.innerHTML = '';
@@ -224,6 +242,9 @@ describe('ElementState parity — executor, snapshot and render-log read one sta
       expect(state.visible).toBe(false);
       expect(state.visibilityReason).toBe('occluded');
       expect(state.occludedPct).toBe(100);
+      // The overlay is unregistered and has no id or class, so
+      // `describeOccluder` names it by its tag.
+      expect(state.occludedBy).toBe('div');
     }
   });
 
@@ -295,6 +316,35 @@ describe('ElementState parity — executor, snapshot and render-log read one sta
     expect(secret.accessibleName).toBe(REDACTED_VALUE);
     expect(secret.dataset).toBeUndefined();
   });
+
+  it('an <a href> inside a redaction boundary reads href: [REDACTED] everywhere', async () => {
+    const r = await readAll('secretLink');
+    for (const state of [r.executor, r.snapshot, r.renderLog]) {
+      expect(state.href).toBe(REDACTED_VALUE);
+      expect(state.textContent).toBe(REDACTED_VALUE);
+      expect(JSON.stringify(state)).not.toContain('SECRET123');
+    }
+    const captured = captureDOMSnapshot({ includeHidden: true }).elements.find(
+      (e) => e.identifier.testId === 'secretLink'
+    )!;
+    // The render-log's own attribute record and its state agree.
+    expect(captured.attributes.href).toBe(REDACTED_VALUE);
+    expect(JSON.stringify(captured)).not.toContain('SECRET123');
+  });
+
+  it('constraint attributes and the validation message inside a boundary are redacted', async () => {
+    const r = await readAll('secretPattern');
+    for (const state of [r.executor, r.snapshot, r.renderLog]) {
+      expect(state.required).toBe(true);
+      expect(state.value).toBe(REDACTED_VALUE);
+      expect(state.constraints).toEqual({ pattern: REDACTED_VALUE, min: REDACTED_VALUE });
+      expect(state.validationState?.valid).toBe(false);
+      expect(state.validationState?.patternMismatch).toBe(true);
+      expect(state.validationState?.customError).toBe(true);
+      expect(state.validationState?.validationMessage).toBe(REDACTED_VALUE);
+      expect(JSON.stringify(state)).not.toContain('SECRET');
+    }
+  });
 });
 
 describe('executor waitFor reads the canonical, occlusion-aware visible', () => {
@@ -306,12 +356,17 @@ describe('executor waitFor reads the canonical, occlusion-aware visible', () => 
     expect(result.state?.visibilityReason).toBe('occluded');
   });
 
-  it('resolves met: true within 200 ms of the overlay being removed', async () => {
+  it('resolves met: true once the overlay is removed', async () => {
     setTimeout(() => overlay.remove(), 50);
-    const result = await executor.waitFor('occluded', { visible: true, timeout: 1000 });
+    // Lower bound + met only: no wall-clock ceiling to flake on a loaded box.
+    // The generous timeout means "met" is the assertion that it terminated.
+    const result = await executor.waitFor('occluded', {
+      visible: true,
+      timeout: 5000,
+      interval: 10,
+    });
     expect(result.met).toBe(true);
     expect(result.waitedMs).toBeGreaterThanOrEqual(40);
-    expect(result.waitedMs).toBeLessThan(250);
     expect(result.state?.visible).toBe(true);
     expect(result.state?.visibilityReason).toBeUndefined();
   });

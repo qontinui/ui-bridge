@@ -1,20 +1,29 @@
 /**
  * The ONE `ElementState` reader.
  *
- * Every builder that turns a live DOM element into an `ElementState` delegates
- * here: the registry (`core/registry.ts`, every registered element's
- * `getState()` and so every snapshot entry), the action executor
+ * The registry (`core/registry.ts`, every registered element's `getState()`
+ * and so every snapshot entry), the action executor
  * (`control/action-executor.ts`, action responses, find/discover rows and the
  * wait loop), the render-log capture (`render-log/dom-capture.ts`) and the
- * debug inspector (`debug/inspector.tsx`). Before this module existed each of
- * those carried its own copy, with four different `visible` algorithms behind
- * one field name (plan
+ * debug inspector (`debug/inspector.tsx`) all delegate here. Before this
+ * module existed each of those carried its own copy, with four different
+ * `visible` algorithms behind one field name (plan
  * `2026-11-08-ui-bridge-element-state-has-two-readers-and-no-aria-busy`, D1).
  * A second reader is the defect class; extend this one instead.
  *
- * Moved verbatim out of `core/registry.ts`, so the registry's behaviour is
- * unchanged. Every DOM string still mints through the `core/redaction` choke
- * point.
+ * ONE divergent builder remains: `server/dom-fallback.ts` (the un-registered
+ * fallback scan) builds its own narrower state, with an `offsetParent`-based
+ * `visible`. It is a known follow-up, not a sanctioned second algorithm.
+ *
+ * Moved out of `core/registry.ts`. §4.6: every DOM-derived TEXT field —
+ * `accessibleName`, `textContent`, `value`, the option lists, `href`,
+ * `constraints.pattern/min/max/step` and `validationState.validationMessage` —
+ * is minted through the `core/redaction` choke point (the branded `Scrubbed<T>`
+ * types make a raw assignment a compile error), and `dataset` is omitted on
+ * the VALUE axis. The fields left raw are structural tokens rather than page
+ * text: `role` and `ariaCurrent` (ARIA tokens), `nameSource` (an enum),
+ * `occludedBy` (a registry id or a tag/id/class descriptor) and
+ * `computedStyles` (CSS values).
  */
 
 import type { ElementState } from './types';
@@ -33,7 +42,9 @@ import {
   readScrubbedText,
   scrubContentByVerdict,
   readScrubbedValue,
+  scrubValueByVerdict,
   scrubSelectState,
+  type RedactionVerdict,
 } from './redaction';
 
 /**
@@ -41,7 +52,8 @@ import {
  */
 function captureFormControlState(
   element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
-  state: ElementState
+  state: ElementState,
+  verdict: RedactionVerdict
 ): void {
   // Required
   if (element.required || element.getAttribute('aria-required') === 'true') {
@@ -54,7 +66,8 @@ function captureFormControlState(
     if (!v.valid || element.validationMessage) {
       state.validationState = {
         valid: v.valid,
-        validationMessage: element.validationMessage || undefined,
+        // §4.6 VALUE axis: a browser's message can quote the entered value.
+        validationMessage: scrubValueByVerdict(element.validationMessage || undefined, verdict),
         valueMissing: v.valueMissing || undefined,
         typeMismatch: v.typeMismatch || undefined,
         patternMismatch: v.patternMismatch || undefined,
@@ -75,19 +88,19 @@ function captureFormControlState(
 
     if (element instanceof HTMLInputElement) {
       if (element.pattern) {
-        constraints.pattern = element.pattern;
+        constraints.pattern = scrubContentByVerdict(element.pattern, verdict);
         hasConstraint = true;
       }
       if (element.min) {
-        constraints.min = element.min;
+        constraints.min = scrubContentByVerdict(element.min, verdict);
         hasConstraint = true;
       }
       if (element.max) {
-        constraints.max = element.max;
+        constraints.max = scrubContentByVerdict(element.max, verdict);
         hasConstraint = true;
       }
       if (element.step && element.step !== 'any') {
-        constraints.step = element.step;
+        constraints.step = scrubContentByVerdict(element.step, verdict);
         hasConstraint = true;
       }
     }
@@ -332,10 +345,10 @@ export function getElementState(element: HTMLElement): ElementState {
     if (element.type === 'checkbox' || element.type === 'radio') {
       state.checked = element.checked;
     }
-    captureFormControlState(element, state);
+    captureFormControlState(element, state, verdict);
   } else if (element instanceof HTMLTextAreaElement) {
     state.value = readScrubbedValue(element, verdict);
-    captureFormControlState(element, state);
+    captureFormControlState(element, state, verdict);
   } else if (element instanceof HTMLSelectElement) {
     // §4.6: single shared option-list scrub — the COUNT-collapse-when-redacted
     // decision lives in `scrubSelectState` so all three builders cannot diverge.
@@ -343,12 +356,14 @@ export function getElementState(element: HTMLElement): ElementState {
     state.value = sel.value;
     state.selectedOptions = sel.selectedOptions;
     state.availableOptions = sel.availableOptions;
-    captureFormControlState(element, state);
+    captureFormControlState(element, state, verdict);
   }
 
-  // Capture href for anchor elements
+  // Capture href for anchor elements. §4.6 CONTENT axis — the same axis the
+  // render-log's `attributes.href` collapses on: a URL can carry a secret
+  // (`/reset?token=…`), so inside a boundary it is the sentinel.
   if (element instanceof HTMLAnchorElement && element.href) {
-    state.href = element.href;
+    state.href = scrubContentByVerdict(element.href, verdict);
   }
 
   return state;

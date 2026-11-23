@@ -326,6 +326,12 @@ class ElementState(BaseModel):
     carries. A driver that must distinguish "observed enabled" from "not
     reported" has to check the field's presence in the raw payload, not this
     model's value.
+
+    ABSENT IS NOT "OBSERVED NOT BUSY" either. ``aria_busy`` defaults to
+    ``False`` the same way: a current server always sends ``ariaBusy``, but a
+    payload from a server predating the field validates as ``False`` without
+    the attribute ever having been read. Check for ``ariaBusy`` in the raw
+    payload when "not busy" must be an observation.
     """
 
     visible: bool

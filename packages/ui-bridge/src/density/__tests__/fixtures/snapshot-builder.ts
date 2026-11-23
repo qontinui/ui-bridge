@@ -103,7 +103,7 @@ export function densityTestElement(spec: DensityTestElementSpec): DensityTestSna
   if (spec.redacted) state.redaction = { content: true };
   if (spec.nameSource !== undefined) state.nameSource = spec.nameSource;
   if (spec.ariaExpanded !== undefined) state.ariaExpanded = spec.ariaExpanded;
-  if (spec.href !== undefined) state.href = spec.href;
+  if (spec.href !== undefined) state.href = scrub(spec.href);
   if (spec.dataset !== undefined) state.dataset = spec.dataset;
   if (spec.scrollInfo !== undefined) state.scrollInfo = spec.scrollInfo;
   if (spec.role !== undefined) state.role = spec.role;
