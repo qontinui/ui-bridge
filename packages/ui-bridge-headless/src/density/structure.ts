@@ -204,6 +204,12 @@ function contains(outer: DensityRect, inner: DensityRect): boolean {
   );
 }
 
+/** The key of the chain's parent segment; see `siblingKey` below. */
+function siblingKeyOf(p: (ParsedChain & { ownId: boolean }) | null): string | null {
+  if (!p || p.ownId || p.keys.length < 2) return null;
+  return p.keys[p.keys.length - 2];
+}
+
 /**
  * Resolve the structure of `items` in place of their unresolved fields, and
  * answer new items (the inputs are not mutated). `hints[i]` belongs to
@@ -240,6 +246,10 @@ function contains(outer: DensityRect, inner: DensityRect): boolean {
  *   collapsed separators between them, not below 0; `null` when any term is
  *   `null`. A child read from geometry is assumed to be a DOM descendant; the
  *   summary counts the items for which that assumption was made.
+ * - **siblingKey.** The key of the chain's parent segment (the item's parent
+ *   element, registered or not), so that items sharing it are DOM siblings;
+ *   `null` for an own-id xpath, a one-segment chain, or a chain through an
+ *   ambiguous key.
  * - **blockKey.** The key of the nearest block-tag ancestor-or-self in the
  *   chain, else (for a chain anchored at a registered item) that item's.
  */
@@ -453,6 +463,7 @@ export function resolveDensityStructure(
           ? null
           : Math.max(0, chars - kids - Math.max(0, textChildren[i] - 1)),
       blockKey: blockKey[i] ?? null,
+      siblingKey: parsed[i]?.keys.some(ambiguous) ? null : siblingKeyOf(parsed[i]),
     };
   });
 }

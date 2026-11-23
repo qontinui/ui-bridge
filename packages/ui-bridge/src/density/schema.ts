@@ -127,6 +127,15 @@ export interface DensityItem {
    * has none, or until structure is resolved.
    */
   blockKey: string | null;
+  /**
+   * Opaque key of the item's parent ELEMENT in the xpath chain, registered or
+   * not: items that share it are DOM siblings. Built from tags, sibling indices
+   * and the anchor's id or test id; it holds no page text. `null` for an
+   * own-id xpath, a chain of one segment, a chain through a key several items
+   * claim, or until structure is resolved. Optional on read, where absence is
+   * `null`.
+   */
+  siblingKey: string | null;
   /** SHA-256 hex of the collapsed text; `null` when the text is redacted or empty. */
   textHash: string | null;
   shape: DensityShape | null;
@@ -581,7 +590,7 @@ const ITEM_KEYS = [
 ] as const;
 
 function readItem(r: Reader, value: unknown, path: string): DensityItem | null {
-  const o = r.object(value, path, ITEM_KEYS, ['blockKey', 'selected', 'filters']);
+  const o = r.object(value, path, ITEM_KEYS, ['blockKey', 'siblingKey', 'selected', 'filters']);
   if (!o) return null;
   return {
     id: r.string(o.id, `${path}.id`, { nonEmpty: true }),
@@ -600,6 +609,8 @@ function readItem(r: Reader, value: unknown, path: string): DensityItem | null {
     // Optional on read: a capture written before the structure pass carried
     // no `blockKey`, and its absence is the same statement as `null`.
     blockKey: o.blockKey === undefined ? null : r.stringOrNull(o.blockKey, `${path}.blockKey`),
+    siblingKey:
+      o.siblingKey === undefined ? null : r.stringOrNull(o.siblingKey, `${path}.siblingKey`),
     textHash: readHashOrNull(r, o.textHash, `${path}.textHash`),
     shape: r.oneOfOrNull(o.shape, `${path}.shape`, DENSITY_SHAPES),
     fontPx: r.numberOrNull(o.fontPx, `${path}.fontPx`, { min: 0 }),

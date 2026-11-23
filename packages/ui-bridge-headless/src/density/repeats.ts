@@ -8,14 +8,17 @@
  *
  * A repeat is found by path, else by geometry:
  *
- * - **by: path** — siblings with one parent, one ancestor path and one tag,
- *   whose parent link was read from the xpath (`structureBy: xpath`), and whose
- *   widths agree within {@link DENSITY_REPEAT_TOLERANCE_PX} of the first; a
- *   run of paragraphs (every member a `prose` leaf) is text, not rows;
+ * - **by: path** — DOM siblings (one `siblingKey`: the same parent element,
+ *   registered or not) of one tag whose left edges agree within
+ *   {@link DENSITY_REPEAT_TOLERANCE_PX} of the first; containers must agree in
+ *   width too (stacked layout wrappers are not rows), leaves need not (a
+ *   fit-content list); a run of paragraphs (every member a `prose` leaf) is
+ *   text, not rows;
  * - **by: geometry** — items with no such chain (`structureBy: geometry`), of
  *   one parent, tag and role, whose left edge and width agree within
  *   {@link DENSITY_REPEAT_TOLERANCE_PX} of the first item of a column; columns
- *   of equal width whose rows line up are one grid.
+ *   of equal width whose rows line up are one grid (a short last column of a
+ *   ragged grid included).
  *
  * Either way the members are arranged in ROWS: members whose tops agree within
  * the tolerance share a row (a grid of cards holds several per row), and a
@@ -23,7 +26,9 @@
  * rows. Siblings side by side in a single row (the cells of one table row, a
  * tab strip, a pager) are not a repeat: none of the row quantities describes
  * them. Members with no rect, no area, or a `hidden` / `no-layout` visibility
- * take no space and are left out.
+ * take no space and are left out. A row holding an item whose text or rect
+ * cannot be read is not estimated: its lines, values and fill are unknown,
+ * never zero.
  *
  * Line bands are ESTIMATED in snapshot mode (`linesBasis: estimated`): a
  * leaf's text is assumed to wrap at {@link DENSITY_CHAR_WIDTH_EM} em per
@@ -65,8 +70,16 @@ export interface DensityUnknownQuantity {
 
 export type DensityRepeatBy = 'path' | 'geometry';
 
-/** Where the controls that act on a repeat were looked for. */
-export type DensityRepeatScopeBy = 'block' | 'parent';
+/**
+ * Where the controls that act on a repeat were looked for: `block`, the
+ * innermost block holding a first-row leaf and a control outside the repeat;
+ * `ancestor`, the subtree of the nearest of the repeat's first
+ * {@link DENSITY_REPEAT_SCOPE_LEVELS} ancestors that holds such a control.
+ */
+export type DensityRepeatScopeBy = 'block' | 'ancestor';
+
+/** How many ancestors above a repeat its scope may climb (never into `main`, `body` or `html`). */
+export const DENSITY_REPEAT_SCOPE_LEVELS = 3;
 
 /** A finder: a control that narrows or locates rows of a repeat. */
 export interface DensityRepeatFinder {
@@ -130,8 +143,9 @@ export interface DensityRepeat {
   /** The extent projected at the declared row volume, or why it cannot be. */
   extentAtVolume: { volume: number; px: number } | DensityUnknownQuantity;
   /**
-   * Where the finder, filters and pager were looked for: the innermost block
-   * holding a first-row leaf, else the parent's subtree; `null` with neither.
+   * Where the finder, filters and pager were looked for; `null` when no block
+   * and no ancestor in reach holds a control outside the repeat (then nothing
+   * acts on it by position).
    */
   scope: DensityRepeatScopeBy | null;
   finder: DensityRepeatFinder | null;
@@ -187,7 +201,7 @@ function rowLines(leaves: readonly DensityItem[]): { lines: number; textPx: numb
   const tops: Array<{ top: number; lh: number }> = [];
   for (const leaf of leaves) {
     const r = leaf.rect;
-    if (r === null) continue;
+    if (r === null) return null;
     const n = leaf.ownChars;
     if (n === null) return null;
     if (n === 0) continue;
@@ -245,8 +259,11 @@ function widthFillOf(leaves: readonly DensityItem[], left: number, right: number
 }
 
 /** Items of the capture that are `id` or below it, following parent links. */
-export function densitySubtree(capture: DensityCapture, ids: Iterable<string>): Set<string> {
-  const children = densityChildren(capture);
+export function densitySubtree(
+  capture: DensityCapture,
+  ids: Iterable<string>,
+  children: Map<string, string[]> = densityChildren(capture)
+): Set<string> {
   const out = new Set<string>();
   const stack = [...ids];
   while (stack.length > 0) {
@@ -269,59 +286,123 @@ function centreY(item: DensityItem): number | null {
   return item.rect === null ? null : item.rect.y + item.rect.h / 2;
 }
 
+/** What a repeat's controls are looked for in. */
+export interface DensityRepeatScope {
+  by: DensityRepeatScopeBy | null;
+  /** The items in scope: never the repeat's own subtree, never another repeat's rows. */
+  ids: Set<string>;
+  /** The repeat's own subtree. */
+  own: Set<string>;
+}
+
+const SCOPE_CEILING_TAGS = new Set(['main', 'body', 'html']);
+
 /**
- * The items in which a repeat's finder, filters and pager are looked for: the
- * innermost block that holds a leaf of its first row, else the subtree of its
- * parent; less the repeat's own subtree and the rows of every OTHER repeat
- * (a per-row control acts on its own row), except a row this repeat sits
- * inside. `by` is `null` when it has neither a block nor a parent.
+ * The scope of every repeat, by repeat id. A repeat's controls are looked
+ * for, in order:
+ *
+ * 1. in the innermost block that holds a leaf of its first row AND an
+ *    interactive item outside the repeat (`by: block`) — a list whose rows
+ *    open their own block (a table, article cards) skips that block;
+ * 2. in the subtree of the nearest of its first
+ *    {@link DENSITY_REPEAT_SCOPE_LEVELS} ancestors (by parent links, from the
+ *    repeat's parent up, never `main`, `body` or `html`) that holds an
+ *    interactive item outside the repeat (`by: ancestor`);
+ * 3. nowhere (`by: null`, an empty scope).
+ *
+ * Every scope excludes the repeat's own subtree and the rows of every OTHER
+ * repeat (a per-row control acts on its own row), except a row this repeat
+ * sits inside.
  */
-export function densityRepeatScope(
+export function densityRepeatScopes(
   capture: DensityCapture,
-  repeat: Pick<DensityRepeat, 'id' | 'members' | 'parent' | 'firstRow'>,
-  blocks: DensityBlocks,
-  others: ReadonlyArray<Pick<DensityRepeat, 'id' | 'members'>> = []
-): { by: DensityRepeatScopeBy | null; ids: Set<string>; own: Set<string> } {
-  const own = densitySubtree(capture, repeat.members);
+  repeats: ReadonlyArray<Pick<DensityRepeat, 'id' | 'members' | 'parent' | 'firstRow'>>,
+  blocks: DensityBlocks
+): Map<string, DensityRepeatScope> {
+  const children = densityChildren(capture);
   const byId = new Map(capture.items.map((i) => [i.id, i]));
-  const firstRowIds = repeat.members.filter((id) => {
-    const r = byId.get(id)?.rect ?? null;
-    return r !== null && r.y - repeat.firstRow.topPx <= DENSITY_REPEAT_TOLERANCE_PX;
-  });
-  const firstRowSubtree = densitySubtree(capture, firstRowIds);
-  let ids = new Set<string>();
-  let by: DensityRepeatScopeBy | null = null;
-  // The innermost block holding a first-row leaf: the one with the fewest members.
-  const holding = blocks.blocks
-    .filter((b) => b.members.some((m) => firstRowSubtree.has(m)))
-    .sort((a, b) => a.members.length - b.members.length)[0];
-  if (holding) {
-    by = 'block';
-    ids = new Set(holding.members);
-  } else if (repeat.parent !== null) {
-    by = 'parent';
-    ids = densitySubtree(capture, [repeat.parent]);
-    ids.delete(repeat.parent);
-  }
-  for (const id of own) ids.delete(id);
-  for (const other of others) {
-    if (other.id === repeat.id) continue;
-    for (const m of other.members) {
-      const row = densitySubtree(capture, [m]);
-      // A row this repeat sits inside keeps its controls in scope.
-      if (repeat.members.some((x) => row.has(x))) continue;
-      for (const id of row) ids.delete(id);
+  const rowSubtree = new Map<string, Set<string>>();
+  for (const r of repeats) {
+    for (const m of r.members) {
+      if (!rowSubtree.has(m)) rowSubtree.set(m, densitySubtree(capture, [m], children));
     }
   }
-  return { by, ids, own };
+  const ancestorsOf = (id: string): string[] => {
+    const out: string[] = [];
+    const seen = new Set<string>([id]);
+    let cur = byId.get(id)?.parent ?? null;
+    while (cur !== null && !seen.has(cur)) {
+      out.push(cur);
+      seen.add(cur);
+      cur = byId.get(cur)?.parent ?? null;
+    }
+    return out;
+  };
+  const out = new Map<string, DensityRepeatScope>();
+  for (const rep of repeats) {
+    const own = new Set<string>();
+    for (const m of rep.members) rowSubtree.get(m)!.forEach((id) => own.add(id));
+    // Rows of other repeats, less a row this repeat sits inside.
+    const inside = new Set(ancestorsOf(rep.members[0]));
+    const foreign = new Set<string>();
+    for (const other of repeats) {
+      if (other.id === rep.id) continue;
+      for (const m of other.members) {
+        if (inside.has(m) || own.has(m)) continue;
+        rowSubtree.get(m)!.forEach((id) => foreign.add(id));
+      }
+    }
+    const usable = (ids: Iterable<string>): Set<string> => {
+      const set = new Set<string>();
+      for (const id of ids) if (!own.has(id) && !foreign.has(id)) set.add(id);
+      return set;
+    };
+    const hasControl = (set: Set<string>): boolean => {
+      for (const id of set) if (byId.get(id)?.interactive) return true;
+      return false;
+    };
+
+    const firstRow = rep.members.filter((id) => {
+      const r = byId.get(id)?.rect ?? null;
+      return r !== null && r.y - rep.firstRow.topPx <= DENSITY_REPEAT_TOLERANCE_PX;
+    });
+    const firstRowSubtree = densitySubtree(capture, firstRow, children);
+    let scope: DensityRepeatScope = { by: null, ids: new Set(), own };
+    const holding = blocks.blocks
+      .filter((b) => b.members.some((m) => firstRowSubtree.has(m)))
+      .sort((a, b) => a.members.length - b.members.length);
+    for (const b of holding) {
+      const ids = usable(b.members);
+      if (hasControl(ids)) {
+        scope = { by: 'block', ids, own };
+        break;
+      }
+    }
+    if (scope.by === null) {
+      const ancestors = rep.parent === null ? [] : [rep.parent, ...ancestorsOf(rep.parent)];
+      for (const a of ancestors.slice(0, DENSITY_REPEAT_SCOPE_LEVELS)) {
+        if (SCOPE_CEILING_TAGS.has(byId.get(a)?.tag ?? '')) break;
+        const sub = densitySubtree(capture, [a], children);
+        sub.delete(a);
+        const ids = usable(sub);
+        if (hasControl(ids)) {
+          scope = { by: 'ancestor', ids, own };
+          break;
+        }
+      }
+    }
+    out.set(rep.id, scope);
+  }
+  return out;
 }
 
 /** The ids a control names when it acts on the repeat: its parent, its members and their subtrees. */
 export function densityRepeatTargets(
   capture: DensityCapture,
-  repeat: Pick<DensityRepeat, 'members' | 'parent'>
+  repeat: Pick<DensityRepeat, 'members' | 'parent'>,
+  children: Map<string, string[]> = densityChildren(capture)
 ): Set<string> {
-  const out = densitySubtree(capture, repeat.members);
+  const out = densitySubtree(capture, repeat.members, children);
   if (repeat.parent !== null) out.add(repeat.parent);
   return out;
 }
@@ -343,19 +424,23 @@ function clusterBy(
 
 /**
  * Columns (equal left edges) of one width, merged into one grid when their
- * rows line up: the same number of rows, each top within the tolerance.
+ * rows line up: the shorter column's row tops are, within the tolerance, the
+ * first tops of the longer one (a ragged grid's short last columns).
  */
 function gridsOf(sameWidth: readonly DensityItem[]): DensityItem[][] {
   const grids: Array<{ tops: number[]; members: DensityItem[] }> = [];
   for (const column of clusterBy(sameWidth, (r) => r.x)) {
     const tops = rowsOf(column).map((row) => row[0].rect!.y);
-    const home = grids.find(
-      (g) =>
-        g.tops.length === tops.length &&
-        g.tops.every((t, i) => Math.abs(t - tops[i]) <= DENSITY_REPEAT_TOLERANCE_PX)
-    );
-    if (home) home.members.push(...column);
-    else grids.push({ tops, members: column.slice() });
+    const home = grids.find((g) => {
+      const [short, long] = g.tops.length <= tops.length ? [g.tops, tops] : [tops, g.tops];
+      return short.every((t, i) => Math.abs(t - long[i]) <= DENSITY_REPEAT_TOLERANCE_PX);
+    });
+    if (home) {
+      home.members.push(...column);
+      if (tops.length > home.tops.length) home.tops = tops;
+    } else {
+      grids.push({ tops, members: column.slice() });
+    }
   }
   return grids.map((g) => g.members);
 }
@@ -391,19 +476,26 @@ export function densityRepeats(
   const eligible = capture.items.filter(takesSpace);
   const groups: Group[] = [];
 
-  // ---- by path: one parent, one ancestor path, one tag ----
+  // ---- by path: DOM siblings (one parent element) of one tag ----
   const byPath = new Map<string, Group>();
   for (const item of eligible) {
-    if (item.structureBy !== 'xpath' || item.path === null) continue;
-    const key = `${item.parent ?? ''}\u0000${item.path.join('/')}\u0000${item.tag}`;
+    if (item.siblingKey === null) continue;
+    const key = `${item.siblingKey}\u0000${item.tag}`;
     const g = byPath.get(key);
     if (g) g.members.push(item);
     else byPath.set(key, { by: 'path', parent: item.parent, tag: item.tag, members: [item] });
   }
   const inPathRepeat = new Set<string>();
   for (const g of byPath.values()) {
-    for (const members of clusterBy(g.members, (r) => r.w)) {
+    for (const members of clusterBy(g.members, (r) => r.x)) {
       if (rowsOf(members).length < DENSITY_REPEAT_MIN_ROWS) continue;
+      // Containers of different widths are layout, not rows; leaves (a
+      // fit-content list) may differ.
+      const w0 = members[0].rect!.w;
+      const sameWidth = members.every(
+        (m) => Math.abs(m.rect!.w - w0) <= DENSITY_REPEAT_TOLERANCE_PX
+      );
+      if (!sameWidth && !members.every((m) => leafSet.has(m.id))) continue;
       // A run of paragraphs is text, not rows.
       if (members.every((m) => kindOf.get(m.id) === 'prose')) continue;
       groups.push({ ...g, members });
@@ -431,8 +523,8 @@ export function densityRepeats(
 
   const children = densityChildren(capture);
   /**
-   * The leaves at or below an item, and whether any item there that takes
-   * space could not be read as leaf or container (`ownChars` null: redacted).
+   * The leaves at or below an item, and whether any laid-out item there could
+   * not be read: no rect, or `ownChars` null (redacted text).
    */
   const leavesUnder = (id: string): { leaves: DensityItem[]; unreadable: boolean } => {
     const out: DensityItem[] = [];
@@ -444,8 +536,11 @@ export function densityRepeats(
       if (seen.has(cur)) continue;
       seen.add(cur);
       const item = byId.get(cur)!;
-      // A leaf that takes no space (a closed menu's items) draws no line in the row.
-      if (takesSpace(item)) {
+      // A leaf that takes no space (a closed menu's items) draws no line in the
+      // row; one whose rect is unknown, or whose text is, makes the row unknown.
+      const laidOut = item.visibility !== 'hidden' && item.visibility !== 'no-layout';
+      if (laidOut && item.rect === null) unreadable = true;
+      else if (takesSpace(item)) {
         if (leafSet.has(cur)) out.push(item);
         else if (unknownLeaves.has(cur)) unreadable = true;
       }
@@ -539,10 +634,11 @@ export function densityRepeats(
   });
 
   // ---- finder: in the repeat's scope above its first row, or a declared `filters` edge ----
+  const scopes = densityRepeatScopes(capture, repeats, blocks);
   for (const rep of repeats) {
-    const scope = densityRepeatScope(capture, rep, blocks, repeats);
+    const scope = scopes.get(rep.id)!;
     rep.scope = scope.by;
-    const aimed = densityRepeatTargets(capture, rep);
+    const aimed = densityRepeatTargets(capture, rep, children);
     let finder: DensityRepeatFinder | null = null;
     for (const item of capture.items) {
       if (scope.own.has(item.id) || !isDensityFinderControl(item)) continue;

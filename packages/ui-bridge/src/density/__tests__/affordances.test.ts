@@ -315,20 +315,104 @@ describe('affordances', () => {
     ]);
   });
 
-  it('a declared filters edge makes a filter, and the finder, wherever the control sits', () => {
+  it('a declared filters edge makes a select a filter wherever it sits, and a search box the finder', () => {
     const c = capture(PAGE, [
       ...RELATIONSHIPS,
+      { source: 'app.side.sort', target: 'app.orders.list', type: 'filters' },
       { source: 'app.side.search', target: 'app.orders.list', type: 'filters' },
     ]);
     const filters = densityAffordances(c, null).filter((a) => a.kind === 'filter');
+    // The search box is the finder and a search, never also a filter.
     expect(filters.map((a) => [a.id, a.rule, a.repeat])).toEqual([
       ['app.orders.state', 'control-above-repeat', 'repeat:app.orders.row-1'],
-      ['app.side.search', 'declared-filters', 'repeat:app.orders.row-1'],
+      ['app.side.sort', 'declared-filters', 'repeat:app.orders.row-1'],
     ]);
     expect(densityRepeats(c, null)[0].finder).toEqual({
-      id: 'app.side.search',
+      id: 'app.side.sort',
       by: 'relationship',
     });
+  });
+
+  it('a table whose rows open its own block still finds the search, filter and pager beside it', () => {
+    const S = '/html/body/main/section';
+    const els: DensityTestElementSpec[] = [
+      { id: 'app.t', tag: 'section', xpath: S, rect: [0, 100, 800, 600], text: '' },
+      {
+        id: 'app.t.q',
+        tag: 'input',
+        role: 'searchbox',
+        category: 'interactive',
+        xpath: `${S}/input`,
+        rect: [0, 100, 300, 28],
+        text: '',
+      },
+      {
+        id: 'app.t.state',
+        tag: 'select',
+        role: 'combobox',
+        category: 'interactive',
+        xpath: `${S}/select`,
+        rect: [400, 100, 200, 28],
+        text: 'All',
+      },
+      { id: 'app.t.table', tag: 'table', xpath: `${S}/table`, rect: [0, 140, 800, 120], text: '' },
+      ...[1, 2, 3].flatMap((k): DensityTestElementSpec[] => [
+        {
+          id: `app.t.row-${k}`,
+          tag: 'tr',
+          xpath: `${S}/table/tbody/tr[${k}]`,
+          rect: [0, 140 + 40 * (k - 1), 800, 40],
+          text: `R${k} 12,50 €`,
+        },
+        {
+          id: `app.t.row-${k}.a`,
+          tag: 'td',
+          xpath: `${S}/table/tbody/tr[${k}]/td[1]`,
+          rect: [0, 140 + 40 * (k - 1), 400, 40],
+          text: `R${k}`,
+        },
+        {
+          id: `app.t.row-${k}.b`,
+          tag: 'td',
+          xpath: `${S}/table/tbody/tr[${k}]/td[2]`,
+          rect: [400, 140 + 40 * (k - 1), 400, 40],
+          text: '12,50 €',
+        },
+      ]),
+      {
+        id: 'app.t.next',
+        tag: 'button',
+        category: 'interactive',
+        xpath: `${S}/nav/button`,
+        rect: [0, 280, 80, 28],
+        text: 'Next',
+      },
+    ];
+    const c = capture(els);
+    const [rep] = densityRepeats(c, null);
+    expect([rep.id, rep.scope, rep.finder]).toEqual([
+      'repeat:app.t.row-1',
+      'ancestor',
+      // Both sit at one height above the first row; the earlier in capture order wins.
+      { id: 'app.t.q', by: 'position' },
+    ]);
+    const acting = densityAffordances(c, null, { repeats: [rep] }).filter((a) => a.repeat !== null);
+    expect(acting.map((a) => [a.id, a.rule])).toEqual([
+      ['app.t.state', 'control-above-repeat'],
+      ['app.t.next', 'nav-after-repeat'],
+    ]);
+  });
+
+  it('a pager more than a screen below the last row is not the pager of the list', () => {
+    const els = PAGE.map((e) =>
+      e.id === 'app.orders.next'
+        ? { ...e, rect: [100, 1200, 80, 28] as [number, number, number, number] }
+        : e
+    );
+    const pagers = densityAffordances(capture(els, RELATIONSHIPS), null).filter(
+      (a) => a.kind === 'pager'
+    );
+    expect(pagers.map((a) => a.id)).toEqual(['app.orders.prev']);
   });
 
   it('a select with a declared controls edge to the list is a filter by that edge', () => {
