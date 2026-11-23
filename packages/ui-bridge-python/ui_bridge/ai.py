@@ -412,55 +412,77 @@ class AIClient:
         )
         return AssertionResult.model_validate(data)
 
-    def assert_visible(self, target: str, *, timeout: int | None = None) -> AssertionResult:
+    def assert_visible(
+        self, target: str | SearchCriteria, *, timeout: int | None = None
+    ) -> AssertionResult:
         """Assert element is visible."""
         return self.assert_that(target, AssertionType.VISIBLE, timeout=timeout)
 
-    def assert_hidden(self, target: str, *, timeout: int | None = None) -> AssertionResult:
+    def assert_hidden(
+        self, target: str | SearchCriteria, *, timeout: int | None = None
+    ) -> AssertionResult:
         """Assert element is hidden."""
         return self.assert_that(target, AssertionType.HIDDEN, timeout=timeout)
 
-    def assert_enabled(self, target: str, *, timeout: int | None = None) -> AssertionResult:
+    def assert_enabled(
+        self, target: str | SearchCriteria, *, timeout: int | None = None
+    ) -> AssertionResult:
         """Assert element is enabled."""
         return self.assert_that(target, AssertionType.ENABLED, timeout=timeout)
 
-    def assert_disabled(self, target: str, *, timeout: int | None = None) -> AssertionResult:
+    def assert_disabled(
+        self, target: str | SearchCriteria, *, timeout: int | None = None
+    ) -> AssertionResult:
         """Assert element is disabled."""
         return self.assert_that(target, AssertionType.DISABLED, timeout=timeout)
 
     def assert_has_text(
-        self, target: str, text: str, *, timeout: int | None = None
+        self, target: str | SearchCriteria, text: str, *, timeout: int | None = None
     ) -> AssertionResult:
         """Assert element has exact text."""
         return self.assert_that(target, AssertionType.HAS_TEXT, text, timeout=timeout)
 
     def assert_contains_text(
-        self, target: str, text: str, *, timeout: int | None = None
+        self, target: str | SearchCriteria, text: str, *, timeout: int | None = None
     ) -> AssertionResult:
         """Assert element contains text."""
         return self.assert_that(target, AssertionType.CONTAINS_TEXT, text, timeout=timeout)
 
     def assert_has_value(
-        self, target: str, value: str, *, timeout: int | None = None
+        self, target: str | SearchCriteria, value: str, *, timeout: int | None = None
     ) -> AssertionResult:
         """Assert input element has value."""
         return self.assert_that(target, AssertionType.HAS_VALUE, value, timeout=timeout)
 
-    def assert_exists(self, target: str, *, timeout: int | None = None) -> AssertionResult:
+    def assert_exists(
+        self, target: str | SearchCriteria, *, timeout: int | None = None
+    ) -> AssertionResult:
         """Assert element exists."""
         return self.assert_that(target, AssertionType.EXISTS, timeout=timeout)
 
-    def assert_not_exists(self, target: str, *, timeout: int | None = None) -> AssertionResult:
+    def assert_not_exists(
+        self, target: str | SearchCriteria, *, timeout: int | None = None
+    ) -> AssertionResult:
         """Assert element does not exist."""
         return self.assert_that(target, AssertionType.NOT_EXISTS, timeout=timeout)
 
-    def assert_checked(self, target: str, *, timeout: int | None = None) -> AssertionResult:
+    def assert_checked(
+        self, target: str | SearchCriteria, *, timeout: int | None = None
+    ) -> AssertionResult:
         """Assert checkbox is checked."""
         return self.assert_that(target, AssertionType.CHECKED, timeout=timeout)
 
-    def assert_unchecked(self, target: str, *, timeout: int | None = None) -> AssertionResult:
+    def assert_unchecked(
+        self, target: str | SearchCriteria, *, timeout: int | None = None
+    ) -> AssertionResult:
         """Assert checkbox is unchecked."""
         return self.assert_that(target, AssertionType.UNCHECKED, timeout=timeout)
+
+    def assert_count(
+        self, target: str | SearchCriteria, expected_count: int, *, timeout: int | None = None
+    ) -> AssertionResult:
+        """Assert the number of elements matching ``target`` (TS ``assertCount``)."""
+        return self.assert_that(target, AssertionType.COUNT, expected_count, timeout=timeout)
 
     def assert_no_overlap(
         self,
@@ -586,15 +608,21 @@ class AIClient:
     # Convenience Methods
     # =========================================================================
 
-    def wait_for_visible(self, target: str, *, timeout: int = 5000) -> AssertionResult:
+    def wait_for_visible(
+        self, target: str | SearchCriteria, *, timeout: int = 5000
+    ) -> AssertionResult:
         """Wait for an element to become visible."""
         return self.assert_visible(target, timeout=timeout)
 
-    def wait_for_hidden(self, target: str, *, timeout: int = 5000) -> AssertionResult:
+    def wait_for_hidden(
+        self, target: str | SearchCriteria, *, timeout: int = 5000
+    ) -> AssertionResult:
         """Wait for an element to become hidden."""
         return self.assert_hidden(target, timeout=timeout)
 
-    def wait_for_enabled(self, target: str, *, timeout: int = 5000) -> AssertionResult:
+    def wait_for_enabled(
+        self, target: str | SearchCriteria, *, timeout: int = 5000
+    ) -> AssertionResult:
         """Wait for an element to become enabled."""
         return self.assert_enabled(target, timeout=timeout)
 
