@@ -168,6 +168,21 @@ test('tests under __tests__/ are not sources and are not copied', () => {
   ]);
 });
 
+test('a *.test.ts beside the sources is not a source and is not copied', () => {
+  const root = fixture({ extraSource: { name: 'c.test.ts', text: "import { a } from './a';\n" } });
+  assert.deepEqual([...expectedDensityCopies(root).keys()].sort(), [
+    `${DENSITY_TARGET_DIR}/a.ts`,
+    `${DENSITY_TARGET_DIR}/b.ts`,
+    `${OBSERVATION_TARGET_DIR}/observation.ts`,
+  ]);
+});
+
+test('an unknown argument exits 2 and writes nothing (a typo never runs the writing sync)', () => {
+  const root = fixture();
+  assert.equal(main(['--chek'], root, silent), 2);
+  assert.equal(checkDensityCopies(root).missing.length, 3);
+});
+
 test('each copy is the @generated header followed by the source, byte for byte', () => {
   const root = fixture();
   const text = expectedDensityCopies(root).get(`${DENSITY_TARGET_DIR}/a.ts`);
@@ -217,6 +232,31 @@ const FORBIDDEN = [
     "import {\n  readFileSync,\n  writeFileSync,\n} from 'node:fs';\n",
     "x.ts:4: 'node:fs' is a Node builtin",
   ],
+  [
+    'a require() inside a template substitution',
+    "export const s = `${require('fs').x}`;\n",
+    'require() is not allowed',
+  ],
+  [
+    'a dynamic import() inside a template substitution',
+    "export const s = async () => `${await import('node:fs')}`;\n",
+    'a dynamic import() is not allowed',
+  ],
+  [
+    'a require() after a template nested in a substitution',
+    "export const s = `a${`b${1}`}c`;\nconst fs = require('fs');\n",
+    'x.ts:2: require() is not allowed',
+  ],
+  [
+    'a require() after a postfix increment divided',
+    "let i = 0;\nexport const r = i++ / 2; const fs = require('fs'); const z = 1 / 3;\n",
+    'x.ts:2: require() is not allowed',
+  ],
+  [
+    'a require() after a postfix decrement on an index divided',
+    "const a = [4];\nexport const r = a[0]-- / 2; const fs = require('fs'); const z = 1 / 3;\n",
+    'x.ts:2: require() is not allowed',
+  ],
 ];
 
 for (const [what, text, expected] of FORBIDDEN) {
@@ -260,6 +300,11 @@ const ALLOWED = [
   ['import( in a template', 'export const msg = `no import("x")`;\n'],
   ['from in a regex', "export const re = /from 'node:fs'|require\\(/;\n"],
   ['import.meta is not an import()', 'export const u = typeof import.meta;\n'],
+  [
+    'a substitution holding an object literal',
+    "export const s = `${JSON.stringify({ a: 'require(x)' })}`;\n",
+  ],
+  ['a regex after a prefix increment', 'let i = 0;\nexport const r = [++i, /require\\(/];\n'],
 ];
 
 for (const [what, text] of ALLOWED) {
