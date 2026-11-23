@@ -802,6 +802,36 @@ describe('density structure: review round 1', () => {
     expect([c['app.row-1'].ownChars, c['app.row-2'].ownChars]).toEqual([0, 0]);
   });
 
+  it('a deeper key one repeated row alone registered does not adopt the other row', () => {
+    const c = byId(
+      capture([
+        {
+          id: 'app.c1.d',
+          tag: 'div',
+          xpath: '/li[@data-testid="card"]/div[2]',
+          rect: [0, 0, 400, 20],
+          text: 'One',
+        },
+        {
+          id: 'app.c1.s',
+          tag: 'span',
+          xpath: '/li[@data-testid="card"]/div[2]/span',
+          rect: [0, 0, 100, 20],
+          text: 'One',
+        },
+        {
+          id: 'app.c2.s',
+          tag: 'span',
+          xpath: '/li[@data-testid="card"]/div[2]/span',
+          rect: [0, 40, 100, 20],
+          text: 'Two',
+        },
+      ])
+    );
+    expect(c['app.c2.s']).toMatchObject({ parent: null, structureBy: 'geometry' });
+    expect(c['app.c1.s']).toMatchObject({ parent: 'app.c1.d', structureBy: 'geometry' });
+  });
+
   it("two chains anchored at each other never become each other's parent", () => {
     const c = byId(
       capture([
@@ -902,6 +932,14 @@ describe('density structure: review round 1', () => {
           { id: 'app.stuck', rect: [0, 50, 1280, 30], styles: { position: 'sticky' } },
           { id: 'app.stuck-top', rect: [0, 0, 1280, 30], styles: { position: 'sticky' } },
           { id: 'app.nostyle', rect: [0, 400, 1280, 30], styles: false },
+          // Scrolled away from both edges now; at scroll 0 it may sit at the top.
+          { id: 'app.sticky-away', rect: [0, 100, 1280, 30], styles: { position: 'sticky' } },
+          {
+            id: 'app.unseen',
+            rect: [0, 0, 1280, 30],
+            styles: { position: 'fixed' },
+            visible: false,
+          },
         ],
       }),
       { producer: DENSITY_TEST_PRODUCER, evaluatedAt: '2026-11-23T10:00:00.000Z' }
@@ -912,8 +950,10 @@ describe('density structure: review round 1', () => {
       pinBottomPx: 60,
       usableHeightPx: 690,
       ids: ['app.top', 'app.bottom'],
-      // Stuck at the top now, at scroll 300; where it sits at scroll 0 is unknown.
-      unknown: ['app.stuck-top', 'app.nostyle'],
+      // Every sticky item in a capture taken at scroll 300 (a pin is judged at
+      // scroll 0), the item with no computed position, and a fixed bar whose
+      // visibility is unknown.
+      unknown: ['app.stuck', 'app.stuck-top', 'app.nostyle', 'app.sticky-away', 'app.unseen'],
     });
   });
 
@@ -981,10 +1021,25 @@ describe('density structure: review round 1', () => {
           rect: [10, 10, 20, 20],
           text: '9',
         },
+        {
+          id: 'app.box',
+          tag: 'div',
+          xpath: '/html/body/section',
+          rect: [0, 200, 400, 100],
+          text: 'Box',
+        },
+        {
+          id: 'app.icon',
+          tag: 'span',
+          xpath: '//*[@id="icon"]',
+          rect: [10, 210, 20, 20],
+          text: '',
+        },
       ]),
       null
     );
     if (!s.structureResolved) throw new Error('unresolved');
-    expect(s.leaves).toEqual({ count: 2, unknown: 0, geometryOwnChars: 1 });
+    // app.box's geometry child has no text, so the assumption changed nothing there.
+    expect(s.leaves).toEqual({ count: 3, unknown: 0, geometryOwnChars: 1 });
   });
 });

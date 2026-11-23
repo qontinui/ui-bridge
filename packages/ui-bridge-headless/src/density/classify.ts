@@ -246,7 +246,7 @@ export function summarizeDensityStructure(
       unknown: leaves.unknown.length,
       geometryOwnChars: new Set(
         capture.items
-          .filter((i) => i.parent !== null && i.structureBy === 'geometry')
+          .filter((i) => i.parent !== null && i.structureBy === 'geometry' && (i.chars ?? 0) > 0)
           .map((i) => i.parent as string)
       ).size,
     },
