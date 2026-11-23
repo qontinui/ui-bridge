@@ -139,7 +139,8 @@ describe('repeats', () => {
         rowsPerScreenBasis: 'measured',
         extentPx: 196,
         extentAtVolume: { volume: 50, px: 1996 },
-        scope: 'block',
+        // No control outside the list in its block or a near ancestor.
+        scope: null,
         finder: null,
         renderedOf: {
           unknown: 'input_missing',
@@ -276,11 +277,29 @@ describe('repeats', () => {
   });
 
   it('three stacked siblings of different widths are not a repeat, nor is a run of paragraphs', () => {
-    const wrappers: DensityTestElementSpec[] = [
-      { id: 'app.a', tag: 'div', xpath: '/html/body/div[1]', rect: [0, 0, 1280, 60], text: 'Top' },
-      { id: 'app.b', tag: 'div', xpath: '/html/body/div[2]', rect: [0, 60, 900, 600], text: 'Mid' },
-      { id: 'app.c', tag: 'div', xpath: '/html/body/div[3]', rect: [0, 660, 400, 80], text: 'End' },
-    ];
+    // Layout wrappers: containers (each holds a registered child) of different widths.
+    const wrappers: DensityTestElementSpec[] = (
+      [
+        ['a', 60, 1280, 0],
+        ['b', 600, 900, 60],
+        ['c', 80, 400, 660],
+      ] as const
+    ).flatMap(([n, h, w, y], i): DensityTestElementSpec[] => [
+      {
+        id: `app.${n}`,
+        tag: 'div',
+        xpath: `/html/body/div[${i + 1}]`,
+        rect: [0, y, w, h],
+        text: 'X',
+      },
+      {
+        id: `app.${n}.x`,
+        tag: 'span',
+        xpath: `/html/body/div[${i + 1}]/span`,
+        rect: [0, y, 20, 20],
+        text: 'X',
+      },
+    ]);
     expect(densityRepeats(capture(wrappers), null)).toEqual([]);
     const prose: DensityTestElementSpec[] = [1, 2, 3].map((k) => ({
       id: `app.p-${k}`,
@@ -318,6 +337,58 @@ describe('repeats', () => {
     expect(reps.map((r) => [r.id, r.by, r.rows, r.perRow, r.members.length, r.rowPitchPx])).toEqual(
       [['repeat:app.grid.card-1', 'geometry', 3, 2, 6, 100]]
     );
+  });
+
+  it('a fit-content list of leaves of different widths is a repeat', () => {
+    const links: DensityTestElementSpec[] = [80, 140, 60].map((w, i) => ({
+      id: `app.nav.link-${i + 1}`,
+      tag: 'a',
+      xpath: `/html/body/aside/a[${i + 1}]`,
+      rect: [16, 100 + 28 * i, w, 20],
+      text: `Link ${i + 1}`,
+    }));
+    const reps = densityRepeats(capture(links), null);
+    expect(reps.map((r) => [r.id, r.by, r.rows])).toEqual([['repeat:app.nav.link-1', 'path', 3]]);
+  });
+
+  it('items under different parents with one tag chain are not siblings', () => {
+    // body/div[2]/button, body/div[4]/button, body/div[6]/button: no registered parent.
+    const buttons: DensityTestElementSpec[] = [2, 4, 6].map((k) => ({
+      id: `app.btn-${k}`,
+      tag: 'button',
+      category: 'interactive',
+      xpath: `/html/body/div[${k}]/button`,
+      rect: [0, 100 * k, 120, 32],
+      text: `Go ${k}`,
+    }));
+    expect(densityRepeats(capture(buttons), null)).toEqual([]);
+  });
+
+  it('a ragged geometry grid keeps its short columns: seven cards in three columns', () => {
+    const grid: DensityTestElementSpec[] = [
+      { id: 'app.grid', tag: 'div', xpath: '//*[@id="grid"]', rect: [0, 100, 1000, 400], text: '' },
+    ];
+    for (let n = 0; n < 7; n++) {
+      const row = Math.floor(n / 3);
+      const col = n % 3;
+      grid.push({
+        id: `app.grid.card-${n + 1}`,
+        tag: 'div',
+        xpath: `//*[@id="card-${n + 1}"]`,
+        rect: [20 + 320 * col, 110 + 100 * row, 300, 80],
+        text: '',
+      });
+    }
+    const reps = densityRepeats(capture(grid), null);
+    expect(reps.map((r) => [r.rows, r.perRow, r.members.length])).toEqual([[3, 3, 7]]);
+  });
+
+  it('a row holding a leaf with no rect is not estimated', () => {
+    const els = orderList(3).map((e) =>
+      e.id === 'app.orders.row-2.sum' ? { ...e, rect: null } : e
+    );
+    const [rep] = densityRepeats(capture(els), null);
+    expect([rep.rows, rep.rowsEstimated, rep.valuesPerRow]).toEqual([3, 2, 2]);
   });
 
   it('a hidden leaf in a row draws no line band', () => {

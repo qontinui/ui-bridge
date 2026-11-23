@@ -15,14 +15,20 @@
  */
 
 import {
-  densityRepeatScope,
+  densityRepeatScopes,
   densityRepeatTargets,
   densityRepeats,
   type DensityRepeat,
   type DensityUnknownQuantity,
 } from './repeats';
 import type { DensityCapture, DensityItem, DensityTargets } from './schema';
-import { densityBlocks, densityLeaves, type DensityBlocks, type DensityLeaves } from './structure';
+import {
+  densityBlocks,
+  densityChildren,
+  densityLeaves,
+  type DensityBlocks,
+  type DensityLeaves,
+} from './structure';
 
 export type DensityAffordanceKind =
   | 'disclosure'
@@ -75,7 +81,8 @@ export const DENSITY_AFFORDANCE_RULES: Readonly<
   },
   'declared-filters': {
     kind: 'filter',
-    definition: 'a declared `filters` relationship from the item to a repeat, its parent or a row',
+    definition:
+      'a select, combobox, listbox, checkbox or radio with a declared `filters` relationship to a repeat, its parent or a row',
   },
   'declared-controls': {
     kind: 'filter',
@@ -85,12 +92,12 @@ export const DENSITY_AFFORDANCE_RULES: Readonly<
   'control-above-repeat': {
     kind: 'filter',
     definition:
-      "a select, combobox, listbox, checkbox or radio in the repeat's block (else its parent), outside every other repeat's rows, centred above its first row",
+      "a select, combobox, listbox, checkbox or radio in the repeat's scope (its block, else a near ancestor; never another repeat's rows), centred above its first row",
   },
   'nav-after-repeat': {
     kind: 'pager',
     definition:
-      "an interactive item inside a `nav`, in the repeat's block (else its parent), centred below its last row: one entry per control, not per pager",
+      "an interactive item in a `nav` (tag or navigation landmark), in the repeat's scope, centred below its last row and within one viewport height of it: one entry per control, not per pager",
   },
   'scroll-width': {
     kind: 'truncation',
@@ -99,7 +106,8 @@ export const DENSITY_AFFORDANCE_RULES: Readonly<
   abbr: { kind: 'abbreviation', definition: 'an `abbr` element' },
   title: {
     kind: 'abbreviation',
-    definition: 'a leaf whose accessible name comes from its `title` (the full form on hover)',
+    definition:
+      'a leaf whose accessible name comes from its `title` (the full form on hover); a snapshot row carries no `title` attribute, so a leaf named by its content that also has one is not seen',
   },
 };
 
@@ -239,35 +247,37 @@ export function densityAffordances(
   }
 
   // filters and pagers: per repeat
+  const children = densityChildren(capture);
+  const scopes = densityRepeatScopes(capture, repeats, blocks);
+  const H = capture.viewport.height;
   for (const rep of repeats) {
-    const scope = densityRepeatScope(capture, rep, blocks, repeats);
-    const aimed = densityRepeatTargets(capture, rep);
+    const scope = scopes.get(rep.id)!;
+    const aimed = densityRepeatTargets(capture, rep, children);
     for (const item of capture.items) {
       if (scope.own.has(item.id)) continue;
-      // filter
-      if (item.filters !== null && aimed.has(item.filters)) {
+      const filterControl = isDensityFilterControl(item);
+      // filter (a search box with a `filters` edge is the repeat's finder, not a filter)
+      if (filterControl && item.filters !== null && aimed.has(item.filters)) {
         add(item, 'declared-filters', null, { repeat: rep.id });
-      } else if (
-        isDensityFilterControl(item) &&
-        item.controls !== null &&
-        aimed.has(item.controls)
-      ) {
+      } else if (filterControl && item.controls !== null && aimed.has(item.controls)) {
         add(item, 'declared-controls', null, { repeat: rep.id });
       } else if (
         scope.ids.has(item.id) &&
         item.interactive &&
-        isDensityFilterControl(item) &&
+        filterControl &&
         (centreY(item) ?? Infinity) < rep.firstRow.topPx
       ) {
         add(item, 'control-above-repeat', null, { repeat: rep.id });
       }
-      // pager
+      // pager: in a `nav` (tag or landmark), below the last row and within a screen of it
+      const cy = centreY(item);
       if (
         scope.ids.has(item.id) &&
         item.interactive &&
-        item.path !== null &&
-        item.path.includes('nav') &&
-        (centreY(item) ?? -Infinity) > rep.lastRow.bottomPx
+        ((item.path !== null && item.path.includes('nav')) || item.landmark === 'navigation') &&
+        cy !== null &&
+        cy > rep.lastRow.bottomPx &&
+        cy <= rep.lastRow.bottomPx + H
       ) {
         add(item, 'nav-after-repeat', null, { repeat: rep.id });
       }
