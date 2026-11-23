@@ -32,8 +32,8 @@
 //   5. `additiveGuardScopes` — the `files`/`ignores` of an ADDITIVE guard block
 //                            (sentinels `redaction-surface:additive-guard-scopes:{start,end}`),
 //                            e.g. the density core's purity block. Its ignores
-//                            exempt nothing from §4.6 because the block may not
-//                            set `no-restricted-syntax` — checked, fail-closed.
+//                            exempt nothing from §4.6 because the block is
+//                            parsed and proven additive (scripts/lib/additive-guard-block.cjs).
 //
 // Usage:
 //   node scripts/check-redaction-surface.cjs            # verify (CI, before Lint)
@@ -46,6 +46,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const ts = require('typescript');
+const { additiveGuardBlockProblems } = require('./lib/additive-guard-block.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const TYPES_TS = path.join(REPO_ROOT, 'packages/ui-bridge/src/server/types.ts');
@@ -181,31 +182,21 @@ const liveProjectionModuleIgnores = () => liveSentinelList('projection-module-ig
 // (sentinels `redaction-surface:additive-guard-scopes:{start,end}`), such as
 // the density core's purity block. Its `ignores` only narrow where the block's
 // own extra rules apply, so they exempt nothing from §4.6 — PROVIDED the block
-// never configures `no-restricted-syntax`, which would REPLACE the package-wide
-// selectors for its files (flat config does not merge one rule across blocks).
-// That proviso is checked here, fail-closed: the text from the end sentinel to
-// the block's closing `  }` (comment lines stripped) must not name the rule.
-// Scope changes are recorded in the manifest like the other three lists.
+// is provably additive: keys exactly files / ignores / rules, `files` present
+// (an ignores-only object is a GLOBAL ignore), and `rules` setting only
+// no-restricted-globals / no-restricted-imports (never `no-restricted-syntax`,
+// which would REPLACE the package-wide selectors for its files). That is
+// checked on the parsed config by scripts/lib/additive-guard-block.cjs, fail
+// closed, with its own self-test. Scope changes are recorded in the manifest
+// like the other lists.
 function liveAdditiveGuardScopes() {
   const list = liveSentinelList('additive-guard-scopes');
-  const src = fs.readFileSync(ESLINT_CONFIG, 'utf8');
-  const [, end] = sentinelRange(src, 'additive-guard-scopes');
-  const close = src.slice(end).search(/\n {2}\}/);
-  if (close === -1) {
+  const problems = additiveGuardBlockProblems(fs.readFileSync(ESLINT_CONFIG, 'utf8'));
+  if (problems.length) {
     throw new Error(
-      'redaction-surface:additive-guard-scopes: cannot find the closing `  }` of the block'
-    );
-  }
-  const rest = src
-    .slice(end, end + close)
-    .split('\n')
-    .filter((line) => !line.trim().startsWith('//'))
-    .join('\n');
-  if (/no-restricted-syntax/.test(rest)) {
-    throw new Error(
-      'redaction-surface:additive-guard-scopes: the block configures `no-restricted-syntax`, ' +
-        'which REPLACES the package-wide §4.6 selectors for its files. An additive guard ' +
-        'block must use other rules (no-restricted-globals, no-restricted-imports, ...).'
+      'redaction-surface:additive-guard-scopes: the block is not provably additive, so its ' +
+        'src paths could exempt files from §4.6: ' +
+        problems.join('; ')
     );
   }
   return list;
@@ -445,10 +436,10 @@ if (additiveDiff.added.length || additiveDiff.removed.length) {
     'ERROR: an additive guard block scope (eslint.config.js additive-guard-scopes) drifted from'
   );
   console.error(
-    '       the manifest. Confirm the block still only ADDS rules (it may not set'
+    '       the manifest. The block was verified additive (no no-restricted-syntax, files'
   );
   console.error(
-    '       no-restricted-syntax), then run `npm run redaction:surface:update` and commit it.'
+    '       present); review the scope change, then run `npm run redaction:surface:update`.'
   );
   for (const m of additiveDiff.added) console.error(`   + (new in eslint) ${m}`);
   for (const m of additiveDiff.removed) console.error(`   - (gone from eslint) ${m}`);
