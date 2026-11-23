@@ -17,8 +17,7 @@ import type { DataType } from '../types';
 
 describe('classifyDataType', () => {
   it('a dotted date is a date, never a phone', () => {
-    expect(classifyDataType('16.10.2026').type).toBe('date');
-    expect(classifyDataType('16.10.2026').type).not.toBe('phone');
+    expect(classifyDataType('16.10.2026')).toEqual({ type: 'date', confidence: 0.85 });
   });
 
   const CLASSIFICATION: Array<[string, DataType]> = [
@@ -98,6 +97,13 @@ describe('normalizeValue', () => {
     ['0301234567', 'phone', '0301234567'],
     // `0,` cannot start a thousands group, so this is a decimal comma
     ['0,123', 'number', '0.123'],
+    // a bare leading decimal point
+    ['$.99', 'currency', '0.99'],
+    ['.5%', 'percentage', '0.5'],
+    // timestamps with a zone name, AM/PM or a spaced offset are their day
+    ['2026-10-16 08:00 UTC', 'date', '2026-10-16'],
+    ['2026-10-16 8:00 AM', 'date', '2026-10-16'],
+    ['2026-10-16 08:00:00 +0000', 'date', '2026-10-16'],
     // a minus sign before the currency symbol
     ['-$5.00', 'currency', '-5'],
     // a slash date whose first field cannot be a month reads day-first
