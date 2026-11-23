@@ -246,7 +246,8 @@ ui-bridge-density measure --snapshot snapshot.json --role buyer \
   usage error, 1 for an internal error. On SIGHUP, SIGINT or SIGTERM before it
   has answered, it prints an `interrupted` document naming the step it had
   reached and exits 129, 130 or 143. A signal after the answer is printed
-  exits 0 and prints nothing more.
+  exits 0 and prints nothing more (or, if it lands while the finished process
+  is already exiting, takes the default action after the answer was written).
 
 It runs a generated copy of the density core and does not load
 `@qontinui/ui-bridge`. A capture holds no page text, but its text hashes are

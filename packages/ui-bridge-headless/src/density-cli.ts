@@ -25,6 +25,9 @@
  * nothing more. The steps after reading the snapshot are synchronous, so a
  * signal is delivered while the run waits for input (`--snapshot -`) or once
  * it has answered. A closed stdout (EPIPE, e.g. `| head`) ends the run quietly.
+ * One window no handler can cover: a signal that lands while Node is already
+ * tearing the finished process down takes the OS default action (killed by
+ * the signal), after the whole answer was written.
  *
  * The density core is the generated copy under `./density/` (scripts/sync-density.mjs),
  * never `@qontinui/ui-bridge`: the SDK depends on this package, not the reverse.
