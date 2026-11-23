@@ -452,9 +452,11 @@ const SIGNAL_EXIT: Record<'SIGHUP' | 'SIGINT' | 'SIGTERM', number> = {
 export function sameFileOnDisk(a: string, b: string): boolean {
   if (resolvePath(a) === resolvePath(b)) return true;
   try {
-    const sa = statSync(a);
-    const sb = statSync(b);
-    return sa.dev === sb.dev && sa.ino === sb.ino && sa.ino !== 0;
+    // As bigints: an NTFS file id exceeds 2^53, where a double would round two
+    // neighbouring files to one inode.
+    const sa = statSync(a, { bigint: true });
+    const sb = statSync(b, { bigint: true });
+    return sa.dev === sb.dev && sa.ino === sb.ino && sa.ino !== 0n;
   } catch {
     // The output does not exist yet, so it cannot be the input.
     return false;
@@ -508,7 +510,11 @@ async function main(): Promise<void> {
         process.exit(reachedCode());
       }
       if (stream === process.stdout) {
-        process.stderr.write(`ui-bridge-density: internal error: stdout: ${err.message}\n`);
+        // Exit once the line is written, as every other exit here does.
+        process.stderr.write(`ui-bridge-density: internal error: stdout: ${err.message}\n`, () =>
+          process.exit(1)
+        );
+        return;
       }
       process.exit(1);
     });
@@ -570,9 +576,10 @@ async function main(): Promise<void> {
 
 if (isEntryModule(import.meta.url)) {
   main().catch((err: unknown) => {
+    // Exit once the stack is written: an asynchronous stderr could drop it.
     process.stderr.write(
-      `ui-bridge-density: internal error: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`
+      `ui-bridge-density: internal error: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`,
+      () => process.exit(1)
     );
-    process.exit(1);
   });
 }
