@@ -398,8 +398,17 @@ export default tseslint.config(
   // files — flat config does not merge one rule across blocks (NOTE above).
   // Plan 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change, Phase 1.
   {
+    // redaction-surface:additive-guard-scopes:start
+    // The scope of an ADDITIVE guard block: one that only adds rules to src
+    // files and never sets `no-restricted-syntax`, so its `ignores` narrow
+    // where its own extra rules apply and exempt nothing from §4.6. Mirrored
+    // into packages/ui-bridge/redaction-surface.manifest.json and checked by
+    // scripts/check-redaction-surface.cjs, which also refuses this block if it
+    // ever configures `no-restricted-syntax`. After editing, run
+    // `npm run redaction:surface:update`.
     files: ['packages/ui-bridge/src/density/**/*.ts'],
     ignores: ['packages/ui-bridge/src/density/__tests__/**'],
+    // redaction-surface:additive-guard-scopes:end
     rules: {
       'no-restricted-globals': [
         'error',

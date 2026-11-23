@@ -35,6 +35,10 @@
     "packages/ui-bridge/src/undo/undo-detector.ts",
     "packages/ui-bridge/src/vision/dom-assertions.ts"
   ],
+  "additiveGuardScopes": [
+    "packages/ui-bridge/src/density/**/*.ts",
+    "packages/ui-bridge/src/density/__tests__/**"
+  ],
   "routes": [
     "DELETE /ai/bookmark/:name -> deleteBookmark",
     "DELETE /ai/bookmarks/:name -> deleteBookmark",

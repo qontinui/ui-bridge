@@ -9,7 +9,7 @@
 // every surface change (the plan's goal: change the default from "silently
 // leak" to "fail the build").
 //
-// Surface = four committed sets in packages/ui-bridge/redaction-surface.manifest.json:
+// Surface = five committed sets in packages/ui-bridge/redaction-surface.manifest.json:
 //   1. `routes`            — every entry in `UI_BRIDGE_ROUTES` (server/types.ts).
 //                            A new client-reachable route is the way a new leak
 //                            reaches a client; adding one must be a deliberate,
@@ -29,6 +29,11 @@
 //                            An added entry silently disables the raw-read ban
 //                            for a projection module while the `files` list
 //                            still matches — only test globs belong here.
+//   5. `additiveGuardScopes` — the `files`/`ignores` of an ADDITIVE guard block
+//                            (sentinels `redaction-surface:additive-guard-scopes:{start,end}`),
+//                            e.g. the density core's purity block. Its ignores
+//                            exempt nothing from §4.6 because the block may not
+//                            set `no-restricted-syntax` — checked, fail-closed.
 //
 // Usage:
 //   node scripts/check-redaction-surface.cjs            # verify (CI, before Lint)
@@ -109,6 +114,7 @@ const SENTINEL_NAMES = [
   'projection-modules',
   'package-guard-exemptions',
   'projection-module-ignores',
+  'additive-guard-scopes',
 ];
 const SRC_PREFIX = 'packages/ui-bridge/src/';
 
@@ -170,6 +176,40 @@ function liveSentinelList(name) {
 const liveProjectionModules = () => liveSentinelList('projection-modules');
 const livePackageGuardExemptions = () => liveSentinelList('package-guard-exemptions');
 const liveProjectionModuleIgnores = () => liveSentinelList('projection-module-ignores');
+
+// 5. `additiveGuardScopes` — the `files`/`ignores` of an ADDITIVE guard block
+// (sentinels `redaction-surface:additive-guard-scopes:{start,end}`), such as
+// the density core's purity block. Its `ignores` only narrow where the block's
+// own extra rules apply, so they exempt nothing from §4.6 — PROVIDED the block
+// never configures `no-restricted-syntax`, which would REPLACE the package-wide
+// selectors for its files (flat config does not merge one rule across blocks).
+// That proviso is checked here, fail-closed: the text from the end sentinel to
+// the block's closing `  }` (comment lines stripped) must not name the rule.
+// Scope changes are recorded in the manifest like the other three lists.
+function liveAdditiveGuardScopes() {
+  const list = liveSentinelList('additive-guard-scopes');
+  const src = fs.readFileSync(ESLINT_CONFIG, 'utf8');
+  const [, end] = sentinelRange(src, 'additive-guard-scopes');
+  const close = src.slice(end).search(/\n {2}\}/);
+  if (close === -1) {
+    throw new Error(
+      'redaction-surface:additive-guard-scopes: cannot find the closing `  }` of the block'
+    );
+  }
+  const rest = src
+    .slice(end, end + close)
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('//'))
+    .join('\n');
+  if (/no-restricted-syntax/.test(rest)) {
+    throw new Error(
+      'redaction-surface:additive-guard-scopes: the block configures `no-restricted-syntax`, ' +
+        'which REPLACES the package-wide §4.6 selectors for its files. An additive guard ' +
+        'block must use other rules (no-restricted-globals, no-restricted-imports, ...).'
+    );
+  }
+  return list;
+}
 
 // Layer-0 backstop: every `'packages/ui-bridge/src/...'` string in
 // eslint.config.js must sit INSIDE one of the three ratcheted sentinel blocks,
@@ -262,6 +302,7 @@ try {
     packageGuardExemptions: livePackageGuardExemptions(),
     projectionModuleIgnores: liveProjectionModuleIgnores(),
     projectionModules: liveProjectionModules(),
+    additiveGuardScopes: liveAdditiveGuardScopes(),
     routes: liveRoutes(),
   };
   unratcheted = unratchetedSrcRefs();
@@ -304,7 +345,8 @@ if (UPDATE) {
     `redaction:surface:update — wrote ${surface.routes.length} routes, ` +
       `${surface.projectionModules.length} projection modules, ` +
       `${surface.packageGuardExemptions.length} guard exemptions, ` +
-      `${surface.projectionModuleIgnores.length} projection ignores to redaction-surface.manifest.json`
+      `${surface.projectionModuleIgnores.length} projection ignores, ` +
+      `${surface.additiveGuardScopes.length} additive guard scopes to redaction-surface.manifest.json`
   );
   process.exit(0);
 }
@@ -322,6 +364,7 @@ const routeDiff = diff(committed.routes || [], surface.routes);
 const modDiff = diff(committed.projectionModules || [], surface.projectionModules);
 const exemptDiff = diff(committed.packageGuardExemptions || [], surface.packageGuardExemptions);
 const ignoreDiff = diff(committed.projectionModuleIgnores || [], surface.projectionModuleIgnores);
+const additiveDiff = diff(committed.additiveGuardScopes || [], surface.additiveGuardScopes);
 // Existence-check both file lists — with opposite dispositions: a projection
 // module that no longer resolves is DEAD GUARD COVERAGE; an exemption that no
 // longer resolves is a DEAD ALLOWLIST ENTRY (a renamed sanctioned reader).
@@ -395,6 +438,22 @@ if (ignoreDiff.added.length || ignoreDiff.removed.length) {
   for (const m of ignoreDiff.removed) console.error(`   - (gone from eslint) ${m}`);
 }
 
+if (additiveDiff.added.length || additiveDiff.removed.length) {
+  failed = true;
+  console.error('');
+  console.error(
+    'ERROR: an additive guard block scope (eslint.config.js additive-guard-scopes) drifted from'
+  );
+  console.error(
+    '       the manifest. Confirm the block still only ADDS rules (it may not set'
+  );
+  console.error(
+    '       no-restricted-syntax), then run `npm run redaction:surface:update` and commit it.'
+  );
+  for (const m of additiveDiff.added) console.error(`   + (new in eslint) ${m}`);
+  for (const m of additiveDiff.removed) console.error(`   - (gone from eslint) ${m}`);
+}
+
 if (missingModules.length) {
   failed = true;
   console.error('');
@@ -423,5 +482,6 @@ console.log(
   `redaction:check-surface OK — ${surface.routes.length} routes, ` +
     `${surface.projectionModules.length} projection modules, ` +
     `${surface.packageGuardExemptions.length} guard exemptions, ` +
-    `${surface.projectionModuleIgnores.length} projection ignores match the committed surface`
+    `${surface.projectionModuleIgnores.length} projection ignores, ` +
+    `${surface.additiveGuardScopes.length} additive guard scopes match the committed surface`
 );
