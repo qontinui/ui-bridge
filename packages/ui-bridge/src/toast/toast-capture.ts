@@ -339,7 +339,12 @@ export class ToastCapture {
    * disconnects. `uninstall` clears it, since nothing prunes it afterwards.
    */
   private parked: Map<Element, string> = new Map();
-  /** Guards `reconcile` against re-entry from a synchronous event listener. */
+  /**
+   * Guards `reconcile` against re-entry from a synchronous event listener. A
+   * read made by such a listener returns without reconciling, so it sees the
+   * in-between state of the pass that is running (e.g. on a `dismissed` event
+   * for a text change, the old text dismissed and the new one not yet active).
+   */
   private reconciling = false;
   private activeToasts: Map<string, { toast: CapturedToast; element: Element }> = new Map();
   private recentToasts: CapturedToast[] = [];
@@ -413,7 +418,7 @@ export class ToastCapture {
   }
 
   getSnapshot(): ToastSnapshot {
-    this.reconcile(Date.now());
+    this.reconcileForRead();
     return {
       active: this.getActiveList(),
       recent: [...this.recentToasts],
@@ -431,16 +436,26 @@ export class ToastCapture {
   }
 
   getActive(): CapturedToast[] {
-    this.reconcile(Date.now());
+    this.reconcileForRead();
     return this.getActiveList();
   }
 
   getRecent(count?: number): CapturedToast[] {
-    this.reconcile(Date.now());
+    this.reconcileForRead();
     if (count !== undefined && count >= 0) {
       return this.recentToasts.slice(0, count);
     }
     return [...this.recentToasts];
+  }
+
+  /**
+   * Reads reconcile only while installed. After `uninstall` the captured data
+   * stays readable as it was left: a read must not capture, dismiss or park
+   * with no observer running.
+   */
+  private reconcileForRead(): void {
+    if (this.installed) this.reconcile(Date.now());
+    else this.pruneRecent();
   }
 
   // ==========================================================================
@@ -580,7 +595,12 @@ export class ToastCapture {
           this.parked.delete(el);
           continue;
         }
-        if (!isElementVisible(el)) continue;
+        if (!isElementVisible(el)) {
+          // Same rule as an active element that is hidden: becoming visible
+          // again with any text is a new announcement.
+          if (parkedMessage !== '') this.parked.set(el, '');
+          continue;
+        }
         const message = extractMessage(el);
         if (message && message !== parkedMessage) {
           this.captureToast(el, message, now);

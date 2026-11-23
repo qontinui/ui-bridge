@@ -331,4 +331,52 @@ describe('ToastCapture live-region text', () => {
     expect(capture.getSnapshot().totalCaptured).toBe(2);
     expect(events.map((e) => e.action)).toEqual(['appeared', 'dismissed', 'appeared']);
   });
+
+  // 14
+  it('an element parked by max-age, hidden and shown again with the same text, is a new announcement', async () => {
+    install({ pollInterval: 500, maxToastAgeMs: 1_000 });
+    const el = addStatus('status', 'Idle');
+    await flushAndScan();
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(capture.getActive()).toHaveLength(0); // parked by max-age
+
+    el.style.display = 'none';
+    await vi.advanceTimersByTimeAsync(500);
+    el.style.display = '';
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['status', 'Idle']]);
+    expect(capture.getSnapshot().totalCaptured).toBe(2);
+  });
+
+  // 15
+  it('reads after uninstall leave the captured state as it was', async () => {
+    install();
+    const el = addStatus('health', 'One');
+    await flushAndScan();
+    capture.uninstall();
+
+    setTextInPlace(el, 'Two');
+    const snap = capture.getSnapshot();
+
+    expect(snap.totalCaptured).toBe(1);
+    expect(snap.active.map((t) => t.message)).toEqual(['One']);
+    expect(capture.getActive().map((t) => t.message)).toEqual(['One']);
+    expect(capture.getRecent()).toHaveLength(0);
+  });
+
+  // 16
+  it('a childList text change on an active element is captured exactly once by scan plus poll', async () => {
+    install({ pollInterval: 500 });
+    const el = addStatus('health', 'No sessions match this filter');
+    await flushAndScan();
+
+    el.textContent = '38 sessions'; // replaces the text node: a scan runs too
+    await flushAndScan();
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(capture.getSnapshot().totalCaptured).toBe(2);
+    expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['health', '38 sessions']]);
+    expect(events.map((e) => e.action)).toEqual(['appeared', 'dismissed', 'appeared']);
+  });
 });
