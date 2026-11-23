@@ -9,7 +9,12 @@ import { describe, expect, it } from 'vitest';
 import { captureDensityFromSnapshot } from '../capture-from-snapshot';
 import { classifyDensityItems, summarizeDensityStructure } from '../classify';
 import { resolveDensityMatcher } from '../match';
-import { parseDensityTargets, type DensityCapture, type DensityTargets } from '../schema';
+import {
+  parseDensityCapture,
+  parseDensityTargets,
+  type DensityCapture,
+  type DensityTargets,
+} from '../schema';
 import { densityBlocks, densityLeaves, densityPins } from '../structure';
 import {
   DENSITY_TEST_PRODUCER,
@@ -411,13 +416,20 @@ describe('density structure', () => {
       pinBottomPx: 40,
       usableHeightPx: 712,
       ids: ['app.header', 'app.notice'],
+      unknown: [],
     });
     // Narrower than half the viewport, or sticky away from an edge: not a pin.
     const c = capture([
       { id: 'app.side', rect: [0, 0, 600, 800], styles: { position: 'fixed' } },
       { id: 'app.mid', rect: [0, 300, 1280, 40], styles: { position: 'sticky' } },
     ]);
-    expect(densityPins(c)).toEqual({ pinTopPx: 0, pinBottomPx: 0, usableHeightPx: 800, ids: [] });
+    expect(densityPins(c)).toEqual({
+      pinTopPx: 0,
+      pinBottomPx: 0,
+      usableHeightPx: 800,
+      ids: [],
+      unknown: [],
+    });
   });
 });
 
@@ -480,6 +492,20 @@ describe('density kinds', () => {
           text: 'Go',
           origin: 'hook',
         },
+        {
+          id: 'app.colhead',
+          tag: 'div',
+          role: 'columnheader',
+          xpath: '/html/body/div[3]',
+          text: 'Due',
+        },
+        {
+          id: 'app.gridcell',
+          tag: 'div',
+          role: 'gridcell',
+          xpath: '/html/body/div[4]',
+          text: 'soon',
+        },
       ]),
       null
     );
@@ -490,6 +516,8 @@ describe('density kinds', () => {
       ['app.status', 'prose', 'role'],
       ['app.pic', 'media', 'role'],
       ['app.go', 'control', 'role'],
+      ['app.colhead', 'label', 'role'],
+      ['app.gridcell', 'value', 'role'],
     ]);
   });
 
@@ -642,10 +670,10 @@ describe('density structure summary', () => {
     expect(summarizeDensityStructure(capture(PAGE), null)).toEqual({
       structureResolved: true,
       structureBy: { xpath: 20, geometry: 2 },
-      leaves: { count: 18, unknown: 0 },
+      leaves: { count: 18, unknown: 0, geometryOwnChars: 0 },
       // app.total has a registered child: its own 6 characters are on a container.
       unattributedChars: 6,
-      pins: { pinTopPx: 48, pinBottomPx: 40, usableHeightPx: 712, items: 2 },
+      pins: { pinTopPx: 48, pinBottomPx: 40, usableHeightPx: 712, items: 2, unknown: 0 },
       kinds: {
         byBasis: {
           declared: {},
@@ -659,6 +687,7 @@ describe('density structure summary', () => {
       },
       blocks: {
         byBasis: { declared: 0, path: 2, heading: 3 },
+        headingLevelUnknown: 0,
         shown: 5,
         total: 5,
         truncated: false,
@@ -729,5 +758,233 @@ describe('density structure summary', () => {
           'the capture was written before its structure was resolved (structureResolved: false)',
       }
     );
+  });
+});
+
+describe('density structure: review round 1', () => {
+  it('repeated rows sharing a data-testid: an ambiguous anchor resolves nothing, geometry does', () => {
+    const c = byId(
+      capture([
+        {
+          id: 'app.row-1',
+          tag: 'li',
+          xpath: '/li[@data-testid="row"]',
+          testId: 'row',
+          rect: [0, 0, 400, 20],
+          text: 'One',
+        },
+        {
+          id: 'app.row-1.s',
+          tag: 'span',
+          xpath: '/li[@data-testid="row"]/span',
+          rect: [0, 0, 100, 20],
+          text: 'One',
+        },
+        {
+          id: 'app.row-2',
+          tag: 'li',
+          xpath: '/li[@data-testid="row"]',
+          testId: 'row',
+          rect: [0, 20, 400, 20],
+          text: 'Two',
+        },
+        {
+          id: 'app.row-2.s',
+          tag: 'span',
+          xpath: '/li[@data-testid="row"]/span',
+          rect: [0, 20, 100, 20],
+          text: 'Two',
+        },
+      ])
+    );
+    expect(c['app.row-1.s']).toMatchObject({ parent: 'app.row-1', structureBy: 'geometry' });
+    expect(c['app.row-2.s']).toMatchObject({ parent: 'app.row-2', structureBy: 'geometry' });
+    expect([c['app.row-1'].ownChars, c['app.row-2'].ownChars]).toEqual([0, 0]);
+  });
+
+  it("two chains anchored at each other never become each other's parent", () => {
+    const c = byId(
+      capture([
+        {
+          id: 'app.a',
+          tag: 'div',
+          xpath: '/div[@data-testid="b"]/div',
+          testId: 'a',
+          rect: [0, 0, 100, 100],
+          text: 'a',
+        },
+        {
+          id: 'app.b',
+          tag: 'div',
+          xpath: '/div[@data-testid="a"]/div',
+          testId: 'b',
+          rect: [200, 0, 100, 100],
+          text: 'b',
+        },
+      ])
+    );
+    expect(c['app.a'].parent).toBe('app.b');
+    expect(c['app.b'].parent).toBe(null);
+  });
+
+  it('the landmark is the innermost: a registered navigation inside main', () => {
+    const c = byId(
+      capture([
+        {
+          id: 'app.nav',
+          tag: 'div',
+          role: 'navigation',
+          xpath: '/html/body/main/div',
+          rect: [0, 0, 400, 100],
+        },
+        {
+          id: 'app.link',
+          tag: 'span',
+          xpath: '/html/body/main/div/span',
+          rect: [0, 0, 50, 20],
+          text: 'Home',
+        },
+      ])
+    );
+    expect(c['app.nav'].landmark).toBe('navigation');
+    expect(c['app.link'].landmark).toBe('navigation');
+  });
+
+  it('a header with unknown ancestry is no landmark; with a root chain it is the banner', () => {
+    const c = byId(
+      capture([
+        { id: 'app.h-own', tag: 'header', xpath: '//*[@id="h"]', rect: [0, 0, 400, 40], text: 'x' },
+        {
+          id: 'app.h-anchored',
+          tag: 'header',
+          xpath: '/div[@data-testid="t"]/header',
+          rect: [0, 100, 400, 40],
+          text: 'y',
+        },
+        {
+          id: 'app.h-root',
+          tag: 'header',
+          xpath: '/html/body/header',
+          rect: [0, 200, 400, 40],
+          text: 'z',
+        },
+        {
+          id: 'app.h-scoped',
+          tag: 'header',
+          xpath: '/html/body/article/header',
+          rect: [0, 300, 400, 40],
+          text: 'w',
+        },
+      ])
+    );
+    expect(c['app.h-own'].landmark).toBe(null);
+    expect(c['app.h-anchored'].landmark).toBe(null);
+    expect(c['app.h-root'].landmark).toBe('banner');
+    expect(c['app.h-scoped'].landmark).toBe(null);
+  });
+
+  it("a redacted child makes its parent's ownChars unknown, and the parent an unknown leaf", () => {
+    const cap = capture([
+      { id: 'app.p', tag: 'div', xpath: '/html/body/div', text: 'Total 42' },
+      { id: 'app.p.s', tag: 'span', xpath: '/html/body/div/span', text: '42', redacted: true },
+    ]);
+    expect(byId(cap)['app.p'].ownChars).toBe(null);
+    expect(densityLeaves(cap)).toEqual({ ids: [], unknown: ['app.p', 'app.p.s'] });
+  });
+
+  it('pins: a fixed bottom bar, a scrolled capture, and an item with no computed position', () => {
+    const scrolled = captureDensityFromSnapshot(
+      densityTestSnapshot({
+        viewport: { scrollY: 300 },
+        elements: [
+          { id: 'app.top', rect: [0, 0, 1280, 50], styles: { position: 'fixed' } },
+          { id: 'app.bottom', rect: [0, 740, 1280, 60], styles: { position: 'fixed' } },
+          { id: 'app.stuck', rect: [0, 50, 1280, 30], styles: { position: 'sticky' } },
+          { id: 'app.stuck-top', rect: [0, 0, 1280, 30], styles: { position: 'sticky' } },
+          { id: 'app.nostyle', rect: [0, 400, 1280, 30], styles: false },
+        ],
+      }),
+      { producer: DENSITY_TEST_PRODUCER, evaluatedAt: '2026-11-23T10:00:00.000Z' }
+    );
+    if (scrolled.status !== 'measured') throw new Error(scrolled.status);
+    expect(densityPins(scrolled.value)).toEqual({
+      pinTopPx: 50,
+      pinBottomPx: 60,
+      usableHeightPx: 690,
+      ids: ['app.top', 'app.bottom'],
+      // Stuck at the top now, at scroll 300; where it sits at scroll 0 is unknown.
+      unknown: ['app.stuck-top', 'app.nostyle'],
+    });
+  });
+
+  it('two headings at one y: neither lists the other, and the blocks terminate', () => {
+    const b = densityBlocks(
+      capture([
+        { id: 'app.h-a', tag: 'h2', xpath: '/html/body/h2[1]', rect: [0, 100, 400, 28], text: 'A' },
+        { id: 'app.h-b', tag: 'h2', xpath: '/html/body/h2[2]', rect: [0, 100, 400, 28], text: 'B' },
+        { id: 'app.p', tag: 'p', xpath: '/html/body/p', rect: [0, 140, 400, 20], text: 'Text' },
+        { id: 'app.h-c', tag: 'h3', xpath: '/html/body/h3', rect: [0, 100, 400, 28], text: 'C' },
+      ]),
+      null
+    );
+    expect(b.blocks.map((x) => [x.id, x.members, x.parent])).toEqual([
+      ['heading:app.h-a', ['app.h-a'], null],
+      ['heading:app.h-b', ['app.h-b', 'app.p', 'app.h-c'], null],
+      ['heading:app.h-c', ['app.p', 'app.h-c'], 'heading:app.h-b'],
+    ]);
+  });
+
+  it('a role heading of unknown level nests nothing and sits inside nothing', () => {
+    const b = densityBlocks(
+      capture([
+        { id: 'app.h2', tag: 'h2', xpath: '/html/body/h2', rect: [0, 100, 400, 28], text: 'A' },
+        {
+          id: 'app.rh',
+          tag: 'div',
+          role: 'heading',
+          xpath: '/html/body/div',
+          rect: [0, 140, 400, 28],
+          text: 'B',
+        },
+        { id: 'app.p', tag: 'p', xpath: '/html/body/p', rect: [0, 180, 400, 20], text: 'Text' },
+      ]),
+      null
+    );
+    expect(b.blocks.map((x) => [x.id, x.members, x.parent])).toEqual([
+      ['heading:app.h2', ['app.h2'], null],
+      ['heading:app.rh', ['app.rh', 'app.p'], null],
+    ]);
+  });
+
+  it('a capture file written before blockKey existed still parses', () => {
+    const c = capture(PAGE);
+    const old = { ...c, items: c.items.map(({ blockKey: _b, ...rest }) => rest) };
+    const parsed = parseDensityCapture(JSON.parse(JSON.stringify(old)));
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.value.items.every((i) => i.blockKey === null)).toBe(true);
+  });
+
+  it('the summary counts containers whose ownChars subtracted a geometry child', () => {
+    const s = summarizeDensityStructure(
+      capture([
+        {
+          id: 'app.card',
+          tag: 'div',
+          xpath: '/html/body/div',
+          rect: [0, 0, 400, 100],
+          text: 'Card 9',
+        },
+        {
+          id: 'app.badge',
+          tag: 'span',
+          xpath: '//*[@id="badge"]',
+          rect: [10, 10, 20, 20],
+          text: '9',
+        },
+      ]),
+      null
+    );
+    if (!s.structureResolved) throw new Error('unresolved');
+    expect(s.leaves).toEqual({ count: 2, unknown: 0, geometryOwnChars: 1 });
   });
 });

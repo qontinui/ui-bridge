@@ -90,6 +90,7 @@ export interface DensityItem {
    * Ancestor tags, outermost first, as far as the xpath knows them: every
    * ancestor for a chain from the document root, those below the anchor for a
    * chain anchored at an unregistered id; `null` when the xpath gives none.
+   * `*` stands for an ancestor whose tag the xpath does not name.
    */
   path: string[] | null;
   /**
@@ -556,7 +557,6 @@ const ITEM_KEYS = [
   'visibility',
   'chars',
   'ownChars',
-  'blockKey',
   'textHash',
   'shape',
   'fontPx',
@@ -570,7 +570,7 @@ const ITEM_KEYS = [
 ] as const;
 
 function readItem(r: Reader, value: unknown, path: string): DensityItem | null {
-  const o = r.object(value, path, ITEM_KEYS);
+  const o = r.object(value, path, ITEM_KEYS, ['blockKey']);
   if (!o) return null;
   return {
     id: r.string(o.id, `${path}.id`, { nonEmpty: true }),
@@ -586,7 +586,9 @@ function readItem(r: Reader, value: unknown, path: string): DensityItem | null {
     visibility: r.oneOfOrNull(o.visibility, `${path}.visibility`, DENSITY_VISIBILITIES),
     chars: r.numberOrNull(o.chars, `${path}.chars`, { integer: true, min: 0 }),
     ownChars: r.numberOrNull(o.ownChars, `${path}.ownChars`, { integer: true, min: 0 }),
-    blockKey: r.stringOrNull(o.blockKey, `${path}.blockKey`),
+    // Optional on read: a capture written before the structure pass carried
+    // no `blockKey`, and its absence is the same statement as `null`.
+    blockKey: o.blockKey === undefined ? null : r.stringOrNull(o.blockKey, `${path}.blockKey`),
     textHash: readHashOrNull(r, o.textHash, `${path}.textHash`),
     shape: r.oneOfOrNull(o.shape, `${path}.shape`, DENSITY_SHAPES),
     fontPx: r.numberOrNull(o.fontPx, `${path}.fontPx`, { min: 0 }),

@@ -6,8 +6,9 @@
  * 1. `declared` — a `classify` matcher of the targets file;
  * 2. `landmark` — a banner, navigation or contentinfo landmark (the item's own
  *    or an ancestor's), or a pinned item or one inside a pinned item: `chrome`;
- * 3. `role` — a heading: `heading`; `dt`, `th`, `label`: `label`; `dd`, `td`,
- *    role `definition` or `cell`: `value`; interactive: `control`; `p`, role
+ * 3. `role` — a heading: `heading`; `dt`, `th`, `label`, role `columnheader`
+ *    or `rowheader`: `label`; `dd`, `td`, role `definition`, `cell` or
+ *    `gridcell`: `value`; interactive: `control`; `p`, role
  *    `note` or `status`: `prose`; `img`, `svg`, `video`: `media`;
  * 4. `author-id` — a non-interactive leaf that carries an author-declared id
  *    (`authorId` as the capture defines it: a `hook` registration,
@@ -24,11 +25,12 @@ import { resolveDensityMatcher, type DensityUnresolvedReason } from './match';
 import type { DensityCapture, DensityItem, DensityItemKind, DensityTargets } from './schema';
 import {
   densityBlocks,
-  densityHeadingLevel,
   densityLeaves,
   densityPinnedIds,
   densityPins,
   densityUnattributedChars,
+  densityHeadingLevel,
+  isDensityHeading,
   isDensityMedia,
   type DensityBlockBy,
   type DensityLeaves,
@@ -69,15 +71,17 @@ export interface DensityClassification {
 
 const LABEL_TAGS = new Set(['dt', 'th', 'label']);
 const VALUE_TAGS = new Set(['dd', 'td']);
-const VALUE_ROLES = new Set(['definition', 'cell']);
+const VALUE_ROLES = new Set(['definition', 'cell', 'gridcell']);
+const LABEL_ROLES = new Set(['columnheader', 'rowheader']);
 const PROSE_ROLES = new Set(['note', 'status']);
 const VALUE_SHAPES = new Set(['number', 'date', 'currency', 'identifier']);
 const CHROME_LANDMARKS = new Set(['banner', 'navigation', 'contentinfo']);
 
 /** Rule 3: the kind an item's tag, role or interactivity names, if any. */
 function kindByRole(item: DensityItem): DensityItemKind | null {
-  if (densityHeadingLevel(item) !== null) return 'heading';
-  if (LABEL_TAGS.has(item.tag)) return 'label';
+  if (isDensityHeading(item)) return 'heading';
+  if (LABEL_TAGS.has(item.tag) || (item.role !== null && LABEL_ROLES.has(item.role)))
+    return 'label';
   if (VALUE_TAGS.has(item.tag) || (item.role !== null && VALUE_ROLES.has(item.role)))
     return 'value';
   if (item.interactive) return 'control';
@@ -158,13 +162,27 @@ export type DensityStructureSummary =
       structureResolved: true;
       /** How many items took each parent basis. */
       structureBy: { xpath: number; geometry: number };
-      leaves: { count: number; unknown: number };
+      /**
+       * `geometryOwnChars`: containers whose `ownChars` subtracted a child
+       * whose parent link was read from geometry, assumed (not known) to be a
+       * DOM descendant.
+       */
+      leaves: { count: number; unknown: number; geometryOwnChars: number };
       /** Text on containers that the registry does not see; `null` when a term is unreadable. */
       unattributedChars: number | null;
-      pins: { pinTopPx: number; pinBottomPx: number; usableHeightPx: number; items: number };
+      /** `unknown`: items whose pin status could not be read; while nonzero the pin heights are lower bounds. */
+      pins: {
+        pinTopPx: number;
+        pinBottomPx: number;
+        usableHeightPx: number;
+        items: number;
+        unknown: number;
+      };
       kinds: { byBasis: DensityKindCounts; unresolvedRules: DensityUnresolvedClassify[] };
       blocks: {
         byBasis: Record<DensityBlockBy, number>;
+        /** Headings (role `heading` on a non-`h` tag) whose level the capture does not carry. */
+        headingLevelUnknown: number;
         shown: number;
         total: number;
         truncated: boolean;
@@ -219,17 +237,29 @@ export function summarizeDensityStructure(
       xpath: capture.items.filter((i) => i.structureBy === 'xpath').length,
       geometry: capture.items.filter((i) => i.structureBy === 'geometry').length,
     },
-    leaves: { count: leaves.ids.length, unknown: leaves.unknown.length },
+    leaves: {
+      count: leaves.ids.length,
+      unknown: leaves.unknown.length,
+      geometryOwnChars: new Set(
+        capture.items
+          .filter((i) => i.parent !== null && i.structureBy === 'geometry')
+          .map((i) => i.parent as string)
+      ).size,
+    },
     unattributedChars: densityUnattributedChars(capture),
     pins: {
       pinTopPx: pins.pinTopPx,
       pinBottomPx: pins.pinBottomPx,
       usableHeightPx: pins.usableHeightPx,
       items: pins.ids.length,
+      unknown: pins.unknown.length,
     },
     kinds: { byBasis, unresolvedRules: classes.unresolved },
     blocks: {
       byBasis: blockBasis,
+      headingLevelUnknown: capture.items.filter(
+        (i) => isDensityHeading(i) && densityHeadingLevel(i) === null
+      ).length,
       shown: list.length,
       total: blocks.blocks.length,
       truncated: list.length < blocks.blocks.length,

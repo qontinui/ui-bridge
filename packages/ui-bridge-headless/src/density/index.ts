@@ -88,6 +88,7 @@ export {
   densityPins,
   densitySameColumn,
   densityUnattributedChars,
+  isDensityHeading,
   isDensityMedia,
   resolveDensityStructure,
   type DensityBlock,
