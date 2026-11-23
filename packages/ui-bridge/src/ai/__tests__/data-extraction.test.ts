@@ -49,13 +49,14 @@ describe('classifyDataType', () => {
     ['+49 30 1234567', 'phone'],
     ['(555) 123-4567', 'phone'],
     ['555-123-4567', 'phone'],
+    ['555.123.4567', 'phone'],
+    // day-first hyphen digits that name no calendar day stay a phone
+    ['12-34-5678', 'phone'],
     // the rest
     ['true', 'boolean'],
     ['a@b.co', 'email'],
     ['https://x.test/', 'url'],
     ['hello world', 'text'],
-    // digits with dots only are neither a number form nor a phone
-    ['555.123.4567', 'text'],
     ['', 'unknown'],
   ];
 
@@ -81,6 +82,12 @@ describe('normalizeValue', () => {
     ['12,5', 'number', '12.5'],
     ['1.234,56 €', 'currency', '1234.56'],
     ['(555) 123-4567', 'phone', '5551234567'],
+    // two-digit years read as the legacy Date parser read them: 00-49 is 20xx
+    ['12/31/26', 'date', '2026-12-31'],
+    ['16.10.26', 'date', '2026-10-16'],
+    ['Sept 16, 2026', 'date', '2026-09-16'],
+    // the calendar date as written; a following offset is not applied
+    ['2026-10-16T23:30:00-05:00', 'date', '2026-10-16'],
   ];
 
   it.each(NORMALISATION)('normalises %j (%s) to %j', (value, type, expected) => {
@@ -88,12 +95,23 @@ describe('normalizeValue', () => {
     expect(normalizeValue(value, type)).toBe(expected);
   });
 
+  // A caller may pass a type for text the classifier would call `text`.
+  const CALLER_TYPED: Array<[string, DataType, string]> = [
+    ['approx. 5', 'number', '5'],
+    ['1,234 (est.)', 'number', '1234'],
+    ['USD 12,50', 'currency', '12.5'],
+  ];
+
+  it.each(CALLER_TYPED)('normalises caller-typed %j (%s) to %j', (value, type, expected) => {
+    expect(normalizeValue(value, type)).toBe(expected);
+  });
+
   /**
    * The old date case went through `new Date(text).toISOString()`, which reads
    * these two forms as local midnight: east of UTC that is the previous day in
-   * UTC. CI runs in UTC, so the rows set `TZ` themselves. A runtime that
-   * ignores an assigned `TZ` cannot run them, so they are skipped there (probed
-   * below, not assumed per platform) and CI's Linux run is the one that counts.
+   * UTC. A runner's own zone may be UTC, so the rows set `TZ` themselves. A
+   * runtime that ignores an assigned `TZ` cannot run them, so they are skipped
+   * there (probed below, not assumed per platform).
    */
   const savedTz = process.env.TZ;
   process.env.TZ = 'Europe/Berlin';
