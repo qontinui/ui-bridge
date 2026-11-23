@@ -1735,6 +1735,455 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     await page.close();
   }, 60_000);
 
+  it('contrast_meets_wcag: a ::after past a box whose overflow is the viewport’s, and past boxes that really clip', async () => {
+    // A block ::after overflows its box under a badge placed past it; the page
+    // shows black on navy there, where white read beneath it would pass at
+    // 21:1. A body whose `overflow: hidden` propagates to the viewport, and a
+    // root with `overflow: hidden`, clip nothing of their own: unknown. A
+    // plain div that clips, and one that scrolls, stay exact: the ::after is
+    // cut off or reachable only by scrolling, the badge reads black on white.
+    const navy = 'rgb(20, 30, 90)';
+    const rows: Array<[string, string, string]> = [
+      [
+        'bodyhidden',
+        `<style>body { height: 40px; overflow: hidden } body::after { content: ""; display: block; height: 40px; background: ${navy} }</style>
+         <div style="height:30px">Title</div>
+         <span data-id="bodyhidden" style="position:absolute;left:10px;top:60px;color:#000">PRO</span>`,
+        'unknown',
+      ],
+      [
+        'roothidden',
+        `<style>html { height: 60px; overflow: hidden } html::after { content: ""; display: block; height: 40px; background: ${navy} }</style>
+         <div style="height:30px">Title</div>
+         <span data-id="roothidden" style="position:absolute;left:10px;top:60px;color:#000">PRO</span>`,
+        'unknown',
+      ],
+      [
+        // The root clips nothing and its ::after fits: the badge past the box
+        // is exact. align-content bounds the ::after by the box (its place in
+        // the flow is not read), so a spill that carried the viewport's size
+        // past the box would reach the badge and read unknown.
+        'rootfits',
+        `<style>html { height: 100px; overflow: hidden; align-content: center } html::after { content: ""; display: block; height: 14px; background: ${navy} }</style>
+         <div style="height:30px">Title</div>
+         <span data-id="rootfits" style="position:absolute;left:10px;top:110px;color:#000">PRO</span>`,
+        'passed',
+      ],
+      [
+        // The same, with the ::after placed by its flow: exact.
+        'rootfits2',
+        `<style>html { height: 100px; overflow: hidden } html::after { content: ""; display: block; height: 14px; background: ${navy} }</style>
+         <div style="height:30px">Title</div>
+         <span data-id="rootfits2" style="position:absolute;left:10px;top:110px;color:#000">PRO</span>`,
+        'passed',
+      ],
+      [
+        'clipdiv',
+        `<style>.c { height: 30px; overflow: hidden; margin-bottom: 60px } .c::after { content: ""; display: block; height: 40px; background: ${navy} }</style>
+         <div class="c">Title</div>
+         <span data-id="clipdiv" style="position:absolute;left:10px;top:50px;color:#000">PRO</span>`,
+        'passed',
+      ],
+      [
+        'scrolldiv',
+        `<style>.c { height: 30px; overflow: auto; margin-bottom: 60px } .c::after { content: ""; display: block; height: 40px; background: ${navy} }</style>
+         <div class="c">Title</div>
+         <span data-id="scrolldiv" style="position:absolute;left:10px;top:50px;color:#000">PRO</span>`,
+        'passed',
+      ],
+    ];
+    const got: Array<[string, string, string | null, string]> = [];
+    for (const [id, body] of rows) {
+      const page = await openPage(body, { width: 800, height: 700 });
+      // Precondition: the fixture really overflows (or clips) as described, so
+      // a pass cannot come from a ::after that never reached the badge.
+      const lay = await page.evaluate(() => ({
+        body: document.body.scrollHeight - document.body.clientHeight,
+        rootH: document.documentElement.offsetHeight,
+      }));
+      if (id === 'bodyhidden') expect(lay.body).toBeGreaterThanOrEqual(30);
+      if (id === 'roothidden') expect(lay.rootH).toBe(60);
+      if (id === 'rootfits' || id === 'rootfits2') expect(lay.rootH).toBe(100);
+      const r = await assertOn(page, [{ type: 'contrast_meets_wcag', element: id }]);
+      got.push([id, r.results[0].outcome, r.results[0].code ?? null, r.results[0].detail ?? '']);
+      await page.close();
+    }
+    expect(got.map(([id, o]) => [id, o])).toEqual(rows.map(([id, , o]) => [id, o]));
+    expect(got[0][2]).toBe('input_missing');
+    expect(got[0][3]).toContain('<body>::after is laid out in normal flow inside');
+    expect(got[1][2]).toBe('input_missing');
+    expect(got[1][3]).toContain('<html>::after is laid out in normal flow inside');
+    expect(got[2][3]).toContain('contrast ratio 21.00:1');
+    expect(got[3][3]).toContain('contrast ratio 21.00:1');
+    expect(got[4][3]).toContain('contrast ratio 21.00:1');
+    expect(got[5][3]).toContain('contrast ratio 21.00:1');
+  }, 60_000);
+
+  it('contrast_meets_wcag: a root ::after whose extent the root’s children do not give is unknown', async () => {
+    // Each page shows black on navy under the badge, which lies past the
+    // root's box (overflow hidden on the root clips nothing of its own). What
+    // the root's children say of its content cannot bound the ::after here:
+    // padding and border add to its height, its own width can overflow, a
+    // display: contents body has no box, an individual `translate` moves a
+    // child's rect without moving its layout. The ::after is bounded by the
+    // viewport, which holds the badge: unknown.
+    const navy = 'rgb(20, 30, 90)';
+    const rows: Array<[string, string, string | null]> = [
+      [
+        'padded',
+        `<style>html { height: 100px; overflow: hidden } html::after { content: ""; display: block; height: 4px; padding: 40px 0; background: ${navy} }</style>
+         <div style="height:30px">Title</div>
+         <span data-id="padded" style="position:absolute;left:10px;top:115px;color:#000">PRO</span>`,
+        null,
+      ],
+      [
+        'wide',
+        `<style>html { width: 400px; height: 100px; overflow: hidden } html::after { content: ""; display: block; width: 700px; height: 20px; background: ${navy} }</style>
+         <div style="height:30px">Title</div>
+         <span data-id="wide" style="position:absolute;left:500px;top:50px;color:#000">PRO</span>`,
+        null,
+      ],
+      [
+        'contents',
+        `<style>html { height: 60px; overflow: hidden } body { display: contents } html::after { content: ""; display: block; height: 20px; background: ${navy} }</style>
+         <div style="height:80px">Title</div>
+         <span data-id="contents" style="position:absolute;left:10px;top:85px;color:#000">PRO</span>`,
+        null,
+      ],
+      [
+        'translated',
+        `<style>html { height: 60px; overflow: hidden } html::after { content: ""; display: block; height: 40px; background: ${navy} }</style>
+         <div style="height:30px">Title</div>
+         <span data-id="translated" style="position:absolute;left:10px;top:100px;color:#000">PRO</span>`,
+        'translate: 0 -100px; height: 30px',
+      ],
+      [
+        'relshift',
+        `<style>html { height: 60px; overflow: hidden } html::after { content: ""; display: block; height: 40px; background: ${navy} }</style>
+         <div style="height:30px">Title</div>
+         <span data-id="relshift" style="position:absolute;left:10px;top:100px;color:#000">PRO</span>`,
+        'position: relative; top: -100px; height: 30px',
+      ],
+      [
+        'inlinepseudo',
+        `<style>html { height: 60px; overflow: hidden; line-height: 60px } html::after { content: ""; display: inline-block; width: 50px; height: 20px; background: ${navy} }</style>
+         <div style="height:30px;line-height:20px">Title</div>
+         <span data-id="inlinepseudo" style="position:absolute;left:10px;top:72px;font:4px/4px sans-serif;color:#000">PRO</span>`,
+        null,
+      ],
+      [
+        'zoomed',
+        `<style>html { height: 100px; overflow: hidden } html::after { content: ""; display: block; height: 20px; zoom: 3; background: ${navy} }</style>
+         <div style="height:30px">Title</div>
+         <span data-id="zoomed" style="position:absolute;left:10px;top:102px;font:4px/4px sans-serif;color:#000">PRO</span>`,
+        null,
+      ],
+      [
+        'rtl',
+        `<style>html { direction: rtl; margin-left: 600px; width: 400px; height: 100px; overflow: hidden } html::after { content: ""; display: block; width: 700px; height: 20px; background: ${navy} }</style>
+         <div style="height:30px">Title</div>
+         <span data-id="rtl" style="position:absolute;left:350px;top:50px;color:#000">PRO</span>`,
+        null,
+      ],
+    ];
+    const got: Array<[string, string, string | null]> = [];
+    for (const [id, body, translate] of rows) {
+      const page = await openPage(body, { width: 1400, height: 700 });
+      if (translate) {
+        await page.evaluate((translate) => {
+          const div = document.createElement('div');
+          div.setAttribute('style', translate);
+          document.documentElement.appendChild(div);
+        }, translate);
+      }
+      const r = await assertOn(page, [{ type: 'contrast_meets_wcag', element: id }]);
+      got.push([id, r.results[0].outcome, r.results[0].code ?? null]);
+      await page.close();
+    }
+    expect(got).toEqual(rows.map(([id]) => [id, 'unknown', 'input_missing']));
+  }, 90_000);
+
+  it('contrast_meets_wcag: a ::after below a line another font makes taller, or a line-height of normal', async () => {
+    // The fonts are `local()` faces with their metrics overridden, so the line
+    // a face makes does not depend on which of the listed fonts the machine
+    // has. RTall has an ascent of 2em: a span in it, at the same explicit
+    // line-height, lifts its half of the line and makes the line box taller,
+    // so a block ::after after it lies lower than the container's line-height
+    // puts it. RGap has a normal line-height of 2.4em, not the 1.5em the
+    // evaluator once assumed. Each badge is set in the last pixels of the
+    // ::after the band would not reach (its true position read from a clone
+    // with a real block in its place), the page showing black on navy there:
+    // a passed was a false pass, and the verdict is unknown. A container all in
+    // RTall at an explicit line-height is not made taller by it: exact.
+    const face = (name: string, metrics: string): string =>
+      `@font-face { font-family: ${name}; src: local("Liberation Sans"), local("DejaVu Sans"), local("Arial"); ${metrics} }`;
+    const style = `<style>
+      ${face('RTall', 'ascent-override: 200%; descent-override: 0%; line-gap-override: 0%')}
+      ${face('RGap', 'ascent-override: 90%; descent-override: 30%; line-gap-override: 120%')}
+      .c { width: 400px; height: 120px; color: #000 }
+      .c::after { content: ""; display: block; height: 24px; background: rgb(20, 30, 90) }
+      .probe::after { display: none }
+    </style>`;
+    type Row = {
+      id: string;
+      host: string; // the container's inline style
+      content: string;
+      plain: string; // the same content with the offending font taken out
+      family: string;
+      slice: boolean; // badge in the slice the band would miss, else far below the ::after
+      outcome: string;
+    };
+    const rows: Row[] = [
+      {
+        id: 'tallspan',
+        host: 'font: 16px/30px sans-serif',
+        content: 'Some text <span style="font-family: RTall">Tall</span>',
+        plain: 'Some text <span>Tall</span>',
+        family: 'RTall',
+        slice: true,
+        outcome: 'unknown',
+      },
+      {
+        id: 'normalgap',
+        host: 'font: 16px/normal RGap',
+        content: 'Some text here',
+        plain: 'Some text here',
+        family: 'RGap',
+        slice: true,
+        outcome: 'unknown',
+      },
+      ...(
+        [
+          ['weightspan', 'font-weight: 700'],
+          ['italicspan', 'font-style: italic'],
+          ['capsspan', 'font-variant: small-caps'],
+          ['adjustspan', 'font-size-adjust: 0.6'],
+          ['stretchspan', 'font-stretch: 150%'],
+          ['variationspan', "font-variation-settings: 'wght' 700"],
+          ['opticalspan', 'font-optical-sizing: none'],
+          ['synthspan', 'font-synthesis: none'],
+        ] as const
+      ).map(
+        ([id, css]): Row => ({
+          id,
+          host: 'font: 16px/30px RTall',
+          content: `Some text <span style="${css}">more</span>`,
+          plain: 'Some text <span>more</span>',
+          family: 'RTall',
+          slice: false,
+          outcome: 'unknown',
+        })
+      ),
+      {
+        id: 'samefamily',
+        host: 'font: 16px/30px RTall',
+        content: 'Some text <span style="font-family: RTall">more</span>',
+        plain: 'Some text <span>more</span>',
+        family: 'RTall',
+        slice: false,
+        outcome: 'passed',
+      },
+    ];
+    const got: Array<[string, string, string | null]> = [];
+    for (const row of rows) {
+      const page = await openPage(
+        `${style}<div class="c" id="host" style="${row.host}">${row.content}</div>
+         <span data-id="${row.id}" style="position:absolute;left:10px;top:0;font:4px/4px sans-serif;color:#000">PRO</span>`,
+        { width: 800, height: 700 }
+      );
+      const read = await page.evaluate(
+        async ({ family, plain, slice, content }) => {
+          // Precondition: the face really loaded (`check` alone is not a load).
+          const loaded = await document.fonts.load(`16px ${family}`);
+          const ok = loaded.length > 0 && document.fonts.check(`16px ${family}`);
+          const host = document.getElementById('host') as HTMLElement;
+          // Where a real block put after this content lies, relative to the
+          // container's top: with the content, and with the offender taken out.
+          const blockTop = (html: string, hostStyle: string): number => {
+            const probe = document.createElement('div');
+            probe.className = 'c probe';
+            probe.setAttribute('style', hostStyle);
+            probe.innerHTML = `${html}<div style="height:24px"></div>`;
+            document.body.appendChild(probe);
+            const top = (probe.lastElementChild as HTMLElement).getBoundingClientRect().top;
+            const rel = top - probe.getBoundingClientRect().top;
+            probe.remove();
+            return rel;
+          };
+          const style = host.getAttribute('style') as string;
+          const real = blockTop(content, style);
+          const control = blockTop(plain, style.replace(/RTall|RGap/, 'sans-serif'));
+          const hostTop = host.getBoundingClientRect().top + window.scrollY;
+          const badge = document.querySelector('[data-id]:not(#host)') as HTMLElement;
+          badge.style.top = `${slice ? hostTop + real + 24 - 5 : hostTop + 100}px`;
+          return { ok, differs: Math.abs(real - control), slice };
+        },
+        { family: row.family, plain: row.plain, slice: row.slice, content: row.content }
+      );
+      expect(read.ok).toBe(true);
+      // Precondition: without the font, the block would not be where it is.
+      if (row.slice) expect(read.differs).toBeGreaterThanOrEqual(1);
+      const r = await assertOn(page, [{ type: 'contrast_meets_wcag', element: row.id }]);
+      got.push([row.id, r.results[0].outcome, r.results[0].code ?? null]);
+      await page.close();
+    }
+    expect(got).toEqual(
+      rows.map((row) => [row.id, row.outcome, row.outcome === 'unknown' ? 'input_missing' : null])
+    );
+  }, 90_000);
+
+  it('contrast_meets_wcag: a taller line is read only where it can reach the line a ::after sits on', async () => {
+    // A paragraph wraps to six lines and ends in a block ::after (navy), under
+    // which no badge sits: each badge is on the first line, inside the box and
+    // far above the ::after. A `<code>` or `<sup>` on the FIRST line cannot
+    // move the last line, so the ::after is where the band puts it, away from
+    // the badge, and the badge reads exact (black on white 21:1; #ccc on white
+    // fails). The same offenders on the LAST line, an unbounded shift (a
+    // `vertical-align` length, a relative offset) and an atomic inline on the
+    // last line can move it, and the ::after is bounded by the whole box,
+    // which holds the badge: unknown.
+    const words = 'alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike ';
+    const text = words.repeat(4);
+    const rows: Array<[string, string, string, string]> = [
+      ['codefirst', `<code>fn()</code> ${text}`, 'color:#000', 'passed'],
+      ['codefirstfail', `<code>fn()</code> ${text}`, 'color:#ccc', 'failed'],
+      ['supfirst', `x<sup>2</sup> ${text}`, 'color:#000', 'passed'],
+      ['codelast', `${text}<code>fn()</code>`, 'color:#000', 'unknown'],
+      ['suplast', `${text}x<sup>2</sup>`, 'color:#000', 'unknown'],
+      ['valength', `<span style="vertical-align:-30px">x</span> ${text}`, 'color:#000', 'unknown'],
+      [
+        'relative',
+        `<span style="position:relative;top:2px">x</span> ${text}`,
+        'color:#000',
+        'unknown',
+      ],
+      [
+        'inlineblocklast',
+        `${text}<span style="display:inline-block;width:10px;height:10px;background:#ccc"></span>`,
+        'color:#000',
+        'unknown',
+      ],
+    ];
+    const got: Array<[string, string, string | null]> = [];
+    for (const [id, content, badge] of rows) {
+      const page = await openPage(
+        `<style>
+          .para { width: 200px; font: 16px/20px sans-serif; color: #000 }
+          .para code { font: 13px monospace }
+          .para::after { content: ""; display: block; height: 24px; background: rgb(20, 30, 90) }
+        </style>
+        <div class="para" id="host">${content}</div>
+        <span data-id="${id}" style="position:absolute;left:10px;top:10px;${badge}">PRO</span>`,
+        { width: 800, height: 700 }
+      );
+      // Precondition: the text wraps to at least five lines above the ::after,
+      // so the offender and the ::after's line are far apart.
+      const h = await page.evaluate(
+        () => (document.getElementById('host') as HTMLElement).offsetHeight
+      );
+      expect(h - 24).toBeGreaterThanOrEqual(100);
+      const r = await assertOn(page, [{ type: 'contrast_meets_wcag', element: id }]);
+      got.push([id, r.results[0].outcome, r.results[0].code ?? null]);
+      await page.close();
+    }
+    expect(got).toEqual(
+      rows.map(([id, , , outcome]) => [id, outcome, outcome === 'unknown' ? 'input_missing' : null])
+    );
+  }, 90_000);
+
+  it('contrast_meets_wcag: the 512-element walk of a ::after never copies a container’s children', async () => {
+    // A container of 600 plain spans (past the walk's 512 budget) and one of
+    // 200 each end in a block ::after; a black badge sits on the first line,
+    // far above the ::after. The 600-span one is unknown (the budget is
+    // spent, not all read, so the ::after is bounded by the whole box); the
+    // 200-span one is exact: the band puts the ::after at the last line, away
+    // from the badge, and the badge reads black on white. A spy on the `children` and `childNodes` getters records
+    // the length of every collection read from inside the line walk
+    // (`lineMayGrow`) or the edge read (`flowEdge`): the walk goes sibling by
+    // sibling, and a collection sized to the child count is never built.
+    const spans = (n: number): string => '<span>x </span>'.repeat(n);
+    const fixture = `
+      <style>
+        .big { font: 16px/20px sans-serif; color: #000; width: 300px }
+        .big::after { content: ""; display: block; height: 24px; background: rgb(20, 30, 90) }
+      </style>
+      <div class="big" id="host">${spans(600)}</div>
+      <span data-id="badge" style="position:absolute;left:10px;top:0;color:#000">PRO</span>`;
+    const results: Array<{
+      n: number;
+      outcome: string;
+      code: string | null;
+      children: number[];
+      nodes: number[];
+    }> = [];
+    for (const n of [600, 200]) {
+      const page = await openPage(fixture.replace(spans(600), spans(n)), {
+        width: 800,
+        height: 900,
+      });
+      const pre = await page.evaluate(() => {
+        const host = document.getElementById('host') as HTMLElement;
+        const r = host.getBoundingClientRect();
+        // The badge sits on the first line, far above the ::after.
+        (document.querySelector('[data-id="badge"]') as HTMLElement).style.top =
+          `${r.top + 2 + window.scrollY}px`;
+        return host.childNodes.length * (r.height > 150 ? 1 : 0);
+      });
+      // Precondition: the host really holds the children the row counts.
+      expect(pre).toBe(n);
+      await page.evaluate(() => {
+        const seen: { children: number[]; nodes: number[] } = { children: [], nodes: [] };
+        (window as unknown as { __seen: typeof seen }).__seen = seen;
+        const wrap = (proto: object, name: string, into: number[], tag: string): void => {
+          const d = Object.getOwnPropertyDescriptor(proto, name) as PropertyDescriptor;
+          Object.defineProperty(proto, name, {
+            ...d,
+            get(this: unknown) {
+              const v = (d.get as () => { length: number }).call(this);
+              if ((new Error().stack ?? '').includes(tag)) into.push(v.length);
+              return v;
+            },
+          });
+        };
+        wrap(Element.prototype, 'children', seen.children, 'lineMayGrow');
+        wrap(Node.prototype, 'childNodes', seen.nodes, 'flowEdge');
+      });
+      // Positive control: a read made from a frame named lineMayGrow / flowEdge
+      // IS recorded, so the empty arrays below mean no such read, not a spy
+      // that cannot see.
+      const control = await page.evaluate(() => {
+        const seen = (window as unknown as { __seen: { children: number[]; nodes: number[] } })
+          .__seen;
+        const host = document.getElementById('host') as HTMLElement;
+        const lineMayGrow = (): number => host.children.length;
+        const flowEdge = (): number => host.childNodes.length;
+        lineMayGrow();
+        flowEdge();
+        const recorded = { children: [...seen.children], nodes: [...seen.nodes] };
+        seen.children.length = 0;
+        seen.nodes.length = 0;
+        return recorded;
+      });
+      expect(control).toEqual({ children: [n], nodes: [n] });
+      const r = await assertOn(page, [{ type: 'contrast_meets_wcag', element: 'badge' }]);
+      const seen = await page.evaluate(
+        () => (window as unknown as { __seen: { children: number[]; nodes: number[] } }).__seen
+      );
+      results.push({
+        n,
+        outcome: r.results[0].outcome,
+        code: r.results[0].code ?? null,
+        children: seen.children,
+        nodes: seen.nodes,
+      });
+      await page.close();
+    }
+    expect(results).toEqual([
+      { n: 600, outcome: 'unknown', code: 'input_missing', children: [], nodes: [] },
+      { n: 200, outcome: 'passed', code: null, children: [], nodes: [] },
+    ]);
+  }, 60_000);
+
   it('contrast_meets_wcag: a page backdrop the body draws under a footer fixed below its box', async () => {
     // The body is 40px tall; its fixed ::before backdrop fills the viewport,
     // under a footer fixed at the bottom (the page shows white on navy). The

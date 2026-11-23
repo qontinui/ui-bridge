@@ -1056,6 +1056,18 @@ type HitHidden = {
 /** What an element does to its content's overflow on one axis. */
 type Overflow = 'clip' | 'scroll' | null;
 
+/** Font properties besides family and size that can change the line a face makes. */
+const FONT_METRIC_PROPS = [
+  'font-weight',
+  'font-style',
+  'font-variant',
+  'font-size-adjust',
+  'font-stretch',
+  'font-variation-settings',
+  'font-optical-sizing',
+  'font-synthesis',
+];
+
 /** The edge a scroll container scrolls from, per axis: `start` is left or top. */
 type ScrollEdge = 'start' | 'end';
 
@@ -2850,10 +2862,26 @@ class TabMeasurement {
   ): VisionRegion | null {
     if (!(layer instanceof HTMLElement)) return box;
     const st = this.style(layer);
-    const past = (scroll: number, client: number, overflow: string): number =>
-      overflow === 'visible' && scroll - client > 1 ? scroll - client : 0;
-    const down = past(layer.scrollHeight, layer.clientHeight, st.overflowY);
-    const across = past(layer.scrollWidth, layer.clientWidth, st.overflowX);
+    // Where the box clips nothing of its own — the root, a body whose overflow
+    // is the viewport's, an inline box, or `overflow: visible` — its content
+    // paints past it. The computed `overflow` is not the test: a `hidden` on
+    // the root or on a propagating body is the viewport's, not the box's.
+    const axes = this.overflowAxes(layer, st);
+    const past = (scroll: number, size: number, clipped: Overflow): number =>
+      clipped === null && scroll - size > 1 ? scroll - size : 0;
+    let down: number;
+    let across: number;
+    if (layer === document.documentElement) {
+      // The root's client size is the viewport's and its scroll size is at
+      // least the viewport's, so neither says how far its content overflows
+      // the root's own box: read its content's extent instead.
+      const reach = this.rootOverflow(layer, ps, box);
+      if (!reach) return null;
+      ({ down, across } = reach);
+    } else {
+      down = past(layer.scrollHeight, layer.clientHeight, axes.y);
+      across = past(layer.scrollWidth, layer.clientWidth, axes.x);
+    }
     const pulled = (v: string): number => Math.max(0, -(pxValue(v) || 0));
     const up = pulled(ps.marginTop);
     const aside = Math.max(pulled(ps.marginLeft), pulled(ps.marginRight));
@@ -2868,6 +2896,95 @@ class TabMeasurement {
     const right = box.x + box.w + aside * m.a + across * sx;
     const bottom = box.y + box.h + down * sy;
     return { x, y, w: right - x, h: bottom - y };
+  }
+
+  /**
+   * How far the content of the root element `root` extends past its own box,
+   * in layout pixels, down and across: its in-flow children (each to the far
+   * edge of its scrollable overflow and its far margin) and, below them, the
+   * pseudo-element `ps`'s own height. The viewport's size is no part of it.
+   * Null when that is not known: a child a transform moves, a pseudo-element
+   * whose height is not a length, a box with no size.
+   */
+  private rootOverflow(
+    root: HTMLElement,
+    ps: CSSStyleDeclaration,
+    box: VisionRegion
+  ): { down: number; across: number } | null {
+    if (!(root.offsetWidth > 0 && root.offsetHeight > 0)) return null;
+    const sx = box.w / root.offsetWidth;
+    const sy = box.h / root.offsetHeight;
+    if (!(sx > 0 && sy > 0)) return null;
+    const at = root.getBoundingClientRect();
+    let bottom = 0;
+    let right = 0;
+    // Only a root on horizontal, left-to-right lines, and a pseudo-element
+    // that is a block at its own zoom of one, are measured here: an inline one
+    // sits on a line box of at least the line-height, a zoomed one draws a
+    // multiple of its size.
+    const rootst = this.style(root);
+    if (
+      !['', 'horizontal-tb'].includes(rootst.writingMode) ||
+      !['', 'ltr'].includes(rootst.direction)
+    ) {
+      return null;
+    }
+    if (/^(inline|list-item)/.test(ps.display) || zoomOf(ps) !== 1) return null;
+    let boxes = 0;
+    // Text laid out in the root itself is not a child box to measure.
+    for (let t = root.firstChild; t; t = t.nextSibling) {
+      if (t.nodeType === 3 && /\S/.test(t.nodeValue ?? '')) return null;
+    }
+    for (let c = root.firstElementChild; c; c = c.nextElementSibling) {
+      const cst = this.style(c);
+      if (cst.display === 'none') continue;
+      // A child laid out in its parent's place, moved by any transform
+      // property or by a zoom, or an inline one, is not a box this measures.
+      if (cst.display === 'contents' || cst.display.startsWith('inline')) return null;
+      if (zoomOf(cst) !== 1) return null;
+      // A relative or sticky child's rect holds its visual offset, not its
+      // place in the flow.
+      if (cst.position === 'relative' || cst.position === 'sticky') {
+        for (const side of ['top', 'left', 'right', 'bottom']) {
+          const v = cst.getPropertyValue(side);
+          if (v !== 'auto' && v !== '' && pxValue(v) !== 0) return null;
+        }
+      }
+      boxes += 1;
+      for (const prop of ['transform', 'translate', 'rotate', 'scale', 'offset-path']) {
+        const v = cst.getPropertyValue(prop);
+        if (v !== 'none' && v !== '') return null;
+      }
+      const r = c.getBoundingClientRect();
+      bottom = Math.max(
+        bottom,
+        (r.top - at.top) / sy + c.clientTop + c.scrollHeight + (pxValue(cst.marginBottom) || 0)
+      );
+      right = Math.max(
+        right,
+        (r.left - at.left) / sx + c.clientLeft + c.scrollWidth + (pxValue(cst.marginRight) || 0)
+      );
+    }
+    // No child box: the root's own padding and border are not in `bottom`.
+    if (boxes === 0) return null;
+    const height = pxValue(ps.height);
+    const width = pxValue(ps.width);
+    if (!Number.isFinite(height) || !Number.isFinite(width)) return null;
+    const margins = Math.abs(pxValue(ps.marginTop) || 0) + Math.abs(pxValue(ps.marginBottom) || 0);
+    // The pseudo's own box: its height and width with padding and border, and
+    // its margins, from the root's content box's left edge.
+    const own = height + this.pseudoExtra(ps, 'top', 'bottom') + margins;
+    const wide =
+      root.clientLeft +
+      (pxValue(rootst.paddingLeft) || 0) +
+      Math.max(0, pxValue(ps.marginLeft) || 0) +
+      width +
+      this.pseudoExtra(ps, 'left', 'right') +
+      Math.max(0, pxValue(ps.marginRight) || 0);
+    right = Math.max(right, wide);
+    const down = bottom + own - root.offsetHeight;
+    const across = right - root.offsetWidth;
+    return { down: down > 1 ? down : 0, across: across > 1 ? across : 0 };
   }
 
   /**
@@ -2887,6 +3004,7 @@ class TabMeasurement {
    * or an `align-content` that lays the content lower, for a `::after` or
    * an inline `::before` a line that may be taller than the container's
    * line-height sets it ({@link lineMayGrow}), a `vertical-align` length, a
+   * `line-height: normal` (the font's own, which the DOM does not give), a
    * size not read — where `spill` bounds it.
    */
   private flowBand(
@@ -2911,14 +3029,19 @@ class TabMeasurement {
     const px = (v: string): number => pxValue(v) || 0;
     const inline = ps.display.startsWith('inline');
     if (inline && !/^[a-z-]+$/.test(ps.verticalAlign)) return null;
-    const lineOf = (of: CSSStyleDeclaration): number => {
+    // A line-height that is `normal` comes from the font's own metrics, which
+    // the DOM does not offer: it is not read (null), never guessed.
+    const lineOf = (of: CSSStyleDeclaration): number | null => {
       const line = pxValue(of.lineHeight);
-      return Number.isFinite(line) ? line : pxValue(of.fontSize) * 1.5;
+      return Number.isFinite(line) ? line : null;
     };
-    const own = ps.display === 'inline' ? lineOf(ps) : pxValue(ps.height);
+    const ownLine = ps.display === 'inline' ? lineOf(ps) : 0;
+    const stLine = lineOf(st);
+    if (ownLine === null || (inline && stLine === null)) return null;
+    const own = ps.display === 'inline' ? ownLine : pxValue(ps.height);
     const margins = Math.abs(px(ps.marginTop)) + Math.abs(px(ps.marginBottom));
     const deep = (own + this.pseudoExtra(ps, 'top', 'bottom') + margins) * m.d;
-    const line = (inline ? lineOf(st) : 0) * m.d;
+    const line = (inline ? (stLine as number) : 0) * m.d;
     if (!Number.isFinite(deep) || !Number.isFinite(line)) return null;
     const contentTop = box.y + (px(st.borderTopWidth) + px(st.paddingTop)) * m.d;
     const edge = this.flowEdge(layer, which === '::before' ? 'first' : 'last', m.d);
@@ -2927,13 +3050,23 @@ class TabMeasurement {
     // line-height, font size or vertical-align, can be taller than the
     // container's line-height sets it, or hold its text higher: how far down
     // a ::after (or an inline ::before) such a line places lies is not read.
+    // Only inline content that can reach the line `edge` is on counts.
     // A block ::before is laid out above the lines, and its band stands.
-    if (edge && !edge.block && (which === '::after' || inline) && this.lineMayGrow(layer)) {
+    if (
+      edge &&
+      !edge.block &&
+      (which === '::after' || inline) &&
+      this.lineMayGrow(layer, edge, m.d)
+    ) {
       return null;
     }
     // A block after inline content starts at the bottom of that content's
     // last line box: half the line's leading below its last fragment.
-    const leading = edge ? Math.max(0, lineOf(st) * m.d - (edge.bottom - edge.top)) / 2 + 1 : 0;
+    const below = which === '::after' && !inline && edge && !edge.block ? edge : null;
+    if (below && stLine === null) return null;
+    const leading = below
+      ? Math.max(0, (stLine as number) * m.d - (below.bottom - below.top)) / 2 + 1
+      : 0;
     let top = contentTop - Math.abs(px(ps.marginTop)) * m.d;
     let bottom = contentTop + deep + line;
     if (which === '::before' && edge && inline && !edge.block) {
@@ -2948,18 +3081,44 @@ class TabMeasurement {
   }
 
   /**
-   * Whether a line of `layer` may be taller, or hold its text higher, than
-   * `layer`'s own line-height sets it: its in-flow inline content, at any
-   * depth, holds an atomic inline (an inline-block, a replaced element, a
-   * form control, ruby), or an inline box whose line-height, font size or
-   * vertical-align differs from `layer`'s, or that a relative offset moves.
-   * True, too, past 512 elements, which are not all read.
+   * Whether a line of `layer` that can reach the line `edge` is on (the first
+   * line for an inline `::before`, the last for `::after`) may be taller, or
+   * hold its text higher, than `layer`'s own line-height sets it: its in-flow
+   * inline content, at any depth, holds an atomic inline (an inline-block, a
+   * replaced element, a form control, ruby), or an inline box whose
+   * line-height, font size or font family differs from `layer`'s, or whose vertical-align
+   * is not `baseline`, or that a relative offset moves. Such content is passed
+   * over when every client rect of it lies wholly outside `edge`, widened by
+   * `layer`'s line-height and the content's own font size (a generous bound
+   * on a keyword `vertical-align` such as `super`): no line it makes taller
+   * can be the one `edge` is on. It is never passed over when it has a
+   * `vertical-align` length or percentage or a `position` other than
+   * `static` (an unbounded shift), when it has no client rect, or when
+   * `layer`'s line-height is not a length (`normal`, which the font sets). True, too, past 512 elements,
+   * which are not all read. `scale` is `layer`'s vertical scale to viewport
+   * pixels.
    */
-  private lineMayGrow(layer: Element): boolean {
+  private lineMayGrow(
+    layer: Element,
+    edge: { top: number; bottom: number },
+    scale: number
+  ): boolean {
     const st = this.style(layer);
     let budget = 512;
+    const reaches = (child: Element, cst: CSSStyleDeclaration): boolean => {
+      if (cst.position !== 'static' || !/^[a-z-]+$/.test(cst.verticalAlign)) return true;
+      const slack = (pxValue(st.lineHeight) + pxValue(cst.fontSize)) * scale;
+      const rects = child.getClientRects();
+      if (!Number.isFinite(slack) || rects.length === 0) return true;
+      for (const r of Array.from(rects)) {
+        if (!(r.bottom < edge.top - slack || r.top > edge.bottom + slack)) return true;
+      }
+      return false;
+    };
     const grows = (el: Element): boolean => {
-      for (const child of Array.from(el.children)) {
+      // Sibling by sibling: a collection of every child is never built, so the
+      // cost before the budget bites does not grow with the child count.
+      for (let child = el.firstElementChild; child; child = child.nextElementSibling) {
         if (--budget < 0) return true;
         const cst = this.style(child);
         if (cst.display === 'none' || cst.position === 'absolute' || cst.position === 'fixed') {
@@ -2974,12 +3133,25 @@ class TabMeasurement {
         if (cst.display !== 'inline') {
           // An inline-level box that is not a plain inline one is atomic;
           // a block lays out lines of its own.
-          if (/^(inline|ruby)/.test(cst.display)) return true;
+          if (/^(inline|ruby)/.test(cst.display) && reaches(child, cst)) return true;
           continue;
         }
-        if (isReplaced(child) || FORM_CONTROL_TAGS.has(child.tagName.toUpperCase())) return true;
-        if (cst.position !== 'static' || cst.verticalAlign !== 'baseline') return true;
-        if (cst.lineHeight !== st.lineHeight || cst.fontSize !== st.fontSize) return true;
+        if (isReplaced(child) || FORM_CONTROL_TAGS.has(child.tagName.toUpperCase())) {
+          if (reaches(child, cst)) return true;
+          continue;
+        }
+        if (cst.position !== 'static') return true;
+        const differs =
+          cst.verticalAlign !== 'baseline' ||
+          cst.lineHeight !== st.lineHeight ||
+          cst.fontSize !== st.fontSize ||
+          cst.fontFamily !== st.fontFamily ||
+          // Weight, style, variant and size-adjust each change a face's
+          // metrics, and so the line it makes.
+          FONT_METRIC_PROPS.some(
+            (prop) => cst.getPropertyValue(prop) !== st.getPropertyValue(prop)
+          );
+        if (differs && reaches(child, cst)) return true;
         if (grows(child)) return true;
       }
       return false;
@@ -2999,9 +3171,13 @@ class TabMeasurement {
     end: 'first' | 'last',
     scale: number
   ): { top: number; bottom: number; block: boolean } | null | undefined {
-    const nodes = Array.from(layer.childNodes);
-    if (end === 'last') nodes.reverse();
-    for (const node of nodes) {
+    // Node by node from the wanted end, stopping at the first piece: a copy of
+    // every child node is never built.
+    for (
+      let node = end === 'first' ? layer.firstChild : layer.lastChild;
+      node;
+      node = end === 'first' ? node.nextSibling : node.previousSibling
+    ) {
       if (node.nodeType === 3) {
         if (!/\S/.test(node.nodeValue ?? '')) continue;
         const range = document.createRange();
