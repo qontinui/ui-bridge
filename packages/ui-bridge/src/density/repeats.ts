@@ -5,11 +5,14 @@
  * A repeat is found by path, else by geometry:
  *
  * - **by: path** — DOM siblings (one `siblingKey`: the same parent element,
- *   registered or not) of one tag whose left edges agree within
- *   {@link DENSITY_REPEAT_TOLERANCE_PX} of the first; containers must agree in
- *   width too (stacked layout wrappers are not rows), leaves need not (a
- *   fit-content list); a run of paragraphs (every member a `prose` leaf) is
- *   text, not rows;
+ *   registered or not) of one tag: those of one width (within
+ *   {@link DENSITY_REPEAT_TOLERANCE_PX}) grouped into columns and aligned
+ *   columns merged into a grid, as below; leaves of different widths (a
+ *   fit-content list) grouped by left edge; stacked containers of different
+ *   widths are layout, not rows; a run of paragraphs (every member a `prose`
+ *   leaf) is text, not rows. Items inside repeated rows nobody registered
+ *   (`ul > li[k] > a` with only the links registered) share a `cousinKey`
+ *   instead, and form a repeat by it;
  * - **by: geometry** — items with no such chain (`structureBy: geometry`), of
  *   one parent, tag and role, whose left edge and width agree within
  *   {@link DENSITY_REPEAT_TOLERANCE_PX} of the first item of a column; columns
@@ -202,7 +205,11 @@ function rowLines(leaves: readonly DensityItem[]): { lines: number; textPx: numb
     if (n === null) return null;
     if (n === 0) continue;
     if (leaf.fontPx === null || leaf.lineHeightPx === null || r.w <= 0) return null;
-    const lines = Math.max(1, Math.ceil((n * DENSITY_CHAR_WIDTH_EM * leaf.fontPx) / r.w));
+    // The estimate never exceeds what the measured height can hold, and a
+    // truncated leaf (nowrap, ellipsis) is one line.
+    const wrapped = Math.max(1, Math.ceil((n * DENSITY_CHAR_WIDTH_EM * leaf.fontPx) / r.w));
+    const fits = Math.max(1, Math.round(r.h / leaf.lineHeightPx));
+    const lines = leaf.truncated === true ? 1 : Math.min(wrapped, fits);
     for (let k = 0; k < lines; k++)
       tops.push({ top: r.y + k * leaf.lineHeightPx, lh: leaf.lineHeightPx });
   }
@@ -278,6 +285,29 @@ export function isDensityFinderControl(item: DensityItem): boolean {
   return item.tag === 'select' || (item.role !== null && FINDER_ROLES.has(item.role));
 }
 
+const FILTER_ROLES = new Set(['combobox', 'checkbox', 'radio']);
+
+/** A select, combobox, checkbox or radio. */
+export function isDensityFilterControl(item: DensityItem): boolean {
+  return item.tag === 'select' || (item.role !== null && FILTER_ROLES.has(item.role));
+}
+
+/** An interactive item in a `nav` (by tag in its path, or the navigation landmark). */
+export function isDensityNavControl(item: DensityItem): boolean {
+  return (
+    item.interactive &&
+    ((item.path !== null && item.path.includes('nav')) || item.landmark === 'navigation')
+  );
+}
+
+/** A control a repeat's scope is looked for by: a finder, a filter or a nav control. */
+function isScopeControl(item: DensityItem): boolean {
+  return (
+    item.interactive &&
+    (isDensityFinderControl(item) || isDensityFilterControl(item) || isDensityNavControl(item))
+  );
+}
+
 function centreY(item: DensityItem): number | null {
   return item.rect === null ? null : item.rect.y + item.rect.h / 2;
 }
@@ -297,13 +327,13 @@ const SCOPE_CEILING_TAGS = new Set(['main', 'body', 'html']);
  * The scope of every repeat, by repeat id. A repeat's controls are looked
  * for, in order:
  *
- * 1. in the innermost block that holds a leaf of its first row AND an
- *    interactive item outside the repeat (`by: block`) — a list whose rows
- *    open their own block (a table, article cards) skips that block;
+ * 1. in the innermost block that holds a leaf of its first row AND a finder,
+ *    filter or nav control outside the repeat (`by: block`) — a list whose
+ *    rows open their own block (a table, article cards) skips that block;
  * 2. in the subtree of the nearest of its first
  *    {@link DENSITY_REPEAT_SCOPE_LEVELS} ancestors (by parent links, from the
- *    repeat's parent up, never `main`, `body` or `html`) that holds an
- *    interactive item outside the repeat (`by: ancestor`);
+ *    repeat's parent up, never `main`, `body` or `html`) that holds such a
+ *    control outside the repeat (`by: ancestor`);
  * 3. nowhere (`by: null`, an empty scope).
  *
  * Every scope excludes the repeat's own subtree and the rows of every OTHER
@@ -353,8 +383,13 @@ export function densityRepeatScopes(
       for (const id of ids) if (!own.has(id) && !foreign.has(id)) set.add(id);
       return set;
     };
+    // Only a control this repeat looks for qualifies: a sort button in a
+    // table's header is no reason to stop at the table.
     const hasControl = (set: Set<string>): boolean => {
-      for (const id of set) if (byId.get(id)?.interactive) return true;
+      for (const id of set) {
+        const item = byId.get(id);
+        if (item && isScopeControl(item)) return true;
+      }
       return false;
     };
 
@@ -390,6 +425,40 @@ export function densityRepeatScopes(
     out.set(rep.id, scope);
   }
   return out;
+}
+
+/**
+ * For each control in some repeat's scope, the one repeat it acts on by
+ * position: `below`, the repeat whose first row is nearest below the control's
+ * centre (a finder or filter); `above`, the repeat whose last row is nearest
+ * above it (a pager). A control above two stacked lists belongs to the nearer.
+ */
+export function densityNearestRepeats(
+  capture: DensityCapture,
+  repeats: ReadonlyArray<Pick<DensityRepeat, 'id' | 'firstRow' | 'lastRow'>>,
+  scopes: Map<string, DensityRepeatScope>,
+  direction: 'below' | 'above'
+): Map<string, string> {
+  const byId = new Map(capture.items.map((i) => [i.id, i]));
+  const best = new Map<string, { id: string; gap: number }>();
+  for (const rep of repeats) {
+    const scope = scopes.get(rep.id);
+    if (!scope) continue;
+    for (const id of scope.ids) {
+      const item = byId.get(id);
+      const cy = item ? centreY(item) : null;
+      if (cy === null) continue;
+      const gap = direction === 'below' ? rep.firstRow.topPx - cy : cy - rep.lastRow.bottomPx;
+      if (gap <= 0) continue;
+      const cur = best.get(id);
+      if (!cur || gap < cur.gap) best.set(id, { id: rep.id, gap });
+    }
+  }
+  return new Map([...best].map(([k, v]) => [k, v.id]));
+}
+
+function finderRank(item: DensityItem): number {
+  return item.role === 'searchbox' ? 0 : item.role === 'textbox' ? 1 : 2;
 }
 
 /** The ids a control names when it acts on the repeat: its parent, its members and their subtrees. */
@@ -482,22 +551,37 @@ export function densityRepeats(
     else byPath.set(key, { by: 'path', parent: item.parent, tag: item.tag, members: [item] });
   }
   const inPathRepeat = new Set<string>();
+  const accept = (g: Group, members: DensityItem[]): void => {
+    if (rowsOf(members).length < DENSITY_REPEAT_MIN_ROWS) return;
+    // A run of paragraphs is text, not rows.
+    if (members.every((m) => kindOf.get(m.id) === 'prose')) return;
+    groups.push({ ...g, members });
+    members.forEach((m) => inPathRepeat.add(m.id));
+  };
   for (const g of byPath.values()) {
-    for (const members of clusterBy(g.members, (r) => r.x)) {
-      if (rowsOf(members).length < DENSITY_REPEAT_MIN_ROWS) continue;
-      // Containers of different widths are layout, not rows; leaves (a
-      // fit-content list) may differ.
-      const w0 = members[0].rect!.w;
-      const sameWidth = members.every(
-        (m) => Math.abs(m.rect!.w - w0) <= DENSITY_REPEAT_TOLERANCE_PX
-      );
-      if (!sameWidth && !members.every((m) => leafSet.has(m.id))) continue;
-      // A run of paragraphs is text, not rows.
-      if (members.every((m) => kindOf.get(m.id) === 'prose')) continue;
-      groups.push({ ...g, members });
-      members.forEach((m) => inPathRepeat.add(m.id));
+    // One width: columns, and aligned columns merged into a grid.
+    for (const sameWidth of clusterBy(g.members, (r) => r.w)) {
+      for (const c of gridsOf(sameWidth)) accept(g, c);
     }
+    // Leaves of different widths (a fit-content list), by left edge.
+    const rest = g.members.filter((m) => !inPathRepeat.has(m.id) && leafSet.has(m.id));
+    for (const c of clusterBy(rest, (r) => r.x)) accept(g, c);
   }
+  // Items at one place inside repeated rows nobody registered.
+  const byCousin = new Map<string, Group>();
+  for (const item of eligible) {
+    if (item.cousinKey === null || inPathRepeat.has(item.id)) continue;
+    const g = byCousin.get(item.cousinKey);
+    if (g) g.members.push(item);
+    else
+      byCousin.set(item.cousinKey, {
+        by: 'path',
+        parent: item.parent,
+        tag: item.tag,
+        members: [item],
+      });
+  }
+  for (const g of byCousin.values()) accept(g, g.members);
 
   // ---- by geometry: one parent, tag and role; equal left edge and width ----
   const byType = new Map<string, DensityItem[]>();
@@ -631,21 +715,34 @@ export function densityRepeats(
 
   // ---- finder: in the repeat's scope above its first row, or a declared `filters` edge ----
   const scopes = densityRepeatScopes(capture, repeats, blocks);
+  const nearestBelow = densityNearestRepeats(capture, repeats, scopes, 'below');
   for (const rep of repeats) {
     const scope = scopes.get(rep.id)!;
     rep.scope = scope.by;
     const aimed = densityRepeatTargets(capture, rep, children);
     let finder: DensityRepeatFinder | null = null;
-    for (const item of capture.items) {
-      if (scope.own.has(item.id) || !isDensityFinderControl(item)) continue;
-      if (item.filters !== null && aimed.has(item.filters)) {
-        finder = { id: item.id, by: 'relationship' };
-        break;
-      }
-    }
+    // A declared edge: a search box first, then a text field, then the rest.
+    const declared = capture.items
+      .filter(
+        (i) =>
+          !scope.own.has(i.id) &&
+          i.interactive &&
+          takesSpace(i) &&
+          isDensityFinderControl(i) &&
+          i.filters !== null &&
+          aimed.has(i.filters)
+      )
+      .sort((a, b) => finderRank(a) - finderRank(b));
+    if (declared.length > 0) finder = { id: declared[0].id, by: 'relationship' };
     if (finder === null) {
       const above = capture.items
-        .filter((i) => scope.ids.has(i.id) && i.interactive && isDensityFinderControl(i))
+        .filter(
+          (i) =>
+            scope.ids.has(i.id) &&
+            i.interactive &&
+            isDensityFinderControl(i) &&
+            nearestBelow.get(i.id) === rep.id
+        )
         .filter((i) => {
           const y = centreY(i);
           return y !== null && y < rep.firstRow.topPx;

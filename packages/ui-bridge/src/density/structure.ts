@@ -246,6 +246,9 @@ function siblingKeyOf(p: (ParsedChain & { ownId: boolean }) | null): string | nu
  *   element, registered or not), so that items sharing it are DOM siblings;
  *   `null` for an own-id xpath, a one-segment chain, or a chain through an
  *   ambiguous key.
+ * - **cousinKey.** The chain with the sibling index of its deepest indexed
+ *   ancestor that nobody registered, and every index below it, replaced:
+ *   items at one place inside repeated unregistered rows share it.
  * - **blockKey.** The key of the nearest block-tag ancestor-or-self in the
  *   chain, else (for a chain anchored at a registered item) that item's.
  */
@@ -426,6 +429,27 @@ export function resolveDensityStructure(
   };
   for (let i = 0; i < n; i++) resolveOne(i);
 
+  const ROW_TAGS = new Set(['li', 'tr']);
+  /** The text of chain segment `k` (`li[3]`), read back from the prefix keys. */
+  const segmentOf = (p: ParsedChain, k: number): string =>
+    k === 0 ? p.keys[0].replace(/^\//, '') : p.keys[k].slice(p.keys[k - 1].length + 1);
+  const unindexed = (seg: string): string => seg.replace(/\[\d+\]$/, '');
+  const cousinKeyOf = (p: (ParsedChain & { ownId: boolean }) | null): string | null => {
+    if (!p || p.ownId || p.keys.some(ambiguous)) return null;
+    for (let k = p.keys.length - 2; k >= 0; k--) {
+      const seg = segmentOf(p, k);
+      // Only a list item or a table row is a row nobody registered: an
+      // indexed wrapper div is as likely three unrelated sections.
+      if (!/\[\d+\]$/.test(seg) || !ROW_TAGS.has(unindexed(seg))) continue;
+      // A registered row is read by the path arm through its own siblings.
+      if (lookup(p.keys[k]) !== null) return null;
+      const below: string[] = [];
+      for (let j = k + 1; j < p.keys.length; j++) below.push(unindexed(segmentOf(p, j)));
+      return [k > 0 ? p.keys[k - 1] : '', `${unindexed(seg)}[*]`, ...below].join('/');
+    }
+    return null;
+  };
+
   // ---- ownChars: direct children only ----
   // `chars` is the WHITESPACE-COLLAPSED length, so the text of a row of k
   // registered spans carries up to k - 1 collapsed separators between them.
@@ -460,6 +484,7 @@ export function resolveDensityStructure(
           : Math.max(0, chars - kids - Math.max(0, textChildren[i] - 1)),
       blockKey: blockKey[i] ?? null,
       siblingKey: parsed[i]?.keys.some(ambiguous) ? null : siblingKeyOf(parsed[i]),
+      cousinKey: cousinKeyOf(parsed[i]),
     };
   });
 }

@@ -355,6 +355,7 @@ function buildItem(
       ownChars: null,
       blockKey: null,
       siblingKey: null,
+      cousinKey: null,
       textHash,
       shape,
       fontPx,

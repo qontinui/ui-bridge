@@ -136,6 +136,16 @@ export interface DensityItem {
    * `null`.
    */
   siblingKey: string | null;
+  /**
+   * Opaque key shared by items that sit at the same place inside repeated,
+   * UNREGISTERED ancestors (`ul > li[k] > a` with only the links registered,
+   * `tr[k] > td[j]` with only the cells): the chain with the sibling index of
+   * its deepest indexed, unregistered `li` or `tr` ancestor, and every index
+   * below it, removed. Holds no page text. `null` when no such ancestor exists, when that
+   * ancestor is registered (its own rows are the repeat), for an own-id xpath
+   * or an ambiguous chain, or until structure is resolved. Optional on read.
+   */
+  cousinKey: string | null;
   /** SHA-256 hex of the collapsed text; `null` when the text is redacted or empty. */
   textHash: string | null;
   shape: DensityShape | null;
@@ -590,7 +600,13 @@ const ITEM_KEYS = [
 ] as const;
 
 function readItem(r: Reader, value: unknown, path: string): DensityItem | null {
-  const o = r.object(value, path, ITEM_KEYS, ['blockKey', 'siblingKey', 'selected', 'filters']);
+  const o = r.object(value, path, ITEM_KEYS, [
+    'blockKey',
+    'siblingKey',
+    'cousinKey',
+    'selected',
+    'filters',
+  ]);
   if (!o) return null;
   return {
     id: r.string(o.id, `${path}.id`, { nonEmpty: true }),
@@ -611,6 +627,7 @@ function readItem(r: Reader, value: unknown, path: string): DensityItem | null {
     blockKey: o.blockKey === undefined ? null : r.stringOrNull(o.blockKey, `${path}.blockKey`),
     siblingKey:
       o.siblingKey === undefined ? null : r.stringOrNull(o.siblingKey, `${path}.siblingKey`),
+    cousinKey: o.cousinKey === undefined ? null : r.stringOrNull(o.cousinKey, `${path}.cousinKey`),
     textHash: readHashOrNull(r, o.textHash, `${path}.textHash`),
     shape: r.oneOfOrNull(o.shape, `${path}.shape`, DENSITY_SHAPES),
     fontPx: r.numberOrNull(o.fontPx, `${path}.fontPx`, { min: 0 }),
