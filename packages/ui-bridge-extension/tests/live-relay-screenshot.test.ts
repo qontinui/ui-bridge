@@ -429,7 +429,7 @@ describe('live relay getScreenshot', () => {
     await t.close();
   });
 
-  it("the manifest's host grant covers the relay's origins", () => {
+  it("the manifest's host grant is <all_urls> (D6) and covers the relay's origins", () => {
     const manifest = JSON.parse(
       readFileSync(new URL('../manifest.json', import.meta.url), 'utf8')
     ) as {

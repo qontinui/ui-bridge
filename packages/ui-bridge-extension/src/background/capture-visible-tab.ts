@@ -24,10 +24,8 @@
  *
  * PERMISSION — `<all_urls>` IS REQUIRED (D6 probe, run 2026-11-23).
  * `manifest.json` grants `"host_permissions": ["<all_urls>"]`, and that grant
- * is load-bearing. Chrome's own `chrome.tabs` page disagrees with itself about
- * what a no-gesture capture needs (the `captureVisibleTab` method reference
- * names `<all_urls>` or `activeTab`; its "Host permissions" section says host
- * permissions allow `captureVisibleTab`), so plan
+ * is load-bearing. Chrome's documentation was ambiguous about what a
+ * no-gesture capture needs, so plan
  * 2026-11-22-vision-capture-websocket-follow-ups Phase 4 ran the D6 probe in a
  * headed Chromium 147.0.7727.15: a service-worker `captureVisibleTab` with no
  * user gesture, on an https tab and on an http 127.0.0.1 tab.
@@ -35,11 +33,7 @@
  *   - Under `["https://*\/*", "http://localhost:*\/*", "http://127.0.0.1:*\/*"]`
  *     (the content scripts' match set): both were refused with "Either the
  *     '<all_urls>' or 'activeTab' permission is required."
- * That matches the source reading: Chromium's
- * `PermissionsData::CanCaptureVisiblePage` sets `has_all_urls` only when a
- * granted pattern's `match_all_urls()` is true, and otherwise refuses with
- * `kAllURLOrActiveTabNeeded` unless an active-tab grant exists. Do not narrow
- * the grant; tests/live-relay-screenshot.test.ts holds it to `<all_urls>`.
+ * Do not narrow the grant; tests/live-relay-screenshot.test.ts holds it to `<all_urls>`.
  */
 
 import type { CaptureVisibleTabResponse } from '../shared/messages';
