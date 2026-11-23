@@ -102,9 +102,9 @@ const EXPECTED_VALUE = {
   structure: {
     structureResolved: true,
     structureBy: { xpath: 1, geometry: 0 },
-    leaves: { count: 1, unknown: 0 },
+    leaves: { count: 1, unknown: 0, geometryOwnChars: 0 },
     unattributedChars: 0,
-    pins: { pinTopPx: 0, pinBottomPx: 0, usableHeightPx: 740, items: 0 },
+    pins: { pinTopPx: 0, pinBottomPx: 0, usableHeightPx: 740, items: 0, unknown: 0 },
     kinds: {
       byBasis: {
         declared: {},
@@ -118,6 +118,7 @@ const EXPECTED_VALUE = {
     },
     blocks: {
       byBasis: { declared: 0, path: 0, heading: 0 },
+      headingLevelUnknown: 0,
       shown: 0,
       total: 0,
       truncated: false,
@@ -733,9 +734,9 @@ describe('ui-bridge-density measure: the structure summary', () => {
       structureResolved: true,
       // The note's xpath is its own id, which names no ancestor.
       structureBy: { xpath: 4, geometry: 1 },
-      leaves: { count: 4, unknown: 0 },
+      leaves: { count: 4, unknown: 0, geometryOwnChars: 0 },
       unattributedChars: 0,
-      pins: { pinTopPx: 48, pinBottomPx: 0, usableHeightPx: 692, items: 1 },
+      pins: { pinTopPx: 48, pinBottomPx: 0, usableHeightPx: 692, items: 1, unknown: 0 },
       kinds: {
         byBasis: {
           declared: { value: 1 },
@@ -749,6 +750,7 @@ describe('ui-bridge-density measure: the structure summary', () => {
       },
       blocks: {
         byBasis: { declared: 0, path: 1, heading: 0 },
+        headingLevelUnknown: 0,
         shown: 1,
         total: 1,
         truncated: false,

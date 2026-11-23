@@ -85,6 +85,7 @@ describe('the ./density subpath', () => {
       'densityUnattributedChars',
       'evaluateDensityTextMatchers',
       'hashDensityCanonical',
+      'isDensityHeading',
       'isDensityMedia',
       'parseDensityCapture',
       'parseDensityTargets',
