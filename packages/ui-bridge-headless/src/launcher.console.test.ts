@@ -64,7 +64,7 @@ const consoleMessage = (type: string, text: string) => ({
 const locatedConsoleMessage = (type: string, text: string, url: string) => ({
   type: () => type,
   text: () => text,
-  location: () => ({ url, line: 1, column: 1, lineNumber: 0, columnNumber: 0 }),
+  location: () => ({ url, line: 0, column: 0, lineNumber: 0, columnNumber: 0 }),
 });
 
 describe('launchHeadlessTab · console forwarding goes to stderr, never stdout', () => {
