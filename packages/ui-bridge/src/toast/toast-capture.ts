@@ -19,8 +19,10 @@
  * browser throttles, never serves text the page stopped showing.
  *
  * Re-reading is gated on mutation: every tracked (active or parked) element
- * has its own MutationObserver, and `extractMessage` (a deep clone) runs for
- * it only when its subtree mutated — the observer's callback marks it dirty,
+ * has its own MutationObserver (an active entry that survives uninstall has
+ * none until the next install's first reconcile re-tracks it; an untracked
+ * element always counts as dirty, so it is re-read then), and
+ * `extractMessage` (a deep clone) runs for it only when its subtree mutated — the observer's callback marks it dirty,
  * and a synchronous `takeRecords()` drain catches a change made in the same
  * tick as the read — or when one of the two inputs outside its subtree, its
  * visibility or an ancestor redaction boundary, flipped. The ancestor
