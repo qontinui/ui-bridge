@@ -254,7 +254,9 @@ export function forbiddenImports(sourceRel, text, siblings, isEnvelope) {
       continue;
     }
     if (edge.kind === 'require') {
-      problems.push(`${at}: require() is not allowed in a vendored file`);
+      problems.push(
+        `${at}: require() is not allowed in a vendored file (nor any reference to the CommonJS loader names require or module, a local of that name included)`
+      );
       continue;
     }
     const spec = edge.specifier;
@@ -287,7 +289,9 @@ export function forbiddenImports(sourceRel, text, siblings, isEnvelope) {
  * holding one must not fail the sync or the check that CI passes.
  */
 function isLocalJunk(name) {
-  return name.startsWith('.') || name.endsWith('~') || /\.sw[a-p]$/.test(name);
+  if (name === '.DS_Store' || name === 'Thumbs.db' || name === 'desktop.ini') return true;
+  // A vim swap file is `.<name>.sw?`; a backup file ends in `~`.
+  return name.endsWith('~') || /^\..+\.sw[a-p]$/.test(name);
 }
 
 /** The density sources: every `.ts` file directly in the source dir, sorted. */

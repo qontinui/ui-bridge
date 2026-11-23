@@ -217,6 +217,11 @@ test('OS and editor junk in a source or target dir is neither a source nor stale
   assert.equal(main(['--check'], root, silent), 0);
 });
 
+test('a dot-prefixed .ts source is a source, not junk', () => {
+  const root = fixture({ extraSource: { name: '.hidden.ts', text: 'export const h = 1;\n' } });
+  assert.ok(expectedDensityCopies(root).has(`${DENSITY_TARGET_DIR}/.hidden.ts`));
+});
+
 test('an unknown argument exits 2 and writes nothing (a typo never runs the writing sync)', () => {
   const root = fixture();
   assert.equal(main(['--chek'], root, silent), 2);
