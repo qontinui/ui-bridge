@@ -14,7 +14,7 @@ import { buildTimelineSummary } from './timeline-summary';
 import type { SemanticSnapshot, ChangeTimeline, TimelineEvent } from './types';
 import type { ControlSnapshot } from '../control/types';
 import type { SemanticSnapshotManager } from './semantic-snapshot';
-import { redactRequestUrl } from './timeline-recorder';
+import { redactRequestUrl } from '../network/redact-request-url';
 import type {
   TimelineCapture,
   TimelineNetworkEvent,
@@ -175,6 +175,7 @@ describe('perf/ probe', () => {
     expect(probePerfEntrySupport()).toEqual({
       layoutShift: false,
       longTask: false,
+      resource: false,
       supportedEntryTypes: null,
       observerAvailable: false,
     });

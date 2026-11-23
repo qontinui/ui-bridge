@@ -11,7 +11,7 @@ import type { AnyCapturedEvent } from './browser-capture-types';
 import type { ErrorSeverity } from './error-severity';
 import { classifyEvent } from './error-severity';
 import { computeFingerprint, extractSourceLocation } from './error-fingerprint';
-import { getEventStack } from './shared-utils';
+import { describeResourceStatus, getEventStack } from './shared-utils';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -91,6 +91,8 @@ export function extractMessage(event: AnyCapturedEvent): string {
       return event.message;
     case 'resource-error':
       return `Failed to load ${event.tagName}: ${event.resourceUrl}`;
+    case 'resource-status':
+      return describeResourceStatus(event);
     case 'hmr':
       return event.message;
     case 'ws-disconnection':

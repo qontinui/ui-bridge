@@ -16,6 +16,7 @@ export type BrowserEventType =
   | 'long-task'
   | 'long-animation-frame'
   | 'resource-error'
+  | 'resource-status'
   | 'web-vital'
   | 'memory'
   | 'ws-disconnection'
@@ -79,6 +80,81 @@ export interface ResourceErrorCapturedEvent extends BrowserCapturedEvent {
   resourceUrl: string;
   tagName: string;
 }
+
+/**
+ * Fields shared by every `resource-status` event. The base `url` is the page
+ * the event was observed on — for a `fromPreviousDocument` event, the page of
+ * the document that drew the failure, not the current one.
+ */
+interface ResourceStatusEventBase extends BrowserCapturedEvent {
+  type: 'resource-status';
+  /**
+   * Observed by the previous same-tab document and carried across its
+   * navigation through `sessionStorage`. Absent on events observed by this
+   * document.
+   */
+  fromPreviousDocument?: true;
+}
+
+/**
+ * A resource (or the document itself) that answered `>= 400`, or whose status
+ * the browser did not report. Read from Resource Timing with
+ * `buffered: true`, so it includes requests made before the capture was
+ * installed and requests the `network` capture ignores (`/api/ui-bridge/*`).
+ */
+export interface ResourceStatusEntryEvent extends ResourceStatusEventBase {
+  kind: 'status';
+  /** Origin + pathname of the resource. The query is never reported. */
+  resourceUrl: string;
+  /** Whether the resource URL carried a query string. */
+  hasQuery: boolean;
+  /** What initiated the fetch (`fetch`, `xmlhttprequest`, `script`, `navigation`, …). */
+  initiatorType: string;
+  /**
+   * The HTTP status, or `null` when the browser reported none (no
+   * `Timing-Allow-Origin` on a cross-origin response, or an engine without
+   * `responseStatus`). `null` is UNKNOWN — never a success.
+   */
+  responseStatus: number | null;
+  /** `performance.now()`-clock start of the fetch, in the observing document's clock. */
+  startTime: number;
+  /** `performance.now()`-clock end of the response, in the observing document's clock. */
+  responseEnd: number;
+}
+
+/** This webview cannot observe Resource Timing: every status is UNKNOWN. */
+export interface ResourceStatusObserverUnavailableEvent extends ResourceStatusEventBase {
+  kind: 'observer-unavailable';
+  observerUnavailable: true;
+}
+
+/**
+ * The Resource Timing buffer was full, so failures from before the capture was
+ * installed may be missing: the pre-install window is UNKNOWN.
+ */
+export interface ResourceStatusBufferFullEvent extends ResourceStatusEventBase {
+  kind: 'buffer-full';
+  bufferFull: true;
+  /** `performance.getEntriesByType('resource').length` when the fullness was observed. */
+  resourceEntryCount: number;
+}
+
+/**
+ * The per-document budget for `responseStatus: null` events was spent; later
+ * unknown statuses on this document are not reported one by one.
+ */
+export interface ResourceStatusUnknownCappedEvent extends ResourceStatusEventBase {
+  kind: 'unknown-status-capped';
+  unknownStatusCapped: true;
+  /** The budget that was spent. */
+  budget: number;
+}
+
+export type ResourceStatusCapturedEvent =
+  | ResourceStatusEntryEvent
+  | ResourceStatusObserverUnavailableEvent
+  | ResourceStatusBufferFullEvent
+  | ResourceStatusUnknownCappedEvent;
 
 export interface WebVitalCapturedEvent extends BrowserCapturedEvent {
   type: 'web-vital';
@@ -149,6 +225,7 @@ export type AnyCapturedEvent =
   | LongTaskCapturedEvent
   | LoafCapturedEvent
   | ResourceErrorCapturedEvent
+  | ResourceStatusCapturedEvent
   | WebVitalCapturedEvent
   | MemoryCapturedEvent
   | WsDisconnectionCapturedEvent
@@ -205,6 +282,12 @@ export interface BrowserCaptureConfig {
   longAnimationFrames?: boolean;
   /** Capture failed resource loads (img/script/link). Default: true */
   resourceErrors?: boolean;
+  /**
+   * Capture resource and document responses `>= 400` (or with an unreported
+   * status) from Resource Timing, including those made before install and in
+   * the previous same-tab document. Default: true
+   */
+  resourceStatus?: boolean;
   /** Capture WebSocket disconnection events. Default: true */
   wsDisconnections?: boolean;
   /** Capture Next.js HMR compilation errors/warnings via EventSource. Default: true */
@@ -246,6 +329,7 @@ export const DEFAULT_CAPTURE_CONFIG: Required<
     | 'longTasks'
     | 'longAnimationFrames'
     | 'resourceErrors'
+    | 'resourceStatus'
     | 'wsDisconnections'
     | 'hmr'
     | 'frameworkOverlays'
@@ -266,6 +350,7 @@ export const DEFAULT_CAPTURE_CONFIG: Required<
   longTasks: true,
   longAnimationFrames: true,
   resourceErrors: true,
+  resourceStatus: true,
   wsDisconnections: true,
   hmr: true,
   frameworkOverlays: true,

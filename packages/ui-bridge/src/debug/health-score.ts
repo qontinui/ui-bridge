@@ -11,6 +11,7 @@ import type { AnyCapturedEvent } from './browser-capture-types';
 import type { BrowserEventCaptureLike } from './error-timeline';
 import type { ErrorSeverity } from './error-severity';
 import { classifyEvent, SEVERITY_RANK } from './error-severity';
+import { describeResourceStatus } from './shared-utils';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -85,6 +86,8 @@ function extractMessage(event: AnyCapturedEvent): string {
       return event.message;
     case 'resource-error':
       return `Failed to load ${event.tagName}: ${event.resourceUrl}`;
+    case 'resource-status':
+      return describeResourceStatus(event);
     case 'hmr':
       return event.message;
     case 'ws-disconnection':
