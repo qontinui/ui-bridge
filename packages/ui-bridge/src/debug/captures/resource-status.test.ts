@@ -469,6 +469,24 @@ describe('resource-status capture', () => {
     expect(kinds.sort()).toEqual(['buffer-full', 'observer-unavailable', 'status']);
   });
 
+  it('two same-path requests in one tick get distinct failureIds', async () => {
+    const capture = install();
+    await settle();
+    const now = performance.now();
+    const sameTick = (url: string) => ({
+      ...resourceEntry(url, 503),
+      startTime: now + 1,
+      responseEnd: now + 2,
+    });
+    FakePerformanceObserver.record('resource', [
+      sameTick('https://app.example.com/api/v1/same?a=1'),
+      sameTick('https://app.example.com/api/v1/same?a=2'),
+    ]);
+    const ids = statusEvents(capture).map((e) => (e.kind === 'status' ? e.failureId : ''));
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).not.toBe(ids[1]);
+  });
+
   it('a failure keeps one failureId across the navigation that carries it', async () => {
     const first = install();
     await settle();
@@ -529,18 +547,17 @@ describe('resource-status capture', () => {
     expect(statusFor(capture, url)).toHaveLength(1);
   });
 
-  it('a second resource-status install on one document is a no-op that warns once', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const first = install();
-    const second = install();
-    const third = install();
+  it('stays armed until the last of several owners uninstalls', async () => {
+    const a = install();
+    const b = install();
     await settle();
-    FakePerformanceObserver.record('resource', [resourceEntry('https://app.example.com/x', 503)]);
-    expect(statusEvents(first)).toHaveLength(1);
-    expect(statusEvents(second)).toHaveLength(0);
-    expect(statusEvents(third)).toHaveLength(0);
-    expect(warn.mock.calls.filter((c) => String(c[0]).includes('resource-status'))).toHaveLength(1);
-    warn.mockRestore();
+    a.uninstall();
+    FakePerformanceObserver.record('resource', [liveEntry('https://app.example.com/x', 503)]);
+    expect(statusEvents(b)).toHaveLength(1);
+    b.uninstall();
+    expect(FakePerformanceObserver.live.size).toBe(0);
+    FakePerformanceObserver.record('resource', [liveEntry('https://app.example.com/y', 503)]);
+    expect(statusEvents(b)).toHaveLength(1);
   });
 
   it('a nested network wrapper does not record a second report for one failure', async () => {
@@ -693,7 +710,8 @@ describe('resource-status capture', () => {
     const dropped = install();
     await settle();
     expect(statusEvents(dropped)).toHaveLength(0);
-    expect(sessionStorage.getItem(STORAGE_KEY)).toBeNull();
+    // Not this document's: left for whom it may concern, not deleted.
+    expect(sessionStorage.getItem(STORAGE_KEY)).not.toBeNull();
 
     await write();
     setReferrer(`${window.location.origin}${window.location.pathname}?from=nav#frag`);
@@ -731,15 +749,17 @@ describe('resource-status capture', () => {
     expect(carried[0]).toMatchObject({ responseStatus: 429, fromPreviousDocument: true });
   });
 
-  it('a restored document leaves the next document’s carry alone', async () => {
+  it('a restored document receives the carry of the page it came back from, once', async () => {
+    const here = `${window.location.origin}${window.location.pathname}`;
     // A: draws a 429, leaves (bfcache), writes its carry.
     const a = install();
     await settle();
     FakePerformanceObserver.record('resource', [resourceEntry('https://app.example.com/a', 429)]);
     window.dispatchEvent(new Event('pagehide'));
 
-    // B: takes A's carry, draws a 503, leaves, writes its own.
+    // B (referred by A): takes A's carry, draws a 503, leaves, writes its own.
     newDocument();
+    setReferrer(here);
     const b = install();
     await settle();
     expect(statusEvents(b)).toEqual([
@@ -751,21 +771,119 @@ describe('resource-status capture', () => {
     FakePerformanceObserver.record('resource', [resourceEntry('https://app.example.com/b', 503)]);
     window.dispatchEvent(new Event('pagehide'));
     b.uninstall();
-    const bCarry = sessionStorage.getItem(STORAGE_KEY);
-    expect(bCarry).toContain('https://app.example.com/b');
+    expect(sessionStorage.getItem(STORAGE_KEY)).toContain('https://app.example.com/b');
 
-    // A is restored from the cache, then leaves again.
+    // A is restored from the cache: it is the document the user sees after B,
+    // so it receives B's carry, and takes it out of storage.
+    const before = statusEvents(a).length;
     window.dispatchEvent(Object.assign(new Event('pageshow'), { persisted: true }));
-    expect(sessionStorage.getItem(STORAGE_KEY)).toBe(bCarry);
+    const received = statusEvents(a).slice(before);
+    expect(received).toEqual([
+      expect.objectContaining({
+        resourceUrl: 'https://app.example.com/b',
+        fromPreviousDocument: true,
+      }),
+    ]);
+    expect(sessionStorage.getItem(STORAGE_KEY)).toBeNull();
     window.dispatchEvent(new Event('pagehide'));
     a.uninstall();
 
-    // C: B's carry survives; A's 429 (already delivered to B) does not come again.
+    // C (referred by A): nothing is left; each failure was delivered once.
     newDocument();
+    setReferrer(here);
     const c = install();
     await settle();
-    const carried = statusEvents(c).map((e) => (e.kind === 'status' ? e.resourceUrl : e.kind));
-    expect(carried).toEqual(['https://app.example.com/b']);
+    expect(statusEvents(c)).toHaveLength(0);
+  });
+
+  it('a framed document neither takes nor writes a carry', async () => {
+    sessionStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        v: 1,
+        writtenAt: Date.now(),
+        writtenBy: `${window.location.origin}${window.location.pathname}`,
+        writerToken: 't',
+        events: [
+          {
+            type: 'resource-status',
+            timestamp: 1,
+            url: 'x',
+            kind: 'observer-unavailable',
+            observerUnavailable: true,
+          },
+        ],
+      })
+    );
+    const stored = sessionStorage.getItem(STORAGE_KEY);
+    const top = vi.spyOn(window, 'top', 'get').mockReturnValue({} as Window);
+    try {
+      const framed = install();
+      await settle();
+      expect(statusEvents(framed)).toHaveLength(0);
+      FakePerformanceObserver.record('resource', [liveEntry('https://app.example.com/f', 503)]);
+      expect(statusEvents(framed)).toHaveLength(1);
+      window.dispatchEvent(new Event('pagehide'));
+      expect(sessionStorage.getItem(STORAGE_KEY)).toBe(stored);
+    } finally {
+      top.mockRestore();
+    }
+  });
+
+  it('marks a carried failure that another capture reported live', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('', { status: 503 }))
+    );
+    const url = 'https://app.example.com/api/v1/marked';
+    const first = install(WITH_NETWORK_AND_RESOURCE_ERRORS);
+    await settle();
+    await window.fetch(url);
+    FakePerformanceObserver.record('resource', [
+      liveEntry(url, 503),
+      liveEntry('https://app.example.com/api/v1/unreported', 503),
+    ]);
+    window.dispatchEvent(new Event('pagehide'));
+    first.uninstall();
+
+    newDocument();
+    const second = install();
+    await settle();
+    expect(statusFor(second, url)).toEqual([
+      expect.objectContaining({ fromPreviousDocument: true, reportedLiveAs: 'network' }),
+    ]);
+    expect(statusFor(second, 'https://app.example.com/api/v1/unreported')[0]).not.toHaveProperty(
+      'reportedLiveAs'
+    );
+  });
+
+  it('an XHR failure is not absorbed by a leftover fetch report', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('', { status: 503 }))
+    );
+    const url = 'https://app.example.com/api/v1/xhr-or-fetch';
+    const capture = install(WITH_NETWORK_AND_RESOURCE_ERRORS);
+    await settle();
+    await window.fetch(url);
+    FakePerformanceObserver.record('resource', [liveEntry(url, 503, 'xmlhttprequest')]);
+    expect(statusFor(capture, url)).toHaveLength(1);
+  });
+
+  it('a responsive img is matched on the source it actually loaded', async () => {
+    const capture = install(WITH_NETWORK_AND_RESOURCE_ERRORS);
+    await settle();
+    const img = document.createElement('img');
+    img.src = 'https://app.example.com/photo-1x.png';
+    img.srcset = 'https://app.example.com/photo-2x.png 2x';
+    Object.defineProperty(img, 'currentSrc', { value: 'https://app.example.com/photo-2x.png' });
+    document.body.appendChild(img);
+    img.dispatchEvent(new Event('error'));
+    img.remove();
+    FakePerformanceObserver.record('resource', [
+      liveEntry('https://app.example.com/photo-2x.png', 404, 'img'),
+    ]);
+    expect(statusFor(capture, 'https://app.example.com/photo-2x.png')).toHaveLength(0);
   });
 
   it('pagehide flushes entries the observer has not dispatched yet', async () => {

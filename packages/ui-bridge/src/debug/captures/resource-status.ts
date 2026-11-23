@@ -28,7 +28,8 @@
  * emits `bufferFull`, and a status the browser did not report is
  * `responseStatus: null` (UNKNOWN). Unknown statuses are bounded per document
  * ({@link UNKNOWN_STATUS_BUDGET}) — on engines that do not report
- * `responseStatus` (e.g. WebKit, per MDN browser-compat-data) every resource
+ * `responseStatus` (e.g. WebKit, as reported by MDN browser-compat-data; not
+ * verified in this repo) every resource
  * is unknown, and unbounded they would evict every other captured event — and
  * spending the budget is itself one event.
  *
@@ -36,30 +37,33 @@
  * install → uninstall → install on one document does not replay the entries
  * an earlier install already observed: a live observer sees every entry, so
  * an entry that ended before the last uninstall was observed then (a
- * watermark, so no per-entry memory grows with the page). One
- * capture per document is assumed: a second concurrent install is a no-op
- * that warns once.
+ * watermark, so no per-entry memory grows with the page). One capture runs
+ * per document, reference-counted by its installs: it stays armed until the
+ * last one uninstalls. A framed document (not `window.top`) neither takes nor
+ * writes a carry: the carry belongs to the tab's top-level navigation.
  *
  * Install-time events (the carry, the document's own status, `bufferFull`,
  * `observerUnavailable`) are emitted on a macrotask after `install()`, so a
  * host that wires its event callback right after installing — the React
  * provider installs during render and wires it in an effect — receives them.
  *
- * Each `status` event carries a `failureId` (a per-document nonce plus the
- * entry's identity) that its carried copy keeps, so a consumer that sees
- * both documents counts distinct `failureId`s.
+ * Each `status` event carries a `failureId` (a per-document nonce plus a
+ * sequence number) that its carried copy keeps, so a consumer that sees both
+ * documents counts distinct `failureId`s.
  *
  * One failure, one event: a live entry whose failure the `network` or
  * `resource-errors` capture already reported (`../observed-reports`) is not
- * emitted. Those captures report first in practice — fetch resolves at the
- * response headers, before Resource Timing records `responseEnd`; an element's
- * `error` event fires before the observer's asynchronous batch. When a sample
- * is observed first anyway, both events are emitted (a known residual).
+ * emitted. This ASSUMES those captures report first — fetch resolves at the
+ * response headers, before Resource Timing should record `responseEnd`; an
+ * element's `error` event should fire before the observer's asynchronous
+ * batch. That order is reasoned from the specs, not measured here. When a
+ * sample is observed first anyway, both events are emitted (a known residual).
  * Entries that finished before install, the navigation entry and carried
  * events never consult the reports: no other capture saw them. A suppressed
  * failure is still carried across a navigation — the other capture's report
  * dies with the page — and the next document emits it once, as
- * `fromPreviousDocument`.
+ * `fromPreviousDocument`, marked `reportedLiveAs` with the capture that
+ * reported it.
  *
  * URLs — the resource's and the page's — are redacted with
  * `redactRequestUrl`: origin + path, never the query or fragment (a page URL
@@ -114,10 +118,12 @@ interface StoredEvents {
 interface DocumentState {
   /** Random per document: the prefix of every `failureId` it mints. */
   nonce: string;
-  /** Whether a capture is installed on this document (one per document). */
-  installed: boolean;
-  /** Whether the duplicate-install warning was already logged. */
-  warnedDuplicate: boolean;
+  /** The next `failureId` sequence number on this document. */
+  sequence: number;
+  /** The installs currently owning the capture; it runs while any remain. */
+  owners: Set<Emit>;
+  /** Stops the running capture; `null` when none runs. */
+  teardown: (() => void) | null;
   /**
    * `performance.now()` at the last uninstall: an entry that ended by then was
    * observed by that install. `null` before any uninstall.
@@ -138,8 +144,9 @@ interface DocumentState {
 function freshDocumentState(): DocumentState {
   return {
     nonce: randomToken(),
-    installed: false,
-    warnedDuplicate: false,
+    sequence: 0,
+    owners: new Set(),
+    teardown: null,
     observedUntil: null,
     navigationRead: false,
     blindSpots: new Set(),
@@ -198,13 +205,6 @@ function randomToken(): string {
   }
 }
 
-/** One Resource Timing entry's identity within a document; the URL is redacted. */
-function entryKey(sample: ResourceSample): string {
-  return `${sample.initiatorType}|${sample.startTime}|${redactRequestUrl(sample.name).url}`;
-}
-
-/** Initiators whose failure the network capture reports with a status. */
-const REQUEST_INITIATORS = new Set(['fetch', 'xmlhttprequest', 'beacon', 'ping', 'other']);
 /** Initiators whose failure the resource-errors capture reports as an element error. */
 const ELEMENT_INITIATORS = new Set(['img', 'script', 'link', 'css']);
 
@@ -235,7 +235,12 @@ function restoreStoredEvent(value: unknown): ResourceStatusCapturedEvent | null 
         !(v.responseStatus === null || isFiniteNumber(v.responseStatus)) ||
         !isFiniteNumber(v.startTime) ||
         !isFiniteNumber(v.responseEnd) ||
-        typeof v.failureId !== 'string'
+        typeof v.failureId !== 'string' ||
+        !(
+          v.reportedLiveAs === undefined ||
+          v.reportedLiveAs === 'network' ||
+          v.reportedLiveAs === 'resource-error'
+        )
       ) {
         return null;
       }
@@ -250,6 +255,9 @@ function restoreStoredEvent(value: unknown): ResourceStatusCapturedEvent | null 
         startTime: v.startTime,
         responseEnd: v.responseEnd,
         failureId: v.failureId,
+        ...(v.reportedLiveAs === 'network' || v.reportedLiveAs === 'resource-error'
+          ? { reportedLiveAs: v.reportedLiveAs }
+          : {}),
       };
     }
     case 'observer-unavailable':
@@ -313,49 +321,98 @@ function isCarried(event: ResourceStatusCapturedEvent): boolean {
   }
 }
 
-/** Read and clear the previous document's events. Never throws. */
-function takePreviousDocumentEvents(): ResourceStatusCapturedEvent[] {
-  const storage = getSessionStorage();
-  if (!storage) return [];
+/**
+ * The events of a stored carry that is well-formed and young enough, or
+ * `null` when it is not (garbage, whoever it was for).
+ */
+function carryEvents(parsed: Partial<StoredEvents>): ResourceStatusCapturedEvent[] | null {
+  if (parsed.v !== STORAGE_VERSION || !Array.isArray(parsed.events)) return null;
+  const age = isFiniteNumber(parsed.writtenAt) ? Date.now() - parsed.writtenAt : NaN;
+  if (!(age >= 0 && age <= PREVIOUS_DOCUMENT_MAX_AGE_MS)) return null;
+  if (typeof parsed.writtenBy !== 'string') return null;
+  return parsed.events
+    .map(restoreStoredEvent)
+    .filter((e): e is ResourceStatusCapturedEvent => e !== null)
+    .slice(-PREVIOUS_DOCUMENT_LIMIT);
+}
+
+/** Read the stored carry, or `null` when there is none or storage is unreadable. Never throws. */
+function readCarry(storage: Storage): Partial<StoredEvents> | 'garbage' | null {
   let raw: string | null;
   try {
     raw = storage.getItem(STORAGE_KEY);
-    storage.removeItem(STORAGE_KEY);
   } catch {
-    return [];
+    return null;
   }
-  if (raw === null) return [];
+  if (raw === null) return null;
   try {
-    const parsed = JSON.parse(raw) as Partial<StoredEvents>;
-    if (parsed.v !== STORAGE_VERSION || !Array.isArray(parsed.events)) return [];
-    const age = isFiniteNumber(parsed.writtenAt) ? Date.now() - parsed.writtenAt : NaN;
-    if (!(age >= 0 && age <= PREVIOUS_DOCUMENT_MAX_AGE_MS)) return [];
-    if (typeof parsed.writtenBy !== 'string' || !precededThisDocument(parsed.writtenBy)) return [];
-    return parsed.events
-      .map(restoreStoredEvent)
-      .filter((e): e is ResourceStatusCapturedEvent => e !== null)
-      .slice(-PREVIOUS_DOCUMENT_LIMIT);
+    return JSON.parse(raw) as Partial<StoredEvents>;
   } catch {
-    return [];
+    return 'garbage';
   }
 }
 
-export function installResourceStatusCapture(emit: Emit): () => void {
+function removeCarry(storage: Storage): void {
+  try {
+    storage.removeItem(STORAGE_KEY);
+  } catch {
+    // Blocked storage: nothing was readable for a later document either.
+  }
+}
+
+/**
+ * Take the previous document's carry: it is removed only once it passes every
+ * gate. Garbage (malformed, wrong version, too old) is removed too; a carry
+ * that did not precede this document (the referrer gate) is left in place.
+ * Never throws.
+ */
+function takePreviousDocumentEvents(): ResourceStatusCapturedEvent[] {
+  const storage = getSessionStorage();
+  if (!storage) return [];
+  const parsed = readCarry(storage);
+  if (parsed === null) return [];
+  const events = parsed === 'garbage' ? null : carryEvents(parsed);
+  if (events === null) {
+    removeCarry(storage);
+    return [];
+  }
+  if (parsed === 'garbage' || !precededThisDocument(parsed.writtenBy as string)) return [];
+  removeCarry(storage);
+  return events;
+}
+
+/** Whether this is the top-level document; a framed one has no carry of its own. */
+function isTopLevelDocument(): boolean {
+  try {
+    return window.top === window;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Install the capture. One capture runs per document; every install is an
+ * owner of it, events go to every current owner, and it stays armed until the
+ * last owner uninstalls. An owner that joins late does not receive the
+ * install-time events already emitted.
+ */
+export function installResourceStatusCapture(ownerEmit: Emit): () => void {
   if (typeof window === 'undefined') {
     return () => {};
   }
   const doc = documentState;
-  if (doc.installed) {
-    if (!doc.warnedDuplicate) {
-      doc.warnedDuplicate = true;
-      console.warn(
-        '[ui-bridge] resource-status capture is already installed on this document; ' +
-          'a second concurrent install is a no-op (one capture per document).'
-      );
-    }
-    return () => {};
-  }
-  doc.installed = true;
+  doc.owners.add(ownerEmit);
+  const release = () => {
+    if (!doc.owners.delete(ownerEmit) || doc.owners.size > 0) return;
+    doc.teardown?.();
+    doc.teardown = null;
+  };
+  if (doc.teardown !== null) return release;
+
+  const emit = (event: AnyCapturedEvent) => {
+    for (const owner of [...doc.owners]) owner(event);
+  };
+  const carries = isTopLevelDocument();
 
   const pushRecent = (events: ResourceStatusCapturedEvent[]) => {
     doc.recent.push(...events.filter(isCarried));
@@ -376,17 +433,25 @@ export function installResourceStatusCapture(emit: Emit): () => void {
   // An entry that finished at or after this point may have been reported by
   // the network or resource-errors capture, installed in the same pass.
   const installedAt = typeof performance !== 'undefined' ? performance.now() : null;
-  /** Consume the report of a live failure another capture already emitted. */
-  const reportedElsewhere = (sample: ResourceSample, status: number): boolean => {
-    if (installedAt === null || sample.responseEnd < installedAt) return false;
+  /** Consume the report of a live failure another capture already emitted; name that capture. */
+  const reportedElsewhere = (
+    sample: ResourceSample,
+    status: number
+  ): ResourceStatusEntryEvent['reportedLiveAs'] => {
+    if (installedAt === null || sample.responseEnd < installedAt) return undefined;
     const now = Date.now();
-    if (REQUEST_INITIATORS.has(sample.initiatorType)) {
-      return consumeObservedReport(statusReportKey(sample.name, status), now);
+    // The network capture wraps fetch only.
+    if (sample.initiatorType === 'fetch') {
+      return consumeObservedReport(statusReportKey(sample.name, status), now)
+        ? 'network'
+        : undefined;
     }
     if (ELEMENT_INITIATORS.has(sample.initiatorType)) {
-      return consumeObservedReport(elementReportKey(sample.name, sample.initiatorType), now);
+      return consumeObservedReport(elementReportKey(sample.name, sample.initiatorType), now)
+        ? 'resource-error'
+        : undefined;
     }
-    return false;
+    return undefined;
   };
 
   const onSample = (sample: ResourceSample, isNavigation = false) => {
@@ -423,11 +488,15 @@ export function installResourceStatusCapture(emit: Emit): () => void {
       responseStatus: status,
       startTime: sample.startTime,
       responseEnd: sample.responseEnd,
-      failureId: `${doc.nonce}:${entryKey(sample)}`,
+      failureId: `${doc.nonce}:${doc.sequence++}`,
     };
-    // Carried either way: the other capture's report dies with this page.
-    pushRecent([event]);
-    if (status !== null && !isNavigation && reportedElsewhere(sample, status)) return;
+    const reportedLiveAs =
+      status !== null && !isNavigation ? reportedElsewhere(sample, status) : undefined;
+    // Carried either way: the other capture's report dies with this page. The
+    // carried copy says which capture reported it, so a consumer that saw
+    // that report can exclude it.
+    pushRecent([reportedLiveAs ? { ...event, reportedLiveAs } : event]);
+    if (reportedLiveAs) return;
     emit(event);
   };
 
@@ -444,7 +513,7 @@ export function installResourceStatusCapture(emit: Emit): () => void {
 
   const deferred = setTimeout(() => {
     // 1. The previous same-tab document's failures, re-emitted once per document.
-    if (!doc.carryTaken) {
+    if (carries && !doc.carryTaken) {
       doc.carryTaken = true;
       for (const previous of takePreviousDocumentEvents()) {
         emit({ ...previous, fromPreviousDocument: true });
@@ -492,7 +561,7 @@ export function installResourceStatusCapture(emit: Emit): () => void {
   let written: { token: string; events: ResourceStatusCapturedEvent[] } | null = null;
   const onPageHide = () => {
     handle?.flush();
-    if (doc.recent.length === 0) return;
+    if (!carries || doc.recent.length === 0) return;
     const storage = getSessionStorage();
     if (!storage) return;
     try {
@@ -510,39 +579,44 @@ export function installResourceStatusCapture(emit: Emit): () => void {
       // Quota or a blocked storage: the carry-over is lost, the live events were emitted.
     }
   };
-  // A document restored from the back/forward cache is the same document. If
-  // its carry is still in storage — no later document took it — it withdraws
-  // the carry and takes the events back, so its next pagehide carries them
-  // once with whatever happened since. If a later document took it (and may
-  // have written its own carry since), those events were delivered: storage
-  // is left alone and nothing is taken back.
+  // A document restored from the back/forward cache is the same document.
+  // - Its own carry still in storage (no later document took it): it
+  //   withdraws the carry and takes the events back, so its next pagehide
+  //   carries them once with whatever happened since.
+  // - Another page's carry in storage: that page was left for this one, so
+  //   this restored document is the next one the user sees — it takes the
+  //   carry and emits it, once. (Leaving it for a later document would fail
+  //   that document's referrer gate, which names this page, not the writer.)
+  // Each carried failure is thereby delivered exactly once.
   const onPageShow = (event: PageTransitionEvent) => {
-    if (!event.persisted || written === null) return;
+    if (!carries || !event.persisted) return;
     const mine = written;
     written = null;
     const storage = getSessionStorage();
-    try {
-      const raw = storage?.getItem(STORAGE_KEY) ?? null;
-      const stored = raw === null ? null : (JSON.parse(raw) as Partial<StoredEvents>);
-      if (stored?.writerToken !== mine.token) return;
-      storage?.removeItem(STORAGE_KEY);
-    } catch {
-      // Unreadable or blocked storage: ownership is unknown, so nothing is taken back.
+    if (!storage) return;
+    const parsed = readCarry(storage);
+    if (parsed === null || parsed === 'garbage') return;
+    if (mine !== null && parsed.writerToken === mine.token) {
+      removeCarry(storage);
+      const since = doc.recent.splice(0);
+      pushRecent([...mine.events, ...since]);
       return;
     }
-    const since = doc.recent.splice(0);
-    pushRecent([...mine.events, ...since]);
+    const foreign = carryEvents(parsed);
+    if (foreign === null) return;
+    removeCarry(storage);
+    for (const previous of foreign) emit({ ...previous, fromPreviousDocument: true });
   };
   window.addEventListener('pagehide', onPageHide);
   window.addEventListener('pageshow', onPageShow);
 
-  return () => {
+  doc.teardown = () => {
     clearTimeout(deferred);
-    doc.installed = false;
     handle?.flush();
     handle?.disconnect();
     if (typeof performance !== 'undefined') doc.observedUntil = performance.now();
     window.removeEventListener('pagehide', onPageHide);
     window.removeEventListener('pageshow', onPageShow);
   };
+  return release;
 }
