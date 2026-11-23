@@ -11,7 +11,9 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  CONTROL_BATCH_REQUEST_SHAPE,
   CONTROL_BATCH_STEP_SHAPE,
+  MAX_BATCH_TOTAL_WAIT_MS,
   MAX_BATCH_WAIT_MS,
   readControlBatchRequest,
   runControlBatch,
@@ -305,6 +307,47 @@ describe('controlBatch step grammar', () => {
     'a wait with ms %j fails as that step',
     (ms) => refusedStep({ type: 'wait', ms }, '"ms" must be a finite, non-negative number', 'wait')
   );
+
+  it('a batch whose waits total more than the batch-wide cap is refused before any step runs', async () => {
+    const { response, ran } = await run({
+      actions: [
+        CLICK,
+        { type: 'wait', ms: 30_000 },
+        { type: 'wait', ms: 30_000 },
+        { type: 'wait', ms: 1 },
+      ],
+    });
+    expect(ran).toEqual([]);
+    expect(response).toMatchObject({
+      success: false,
+      results: [],
+      total: 0,
+      code: 'UB-VALIDATION-ERROR',
+      error:
+        `controlBatch request refused: its wait steps total 60001 ms, more than the 60000 ms one ` +
+        `batch may wait. Expected ${CONTROL_BATCH_REQUEST_SHAPE}.`,
+    });
+  });
+
+  it('waits totalling exactly the batch-wide cap are accepted', () => {
+    const reading = readControlBatchRequest({
+      actions: [
+        { type: 'wait', ms: 30_000 },
+        { type: 'wait', ms: MAX_BATCH_TOTAL_WAIT_MS - 30_000 },
+      ],
+    });
+    expect(reading.ok).toBe(true);
+  });
+
+  it('a wait step refused on its own does not count toward the batch-wide total', () => {
+    const reading = readControlBatchRequest({
+      actions: [
+        { type: 'wait', ms: MAX_BATCH_WAIT_MS },
+        { type: 'wait', ms: MAX_BATCH_WAIT_MS + 1 },
+      ],
+    });
+    expect(reading.ok).toBe(true);
+  });
 
   it('a wait of exactly the cap is a wait step', () => {
     expect(readControlBatchRequest({ actions: [{ type: 'wait', ms: MAX_BATCH_WAIT_MS }] })).toEqual(

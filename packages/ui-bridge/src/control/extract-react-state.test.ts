@@ -240,3 +240,33 @@ describe('extractReactState — a wrapper around a redacted element', () => {
     });
   });
 });
+
+describe('extractReactState — one walk to the component fiber', () => {
+  it("reads the host fiber's `return` once, for both the state and the withholding check", () => {
+    const div = document.createElement('div');
+    document.body.appendChild(div);
+    const component = {
+      type: function Panel() {
+        return null;
+      },
+      memoizedState: { memoizedState: 'open', next: null },
+    };
+    let returnReads = 0;
+    const host = {
+      type: 'div',
+      memoizedState: null,
+      get return() {
+        returnReads++;
+        return component;
+      },
+    };
+    attachFiber(div, host as unknown as FakeFiber);
+    expect(extractReactState(div)).toEqual({
+      props: {},
+      fiberState: ['open'],
+      componentName: 'Panel',
+    });
+    expect(returnReads).toBe(1);
+    div.remove();
+  });
+});

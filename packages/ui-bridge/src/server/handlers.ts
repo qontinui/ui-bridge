@@ -101,7 +101,7 @@ import {
   type RoutesAnswer,
 } from '../react/navigation-commands';
 import { checkNavigationUrl } from '../core/navigation-url';
-import { withElementActionEvents } from '../core/element-action-events';
+import { recordingActionExecutor } from '../core/element-action-events';
 import { extractReactState, noReactInternals } from '../control/extract-react-state';
 import { buildSdkDiagnostics, type SdkDiagnostics } from '../core/sdk-diagnostics';
 import {
@@ -1154,7 +1154,7 @@ function createFailureDetails(
  * Create server handlers for UI Bridge
  *
  * @param registry - The UI Bridge registry instance
- * @param actionExecutor - The action executor instance
+ * @param rawActionExecutor - The action executor instance (wrapped once so every element action records its `action:*` events)
  * @param config - Optional configuration
  * @returns Handler implementations for all endpoints
  *
@@ -1265,9 +1265,14 @@ const PAGE_ONLY_HANDLERS = [
 
 export function createHandlers(
   registry: RegistryLike,
-  actionExecutor: ActionExecutorLike,
+  rawActionExecutor: ActionExecutorLike,
   config: CreateHandlersConfig = {}
 ): UIBridgeServerHandlers {
+  // Every element action this server runs — the route's, a batch step's, the
+  // change tracker's, the NL executor's — goes through this ONE executor, so
+  // each records its `action:*` events on the registry exactly once
+  // (`../core/element-action-events.ts`).
+  const actionExecutor = recordingActionExecutor(rawActionExecutor, registry);
   // Create AI module instances
   const searchEngine = new SearchEngine();
   const nlExecutor = new NLActionExecutor();
@@ -7469,19 +7474,6 @@ export function createHandlers(
     },
   };
 
-  // Every element action — the route's, a batch step's — runs between its
-  // `action:started` and `action:completed` / `action:failed` events, so the
-  // registry's `ElementEventLog` records it (`../core/element-action-events.ts`)
-  // as the page's `executeElementAction` command does.
-  const runElementAction = handlers.executeElementAction;
-  handlers.executeElementAction = (id: string, request: ControlActionRequest) =>
-    withElementActionEvents(
-      registry,
-      id,
-      typeof request?.action === 'string' ? request.action : '',
-      () => runElementAction(id, request)
-    );
-
   if (!pageRuntime) {
     // These read or drive the live page itself (history, viewport, layout,
     // computed styles, the router's links) and have nothing to fall back on
@@ -7501,7 +7493,7 @@ export function createHandlers(
  */
 export function createAIHandlers(
   registry: RegistryLike,
-  actionExecutor: ActionExecutorLike
+  rawActionExecutor: ActionExecutorLike
 ): Pick<
   UIBridgeServerHandlers,
   | 'aiSearch'
@@ -7513,6 +7505,8 @@ export function createAIHandlers(
   | 'getSemanticDiff'
   | 'getPageSummary'
 > {
+  // As `createHandlers`: one recording executor (`../core/element-action-events.ts`).
+  const actionExecutor = recordingActionExecutor(rawActionExecutor, registry);
   const searchEngine = new SearchEngine();
   const nlExecutor = new NLActionExecutor();
   const assertionExecutor = new AssertionExecutor();
