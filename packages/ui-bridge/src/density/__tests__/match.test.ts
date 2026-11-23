@@ -84,7 +84,11 @@ describe('resolveDensityMatcher', () => {
 
   it('within is unresolved while the capture has no structure', () => {
     expect(
-      resolveDensityMatcher(base(), { tag: 'li', within: { idPrefix: 'app.orders' } })
+      resolveDensityMatcher(
+        // A capture file written before structure was resolved.
+        { ...base(), structureResolved: false },
+        { tag: 'li', within: { idPrefix: 'app.orders' } }
+      )
     ).toEqual({
       status: 'unresolved',
       reason: 'structure-not-resolved',

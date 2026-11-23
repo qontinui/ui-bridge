@@ -118,7 +118,7 @@ describe('captureDensityFromSnapshot', () => {
     expect(bare.observedAt).toBe('2026-11-23T09:00:00.000Z');
     expect(bare.snapshotId).toBe('snap-synthetic-1');
     expect(bare.capturedBy).toEqual({ package: '@qontinui/ui-bridge', version: '0.0.0-test' });
-    expect(bare.structureResolved).toBe(false);
+    expect(bare.structureResolved).toBe(true);
   });
 
   it('answers in an Observation from the producer it was given, with the host package in source', () => {
@@ -543,13 +543,15 @@ describe('captureDensityFromSnapshot', () => {
     expect(by['app.panel'].interactive).toBe(false);
   });
 
-  it('structureBy is xpath when the item has an xpath chain, structure left unresolved', () => {
-    const item = one({ id: 'app.a', xpath: '//*[@id="main"]/div[2]/span[1]' });
-    expect(item.structureBy).toBe('xpath');
-    expect([item.parent, item.path, item.landmark, item.ownChars]).toEqual([
+  it('the structure pass runs on the capture: a chain anchored at an unregistered id falls back to geometry', () => {
+    const item = one({ id: 'app.a', text: 'Hello', xpath: '//*[@id="main"]/div[2]/span[1]' });
+    // The anchor `main` is not registered and nothing contains the item.
+    expect(item.structureBy).toBe('geometry');
+    expect([item.parent, item.path, item.landmark, item.ownChars, item.blockKey]).toEqual([
       null,
+      ['*', 'div'],
       null,
-      null,
+      5,
       null,
     ]);
   });

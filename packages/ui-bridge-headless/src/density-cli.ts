@@ -13,7 +13,9 @@
  * each with its `Observation` from producer `sdk/density`, and `next[]`.
  *
  * In this release `measure` answers the capture summary — the cell, the
- * viewport, the bases and the coverage. `--capture-out` writes the text-free
+ * viewport, the bases and the coverage — and the structure summary: leaves,
+ * kinds by the rule that decided them (`kindBy`), blocks, pins, and how many
+ * items took each `structureBy`. `--capture-out` writes the text-free
  * `ui-bridge/density-capture@1`, which is how a cell is kept for a later
  * `diff` without keeping the snapshot (which carries the page's text).
  *
@@ -32,7 +34,7 @@
  * The density core is the generated copy under `./density/` (scripts/sync-density.mjs),
  * never `@qontinui/ui-bridge`: the SDK depends on this package, not the reverse.
  *
- * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change, Phase 2.
+ * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change, Phases 2 and 3.
  */
 
 import { fstatSync, readFileSync, statSync, writeFileSync } from 'node:fs';
@@ -44,6 +46,7 @@ import {
   captureDensityFromSnapshot,
   densityAsksHash,
   parseDensityTargets,
+  summarizeDensityStructure,
   type DensityCapture,
   type DensityCaptureBases,
   type DensityCaptureViewport,
@@ -51,6 +54,7 @@ import {
   type DensityCoverage,
   type DensityProbeResult,
   type DensityProducer,
+  type DensityStructureSummary,
   type DensityTargets,
 } from './density/index.js';
 import { Observation } from './observation/observation.js';
@@ -192,6 +196,8 @@ export interface DensityCaptureSummary {
   probe: DensityProbeResult | null;
   items: number;
   structureResolved: boolean;
+  /** Leaves, kinds by `kindBy`, blocks, pins and the `structureBy` counts. */
+  structure: DensityStructureSummary;
   snapshotId: string | null;
   observedAt: string | null;
   targetsHash: string | null;
@@ -253,6 +259,7 @@ export function measureDensityCell(
         probe: capture.probe,
         items: capture.items.length,
         structureResolved: capture.structureResolved,
+        structure: summarizeDensityStructure(capture, input.targets),
         snapshotId: capture.snapshotId,
         observedAt: capture.observedAt,
         targetsHash: capture.targetsHash,

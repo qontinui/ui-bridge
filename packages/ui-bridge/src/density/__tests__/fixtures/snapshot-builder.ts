@@ -8,7 +8,7 @@
  */
 
 import type { ControlSnapshot, SnapshotViewportContext } from '../../../control/types';
-import type { ElementState } from '../../../core/types';
+import type { BridgeSnapshot, ElementState } from '../../../core/types';
 import type { Scrubbed } from '../../../core/redaction';
 import type { ElementRelationship } from '../../../relationships/types';
 
@@ -16,6 +16,7 @@ import type { ElementRelationship } from '../../../relationships/types';
 export type DensityTestSnapshotElement = ControlSnapshot['elements'][number] & {
   uiBridgeId?: string;
   origin?: 'hook' | 'auto';
+  stableRef?: NonNullable<BridgeSnapshot['elements'][number]['stableRef']>;
 };
 
 /** A snapshot, plus the identity fields `BridgeSnapshot` adds. */
@@ -47,6 +48,12 @@ export interface DensityTestElementSpec {
   redacted?: boolean;
   scrollInfo?: NonNullable<ElementState['scrollInfo']>;
   xpath?: string;
+  /** `identifier.htmlId`. */
+  htmlId?: string;
+  /** `identifier.testId`. */
+  testId?: string;
+  /** `stableRef.semanticPath`. */
+  semanticPath?: string;
 }
 
 const BASE_STYLES: NonNullable<ElementState['computedStyles']> = {
@@ -117,8 +124,20 @@ export function densityTestElement(spec: DensityTestElementSpec): DensityTestSna
     mounted: true,
     category: spec.category ?? 'content',
     tagName: spec.tag ?? 'div',
-    identifier: { xpath: spec.xpath ?? `//*[@id="${spec.id}"]`, selector: `#${spec.id}` },
+    identifier: {
+      xpath: spec.xpath ?? `//*[@id="${spec.id}"]`,
+      selector: `#${spec.id}`,
+      ...(spec.htmlId !== undefined ? { htmlId: spec.htmlId } : {}),
+      ...(spec.testId !== undefined ? { testId: spec.testId } : {}),
+    },
   };
+  if (spec.semanticPath !== undefined) {
+    row.stableRef = {
+      id: spec.id,
+      fingerprint: 'synthetic',
+      semanticPath: spec.semanticPath,
+    };
+  }
   if (spec.role !== undefined) row.role = spec.role;
   if (spec.uiBridgeId !== undefined) row.uiBridgeId = spec.uiBridgeId;
   if (spec.origin !== undefined) row.origin = spec.origin;
