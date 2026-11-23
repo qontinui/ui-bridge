@@ -12,6 +12,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   CONTROL_BATCH_STEP_SHAPE,
+  MAX_BATCH_WAIT_MS,
   readControlBatchRequest,
   runControlBatch,
   type ControlBatchDeps,
@@ -289,6 +290,31 @@ describe('controlBatch step grammar', () => {
   it.each([[-1], [Number.NaN], ['5'], [undefined]])('a wait with ms %j fails as that step', (ms) =>
     refusedStep({ type: 'wait', ms }, '"ms" must be a finite, non-negative number', 'wait')
   );
+
+  it.each([[MAX_BATCH_WAIT_MS + 1], [2 ** 31], [Number.MAX_SAFE_INTEGER]])(
+    'a wait with ms %j, above the cap, fails as that step',
+    (ms) =>
+      refusedStep(
+        { type: 'wait', ms },
+        `"ms" must be at most 60000 (the longest one wait step may wait), got ${ms}`,
+        'wait'
+      )
+  );
+
+  it.each([[Number.POSITIVE_INFINITY], [Number.NEGATIVE_INFINITY], [-0.5]])(
+    'a wait with ms %j fails as that step',
+    (ms) => refusedStep({ type: 'wait', ms }, '"ms" must be a finite, non-negative number', 'wait')
+  );
+
+  it('a wait of exactly the cap is a wait step', () => {
+    expect(readControlBatchRequest({ actions: [{ type: 'wait', ms: MAX_BATCH_WAIT_MS }] })).toEqual(
+      {
+        ok: true,
+        steps: [{ kind: 'wait', type: 'wait', ms: MAX_BATCH_WAIT_MS }],
+        stopOnError: true,
+      }
+    );
+  });
 
   it('a wait with a key it does not read fails as that step', () =>
     refusedStep({ type: 'wait', ms: 1, seconds: 2 }, '"seconds" not read by a wait step', 'wait'));

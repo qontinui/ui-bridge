@@ -10,11 +10,20 @@
  * Pure and browser-safe: no DOM, no Node API beyond the WHATWG `URL` both
  * runtimes ship.
  *
- * What it decides, and only that: `url` resolved against `base` must parse,
- * and its scheme must be `http:` or `https:`. Relative forms (`/a`, `a`,
- * `?q`, `#h`) inherit `base`'s scheme and pass. A caller that has a stricter
- * FORMAT rule of its own (the relay `pageNavigate`, which refuses a bare
- * `settings`) keeps it at its own call site.
+ * What it decides, and only that:
+ *   - A ROOT-RELATIVE path (`/settings`, `/a?b#c` — one `/` not followed by
+ *     another `/` or a `\`, after the trimming the URL parser itself does)
+ *     is a path on the page's own origin and always passes, whatever `base`'s
+ *     scheme: it cannot name a scheme of its own, and it is what an app served
+ *     from `tauri://localhost`, `file://` or an `about:blank` frame navigates
+ *     with. Resolving it against such a base would refuse it (or throw).
+ *   - Anything else is resolved against `base`: it must parse, and its scheme
+ *     must be `http:` or `https:`. Other relative forms (`a`, `?q`, `#h`)
+ *     inherit `base`'s scheme, so they pass on an http(s) page and are refused
+ *     on any other.
+ * A caller that has a stricter FORMAT rule of its own (the relay
+ * `pageNavigate`, which refuses a bare `settings`) keeps it at its own call
+ * site.
  */
 
 /** The codes a refusal carries; `diagnostics` maps both to `UB-VALIDATION-ERROR`. */
@@ -35,8 +44,33 @@ const ALLOWED_PROTOCOLS: readonly string[] = ['http:', 'https:'];
  */
 export const RELAY_NAVIGATION_BASE = 'http://relay.invalid/';
 
+/**
+ * `url` as the WHATWG URL parser sees it before parsing: leading and trailing
+ * C0 controls and spaces stripped, every tab and newline removed. Without it
+ * `" /\t/evil.test"` would look root-relative here and parse as `//evil.test`.
+ */
+function parserNormalized(url: string): string {
+  let start = 0;
+  let end = url.length;
+  while (start < end && url.charCodeAt(start) <= 0x20) start++;
+  while (end > start && url.charCodeAt(end - 1) <= 0x20) end--;
+  let out = '';
+  for (let i = start; i < end; i++) {
+    const c = url.charCodeAt(i);
+    if (c !== 0x09 && c !== 0x0a && c !== 0x0d) out += url[i];
+  }
+  return out;
+}
+
+/** A path on the page's own origin: `/` not followed by `/` or `\`. */
+function isRootRelativePath(url: string): boolean {
+  const normalized = parserNormalized(url);
+  return normalized.startsWith('/') && normalized[1] !== '/' && normalized[1] !== '\\';
+}
+
 /** Decide whether a tab may be navigated to `url`, resolved against `base`. */
 export function checkNavigationUrl(url: string, base: string): NavigationUrlVerdict {
+  if (isRootRelativePath(url)) return { ok: true };
   let parsed: URL;
   try {
     parsed = new URL(url, base);

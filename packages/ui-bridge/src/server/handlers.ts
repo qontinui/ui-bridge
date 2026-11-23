@@ -95,10 +95,13 @@ import {
   getRoutesCommand,
   isNavigationFailure,
   navigateByAdapterCommand,
+  navigationRefusal,
   type NavigatedAnswer,
   type NavigationSlots,
   type RoutesAnswer,
 } from '../react/navigation-commands';
+import { checkNavigationUrl } from '../core/navigation-url';
+import { withElementActionEvents } from '../core/element-action-events';
 import { extractReactState, noReactInternals } from '../control/extract-react-state';
 import { buildSdkDiagnostics, type SdkDiagnostics } from '../core/sdk-diagnostics';
 import {
@@ -511,6 +514,9 @@ export interface RegistryLike {
   getElementHistory?(elementId: string, options?: ElementHistoryOptions): ElementLogEntry[];
   /** `false` when the registry keeps no element event log (`react/history-commands.ts`). */
   hasElementHistory?(): boolean;
+
+  /** Emit a bridge event (the element-action events, `../core/element-action-events.ts`). */
+  dispatchEvent?<T>(type: import('../core').BridgeEventType, data: T): void;
 
   // Event subscription (for push-based change observation)
   on?<T = unknown>(
@@ -3979,20 +3985,13 @@ export function createHandlers(
         }
         const mode: 'hard' | 'soft' = rawMode ?? 'hard';
 
-        // Validate URL scheme to prevent javascript:/data: injection
-        try {
-          const parsed = new URL(request.url, window.location.origin);
-          if (!['http:', 'https:'].includes(parsed.protocol) && !request.url.startsWith('/')) {
-            return error(
-              'Invalid URL protocol — only http/https and relative paths allowed',
-              'INVALID_REQUEST'
-            );
-          }
-        } catch {
-          // Relative URLs like "/foo" won't parse without a base — they're safe
-          if (!request.url.startsWith('/')) {
-            return error('Invalid URL format', 'INVALID_REQUEST');
-          }
+        // The one navigation URL gate (`../core/navigation-url.ts`), as the
+        // page's `pageNavigate` and every `navigateByAdapter` ask it: one rule,
+        // one code set (INVALID_URL_PROTOCOL / INVALID_URL_FORMAT →
+        // UB-VALIDATION-ERROR), refused before anything navigates.
+        const urlVerdict = checkNavigationUrl(request.url, window.location.href);
+        if (!urlVerdict.ok) {
+          return liftInnerFailure(navigationRefusal(urlVerdict.code, urlVerdict.message));
         }
 
         if (mode === 'soft') {
@@ -7444,8 +7443,17 @@ export function createHandlers(
           );
           // A step's answer is the action's own response: the envelope's
           // `data` (the enriched failure carries `failureDetails` there), or
-          // the envelope itself when it carries none.
-          return answer.data !== undefined ? answer.data : answer;
+          // the envelope itself when it carries none — and the envelope
+          // itself whenever it FAILED but its `data` does not say so (a
+          // catch-arm `error(…)` with partial data), so the step's verdict is
+          // never read off a `data` that cannot carry one.
+          const { data } = answer;
+          const dataSaysFailed =
+            data !== null &&
+            typeof data === 'object' &&
+            (data as { success?: unknown }).success === false;
+          if (answer.success === false && !dataSaysFailed) return answer;
+          return data !== undefined ? data : answer;
         },
         snapshot: () => registry.createSnapshot(),
         now: () => performance.now(),
@@ -7460,6 +7468,19 @@ export function createHandlers(
       } as APIResponse<ControlBatchResponse>;
     },
   };
+
+  // Every element action — the route's, a batch step's — runs between its
+  // `action:started` and `action:completed` / `action:failed` events, so the
+  // registry's `ElementEventLog` records it (`../core/element-action-events.ts`)
+  // as the page's `executeElementAction` command does.
+  const runElementAction = handlers.executeElementAction;
+  handlers.executeElementAction = (id: string, request: ControlActionRequest) =>
+    withElementActionEvents(
+      registry,
+      id,
+      typeof request?.action === 'string' ? request.action : '',
+      () => runElementAction(id, request)
+    );
 
   if (!pageRuntime) {
     // These read or drive the live page itself (history, viewport, layout,

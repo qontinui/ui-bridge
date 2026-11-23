@@ -196,6 +196,7 @@ import { extractReactState, noReactInternals } from '../control/extract-react-st
 import { buildSdkDiagnostics } from '../core/sdk-diagnostics';
 import { elementHistoryCommand, recentEffectsCommand } from './history-commands';
 import { checkNavigationUrl } from '../core/navigation-url';
+import { withElementActionEvents } from '../core/element-action-events';
 import type { NavigationAdapter } from '../navigation/navigation-adapter';
 import {
   getRoutesCommand,
@@ -1557,11 +1558,32 @@ async function relayExecuteWithDiff(payload: P, bridge: BridgeAccess): Promise<A
   });
 }
 
+/**
+ * Marks the inner `executeCommand` call {@link withElementActionEvents} makes,
+ * so the action it records is dispatched once. Not exported: no caller can
+ * skip the events.
+ */
+const ELEMENT_ACTION_EVENTS_EMITTED: unique symbol = Symbol('elementActionEventsEmitted');
+
 export async function executeCommand(
   action: string,
   payload: P,
-  bridge: BridgeAccess
+  bridge: BridgeAccess,
+  eventsEmitted?: typeof ELEMENT_ACTION_EVENTS_EMITTED
 ): Promise<unknown> {
+  // An element action runs between its `action:started` and
+  // `action:completed` / `action:failed` events on the global registry, so its
+  // `ElementEventLog` (and `getElementHistory`) records what was done to the
+  // element (`../core/element-action-events.ts`). A payload the grammar
+  // refuses names no action that ran, and records nothing.
+  if (action === 'executeElementAction' && eventsEmitted !== ELEMENT_ACTION_EVENTS_EMITTED) {
+    const parsed = readElementActionPayload(payload);
+    if (parsed.ok) {
+      return withElementActionEvents(getGlobalRegistry(), parsed.id, parsed.request.action, () =>
+        executeCommand(action, payload, bridge, ELEMENT_ACTION_EVENTS_EMITTED)
+      );
+    }
+  }
   const g = getBridge();
 
   // For AI actions, wait for the DOM to settle BEFORE reading the registry

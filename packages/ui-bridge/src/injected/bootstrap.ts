@@ -7,7 +7,10 @@
  *   1. `new UIBridgeRegistry()` (standalone, React-free) installed as the
  *      global registry so the relay dispatcher reads from it. It carries an
  *      `ElementEventLog` at the `info` level, so `getElementHistory` answers
- *      the element's actions, state changes and errors in exec mode.
+ *      the element's actions in exec mode: every `executeElementAction`
+ *      (batch steps included) emits `action:started` and `action:completed` /
+ *      `action:failed` on this registry (`../core/element-action-events.ts`).
+ *      Registration events are `debug` and are not kept.
  *   2. `observeAndSeed` — populate + keep it live from the bare DOM via the
  *      `dom-fallback` substrate (no app cooperation).
  *   3. `window.__uiBridgeInjected.execute = (a, p) => executeCommand(a, p, bridge)`
@@ -47,8 +50,9 @@ declare const __SDK_VERSION__: string;
   enableDevControls('injected-runtime');
 
   // A driver-launched runtime exists to be inspected: keep the per-element
-  // event log (actions, state changes, errors — the `info` level) so
-  // `getElementHistory` has something to answer from.
+  // event log at the `info` level — the element actions the dispatcher emits
+  // (`action:started` / `action:completed` / `action:failed`) — so
+  // `getElementHistory` answers what was done to an element.
   const registry = new UIBridgeRegistry({
     elementEventLog: new ElementEventLog({ defaultLogLevel: 'info' }),
   });
