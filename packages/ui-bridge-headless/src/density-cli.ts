@@ -33,6 +33,7 @@
  */
 
 import { readFileSync, writeFileSync } from 'node:fs';
+import { resolve as resolvePath } from 'node:path';
 import { consumeValue, type ArgErrorFactory } from '@qontinui/ui-bridge-cli-args';
 import { isEntryModule } from './entry-guard.js';
 import {
@@ -368,6 +369,18 @@ export async function runDensityCli(
 
     if (args.captureOut !== null) {
       onStep('write-capture');
+      // Writing the capture over an input would destroy what was measured.
+      const out = resolvePath(args.captureOut);
+      for (const [flag, input] of [
+        ['--snapshot', args.snapshot],
+        ['--targets', args.targets],
+      ] as const) {
+        if (input !== null && input !== '-' && resolvePath(input) === out) {
+          throw new DensityCliArgError(
+            `--capture-out ${args.captureOut} is the ${flag} file; refusing to overwrite an input`
+          );
+        }
+      }
       if (capture === null) {
         report.captureOut = {
           path: args.captureOut,
@@ -451,7 +464,9 @@ async function main(): Promise<void> {
   for (const signal of Object.keys(SIGNAL_EXIT) as Array<keyof typeof SIGNAL_EXIT>) {
     process.on(signal, () => {
       const code = SIGNAL_EXIT[signal];
-      if (interrupting) process.exit(code);
+      // A second signal: after the answer the run is still complete (0);
+      // during an interrupted flush it ends with the signal's code at once.
+      if (interrupting) process.exit(printed ? 0 : code);
       interrupting = true;
       // The answer is already on its way: the run is complete, so it ends as
       // one, once the answer is flushed.
@@ -473,6 +488,9 @@ async function main(): Promise<void> {
       readStdin,
       writeFile: (p, t) => writeFileSync(p, t),
       stdout: (t) => {
+        // Once a signal has printed the interrupted verdict, that verdict is
+        // the run's one document: a report finishing in the same turn is dropped.
+        if (signalCode !== null) return;
         pending++;
         process.stdout.write(t, () => {
           pending--;

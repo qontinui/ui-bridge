@@ -423,6 +423,17 @@ describe('runDensityCli, in process', () => {
     expect(out.stderr).toContain('--role expects a value');
   });
 
+  it('--capture-out naming the snapshot file is a usage error, and nothing is written', async () => {
+    const { io, out } = memoryIo({ 'snap.json': JSON.stringify(BARE) });
+    const code = await runDensityCli(
+      ['measure', '--snapshot', 'snap.json', '--role', 'buyer', '--capture-out', './snap.json'],
+      io
+    );
+    expect(code).toBe(2);
+    expect(out.written).toEqual({});
+    expect(out.stderr).toContain('is the --snapshot file; refusing to overwrite an input');
+  });
+
   it('a missing snapshot file is a usage error naming it', async () => {
     const { io, out } = memoryIo({});
     const code = await runDensityCli(['measure', '--snapshot', 'gone.json', '--role', 'buyer'], io);
@@ -477,26 +488,10 @@ describe.skipIf(process.platform === 'win32')('ui-bridge-density interrupted', (
     60_000
   );
 
-  it('a signal after the answer is printed ends the run with 0 and the answer whole', async () => {
-    const run = spawnTraced(
-      ['measure', '--snapshot', '-', '--role', 'buyer', '--fixture', 'after-answer'],
-      'print'
-    );
-    run.child.stdin.write(JSON.stringify(BARE));
-    run.child.stdin.end();
-    await run.reached;
-    run.child.kill('SIGTERM');
-    const code = await run.closed;
-    // The run may already have ended by itself (0) or be ended by the signal
-    // after its answer (0): either way the code is 0 and the report is whole.
-    expect(code).toBe(0);
-    const report = JSON.parse(run.stdout()) as Report;
-    expect(report.cells[0]!.cell).toEqual({
-      role: 'buyer',
-      viewport: { width: 360, height: 740 },
-      fixture: 'after-answer',
-    });
-  }, 60_000);
+  // The signal-after-answer arm (exit 0, the answer whole) is not pinned here:
+  // the run normally exits before a signal sent after its 'print' step lands,
+  // so such a test would pass whatever the handler does. It was observed on
+  // Linux against the built bin instead (PR body).
 });
 
 describe('ui-bridge-density usage', () => {
