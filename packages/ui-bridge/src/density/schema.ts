@@ -143,6 +143,17 @@ export interface DensityItem {
   expanded: boolean | null;
   /** The id this item controls or toggles, from the snapshot's relationships. */
   controls: string | null;
+  /**
+   * `aria-selected`, when stated (a tab, an option, a list row). `null` when the
+   * snapshot does not state it; optional on read, where absence is `null`.
+   */
+  selected: boolean | null;
+  /**
+   * The id whose content this item narrows, from a declared `filters` edge of
+   * the snapshot's relationships (search -> list). Optional on read, where
+   * absence is `null`.
+   */
+  filters: string | null;
   /** SHA-256 hex of the `href`, never the URL itself. */
   href: string | null;
 }
@@ -570,7 +581,7 @@ const ITEM_KEYS = [
 ] as const;
 
 function readItem(r: Reader, value: unknown, path: string): DensityItem | null {
-  const o = r.object(value, path, ITEM_KEYS, ['blockKey']);
+  const o = r.object(value, path, ITEM_KEYS, ['blockKey', 'selected', 'filters']);
   if (!o) return null;
   return {
     id: r.string(o.id, `${path}.id`, { nonEmpty: true }),
@@ -598,6 +609,10 @@ function readItem(r: Reader, value: unknown, path: string): DensityItem | null {
     recoverable: r.booleanOrNull(o.recoverable, `${path}.recoverable`),
     expanded: r.booleanOrNull(o.expanded, `${path}.expanded`),
     controls: r.stringOrNull(o.controls, `${path}.controls`),
+    // Optional on read: a capture written before Phase 4 carried neither, and
+    // their absence is the same statement as `null` (not stated).
+    selected: o.selected === undefined ? null : r.booleanOrNull(o.selected, `${path}.selected`),
+    filters: o.filters === undefined ? null : r.stringOrNull(o.filters, `${path}.filters`),
     href: readHashOrNull(r, o.href, `${path}.href`),
   };
 }

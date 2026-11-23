@@ -1,0 +1,418 @@
+// @vitest-environment node
+/**
+ * affordances.ts over a hand-built snapshot (design test 1, continued):
+ * literal expected affordances, each with the rule that detected it.
+ *
+ * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change (Phase 4).
+ */
+import { describe, expect, it } from 'vitest';
+import { densityAffordances, summarizeDensityAffordances } from '../affordances';
+import { captureDensityFromSnapshot } from '../capture-from-snapshot';
+import { densityRepeats } from '../repeats';
+import type { DensityCapture } from '../schema';
+import {
+  DENSITY_TEST_PRODUCER,
+  densityTestSnapshot,
+  type DensityTestElementSpec,
+  type DensityTestSnapshotSpec,
+} from './fixtures/snapshot-builder';
+
+function capture(
+  elements: DensityTestElementSpec[],
+  relationships?: DensityTestSnapshotSpec['relationships']
+): DensityCapture {
+  const obs = captureDensityFromSnapshot(densityTestSnapshot({ elements, relationships }), {
+    producer: DENSITY_TEST_PRODUCER,
+    evaluatedAt: '2026-11-23T10:00:00.000Z',
+  });
+  if (obs.status !== 'measured') throw new Error(`expected measured, got ${JSON.stringify(obs)}`);
+  return obs.value;
+}
+
+const HIDES = {
+  unknown: 'input_missing',
+  reason:
+    'what a control hides is measured by the document walk; a snapshot of registered elements does not carry it',
+};
+
+const SECTION = '/html/body/main/section';
+const ASIDE = '/html/body/main/aside';
+
+/** A list section with a filter above it, a select below it and a pager after it; an aside with the rest. */
+const PAGE: DensityTestElementSpec[] = [
+  { id: 'app.orders', tag: 'section', xpath: SECTION, rect: [0, 100, 600, 500], text: '' },
+  {
+    id: 'app.orders.title',
+    tag: 'h2',
+    xpath: `${SECTION}/h2`,
+    rect: [0, 100, 300, 28],
+    text: 'Orders',
+  },
+  {
+    id: 'app.orders.state',
+    tag: 'select',
+    role: 'combobox',
+    category: 'interactive',
+    xpath: `${SECTION}/select`,
+    rect: [400, 100, 200, 28],
+    text: 'All states',
+  },
+  { id: 'app.orders.list', tag: 'ul', xpath: `${SECTION}/ul`, rect: [0, 140, 600, 196], text: '' },
+  ...[1, 2, 3, 4, 5].map(
+    (k): DensityTestElementSpec => ({
+      id: `app.orders.row-${k}`,
+      tag: 'li',
+      xpath: `${SECTION}/ul/li[${k}]`,
+      rect: [0, 140 + 40 * (k - 1), 600, 36],
+      text: `Order ${k}`,
+    })
+  ),
+  // Below the list's first row: not a filter.
+  {
+    id: 'app.orders.export',
+    tag: 'select',
+    role: 'combobox',
+    category: 'interactive',
+    xpath: `${SECTION}/div/select`,
+    rect: [0, 350, 200, 28],
+    text: 'Export as',
+  },
+  {
+    id: 'app.orders.prev',
+    tag: 'button',
+    category: 'interactive',
+    xpath: `${SECTION}/nav/button[1]`,
+    rect: [0, 390, 80, 28],
+    text: 'Previous',
+  },
+  {
+    id: 'app.orders.next',
+    tag: 'button',
+    category: 'interactive',
+    xpath: `${SECTION}/nav/button[2]`,
+    rect: [100, 390, 80, 28],
+    text: 'Next',
+  },
+  { id: 'app.side', tag: 'aside', xpath: ASIDE, rect: [700, 100, 400, 500], text: '' },
+  // Above the list's first row, but in another block: not a filter.
+  {
+    id: 'app.side.sort',
+    tag: 'select',
+    role: 'combobox',
+    category: 'interactive',
+    xpath: `${ASIDE}/select`,
+    rect: [700, 100, 200, 28],
+    text: 'Newest',
+  },
+  {
+    id: 'app.side.search',
+    tag: 'input',
+    role: 'searchbox',
+    category: 'interactive',
+    xpath: `${ASIDE}/input`,
+    rect: [700, 140, 200, 28],
+    text: '',
+  },
+  {
+    id: 'app.side.more',
+    tag: 'button',
+    category: 'interactive',
+    xpath: `${ASIDE}/button`,
+    rect: [700, 180, 120, 28],
+    text: 'More filters',
+    ariaExpanded: false,
+  },
+  {
+    id: 'app.side.panel',
+    tag: 'div',
+    xpath: `${ASIDE}/div[1]`,
+    rect: [700, 210, 400, 10],
+    text: '',
+  },
+  {
+    id: 'app.side.help',
+    tag: 'summary',
+    xpath: `${ASIDE}/details/summary`,
+    rect: [700, 230, 200, 20],
+    text: 'Help',
+    ariaExpanded: true,
+  },
+  {
+    id: 'app.side.tab-1',
+    tag: 'button',
+    role: 'tab',
+    category: 'interactive',
+    xpath: `${ASIDE}/div[2]/button[1]`,
+    rect: [700, 260, 90, 28],
+    text: 'Open',
+    ariaSelected: true,
+  },
+  {
+    id: 'app.side.tab-2',
+    tag: 'button',
+    role: 'tab',
+    category: 'interactive',
+    xpath: `${ASIDE}/div[2]/button[2]`,
+    rect: [800, 260, 90, 28],
+    text: 'Closed',
+    ariaSelected: false,
+  },
+  {
+    id: 'app.side.cell-1',
+    tag: 'span',
+    xpath: `${ASIDE}/span[1]`,
+    rect: [700, 300, 100, 20],
+    text: 'Synthetic long customer name',
+    scrollWidth: 300,
+    clientWidth: 100,
+    styles: { overflow: 'hidden' },
+  },
+  {
+    id: 'app.side.cell-2',
+    tag: 'span',
+    xpath: `${ASIDE}/span[2]`,
+    rect: [700, 330, 100, 20],
+    text: 'Synthetic long street name',
+    scrollWidth: 300,
+    clientWidth: 100,
+    styles: { overflow: 'hidden' },
+    nameSource: 'title',
+  },
+];
+
+const RELATIONSHIPS = [
+  { source: 'app.side.more', target: 'app.side.panel', type: 'controls' as const },
+];
+
+describe('affordances', () => {
+  it('runs with no DOM', () => {
+    expect(typeof document).toBe('undefined');
+  });
+
+  it('each affordance is listed with the rule that detected it', () => {
+    const c = capture(PAGE, RELATIONSHIPS);
+    expect(densityAffordances(c, null)).toEqual([
+      {
+        kind: 'search',
+        rule: 'role-searchbox',
+        id: 'app.side.search',
+        state: null,
+        controls: null,
+        repeat: null,
+        recoverable: null,
+        hides: HIDES,
+      },
+      {
+        kind: 'disclosure',
+        rule: 'aria-expanded',
+        id: 'app.side.more',
+        state: 'closed',
+        controls: 'app.side.panel',
+        repeat: null,
+        recoverable: null,
+        hides: HIDES,
+      },
+      {
+        kind: 'disclosure',
+        rule: 'summary',
+        id: 'app.side.help',
+        state: 'open',
+        controls: null,
+        repeat: null,
+        recoverable: null,
+        hides: HIDES,
+      },
+      {
+        kind: 'tab',
+        rule: 'role-tab',
+        id: 'app.side.tab-1',
+        state: 'active',
+        controls: null,
+        repeat: null,
+        recoverable: null,
+        hides: HIDES,
+      },
+      {
+        kind: 'tab',
+        rule: 'role-tab',
+        id: 'app.side.tab-2',
+        state: 'inactive',
+        controls: null,
+        repeat: null,
+        recoverable: null,
+        hides: HIDES,
+      },
+      {
+        kind: 'truncation',
+        rule: 'scroll-width',
+        id: 'app.side.cell-1',
+        state: null,
+        controls: null,
+        repeat: null,
+        recoverable: null,
+        hides: HIDES,
+      },
+      {
+        kind: 'truncation',
+        rule: 'scroll-width',
+        id: 'app.side.cell-2',
+        state: null,
+        controls: null,
+        repeat: null,
+        recoverable: true,
+        hides: HIDES,
+      },
+      {
+        kind: 'abbreviation',
+        rule: 'title',
+        id: 'app.side.cell-2',
+        state: null,
+        controls: null,
+        repeat: null,
+        recoverable: true,
+        hides: HIDES,
+      },
+      {
+        kind: 'filter',
+        rule: 'control-above-repeat',
+        id: 'app.orders.state',
+        state: null,
+        controls: null,
+        repeat: 'repeat:app.orders.row-1',
+        recoverable: null,
+        hides: HIDES,
+      },
+      {
+        kind: 'pager',
+        rule: 'nav-after-repeat',
+        id: 'app.orders.prev',
+        state: null,
+        controls: null,
+        repeat: 'repeat:app.orders.row-1',
+        recoverable: null,
+        hides: HIDES,
+      },
+      {
+        kind: 'pager',
+        rule: 'nav-after-repeat',
+        id: 'app.orders.next',
+        state: null,
+        controls: null,
+        repeat: 'repeat:app.orders.row-1',
+        recoverable: null,
+        hides: HIDES,
+      },
+    ]);
+  });
+
+  it('the list finds its finder above its first row, never a control below it or in another block', () => {
+    const [rep] = densityRepeats(capture(PAGE, RELATIONSHIPS), null);
+    expect([rep.id, rep.rows, rep.scope, rep.finder]).toEqual([
+      'repeat:app.orders.row-1',
+      5,
+      'block+parent',
+      { id: 'app.orders.state', by: 'position' },
+    ]);
+  });
+
+  it('a declared filters edge makes a filter, and the finder, wherever the control sits', () => {
+    const c = capture(PAGE, [
+      ...RELATIONSHIPS,
+      { source: 'app.side.search', target: 'app.orders.list', type: 'filters' },
+    ]);
+    const filters = densityAffordances(c, null).filter((a) => a.kind === 'filter');
+    expect(filters.map((a) => [a.id, a.rule, a.repeat])).toEqual([
+      ['app.orders.state', 'control-above-repeat', 'repeat:app.orders.row-1'],
+      ['app.side.search', 'declared-filters', 'repeat:app.orders.row-1'],
+    ]);
+    expect(densityRepeats(c, null)[0].finder).toEqual({
+      id: 'app.side.search',
+      by: 'relationship',
+    });
+  });
+
+  it('a select with a declared controls edge to the list is a filter by that edge', () => {
+    const c = capture(PAGE, [
+      ...RELATIONSHIPS,
+      { source: 'app.side.sort', target: 'app.orders.list', type: 'controls' },
+    ]);
+    const filters = densityAffordances(c, null).filter((a) => a.kind === 'filter');
+    expect(filters.map((a) => [a.id, a.rule])).toEqual([
+      ['app.orders.state', 'control-above-repeat'],
+      ['app.side.sort', 'declared-controls'],
+    ]);
+  });
+
+  it('a disclosure with no aria-expanded and no summary is not one; a summary with no state is', () => {
+    const els = PAGE.map((e) => {
+      if (e.id === 'app.side.more') return { ...e, ariaExpanded: undefined };
+      if (e.id === 'app.side.help') return { ...e, ariaExpanded: undefined };
+      return e;
+    });
+    const disclosures = densityAffordances(capture(els), null).filter(
+      (a) => a.kind === 'disclosure'
+    );
+    expect(disclosures.map((a) => [a.id, a.rule, a.state])).toEqual([
+      ['app.side.help', 'summary', null],
+    ]);
+  });
+
+  it('a menu reads open or closed from its visibility', () => {
+    const els: DensityTestElementSpec[] = [
+      {
+        id: 'app.menu',
+        tag: 'ul',
+        role: 'menu',
+        xpath: '/html/body/ul',
+        rect: [0, 0, 200, 100],
+        text: '',
+        visible: false,
+        visibilityReason: 'hidden',
+      },
+      {
+        id: 'app.menu.item',
+        tag: 'li',
+        role: 'menuitem',
+        category: 'interactive',
+        xpath: '/html/body/ul/li',
+        rect: [0, 0, 200, 20],
+        text: 'Rename',
+      },
+    ];
+    expect(densityAffordances(capture(els), null).map((a) => [a.id, a.rule, a.state])).toEqual([
+      ['app.menu', 'role-menu', 'closed'],
+      ['app.menu.item', 'role-menuitem', 'open'],
+    ]);
+  });
+
+  it('the summary counts by kind and rule, states the static basis, and caps the list', () => {
+    const report = summarizeDensityAffordances(capture(PAGE, RELATIONSHIPS), null, undefined, 2);
+    expect(report).toMatchObject({
+      structureResolved: true,
+      interactionsBasis: 'static',
+      byKind: {
+        disclosure: 2,
+        tab: 2,
+        menu: 0,
+        search: 1,
+        filter: 1,
+        pager: 2,
+        truncation: 2,
+        abbreviation: 1,
+      },
+      byRule: {
+        'role-searchbox': 1,
+        'aria-expanded': 1,
+        summary: 1,
+        'role-tab': 2,
+        'scroll-width': 2,
+        title: 1,
+        'control-above-repeat': 1,
+        'nav-after-repeat': 2,
+      },
+      shown: 2,
+      total: 11,
+      truncated: true,
+    });
+  });
+});

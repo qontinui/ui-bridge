@@ -41,6 +41,7 @@ export interface DensityTestElementSpec {
   clientWidth?: number;
   nameSource?: ElementState['nameSource'];
   ariaExpanded?: boolean;
+  ariaSelected?: boolean;
   href?: string;
   dataset?: Record<string, string>;
   uiBridgeId?: string;
@@ -110,6 +111,7 @@ export function densityTestElement(spec: DensityTestElementSpec): DensityTestSna
   if (spec.redacted) state.redaction = { content: true };
   if (spec.nameSource !== undefined) state.nameSource = spec.nameSource;
   if (spec.ariaExpanded !== undefined) state.ariaExpanded = spec.ariaExpanded;
+  if (spec.ariaSelected !== undefined) state.ariaSelected = spec.ariaSelected;
   if (spec.href !== undefined) state.href = scrub(spec.href);
   if (spec.dataset !== undefined) state.dataset = spec.dataset;
   if (spec.scrollInfo !== undefined) state.scrollInfo = spec.scrollInfo;
