@@ -32,7 +32,7 @@
  * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change, Phase 2.
  */
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import { resolve as resolvePath } from 'node:path';
 import { consumeValue, type ArgErrorFactory } from '@qontinui/ui-bridge-cli-args';
 import { isEntryModule } from './entry-guard.js';
@@ -134,7 +134,12 @@ export function parseDensityArgs(argv: string[]): DensityCliArgs {
   let fixture: string | null = null;
   let targets: string | null = null;
   let captureOut: string | null = null;
+  const seen = new Set<string>();
   const value = (flag: string, raw: string | undefined): string => {
+    // A flag given twice is refused: keeping the last `--role` silently would
+    // measure the cell for an audience the caller did not mean.
+    if (seen.has(flag)) throw mkError(`${flag} is given more than once`);
+    seen.add(flag);
     const v = consumeValue(flag, raw, mkError);
     if (v === null || v.trim() === '') throw mkError(`${flag} expects a value`);
     return v;
@@ -159,6 +164,8 @@ export function parseDensityArgs(argv: string[]): DensityCliArgs {
         break;
       case '--capture-out':
         captureOut = value('--capture-out', rest[++i]);
+        // Standard output already carries the report; `-` here would name a file.
+        if (captureOut === '-') throw mkError('--capture-out takes a file path, not -');
         break;
       default:
         if (arg !== undefined && arg.startsWith('-') && arg !== '-') {
@@ -275,6 +282,8 @@ export interface DensityCliIo {
   readFile(path: string): string;
   readStdin(): Promise<string>;
   writeFile(path: string, text: string): void;
+  /** Whether two paths name one file (a case variant, a symlink, a hard link). Defaults to resolved-path equality. */
+  sameFile?(a: string, b: string): boolean;
   stdout(text: string): void;
   stderr(text: string): void;
 }
@@ -370,12 +379,12 @@ export async function runDensityCli(
     if (args.captureOut !== null) {
       onStep('write-capture');
       // Writing the capture over an input would destroy what was measured.
-      const out = resolvePath(args.captureOut);
+      const same = io.sameFile ?? ((a: string, b: string) => resolvePath(a) === resolvePath(b));
       for (const [flag, input] of [
         ['--snapshot', args.snapshot],
         ['--targets', args.targets],
       ] as const) {
-        if (input !== null && input !== '-' && resolvePath(input) === out) {
+        if (input !== null && input !== '-' && same(input, args.captureOut)) {
           throw new DensityCliArgError(
             `--capture-out ${args.captureOut} is the ${flag} file; refusing to overwrite an input`
           );
@@ -430,6 +439,23 @@ const SIGNAL_EXIT: Record<'SIGHUP' | 'SIGINT' | 'SIGTERM', number> = {
   SIGTERM: 143,
 };
 
+/**
+ * Whether two paths name one file on disk: the same device and inode when the
+ * second exists (catching a case variant on a case-insensitive filesystem, a
+ * symlink and a hard link). A path that does not exist yet names no input.
+ */
+export function sameFileOnDisk(a: string, b: string): boolean {
+  if (resolvePath(a) === resolvePath(b)) return true;
+  try {
+    const sa = statSync(a);
+    const sb = statSync(b);
+    return sa.dev === sb.dev && sa.ino === sb.ino && sa.ino !== 0;
+  } catch {
+    // The output does not exist yet, so it cannot be the input.
+    return false;
+  }
+}
+
 async function main(): Promise<void> {
   let step: DensityCliStep = 'parse-args';
   // Set once anything is on stdout (the report, the usage, the version): an
@@ -447,8 +473,8 @@ async function main(): Promise<void> {
   // Writes to stdout still in flight; the answer is out only when this is 0.
   let pending = 0;
   const exitWhenFlushed = (exitCode: number): void => {
-    // A queued write is not yet a delivered one: on an asynchronous stdout
-    // (a pipe on macOS or Windows) exiting now would drop its tail.
+    // A queued write is not yet a delivered one: where stdout's writes may be
+    // asynchronous (Node's process-I/O note), exiting now could drop its tail.
     if (pending === 0) process.exit(exitCode);
     else process.stdout.write('', () => process.exit(exitCode));
   };
@@ -487,6 +513,7 @@ async function main(): Promise<void> {
       readFile: (p) => readFileSync(p, 'utf8'),
       readStdin,
       writeFile: (p, t) => writeFileSync(p, t),
+      sameFile: sameFileOnDisk,
       stdout: (t) => {
         // Once a signal has printed the interrupted verdict, that verdict is
         // the run's one document: a report finishing in the same turn is dropped.

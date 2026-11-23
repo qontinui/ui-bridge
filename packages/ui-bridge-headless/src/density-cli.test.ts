@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { missingOutputMessage } from '../../../test-support/build-if-stale.mjs';
-import { runDensityCli, type DensityCliIo } from './density-cli';
+import { runDensityCli, sameFileOnDisk, type DensityCliIo } from './density-cli';
 
 /**
  * `ui-bridge-density measure`, run as the built bin (dist/density-cli.js) over
@@ -432,6 +432,36 @@ describe('runDensityCli, in process', () => {
     expect(code).toBe(2);
     expect(out.written).toEqual({});
     expect(out.stderr).toContain('is the --snapshot file; refusing to overwrite an input');
+  });
+
+  it('a flag given twice is a usage error', async () => {
+    const { io, out } = memoryIo({ 'snap.json': JSON.stringify(BARE) });
+    const code = await runDensityCli(
+      ['measure', '--snapshot', 'snap.json', '--role', 'buyer', '--role', 'supplier'],
+      io
+    );
+    expect(code).toBe(2);
+    expect(out.stderr).toContain('--role is given more than once');
+  });
+
+  it('--capture-out - is a usage error (stdout already carries the report)', async () => {
+    const { io, out } = memoryIo({ 'snap.json': JSON.stringify(BARE) });
+    const code = await runDensityCli(
+      ['measure', '--snapshot', 'snap.json', '--role', 'buyer', '--capture-out', '-'],
+      io
+    );
+    expect(code).toBe(2);
+    expect(out.stderr).toContain('--capture-out takes a file path, not -');
+  });
+
+  it('sameFileOnDisk sees a hard link to the snapshot as the snapshot', () => {
+    const a = join(dir, 'linked-a.json');
+    const b = join(dir, 'linked-b.json');
+    writeFileSync(a, '{}');
+    linkSync(a, b);
+    expect(sameFileOnDisk(a, b)).toBe(true);
+    expect(sameFileOnDisk(a, join(dir, 'bare.json'))).toBe(false);
+    expect(sameFileOnDisk(a, join(dir, 'does-not-exist.json'))).toBe(false);
   });
 
   it('a missing snapshot file is a usage error naming it', async () => {

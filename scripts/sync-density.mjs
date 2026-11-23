@@ -81,6 +81,38 @@ export function generatedHeader(sourceRel) {
 /** The CommonJS loader names; a vendored file may not refer to either. */
 const LOADER_NAMES = new Set(['require', 'module']);
 
+/** The names under which code can reach the global object. */
+const GLOBAL_OBJECTS = new Set(['globalThis', 'global', 'window', 'self']);
+
+/** `globalThis.require`, `global.module`, `self['require']`, and the like. */
+function isGlobalLoaderAccess(node) {
+  let object;
+  let name;
+  if (ts.isPropertyAccessExpression(node)) {
+    object = node.expression;
+    name = node.name.text;
+  } else if (
+    ts.isElementAccessExpression(node) &&
+    ts.isStringLiteralLike(node.argumentExpression)
+  ) {
+    object = node.expression;
+    name = node.argumentExpression.text;
+  } else {
+    return false;
+  }
+  // `(globalThis as any).require`: look through parentheses and type casts.
+  while (
+    ts.isParenthesizedExpression(object) ||
+    ts.isAsExpression(object) ||
+    ts.isNonNullExpression(object) ||
+    ts.isTypeAssertionExpression(object) ||
+    ts.isSatisfiesExpression(object)
+  ) {
+    object = object.expression;
+  }
+  return ts.isIdentifier(object) && GLOBAL_OBJECTS.has(object.text) && LOADER_NAMES.has(name);
+}
+
 /**
  * Whether an identifier refers to a binding, rather than naming a property or
  * a declared member (`o.require`, `{ require: 1 }`, `interface I { module: x }`
@@ -174,6 +206,10 @@ export function moduleEdges(text, fileName = 'x.ts') {
       });
     } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
       edges.push({ kind: 'dynamic', specifier: null, line: lineOf(node.getStart(sf)) });
+    } else if (isGlobalLoaderAccess(node)) {
+      // `globalThis.require`, `global['module']`: the loader reached through
+      // the global object rather than by its bare name.
+      edges.push({ kind: 'require', specifier: null, line: lineOf(node.getStart(sf)) });
     } else if (ts.isIdentifier(node) && LOADER_NAMES.has(node.text) && isValueReference(node)) {
       // Any reference to `require` or `module` — a call, `require.resolve`,
       // `module.require`, or an alias (`const r = require`) — is a way to load

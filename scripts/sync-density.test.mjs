@@ -330,6 +330,21 @@ const FORBIDDEN = [
   ['require.resolve()', "export const p = require.resolve('fs');\n", 'require() is not allowed'],
   ['module.require()', "export const fs = module.require('fs');\n", 'require() is not allowed'],
   [
+    'globalThis.require()',
+    "export const fs = globalThis.require('fs');\n",
+    'require() is not allowed',
+  ],
+  [
+    "global['module'] through an element access",
+    "export const m = global['module'];\n",
+    'require() is not allowed',
+  ],
+  [
+    'the loader through a cast global object',
+    "export const n = (globalThis as any).require('fs');\n",
+    'require() is not allowed',
+  ],
+  [
     'an aliased require',
     "const r = require;\nexport const fs = r('fs');\n",
     'x.ts:1: require() is not allowed',
