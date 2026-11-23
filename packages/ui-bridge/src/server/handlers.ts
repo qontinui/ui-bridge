@@ -51,7 +51,6 @@ import type {
   ComponentActionPredictRequest,
   ComponentActionPredictResponse,
 } from '../control';
-import { getGlobalEffectStore } from '../control/effect-store';
 import {
   applyCanonicalFindFilter,
   isFindRefusalError,
@@ -71,7 +70,6 @@ import { buildVisibilityReport } from './visibility-report';
 import {
   scanDOMForInteractiveElements,
   scanDOMForInteractiveElementsWithRefs,
-  countDOMInteractiveElements,
 } from './dom-fallback';
 import {
   matchesElementSelector,
@@ -94,7 +92,14 @@ import {
 } from './page-primitives';
 import type { NavigationAdapter } from '../navigation/navigation-adapter';
 import { WindowLocationAdapter } from '../navigation/navigation-adapter';
-import { extractReactState } from '../control/action-executor';
+import { extractReactState, noReactInternals } from '../control/extract-react-state';
+import { buildSdkDiagnostics, type SdkDiagnostics } from '../core/sdk-diagnostics';
+import {
+  elementHistoryCommand,
+  isHistoryCommandFailure,
+  recentEffectsCommand,
+  type HistoryCommandFailure,
+} from '../react/history-commands';
 import {
   captureComponent,
   componentCaptureRefusalEnvelope,
@@ -501,6 +506,8 @@ export interface RegistryLike {
 
   // Element event log
   getElementHistory?(elementId: string, options?: ElementHistoryOptions): ElementLogEntry[];
+  /** `false` when the registry keeps no element event log (`react/history-commands.ts`). */
+  hasElementHistory?(): boolean;
 
   // Event subscription (for push-based change observation)
   on?<T = unknown>(
@@ -1021,6 +1028,53 @@ function noPageRuntime(handler: string): APIResponse<unknown> {
     code: 'UB-CAPABILITY-UNAVAILABLE',
     data: { code: 'capability_unavailable_in_build', reason: 'no_browser_context' },
     timestamp: Date.now(),
+  };
+}
+
+/**
+ * Lift a failure a shared command RETURNED (the page's own answer) onto the
+ * envelope, by the shared inner-failure rule the relay seam applies too: the
+ * canonical `UB-*` code on the envelope, the command's answer verbatim under
+ * `data` (raw `failureDetails.errorCode` included).
+ */
+function liftInnerFailure<T>(inner: unknown): APIResponse<T> {
+  const { message, code } = describeInnerFailure(
+    inner,
+    'The command did not report success and supplied no error message.'
+  );
+  return {
+    success: false,
+    error: message,
+    code: code as UiBridgeErrorCode,
+    data: inner as T,
+    timestamp: Date.now(),
+  };
+}
+
+/**
+ * The envelope for a history command's returned failure: the capability
+ * statement is already the typed `UB-CAPABILITY-UNAVAILABLE` envelope
+ * {@link noPageRuntime} shapes, and is answered as it is; a payload refusal is
+ * lifted like any inner failure.
+ */
+function historyFailureResponse<T>(failure: HistoryCommandFailure): APIResponse<T> {
+  if ('code' in failure) {
+    return { ...failure, timestamp: Date.now() } as unknown as APIResponse<T>;
+  }
+  return liftInnerFailure(failure);
+}
+
+/** The page dispatcher's not-found answer for an element read, as a returned failure. */
+function elementNotFound(id: string, message: string) {
+  return {
+    success: false as const,
+    error: message,
+    failureDetails: {
+      errorCode: 'ELEMENT_NOT_FOUND',
+      message,
+      elementId: id,
+      selectorsTried: [`registry:${id}`],
+    },
   };
 }
 
@@ -1967,23 +2021,17 @@ export function createHandlers(
 
     getElementReactState: async (id: string): Promise<APIResponse<unknown>> => {
       try {
+        // The one projection the page serves too (`../control/extract-react-state.ts`),
+        // and the page's not-found: a RETURNED `ELEMENT_NOT_FOUND` for no
+        // registration or a gone DOM node, lifted by the shared inner-failure rule.
         const element = registry.getElement(id) as { element?: HTMLElement } | undefined;
         if (!element) {
-          return error(`Element not found: ${id}`, 'NOT_FOUND');
+          return liftInnerFailure(elementNotFound(id, `Element ${id} not found`));
         }
-        if (!element.element) {
-          return error(`Element ${id} has no DOM node`, 'NO_DOM_NODE');
+        if (!element.element?.isConnected) {
+          return liftInnerFailure(elementNotFound(id, `DOM element for ${id} not found`));
         }
-        const reactState = extractReactState(element.element);
-        if (!reactState) {
-          return success({
-            props: {},
-            fiberState: [],
-            componentName: undefined,
-            note: 'No React internals found on this element',
-          });
-        }
-        return success(reactState);
+        return success(extractReactState(element.element) ?? noReactInternals());
       } catch (err) {
         return error((err as Error).message, 'REACT_STATE_ERROR');
       }
@@ -2872,17 +2920,10 @@ export function createHandlers(
       limit?: number;
     }): Promise<APIResponse<EffectRecordEntry[]>> => {
       try {
-        // The GET adapter passes query values as strings; coerce `limit`.
-        const rawLimit: unknown = options?.limit;
-        let limit: number | undefined;
-        if (typeof rawLimit === 'number' && Number.isFinite(rawLimit)) {
-          limit = rawLimit;
-        } else if (typeof rawLimit === 'string' && rawLimit.trim() !== '') {
-          const parsed = Number(rawLimit);
-          if (Number.isFinite(parsed)) limit = parsed;
-        }
-        const recent = getGlobalEffectStore().getRecent(limit);
-        return success(recent);
+        // The page's command (`../react/history-commands.ts`), `limit` coercion included.
+        const answer = recentEffectsCommand(options ?? {});
+        if (isHistoryCommandFailure(answer)) return historyFailureResponse(answer);
+        return success(answer);
       } catch (err) {
         return error((err as Error).message, 'RECENT_EFFECTS_ERROR');
       }
@@ -3602,59 +3643,17 @@ export function createHandlers(
     // Diagnostics Endpoint
     // =========================================================================
 
-    getDiagnostics: async (): Promise<
-      APIResponse<{
-        sdk_initialized: boolean;
-        auto_register_active: boolean;
-        registered_elements: number;
-        dom_interactive_elements: number;
-        mutation_observer_active: boolean;
-        navigation_adapter: string;
-        page_title: string;
-        page_url: string;
-        page_ready: boolean;
-        providers_mounted: string[];
-        last_discover_at: string | null;
-        capabilities: string[];
-      }>
-    > => {
+    getDiagnostics: async (): Promise<APIResponse<SdkDiagnostics>> => {
       try {
-        const registeredCount = registry.getAllElements().length;
-        const domCount = countDOMInteractiveElements();
-        const globalBridge =
-          typeof window !== 'undefined'
-            ? (
-                window as unknown as {
-                  __UI_BRIDGE__?: {
-                    autoRegisterActive?: boolean;
-                    mutationObserverActive?: boolean;
-                    providers?: string[];
-                  };
-                }
-              ).__UI_BRIDGE__
-            : null;
-
-        return success({
-          sdk_initialized: !!globalBridge,
-          auto_register_active: !!globalBridge?.autoRegisterActive,
-          registered_elements: registeredCount,
-          dom_interactive_elements: domCount,
-          mutation_observer_active: !!globalBridge?.mutationObserverActive,
-          navigation_adapter: config.navigationAdapter ? 'custom' : 'window-location',
-          page_title: typeof document !== 'undefined' ? document.title : '',
-          page_url: typeof window !== 'undefined' ? window.location.href : '',
-          page_ready: typeof document !== 'undefined' ? document.readyState === 'complete' : false,
-          providers_mounted: globalBridge?.providers ?? [],
-          last_discover_at: null,
-          capabilities: [
-            'control',
-            'find',
-            'ai',
-            ...(config.consoleCapture ? ['debug'] : []),
-            ...(config.navigationTracker ? ['navigation'] : []),
-            ...(config.navigationAdapter ? ['navigation-adapter'] : []),
-          ],
-        });
+        // The one builder the page serves too (`../core/sdk-diagnostics.ts`).
+        return success(
+          buildSdkDiagnostics({
+            registeredElements: registry.getAllElements().length,
+            hasConsoleCapture: !!config.consoleCapture,
+            hasNavigationTracker: !!config.navigationTracker,
+            hasNavigationAdapter: !!config.navigationAdapter,
+          })
+        );
       } catch (err) {
         return error((err as Error).message, 'DIAGNOSTICS_ERROR');
       }
@@ -6700,8 +6699,11 @@ export function createHandlers(
       options?: ElementHistoryOptions
     ): Promise<APIResponse<ElementLogEntry[]>> => {
       try {
-        const entries = registry.getElementHistory?.(elementId, options) ?? [];
-        return success(entries);
+        // The page's command (`../react/history-commands.ts`): a registry that
+        // keeps no history answers `UB-CAPABILITY-UNAVAILABLE`, never `[]`.
+        const answer = elementHistoryCommand({ elementId, options }, registry);
+        if (isHistoryCommandFailure(answer)) return historyFailureResponse(answer);
+        return success(answer);
       } catch (err) {
         return error((err as Error).message, 'ELEMENT_HISTORY_ERROR');
       }

@@ -5,7 +5,9 @@
  *
  * It composes ONLY existing engines (plan §3.2):
  *   1. `new UIBridgeRegistry()` (standalone, React-free) installed as the
- *      global registry so the relay dispatcher reads from it.
+ *      global registry so the relay dispatcher reads from it. It carries an
+ *      `ElementEventLog` at the `info` level, so `getElementHistory` answers
+ *      the element's actions, state changes and errors in exec mode.
  *   2. `observeAndSeed` — populate + keep it live from the bare DOM via the
  *      `dom-fallback` substrate (no app cooperation).
  *   3. `window.__uiBridgeInjected.execute = (a, p) => executeCommand(a, p, bridge)`
@@ -21,6 +23,7 @@
  */
 
 import { UIBridgeRegistry, setGlobalRegistry } from '../core/registry';
+import { ElementEventLog } from '../debug/element-event-log';
 import { enableDevControls } from '../core/dev-controls';
 import { executeCommand } from '../react/commandHandlers';
 import { startRelayClient } from '../relay/relay-client';
@@ -43,7 +46,12 @@ declare const __SDK_VERSION__: string;
   // text visibility) are on here — this is the path a design loop drives them through.
   enableDevControls('injected-runtime');
 
-  const registry = new UIBridgeRegistry();
+  // A driver-launched runtime exists to be inspected: keep the per-element
+  // event log (actions, state changes, errors — the `info` level) so
+  // `getElementHistory` has something to answer from.
+  const registry = new UIBridgeRegistry({
+    elementEventLog: new ElementEventLog({ defaultLogLevel: 'info' }),
+  });
   // Install as the global so `executeCommand` (which reads
   // `getGlobalRegistry()` for elements/components/workflows) sees our
   // DOM-seeded elements.

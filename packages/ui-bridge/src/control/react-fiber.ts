@@ -4,7 +4,7 @@
  * host nodes under a fiber.
  *
  * §4.6: nothing here reads props or state. Props leave the fiber only through
- * `extractOwnerComponentProps` / `extractReactState` (control/action-executor.ts),
+ * `extractOwnerComponentProps` (control/action-executor.ts) / `extractReactState` (control/extract-react-state.ts),
  * which scrub them through `scrubReactProps`.
  *
  * Why "current": React stores ONE fiber on each host DOM node (the

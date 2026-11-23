@@ -19,6 +19,7 @@
     "packages/ui-bridge/src/ai/search-engine.ts",
     "packages/ui-bridge/src/ai/semantic-snapshot.ts",
     "packages/ui-bridge/src/control/action-executor.ts",
+    "packages/ui-bridge/src/control/extract-react-state.ts",
     "packages/ui-bridge/src/control/media-override.ts",
     "packages/ui-bridge/src/core/element-projection.ts",
     "packages/ui-bridge/src/core/element-state.ts",

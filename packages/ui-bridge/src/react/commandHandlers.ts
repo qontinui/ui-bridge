@@ -192,6 +192,9 @@ import {
 import type { StyleGuideConfig } from '../specs/style-types';
 import { sdkDispatch } from '../core/sdk-dispatch';
 import { readControlBatchRequest, runControlBatch } from '../control/control-batch';
+import { extractReactState, noReactInternals } from '../control/extract-react-state';
+import { buildSdkDiagnostics } from '../core/sdk-diagnostics';
+import { elementHistoryCommand, recentEffectsCommand } from './history-commands';
 import {
   ELEMENT_ACTION_PAYLOAD_SHAPE,
   ELEMENT_READ_PAYLOAD_SHAPE,
@@ -1826,6 +1829,59 @@ export async function executeCommand(
         snapshot: () => executeCommand('getControlSnapshot', {}, bridge),
         now: () => performance.now(),
       });
+
+    case 'getElementReactState': {
+      // The element's React props and hook state, through the one §4.6-scrubbed
+      // projection the in-process route serves (`../control/extract-react-state.ts`).
+      // Payload grammar and not-found answer exactly as `getElement`'s: a
+      // RETURNED `ELEMENT_NOT_FOUND` for no registration or a gone DOM node.
+      const startTime = performance.now();
+      const parsed = readElementIdPayload('getElementReactState', payload);
+      if (!parsed.ok) {
+        return withPayloadGrammar(
+          createActionFailure(parsed.elementId, 'INVALID_REQUEST', parsed.message, startTime),
+          parsed,
+          ELEMENT_READ_PAYLOAD_SHAPE
+        );
+      }
+      const el = getElement(parsed.id);
+      if (!el) {
+        return createActionFailure(
+          parsed.id,
+          'ELEMENT_NOT_FOUND',
+          `Element ${parsed.id} not found`,
+          startTime
+        );
+      }
+      if (!el.element?.isConnected) {
+        return createActionFailure(
+          parsed.id,
+          'ELEMENT_NOT_FOUND',
+          `DOM element for ${parsed.id} not found`,
+          startTime
+        );
+      }
+      return extractReactState(el.element) ?? noReactInternals();
+    }
+
+    case 'getDiagnostics':
+      // The one diagnostics builder (`../core/sdk-diagnostics.ts`), over THIS
+      // page's registry and the capture / navigation pieces the page carries.
+      return buildSdkDiagnostics({
+        registeredElements: elements.length,
+        hasConsoleCapture: !!g.consoleCapture,
+        hasNavigationTracker: !!g.navigationTracker,
+        hasNavigationAdapter: false,
+      });
+
+    case 'getElementHistory':
+      // The registry's per-element event log (`./history-commands.ts`); a
+      // registry that keeps none answers `UB-CAPABILITY-UNAVAILABLE`, never `[]`.
+      return elementHistoryCommand(payload, registry);
+
+    case 'getRecentEffects':
+      // The page's effect store, newest first (`./history-commands.ts`).
+      return recentEffectsCommand(payload);
 
     case 'executeElementAction': {
       const startTime = performance.now();
