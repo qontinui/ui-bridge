@@ -343,6 +343,10 @@ export default tseslint.config(
           'packages/ui-bridge/src/server/dom-fallback.ts',
           'packages/ui-bridge/src/server/page-primitives.ts',
           'packages/ui-bridge/src/core/element-projection.ts',
+          // The ONE ElementState reader (registry, executor, render-log and
+          // inspector all delegate to it): every DOM string mints through
+          // core/redaction.
+          'packages/ui-bridge/src/core/element-state.ts',
           'packages/ui-bridge/src/react/commandHandlers.ts',
           'packages/ui-bridge/src/render-log/dom-capture.ts',
           'packages/ui-bridge/src/recording/**/*.ts',

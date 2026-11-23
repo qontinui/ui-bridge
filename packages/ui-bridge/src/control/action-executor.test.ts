@@ -558,8 +558,11 @@ describe('DefaultActionExecutor - waitOptions precondition', () => {
   });
 
   // Stub getBoundingClientRect because jsdom doesn't compute layout —
-  // the default {0,0,0,0} rect makes isVisible() return false and would
-  // mask the wait behavior we want to verify.
+  // the default {0,0,0,0} rect makes the canonical reader
+  // (`core/element-state` `getElementState`) report `visible: false,
+  // visibilityReason: 'no-layout'` and would mask the wait behavior we want
+  // to verify. jsdom has no `elementFromPoint`, so the occlusion arm finds
+  // nothing covering the element and does not affect these cases.
   function stubRect(
     el: HTMLElement,
     rect: { x: number; y: number; width: number; height: number }
@@ -619,7 +622,8 @@ describe('DefaultActionExecutor - waitOptions precondition', () => {
     const summary = document.createElement('summary');
     summary.textContent = 'Hidden';
     details.appendChild(summary);
-    // display:none makes isVisible() return false unambiguously.
+    // display:none makes the canonical reader return `visible: false`
+    // (`visibilityReason: 'hidden'`) unambiguously.
     details.style.display = 'none';
     container.appendChild(details);
     stubRect(details, { x: 50, y: 50, width: 200, height: 24 });
@@ -685,7 +689,7 @@ describe('DefaultActionExecutor - value mutation focus lifecycle', () => {
     return { el, events };
   }
 
-  it("`type` dispatches focus before input with no trailing blur", async () => {
+  it('`type` dispatches focus before input with no trailing blur', async () => {
     const { el, events } = registerInput('type-input');
 
     const result = await executor.executeAction('type-input', {
@@ -701,7 +705,7 @@ describe('DefaultActionExecutor - value mutation focus lifecycle', () => {
     expect(events).not.toContain('blur');
   });
 
-  it("`setValue` dispatches focus before input with no trailing blur", async () => {
+  it('`setValue` dispatches focus before input with no trailing blur', async () => {
     const { el, events } = registerInput('setvalue-input', 'old');
 
     const result = await executor.executeAction('setvalue-input', {
@@ -715,7 +719,7 @@ describe('DefaultActionExecutor - value mutation focus lifecycle', () => {
     expect(events).not.toContain('blur');
   });
 
-  it("`clear` dispatches focus before input with no trailing blur", async () => {
+  it('`clear` dispatches focus before input with no trailing blur', async () => {
     const { el, events } = registerInput('clear-input', 'remove me');
 
     const result = await executor.executeAction('clear-input', { action: 'clear' });
@@ -726,12 +730,8 @@ describe('DefaultActionExecutor - value mutation focus lifecycle', () => {
     expect(events).not.toContain('blur');
   });
 
-  it("`type` into a <textarea> also focuses before input", async () => {
-    const { el, events } = registerInput(
-      'type-textarea',
-      '',
-      document.createElement('textarea')
-    );
+  it('`type` into a <textarea> also focuses before input', async () => {
+    const { el, events } = registerInput('type-textarea', '', document.createElement('textarea'));
 
     const result = await executor.executeAction('type-textarea', {
       action: 'type',
