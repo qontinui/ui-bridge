@@ -45,6 +45,7 @@ import {
   EVICTED_NO_ANSWER_CAUSE,
   NoLiveAnswer,
   TabReportedFailure,
+  isEvictedNoLiveAnswer,
   isNoLiveAnswer,
   mayFailOver,
   noResultArrivedMessage,
@@ -1578,7 +1579,10 @@ export class CommandRelay {
           // routes elsewhere until it heartbeats again (D4), whether or not
           // this one is re-sent. A tab that answered is live, and keeps its
           // standing.
-          if (isNoLiveAnswer(firstError)) this.demotePrimaryTab(primaryId);
+          // An eviction is queue overload, not that tab's silence.
+          if (isNoLiveAnswer(firstError) && !isEvictedNoLiveAnswer(firstError)) {
+            this.demotePrimaryTab(primaryId);
+          }
           if (!mayFailOver(action, firstError)) throw firstError;
           const retryId = this.selectPrimarySuccessor(primaryId);
           if (!retryId) throw firstError;
