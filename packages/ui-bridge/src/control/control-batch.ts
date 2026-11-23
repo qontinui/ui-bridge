@@ -197,13 +197,21 @@ export const CONTROL_BATCH_STEP_SHAPE =
   '{"type":"wait","ms":<milliseconds>} or {"type":"snapshot"}, each with an optional string "label"';
 
 /**
- * The longest one `wait` step may wait, in milliseconds. A batch runs inside
- * ONE relay command, whose budget is seconds (`CommandRelay.commandBudgetMs`,
- * 8-10 s by default), so a wait past a minute can never finish inside any
- * transport's answer — and above 2^31-1 ms `setTimeout` clamps the delay to
- * 1 ms, so an unbounded `ms` would report a wait it never did.
+ * The longest one `wait` step may wait, in milliseconds. Above 2^31-1 ms
+ * `setTimeout` clamps the delay to 1 ms, so an unbounded `ms` would report a
+ * wait it never did; a minute is far past any wait a step needs.
  */
 export const MAX_BATCH_WAIT_MS = 60_000;
+
+/**
+ * The most a whole batch may plan to wait, summed over its `wait` steps, in
+ * milliseconds. A batch holds its tab for its whole run, and a relayed batch
+ * answers inside ONE relay command; per-step capping alone lets a batch of
+ * many capped waits sleep without bound. The planned total is checked before
+ * any step runs. (The relay's own command budget, `CommandRelay.commandBudgetMs`,
+ * is per relay and is not visible in the page, so this is the page's bound.)
+ */
+export const MAX_BATCH_TOTAL_WAIT_MS = 60_000;
 
 /** The request grammar, as a refusal quotes it. */
 export const CONTROL_BATCH_REQUEST_SHAPE =
@@ -387,9 +395,20 @@ export function readControlBatchRequest(payload: unknown): ControlBatchReading {
     };
   }
   const flag = STOP_FLAG_KEYS.map((k) => payload[k]).find((v) => typeof v === 'boolean');
+  const steps = rawSteps.map((raw, index) => readStep(raw, index));
+  const plannedWaitMs = steps.reduce(
+    (sum, step) => (step.kind === 'wait' ? sum + step.ms : sum),
+    0
+  );
+  if (plannedWaitMs > MAX_BATCH_TOTAL_WAIT_MS) {
+    return {
+      ok: false,
+      message: `controlBatch request refused: its wait steps total ${plannedWaitMs} ms, more than the ${MAX_BATCH_TOTAL_WAIT_MS} ms one batch may wait. Expected ${CONTROL_BATCH_REQUEST_SHAPE}.`,
+    };
+  }
   return {
     ok: true,
-    steps: rawSteps.map((raw, index) => readStep(raw, index)),
+    steps,
     stopOnError: typeof flag === 'boolean' ? flag : true,
   };
 }

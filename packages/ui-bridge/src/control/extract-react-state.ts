@@ -33,6 +33,8 @@ import type { ReactStateInfo } from './types';
  */
 const SAFE_SERIALIZE_MAX_DEPTH = 6;
 
+type Fiber = Record<string, unknown>;
+
 /**
  * Safely serialize a value, replacing functions and handling circular
  * references. Exported for the component capture's prop reader
@@ -172,34 +174,24 @@ export function extractReactState(element: HTMLElement): ReactStateInfo | null {
   const fiberState: unknown[] = [];
   let componentName: string | undefined;
 
-  if (reactFiberKey) {
-    const fiber = el[reactFiberKey] as Record<string, unknown> | undefined;
-    if (fiber) {
-      // Walk up to find the nearest function/class component
-      let current: Record<string, unknown> | undefined = fiber;
-      while (current) {
-        const type = current.type;
-        if (typeof type === 'function') {
-          componentName =
-            (type as { displayName?: string; name?: string }).displayName ||
-            (type as { name?: string }).name ||
-            undefined;
-          break;
-        }
-        current = current.return as Record<string, unknown> | undefined;
-      }
-
-      // Extract memoizedState chain from the component fiber (not the DOM fiber)
-      const componentFiber = current || fiber;
-      let stateNode = componentFiber?.memoizedState as Record<string, unknown> | null;
-      let stateCount = 0;
-      const maxStates = 20; // Safety limit
-      while (stateNode && stateCount < maxStates) {
-        fiberState.push(safeSerialize(stateNode.memoizedState, undefined, 0, true));
-        stateNode = stateNode.next as Record<string, unknown> | null;
-        stateCount++;
-      }
-    }
+  // ONE walk up to the nearest function/class component: its hooks are the
+  // state read below, and its rendered subtree is what the withholding check
+  // walks.
+  const hostFiber = reactFiberKey ? (el[reactFiberKey] as Fiber | undefined) : undefined;
+  const component = componentFiberOf(hostFiber);
+  if (component) {
+    const type = component.type as { displayName?: string; name?: string };
+    componentName = type.displayName || type.name || undefined;
+  }
+  // The memoizedState chain of the component fiber (not the DOM fiber), else
+  // of the host fiber itself.
+  let stateNode = (component ?? hostFiber)?.memoizedState as Record<string, unknown> | null;
+  let stateCount = 0;
+  const maxStates = 20; // Safety limit
+  while (stateNode && stateCount < maxStates) {
+    fiberState.push(safeSerialize(stateNode.memoizedState, undefined, 0, true));
+    stateNode = stateNode.next as Record<string, unknown> | null;
+    stateCount++;
   }
 
   if (reactVerdict.value) {
@@ -210,10 +202,7 @@ export function extractReactState(element: HTMLElement): ReactStateInfo | null {
   // useState('')` in the form that renders the password input). A raw string
   // cannot be told from any other, so when that component — or the wrapper
   // itself — renders a value-redacted element, its state is withheld whole.
-  if (
-    fiberState.length > 0 &&
-    rendersRedactedElement(element, componentFiberOf(el, reactFiberKey))
-  ) {
+  if (fiberState.length > 0 && rendersRedactedElement(element, component)) {
     return { props, fiberState: [], componentName, note: FIBER_STATE_WITHHELD_NOTE };
   }
   return { props, fiberState, componentName };
@@ -229,11 +218,9 @@ export const FIBER_STATE_WITHHELD_NOTE =
  */
 const RENDERED_SUBTREE_FIBER_CAP = 10_000;
 
-type Fiber = Record<string, unknown>;
-
-/** The nearest function/class component fiber at or above `el`'s host fiber. */
-function componentFiberOf(el: Record<string, unknown>, fiberKey: string | undefined): Fiber | null {
-  let current = fiberKey ? (el[fiberKey] as Fiber | undefined) : undefined;
+/** The nearest function/class component fiber at or above `hostFiber`. */
+function componentFiberOf(hostFiber: Fiber | undefined): Fiber | null {
+  let current = hostFiber;
   while (current) {
     if (typeof current.type === 'function') return current;
     current = current.return as Fiber | undefined;
