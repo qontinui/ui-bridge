@@ -43,7 +43,10 @@
  * `error` event fires before the observer's asynchronous batch. When a sample
  * is observed first anyway, both events are emitted (a known residual).
  * Entries that finished before install, the navigation entry and carried
- * events never consult the reports: no other capture saw them.
+ * events never consult the reports: no other capture saw them. A suppressed
+ * failure is still carried across a navigation — the other capture's report
+ * dies with the page — and the next document emits it once, as
+ * `fromPreviousDocument`.
  *
  * URLs — the resource's and the page's — are redacted with
  * `redactRequestUrl`: origin + path, never the query or fragment (a page URL
@@ -353,7 +356,6 @@ export function installResourceStatusCapture(emit: Emit): () => void {
       doc.unknownEmitted++;
     }
     doc.seen.add(key);
-    if (status !== null && !isNavigation && reportedElsewhere(sample, status)) return;
     const { url, hasQuery } = redactRequestUrl(sample.name);
     const event: ResourceStatusEntryEvent = {
       type: 'resource-status',
@@ -367,7 +369,9 @@ export function installResourceStatusCapture(emit: Emit): () => void {
       startTime: sample.startTime,
       responseEnd: sample.responseEnd,
     };
+    // Carried either way: the other capture's report dies with this page.
     pushRecent([event]);
+    if (status !== null && !isNavigation && reportedElsewhere(sample, status)) return;
     emit(event);
   };
 
