@@ -282,6 +282,10 @@ function buildItem(
     authorId = true;
   } else if (origin === 'auto') {
     authorId = authorOnly;
+    // Inside a redaction boundary the serializer omits `dataset`, so an
+    // author-only carrier cannot be seen: that `false` is unmeasured.
+    if (!authorOnly && redaction && !isRecord(state.dataset))
+      miss('authorId', 'not_attempted_by_policy');
   } else {
     authorId = authorOnly || stamped;
     if (stamped && !authorOnly) miss('origin');
@@ -379,7 +383,13 @@ export function captureDensityFromSnapshot(
   options: DensityCaptureOptions
 ): DensityCaptureObservation {
   const producer = options.producer;
-  const evaluatedAt = options.evaluatedAt ?? new Date();
+  // An unparseable caller time would make every provenance build throw,
+  // the catch's included, so it falls back to now.
+  const requestedAt = options.evaluatedAt;
+  const evaluatedAt =
+    requestedAt !== undefined && Number.isFinite(new Date(requestedAt).getTime())
+      ? requestedAt
+      : new Date();
   const role = options.role ?? null;
   const targets = options.targets ?? null;
   let targetsHash: string | null = null;
