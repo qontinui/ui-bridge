@@ -404,6 +404,23 @@ describe('affordances', () => {
     ]);
   });
 
+  it('an icon button named by its title is not an abbreviation; a hidden select is not a filter', () => {
+    const els = PAGE.map((e): DensityTestElementSpec => {
+      if (e.id === 'app.side.more') return { ...e, text: '', nameSource: 'title' };
+      if (e.id === 'app.side.sort') return { ...e, visible: false, visibilityReason: 'hidden' };
+      return e;
+    });
+    const c = capture(els, [
+      ...RELATIONSHIPS,
+      { source: 'app.side.sort', target: 'app.orders.list', type: 'filters' },
+    ]);
+    const found = densityAffordances(c, null);
+    expect(found.filter((a) => a.kind === 'abbreviation').map((a) => a.id)).toEqual([
+      'app.side.cell-2',
+    ]);
+    expect(found.filter((a) => a.kind === 'filter').map((a) => a.id)).toEqual(['app.orders.state']);
+  });
+
   it('a sort button in the table header does not stop the scope at the table', () => {
     const S = '/html/body/main/section';
     const els: DensityTestElementSpec[] = [

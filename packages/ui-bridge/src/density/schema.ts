@@ -146,6 +146,13 @@ export interface DensityItem {
    * or an ambiguous chain, or until structure is resolved. Optional on read.
    */
   cousinKey: string | null;
+  /**
+   * With `cousinKey`: the key of the repeated row the item sits in (the
+   * unregistered `li` / `tr`), so that cousins are counted in their rows rather
+   * than by their tops. `null` exactly when `cousinKey` is. Optional on read.
+   */
+  cousinRowKey: string | null;
+
   /** SHA-256 hex of the collapsed text; `null` when the text is redacted or empty. */
   textHash: string | null;
   shape: DensityShape | null;
@@ -604,6 +611,7 @@ function readItem(r: Reader, value: unknown, path: string): DensityItem | null {
     'blockKey',
     'siblingKey',
     'cousinKey',
+    'cousinRowKey',
     'selected',
     'filters',
   ]);
@@ -628,6 +636,9 @@ function readItem(r: Reader, value: unknown, path: string): DensityItem | null {
     siblingKey:
       o.siblingKey === undefined ? null : r.stringOrNull(o.siblingKey, `${path}.siblingKey`),
     cousinKey: o.cousinKey === undefined ? null : r.stringOrNull(o.cousinKey, `${path}.cousinKey`),
+    cousinRowKey:
+      o.cousinRowKey === undefined ? null : r.stringOrNull(o.cousinRowKey, `${path}.cousinRowKey`),
+
     textHash: readHashOrNull(r, o.textHash, `${path}.textHash`),
     shape: r.oneOfOrNull(o.shape, `${path}.shape`, DENSITY_SHAPES),
     fontPx: r.numberOrNull(o.fontPx, `${path}.fontPx`, { min: 0 }),
