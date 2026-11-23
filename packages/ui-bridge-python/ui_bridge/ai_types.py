@@ -304,6 +304,7 @@ class AssertionRequest(BaseModel):
 
     Required for those two: the SDK refuses a spatial check without one (or with
     search criteria that select nothing) as ``unmeasured`` / ``UB-VALIDATION-ERROR``.
+    A ``SearchCriteria`` here sends ``fuzzy: true`` unless set, as for every target.
     """
     min_gap: float | None = Field(default=None, alias="minGap")
     """Minimum gap in pixels between the two elements (for ``minSpacing``)."""

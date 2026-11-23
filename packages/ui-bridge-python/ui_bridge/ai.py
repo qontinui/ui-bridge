@@ -462,6 +462,35 @@ class AIClient:
         """Assert checkbox is unchecked."""
         return self.assert_that(target, AssertionType.UNCHECKED, timeout=timeout)
 
+    def assert_no_overlap(
+        self,
+        target: str,
+        related_target: str | SearchCriteria,
+        *,
+        timeout: int | None = None,
+    ) -> AssertionResult:
+        """Assert the target's layout rect does not overlap ``related_target``'s."""
+        return self.assert_that(
+            target, AssertionType.NO_OVERLAP, related_target=related_target, timeout=timeout
+        )
+
+    def assert_min_spacing(
+        self,
+        target: str,
+        related_target: str | SearchCriteria,
+        min_gap: float,
+        *,
+        timeout: int | None = None,
+    ) -> AssertionResult:
+        """Assert at least ``min_gap`` pixels separate the target from ``related_target``."""
+        return self.assert_that(
+            target,
+            AssertionType.MIN_SPACING,
+            related_target=related_target,
+            min_gap=min_gap,
+            timeout=timeout,
+        )
+
     def assert_batch(
         self,
         assertions: Sequence[AssertionRequest | tuple[str, str, Any] | tuple[str, str]],

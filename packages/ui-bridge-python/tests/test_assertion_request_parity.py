@@ -58,7 +58,7 @@ class TestParityWithTsSource:
         src = _ts_source()
         union = re.search(r"export type AssertionType =([^;]+);", src)
         assert union, "AssertionType union not found in types.ts"
-        ts_values = set(re.findall(r"'([A-Za-z]+)'", union.group(1)))
+        ts_values = set(re.findall(r"'([^']+)'", union.group(1)))
         assert ts_values, "AssertionType union parsed empty"
         assert {t.value for t in AssertionType} == ts_values
 
@@ -69,7 +69,8 @@ class TestParityWithTsSource:
         ts_fields = set(re.findall(r"^\s+([A-Za-z]+)\??:", body.group(1), re.M))
         assert ts_fields, "AssertionRequest interface parsed empty"
         py_fields = {f.alias or name for name, f in AssertionRequest.model_fields.items()}
-        assert ts_fields - py_fields == set()
+        # Both directions: a Python field the TS request lacks is one the server never reads.
+        assert py_fields == ts_fields
 
 
 class TestWireShape:
@@ -177,3 +178,28 @@ class TestAsyncClientSendsEveryField:
         )
         sent = client._request.call_args.kwargs["json"]["assertions"]
         assert sent == [{"target": "a", "type": "noOverlap", "relatedTarget": "b"}]
+
+
+class TestSpatialHelpers:
+    def test_sync_helpers_require_and_send_related_target(self) -> None:
+        client = UIBridgeClient(base_url="http://localhost:9876")
+        client._request = MagicMock(return_value=_result_data())  # type: ignore[method-assign]
+        client.ai.assert_no_overlap("a", "b")
+        client.ai.assert_min_spacing("a", "b", 12)
+        payloads = [c.kwargs["json"] for c in client._request.call_args_list]
+        assert payloads == [
+            {"target": "a", "type": "noOverlap", "relatedTarget": "b"},
+            {"target": "a", "type": "minSpacing", "relatedTarget": "b", "minGap": 12},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_async_helpers_require_and_send_related_target(self) -> None:
+        client = AsyncUIBridgeClient(base_url="http://localhost:9876")
+        client._request = AsyncMock(return_value=_result_data())  # type: ignore[method-assign]
+        await client.ai.assert_no_overlap("a", "b")
+        await client.ai.assert_min_spacing("a", "b", 12)
+        payloads = [c.kwargs["json"] for c in client._request.call_args_list]
+        assert payloads == [
+            {"target": "a", "type": "noOverlap", "relatedTarget": "b"},
+            {"target": "a", "type": "minSpacing", "relatedTarget": "b", "minGap": 12},
+        ]
