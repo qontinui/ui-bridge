@@ -77,6 +77,21 @@ export interface ToastCaptureConfig {
    * (status bars, banners, sticky modals) and tracking them indefinitely.
    */
   maxToastAgeMs?: number;
+  /**
+   * Per-element announcement budget (default: 4). One element (a live region
+   * whose text changes often — a timer, a progress count) is captured at most
+   * this many times within `announcementWindowMs`. The capture that would
+   * exceed it is withheld: the element's entry leaves `active`, it is
+   * suppressed, and its further changes are absorbed silently until it has
+   * been unchanged for `announcementWindowMs`; its settled text is then
+   * announced once if it differs from the last text it announced.
+   */
+  maxAnnouncementsPerWindow?: number;
+  /**
+   * Window of the per-element announcement budget, and the quiet period that
+   * releases a suppressed element (ms, default: 10000).
+   */
+  announcementWindowMs?: number;
 }
 
 /**
