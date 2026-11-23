@@ -3265,7 +3265,7 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     }
   }, 60_000);
 
-  it(`times 500 assertions on a 3200-node page: ${MAX_VISION_ASSERTIONS} fit the relay's 8 s`, async () => {
+  it(`times ${MAX_VISION_ASSERTIONS} assertions on a 3200-node page: they fit the relay's 8 s`, async () => {
     // About 3200 nodes: 400 small cards, every one on screen, each a card, a
     // title, a price, a badge, an icon and three click-through tags
     // (pointer-events: none) — one with text, one framed, one with a ::after
@@ -3310,11 +3310,22 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
       ...n(5).map(() => ({ type: 'no_clipping' })),
       ...n(5).map(() => ({ type: 'animation_settled' })),
     ];
-    // The costliest kind alone, each on a different element: nothing is reused.
+    // The costliest kind alone, each on a different element: no (kind, element)
+    // pair repeats.
     const contrast = [
       ...n(400).map((i) => ({ type: 'contrast_meets_wcag', element: `title${i}` })),
       ...n(100).map((i) => ({ type: 'contrast_meets_wcag', element: `price${i}` })),
     ];
+    // The worst batch the validator admits: MAX_VISION_ASSERTIONS of the
+    // costliest kind, every one on a different registered element.
+    const largestBatch = [
+      ...n(400).map((i) => ({ type: 'contrast_meets_wcag', element: `title${i}` })),
+      ...n(400).map((i) => ({ type: 'contrast_meets_wcag', element: `price${i}` })),
+      ...n(200).map((i) => ({ type: 'contrast_meets_wcag', element: `badge${i}` })),
+    ];
+    expect(mixed).toHaveLength(500);
+    expect(contrast).toHaveLength(500);
+    expect(largestBatch).toHaveLength(MAX_VISION_ASSERTIONS);
     const timed = (assertions: unknown[]) =>
       page.evaluate(
         (request) => {
@@ -3327,31 +3338,46 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
 
     // Cold, as a tab's first request is. An empty request times what every
     // request pays once whatever its size: the registry snapshot that
-    // attributes it, and the envelope.
-    const fixedBefore = await timed([]);
+    // attributes it, and the envelope. These three are logged, not gated, so
+    // a regression in either part of a request's cost is visible.
+    const fixedRun = await timed([]);
     const mixedRun = await timed(mixed);
     const contrastRun = await timed(contrast);
-    const fixedAfter = await timed([]);
-    expect(mixed).toHaveLength(500);
-    expect(contrast).toHaveLength(500);
+
+    // The claim itself is timed AS A REQUEST of the largest batch, three times,
+    // and gated on the median. It used to be extrapolated from two empty
+    // requests and two 500-batches (max empty + 2 x (slower 500-batch - min
+    // empty)). An empty request alone costs 3-5.5 s on the self-hosted pool and
+    // its two samples differed by over a second, and that formula counts the
+    // spread about three times: it read 8570 and 8912 ms on main (CI runs
+    // 45197745153, 45199987736) when neither run's 500-batches cost more than
+    // about 1.8 s over its faster empty request. The median rejects one
+    // sample caught by a load spike on a shared host; a host on which a
+    // typical request of the largest batch misses the budget still fails.
+    const largestRuns: Awaited<ReturnType<typeof timed>>[] = [];
+    for (let i = 0; i < 3; i++) largestRuns.push(await timed(largestBatch));
+    const samples = largestRuns.map((r) => r.ms).sort((a, b) => a - b);
+    const median = samples[1];
+
     // Every result is a verdict but the five kinds the tab does not implement:
     // the time is the time to measure, not to give up.
     expect(mixedRun.res.outcomeCounts.unknown).toBe(5);
     expect(contrastRun.res.outcomeCounts.unknown).toBe(0);
-    expect(fixedBefore.res.snapshotAttribution.state).toBe('attributed');
+    for (const run of largestRuns) {
+      expect(run.res.outcomeCounts.unknown).toBe(0);
+      expect(run.res.snapshotAttribution.state).toBe('attributed');
+    }
+    expect(fixedRun.res.snapshotAttribution.state).toBe('attributed');
 
-    const fixed = Math.max(fixedBefore.ms, fixedAfter.ms);
-    const floor = Math.min(fixedBefore.ms, fixedAfter.ms);
-    const perAssertion = (Math.max(mixedRun.ms, contrastRun.ms) - floor) / 500;
-    const largest = fixed + perAssertion * MAX_VISION_ASSERTIONS + 500;
+    const largest = median + 500;
     console.info(
-      `[vision timing] fixed ${fixedBefore.ms.toFixed(0)}/${fixedAfter.ms.toFixed(0)} ms, ` +
-        `500 mixed ${mixedRun.ms.toFixed(0)} ms, 500 contrast ${contrastRun.ms.toFixed(0)} ms: ` +
-        `${perAssertion.toFixed(3)} ms per assertion; ${MAX_VISION_ASSERTIONS} assertions ` +
-        `${largest.toFixed(0)} ms with the 500 ms settle`
+      `[vision timing] fixed ${fixedRun.ms.toFixed(0)} ms, 500 mixed ${mixedRun.ms.toFixed(0)} ms, ` +
+        `500 contrast ${contrastRun.ms.toFixed(0)} ms; ${MAX_VISION_ASSERTIONS} contrast ` +
+        `${samples.map((ms) => ms.toFixed(0)).join('/')} ms, median ${largest.toFixed(0)} ms ` +
+        `with the 500 ms settle`
     );
-    // The largest batch the validator admits, at the slower rate, on top of the
-    // fixed cost and the tab's 500 ms settle wait, inside the relay's 8 s.
+    // The largest batch the validator admits, at its costliest kind, plus the
+    // tab's 500 ms settle wait, inside the relay's 8 s.
     expect(largest).toBeLessThan(8_000);
     await page.close();
   }, 120_000);
