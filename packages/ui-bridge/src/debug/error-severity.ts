@@ -235,8 +235,15 @@ function classifyOwnResourceStatus(event: AnyCapturedEvent & { type: 'resource-s
       if (status === 404 && isCommonAsset404(event.resourceUrl)) {
         return { severity: 'noise', reason: '404 for common asset' };
       }
-      // A fetch/XHR 4xx is also a `network` warning when the network capture
-      // saw it; grading it the same keeps one failure from scoring as an error.
+      // Already reported by the network or resource-errors capture in this
+      // document: one failure counts once. A carried event's original report
+      // left with its document, so it keeps its own grade.
+      if (event.coveredBy && !event.fromPreviousDocument) {
+        return { severity: 'noise', reason: `already reported by the ${event.coveredBy} capture` };
+      }
+      // A fetch/XHR 4xx no other capture reported (pre-install, an XHR, or a URL
+      // the network capture ignores) is graded as the network capture grades
+      // a 4xx: warning.
       if (
         status < 500 &&
         (event.initiatorType === 'fetch' || event.initiatorType === 'xmlhttprequest')
@@ -250,7 +257,8 @@ function classifyOwnResourceStatus(event: AnyCapturedEvent & { type: 'resource-s
     case 'buffer-full':
       return { severity: 'warning', reason: 'resource timing buffer full' };
     case 'unknown-status-capped':
-      return { severity: 'warning', reason: 'unknown resource statuses capped' };
+      // Unknown statuses do not score; neither does running out of budget for them.
+      return { severity: 'noise', reason: 'unknown resource statuses capped' };
   }
 }
 
@@ -338,14 +346,15 @@ function classifyLoaf(event: AnyCapturedEvent & { type: 'long-animation-frame' }
  * Classification rules:
  * - **crash**: React error boundary, unhandled rejection, network errors on critical endpoints
  * - **error**: console.error (not noise), network 5xx, script/stylesheet load failures, HMR errors,
- *   resource-status 5xx and non-fetch/XHR 4xx
+ *   resource-status 5xx and non-fetch/XHR 4xx that no other capture reported
  * - **warning**: console.warn (not noise), network 4xx, image load failures, WS disconnection,
  *   long tasks >= 500ms, long animation frames with high blocking duration, resource-status
- *   fetch/XHR 4xx and observer unavailable / buffer full / unknown statuses capped
+ *   uncovered fetch/XHR 4xx and observer unavailable / buffer full
  *   (a previous document's resource-status event scores one step lower)
  * - **noise**: Noise-pattern matches, long tasks < 100ms, navigation, memory, web vitals,
  *   HMR reconnect messages, aborted requests, WS reconnect attempts, resource-status with an
- *   unknown (null) status
+ *   unknown (null) status, the unknown-status cap, or one another capture already reports
+ *   (a previous document's resource-status event scores one step lower)
  */
 export function classifyEvent(event: AnyCapturedEvent): {
   severity: ErrorSeverity;

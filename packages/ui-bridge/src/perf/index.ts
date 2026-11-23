@@ -99,10 +99,10 @@ export interface ResourceSample {
   /** What initiated the fetch (`fetch`, `xmlhttprequest`, `script`, `img`, …). */
   initiatorType: string;
   /**
-   * The HTTP status the browser recorded, or `null` when it reported none: an
-   * engine without `PerformanceResourceTiming.responseStatus`, or `0` for a
-   * cross-origin response with no `Timing-Allow-Origin`. `null` is UNKNOWN,
-   * never a success.
+   * The HTTP status the browser recorded, or `null` when it reported none:
+   * `responseStatus` missing (an engine that does not report it) or `0`
+   * (reported for some cross-origin responses). `null` is UNKNOWN, never a
+   * success.
    */
   responseStatus: number | null;
   /** `performance.now()`-clock time the fetch started. */
