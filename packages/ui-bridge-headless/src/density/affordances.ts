@@ -117,7 +117,7 @@ export const DENSITY_AFFORDANCE_RULES: Readonly<
   title: {
     kind: 'abbreviation',
     definition:
-      'a leaf whose accessible name comes from its `title` (the full form on hover); a snapshot row carries no `title` attribute, so a leaf named by its content that also has one is not seen',
+      'a leaf with text whose accessible name comes from its `title` (the full form on hover); a snapshot row carries no `title` attribute, so a leaf named by its content that also has one is not seen',
   },
 };
 
@@ -249,7 +249,7 @@ export function densityAffordances(
     }
     // abbreviation
     if (item.tag === 'abbr') add(item, 'abbr', null, { recoverable: item.recoverable });
-    else if (leafSet.has(item.id) && item.recoverable === true) {
+    else if (leafSet.has(item.id) && item.recoverable === true && (item.chars ?? 0) > 0) {
       add(item, 'title', null, { recoverable: true });
     }
   }
@@ -266,7 +266,13 @@ export function densityAffordances(
     const aimed = densityRepeatTargets(capture, rep, children);
     for (const item of capture.items) {
       if (scope.own.has(item.id)) continue;
-      const filterControl = isDensityFilterControl(item);
+      // A filter is a laid-out, interactive select, combobox, checkbox or radio.
+      const filterControl =
+        isDensityFilterControl(item) &&
+        item.interactive &&
+        item.rect !== null &&
+        item.visibility !== 'hidden' &&
+        item.visibility !== 'no-layout';
       // filter (a search box with a `filters` edge is the repeat's finder, not a filter)
       if (filterControl && item.filters !== null && aimed.has(item.filters)) {
         add(item, 'declared-filters', null, { repeat: rep.id });

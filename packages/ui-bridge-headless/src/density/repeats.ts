@@ -200,9 +200,15 @@ function rowsOf(members: readonly DensityItem[]): DensityItem[][] {
  * A row's estimated line bands: `null` when a text leaf lacks a readable text
  * length, a font size, a line height or a width.
  */
-function rowLines(leaves: readonly DensityItem[]): { lines: number; textPx: number } | null {
+function rowLines(
+  leaves: readonly DensityItem[],
+  containers: ReadonlySet<string>
+): { lines: number; textPx: number } | null {
   const tops: Array<{ top: number; lh: number }> = [];
   for (const leaf of leaves) {
+    // A container's own text sits somewhere among its children's lines, which
+    // the capture does not say: the row cannot be estimated.
+    if (containers.has(leaf.id)) return null;
     const r = leaf.rect;
     if (r === null) return null;
     const n = leaf.ownChars;
@@ -352,9 +358,20 @@ export function densityRepeatScopes(
   const children = densityChildren(capture);
   const byId = new Map(capture.items.map((i) => [i.id, i]));
   const rowSubtree = new Map<string, Set<string>>();
+  /** For each item inside some repeat's row: the rows (member ids) it is in. */
+  const rowsHolding = new Map<string, string[]>();
+  const repeatOfMember = new Map<string, string>();
   for (const r of repeats) {
     for (const m of r.members) {
-      if (!rowSubtree.has(m)) rowSubtree.set(m, densitySubtree(capture, [m], children));
+      repeatOfMember.set(m, r.id);
+      if (rowSubtree.has(m)) continue;
+      const sub = densitySubtree(capture, [m], children);
+      rowSubtree.set(m, sub);
+      for (const id of sub) {
+        const list = rowsHolding.get(id);
+        if (list) list.push(m);
+        else rowsHolding.set(id, [m]);
+      }
     }
   }
   const ancestorsOf = (id: string): string[] => {
@@ -374,17 +391,15 @@ export function densityRepeatScopes(
     for (const m of rep.members) rowSubtree.get(m)!.forEach((id) => own.add(id));
     // Rows of other repeats, less a row this repeat sits inside.
     const inside = new Set(ancestorsOf(rep.members[0]));
-    const foreign = new Set<string>();
-    for (const other of repeats) {
-      if (other.id === rep.id) continue;
-      for (const m of other.members) {
-        if (inside.has(m) || own.has(m)) continue;
-        rowSubtree.get(m)!.forEach((id) => foreign.add(id));
-      }
-    }
+    // In another repeat's row (one this repeat does not sit inside): read
+    // per candidate, so the cost follows the scope, not the repeat count.
+    const foreign = (id: string): boolean =>
+      (rowsHolding.get(id) ?? []).some(
+        (m) => repeatOfMember.get(m) !== rep.id && !inside.has(m) && !own.has(m)
+      );
     const usable = (ids: Iterable<string>): Set<string> => {
       const set = new Set<string>();
-      for (const id of ids) if (!own.has(id) && !foreign.has(id)) set.add(id);
+      for (const id of ids) if (!own.has(id) && !foreign(id)) set.add(id);
       return set;
     };
     // Only a control this repeat looks for qualifies: a sort button in a
@@ -519,7 +534,26 @@ interface Group {
   parent: string | null;
   tag: string;
   members: DensityItem[];
+  /** Cousins are counted in the unregistered row they sit in, not by their tops. */
+  byRowKey?: boolean;
 }
+
+/** A group's rows: by `cousinRowKey` for cousins (ordered by top), else bands of tops. */
+function rowsFor(g: Pick<Group, 'members' | 'byRowKey'>): DensityItem[][] {
+  if (!g.byRowKey) return rowsOf(g.members);
+  const byRow = new Map<string, DensityItem[]>();
+  for (const m of g.members) {
+    const key = m.cousinRowKey ?? m.id;
+    const row = byRow.get(key);
+    if (row) row.push(m);
+    else byRow.set(key, [m]);
+  }
+  const top = (row: DensityItem[]) => Math.min(...row.map((m) => m.rect!.y));
+  return [...byRow.values()].sort((a, b) => top(a) - top(b));
+}
+
+/** Tags whose stacked siblings inside one row of another repeat are still rows (a nested list). */
+const NESTED_ROW_TAGS = new Set(['li', 'tr']);
 
 /**
  * Every repeat of `capture`, in document order. `targets` supplies the
@@ -545,6 +579,37 @@ export function densityRepeats(
   const eligible = capture.items.filter(takesSpace);
   const groups: Group[] = [];
 
+  const children = densityChildren(capture);
+  const containers = new Set(children.keys());
+  const pathGroups: Group[] = [];
+  const claimed = new Set<string>();
+  const accept = (g: Group, members: DensityItem[]): boolean => {
+    if (rowsFor({ members, byRowKey: g.byRowKey }).length < DENSITY_REPEAT_MIN_ROWS) return false;
+    // A run of paragraphs is text, not rows.
+    if (members.every((m) => kindOf.get(m.id) === 'prose')) return false;
+    pathGroups.push({ ...g, members });
+    members.forEach((m) => claimed.add(m.id));
+    return true;
+  };
+
+  // ---- by cousin: one place inside repeated rows nobody registered (first,
+  // so the lines inside each such row are not taken for rows) ----
+  const byCousin = new Map<string, Group>();
+  for (const item of eligible) {
+    if (item.cousinKey === null) continue;
+    const g = byCousin.get(item.cousinKey);
+    if (g) g.members.push(item);
+    else
+      byCousin.set(item.cousinKey, {
+        by: 'path',
+        parent: item.parent,
+        tag: item.tag,
+        members: [item],
+        byRowKey: true,
+      });
+  }
+  for (const g of byCousin.values()) accept(g, g.members);
+
   // ---- by path: DOM siblings (one parent element) of one tag ----
   const byPath = new Map<string, Group>();
   for (const item of eligible) {
@@ -554,38 +619,48 @@ export function densityRepeats(
     if (g) g.members.push(item);
     else byPath.set(key, { by: 'path', parent: item.parent, tag: item.tag, members: [item] });
   }
-  const inPathRepeat = new Set<string>();
-  const accept = (g: Group, members: DensityItem[]): void => {
-    if (rowsOf(members).length < DENSITY_REPEAT_MIN_ROWS) return;
-    // A run of paragraphs is text, not rows.
-    if (members.every((m) => kindOf.get(m.id) === 'prose')) return;
-    groups.push({ ...g, members });
-    members.forEach((m) => inPathRepeat.add(m.id));
-  };
+  const sameWidth = (members: readonly DensityItem[]): boolean =>
+    members.every((m) => Math.abs(m.rect!.w - members[0].rect!.w) <= DENSITY_REPEAT_TOLERANCE_PX);
   for (const g of byPath.values()) {
-    // One width: columns, and aligned columns merged into a grid.
-    for (const sameWidth of clusterBy(g.members, (r) => r.w)) {
-      for (const c of gridsOf(sameWidth)) accept(g, c);
+    // 1. A grid: columns of one width whose rows line up, more than one column.
+    for (const oneWidth of clusterBy(g.members, (r) => r.w)) {
+      for (const c of gridsOf(oneWidth)) {
+        if (clusterBy(c, (r) => r.x).length > 1) accept(g, c);
+      }
     }
-    // Leaves of different widths (a fit-content list), by left edge.
-    const rest = g.members.filter((m) => !inPathRepeat.has(m.id) && leafSet.has(m.id));
-    for (const c of clusterBy(rest, (r) => r.x)) accept(g, c);
+    // 2. One column, by left edge: of one width, or all leaves (a fit-content
+    //    list); stacked containers of different widths are layout, not rows.
+    const rest = g.members.filter((m) => !claimed.has(m.id));
+    for (const c of clusterBy(rest, (r) => r.x)) {
+      if (sameWidth(c) || c.every((m) => leafSet.has(m.id))) accept(g, c);
+    }
   }
-  // Items at one place inside repeated rows nobody registered.
-  const byCousin = new Map<string, Group>();
-  for (const item of eligible) {
-    if (item.cousinKey === null || inPathRepeat.has(item.id)) continue;
-    const g = byCousin.get(item.cousinKey);
-    if (g) g.members.push(item);
-    else
-      byCousin.set(item.cousinKey, {
-        by: 'path',
-        parent: item.parent,
-        tag: item.tag,
-        members: [item],
-      });
+
+  // The lines inside one row of another repeat (a title, a subtitle and a date
+  // stacked in each list item) are that row's content, not a list of their own.
+  const parentOf = new Map(capture.items.map((i) => [i.id, i.parent]));
+  const memberOf = new Map<string, Group>();
+  for (const g of pathGroups) for (const m of g.members) memberOf.set(m.id, g);
+  const enclosingRow = (id: string, own: Group): string | null => {
+    const seen = new Set<string>();
+    let cur = parentOf.get(id) ?? null;
+    while (cur !== null && !seen.has(cur)) {
+      const g = memberOf.get(cur);
+      if (g && g !== own) return cur;
+      seen.add(cur);
+      cur = parentOf.get(cur) ?? null;
+    }
+    return null;
+  };
+  const inPathRepeat = new Set<string>();
+  for (const g of pathGroups) {
+    if (!NESTED_ROW_TAGS.has(g.tag)) {
+      const row = enclosingRow(g.members[0].id, g);
+      if (row !== null && g.members.every((m) => enclosingRow(m.id, g) === row)) continue;
+    }
+    groups.push(g);
+    g.members.forEach((m) => inPathRepeat.add(m.id));
   }
-  for (const g of byCousin.values()) accept(g, g.members);
 
   // ---- by geometry: one parent, tag and role; equal left edge and width ----
   const byType = new Map<string, DensityItem[]>();
@@ -605,7 +680,6 @@ export function densityRepeats(
     }
   }
 
-  const children = densityChildren(capture);
   /**
    * The leaves at or below an item, and whether any laid-out item there could
    * not be read: no rect, or `ownChars` null (redacted text).
@@ -640,7 +714,7 @@ export function densityRepeats(
       : null;
 
   const repeats = groups.map((g): DensityRepeat => {
-    const rows = rowsOf(g.members);
+    const rows = rowsFor(g);
     const ordered = rows.flatMap((row) =>
       row.slice().sort((a, b) => captureIndex.get(a.id)! - captureIndex.get(b.id)!)
     );
@@ -662,7 +736,7 @@ export function densityRepeats(
       // and fill are unknown, never zero.
       if (under.some((u) => u.unreadable)) continue;
       const rowLeaves = under.flatMap((u) => u.leaves);
-      const est = rowLines(rowLeaves);
+      const est = rowLines(rowLeaves, containers);
       if (est !== null) {
         lineCounts.push(est.lines);
         textPx.push(est.textPx);

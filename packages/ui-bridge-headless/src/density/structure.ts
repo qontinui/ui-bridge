@@ -438,21 +438,25 @@ export function resolveDensityStructure(
   const segmentOf = (p: ParsedChain, k: number): string =>
     k === 0 ? p.keys[0].replace(/^\//, '') : p.keys[k].slice(p.keys[k - 1].length + 1);
   const unindexed = (seg: string): string => seg.replace(/\[\d+\]$/, '');
-  const cousinKeyOf = (p: (ParsedChain & { ownId: boolean }) | null): string | null => {
-    if (!p || p.ownId || p.keys.some(ambiguous)) return null;
+  /** `[cousinKey, cousinRowKey]`, or `[null, null]`. */
+  const cousinOf = (
+    p: (ParsedChain & { ownId: boolean }) | null
+  ): [string, string] | [null, null] => {
+    if (!p || p.ownId || p.keys.some(ambiguous)) return [null, null];
     for (let k = p.keys.length - 2; k >= 0; k--) {
       const seg = segmentOf(p, k);
       // Only a list item or a table row is a row nobody registered: an
       // indexed wrapper div is as likely three unrelated sections.
       if (!/\[\d+\]$/.test(seg) || !ROW_TAGS.has(unindexed(seg))) continue;
       // A registered row is read by the path arm through its own siblings.
-      if (lookup(p.keys[k]) !== null) return null;
+      if (lookup(p.keys[k]) !== null) return [null, null];
       const below: string[] = [];
       for (let j = k + 1; j < p.keys.length; j++) below.push(unindexed(segmentOf(p, j)));
-      return [k > 0 ? p.keys[k - 1] : '', `${unindexed(seg)}[*]`, ...below].join('/');
+      return [[k > 0 ? p.keys[k - 1] : '', `${unindexed(seg)}[*]`, ...below].join('/'), p.keys[k]];
     }
-    return null;
+    return [null, null];
   };
+  const cousins = parsed.map(cousinOf);
 
   // ---- ownChars: direct children only ----
   // `chars` is the WHITESPACE-COLLAPSED length, so the text of a row of k
@@ -488,7 +492,8 @@ export function resolveDensityStructure(
           : Math.max(0, chars - kids - Math.max(0, textChildren[i] - 1)),
       blockKey: blockKey[i] ?? null,
       siblingKey: parsed[i]?.keys.some(ambiguous) ? null : siblingKeyOf(parsed[i]),
-      cousinKey: cousinKeyOf(parsed[i]),
+      cousinKey: cousins[i][0],
+      cousinRowKey: cousins[i][1],
     };
   });
 }

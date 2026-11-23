@@ -450,6 +450,74 @@ describe('repeats', () => {
     expect([rep.linesPerRow, rep.rowTextPx, rep.rowFill]).toEqual([1, 20, 0.5]);
   });
 
+  /** Six list rows 70 px apart, each a title, a subtitle and a date stacked. */
+  function stackedRows(registerRows: boolean): DensityTestElementSpec[] {
+    const out: DensityTestElementSpec[] = [];
+    for (let k = 1; k <= 6; k++) {
+      const y = 100 + 70 * (k - 1);
+      if (registerRows) {
+        out.push({
+          id: `app.r${k}`,
+          tag: 'li',
+          xpath: `/html/body/ul/li[${k}]`,
+          rect: [0, y, 400, 66],
+          text: 'Title Sub 16.10.2026',
+        });
+      }
+      (
+        [
+          ['t', 180, 'Title'],
+          ['s', 120, 'Sub'],
+          ['d', 60, '16.10.2026'],
+        ] as const
+      ).forEach(([n, w, text], j) =>
+        out.push({
+          id: `app.r${k}.${n}`,
+          tag: 'span',
+          xpath: `/html/body/ul/li[${k}]/span[${j + 1}]`,
+          rect: [0, y + 22 * j, w, 20],
+          text,
+        })
+      );
+    }
+    return out;
+  }
+
+  it('the lines stacked inside each row are not repeats of their own', () => {
+    const reps = densityRepeats(capture(stackedRows(true)), null);
+    expect(reps.map((r) => [r.id, r.rows, r.perRow])).toEqual([['repeat:app.r1', 6, 1]]);
+    // Three line bands per row: 20 px each.
+    expect([reps[0].linesPerRow, reps[0].rowTextPx]).toEqual([3, 60]);
+  });
+
+  it('stacked lines inside rows nobody registered are one repeat, counted in its rows', () => {
+    const reps = densityRepeats(capture(stackedRows(false)), null);
+    expect(reps.map((r) => [r.id, r.rows, r.perRow, r.members.length, r.rowPitchPx])).toEqual([
+      ['repeat:app.r1.t', 6, 3, 18, 70],
+    ]);
+  });
+
+  it('a fit-content list stays one repeat when some of its items share a width', () => {
+    const widths = [40, 62, 62, 62, 55, 71, 48, 80];
+    const links: DensityTestElementSpec[] = widths.map((w, i) => ({
+      id: `app.l${i + 1}`,
+      tag: 'a',
+      xpath: `/html/body/aside/a[${i + 1}]`,
+      rect: [16, 100 + 24 * i, w, 20],
+      text: `L${i + 1}`,
+    }));
+    const reps = densityRepeats(capture(links), null);
+    expect(reps.map((r) => [r.id, r.rows, r.members.length])).toEqual([['repeat:app.l1', 8, 8]]);
+  });
+
+  it('a row whose container holds text of its own beside its children is not estimated', () => {
+    const els = orderList(3).map((e) =>
+      e.id === 'app.orders.row-2' ? { ...e, text: `${e.text} and an unregistered note` } : e
+    );
+    const [rep] = densityRepeats(capture(els), null);
+    expect([rep.rows, rep.rowsEstimated]).toEqual([3, 2]);
+  });
+
   it('a hidden leaf in a row draws no line band', () => {
     const els = orderList(3).map((e): DensityTestElementSpec => {
       if (!e.id.endsWith('.sum')) return e;
