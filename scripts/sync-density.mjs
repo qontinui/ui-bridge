@@ -74,6 +74,24 @@ export function generatedHeader(sourceRel) {
  * look like a module edge.
  */
 export function maskSource(text) {
+  return scanSource(text).masked;
+}
+
+/**
+ * {@link maskSource}, plus `unterminated`: the kind and offset of the first
+ * literal or comment the scan found no end for (`null` when every one closed).
+ * After such a point the scan cannot tell code from text, so a caller that
+ * must see every module edge refuses the file instead of trusting the mask.
+ */
+export function scanSource(text) {
+  let unterminated = null;
+  const open = (kind, at) => {
+    if (unterminated === null) unterminated = { kind, at };
+  };
+  // The keyword before each open `(`: the `)` closing an `if (…)`, `while (…)`,
+  // `for (…)` or `with (…)` ends a condition, so a `/` after it starts a regex.
+  const parens = [];
+  const CONDITION_WORDS = new Set(['if', 'while', 'for', 'with']);
   const out = text.split('');
   const blank = (from, to) => {
     for (let k = from; k < to; k++) if (out[k] !== '\n') out[k] = ' ';
@@ -151,6 +169,7 @@ export function maskSource(text) {
       }
       j++;
     }
+    open('template', i - 1);
     blank(i, text.length);
     return text.length;
   };
@@ -168,6 +187,7 @@ export function maskSource(text) {
     }
     if (c === '/' && n === '*') {
       const end = text.indexOf('*/', i + 2);
+      if (end === -1) open('block comment', i);
       const stop = end === -1 ? text.length : end + 2;
       blank(i, stop);
       i = stop;
@@ -183,6 +203,7 @@ export function maskSource(text) {
         if (text[j] === '\\') j++;
         j++;
       }
+      if (text[j] !== c) open('string', i);
       blank(i + 1, Math.min(j, text.length));
       i = j + 1;
       prev = c;
@@ -214,6 +235,7 @@ export function maskSource(text) {
         else if (text[j] === '/' && !inClass) break;
         else j++;
       }
+      if (text[j] !== '/') open('regular expression', i);
       blank(i + 1, Math.min(j, text.length));
       i = j + 1;
       prev = '/';
@@ -242,28 +264,59 @@ export function maskSource(text) {
       i += 2;
       continue;
     }
+    if (c === '!' && n !== '=' && (prevWord !== '' || prev === ')' || prev === ']')) {
+      // TypeScript's non-null assertion (`c.width! / 2`): an operand ends
+      // here, so a `/` after it is a division, not a regex.
+      prev = ')';
+      prevWord = '';
+      i++;
+      continue;
+    }
+    if (c === '(') parens.push(prevWord);
+    if (c === ')') {
+      // `if (a) /x/.test(s)`: after a condition's `)` a `/` opens a regex.
+      prev = CONDITION_WORDS.has(parens.pop() ?? '') ? ';' : ')';
+      prevWord = '';
+      i++;
+      continue;
+    }
     prev = c;
     prevWord = '';
     i++;
   }
-  return out.join('');
+  if (substitutions.length > 0) open('template substitution', text.length);
+  return { masked: out.join(''), unterminated };
 }
 
 /**
  * Every module edge in `text`: `{ kind, specifier, line }`, where `kind` is
  * `static` (an `import … from`, a side-effect `import '…'`, an
- * `export … from`), `dynamic` (`import(…)`) or `require`. A dynamic import or a
- * require has `specifier: null`: it is refused whatever it names.
+ * `export … from`), `dynamic` (`import(…)`), `require`, `reference` (a
+ * triple-slash reference directive) or `unterminated` (a literal the scan found
+ * no end for; `specifier` names its kind). A dynamic import, a require and a
+ * reference have `specifier: null`: each is refused whatever it names.
  */
 export function moduleEdges(text) {
-  const masked = maskSource(text);
+  const { masked, unterminated } = scanSource(text);
   const edges = [];
   const lineOf = (offset) => text.slice(0, offset).split('\n').length;
+  if (unterminated !== null) {
+    edges.push({
+      kind: 'unterminated',
+      specifier: unterminated.kind,
+      line: lineOf(unterminated.at),
+    });
+  }
+  // A triple-slash reference pulls in types (`/// <reference types="node" />`)
+  // without an import; the comment masking would otherwise hide it.
+  for (const m of text.matchAll(/^[ \t]*\/\/\/[ \t]*<reference\b/gm)) {
+    edges.push({ kind: 'reference', specifier: null, line: lineOf(m.index) });
+  }
   // A quoted specifier is masked to quotes around spaces; read it from `text`.
   const STATIC = [
-    /(?:^|[;\n])\s*import\s+(?:type\s+)?[^;'"`]*?\bfrom\s*(['"])/g,
-    /(?:^|[;\n])\s*import\s*(['"])/g,
-    /(?:^|[;\n])\s*export\s+(?:type\s+)?(?:\*(?:\s+as\s+[A-Za-z_$][\w$]*)?|\{[^}]*\})\s*from\s*(['"])/g,
+    /(?:^|[;\n}])\s*import\s+(?:type\s+)?[^;'"`]*?\bfrom\s*(['"])/g,
+    /(?:^|[;\n}])\s*import\s*(['"])/g,
+    /(?:^|[;\n}])\s*export\s+(?:type\s+)?(?:\*(?:\s+as\s+[A-Za-z_$][\w$]*)?|\{[^}]*\})\s*from\s*(['"])/g,
   ];
   for (const re of STATIC) {
     for (const m of masked.matchAll(re)) {
@@ -296,6 +349,16 @@ export function forbiddenImports(sourceRel, text, siblings, isEnvelope) {
     const at = `${sourceRel}:${edge.line}`;
     if (edge.kind === 'dynamic') {
       problems.push(`${at}: a dynamic import() is not allowed in a vendored file`);
+      continue;
+    }
+    if (edge.kind === 'unterminated') {
+      problems.push(
+        `${at}: an unterminated ${edge.specifier}; the rest of the file cannot be read for imports, so it is refused`
+      );
+      continue;
+    }
+    if (edge.kind === 'reference') {
+      problems.push(`${at}: a triple-slash reference directive is not allowed in a vendored file`);
       continue;
     }
     if (edge.kind === 'require') {

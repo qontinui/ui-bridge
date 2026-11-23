@@ -437,13 +437,21 @@ describe.skipIf(process.platform === 'win32')('ui-bridge-density interrupted', (
   it('SIGTERM while reading the snapshot prints a typed verdict naming the step and exits 143', async () => {
     const child = spawn(process.execPath, [BIN, 'measure', '--snapshot', '-', '--role', 'buyer'], {
       stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, UI_BRIDGE_DENSITY_TRACE: '1' },
     });
     let stdout = '';
     child.stdout.on('data', (c: Buffer) => {
       stdout += c.toString('utf8');
     });
-    // Standard input stays open, so the run is parked at read-snapshot.
-    await new Promise((r) => setTimeout(r, 1500));
+    // Standard input stays open, so the run parks at read-snapshot. Wait for the
+    // trace line that says so: the handlers are installed before the first step.
+    await new Promise<void>((ready) => {
+      let stderr = '';
+      child.stderr.on('data', (c: Buffer) => {
+        stderr += c.toString('utf8');
+        if (stderr.includes('ui-bridge-density: step read-snapshot\n')) ready();
+      });
+    });
     const exited = new Promise<number | null>((r) => child.on('exit', (code) => r(code)));
     child.kill('SIGTERM');
     expect(await exited).toBe(143);

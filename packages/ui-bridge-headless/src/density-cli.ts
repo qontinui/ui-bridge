@@ -418,8 +418,13 @@ async function main(): Promise<void> {
   // Set once the report is on stdout: an interruption after that point must
   // not append a second JSON document to a complete one.
   let printed = false;
+  // The first signal decides the verdict; a second one while that verdict is
+  // still flushing must not print another document.
+  let interrupting = false;
   for (const signal of Object.keys(SIGNAL_EXIT) as Array<keyof typeof SIGNAL_EXIT>) {
     process.on(signal, () => {
+      if (interrupting) return;
+      interrupting = true;
       const code = SIGNAL_EXIT[signal];
       if (printed) process.exit(code);
       const doc = `${JSON.stringify({ command: 'measure', interrupted: { signal, step } }, null, 2)}\n`;
@@ -442,6 +447,11 @@ async function main(): Promise<void> {
     },
     (s) => {
       step = s;
+      // Opt-in progress trace on stderr, so a caller (or a test) can tell which
+      // step a run has reached without reading its stdout.
+      if (process.env.UI_BRIDGE_DENSITY_TRACE === '1') {
+        process.stderr.write(`ui-bridge-density: step ${s}\n`);
+      }
     }
   );
   process.exitCode = code;
