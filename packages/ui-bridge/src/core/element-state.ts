@@ -107,6 +107,17 @@ function captureFormControlState(
 }
 
 /**
+ * `ElementState.ariaBusy`'s rule, in one place: `true` only when the element's
+ * OWN `aria-busy` attribute is the literal `"true"`; every other value and
+ * absence read `false` (WAI-ARIA's default for this global state). An
+ * ancestor's `aria-busy` is not inherited — see the field's doc comment in
+ * `core/types.ts` for why.
+ */
+export function readAriaBusy(element: Element): boolean {
+  return element.getAttribute('aria-busy') === 'true';
+}
+
+/**
  * Get the current state of an element
  */
 export function getElementState(element: HTMLElement): ElementState {
@@ -191,6 +202,9 @@ export function getElementState(element: HTMLElement): ElementState {
     textContent: readScrubbedText(element, verdict),
     computedStyles: projectComputedStyles(computedStyle),
     inViewport,
+    // Required and always set; assigned from the element's own attribute in
+    // the ARIA block below.
+    ariaBusy: false,
   };
 
   // §4.6 provenance — stamp the redaction verdict as DATA so DOM-less wire
@@ -270,6 +284,7 @@ export function getElementState(element: HTMLElement): ElementState {
   }
 
   // ARIA state attributes
+  state.ariaBusy = readAriaBusy(element);
   const ariaSelected = element.getAttribute('aria-selected');
   if (ariaSelected !== null) {
     state.ariaSelected = ariaSelected === 'true';

@@ -203,6 +203,27 @@ export interface ElementState {
   ariaExpanded?: boolean;
   /** ARIA checked state (switches, checkboxes with role="switch"/"checkbox", can be true/false/'mixed') */
   ariaChecked?: boolean | 'mixed';
+  /**
+   * Whether this element is busy: `true` only when the element's OWN
+   * `aria-busy` attribute is the literal `"true"`; every other value
+   * (`"false"`, `""`, `"yes"`, …) and absence read `false`.
+   *
+   * Always set, unlike the set-only-when-present `ariaPressed` /
+   * `ariaExpanded`: WAI-ARIA defines `aria-busy` as a global state whose
+   * default is `false` on every element, so absence is a reading ("not busy"),
+   * not "not applicable". Leaving it `undefined` would make a wait on
+   * `{ state: { ariaBusy: false } }` hang on every element that never declared
+   * the attribute.
+   *
+   * Only the element's own attribute is read; a busy ANCESTOR does not make
+   * this element busy. Page-wide busy regions are the idle detector's signal
+   * (`idle/loading-indicators.ts`), which reads the same attribute for a
+   * different question — "is the page loading" versus "is this element" — so
+   * both can be true without contradiction. The request-scoped attribute
+   * projection (`core/element-projection.ts`) still reports the raw attribute
+   * value when asked.
+   */
+  ariaBusy: boolean;
   /** Computed styles relevant for automation and visual debugging */
   computedStyles?: {
     // Visibility & interaction

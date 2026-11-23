@@ -386,6 +386,16 @@ class ElementState(BaseModel):
     aria_checked: bool | str | None = Field(
         None, alias="ariaChecked", description="True/False or the literal 'mixed'"
     )
+    aria_busy: bool = Field(
+        False,
+        alias="ariaBusy",
+        description=(
+            "The element's OWN `aria-busy` attribute: True only for the literal "
+            "\"true\"; any other value, and absence, read False (WAI-ARIA's "
+            "default for this global state). An ancestor's `aria-busy` is not "
+            "inherited. Absent on the wire also reads False."
+        ),
+    )
     computed_styles: ComputedStyles | None = Field(None, alias="computedStyles")
     required: bool | None = None
     validation_state: ValidationState | None = Field(None, alias="validationState")
