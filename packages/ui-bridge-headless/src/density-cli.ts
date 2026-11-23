@@ -475,13 +475,26 @@ async function main(): Promise<void> {
   const command = argv[0] === 'measure' ? 'measure' : null;
   // The code a signal ends the run with, once one has arrived.
   let signalCode: number | null = null;
-  // Writes to stdout still in flight; the answer is out only when this is 0.
+  // Writes to stdout or stderr still in flight; what the run printed is out
+  // only when this is 0.
   let pending = 0;
   const exitWhenFlushed = (exitCode: number): void => {
-    // A queued write is not yet a delivered one: where stdout's writes may be
-    // asynchronous (Node's process-I/O note), exiting now could drop its tail.
+    // A queued write is not yet a delivered one: where the streams' writes may
+    // be asynchronous (Node's process-I/O note), exiting now could drop a tail.
     if (pending === 0) process.exit(exitCode);
-    else process.stdout.write('', () => process.exit(exitCode));
+    let left = 2;
+    const done = (): void => {
+      left--;
+      if (left === 0) process.exit(exitCode);
+    };
+    process.stdout.write('', done);
+    process.stderr.write('', done);
+  };
+  const tracked = (stream: NodeJS.WriteStream, text: string): void => {
+    pending++;
+    stream.write(text, () => {
+      pending--;
+    });
   };
   // Set once runDensityCli has returned: the run's code is decided.
   let finished = false;
@@ -503,17 +516,18 @@ async function main(): Promise<void> {
   for (const signal of Object.keys(SIGNAL_EXIT) as Array<keyof typeof SIGNAL_EXIT>) {
     process.on(signal, () => {
       const code = SIGNAL_EXIT[signal];
-      // The run already returned its code (a usage error prints nothing on
-      // stdout): it finished, so it ends with that code, not as interrupted.
-      if (finished) process.exit(reachedCode());
-      // A second signal: after the answer the run is still complete (0);
-      // during an interrupted flush it ends with the signal's code at once.
-      if (interrupting) process.exit(printed ? 0 : code);
+      // A second signal while the first one's flush is pending ends the run at
+      // once (a reader that stopped reading may never let it complete): with
+      // the run's own code if it had answered, else with this signal's.
+      if (interrupting) process.exit(finished ? reachedCode() : printed ? 0 : code);
       interrupting = true;
-      // The answer is already on its way: the run is complete, so it ends as
-      // one, once the answer is flushed.
-      if (printed) {
-        exitWhenFlushed(0);
+      // The run already answered — the report, the usage or the version on
+      // stdout, or a usage error on stderr, with its code decided. Signals are
+      // delivered only between event-loop turns, so this is the branch any
+      // signal after an answer takes: the run is complete and ends with its
+      // own code once what it printed is flushed.
+      if (finished || printed) {
+        exitWhenFlushed(finished ? reachedCode() : 0);
         return;
       }
       signalCode = code;
@@ -534,15 +548,12 @@ async function main(): Promise<void> {
         // Once a signal has printed the interrupted verdict, that verdict is
         // the run's one document: a report finishing in the same turn is dropped.
         if (signalCode !== null) return;
-        pending++;
-        process.stdout.write(t, () => {
-          pending--;
-        });
+        tracked(process.stdout, t);
         // Any document on stdout (the report, the usage, the version) is the
         // run's answer; an interruption after it prints nothing more.
         printed = true;
       },
-      stderr: (t) => process.stderr.write(t),
+      stderr: (t) => tracked(process.stderr, t),
     },
     (s) => {
       step = s;
