@@ -213,8 +213,10 @@ jobs:
         # floats on the runner's main; push uses the same pin as a PR.)
         #
         # Placed AFTER `Contract check` so the pin/provenance assertion runs
-        # first on the tree this step reads, and `if:` runs it even when the
-        # contract check failed, so both verdicts always report.
+        # first, and `if:` runs this step even when the contract check failed,
+        # so both verdicts always report. If the provenance assertion failed,
+        # the job is already red and this step's verdict is about an unasserted
+        # tree.
         if: ${{ !cancelled() && steps.sibling.outcome == 'success' }}
         continue-on-error: ${{ github.event_name != 'pull_request' }}
         run: |
