@@ -492,4 +492,80 @@ describe('ToastCapture churn budget and re-read gate', () => {
       expect(capture.getActive().map((t) => t.message)).toEqual(['Build green']);
     });
   });
+
+  // ==========================================================================
+  // Review round 2 — each attribute in the per-element attributeFilter, and
+  // the debounced-scan handle across uninstall → install
+  // ==========================================================================
+
+  describe('review round 2', () => {
+    /** Capture `<div role="status" data-testid="x">` holding `html`; returns it. */
+    async function captureHtml(html: string): Promise<HTMLElement> {
+      install({ pollInterval: 500 });
+      const el = document.createElement('div');
+      el.setAttribute('role', 'status');
+      el.setAttribute('data-testid', 'x');
+      el.innerHTML = html;
+      document.body.appendChild(el);
+      await flushAndScan();
+      return el;
+    }
+
+    // R6
+    it('`hidden` set on a descendant drops its text from the message', async () => {
+      const el = await captureHtml('Saved <span>just now</span>');
+      expect(capture.getActive().map((t) => t.message)).toEqual(['Saved just now']);
+
+      (el.querySelector('span') as HTMLElement).setAttribute('hidden', '');
+
+      expect(capture.getActive().map((t) => t.message)).toEqual(['Saved']);
+    });
+
+    // R7
+    it('inline display:none on a descendant drops its text from the message', async () => {
+      const el = await captureHtml('Saved <span>just now</span>');
+      expect(capture.getActive().map((t) => t.message)).toEqual(['Saved just now']);
+
+      (el.querySelector('span') as HTMLElement).style.display = 'none';
+
+      expect(capture.getActive().map((t) => t.message)).toEqual(['Saved']);
+    });
+
+    // R8
+    it('aria-label="close" set on a button strips the button from the message', async () => {
+      const el = await captureHtml('Upload failed <button>Retry</button>');
+      expect(capture.getActive().map((t) => t.message)).toEqual(['Upload failed Retry']);
+
+      (el.querySelector('button') as HTMLElement).setAttribute('aria-label', 'close');
+
+      expect(capture.getActive().map((t) => t.message)).toEqual(['Upload failed']);
+    });
+
+    // R9
+    it('role="button" set on a close-glyph span strips it from the message', async () => {
+      const el = await captureHtml('Saved <span>\u00d7</span>');
+      expect(capture.getActive().map((t) => t.message)).toEqual(['Saved \u00d7']);
+
+      (el.querySelector('span') as HTMLElement).setAttribute('role', 'button');
+
+      expect(capture.getActive().map((t) => t.message)).toEqual(['Saved']);
+    });
+
+    // R10
+    it('a scan debounced before uninstall does not run under the next install', async () => {
+      install({ pollInterval: 500 });
+      addStatus('late', 'Late');
+      await Promise.resolve(); // the document observer's callback queues the scan
+      capture.uninstall();
+
+      const query = vi.spyOn(document, 'querySelectorAll');
+      capture.install((data) => events.push(data));
+      await flushAndScan();
+
+      // One scan: the install's own initial scan, not also the stale one.
+      expect(query).toHaveBeenCalledTimes(1);
+      expect(appearedFor('late')).toHaveLength(1);
+      expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['late', 'Late']]);
+    });
+  });
 });
