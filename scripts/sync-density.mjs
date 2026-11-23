@@ -248,10 +248,14 @@ export function forbiddenImports(sourceRel, text, siblings, isEnvelope) {
 /** The density sources: every `.ts` file directly in the source dir, sorted. */
 function densitySources(root) {
   const dir = join(root, DENSITY_SOURCE_DIR);
-  const files = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isFile());
-  // A `.tsx`, `.mts`, `.js` or any other file here would be neither copied nor
-  // linted (the ESLint block globs `*.ts`), so it is refused, never skipped.
-  const other = files.filter((e) => !e.name.endsWith('.ts')).map((e) => e.name);
+  const entries = readdirSync(dir, { withFileTypes: true });
+  const files = entries.filter((e) => e.isFile());
+  // A `.tsx`, `.mts`, `.js` or any other file here, or a subdirectory other
+  // than `__tests__/`, would not be copied, so it is refused, never skipped.
+  const other = [
+    ...files.filter((e) => !e.name.endsWith('.ts')).map((e) => e.name),
+    ...entries.filter((e) => !e.isFile() && e.name !== '__tests__').map((e) => `${e.name}/`),
+  ];
   if (other.length > 0) {
     throw new Error(
       `density:sync refused — ${DENSITY_SOURCE_DIR} may hold only .ts sources (and __tests__/); found: ${other.sort().join(', ')}`
