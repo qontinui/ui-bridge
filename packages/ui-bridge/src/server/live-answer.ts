@@ -166,9 +166,14 @@ export function noLiveAnswerCause(action: string, e: unknown): string | undefine
  * live answer, which a second tab must not overrule; a write that timed out
  * may have run; and anything untyped fails closed.
  */
+/** Was `e` a command the relay evicted from its full queue (flag or cause)? */
+export function isEvictedNoLiveAnswer(e: NoLiveAnswer): boolean {
+  return e.evicted === true || e.noAnswerCause === EVICTED_NO_ANSWER_CAUSE;
+}
+
 export function mayFailOver(action: string, e: unknown): boolean {
   if (isNoLiveAnswer(e)) {
-    if (e.evicted === true) return false;
+    if (isEvictedNoLiveAnswer(e)) return false;
     if (e.reason === 'not_delivered') return true;
     return e.reason === 'unanswered' && RELAY_READ_ACTIONS.has(action);
   }
