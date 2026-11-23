@@ -64,7 +64,7 @@ const consoleMessage = (type: string, text: string) => ({
 const locatedConsoleMessage = (type: string, text: string, url: string) => ({
   type: () => type,
   text: () => text,
-  location: () => ({ url, lineNumber: 0, columnNumber: 0 }),
+  location: () => ({ url, line: 1, column: 1, lineNumber: 0, columnNumber: 0 }),
 });
 
 describe('launchHeadlessTab · console forwarding goes to stderr, never stdout', () => {
@@ -134,6 +134,16 @@ describe('launchHeadlessTab · console forwarding goes to stderr, never stdout',
     expect(written(stderr)).toEqual([
       `[browser.error] Failed to load resource: the server responded with a status of 429 (Too Many Requests) @ ${failed}\n`,
     ]);
+  });
+
+  it('an ordinary located console.log is attributed to its script too', async () => {
+    const { page, emit } = makeFakePage();
+    fake.page = page;
+
+    await launchHeadlessTab({ url: 'http://app.local/', headless: true });
+    emit('console', locatedConsoleMessage('log', 'ready', 'http://app.local/main.js'));
+
+    expect(written(stderr)).toEqual(['[browser.log] ready @ http://app.local/main.js' + String.fromCharCode(10)]);
   });
 
   it('an empty, absent or throwing location adds no suffix', async () => {
