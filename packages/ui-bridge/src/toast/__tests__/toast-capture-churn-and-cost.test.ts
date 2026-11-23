@@ -215,10 +215,14 @@ describe('ToastCapture churn budget and re-read gate', () => {
       await tick(timer, 1, 6);
       const before = appearedFor('timer').length;
 
+      // No poll falls inside the scan's 50 ms, so the one re-read below is the
+      // scan handing the parked element to the parked-reconcile step.
+      const clone = vi.spyOn(timer, 'cloneNode');
       timer.replaceChild(document.createTextNode('swapped'), timer.firstChild as Node);
       await flushAndScan();
 
       expect(appearedFor('timer')).toHaveLength(before);
+      expect(clone).toHaveBeenCalledTimes(1);
     });
 
     // A9
@@ -399,6 +403,93 @@ describe('ToastCapture churn budget and re-read gate', () => {
       parent.removeAttribute('data-bridge-redact');
 
       expect(capture.getActive().map((t) => t.message)).toEqual(['Code 123456']);
+    });
+  });
+
+  // ==========================================================================
+  // Review round 1
+  // ==========================================================================
+
+  describe('review round 1', () => {
+    // R1 (A1)
+    it('a scan debounced before uninstall does not run, attach an observer or capture after it', async () => {
+      install({ pollInterval: 500 });
+      addStatus('late', 'Late');
+      await Promise.resolve(); // the document observer's callback queues the scan
+      capture.uninstall();
+
+      const observe = vi.spyOn(MutationObserver.prototype, 'observe');
+      await flushAndScan();
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(observe).toHaveBeenCalledTimes(0);
+      expect(capture.getActive()).toEqual([]);
+      expect(events).toEqual([]);
+    });
+
+    // R2 (A2)
+    it('a region that flaps and settles on its last announced text is announced again on release', async () => {
+      install({ pollInterval: 500 });
+      const el = addStatus('net', 'Online');
+      await flushAndScan();
+      for (const text of ['Offline', 'Online', 'Offline', 'Online', 'Offline']) {
+        setTextInPlace(el, text);
+        await vi.advanceTimersByTimeAsync(500);
+      }
+      expect(appearedFor('net').map((e) => e.toast.message)).toEqual([
+        'Online',
+        'Offline',
+        'Online',
+        'Offline',
+      ]);
+      expect(capture.getActive()).toEqual([]); // suppressed
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(appearedFor('net')).toHaveLength(5);
+      expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['net', 'Offline']]);
+    });
+
+    // R3 (A3)
+    it('a budget below 1 is clamped to 1 and a window below 1 ms falls back to the default', async () => {
+      install({ pollInterval: 500, maxAnnouncementsPerWindow: 0 });
+      addStatus('one', 'First');
+      await flushAndScan();
+      expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['one', 'First']]);
+      capture.uninstall();
+      document.body.innerHTML = '';
+      events = [];
+
+      install({ pollInterval: 500, announcementWindowMs: 0 });
+      const timer = addStatus('timer', '0:00');
+      await flushAndScan();
+      await tick(timer, 1, 10);
+      expect(appearedFor('timer')).toHaveLength(4);
+    });
+
+    // R5 (A5)
+    it('an attribute no re-read depends on does not clone a tracked element', async () => {
+      install({ pollInterval: 500 });
+      const el = document.createElement('div');
+      el.setAttribute('role', 'status');
+      el.setAttribute('data-testid', 'bar');
+      el.innerHTML = 'Build <b>green</b>';
+      document.body.appendChild(el);
+      await flushAndScan();
+      expect(capture.getActive().map((t) => t.message)).toEqual(['Build green']);
+
+      const clone = vi.spyOn(el, 'cloneNode');
+      for (let i = 0; i < 5; i++) {
+        el.setAttribute('data-foo', String(i));
+        el.className = `pulse-${i}`;
+        (el.querySelector('b') as HTMLElement).className = `tone-${i}`;
+        await vi.advanceTimersByTimeAsync(500);
+        capture.getSnapshot();
+      }
+
+      expect(clone).toHaveBeenCalledTimes(0);
+      expect(capture.getActive().map((t) => t.message)).toEqual(['Build green']);
     });
   });
 });
