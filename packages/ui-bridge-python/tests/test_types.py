@@ -169,6 +169,7 @@ class TestElementState:
             "ariaCurrent": "page",
             "ariaExpanded": True,
             "ariaChecked": "mixed",
+            "ariaBusy": True,
             "computedStyles": {
                 "display": "block",
                 "visibility": "visible",
@@ -250,6 +251,37 @@ class TestElementState:
         assert state.scroll_info.can_scroll_down is True
         assert state.redaction is not None
         assert state.redaction.content is True
+        assert state.aria_busy is True
+
+    def test_aria_busy_absent_reads_false(self):
+        """`ariaBusy` is always-set on the wire (default false); absent reads False."""
+        state = ElementState.model_validate(
+            {
+                "visible": True,
+                "enabled": True,
+                "focused": False,
+                "rect": create_test_rect().model_dump(),
+            }
+        )
+        assert state.aria_busy is False
+        assert state.model_dump(by_alias=True)["ariaBusy"] is False
+
+    def test_aria_busy_round_trips(self):
+        """`ariaBusy` validates from the wire alias and dumps back under it."""
+        for wire in (True, False):
+            state = ElementState.model_validate(
+                {
+                    "visible": True,
+                    "enabled": True,
+                    "focused": False,
+                    "rect": create_test_rect().model_dump(),
+                    "ariaBusy": wire,
+                }
+            )
+            assert state.aria_busy is wire
+            dumped = state.model_dump(by_alias=True)
+            assert dumped["ariaBusy"] is wire
+            assert ElementState.model_validate(dumped).aria_busy is wire
 
 
 class TestSnapshotViewportContext:

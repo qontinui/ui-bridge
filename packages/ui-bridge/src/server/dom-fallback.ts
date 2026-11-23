@@ -19,6 +19,7 @@ import {
 import { truncateCodePoints } from '../core/text';
 import type { ElementType, StandardAction } from '../core/types';
 import { inferActions, inferElementType } from '../core/element-kind';
+import { readAriaBusy } from '../core/element-state';
 import {
   computeVisibleText,
   readAriaLabelAttr,
@@ -170,6 +171,8 @@ export interface DOMFallbackElement {
     enabled: boolean;
     disabled: boolean;
     ariaDisabled: boolean;
+    /** `ElementState.ariaBusy`, by the same rule (`core/element-state` `readAriaBusy`). */
+    ariaBusy: boolean;
     focused: boolean;
     rect: {
       x: number;
@@ -272,6 +275,7 @@ export function scanDOMForInteractiveElementsWithRefs(
         enabled: !isInteractionBlocked(disabledSignals),
         disabled: disabledSignals.disabled,
         ariaDisabled: disabledSignals.ariaDisabled,
+        ariaBusy: readAriaBusy(el),
         focused: document.activeElement === el,
         rect: {
           x: Math.round(rect.x),

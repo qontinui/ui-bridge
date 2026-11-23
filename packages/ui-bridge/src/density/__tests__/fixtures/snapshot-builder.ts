@@ -85,6 +85,7 @@ export function densityTestElement(spec: DensityTestElementSpec): DensityTestSna
     enabled: true,
     disabled: false,
     ariaDisabled: false,
+    ariaBusy: false,
     focused: false,
     rect: { x, y, width, height, top: y, left: x, right: x + width, bottom: y + height },
     scrollWidth: spec.scrollWidth ?? width,
