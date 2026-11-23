@@ -13,9 +13,10 @@
  * each with its `Observation` from producer `sdk/density`, and `next[]`.
  *
  * In this release `measure` answers the capture summary — the cell, the
- * viewport, the bases and the coverage — and the structure summary: leaves,
+ * viewport, the bases and the coverage — the structure summary: leaves,
  * kinds by the rule that decided them (`kindBy`), blocks, pins, and how many
- * items took each `structureBy`. `--capture-out` writes the text-free
+ * items took each `structureBy` — the repeats with their row quantities, and
+ * each affordance with the rule that detected it. `--capture-out` writes the text-free
  * `ui-bridge/density-capture@1`, which is how a cell is kept for a later
  * `diff` without keeping the snapshot (which carries the page's text).
  *
@@ -34,7 +35,7 @@
  * The density core is the generated copy under `./density/` (scripts/sync-density.mjs),
  * never `@qontinui/ui-bridge`: the SDK depends on this package, not the reverse.
  *
- * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change, Phases 2 and 3.
+ * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change, Phases 2 to 4.
  */
 
 import { fstatSync, readFileSync, statSync, writeFileSync } from 'node:fs';
@@ -44,9 +45,14 @@ import { isEntryModule } from './entry-guard.js';
 import {
   DENSITY_PRODUCER_ID,
   captureDensityFromSnapshot,
+  densityAffordances,
   densityAsksHash,
+  densityRepeats,
   parseDensityTargets,
+  summarizeDensityAffordances,
+  summarizeDensityRepeats,
   summarizeDensityStructure,
+  type DensityAffordancesReport,
   type DensityCapture,
   type DensityCaptureBases,
   type DensityCaptureViewport,
@@ -54,6 +60,7 @@ import {
   type DensityCoverage,
   type DensityProbeResult,
   type DensityProducer,
+  type DensityRepeatsReport,
   type DensityStructureSummary,
   type DensityTargets,
 } from './density/index.js';
@@ -198,6 +205,10 @@ export interface DensityCaptureSummary {
   structureResolved: boolean;
   /** Leaves, kinds by `kindBy`, blocks, pins and the `structureBy` counts. */
   structure: DensityStructureSummary;
+  /** Lists, tables and card stacks, with their row quantities (line bands estimated). */
+  repeats: DensityRepeatsReport;
+  /** Disclosures, tabs, menus, search, filters, pagers, truncation and abbreviation, each with its rule. */
+  affordances: DensityAffordancesReport;
   snapshotId: string | null;
   observedAt: string | null;
   targetsHash: string | null;
@@ -249,6 +260,11 @@ export function measureDensityCell(
   if (obs.status === 'measured') {
     capture = obs.value;
     cell = capture.cell;
+    // Computed once: the affordances' filters and pagers act on these repeats.
+    const repeats = capture.structureResolved ? densityRepeats(capture, input.targets) : [];
+    const affordances = capture.structureResolved
+      ? densityAffordances(capture, input.targets, { repeats })
+      : [];
     observation = Observation.measured<DensityCaptureSummary>(
       {
         scope: capture.scope,
@@ -260,6 +276,8 @@ export function measureDensityCell(
         items: capture.items.length,
         structureResolved: capture.structureResolved,
         structure: summarizeDensityStructure(capture, input.targets),
+        repeats: summarizeDensityRepeats(capture, input.targets, repeats),
+        affordances: summarizeDensityAffordances(capture, input.targets, affordances),
         snapshotId: capture.snapshotId,
         observedAt: capture.observedAt,
         targetsHash: capture.targetsHash,

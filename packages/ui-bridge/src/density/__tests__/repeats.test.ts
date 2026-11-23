@@ -1,0 +1,311 @@
+// @vitest-environment node
+/**
+ * repeats.ts over hand-built snapshots (design test 1, continued): literal
+ * expected repeats and row quantities.
+ *
+ * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change (Phase 4).
+ */
+import { describe, expect, it } from 'vitest';
+import { captureDensityFromSnapshot } from '../capture-from-snapshot';
+import { densityRepeats, summarizeDensityRepeats } from '../repeats';
+import { parseDensityCapture, type DensityCapture } from '../schema';
+import {
+  DENSITY_TEST_PRODUCER,
+  densityTestSnapshot,
+  type DensityTestElementSpec,
+} from './fixtures/snapshot-builder';
+
+function capture(elements: DensityTestElementSpec[]): DensityCapture {
+  const obs = captureDensityFromSnapshot(densityTestSnapshot({ elements }), {
+    producer: DENSITY_TEST_PRODUCER,
+    evaluatedAt: '2026-11-23T10:00:00.000Z',
+  });
+  if (obs.status !== 'measured') throw new Error(`expected measured, got ${JSON.stringify(obs)}`);
+  return obs.value;
+}
+
+const SECTION = '/html/body/main/section';
+const UL = `${SECTION}/ul`;
+
+/** A section holding a heading and a list of `rows` rows 40 px apart, each with an id and an amount. */
+function orderList(rows: number): DensityTestElementSpec[] {
+  const out: DensityTestElementSpec[] = [
+    {
+      id: 'app.orders',
+      tag: 'section',
+      xpath: SECTION,
+      rect: [0, 100, 600, 400],
+      text: 'Open orders',
+    },
+    {
+      id: 'app.orders.title',
+      tag: 'h2',
+      xpath: `${SECTION}/h2`,
+      rect: [0, 100, 600, 28],
+      text: 'Open orders',
+    },
+    { id: 'app.orders.list', tag: 'ul', xpath: UL, rect: [0, 140, 600, 40 * rows], text: '' },
+  ];
+  for (let k = 1; k <= rows; k++) {
+    const y = 140 + 40 * (k - 1);
+    const no = `A-100${k}`;
+    out.push(
+      {
+        id: `app.orders.row-${k}`,
+        tag: 'li',
+        xpath: `${UL}/li[${k}]`,
+        rect: [0, y, 600, 36],
+        text: `${no} 12,50 €`,
+      },
+      {
+        id: `app.orders.row-${k}.no`,
+        tag: 'span',
+        xpath: `${UL}/li[${k}]/span[1]`,
+        rect: [0, y, 200, 20],
+        text: no,
+      },
+      {
+        id: `app.orders.row-${k}.sum`,
+        tag: 'span',
+        xpath: `${UL}/li[${k}]/span[2]`,
+        rect: [300, y, 100, 20],
+        text: '12,50 €',
+      }
+    );
+  }
+  return out;
+}
+
+/** Three cards whose xpaths name no ancestor, inside a container, at the given left edges and widths. */
+function cards(edges: Array<[number, number]>): DensityTestElementSpec[] {
+  return [
+    {
+      id: 'app.cards',
+      tag: 'div',
+      xpath: '//*[@id="cards"]',
+      htmlId: 'cards',
+      rect: [80, 100, 500, 400],
+      text: '',
+    },
+    ...edges.map(
+      ([x, w], i): DensityTestElementSpec => ({
+        id: `app.cards.card-${i + 1}`,
+        tag: 'div',
+        xpath: `//*[@id="card-${i + 1}"]`,
+        htmlId: `card-${i + 1}`,
+        rect: [x, 110 + 60 * i, w, 50],
+        text: '',
+      })
+    ),
+  ];
+}
+
+describe('repeats', () => {
+  it('runs with no DOM', () => {
+    expect(typeof document).toBe('undefined');
+  });
+
+  it('a five-row list is one repeat by path, with its row quantities', () => {
+    const c = capture(orderList(5));
+    expect(densityRepeats(c, null, { volume: 50 })).toEqual([
+      {
+        id: 'repeat:app.orders.row-1',
+        by: 'path',
+        parent: 'app.orders.list',
+        tag: 'li',
+        members: [
+          'app.orders.row-1',
+          'app.orders.row-2',
+          'app.orders.row-3',
+          'app.orders.row-4',
+          'app.orders.row-5',
+        ],
+        rows: 5,
+        perRow: 1,
+        firstRow: { topPx: 140, bottomPx: 176 },
+        lastRow: { topPx: 300, bottomPx: 336 },
+        rowPitchPx: 40,
+        linesBasis: 'estimated',
+        // Both spans of a row fit one line at the same top: one band of 20 px.
+        linesPerRow: 1,
+        rowTextPx: 20,
+        rowFill: 0.5,
+        rowsEstimated: 5,
+        // The id is an identifier and the amount a currency: two values by shape.
+        valuesPerRow: 2,
+        // [0, 200) and [300, 400) of [0, 600).
+        widthFill: 0.5,
+        rowsPerScreen: 20,
+        extentPx: 196,
+        extentAtVolume: { volume: 50, px: 1996 },
+        scope: 'block+parent',
+        finder: null,
+        renderedOf: {
+          unknown: 'input_missing',
+          reason:
+            'a snapshot carries only the rows that are registered; how many exist is measured by the document walk',
+        },
+      },
+    ]);
+  });
+
+  it('with no declared volume the projected extent is unknown{no_expectation}', () => {
+    const [rep] = densityRepeats(capture(orderList(3)), null);
+    expect(rep.rows).toBe(3);
+    expect(rep.extentAtVolume).toEqual({
+      unknown: 'no_expectation',
+      reason: 'no row volume was declared (the budget names the rows each list is judged at)',
+    });
+  });
+
+  it('a two-row group is not a repeat', () => {
+    expect(densityRepeats(capture(orderList(2)), null)).toEqual([]);
+  });
+
+  it('siblings side by side in one row are not a repeat', () => {
+    const strip: DensityTestElementSpec[] = [
+      { id: 'app.tabs', tag: 'div', xpath: '/html/body/div', rect: [0, 0, 600, 40], text: '' },
+      ...[1, 2, 3, 4].map(
+        (k): DensityTestElementSpec => ({
+          id: `app.tabs.tab-${k}`,
+          tag: 'button',
+          category: 'interactive',
+          xpath: `/html/body/div/button[${k}]`,
+          rect: [100 * (k - 1), 0, 90, 40],
+          text: `Tab ${k}`,
+        })
+      ),
+    ];
+    expect(densityRepeats(capture(strip), null)).toEqual([]);
+  });
+
+  it('a geometry-only repeat whose edges differ by 2 px is one repeat', () => {
+    const c = capture(
+      cards([
+        [100, 300],
+        [102, 300],
+        [101, 302],
+      ])
+    );
+    const reps = densityRepeats(c, null);
+    expect(reps.map((r) => [r.id, r.by, r.parent, r.rows, r.rowPitchPx, r.extentPx])).toEqual([
+      ['repeat:app.cards.card-1', 'geometry', 'app.cards', 3, 60, 170],
+    ]);
+    expect(reps[0].members).toEqual(['app.cards.card-1', 'app.cards.card-2', 'app.cards.card-3']);
+    // Rows with no text: zero line bands, still estimated.
+    expect([reps[0].linesPerRow, reps[0].rowTextPx, reps[0].rowFill]).toEqual([0, 0, 0]);
+  });
+
+  it('a geometry group whose edges differ by 3 px is not a repeat', () => {
+    expect(
+      densityRepeats(
+        capture(
+          cards([
+            [100, 300],
+            [103, 300],
+            [100, 300],
+          ])
+        ),
+        null
+      )
+    ).toEqual([]);
+    expect(
+      densityRepeats(
+        capture(
+          cards([
+            [100, 300],
+            [100, 303],
+            [100, 300],
+          ])
+        ),
+        null
+      )
+    ).toEqual([]);
+  });
+
+  it('a row whose text leaf has no line height is not estimated', () => {
+    const els = orderList(3).map((e) =>
+      e.id === 'app.orders.row-2.no' ? { ...e, styles: { lineHeight: 'normal' } } : e
+    );
+    const [rep] = densityRepeats(capture(els), null);
+    expect([rep.rowsEstimated, rep.linesPerRow, rep.rowTextPx]).toEqual([2, 1, 20]);
+  });
+
+  it('a long label wraps in the estimate: 40 characters at 14 px over 100 px is 3 lines', () => {
+    const els = orderList(3).map((e) =>
+      e.id.endsWith('.sum')
+        ? {
+            ...e,
+            text: 'x'.repeat(40),
+            rect: [300, e.rect![1], 100, 60] as [number, number, number, number],
+          }
+        : e
+    );
+    const [rep] = densityRepeats(capture(els), null);
+    // The id's line shares the first band; the label adds two more.
+    expect([rep.linesPerRow, rep.rowTextPx, rep.rowFill]).toEqual([3, 60, 1.5]);
+  });
+
+  it('hidden members take no space and are left out', () => {
+    const els = orderList(3).map((e) =>
+      e.id === 'app.orders.row-3'
+        ? { ...e, visible: false, visibilityReason: 'hidden' as const }
+        : e
+    );
+    expect(densityRepeats(capture(els), null)).toEqual([]);
+  });
+
+  it('a hidden leaf in a row draws no line band', () => {
+    const els = orderList(3).map((e): DensityTestElementSpec => {
+      if (!e.id.endsWith('.sum')) return e;
+      const [x, y, w, h] = e.rect!;
+      return { ...e, rect: [x, y + 20, w, h], visible: false, visibilityReason: 'hidden' };
+    });
+    const [rep] = densityRepeats(capture(els), null);
+    expect([rep.linesPerRow, rep.rowTextPx]).toEqual([1, 20]);
+  });
+
+  it('the summary counts members, caps the list, and reports the total', () => {
+    // The cards moved 600 px right, beside the list.
+    const beside = cards([
+      [100, 300],
+      [100, 300],
+      [100, 300],
+    ]).map((e): DensityTestElementSpec => {
+      const [x, y, w, h] = e.rect!;
+      return { ...e, rect: [x + 600, y, w, h] };
+    });
+    const c = capture([...orderList(3), ...beside]);
+    const report = summarizeDensityRepeats(c, null, undefined, 1);
+    expect(report.structureResolved).toBe(true);
+    if (!report.structureResolved) return;
+    expect([report.byBasis, report.shown, report.total, report.truncated]).toEqual([
+      { path: 1, geometry: 1 },
+      1,
+      2,
+      true,
+    ]);
+    expect(report.list[0].members).toBe(3);
+  });
+
+  it('a capture whose structure is not resolved reports no repeats, and says why', () => {
+    const c = { ...capture(orderList(3)), structureResolved: false };
+    expect(summarizeDensityRepeats(c, null)).toEqual({
+      structureResolved: false,
+      reason: 'repeats are read from parent links, which this capture has not resolved',
+    });
+  });
+
+  it('a capture file written before selected and filters existed still parses', () => {
+    const c = capture(orderList(3));
+    const old = {
+      ...c,
+      items: c.items.map(({ selected: _s, filters: _f, ...rest }) => rest),
+    };
+    const parsed = parseDensityCapture(JSON.parse(JSON.stringify(old)));
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.value.items.every((i) => i.selected === null && i.filters === null)).toBe(true);
+    }
+  });
+});

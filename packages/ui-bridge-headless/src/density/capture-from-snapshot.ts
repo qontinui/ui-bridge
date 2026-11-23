@@ -164,17 +164,31 @@ function readVisibility(state: Rec): DensityVisibility | null {
   }
 }
 
-/** The ids each element controls or toggles, from the snapshot's relationships. */
-function controlEdges(snapshot: Rec): Map<string, string> {
-  const out = new Map<string, string>();
+/** The relationship edges the capture keeps, by source id: first edge wins. */
+interface DensityEdges {
+  /** `controls` or `toggles`. */
+  controls: Map<string, string>;
+  /** `filters` (search -> list). */
+  filters: Map<string, string>;
+}
+
+/** The ids each element controls, toggles or filters, from the snapshot's relationships. */
+function relationshipEdges(snapshot: Rec): DensityEdges {
+  const out: DensityEdges = { controls: new Map(), filters: new Map() };
   const rel = snapshot.relationships;
   if (!isRecord(rel) || !Array.isArray(rel.relationships)) return out;
   for (const edge of rel.relationships) {
     if (!isRecord(edge)) continue;
-    if (edge.type !== 'controls' && edge.type !== 'toggles') continue;
+    const map =
+      edge.type === 'controls' || edge.type === 'toggles'
+        ? out.controls
+        : edge.type === 'filters'
+          ? out.filters
+          : null;
+    if (map === null) continue;
     const source = str(edge.source);
     const target = str(edge.target);
-    if (source !== null && target !== null && !out.has(source)) out.set(source, target);
+    if (source !== null && target !== null && !map.has(source)) map.set(source, target);
   }
   return out;
 }
@@ -193,7 +207,7 @@ function buildItem(
   el: Rec,
   id: string,
   viewport: DensityCaptureViewport,
-  controls: Map<string, string>,
+  edges: DensityEdges,
   gaps: Gaps
 ): BuiltItem {
   let complete = true;
@@ -348,7 +362,9 @@ function buildItem(
       truncated,
       recoverable,
       expanded: typeof state.ariaExpanded === 'boolean' ? state.ariaExpanded : null,
-      controls: controls.get(id) ?? null,
+      controls: edges.controls.get(id) ?? null,
+      selected: typeof state.ariaSelected === 'boolean' ? state.ariaSelected : null,
+      filters: edges.filters.get(id) ?? null,
       href: href !== null && href !== '' ? sha256DensityHex(href) : null,
     },
     text,
@@ -490,7 +506,7 @@ export function captureDensityFromSnapshot(
     }
 
     const gaps = new Gaps();
-    const controls = controlEdges(snapshot);
+    const edges = relationshipEdges(snapshot);
     const elements = snapshot.elements.filter(isRecord);
     const nonObjects = snapshot.elements.length - elements.length;
     for (let i = 0; i < nonObjects; i++) gaps.add('element', 'input_missing');
@@ -503,7 +519,7 @@ export function captureDensityFromSnapshot(
         continue;
       }
       seen.add(id);
-      built.push(buildItem(el, id, viewport, controls, gaps));
+      built.push(buildItem(el, id, viewport, edges, gaps));
     }
 
     // ---- the role probe ----

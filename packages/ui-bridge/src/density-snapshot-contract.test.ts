@@ -17,7 +17,7 @@
  * reports (zero rects, inline styles); Phase 2's real-browser smoke proves
  * them from a laid-out page.
  *
- * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change (Phase 1).
+ * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change (Phases 1 and 4).
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -54,10 +54,13 @@ describe('density adapter reads the fields the registry serializer writes', () =
         <a id="l" href="/orders/1" data-ui-bridge-id="link-orders">Orders</a>
         <div id="pane" style="overflow-x: auto; overflow-y: auto;">A long synthetic list</div>
         <ul id="ol" data-testid="orders-list"><li>Row one</li></ul>
+        <button id="tab" role="tab" aria-selected="false">Closed orders</button>
+        <input id="q" type="search" />
       </main>`;
     registry = new UIBridgeRegistry();
     // The provider wires a tracker the same way (react/UIBridgeProviderInit.ts).
-    registry.setEnrichers({ relationshipTracker: new RelationshipTracker() });
+    const tracker = new RelationshipTracker();
+    registry.setEnrichers({ relationshipTracker: tracker });
     registry.registerElement('app.orders.refresh', document.getElementById('b')!, {
       type: 'button',
       actions: ['click'],
@@ -114,6 +117,18 @@ describe('density adapter reads the fields the registry serializer writes', () =
       actions: [],
       category: 'content',
     });
+    registry.registerElement('app.orders.tab', document.getElementById('tab')!, {
+      type: 'button',
+      actions: ['click'],
+      category: 'interactive',
+    });
+    registry.registerElement('app.orders.search', document.getElementById('q')!, {
+      type: 'input',
+      actions: ['type'],
+      category: 'interactive',
+    });
+    // A declared edge, as useUIRelationship writes it: the search narrows the list.
+    tracker.declare('app.orders.search', 'app.orders.list', 'filters');
   });
 
   it('every field path the adapter reads is present in a real snapshot', () => {
@@ -187,6 +202,16 @@ describe('density adapter reads the fields the registry serializer writes', () =
         type: 'controls',
       })
     );
+    // Phase 4: aria-selected, the computed role of a search input, and a filters edge.
+    expect((byId['app.orders.tab'].state as Record<string, unknown>).ariaSelected).toBe(false);
+    expect(byId['app.orders.search'].role).toBe('searchbox');
+    expect(relationships).toContainEqual(
+      expect.objectContaining({
+        source: 'app.orders.search',
+        target: 'app.orders.list',
+        type: 'filters',
+      })
+    );
   });
 
   it('the adapter derives each item field from those paths', () => {
@@ -249,6 +274,10 @@ describe('density adapter reads the fields the registry serializer writes', () =
       ownChars: 7,
     });
     expect(byId['app.orders.list'].ownChars).toBe(0);
+
+    expect(byId['app.orders.tab'].selected).toBe(false);
+    expect(byId['app.orders.search'].role).toBe('searchbox');
+    expect(byId['app.orders.search'].filters).toBe('app.orders.list');
 
     const secret = byId['app.secret'];
     expect([secret.chars, secret.textHash, secret.shape]).toEqual([null, null, null]);

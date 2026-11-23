@@ -25,7 +25,7 @@ import { runDensityCli, sameFileOnDisk, type DensityCliIo } from './density-cli'
  * Every id and text here is synthetic (plan D5). Every expected value is a
  * literal spelled in this file.
  *
- * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change, Phases 2 and 3.
+ * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change, Phases 2 to 4.
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -126,6 +126,33 @@ const EXPECTED_VALUE = {
       unresolved: [],
       unblockedLeaves: 1,
     },
+  },
+  repeats: {
+    structureResolved: true,
+    byBasis: { path: 0, geometry: 0 },
+    shown: 0,
+    total: 0,
+    truncated: false,
+    list: [],
+  },
+  affordances: {
+    structureResolved: true,
+    interactionsBasis: 'static',
+    byKind: {
+      disclosure: 0,
+      tab: 0,
+      menu: 0,
+      search: 0,
+      filter: 0,
+      pager: 0,
+      truncation: 0,
+      abbreviation: 0,
+    },
+    byRule: {},
+    shown: 0,
+    total: 0,
+    truncated: false,
+    list: [],
   },
   snapshotId: 'snap-synthetic-1',
   observedAt: '2025-11-23T12:13:20.000Z',
@@ -768,6 +795,164 @@ describe('ui-bridge-density measure: the structure summary', () => {
         unresolved: [],
         unblockedLeaves: 2,
       },
+    });
+  }, 60_000);
+});
+
+/** A list section: a filter above three rows, a pager below them, and a tab beside them. */
+function listElement(
+  id: string,
+  tagName: string,
+  xpath: string,
+  rect: [number, number, number, number],
+  textContent: string,
+  extra: { category?: string; role?: string; ariaSelected?: boolean } = {}
+) {
+  const base = structuredElement(id, tagName, xpath, rect, textContent);
+  return {
+    ...base,
+    category: extra.category ?? 'content',
+    ...(extra.role !== undefined ? { role: extra.role } : {}),
+    state: {
+      ...base.state,
+      ...(extra.ariaSelected !== undefined ? { ariaSelected: extra.ariaSelected } : {}),
+    },
+  };
+}
+
+const LIST = '/html/body/main/section';
+const LISTED = {
+  ...BARE,
+  elements: [
+    listElement('app.orders', 'section', LIST, [0, 60, 360, 400], ''),
+    listElement('app.orders.state', 'select', `${LIST}/select`, [0, 60, 200, 28], 'All', {
+      category: 'interactive',
+      role: 'combobox',
+    }),
+    listElement('app.orders.list', 'ul', `${LIST}/ul`, [0, 100, 360, 120], ''),
+    ...[1, 2, 3].map((k) =>
+      listElement(
+        `app.orders.row-${k}`,
+        'li',
+        `${LIST}/ul/li[${k}]`,
+        [0, 100 + 40 * (k - 1), 360, 36],
+        `Order ${k}`
+      )
+    ),
+    listElement('app.orders.next', 'button', `${LIST}/nav/button`, [0, 240, 80, 28], 'Next', {
+      category: 'interactive',
+    }),
+    listElement('app.tabs.closed', 'button', '/html/body/div/button', [0, 300, 90, 28], 'Closed', {
+      category: 'interactive',
+      role: 'tab',
+      ariaSelected: false,
+    }),
+  ],
+};
+
+describe('ui-bridge-density measure: repeats and affordances', () => {
+  it('reports repeats with their row quantities and each affordance with the rule that detected it', () => {
+    writeFileSync(join(dir, 'listed.json'), JSON.stringify(LISTED));
+    const r = run(['measure', '--snapshot', join(dir, 'listed.json'), '--role', 'buyer']);
+    expect(r.stderr).toBe('');
+    expect(r.status).toBe(0);
+    const report = JSON.parse(r.stdout) as Report;
+    const value = report.cells[0]!.observation.value as { repeats: unknown; affordances: unknown };
+    expect(value.repeats).toEqual({
+      structureResolved: true,
+      byBasis: { path: 1, geometry: 0 },
+      shown: 1,
+      total: 1,
+      truncated: false,
+      list: [
+        {
+          id: 'repeat:app.orders.row-1',
+          by: 'path',
+          parent: 'app.orders.list',
+          tag: 'li',
+          members: 3,
+          rows: 3,
+          perRow: 1,
+          firstRow: { topPx: 100, bottomPx: 136 },
+          lastRow: { topPx: 180, bottomPx: 216 },
+          rowPitchPx: 40,
+          linesBasis: 'estimated',
+          linesPerRow: 1,
+          rowTextPx: 20,
+          rowFill: 0.5,
+          rowsEstimated: 3,
+          valuesPerRow: 0,
+          widthFill: 1,
+          rowsPerScreen: 18.5,
+          extentPx: 116,
+          extentAtVolume: {
+            unknown: 'no_expectation',
+            reason: 'no row volume was declared (the budget names the rows each list is judged at)',
+          },
+          scope: 'block+parent',
+          finder: { id: 'app.orders.state', by: 'position' },
+          renderedOf: {
+            unknown: 'input_missing',
+            reason:
+              'a snapshot carries only the rows that are registered; how many exist is measured by the document walk',
+          },
+        },
+      ],
+    });
+    const hides = {
+      unknown: 'input_missing',
+      reason:
+        'what a control hides is measured by the document walk; a snapshot of registered elements does not carry it',
+    };
+    expect(value.affordances).toEqual({
+      structureResolved: true,
+      interactionsBasis: 'static',
+      byKind: {
+        disclosure: 0,
+        tab: 1,
+        menu: 0,
+        search: 0,
+        filter: 1,
+        pager: 1,
+        truncation: 0,
+        abbreviation: 0,
+      },
+      byRule: { 'role-tab': 1, 'control-above-repeat': 1, 'nav-after-repeat': 1 },
+      shown: 3,
+      total: 3,
+      truncated: false,
+      list: [
+        {
+          kind: 'tab',
+          rule: 'role-tab',
+          id: 'app.tabs.closed',
+          state: 'inactive',
+          controls: null,
+          repeat: null,
+          recoverable: null,
+          hides,
+        },
+        {
+          kind: 'filter',
+          rule: 'control-above-repeat',
+          id: 'app.orders.state',
+          state: null,
+          controls: null,
+          repeat: 'repeat:app.orders.row-1',
+          recoverable: null,
+          hides,
+        },
+        {
+          kind: 'pager',
+          rule: 'nav-after-repeat',
+          id: 'app.orders.next',
+          state: null,
+          controls: null,
+          repeat: 'repeat:app.orders.row-1',
+          recoverable: null,
+          hides,
+        },
+      ],
     });
   }, 60_000);
 });
