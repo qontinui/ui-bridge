@@ -11,7 +11,9 @@
  * Doors covered: `executeElementAction`, `controlBatch` (N action steps → N
  * pairs), `executeWithDiff` (the change tracker's action dependency), and the
  * in-process NL executor (`aiExecute`). A request naming no action records
- * nothing, and a custom action's return value never reaches the log.
+ * nothing, a custom action's return value never reaches the log, and neither
+ * does any error TEXT (it can echo a param or be app-authored): a failure is
+ * kept as its code under a fixed message.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -21,6 +23,8 @@ import { createHandlers, type RegistryLike } from '../server/handlers';
 import type { ControlActionRequest } from '../control/types';
 
 const SECRET = 'app-return-value-7f3a';
+const KEYS_SECRET = 'MyPassw0rd';
+const THROWN_SECRET = 'secret-xyz';
 
 /** jsdom has no layout: give a node a box so it reads as visible (and clickable). */
 function withBox<T extends HTMLElement>(el: T): T {
@@ -63,7 +67,15 @@ beforeEach(async () => {
   document.body.append(pane);
   registry.registerElement('pane', pane, {
     type: 'custom',
-    customActions: { write: { id: 'write', handler: () => ({ token: SECRET }) } },
+    customActions: {
+      write: { id: 'write', handler: () => ({ token: SECRET }) },
+      explode: {
+        id: 'explode',
+        handler: () => {
+          throw new Error(`handler failed: ${THROWN_SECRET}`);
+        },
+      },
+    },
   });
 }, 30_000);
 
@@ -178,5 +190,119 @@ describe("a custom action's return value never reaches the history", () => {
     const entries = await history('pane');
     expect(eventTypes(entries)).toEqual(PAIR);
     expect(JSON.stringify(entries)).not.toContain(SECRET);
+  });
+});
+
+describe('error text never reaches the history; the caller still gets it', () => {
+  const sendKeys = { action: 'sendKeys', params: { keys: [KEYS_SECRET] } };
+
+  /** Exactly one started/failed pair, the secret nowhere, the literal code kept. */
+  async function expectOnlyCode(elementId: string, secret: string, code: string) {
+    const entries = await history(elementId);
+    expect(eventTypes(entries)).toEqual(['action:started', 'action:failed']);
+    expect(JSON.stringify(entries)).not.toContain(secret);
+    expect(entries[1].data).toMatchObject({
+      error: `action failed (${code})`,
+      response: { success: false, failureDetails: { errorCode: code } },
+    });
+  }
+
+  it('on the page: a sendKeys whose keys echo into its error', async () => {
+    const answer = await api.execute('executeElementAction', { id: 'dom-go', request: sendKeys });
+    expect((answer as { success: boolean }).success).toBe(false);
+    expect(JSON.stringify(answer)).toContain(KEYS_SECRET);
+    await expectOnlyCode('dom-go', KEYS_SECRET, 'INVALID_PARAMS');
+  });
+
+  it('in-process: a sendKeys whose keys echo into its error', async () => {
+    const answer = await handlers.executeElementAction(
+      'dom-go',
+      sendKeys as unknown as ControlActionRequest
+    );
+    expect(answer.success).toBe(false);
+    expect(JSON.stringify(answer)).toContain(KEYS_SECRET);
+    await expectOnlyCode('dom-go', KEYS_SECRET, 'UB-ACTION-FAILED');
+  });
+
+  it("on the page: a custom handler's thrown text", async () => {
+    const answer = await api.execute('executeElementAction', {
+      id: 'pane',
+      request: { action: 'explode' },
+    });
+    expect((answer as { success: boolean }).success).toBe(false);
+    expect(JSON.stringify(answer)).toContain(THROWN_SECRET);
+    await expectOnlyCode('pane', THROWN_SECRET, 'ACTION_REJECTED');
+  });
+
+  it("in-process: a custom handler's thrown text", async () => {
+    const answer = await handlers.executeElementAction('pane', { action: 'explode' });
+    expect(answer.success).toBe(false);
+    expect(JSON.stringify(answer)).toContain(THROWN_SECRET);
+    await expectOnlyCode('pane', THROWN_SECRET, 'UB-ACTION-FAILED');
+  });
+});
+
+describe('the text a type step wrote never reaches the history', () => {
+  const TYPED = 'tok-secret-123';
+
+  function plainInput(): void {
+    const input = withBox(document.createElement('input'));
+    input.type = 'text';
+    input.id = 'note';
+    document.body.append(input);
+    getGlobalRegistry().registerElement('note', input, { type: 'input' });
+  }
+
+  it('on the page', async () => {
+    plainInput();
+    const answer = await api.execute('executeElementAction', {
+      id: 'note',
+      request: { action: 'type', params: { text: TYPED } },
+    });
+    expect((answer as { success: boolean }).success).toBe(true);
+    expect((document.getElementById('note') as HTMLInputElement).value).toBe(TYPED);
+    const entries = await history('note');
+    expect(eventTypes(entries)).toEqual(PAIR);
+    expect(JSON.stringify(entries)).not.toContain(TYPED);
+  });
+
+  it('in-process', async () => {
+    plainInput();
+    const answer = await handlers.executeElementAction('note', {
+      action: 'type',
+      params: { text: TYPED },
+    });
+    expect(answer.success).toBe(true);
+    expect((document.getElementById('note') as HTMLInputElement).value).toBe(TYPED);
+    const entries = await history('note');
+    expect(eventTypes(entries)).toEqual(PAIR);
+    expect(JSON.stringify(entries)).not.toContain(TYPED);
+  });
+});
+
+describe('a verb that is neither built in nor registered is recorded as "unknown"', () => {
+  const VERB = 'MyPassw0rd is the admin password';
+
+  it('on the page', async () => {
+    await api.execute('executeElementAction', { id: 'dom-go', request: { action: VERB } });
+    const entries = await history('dom-go');
+    expect(eventTypes(entries)).toEqual(['action:started', 'action:failed']);
+    expect(entries.map((e) => e.data.action)).toEqual(['unknown', 'unknown']);
+    expect(JSON.stringify(entries)).not.toContain('MyPassw0rd');
+  });
+
+  it('in-process', async () => {
+    await handlers.executeElementAction('dom-go', { action: VERB } as ControlActionRequest);
+    const entries = await history('dom-go');
+    expect(eventTypes(entries)).toEqual(['action:started', 'action:failed']);
+    expect(entries.map((e) => e.data.action)).toEqual(['unknown', 'unknown']);
+    expect(JSON.stringify(entries)).not.toContain('MyPassw0rd');
+  });
+
+  it('a custom action the element registered keeps its name', async () => {
+    await api.execute('executeElementAction', { id: 'pane', request: { action: 'write' } });
+    await handlers.executeElementAction('pane', { action: 'write' });
+    const entries = await history('pane');
+    expect(entries.map((e) => e.data.action)).toEqual(['write', 'write', 'write', 'write']);
   });
 });

@@ -18,6 +18,9 @@
  * refusal's suggestion and the executor disagree, which is the #331 defect
  * class on this door.
  *
+ * `SUPPORTED_ACTIONS` is `BUILT_IN_ACTION_VERBS` (`../core/action-verbs.ts`),
+ * so that is the declaration read; the test below also pins the alias.
+ *
  * The sources are read through the TypeScript AST, so a commented-out entry,
  * case or arm is absent here exactly as it is absent at runtime.
  */
@@ -35,6 +38,9 @@ function parse(path: string): ts.SourceFile {
 }
 
 const executor = parse(join(here, 'action-executor.ts'));
+// The gate's verb list lives in its own module, shared with the element-action
+// event producer; the executor's `SUPPORTED_ACTIONS` is that set.
+const actionVerbs = parse(join(here, '..', 'core', 'action-verbs.ts'));
 const types = parse(join(here, '..', 'core', 'types.ts'));
 
 function findAll<T extends ts.Node>(root: ts.Node, match: (n: ts.Node) => n is T): T[] {
@@ -60,11 +66,11 @@ function literal(node: ts.Node, what: string): string {
 function supportedActions(): string[] {
   const decl = only(
     findAll(
-      executor,
+      actionVerbs,
       (n): n is ts.VariableDeclaration =>
-        ts.isVariableDeclaration(n) && n.name.getText() === 'SUPPORTED_ACTIONS'
+        ts.isVariableDeclaration(n) && n.name.getText() === 'BUILT_IN_ACTION_VERBS'
     ),
-    'SUPPORTED_ACTIONS declaration'
+    'BUILT_IN_ACTION_VERBS declaration'
   );
   const init = decl.initializer;
   const array = init && ts.isNewExpression(init) ? init.arguments?.[0] : undefined;
@@ -168,5 +174,19 @@ describe('HTTP executor verb parity', () => {
 
   it("SUPPORTED_ACTIONS equals the verbs performAction's dispatch runs", () => {
     expect([...supportedActions()].sort()).toEqual([...new Set(dispatchedVerbs())].sort());
+  });
+});
+
+describe('SUPPORTED_ACTIONS is the shared verb list', () => {
+  it('action-executor.ts declares SUPPORTED_ACTIONS as BUILT_IN_ACTION_VERBS', () => {
+    const decl = only(
+      findAll(
+        executor,
+        (n): n is ts.VariableDeclaration =>
+          ts.isVariableDeclaration(n) && n.name.getText() === 'SUPPORTED_ACTIONS'
+      ),
+      'SUPPORTED_ACTIONS declaration'
+    );
+    expect(decl.initializer?.getText()).toBe('BUILT_IN_ACTION_VERBS');
   });
 });

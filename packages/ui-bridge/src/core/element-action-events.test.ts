@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   eventResponseOf,
+  recordedVerb,
   recordingActionExecutor,
   withElementActionEvents,
   type ElementActionEventSink,
@@ -43,7 +44,16 @@ describe('withElementActionEvents', () => {
     }));
     expect(events[1]).toEqual({
       type: 'action:failed',
-      data: { elementId: 'go', action: 'click', response: inner, error: 'not visible' },
+      data: {
+        elementId: 'go',
+        action: 'click',
+        response: {
+          success: false,
+          error: 'action failed (UB-ELEM-NOT-VISIBLE)',
+          failureDetails: { errorCode: 'UB-ELEM-NOT-VISIBLE' },
+        },
+        error: 'action failed (UB-ELEM-NOT-VISIBLE)',
+      },
     });
   });
 
@@ -51,36 +61,59 @@ describe('withElementActionEvents', () => {
     const { sink, events } = recordingSink();
     await withElementActionEvents(sink, 'go', 'click', async () => ({
       success: true,
-      data: { success: false, error: 'refused' },
+      data: { success: false, error: 'refused', failureDetails: { errorCode: 'UB-REFUSED' } },
     }));
-    expect(events[1]).toMatchObject({ type: 'action:failed', data: { error: 'refused' } });
+    expect(events[1]).toMatchObject({
+      type: 'action:failed',
+      data: { error: 'action failed (UB-REFUSED)' },
+    });
+    expect(JSON.stringify(events)).not.toContain('refused"');
   });
 
-  it('a failure with no message says so', async () => {
+  it('a failure with no code is recorded under UB-ACTION-FAILED', async () => {
     const { sink, events } = recordingSink();
     await withElementActionEvents(sink, 'go', 'click', async () => ({ success: false }));
     expect(events[1]).toMatchObject({
       type: 'action:failed',
-      data: { error: 'the action did not report success and supplied no error message' },
+      data: {
+        error: 'action failed (UB-ACTION-FAILED)',
+        response: { failureDetails: { errorCode: 'UB-ACTION-FAILED' } },
+      },
     });
   });
 
-  it('a throw is recorded as action:failed and rethrown', async () => {
+  it('a code that is not a code token is not kept', async () => {
+    const { sink, events } = recordingSink();
+    await withElementActionEvents(sink, 'go', 'click', async () => ({
+      success: false,
+      code: 'secret-xyz is not a code',
+    }));
+    expect(events[1]).toMatchObject({ data: { error: 'action failed (UB-ACTION-FAILED)' } });
+    expect(JSON.stringify(events)).not.toContain('secret-xyz');
+  });
+
+  it('a throw is recorded as action:failed by its code, never its message, and rethrown', async () => {
     const { sink, events } = recordingSink();
     await expect(
       withElementActionEvents(sink, 'go', 'click', async () => {
-        throw new Error('boom');
+        throw Object.assign(new Error('secret-xyz'), { code: 'TERMINAL_EXITED' });
       })
-    ).rejects.toThrow('boom');
+    ).rejects.toThrow('secret-xyz');
     expect(events[1]).toEqual({
       type: 'action:failed',
       data: {
         elementId: 'go',
         action: 'click',
-        response: { success: false, error: 'boom', timestamp: expect.any(Number) },
-        error: 'boom',
+        response: {
+          success: false,
+          error: 'action failed (TERMINAL_EXITED)',
+          failureDetails: { errorCode: 'TERMINAL_EXITED' },
+          timestamp: expect.any(Number),
+        },
+        error: 'action failed (TERMINAL_EXITED)',
       },
     });
+    expect(JSON.stringify(events)).not.toContain('secret-xyz');
   });
 
   it('a throwing listener, or a sink with no dispatchEvent, leaves the answer unchanged', async () => {
@@ -95,7 +128,7 @@ describe('withElementActionEvents', () => {
 });
 
 describe('eventResponseOf — only what a scrub reached', () => {
-  it('keeps the allowlisted fields and the canonical failure code, drops the rest', () => {
+  it('keeps the allowlisted fields and the failure code, drops the rest (all caller/app text)', () => {
     expect(
       eventResponseOf({
         success: false,
@@ -112,12 +145,44 @@ describe('eventResponseOf — only what a scrub reached', () => {
       })
     ).toEqual({
       success: false,
-      error: 'boom',
+      error: 'action failed (UB-ACTION-FAILED)',
       durationMs: 3,
       timestamp: 4,
-      requestId: 'r1',
       elementState: { visible: true },
-      failureDetails: { errorCode: 'UB-ACTION-FAILED', message: 'boom' },
+      failureDetails: { errorCode: 'UB-ACTION-FAILED' },
+    });
+  });
+
+  it("keeps only the element's non-content state", () => {
+    expect(
+      eventResponseOf({
+        success: true,
+        elementState: {
+          visible: true,
+          enabled: true,
+          focused: true,
+          checked: false,
+          role: 'textbox',
+          value: 'typed text',
+          textContent: 'shown text',
+          selectedOptions: ['opt'],
+          availableOptions: [{ value: 'a', label: 'A', selected: true }],
+          innerHTML: '<b>x</b>',
+          accessibleName: 'Name',
+          dataset: { token: 't' },
+          href: '/x?token=t',
+          rect: { x: 1 },
+        },
+      })
+    ).toEqual({
+      success: true,
+      elementState: {
+        visible: true,
+        enabled: true,
+        focused: true,
+        checked: false,
+        role: 'textbox',
+      },
     });
   });
 
@@ -135,6 +200,10 @@ describe('recordingActionExecutor', () => {
       return { success: true, result: 'r' };
     }
     get calls() {
+      return this.#calls;
+    }
+    /** A METHOD (not a getter) reading a #private field. */
+    callCount(): number {
       return this.#calls;
     }
   }
@@ -162,4 +231,58 @@ describe('recordingActionExecutor', () => {
       expect(events).toEqual([]);
     }
   );
+
+  it('a method reading a #private field works through the wrapper', async () => {
+    const { sink } = recordingSink();
+    const wrapped = recordingActionExecutor(new Executor(), sink);
+    await wrapped.executeAction('go', { action: 'click' });
+    await wrapped.executeAction('go', { action: 'click' });
+    expect(wrapped.callCount()).toBe(2);
+  });
+
+  it.each([
+    ['rejects', () => Promise.reject(new Error('rejected secret-xyz'))],
+    [
+      'throws synchronously',
+      () => {
+        throw new Error('thrown secret-xyz');
+      },
+    ],
+  ])(
+    'an executeAction that %s: started then failed, and the error is rethrown',
+    async (_n, impl) => {
+      const { sink, events } = recordingSink();
+      const raw = { executeAction: impl as (id: string, r: unknown) => Promise<unknown> };
+      const wrapped = recordingActionExecutor(raw, sink);
+      await expect(wrapped.executeAction('go', { action: 'click' })).rejects.toThrow('secret-xyz');
+      expect(events.map((e) => e.type)).toEqual(['action:started', 'action:failed']);
+      expect(JSON.stringify(events)).not.toContain('secret-xyz');
+    }
+  );
+});
+
+describe('recordedVerb', () => {
+  const sink = {
+    getElement: (id: string) =>
+      id === 'pane' ? { customActions: { write: { id: 'write' } } } : undefined,
+  };
+
+  it.each([
+    ['a built-in verb', 'go', 'click', 'click'],
+    ['a custom action the element registered', 'pane', 'write', 'write'],
+    ['a custom name on an element that did not register it', 'go', 'write', 'unknown'],
+    ['free text', 'go', 'my s3cret token', 'unknown'],
+    ['an inherited property name', 'pane', 'toString', 'unknown'],
+  ])('%s', (_n, id, verb, expected) => {
+    expect(recordedVerb(sink, id, verb)).toBe(expected);
+  });
+
+  it('a throwing registration lookup records "unknown"', () => {
+    const throwing = {
+      getElement: () => {
+        throw new Error('x');
+      },
+    };
+    expect(recordedVerb(throwing, 'go', 'write')).toBe('unknown');
+  });
 });

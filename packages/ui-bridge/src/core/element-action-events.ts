@@ -17,20 +17,65 @@
  *     build (`server/handlers.ts`) — so the route, batch steps, the change
  *     tracker's diff actions and the NL executor all record, and none twice.
  *
- * What an event carries is deliberately narrow: the element id, the verb, and
- * an ALLOWLISTED projection of the action's answer ({@link eventResponseOf}):
- * its verdict, timing, error text and canonical error code, and the
- * `elementState` the answer's own §4.6 projection already scrubbed. Never the
- * request's params (a `type` step's `text` is what a password field was sent),
- * never a custom action's `result` (app data no scrub touches), and nothing
- * else the answer carries that no scrub reached (handler-attached error
- * properties, snapshots, change lists).
+ * What an event carries is deliberately narrow, because the log outlives the
+ * call. It holds: the element id the caller named; the verb, only when it is a
+ * built-in verb (`./action-verbs.ts`) or a custom action that element
+ * registered, else `'unknown'` ({@link recordedVerb}); and an ALLOWLISTED
+ * projection of the action's answer ({@link eventResponseOf}) — its verdict,
+ * its timing, the element's NON-CONTENT state after the action (visibility,
+ * enabled/disabled, focus, checked/pressed/expanded/selected flags, role;
+ * {@link EVENT_ELEMENT_STATE_FIELDS}), and, on a failure, only the error CODE
+ * with a fixed message built from it ({@link failureMessage}).
+ *
+ * So no request param reaches the log — neither directly (a `type` step's
+ * `text`) nor through the element's post-action content (`value`,
+ * `textContent`, `selectedOptions`, options, `innerHTML`, `dataset`, `href`,
+ * the accessible name: an unmarked text input's value IS the text just typed
+ * into it, scrubbed only when the element's own verdict redacts it) — nor the
+ * `requestId`, a free-text verb, or any error TEXT: an error message can echo a
+ * param (a `sendKeys` refusal quotes the key token it rejected) or be
+ * app-authored (a custom handler's throw). Nor a custom action's `result`, nor
+ * anything else the answer carries that no scrub reached (handler-attached
+ * error properties, snapshots, change lists). The caller's own answer is
+ * unchanged.
  */
 import type { BridgeEventType } from './types';
+import { BUILT_IN_ACTION_VERBS } from './action-verbs';
 
-/** Where the events go: the registry's event bus. */
+/**
+ * Where the events go: the registry's event bus — and the registry's
+ * registration lookup, which says whether a non-built-in verb is a custom
+ * action the element registered.
+ */
 export interface ElementActionEventSink {
   dispatchEvent?<T>(type: BridgeEventType, data: T): void;
+  getElement?(id: string): unknown;
+}
+
+/** The verb an event records for a verb that is neither built in nor registered. */
+export const UNKNOWN_VERB = 'unknown';
+
+/**
+ * The verb an event may record for `action` on `elementId`: a built-in verb, or
+ * a custom action the element's registration declares; anything else is
+ * caller-chosen free text and is recorded as {@link UNKNOWN_VERB}.
+ */
+export function recordedVerb(
+  sink: ElementActionEventSink,
+  elementId: string,
+  action: string
+): string {
+  if (BUILT_IN_ACTION_VERBS.has(action)) return action;
+  let registration: unknown;
+  try {
+    registration = sink.getElement?.(elementId);
+  } catch {
+    registration = undefined;
+  }
+  const custom = isRecord(registration) ? registration.customActions : undefined;
+  return isRecord(custom) && Object.prototype.hasOwnProperty.call(custom, action)
+    ? action
+    : UNKNOWN_VERB;
 }
 
 /** `action:started`. */
@@ -46,7 +91,7 @@ export interface ElementActionSettledData extends ElementActionStartedData {
    * (for an envelope, of its `data` when it has one).
    */
   response: Record<string, unknown> | undefined;
-  /** The failure's message (`action:failed` only). */
+  /** The failure's FIXED message, `action failed (<code>)` (`action:failed` only). */
   error?: string;
 }
 
@@ -60,36 +105,112 @@ function actionResponseOf(answer: unknown): unknown {
   return answer;
 }
 
-/** The answer fields an event may carry, as they are. */
+/** The answer fields an event may carry, as they are: none is caller text. */
 const EVENT_RESPONSE_FIELDS = [
   'success',
-  'error',
   'durationMs',
   'timestamp',
-  'requestId',
   'retryCount',
   'waitDurationMs',
   'idleWaitMs',
-  // The answer's own §4.6 projection: scrubbed where it was built.
-  'elementState',
 ] as const;
 
 /**
- * The part of an action answer an event keeps: the allowlisted fields, and of
- * `failureDetails` only the canonical `errorCode` and `message`.
+ * The `elementState` fields an event keeps: NON-CONTENT state only. Every
+ * content-bearing field (`value`, `textContent`, `selectedOptions`,
+ * `availableOptions`, `innerHTML`, `accessibleName`, `dataset`, `href`, …) is
+ * left out — an allowlist, so a field added to `ElementState` later is left out
+ * too until it is reviewed here.
  */
-export function eventResponseOf(response: unknown): Record<string, unknown> | undefined {
+export const EVENT_ELEMENT_STATE_FIELDS = [
+  'visible',
+  'enabled',
+  'disabled',
+  'ariaDisabled',
+  'focused',
+  'role',
+  'checked',
+  'opacityHidden',
+  'ariaSelected',
+  'ariaPressed',
+  'ariaExpanded',
+  'ariaChecked',
+  'required',
+  'inViewport',
+  'visibilityReason',
+] as const;
+
+function elementStateProjection(state: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(state)) return undefined;
+  const out: Record<string, unknown> = {};
+  for (const key of EVENT_ELEMENT_STATE_FIELDS) {
+    if (state[key] !== undefined) out[key] = state[key];
+  }
+  return out;
+}
+
+/** The code a failure with no code of its own is recorded under. */
+export const UNCODED_FAILURE = 'UB-ACTION-FAILED';
+
+/** The fixed message an event carries for a failure with code `code`. */
+export function failureMessage(code: string): string {
+  return `action failed (${code})`;
+}
+
+/**
+ * An error code as an event may keep it: a code-shaped token, never prose.
+ * This is a SHAPE filter, not a known-code check: an app-thrown error's
+ * single-token `code` (`TERMINAL_EXITED`) is recorded as it is, and so would
+ * be any other identifier-shaped string an app chose to put there.
+ */
+function codeToken(value: unknown): string | undefined {
+  return typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(value)
+    ? value
+    : undefined;
+}
+
+/**
+ * The failure's code: the action answer's `failureDetails.errorCode`, else the
+ * envelope's (or the answer's) `code`, else {@link UNCODED_FAILURE}.
+ */
+function failureCodeOf(answer: unknown): string {
+  const inner = actionResponseOf(answer);
+  for (const candidate of [inner, answer]) {
+    if (!isRecord(candidate)) continue;
+    const details = candidate.failureDetails;
+    const fromDetails = isRecord(details) ? codeToken(details.errorCode) : undefined;
+    if (fromDetails) return fromDetails;
+  }
+  for (const candidate of [answer, inner]) {
+    if (!isRecord(candidate)) continue;
+    const code = codeToken(candidate.code);
+    if (code) return code;
+  }
+  return UNCODED_FAILURE;
+}
+
+/**
+ * The part of an action answer an event keeps: the allowlisted fields and,
+ * when it failed, `error` and `failureDetails.errorCode` as
+ * {@link failureCodeOf} / {@link failureMessage} derive them — never its text.
+ */
+export function eventResponseOf(
+  response: unknown,
+  failureCode: string | undefined = isRecord(response) && response.success === false
+    ? failureCodeOf(response)
+    : undefined
+): Record<string, unknown> | undefined {
   if (!isRecord(response)) return undefined;
   const out: Record<string, unknown> = {};
   for (const key of EVENT_RESPONSE_FIELDS) {
     if (response[key] !== undefined) out[key] = response[key];
   }
-  const details = response.failureDetails;
-  if (isRecord(details)) {
-    const kept: Record<string, unknown> = {};
-    if (typeof details.errorCode === 'string') kept.errorCode = details.errorCode;
-    if (typeof details.message === 'string') kept.message = details.message;
-    out.failureDetails = kept;
+  const elementState = elementStateProjection(response.elementState);
+  if (elementState) out.elementState = elementState;
+  if (failureCode !== undefined) {
+    const code = failureCode;
+    out.error = failureMessage(code);
+    out.failureDetails = { errorCode: code };
   }
   return out;
 }
@@ -100,15 +221,6 @@ function answerFailed(answer: unknown): boolean {
   if (answer.success === false) return true;
   const inner = actionResponseOf(answer);
   return isRecord(inner) && inner.success === false;
-}
-
-function errorOf(answer: unknown): string {
-  for (const candidate of [answer, actionResponseOf(answer)]) {
-    if (isRecord(candidate) && typeof candidate.error === 'string' && candidate.error.length > 0) {
-      return candidate.error;
-    }
-  }
-  return 'the action did not report success and supplied no error message';
 }
 
 /**
@@ -131,38 +243,52 @@ function emitSafely(emitOne: () => void): void {
 export async function withElementActionEvents<A>(
   sink: ElementActionEventSink,
   elementId: string,
-  action: string,
+  requestedAction: string,
   run: () => Promise<A>
 ): Promise<A> {
+  const action = recordedVerb(sink, elementId, requestedAction);
   const started: ElementActionStartedData = { elementId, action };
   emitSafely(() => sink.dispatchEvent?.('action:started', started));
   let answer: A;
   try {
     answer = await run();
   } catch (err) {
-    const error = err instanceof Error ? err.message : String(err);
     // No answer exists; the response is the failure a reader of `response`
-    // (the metrics collector) can read like any other.
+    // (the metrics collector) can read like any other. The thrown message is
+    // not kept (it may be app-authored or echo a param), only its code.
+    const code = failureCodeOf(err);
+    const error = failureMessage(code);
     const failed: ElementActionSettledData = {
       elementId,
       action,
-      response: { success: false, error, timestamp: Date.now() },
+      response: {
+        success: false,
+        error,
+        failureDetails: { errorCode: code },
+        timestamp: Date.now(),
+      },
       error,
     };
     emitSafely(() => sink.dispatchEvent?.('action:failed', failed));
     throw err;
   }
-  const response = eventResponseOf(actionResponseOf(answer));
   if (answerFailed(answer)) {
+    // One code for the whole answer (the envelope's, when the action answer
+    // under it carries none), on the event and its response alike.
+    const code = failureCodeOf(answer);
     const failed: ElementActionSettledData = {
       elementId,
       action,
-      response,
-      error: errorOf(answer),
+      response: eventResponseOf(actionResponseOf(answer), code),
+      error: failureMessage(code),
     };
     emitSafely(() => sink.dispatchEvent?.('action:failed', failed));
   } else {
-    const completed: ElementActionSettledData = { elementId, action, response };
+    const completed: ElementActionSettledData = {
+      elementId,
+      action,
+      response: eventResponseOf(actionResponseOf(answer)),
+    };
     emitSafely(() => sink.dispatchEvent?.('action:completed', completed));
   }
   return answer;

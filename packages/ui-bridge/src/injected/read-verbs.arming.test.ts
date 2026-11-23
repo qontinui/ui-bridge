@@ -250,11 +250,17 @@ describe('injected execute("getElementHistory")', () => {
       options: { minLevel: 'error' },
     })) as Array<Record<string, unknown>>;
     expect(entries).toHaveLength(1);
+    // The durable entry keeps the code under a fixed message, never the text.
     expect(entries[0]).toMatchObject({
       eventType: 'action:failed',
       level: 'error',
-      message: `Action failed on dom-nope: ${answer.error}`,
-      data: { elementId: 'dom-nope', action: 'click', error: answer.error },
+      message: 'Action failed on dom-nope: action failed (ELEMENT_NOT_FOUND)',
+      data: {
+        elementId: 'dom-nope',
+        action: 'click',
+        error: 'action failed (ELEMENT_NOT_FOUND)',
+        response: { failureDetails: { errorCode: 'ELEMENT_NOT_FOUND' } },
+      },
     });
   }, 30_000);
 
