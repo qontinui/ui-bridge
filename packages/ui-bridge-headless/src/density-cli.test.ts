@@ -1,6 +1,15 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, linkSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  linkSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -464,6 +473,25 @@ describe('runDensityCli, in process', () => {
     expect(r.status).toBe(2);
     expect(r.stdout).toBe('');
     expect(r.stderr).toContain('is the --snapshot file; refusing to overwrite an input');
+    expect(readFileSync(snap, 'utf8')).toBe(before);
+  }, 60_000);
+
+  it('the bin refuses --capture-out naming the file standard input was redirected from', () => {
+    const snap = join(dir, 'redirected.json');
+    writeFileSync(snap, JSON.stringify(BARE));
+    const before = readFileSync(snap, 'utf8');
+    const fd = openSync(snap, 'r');
+    try {
+      const r = spawnSync(
+        process.execPath,
+        [BIN, 'measure', '--snapshot', '-', '--role', 'buyer', '--capture-out', snap],
+        { encoding: 'utf8', stdio: [fd, 'pipe', 'pipe'], timeout: 60_000 }
+      );
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain('is the --snapshot file; refusing to overwrite an input');
+    } finally {
+      closeSync(fd);
+    }
     expect(readFileSync(snap, 'utf8')).toBe(before);
   }, 60_000);
 
