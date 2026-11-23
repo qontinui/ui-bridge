@@ -54,13 +54,14 @@ Every transport exposes the same registration API:
 
 ```ts
 import { createTransport } from '@qontinui/ui-bridge-wrapper';
+import WebSocket from 'ws'; // Node < 22 has no global WebSocket; omit webSocketCtor in a browser
 
 const transport = createTransport({
   kind: 'live',
   runnerUrl: 'ws://127.0.0.1:9876/ui-bridge/ws',
   appId: 'my-wrapper',
   appName: 'My Wrapper', // optional; defaults to appId (the runner requires both)
-  options: { appType: 'wrapper' },
+  options: { appType: 'wrapper', webSocketCtor: WebSocket },
 });
 
 transport.register('getControlSnapshot', async (_params, ctx) => {
@@ -78,7 +79,7 @@ await transport.ready();
 // for `headless`/`headed`/`api`: call `transport.dispatch('action', params)` from your code
 ```
 
-The handler signature is `(params, ctx) => Promise<Result>`. The `ctx` shape depends on the transport — `live` provides a response helper, `headless`/`headed` provide `{ page, browserContext, browser }` from Playwright, `api` provides `undefined`.
+The handler signature is `(params, ctx) => Promise<Result>`. The `ctx` shape depends on the transport — `live` provides `{ kind: 'live', commandId }`, `headless`/`headed` provide `{ page, browserContext, browser }` from Playwright, `api` provides `undefined`.
 
 ## What handlers should return
 
@@ -107,7 +108,7 @@ For the `live` transport, the runner expects a register frame on socket open. Th
 
 `appType` is required by the runner's deserializer. The SDK defaults it to `"wrapper"` if you omit `LiveTransportOptions.appType`.
 
-The runner replies with `{ "type": "registered", "appId, "connId", "acceptedAt" }`. Once you have that, the runner can dispatch any action your wrapper has a handler for.
+The runner replies with `{ "type": "registered", "appId", "connId", "acceptedAt" }`. Once you have that, the runner can dispatch any action your wrapper has a handler for.
 
 ## Headless / headed: the lifecycle
 
