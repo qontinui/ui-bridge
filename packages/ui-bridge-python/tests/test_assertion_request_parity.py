@@ -10,6 +10,7 @@ there fails here instead of silently being unreachable from Python.
 
 from __future__ import annotations
 
+import inspect
 import re
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,8 @@ from ui_bridge import (
     SearchCriteria,
     UiBridgeErrorCode,
 )
+from ui_bridge.ai import AIClient
+from ui_bridge.async_ai import AsyncAIClient
 from ui_bridge.async_client import AsyncUIBridgeClient
 from ui_bridge.client import UIBridgeClient
 
@@ -270,3 +273,72 @@ class TestSpatialHelpers:
             {"target": "a", "type": "noOverlap", "relatedTarget": "b"},
             {"target": "a", "type": "minSpacing", "relatedTarget": "b", "minGap": 12},
         ]
+
+
+class TestHelpersAcceptSearchCriteria:
+    """Every ``assert_*`` / ``wait_for_*`` helper takes ``str | SearchCriteria``.
+
+    The TS SDK's ``assertVisible`` … ``assertUnchecked`` all take
+    ``string | SearchCriteria``; the Python helpers forward to ``assert_that``,
+    which already accepts it, so a ``str``-only annotation only hid the option.
+    """
+
+    @pytest.mark.parametrize("cls", [AIClient, AsyncAIClient])
+    def test_every_helper_target_annotation_admits_search_criteria(self, cls: type) -> None:
+        helpers = [
+            name
+            for name, fn in inspect.getmembers(cls, inspect.isfunction)
+            if name.startswith(("assert_", "wait_for_"))
+            and "target" in inspect.signature(fn).parameters
+        ]
+        assert len(helpers) >= 18
+        narrow = [
+            name
+            for name in helpers
+            if "SearchCriteria"
+            not in str(inspect.signature(getattr(cls, name)).parameters["target"].annotation)
+        ]
+        assert narrow == []
+
+    def test_sync_helper_forwards_search_criteria_target(self) -> None:
+        client = UIBridgeClient(base_url="http://localhost:9876")
+        client._request = MagicMock(return_value=_result_data())  # type: ignore[method-assign]
+        client.ai.assert_has_text(SearchCriteria(role="heading"), "Hi")
+        assert client._request.call_args.kwargs["json"] == {
+            "target": {"role": "heading", "fuzzy": True},
+            "type": "hasText",
+            "expected": "Hi",
+        }
+
+    @pytest.mark.asyncio
+    async def test_async_helper_forwards_search_criteria_target(self) -> None:
+        client = AsyncUIBridgeClient(base_url="http://localhost:9876")
+        client._request = AsyncMock(return_value=_result_data())  # type: ignore[method-assign]
+        await client.ai.wait_for_visible(SearchCriteria(role="dialog"))
+        assert client._request.call_args.kwargs["json"] == {
+            "target": {"role": "dialog", "fuzzy": True},
+            "type": "visible",
+            "timeout": 5000,
+        }
+
+    def test_sync_assert_count_sends_count_with_expected(self) -> None:
+        client = UIBridgeClient(base_url="http://localhost:9876")
+        client._request = MagicMock(return_value=_result_data())  # type: ignore[method-assign]
+        client.ai.assert_count(SearchCriteria(role="listitem"), 3)
+        assert client._request.call_args.kwargs["json"] == {
+            "target": {"role": "listitem", "fuzzy": True},
+            "type": "count",
+            "expected": 3,
+        }
+
+    @pytest.mark.asyncio
+    async def test_async_assert_count_sends_count_with_expected(self) -> None:
+        client = AsyncUIBridgeClient(base_url="http://localhost:9876")
+        client._request = AsyncMock(return_value=_result_data())  # type: ignore[method-assign]
+        await client.ai.assert_count("rows", 0, timeout=100)
+        assert client._request.call_args.kwargs["json"] == {
+            "target": "rows",
+            "type": "count",
+            "expected": 0,
+            "timeout": 100,
+        }
