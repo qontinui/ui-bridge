@@ -385,5 +385,33 @@ export default tseslint.config(
         },
       },
     ];
-  })()
+  })(),
+
+  // ---- The density core is pure ---------------------------------------------
+  // Every file of packages/ui-bridge/src/density/ is copied verbatim into
+  // @qontinui/ui-bridge-headless, and must run with no DOM and no Node: the
+  // config above enables browser AND Node globals for every file, so without
+  // this block a `document` read in the core lints clean. It sets
+  // `no-restricted-globals` ON PURPOSE and not `no-restricted-syntax`: a
+  // `no-restricted-syntax` here would REPLACE the package-wide selectors (the
+  // redaction Layer-1, `.className` and interaction-predicate guards) for these
+  // files — flat config does not merge one rule across blocks (NOTE above).
+  // Plan 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change, Phase 1.
+  {
+    files: ['packages/ui-bridge/src/density/**/*.ts'],
+    ignores: ['packages/ui-bridge/src/density/__tests__/**'],
+    rules: {
+      'no-restricted-globals': [
+        'error',
+        ...['document', 'window', 'navigator', 'getComputedStyle'].map((name) => ({
+          name,
+          message: `The density core is pure: no DOM (${name}). Code that touches the page lives in src/density-dom/ (plan D-F).`,
+        })),
+        ...['process', 'Buffer', 'require'].map((name) => ({
+          name,
+          message: `The density core is pure: no Node (${name}). It is copied into ui-bridge-headless and must run anywhere.`,
+        })),
+      ],
+    },
+  }
 );
