@@ -121,7 +121,7 @@ const minimal = defineContext(
 
 const dataDense = defineContext(
   'data-dense',
-  'Optimized for dashboards and data-heavy UIs. Lenient on density, strict on alignment and consistency.',
+  'Optimized for dashboards and data-heavy UIs. Runs no area-density metric (elementDensity and whitespaceRatio are disabled); strict on alignment and consistency.',
   {
     // UX (5) — total ~0.25 (dashboards are where these problems appear most)
     contentOverflow: { weight: 0.06 },
@@ -129,9 +129,13 @@ const dataDense = defineContext(
     informationDensity: { weight: 0.05 },
     containerEfficiency: { weight: 0.05, thresholds: { good: 75, warning: 45 } },
     viewportUtilization: { weight: 0.04 },
-    // Density & Layout
-    elementDensity: { weight: 0.015, thresholds: { good: 70, warning: 40 } },
-    whitespaceRatio: { weight: 0.015, thresholds: { good: 70, warning: 40 } },
+    // Density & Layout — the two area metrics are disabled. They score how much
+    // of the viewport registered elements cover, which says nothing about whether
+    // a dashboard's reader reaches the values they came for, and on a dense page
+    // they recommend the opposite of the intent ("reduce density", "add padding").
+    // Measure density with the density tool instead (see `informationDensity`).
+    elementDensity: { enabled: false, weight: 0 },
+    whitespaceRatio: { enabled: false, weight: 0 },
     localDensityBalance: { weight: 0.03 },
     horizontalBalance: { weight: 0.02 },
     verticalBalance: { weight: 0.02 },

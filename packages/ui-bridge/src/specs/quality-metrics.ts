@@ -199,6 +199,22 @@ export const aboveFoldRatio: MetricFunction = (elements, viewport) => {
   });
 };
 
+/**
+ * The share of registered-element area that content-typed elements cover:
+ * the summed rect area of the elements `isContentBearing` accepts, divided by
+ * the summed rect area of all registered elements. It scores 100 from a share
+ * of 30 %, reads no text, and does not use the viewport.
+ *
+ * Despite its id, this is not a measure of information density: it cannot say
+ * which values a reader came for, whether they are on the first screen, or how
+ * many scrolls and interactions reaching them costs. That question is answered
+ * by the density tool (planned: `ui-bridge-density` in
+ * `@qontinui/ui-bridge-headless`, and the `@qontinui/ui-bridge/density`
+ * subpath), which reports reach per role against declared asks.
+ *
+ * The id `informationDensity` is kept: it is part of the evaluator's report
+ * contract, and renaming it is tracked as a separate follow-up.
+ */
 export const informationDensity: MetricFunction = (elements, _viewport) => {
   const contentElements = elements.filter(isContentBearing);
   if (contentElements.length === 0 || elements.length === 0)
