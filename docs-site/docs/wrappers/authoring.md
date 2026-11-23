@@ -57,12 +57,10 @@ import { createTransport } from '@qontinui/ui-bridge-wrapper';
 
 const transport = createTransport({
   kind: 'live',
-  options: {
-    runnerUrl: 'ws://127.0.0.1:9876/ui-bridge/ws',
-    appId: 'my-wrapper',
-    appName: 'My Wrapper',
-    appType: 'wrapper',
-  },
+  runnerUrl: 'ws://127.0.0.1:9876/ui-bridge/ws',
+  appId: 'my-wrapper',
+  appName: 'My Wrapper', // optional; defaults to appId (the runner requires both)
+  options: { appType: 'wrapper' },
 });
 
 transport.register('getControlSnapshot', async (_params, ctx) => {
