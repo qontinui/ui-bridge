@@ -35,7 +35,7 @@
  * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change, Phase 2.
  */
 
-import { readFileSync, statSync, writeFileSync } from 'node:fs';
+import { fstatSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { resolve as resolvePath } from 'node:path';
 import { consumeValue, type ArgErrorFactory } from '@qontinui/ui-bridge-cli-args';
 import { isEntryModule } from './entry-guard.js';
@@ -389,7 +389,8 @@ export async function runDensityCli(
         ['--snapshot', args.snapshot],
         ['--targets', args.targets],
       ] as const) {
-        if (input !== null && input !== '-' && same(input, args.captureOut)) {
+        // `-` (standard input) is compared only by a host that can stat it.
+        if (input !== null && (input !== '-' || io.sameFile) && same(input, args.captureOut)) {
           throw new DensityCliArgError(
             `--capture-out ${args.captureOut} is the ${flag} file; refusing to overwrite an input`
           );
@@ -450,11 +451,12 @@ const SIGNAL_EXIT: Record<'SIGHUP' | 'SIGINT' | 'SIGTERM', number> = {
  * symlink and a hard link). A path that does not exist yet names no input.
  */
 export function sameFileOnDisk(a: string, b: string): boolean {
-  if (resolvePath(a) === resolvePath(b)) return true;
+  if (a !== '-' && resolvePath(a) === resolvePath(b)) return true;
   try {
     // As bigints: an NTFS file id exceeds 2^53, where a double would round two
-    // neighbouring files to one inode.
-    const sa = statSync(a, { bigint: true });
+    // neighbouring files to one inode. `-` is standard input, which may be a
+    // file redirected in (`< snap.json`).
+    const sa = a === '-' ? fstatSync(0, { bigint: true }) : statSync(a, { bigint: true });
     const sb = statSync(b, { bigint: true });
     return sa.dev === sb.dev && sa.ino === sb.ino && sa.ino !== 0n;
   } catch {
@@ -462,6 +464,9 @@ export function sameFileOnDisk(a: string, b: string): boolean {
     return false;
   }
 }
+
+/** Set once main() has failed with a bug and is writing its stack before exit 1. */
+let internalErrorExit = false;
 
 async function main(): Promise<void> {
   let step: DensityCliStep = 'parse-args';
@@ -522,10 +527,14 @@ async function main(): Promise<void> {
   for (const signal of Object.keys(SIGNAL_EXIT) as Array<keyof typeof SIGNAL_EXIT>) {
     process.on(signal, () => {
       const code = SIGNAL_EXIT[signal];
+      // A bug is being reported (exit 1 once its stack is written): a signal
+      // now is not an interruption of the run.
+      if (internalErrorExit) return;
       // A second signal while the first one's flush is pending ends the run at
       // once (a reader that stopped reading may never let it complete): with
-      // the run's own code if it had answered, else with this signal's.
-      if (interrupting) process.exit(finished ? reachedCode() : printed ? 0 : code);
+      // the run's own code if it had answered, else with the FIRST signal's,
+      // which the interrupted document already names.
+      if (interrupting) process.exit(finished ? reachedCode() : printed ? 0 : (signalCode ?? code));
       interrupting = true;
       // The run already answered — the report, the usage or the version on
       // stdout, or a usage error on stderr, with its code decided. Signals are
@@ -576,6 +585,7 @@ async function main(): Promise<void> {
 
 if (isEntryModule(import.meta.url)) {
   main().catch((err: unknown) => {
+    internalErrorExit = true;
     // Exit once the stack is written: an asynchronous stderr could drop it.
     process.stderr.write(
       `ui-bridge-density: internal error: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`,
