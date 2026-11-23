@@ -45,6 +45,9 @@ export function detectFormatPattern(value: string, dataType: DataType): string {
 
     case 'date': {
       if (/^\d{4}-\d{2}-\d{2}/.test(trimmed)) return 'YYYY-MM-DD';
+      // Month first, unless the first field cannot be a month (25/12/2026),
+      // matching how normalizeValue reads the same value.
+      if (/^(1[3-9]|[23]\d)\/(0[1-9]|1[0-2])\/\d{4}$/.test(trimmed)) return 'DD/MM/YYYY';
       if (/^\d{2}\/\d{2}\/\d{4}$/.test(trimmed)) return 'MM/DD/YYYY';
       if (/^\d{2}\.\d{2}\.\d{4}$/.test(trimmed)) return 'DD.MM.YYYY';
       if (/^\d{2}-\d{2}-\d{4}$/.test(trimmed)) return 'DD-MM-YYYY';

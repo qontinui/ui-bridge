@@ -19,6 +19,8 @@ describe('analyzeFormat', () => {
     ['1,234.56', 'number', '#,###.##'],
     ['(555) 123-4567', 'phone', '(###) ###-####'],
     ['-$5.00', 'currency', '$#.##'],
+    ['12/25/2026', 'date', 'MM/DD/YYYY'],
+    ['25/12/2026', 'date', 'DD/MM/YYYY'],
   ];
 
   it.each(PATTERNS)('reads %j as %s with pattern %j', (value, dataType, pattern) => {

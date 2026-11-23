@@ -76,10 +76,11 @@ export function parseNumberForm(text: string): NumberForm | null {
   // is no number.
   if (body.replace(/\D/g, '').length > 15) return null;
 
-  // A leading zero before another digit (0301234567, 0001234567) is an id or
-  // a phone, not a number: reading it as one would drop the zeros and merge
-  // distinct ids.
-  if (/^0\d/.test(body)) return null;
+  // A run of six or more digits with a leading zero before another digit
+  // (0301234567, 0001234567) is an id or a phone, not a number: reading it as
+  // one would drop the zeros and merge distinct ids. A short zero-padded
+  // value (05, 007, $05.00) is still a number.
+  if (/^0\d/.test(body) && body.replace(/\D/g, '').length >= 6) return null;
 
   // Plain digits.
   if (/^\d+$/.test(body)) return read(body, '', null, null);
@@ -142,7 +143,7 @@ function percentageBody(text: string): string | null {
  * begins with a date (2024-01-15-0042) is not one.
  */
 const ISO_DATE =
-  /^(\d{4})-(\d{2})-(\d{2})(?:[T ]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:\s?[AaPp][Mm])?(?:\s?(?:Z|UTC|GMT|[+-]\d{2}:?\d{2}))?)?$/;
+  /^(\d{4})-(\d{2})-(\d{2})(?:[T ]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:\s?[AaPp][Mm])?(?:\s?(?:Z|[A-Z]{2,5}|[+-]\d{2}:?\d{2}))?)?$/;
 /** Slash form, read month first (`MM/DD/YYYY`, as `detectFormatPattern` names it). */
 const SLASH_DATE = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/;
 /** Dotted form, day first: 16.10.2026. */
@@ -323,7 +324,9 @@ export function classifyDataType(value: string): { type: DataType; confidence: n
 function firstNumericRun(text: string): string {
   const run = /\d[\d.,]*/.exec(text);
   if (!run) return '';
-  const sign = /[-−]/.test(text.slice(0, run.index)) ? '-' : '';
+  // Only a minus sign directly before the run (spaces allowed) negates it, so
+  // `Year-to-date 1,234` stays positive.
+  const sign = /(?:^|[^\w])[-−]\s*$/.test(text.slice(0, run.index)) ? '-' : '';
   return sign + run[0].replace(/[.,]+$/, '');
 }
 
