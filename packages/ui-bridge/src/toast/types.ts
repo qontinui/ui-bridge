@@ -83,13 +83,15 @@ export interface ToastCaptureConfig {
    * this many times within `announcementWindowMs`. The capture that would
    * exceed it is withheld: the element's entry leaves `active`, it is
    * suppressed, and its further changes are absorbed silently until it has
-   * been unchanged for `announcementWindowMs`; its settled text is then
-   * announced once if it differs from the last text it announced.
+   * been unchanged for `announcementWindowMs`; its settled text, if not empty,
+   * is then announced once. A value below 1 is clamped to 1 and a fraction is
+   * rounded down; a non-finite value means the default.
    */
   maxAnnouncementsPerWindow?: number;
   /**
    * Window of the per-element announcement budget, and the quiet period that
-   * releases a suppressed element (ms, default: 10000).
+   * releases a suppressed element (ms, default: 10000). A value below 1 ms or
+   * a non-finite one means the default.
    */
   announcementWindowMs?: number;
 }
