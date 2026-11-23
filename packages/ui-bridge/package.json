@@ -36,6 +36,11 @@
       "import": "./dist/observation/index.mjs",
       "require": "./dist/observation/index.js"
     },
+    "./density": {
+      "types": "./dist/density/index.d.ts",
+      "import": "./dist/density/index.mjs",
+      "require": "./dist/density/index.js"
+    },
     "./react": {
       "types": "./dist/react/index.d.ts",
       "import": "./dist/react/index.mjs",

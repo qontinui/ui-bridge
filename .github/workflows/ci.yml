@@ -224,6 +224,23 @@ jobs:
         # @qontinui/ui-bridge, which is only an optional peer there.
         run: npm run observation:check
 
+      - name: Density core vendoring self-test
+        # Pins scripts/sync-density.mjs against fixture trees: its check must
+        # fail on a drifted, a missing and a stale copy, and its generator must
+        # refuse each forbidden import form. It runs FIRST, so a check that has
+        # stopped being able to fail cannot pass the step below.
+        run: npm run density:check:test
+
+      - name: Density core vendoring check
+        # Re-runs scripts/sync-density.mjs in --check mode and fails if
+        # ui-bridge-headless's generated copy of the density core
+        # (src/density/, src/observation/) is not byte-for-byte what the
+        # canonical packages/ui-bridge/src/density/ and the Observation
+        # envelope generate, or holds a copy whose source is gone. Headless
+        # vendors the core because the SDK already depends on headless (plan
+        # 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change, D-A).
+        run: npm run density:check
+
       - name: Redaction surface ratchet
         # §4.6 Layer-3: fails if the UI Bridge route surface or the Layer-2
         # projection-module list drifts from redaction-surface.manifest.json —

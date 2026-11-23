@@ -49,6 +49,7 @@ const PUBLISHED_SUBPATHS = [
   './core',
   './diagnostics',
   './observation',
+  './density',
   './react',
   './control',
   './render-log',

@@ -20,6 +20,13 @@ export default tseslint.config(
       // failing the diagnostics:check drift gate. Same principle as the Rust
       // mirror's #[rustfmt::skip] (plan D-series).
       '**/diagnostics/codes.generated.ts',
+      // The density core's generated copy in ui-bridge-headless, owned by
+      // scripts/sync-density.mjs. The pre-commit hook runs `eslint --fix`,
+      // which must never rewrite a generated file (the density:check gate
+      // would then fail); the canonical packages/ui-bridge/src/density/ is
+      // the copy that is linted.
+      'packages/ui-bridge-headless/src/density/**',
+      'packages/ui-bridge-headless/src/observation/**',
     ],
   },
 
