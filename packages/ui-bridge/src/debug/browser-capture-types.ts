@@ -132,9 +132,10 @@ export interface ResourceStatusEntryEvent extends ResourceStatusEventBase {
   /**
    * Set when the live event was suppressed because that capture already
    * reported the same failure: on a carried copy (`fromPreviousDocument`), and
-   * on the copy replayed to a capture that joined later (a remount). A
-   * consumer that also sees that capture's events dedupes events with
-   * `reportedLiveAs`, as it dedupes a repeated `failureId`.
+   * on the copy replayed to a capture that joined later (a remount). Such an
+   * event is listed and streamed; excluded from scoring (health score, error
+   * impact); stream consumers that also see the reporting capture dedupe on
+   * `reportedLiveAs`.
    */
   reportedLiveAs?: 'network' | 'resource-error';
 }

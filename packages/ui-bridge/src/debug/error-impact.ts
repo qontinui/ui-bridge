@@ -157,6 +157,10 @@ export class ErrorImpactAssessor {
     const results: ErrorImpact[] = [];
 
     for (const event of events) {
+      // Not assessed: the reporting capture's own event is.
+      if (event.type === 'resource-status' && event.kind === 'status' && event.reportedLiveAs) {
+        continue;
+      }
       const { severity } = classifyEvent(event);
       if (severity === 'warning' || severity === 'noise') continue;
       results.push(this.assessImpact(event));

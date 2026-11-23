@@ -20,6 +20,7 @@ import { classifyEvent } from '../error-severity';
 import { computeFingerprint } from '../error-fingerprint';
 import { extractMessage } from '../error-snapshot';
 import { computeHealthReport } from '../health-score';
+import { ErrorImpactAssessor } from '../error-impact';
 import { BrowserEventStream } from '../ws-streaming';
 import * as observedReportsModule from '../observed-reports';
 import * as resourceStatusModule from './resource-status';
@@ -694,6 +695,10 @@ describe('resource-status capture', () => {
     await settle();
     expect(statusFor(next, 'https://app.example.com/doc')).toEqual([
       expect.objectContaining({ responseStatus: 429, fromPreviousDocument: true }),
+    ]);
+    // A fast redirect passes the earlier carry on too, with its failureId.
+    expect(statusFor(next, 'https://app.example.com/before')).toEqual([
+      expect.objectContaining({ fromPreviousDocument: true, failureId: 'prev:0' }),
     ]);
   });
 
@@ -1433,6 +1438,32 @@ describe('resource-status classification', () => {
         ...carried,
       }).severity
     ).toBe('error');
+  });
+
+  it('a reportedLiveAs copy is listed and streamed but not scored', () => {
+    const covered = {
+      ...entry(503),
+      responseStatus: 503,
+      reportedLiveAs: 'network' as const,
+    };
+    // Listed and streamed at its grade.
+    expect(classifyEvent(covered).severity).toBe('error');
+    const stream = new BrowserEventStream();
+    stream.subscribe({ minSeverity: 'warning' });
+    expect(stream.processEvent(covered).size).toBe(1);
+    // Not scored: the reporting capture's own event already counts.
+    const now = Date.now();
+    const report = computeHealthReport({
+      getSince: () => [{ ...covered, timestamp: now }],
+      getRecent: () => [],
+      getByType: () => [],
+    } as unknown as Parameters<typeof computeHealthReport>[0]);
+    expect(report.breakdown).toEqual({ crashes: 0, errors: 0, warnings: 0 });
+    const assessor = new ErrorImpactAssessor({
+      captureUIState: () => ({ elementCount: 0, visibleElements: [], url: '' }) as never,
+    });
+    expect(assessor.assessEvents([covered])).toHaveLength(0);
+    expect(assessor.assessEvents([entry(503)])).toHaveLength(1);
   });
 
   it('a carried 429 reaches a minSeverity-warning stream subscriber', () => {
