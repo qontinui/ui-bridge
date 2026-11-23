@@ -202,8 +202,9 @@ export class BrowserEventCapture {
         this.cleanups.push(installDomMetricsCapture(emit, cfg.domMetricsIntervalMs));
       }
     } catch (error) {
-      // A sub-install threw: undo the ones that already patched globals, so a
-      // failed install leaves nothing behind and a retry does not stack them.
+      // A sub-install threw: undo the sub-modules installed before it, so their
+      // patches do not outlive the failed install and a retry does not stack
+      // them. The throwing sub-install's own partial setup is not reachable.
       this.runCleanups();
       throw error;
     }
@@ -220,15 +221,28 @@ export class BrowserEventCapture {
     this.installed = false;
   }
 
-  /** Run and clear every registered cleanup, newest first; one that throws does not stop the rest. */
+  /**
+   * Run and clear every registered cleanup, newest first; one that throws does
+   * not stop the rest. Failures are reported only after every cleanup ran, so
+   * the warning goes to the restored console rather than through the console
+   * capture (whose host callback could throw and abort the remaining cleanups).
+   */
   private runCleanups(): void {
     const cleanups = this.cleanups;
     this.cleanups = [];
+    const failures: unknown[] = [];
     for (const cleanup of cleanups.reverse()) {
       try {
         cleanup();
       } catch (error) {
+        failures.push(error);
+      }
+    }
+    for (const error of failures) {
+      try {
         console.warn('[ui-bridge] capture cleanup failed', error);
+      } catch {
+        // Reporting is best-effort; it must not replace the caller's error.
       }
     }
   }
