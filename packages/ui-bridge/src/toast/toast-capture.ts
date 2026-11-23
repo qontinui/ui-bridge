@@ -598,6 +598,9 @@ export class ToastCapture {
 
   private scanForToasts(): void {
     if (typeof document === 'undefined') return;
+    // Belt-and-braces: uninstall clears the pending scan timeout (pinned by
+    // R10), so no queued scan reaches here after teardown. This guard only
+    // covers a caller that bypasses scheduleScan; no test pins it alone.
     if (!this.installed) return;
 
     const selectorString = this.allSelectors.join(', ');
