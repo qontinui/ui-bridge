@@ -17,12 +17,22 @@ interface NetworkOptions {
 
 const DEFAULT_IGNORE = ['/api/dev-debug/', '/api/ui-bridge/', 'localhost:9876'];
 
+/** Marks a fetch this capture wrapped, so a nested install can tell. */
+const WRAPPED_BY_NETWORK_CAPTURE = Symbol.for('qontinui.ui-bridge.network-capture');
+
 export function installNetworkCapture(emit: Emit, options?: NetworkOptions): () => void {
   if (typeof window === 'undefined' || typeof window.fetch !== 'function') {
     return () => {};
   }
 
   const originalFetch = window.fetch;
+  // One capture per document is assumed. When this install wraps another
+  // network capture's wrapper, that inner one already records the observed
+  // report for each failure; recording it again would let one failure absorb
+  // two resource-status events.
+  const recordsReports = !(
+    (originalFetch as unknown as Record<symbol, unknown>)[WRAPPED_BY_NETWORK_CAPTURE] === true
+  );
   const ignorePatterns = options?.ignorePatterns ?? DEFAULT_IGNORE;
 
   function shouldIgnore(url: string): boolean {
@@ -44,13 +54,14 @@ export function installNetworkCapture(emit: Emit, options?: NetworkOptions): () 
 
   function toAbsoluteUrl(url: string): string {
     try {
-      return new URL(url, window.location.href).href;
+      // Against the document base (`<base href>`), as fetch itself resolves.
+      return new URL(url, document.baseURI || window.location.href).href;
     } catch {
       return url;
     }
   }
 
-  window.fetch = async function patchedFetch(
+  const patchedFetch = async function patchedFetch(
     input: RequestInfo | URL,
     init?: RequestInit
   ): Promise<Response> {
@@ -70,7 +81,7 @@ export function installNetworkCapture(emit: Emit, options?: NetworkOptions): () 
 
       if (response.status >= 400) {
         // Reported here, so resource-status does not report it again.
-        recordObservedReport(statusReportKey(requestUrl, response.status));
+        if (recordsReports) recordObservedReport(statusReportKey(requestUrl, response.status));
         const event: NetworkCapturedEvent = {
           type: 'network',
           timestamp: Date.now(),
@@ -114,6 +125,9 @@ export function installNetworkCapture(emit: Emit, options?: NetworkOptions): () 
       throw err;
     }
   };
+
+  (patchedFetch as unknown as Record<symbol, unknown>)[WRAPPED_BY_NETWORK_CAPTURE] = true;
+  window.fetch = patchedFetch;
 
   return () => {
     window.fetch = originalFetch;

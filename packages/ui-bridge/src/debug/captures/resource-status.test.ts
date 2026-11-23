@@ -111,6 +111,11 @@ function newDocument(): void {
   ).__resetObservedReportsForTest?.();
 }
 
+/** The `status` events (not blind spots) a capture emitted. */
+function statusOnly(capture: BrowserEventCapture): ResourceStatusCapturedEvent[] {
+  return statusEvents(capture).filter((e) => e.kind === 'status');
+}
+
 /** The `status` events (not blind spots) a capture emitted for `url`. */
 function statusFor(capture: BrowserEventCapture, url: string): ResourceStatusCapturedEvent[] {
   return statusEvents(capture).filter((e) => e.kind === 'status' && e.resourceUrl === url);
@@ -168,8 +173,9 @@ function statusEvents(capture: BrowserEventCapture): ResourceStatusCapturedEvent
     );
 }
 
+/** Let the buffered replay (microtasks) and the deferred install-time emits (a macrotask) run. */
 async function settle(): Promise<void> {
-  await Promise.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 0));
   await Promise.resolve();
 }
 
@@ -428,6 +434,150 @@ describe('resource-status capture', () => {
     expect(breakdown.crashes + breakdown.errors + breakdown.warnings).toBe(1);
   });
 
+  it('install-time events reach an onEvent set synchronously after install()', async () => {
+    sessionStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        v: 1,
+        writtenAt: Date.now(),
+        writtenBy: `${window.location.origin}${window.location.pathname}`,
+        writerToken: 't',
+        events: [
+          {
+            type: 'resource-status',
+            timestamp: 1,
+            url: 'x',
+            kind: 'buffer-full',
+            bufferFull: true,
+            resourceEntryCount: 250,
+          },
+        ],
+      })
+    );
+    navigationEntries = [
+      { ...resourceEntry(window.location.href, 429, 'navigation'), entryType: 'navigation' },
+    ];
+    FakePerformanceObserver.supportedEntryTypes = ['longtask'];
+    const capture = new BrowserEventCapture(ONLY_DEFAULT_RESOURCE_STATUS);
+    installed.push(capture);
+    const seen: AnyCapturedEvent[] = [];
+    // The provider's order: install during render, wire the callback in an effect.
+    capture.install();
+    capture.setOnEvent((e) => seen.push(e));
+    await settle();
+    const kinds = seen.map((e) => (e.type === 'resource-status' ? e.kind : e.type));
+    expect(kinds.sort()).toEqual(['buffer-full', 'observer-unavailable', 'status']);
+  });
+
+  it('a failure keeps one failureId across the navigation that carries it', async () => {
+    const first = install();
+    await settle();
+    FakePerformanceObserver.record('resource', [
+      resourceEntry('https://app.example.com/api/v1/a?t=1', 429),
+      { ...resourceEntry('https://app.example.com/api/v1/a?t=2', 429), startTime: 11 },
+    ]);
+    const live = statusEvents(first);
+    expect(live).toHaveLength(2);
+    const ids = live.map((e) => (e.kind === 'status' ? e.failureId : ''));
+    expect(new Set(ids).size).toBe(2);
+    expect(ids.every((id) => !id.includes('t=1') && !id.includes('t=2'))).toBe(true);
+    window.dispatchEvent(new Event('pagehide'));
+    first.uninstall();
+
+    newDocument();
+    const second = install();
+    await settle();
+    const carried = statusEvents(second).map((e) => (e.kind === 'status' ? e.failureId : ''));
+    expect(carried).toEqual(ids);
+  });
+
+  it('a re-install replays none of a page’s many failures (no per-entry memory)', async () => {
+    const entries = Array.from({ length: 501 }, (_, i) =>
+      resourceEntry(`https://app.example.com/r/${i}`, 503)
+    );
+    FakePerformanceObserver.record('resource', entries);
+    const capture = new BrowserEventCapture({ ...ONLY_DEFAULT_RESOURCE_STATUS, maxEntries: 2000 });
+    installed.push(capture);
+    capture.install();
+    await settle();
+    expect(statusOnly(capture)).toHaveLength(501);
+    capture.uninstall();
+    capture.install();
+    await settle();
+    expect(statusOnly(capture)).toHaveLength(501);
+    // An entry that ends after the uninstall is new.
+    FakePerformanceObserver.record('resource', [liveEntry('https://app.example.com/r/new', 503)]);
+    expect(statusOnly(capture)).toHaveLength(502);
+  });
+
+  it('a status report matches request initiators only, an element report elements only', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('', { status: 404 }))
+    );
+    const url = 'https://app.example.com/shared/asset';
+    const capture = install(WITH_NETWORK_AND_RESOURCE_ERRORS);
+    await settle();
+    await window.fetch(url);
+    // An img 404 on the same URL is not the fetch's failure.
+    FakePerformanceObserver.record('resource', [liveEntry(url, 404, 'img')]);
+    expect(statusFor(capture, url)).toHaveLength(1);
+    // The fetch's own entry consumes the network report.
+    FakePerformanceObserver.record('resource', [
+      { ...liveEntry(url, 404), startTime: performance.now() + 5 },
+    ]);
+    expect(statusFor(capture, url)).toHaveLength(1);
+  });
+
+  it('a second resource-status install on one document is a no-op that warns once', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const first = install();
+    const second = install();
+    const third = install();
+    await settle();
+    FakePerformanceObserver.record('resource', [resourceEntry('https://app.example.com/x', 503)]);
+    expect(statusEvents(first)).toHaveLength(1);
+    expect(statusEvents(second)).toHaveLength(0);
+    expect(statusEvents(third)).toHaveLength(0);
+    expect(warn.mock.calls.filter((c) => String(c[0]).includes('resource-status'))).toHaveLength(1);
+    warn.mockRestore();
+  });
+
+  it('a nested network wrapper does not record a second report for one failure', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('', { status: 503 }))
+    );
+    const url = 'https://app.example.com/api/v1/nested';
+    const outer = install(WITH_NETWORK_AND_RESOURCE_ERRORS);
+    install({ ...ONLY_DEFAULT_RESOURCE_STATUS, network: true, resourceStatus: false });
+    await settle();
+    await window.fetch(url);
+    // Two failing entries, one fetch, one report: one is the fetch's, one is not.
+    FakePerformanceObserver.record('resource', [liveEntry(url, 503), liveEntry(url, 503)]);
+    expect(statusFor(outer, url)).toHaveLength(1);
+  });
+
+  it('the network capture resolves a relative URL against <base href>', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('', { status: 503 }))
+    );
+    const base = document.createElement('base');
+    base.href = 'https://cdn.example.com/sub/';
+    document.head.appendChild(base);
+    try {
+      const capture = install(WITH_NETWORK_AND_RESOURCE_ERRORS);
+      await settle();
+      await window.fetch('rel/x');
+      expect(capture.getByType('network')[0]).toMatchObject({
+        requestUrl: 'https://cdn.example.com/sub/rel/x',
+      });
+    } finally {
+      base.remove();
+    }
+  });
+
   it('an img that starts before install and fails after counts once', async () => {
     const capture = install(WITH_NETWORK_AND_RESOURCE_ERRORS);
     await settle();
@@ -540,8 +690,9 @@ describe('resource-status capture', () => {
 
     await write();
     setReferrer('https://elsewhere.example/other?x=1');
-    expect(statusEvents(install())).toHaveLength(0);
+    const dropped = install();
     await settle();
+    expect(statusEvents(dropped)).toHaveLength(0);
     expect(sessionStorage.getItem(STORAGE_KEY)).toBeNull();
 
     await write();
@@ -652,7 +803,7 @@ describe('resource-status capture', () => {
     capture.install();
     await settle();
     expect(statusEvents(capture)).toHaveLength(2);
-    FakePerformanceObserver.record('resource', [resourceEntry('https://app.example.com/b', 500)]);
+    FakePerformanceObserver.record('resource', [liveEntry('https://app.example.com/b', 500)]);
     expect(statusEvents(capture)).toHaveLength(3);
   });
 
@@ -689,6 +840,7 @@ describe('resource-status capture', () => {
       responseStatus: 429,
       startTime: 1,
       responseEnd: 2,
+      failureId: 'doc-1:fetch|1|https://app.example.com/ok',
     };
     sessionStorage.setItem(
       STORAGE_KEY,
@@ -701,6 +853,7 @@ describe('resource-status capture', () => {
           { ...valid, hasQuery: 'no' },
           { ...valid, startTime: '1' },
           { ...valid, responseEnd: null },
+          { ...valid, failureId: 7 },
           {
             type: 'resource-status',
             timestamp: 1,
@@ -795,19 +948,25 @@ describe('resource-status capture', () => {
         type: 'reload',
       },
     ];
-    expect(statusEvents(install())).toHaveLength(1);
+    const reloaded = install();
+    await settle();
+    expect(statusEvents(reloaded)).toHaveLength(1);
 
     // An origin-only referrer cannot name the writer: ambiguous, dropped.
     newDocument();
     carry(`${window.location.origin}/some/page`);
     setReferrer(`${window.location.origin}/`);
-    expect(statusEvents(install())).toHaveLength(0);
+    const originOnly = install();
+    await settle();
+    expect(statusEvents(originOnly)).toHaveLength(0);
 
     // An origin-only referrer from another origin did not precede it.
     newDocument();
     carry(`${window.location.origin}/some/page`);
     setReferrer('https://elsewhere.example/');
-    expect(statusEvents(install())).toHaveLength(0);
+    const elsewhere = install();
+    await settle();
+    expect(statusEvents(elsewhere)).toHaveLength(0);
   });
 
   it('drops a carry written more than 5 minutes ago', async () => {
