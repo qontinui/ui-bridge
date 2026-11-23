@@ -10,15 +10,15 @@
  * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change (Phase 1).
  */
 import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+// A static relative import, so the real-browser placement check can follow it.
+import additiveGuard from '../../../../scripts/lib/additive-guard-block.cjs';
 
-const require = createRequire(import.meta.url);
+const { additiveGuardBlockProblems } = additiveGuard as {
+  additiveGuardBlockProblems: (source: string) => string[];
+};
 const ROOT = join(__dirname, '..', '..', '..', '..');
-const { additiveGuardBlockProblems } = require(
-  join(ROOT, 'scripts', 'lib', 'additive-guard-block.cjs')
-) as { additiveGuardBlockProblems: (source: string) => string[] };
 
 const LIVE = readFileSync(join(ROOT, 'eslint.config.js'), 'utf8');
 
