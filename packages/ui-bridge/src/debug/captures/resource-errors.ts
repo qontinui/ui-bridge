@@ -11,13 +11,6 @@ type Emit = (event: AnyCapturedEvent) => void;
 
 const TRACKED_TAGS = new Set(['IMG', 'SCRIPT', 'LINK']);
 
-/** The Resource Timing `initiatorType`s of the elements this capture tracks. */
-export const RESOURCE_ERROR_INITIATOR_TYPES: ReadonlySet<string> = new Set([
-  'img',
-  'script',
-  'link',
-]);
-
 export function installResourceErrorCapture(emit: Emit): () => void {
   if (typeof window === 'undefined') {
     return () => {};

@@ -14,7 +14,7 @@ import type {
 } from './browser-capture-types';
 import { DEFAULT_CAPTURE_CONFIG } from './browser-capture-types';
 import { installConsoleCapture } from './captures/console';
-import { DEFAULT_NETWORK_IGNORE_PATTERNS, installNetworkCapture } from './captures/network';
+import { installNetworkCapture } from './captures/network';
 import { installNavigationCapture } from './captures/navigation';
 import { installLongTaskCapture } from './captures/long-tasks';
 import { installResourceErrorCapture } from './captures/resource-errors';
@@ -145,9 +145,6 @@ export class BrowserEventCapture {
     if (this.installed) return;
 
     const cfg = { ...DEFAULT_CAPTURE_CONFIG, ...this.config };
-    // Taken before any sub-capture installs: a request started at or after it
-    // was seen by every capture installed below.
-    const installedAt = typeof performance !== 'undefined' ? performance.now() : null;
     const emit = (event: AnyCapturedEvent) => {
       // Feed memory events to the trend analyzer
       if (event.type === 'memory' && this.memoryTrend) {
@@ -180,17 +177,7 @@ export class BrowserEventCapture {
       this.cleanups.push(installResourceErrorCapture(emit));
     }
     if (cfg.resourceStatus) {
-      const networkWrapsFetch =
-        cfg.network && typeof window !== 'undefined' && typeof window.fetch === 'function';
-      this.cleanups.push(
-        installResourceStatusCapture(emit, {
-          installedAt,
-          networkIgnorePatterns: networkWrapsFetch
-            ? (cfg.networkOptions?.ignorePatterns ?? DEFAULT_NETWORK_IGNORE_PATTERNS)
-            : null,
-          resourceErrors: cfg.resourceErrors,
-        })
-      );
+      this.cleanups.push(installResourceStatusCapture(emit));
     }
     if (cfg.webVitals) {
       this.cleanups.push(installWebVitalsCapture(emit));

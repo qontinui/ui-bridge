@@ -122,19 +122,6 @@ export interface ResourceStatusEntryEvent extends ResourceStatusEventBase {
   startTime: number;
   /** `performance.now()`-clock end of the response, in the observing document's clock. */
   responseEnd: number;
-  /**
-   * The request started before the capture was installed (a buffered replay
-   * entry, or the document's own navigation entry), so no other capture saw it.
-   */
-  preInstall: boolean;
-  /**
-   * The capture that already reports this failure in this document, recorded
-   * at capture time: `network` for a fetch after install whose URL the network
-   * capture does not ignore, `resource-error` for an img/script/link after
-   * install. Such an entry scores as noise so one failure counts once. Absent
-   * when no other capture saw it.
-   */
-  coveredBy?: 'network' | 'resource-error';
 }
 
 /** This webview cannot observe Resource Timing: every status is UNKNOWN. */
