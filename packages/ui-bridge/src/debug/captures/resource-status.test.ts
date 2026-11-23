@@ -20,6 +20,7 @@ import { classifyEvent } from '../error-severity';
 import { computeFingerprint } from '../error-fingerprint';
 import { extractMessage } from '../error-snapshot';
 import { computeHealthReport } from '../health-score';
+import { BrowserEventStream } from '../ws-streaming';
 import * as observedReportsModule from '../observed-reports';
 import * as resourceStatusModule from './resource-status';
 
@@ -40,11 +41,15 @@ class FakePerformanceObserver {
   observe(init: { type: string; buffered?: boolean }): void {
     this.type = init.type;
     FakePerformanceObserver.live.add(this);
+    // The buffered replay is pending like any undispatched entry: it reaches
+    // the callback on a later microtask unless takeRecords takes it first.
     const replay = init.buffered ? [...(FakePerformanceObserver.buffers[init.type] ?? [])] : [];
     if (replay.length > 0) {
+      this.pending.push(...replay);
       queueMicrotask(() => {
-        if (FakePerformanceObserver.live.has(this)) {
-          this.callback({ getEntries: () => replay as unknown as PerformanceEntry[] });
+        const due = this.pending.splice(0);
+        if (due.length > 0 && FakePerformanceObserver.live.has(this)) {
+          this.callback({ getEntries: () => due as unknown as PerformanceEntry[] });
         }
       });
     }
@@ -545,6 +550,41 @@ describe('resource-status capture', () => {
       { ...liveEntry(url, 404), startTime: performance.now() + 5 },
     ]);
     expect(statusFor(capture, url)).toHaveLength(1);
+  });
+
+  it('an uninstall before the first observer batch loses no pre-install failure', async () => {
+    FakePerformanceObserver.record('resource', [
+      resourceEntry('https://app.example.com/early', 429),
+    ]);
+    const capture = new BrowserEventCapture(ONLY_DEFAULT_RESOURCE_STATUS);
+    installed.push(capture);
+    capture.install();
+    capture.uninstall();
+    capture.install();
+    await settle();
+    expect(statusFor(capture, 'https://app.example.com/early')).toHaveLength(1);
+  });
+
+  it('a throwing owner does not stop the others, and is logged once', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const throwing = install();
+      throwing.setOnEvent(() => {
+        throw new Error('owner bug');
+      });
+      const healthy = install();
+      await settle();
+      FakePerformanceObserver.record('resource', [
+        liveEntry('https://app.example.com/one', 503),
+        liveEntry('https://app.example.com/two', 503),
+      ]);
+      expect(statusEvents(healthy)).toHaveLength(2);
+      expect(warn.mock.calls.filter((c) => String(c[0]).includes('resource-status'))).toHaveLength(
+        1
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('stays armed until the last of several owners uninstalls', async () => {
@@ -1243,7 +1283,20 @@ describe('resource-status classification', () => {
   it('grades a previous document’s event one step down', () => {
     const carried = { fromPreviousDocument: true as const };
     expect(classifyEvent({ ...entry(503), ...carried }).severity).toBe('warning');
-    expect(classifyEvent({ ...entry(429), ...carried }).severity).toBe('noise');
+    // A carried failure (>= 400) never drops below warning: the stream's
+    // default subscription is minSeverity 'warning'.
+    expect(classifyEvent({ ...entry(429), ...carried }).severity).toBe('warning');
+    expect(classifyEvent({ ...entry(404), initiatorType: 'img', ...carried }).severity).toBe(
+      'warning'
+    );
+    // A failure graded noise on its own page (a missing favicon) stays noise.
+    expect(
+      classifyEvent({
+        ...entry(404),
+        resourceUrl: 'https://app.example.com/favicon.ico',
+        ...carried,
+      }).severity
+    ).toBe('noise');
     expect(
       classifyEvent({
         ...base,
@@ -1253,6 +1306,13 @@ describe('resource-status classification', () => {
         resourceEntryCount: 250,
       }).severity
     ).toBe('noise');
+  });
+
+  it('a carried 429 reaches a minSeverity-warning stream subscriber', () => {
+    const stream = new BrowserEventStream();
+    stream.subscribe({ minSeverity: 'warning', deduplicate: true });
+    const messages = stream.processEvent({ ...entry(429), fromPreviousDocument: true as const });
+    expect(messages.size).toBe(1);
   });
 
   it('grades the unknown-status cap as noise', () => {
