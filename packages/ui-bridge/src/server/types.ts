@@ -27,6 +27,7 @@ import type { ElementState, FillResult } from '../core/types';
 import type { ControlBatchRequest, ControlBatchResponse } from '../control/control-batch';
 import type { ElementProjection } from '../core/element-projection';
 import type { SdkDiagnostics } from '../core/sdk-diagnostics';
+import type { NavigatedAnswer, RoutesAnswer } from '../react/navigation-commands';
 import type {
   ComponentCapture,
   ComponentCaptureRefusal,
@@ -1661,14 +1662,12 @@ export interface UIBridgeServerHandlers {
   // Diagnostics endpoint
   getDiagnostics: (context?: HandlerContext) => Promise<APIResponse<SdkDiagnostics>>;
 
-  // Navigation adapter endpoints
-  getRoutes: (
-    context?: HandlerContext
-  ) => Promise<APIResponse<Array<{ name: string; path: string }>>>;
+  // Navigation adapter endpoints (`../react/navigation-commands.ts`)
+  getRoutes: (context?: HandlerContext) => Promise<APIResponse<RoutesAnswer>>;
   navigateByAdapter: (
     request: { page: string },
     context?: HandlerContext
-  ) => Promise<APIResponse<{ navigated: boolean; route: { name: string; path: string } }>>;
+  ) => Promise<APIResponse<NavigatedAnswer>>;
 }
 
 /**

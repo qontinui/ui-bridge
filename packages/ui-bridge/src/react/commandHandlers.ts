@@ -195,6 +195,14 @@ import { readControlBatchRequest, runControlBatch } from '../control/control-bat
 import { extractReactState, noReactInternals } from '../control/extract-react-state';
 import { buildSdkDiagnostics } from '../core/sdk-diagnostics';
 import { elementHistoryCommand, recentEffectsCommand } from './history-commands';
+import { checkNavigationUrl } from '../core/navigation-url';
+import type { NavigationAdapter } from '../navigation/navigation-adapter';
+import {
+  getRoutesCommand,
+  navigateByAdapterCommand,
+  navigationRefusal,
+  resolveNavigationAdapter,
+} from './navigation-commands';
 import {
   ELEMENT_ACTION_PAYLOAD_SHAPE,
   ELEMENT_READ_PAYLOAD_SHAPE,
@@ -323,6 +331,12 @@ interface UIBridgeGlobal {
   specs?: { getGlobalSpecStore: () => SpecStore };
   /** Optional client-side navigation handler (e.g., Next.js router.push) */
   navigateHandler?: (url: string) => void;
+  /**
+   * The app's navigation adapter, set by `<UIBridgeProvider navigation={…}>`
+   * (or assigned by the app). `getRoutes` / `navigateByAdapter` read it
+   * through `./navigation-commands.ts`.
+   */
+  navigationAdapter?: NavigationAdapter;
   /** Render log access for getRenderLog relay command */
   renderLog?: { getEntries?: () => unknown[] };
   /**
@@ -1871,7 +1885,7 @@ export async function executeCommand(
         registeredElements: elements.length,
         hasConsoleCapture: !!g.consoleCapture,
         hasNavigationTracker: !!g.navigationTracker,
-        hasNavigationAdapter: false,
+        hasNavigationAdapter: !!resolveNavigationAdapter(g),
       });
 
     case 'getElementHistory':
@@ -4457,36 +4471,14 @@ export async function executeCommand(
           timestamp: Date.now(),
         };
       }
-      // Reject dangerous URL protocols that can execute JS or break the SSE relay.
-      // Only allow http:, https:, and relative paths starting with "/".
-      try {
-        const parsed = new URL(url, window.location.origin);
-        const dangerousProtocols = ['javascript:', 'data:', 'blob:', 'vbscript:'];
-        if (dangerousProtocols.includes(parsed.protocol)) {
-          return {
-            success: false,
-            error: `Dangerous URL protocol rejected: "${parsed.protocol}". Only http, https, and relative paths are allowed.`,
-            timestamp: Date.now(),
-          };
-        }
-        if (!['http:', 'https:'].includes(parsed.protocol) && !url.startsWith('/')) {
-          return {
-            success: false,
-            error: `Invalid URL protocol "${parsed.protocol}". Only http, https, and relative paths are allowed.`,
-            timestamp: Date.now(),
-          };
-        }
-      } catch {
-        // URL failed to parse — only allow if it looks like a relative path
-        if (!url.startsWith('/')) {
-          return {
-            success: false,
-            error:
-              'Invalid URL format. Only http, https, and relative paths starting with "/" are allowed.',
-            timestamp: Date.now(),
-          };
-        }
+      // The one navigation URL gate (`../core/navigation-url.ts`): a URL that
+      // could execute script in the tab (or break the SSE relay) is refused
+      // with its code under `failureDetails`, before anything navigates.
+      if (typeof url !== 'string' || url.length === 0) {
+        return navigationRefusal('INVALID_REQUEST', 'pageNavigate: "url" must be a non-empty string');
       }
+      const urlVerdict = checkNavigationUrl(url, window.location.href);
+      if (!urlVerdict.ok) return navigationRefusal(urlVerdict.code, urlVerdict.message);
 
       // Soft mode: pure client-side navigation via pushState + synthetic
       // popstate. React Router v6 subscribes to popstate by default, so this
@@ -4562,6 +4554,20 @@ export async function executeCommand(
       window.location.href = url;
       return { success: true, url, hard: true, mode: 'hard', timestamp: Date.now() };
     }
+
+    case 'getRoutes':
+      // The registered adapter's routes, or the window's one current-page
+      // route — and whether that list is the app's whole route table
+      // (`./navigation-commands.ts`, D4).
+      return getRoutesCommand(g);
+
+    case 'navigateByAdapter':
+      // Through the URL gate, then the adapter; with none, exactly
+      // `pageNavigate` on the path form of `page` (`./navigation-commands.ts`).
+      return navigateByAdapterCommand(payload, g, {
+        base: window.location.href,
+        pageNavigate: (url) => executeCommand('pageNavigate', { url }, bridge),
+      });
 
     case 'pageGoBack':
       window.history.back();

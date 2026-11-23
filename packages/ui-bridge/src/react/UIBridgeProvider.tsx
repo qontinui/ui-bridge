@@ -37,6 +37,8 @@ import { ElementEventLog } from '../debug/element-event-log';
 import type { OnBrowserEventCallback, BrowserCaptureConfig } from '../debug/browser-capture-types';
 import type { ActionExecutor, WorkflowEngine } from '../control/types';
 import { NavigationTracker } from '../navigation';
+import type { NavigationAdapter } from '../navigation/navigation-adapter';
+import { setNavigationAdapterSlot } from './navigation-commands';
 import { ShortcutTracker } from '../shortcuts';
 import { ModalDetector } from '../modal';
 import { ToastCapture } from '../toast';
@@ -148,6 +150,13 @@ export interface UIBridgeProviderProps {
   onBrowserEvent?: OnBrowserEventCallback;
   /** Configuration for browser event capture sub-modules */
   browserCaptureConfig?: BrowserCaptureConfig;
+  /**
+   * The app's navigation adapter (`createReactRouterAdapter(router)`,
+   * `createNextjsAdapter(router)`, or a custom one). Published on the page
+   * slot `window.__UI_BRIDGE__.navigationAdapter` while mounted, where the
+   * `getRoutes` / `navigateByAdapter` commands read it; cleared on unmount.
+   */
+  navigation?: NavigationAdapter;
 }
 
 /**
@@ -162,6 +171,7 @@ export function UIBridgeProvider({
   onEvent,
   onBrowserEvent,
   browserCaptureConfig,
+  navigation,
 }: UIBridgeProviderProps) {
   // All the singletons — built lazily on first render by initializeUIBridge.
   const internalsRef = useRef<UIBridgeInternals | null>(null);
@@ -267,6 +277,12 @@ export function UIBridgeProvider({
       }
     });
   }, [wsClient, navigationTracker, registry]);
+
+  // navigation prop is live — publish it on the page slot while mounted.
+  useEffect(() => {
+    if (!navigation) return;
+    return setNavigationAdapterSlot(navigation);
+  }, [navigation]);
 
   // onBrowserEvent prop is live — re-register the callback when it changes.
   useEffect(() => {

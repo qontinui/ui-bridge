@@ -22,6 +22,23 @@ export interface NavigationAdapter {
   navigate(target: string): Promise<void>;
   /** Get current page/route. */
   getCurrentRoute(): NavigationRoute;
+  /**
+   * `true` when {@link getRoutes} enumerates the app's route table, rather
+   * than standing in the current page for it. Absent means `false`: a
+   * one-element list from an adapter that cannot see a route table reads as
+   * "this app declared no route table", never "this app has one route"
+   * (`getRoutes`' `complete` field, `react/navigation-commands.ts`).
+   */
+  isRouteTableComplete?(): boolean;
+}
+
+/**
+ * The path a bare navigation target names, as {@link WindowLocationAdapter}
+ * navigates it: `/x` and `http…` are used as given, anything else is taken
+ * as a root-relative page name (`settings` → `/settings`).
+ */
+export function windowLocationPath(target: string): string {
+  return target.startsWith('/') || target.startsWith('http') ? target : '/' + target;
 }
 
 /**
@@ -39,12 +56,7 @@ export class WindowLocationAdapter implements NavigationAdapter {
   }
 
   async navigate(target: string): Promise<void> {
-    if (target.startsWith('/') || target.startsWith('http')) {
-      window.location.href = target;
-    } else {
-      // Treat as relative path
-      window.location.href = '/' + target;
-    }
+    window.location.href = windowLocationPath(target);
   }
 
   getCurrentRoute(): NavigationRoute {
@@ -100,6 +112,10 @@ export function createReactRouterAdapter(router: {
         return flattenRoutes(router.routes);
       }
       return [this.getCurrentRoute()];
+    },
+
+    isRouteTableComplete(): boolean {
+      return Array.isArray(router.routes);
     },
 
     async navigate(target: string): Promise<void> {

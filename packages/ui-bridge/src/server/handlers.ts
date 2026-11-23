@@ -91,7 +91,14 @@ import {
   type SendKeysToPageResult,
 } from './page-primitives';
 import type { NavigationAdapter } from '../navigation/navigation-adapter';
-import { WindowLocationAdapter } from '../navigation/navigation-adapter';
+import {
+  getRoutesCommand,
+  isNavigationFailure,
+  navigateByAdapterCommand,
+  type NavigatedAnswer,
+  type NavigationSlots,
+  type RoutesAnswer,
+} from '../react/navigation-commands';
 import { extractReactState, noReactInternals } from '../control/extract-react-state';
 import { buildSdkDiagnostics, type SdkDiagnostics } from '../core/sdk-diagnostics';
 import {
@@ -1251,6 +1258,7 @@ const PAGE_ONLY_HANDLERS = [
   'evaluateQuality',
   'saveBaseline',
   'getRoutes',
+  'navigateByAdapter',
 ] as const satisfies readonly (keyof UIBridgeServerHandlers)[];
 
 export function createHandlers(
@@ -1275,8 +1283,9 @@ export function createHandlers(
   // owns snapshot.modalStack enrichment via setEnrichers).
   const modalDetector = config.modalDetector ?? null;
 
-  // Navigation adapter for app-agnostic page navigation
-  const navAdapter: NavigationAdapter = config.navigationAdapter ?? new WindowLocationAdapter();
+  // Navigation adapter for app-agnostic page navigation: the slot the page's
+  // own `getRoutes` / `navigateByAdapter` read (`../react/navigation-commands.ts`).
+  const navigationSlots: NavigationSlots = { navigationAdapter: config.navigationAdapter };
 
   // Undo tracker for action recording (recordAction) and /control/undo
   // /control/redo. Snapshot's undoRedo is enriched by the registry.
@@ -3663,22 +3672,25 @@ export function createHandlers(
     // Navigation Adapter Endpoints
     // =========================================================================
 
-    getRoutes: async (): Promise<APIResponse<Array<{ name: string; path: string }>>> => {
+    // The page's own two commands (`../react/navigation-commands.ts`): the
+    // same route answer and the same URL gate. Both are page-only
+    // (`PAGE_ONLY_HANDLERS`).
+    getRoutes: async (): Promise<APIResponse<RoutesAnswer>> => {
       try {
-        const routes = navAdapter.getRoutes();
-        return success(routes);
+        return success(getRoutesCommand(navigationSlots));
       } catch (err) {
         return error((err as Error).message, 'GET_ROUTES_ERROR');
       }
     },
 
-    navigateByAdapter: async (request: {
-      page: string;
-    }): Promise<APIResponse<{ navigated: boolean; route: { name: string; path: string } }>> => {
+    navigateByAdapter: async (request: { page: string }): Promise<APIResponse<NavigatedAnswer>> => {
       try {
-        await navAdapter.navigate(request.page);
-        const current = navAdapter.getCurrentRoute();
-        return success({ navigated: true, route: current });
+        const answer = await navigateByAdapterCommand(request, navigationSlots, {
+          base: window.location.href,
+          pageNavigate: (url) => handlers.pageNavigate({ url }),
+        });
+        if (isNavigationFailure(answer)) return liftInnerFailure(answer);
+        return success(answer);
       } catch (err) {
         return error((err as Error).message, 'NAVIGATE_ERROR');
       }
