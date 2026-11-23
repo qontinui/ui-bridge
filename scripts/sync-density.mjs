@@ -245,10 +245,19 @@ export function forbiddenImports(sourceRel, text, siblings, isEnvelope) {
   return problems;
 }
 
+/**
+ * An OS or editor file that git ignores and no commit carries (`.DS_Store`, a
+ * vim swap or backup file): it is neither a source nor a copy, so a dev box
+ * holding one must not fail the sync or the check that CI passes.
+ */
+function isLocalJunk(name) {
+  return name.startsWith('.') || name.endsWith('~') || /\.sw[a-p]$/.test(name);
+}
+
 /** The density sources: every `.ts` file directly in the source dir, sorted. */
 function densitySources(root) {
   const dir = join(root, DENSITY_SOURCE_DIR);
-  const entries = readdirSync(dir, { withFileTypes: true });
+  const entries = readdirSync(dir, { withFileTypes: true }).filter((e) => !isLocalJunk(e.name));
   const files = entries.filter((e) => e.isFile());
   // A `.tsx`, `.mts`, `.js` or any other file here, or a subdirectory other
   // than `__tests__/`, would not be copied, so it is refused, never skipped.
@@ -307,7 +316,7 @@ function existingCopies(root) {
   const out = [];
   const walk = (abs) => {
     if (!existsSync(abs)) return;
-    for (const e of readdirSync(abs, { withFileTypes: true })) {
+    for (const e of readdirSync(abs, { withFileTypes: true }).filter((x) => !isLocalJunk(x.name))) {
       const p = join(abs, e.name);
       if (e.isDirectory()) walk(p);
       else out.push(posix(relative(root, p)));

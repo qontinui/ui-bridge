@@ -206,6 +206,17 @@ test('a subdirectory of the source dir other than __tests__/ is refused, never s
   assert.throws(() => expectedDensityCopies(root), /found: nested\//);
 });
 
+test('OS and editor junk in a source or target dir is neither a source nor stale', () => {
+  const root = fixture();
+  syncDensityCopies(root);
+  put(root, `${DENSITY_SOURCE_DIR}/.DS_Store`, 'x');
+  put(root, `${DENSITY_SOURCE_DIR}/.a.ts.swp`, 'x');
+  put(root, `${DENSITY_TARGET_DIR}/a.ts~`, 'x');
+  put(root, `${OBSERVATION_TARGET_DIR}/.DS_Store`, 'x');
+  assert.deepEqual(checkDensityCopies(root), clean());
+  assert.equal(main(['--check'], root, silent), 0);
+});
+
 test('an unknown argument exits 2 and writes nothing (a typo never runs the writing sync)', () => {
   const root = fixture();
   assert.equal(main(['--chek'], root, silent), 2);
