@@ -259,6 +259,30 @@ describe('captureDensityFromSnapshot', () => {
     ).toBe(true);
   });
 
+  it('an auto-registered row inside a boundary: authorId is false, and the coverage says it was not looked at', () => {
+    const obs = capture(
+      densityTestSnapshot({
+        elements: [{ id: 'auto-1', origin: 'auto', text: 'x', redacted: true }],
+      })
+    );
+    if (obs.status !== 'measured') throw new Error(obs.status);
+    expect(obs.value.items[0].authorId).toBe(false);
+    expect(obs.provenance.coverage.unmeasured).toContainEqual({
+      dimension: 'authorId',
+      count: 1,
+      code: 'not_attempted_by_policy',
+    });
+  });
+
+  it('an unparseable evaluatedAt from the caller falls back to now instead of throwing', () => {
+    const obs = captureDensityFromSnapshot(densityTestSnapshot({ elements: [{ id: 'app.a' }] }), {
+      producer: DENSITY_TEST_PRODUCER,
+      evaluatedAt: 'not a time',
+    });
+    expect(obs.status).toBe('measured');
+    expect(obs.provenance.evaluatedAt).toMatch(/^[0-9]{4}-[0-9]{2}-[0-9]{2}T/);
+  });
+
   it('a hook registration is author-identified by construction', () => {
     expect(one({ id: 'app.orders', origin: 'hook' }).authorId).toBe(true);
   });
