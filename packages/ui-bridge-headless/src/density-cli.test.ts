@@ -434,8 +434,9 @@ describe('runDensityCli, in process', () => {
 
 // Windows has no catchable SIGTERM (a kill is unconditional), so CI's Linux run is the one that counts.
 describe.skipIf(process.platform === 'win32')('ui-bridge-density interrupted', () => {
-  it('SIGTERM while reading the snapshot prints a typed verdict naming the step and exits 143', async () => {
-    const child = spawn(process.execPath, [BIN, 'measure', '--snapshot', '-', '--role', 'buyer'], {
+  /** Spawn `measure` with the trace on; resolves once the run reaches `step`. */
+  function spawnTraced(args: string[], step: string) {
+    const child = spawn(process.execPath, [BIN, ...args], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, UI_BRIDGE_DENSITY_TRACE: '1' },
     });
@@ -443,22 +444,57 @@ describe.skipIf(process.platform === 'win32')('ui-bridge-density interrupted', (
     child.stdout.on('data', (c: Buffer) => {
       stdout += c.toString('utf8');
     });
-    // Standard input stays open, so the run parks at read-snapshot. Wait for the
-    // trace line that says so: the handlers are installed before the first step.
-    await new Promise<void>((ready) => {
+    // 'close', not 'exit': stdio is drained only by then.
+    const closed = new Promise<number | null>((r) => child.on('close', (code) => r(code)));
+    const reached = new Promise<void>((ready) => {
       let stderr = '';
       child.stderr.on('data', (c: Buffer) => {
         stderr += c.toString('utf8');
-        if (stderr.includes('ui-bridge-density: step read-snapshot\n')) ready();
+        if (stderr.includes(`ui-bridge-density: step ${step}\n`)) ready();
       });
     });
-    // 'close', not 'exit': stdio is drained only by then.
-    const exited = new Promise<number | null>((r) => child.on('close', (code) => r(code)));
-    child.kill('SIGTERM');
-    expect(await exited).toBe(143);
-    expect(JSON.parse(stdout)).toEqual({
-      command: 'measure',
-      interrupted: { signal: 'SIGTERM', step: 'read-snapshot' },
+    return { child, closed, reached, stdout: () => stdout };
+  }
+
+  it.each([
+    ['SIGTERM', 143],
+    ['SIGINT', 130],
+    ['SIGHUP', 129],
+  ] as const)(
+    '%s while reading the snapshot prints a typed verdict naming the step and exits %i',
+    async (signal, code) => {
+      // Standard input stays open, so the run parks at read-snapshot. The
+      // handlers are installed before the first step, which the trace names.
+      const run = spawnTraced(['measure', '--snapshot', '-', '--role', 'buyer'], 'read-snapshot');
+      await run.reached;
+      run.child.kill(signal);
+      expect(await run.closed).toBe(code);
+      expect(JSON.parse(run.stdout())).toEqual({
+        command: 'measure',
+        interrupted: { signal, step: 'read-snapshot' },
+      });
+    },
+    60_000
+  );
+
+  it('a signal after the answer is printed ends the run with 0 and the answer whole', async () => {
+    const run = spawnTraced(
+      ['measure', '--snapshot', '-', '--role', 'buyer', '--fixture', 'after-answer'],
+      'print'
+    );
+    run.child.stdin.write(JSON.stringify(BARE));
+    run.child.stdin.end();
+    await run.reached;
+    run.child.kill('SIGTERM');
+    const code = await run.closed;
+    // The run may already have ended by itself (0) or be ended by the signal
+    // after its answer (0): either way the code is 0 and the report is whole.
+    expect(code).toBe(0);
+    const report = JSON.parse(run.stdout()) as Report;
+    expect(report.cells[0]!.cell).toEqual({
+      role: 'buyer',
+      viewport: { width: 360, height: 740 },
+      fixture: 'after-answer',
     });
   }, 60_000);
 });

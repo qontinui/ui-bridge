@@ -429,19 +429,37 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   // The verb named on the command line, when it is one; `null` before any.
   const command = argv[0] === 'measure' ? 'measure' : null;
+  // The code a signal ends the run with, once one has arrived.
+  let signalCode: number | null = null;
+  // Writes to stdout still in flight; the answer is out only when this is 0.
+  let pending = 0;
+  const exitWhenFlushed = (exitCode: number): void => {
+    // A queued write is not yet a delivered one: on an asynchronous stdout
+    // (a pipe on macOS or Windows) exiting now would drop its tail.
+    if (pending === 0) process.exit(exitCode);
+    else process.stdout.write('', () => process.exit(exitCode));
+  };
   process.stdout.on('error', (err: NodeJS.ErrnoException) => {
-    // The reader went away (`| head`): nothing left to tell it.
-    if (err.code === 'EPIPE')
-      process.exit(typeof process.exitCode === 'number' ? process.exitCode : 0);
-    throw err;
+    // The reader went away (`| head`, a closed terminal after SIGHUP): nothing
+    // is left to tell it, so the run ends with the code it had reached.
+    if (err.code === 'EPIPE' || err.code === 'EIO' || signalCode !== null) {
+      process.exit(signalCode ?? (typeof process.exitCode === 'number' ? process.exitCode : 0));
+    }
+    process.stderr.write(`ui-bridge-density: internal error: stdout: ${err.message}\n`);
+    process.exit(1);
   });
   for (const signal of Object.keys(SIGNAL_EXIT) as Array<keyof typeof SIGNAL_EXIT>) {
     process.on(signal, () => {
       const code = SIGNAL_EXIT[signal];
       if (interrupting) process.exit(code);
       interrupting = true;
-      // The answer is already out: the run is complete, so it ends as one.
-      if (printed) process.exit(0);
+      // The answer is already on its way: the run is complete, so it ends as
+      // one, once the answer is flushed.
+      if (printed) {
+        exitWhenFlushed(0);
+        return;
+      }
+      signalCode = code;
       const doc = `${JSON.stringify({ command, interrupted: { signal, step } }, null, 2)}\n`;
       // Exit only once the document is flushed: on a pipe, a write followed
       // at once by process.exit can drop it.
@@ -455,7 +473,10 @@ async function main(): Promise<void> {
       readStdin,
       writeFile: (p, t) => writeFileSync(p, t),
       stdout: (t) => {
-        process.stdout.write(t);
+        pending++;
+        process.stdout.write(t, () => {
+          pending--;
+        });
         // Any document on stdout (the report, the usage, the version) is the
         // run's answer; an interruption after it prints nothing more.
         printed = true;
