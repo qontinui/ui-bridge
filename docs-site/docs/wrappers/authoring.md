@@ -54,7 +54,7 @@ Every transport exposes the same registration API:
 
 ```ts
 import { createTransport } from '@qontinui/ui-bridge-wrapper';
-import WebSocket from 'ws'; // Node < 22 has no global WebSocket; omit webSocketCtor in a browser
+import WebSocket from 'ws'; // `npm i ws` — Node < 22 has no global WebSocket
 
 const transport = createTransport({
   kind: 'live',
@@ -78,6 +78,8 @@ await transport.ready();
 // for `live`: stays connected; runner dispatches arrive on their own
 // for `headless`/`headed`/`api`: call `transport.dispatch('action', params)` from your code
 ```
+
+This is the Node form. In a browser bundle, import `LiveSessionTransport` from `@qontinui/ui-bridge-wrapper/live` instead (the package root re-exports Node-only transports) and leave out `webSocketCtor` — the browser's global `WebSocket` is used.
 
 The handler signature is `(params, ctx) => Promise<Result>`. The `ctx` shape depends on the transport — `live` provides `{ kind: 'live', commandId }`, `headless`/`headed` provide `{ page, browserContext, browser }` from Playwright, `api` provides `undefined`.
 
