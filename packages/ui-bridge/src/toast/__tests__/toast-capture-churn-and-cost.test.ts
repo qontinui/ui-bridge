@@ -494,9 +494,12 @@ describe('ToastCapture churn budget and re-read gate', () => {
         await flushAndScan();
         await tick(timer, 1, 10);
         expect(appearedFor('timer'), `window ${window}`).toHaveLength(4);
-        await vi.advanceTimersByTimeAsync(10_000);
+        // The last change is seen ~5 s in; pin the 10 s boundary from both sides.
+        await vi.advanceTimersByTimeAsync(9_500);
+        expect(appearedFor('timer'), `window ${window} still held`).toHaveLength(4);
         await vi.advanceTimersByTimeAsync(500);
         expect(appearedFor('timer'), `window ${window} release`).toHaveLength(5);
+        expect(appearedFor('timer').at(-1)?.toast.message).toBe('0:10');
         capture.uninstall();
         document.body.innerHTML = '';
         events = [];
