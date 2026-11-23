@@ -619,13 +619,17 @@ export function installResourceStatusCapture(
   // Install-time work, deferred so a host wiring its callback right after
   // install() receives it; run early by a pagehide that comes first.
   let deferredPending = true;
-  const runDeferred = () => {
+  const runDeferred = (hiding = false) => {
     deferredPending = false;
     // 1. The previous same-tab document's failures, re-emitted once per document.
+    //    A document hidden before this tick (a fast redirect) also carries
+    //    them on, keeping their failureId, so they are not lost with it.
     if (carries && !doc.carryTaken) {
       doc.carryTaken = true;
       for (const previous of takePreviousDocumentEvents()) {
-        emit({ ...previous, fromPreviousDocument: true });
+        const carried = { ...previous, fromPreviousDocument: true as const };
+        if (hiding) pushRecent([carried]);
+        emit(carried);
       }
     }
 
@@ -664,7 +668,7 @@ export function installResourceStatusCapture(
       });
     }
   };
-  const deferred = setTimeout(runDeferred, 0);
+  const deferred = setTimeout(() => runDeferred(), 0);
 
   // 5. Carry this document's events across a same-tab navigation.
   /** What the last pagehide wrote, so a back/forward-cache restore can take it back. */
@@ -674,7 +678,7 @@ export function installResourceStatusCapture(
     // still be emitted (and carried), not lost.
     if (deferredPending) {
       clearTimeout(deferred);
-      runDeferred();
+      runDeferred(true);
     }
     handle?.flush();
     if (!carries || doc.recent.length === 0) return;

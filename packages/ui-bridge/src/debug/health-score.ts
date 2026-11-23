@@ -160,6 +160,10 @@ export function computeHealthReport(
   let topIssueRank = SEVERITY_RANK.noise + 1; // Start worse than any real severity
 
   for (const event of events) {
+    // Listed and streamed, never scored: the reporting capture's event counts.
+    if (event.type === 'resource-status' && event.kind === 'status' && event.reportedLiveAs) {
+      continue;
+    }
     const { severity } = classifyEvent(event);
 
     switch (severity) {
