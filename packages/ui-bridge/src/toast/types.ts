@@ -85,13 +85,16 @@ export interface ToastCaptureConfig {
    * suppressed, and its further changes are absorbed silently until it has
    * been unchanged for `announcementWindowMs`; its settled text, if not empty,
    * is then announced once. A value below 1 is clamped to 1 and a fraction is
-   * rounded down; a non-finite value means the default.
+   * rounded down. There is no unlimited setting, by design (the budget is
+   * tuned, not switched off): `Infinity`, `NaN` or any other non-finite value
+   * means the default.
    */
   maxAnnouncementsPerWindow?: number;
   /**
    * Window of the per-element announcement budget, and the quiet period that
-   * releases a suppressed element (ms, default: 10000). A value below 1 ms or
-   * a non-finite one means the default.
+   * releases a suppressed element (ms, default: 10000). There is no setting
+   * that disables the budget: a value below 1 ms, `Infinity`, `NaN` or any
+   * other non-finite value means the default.
    */
   announcementWindowMs?: number;
 }
