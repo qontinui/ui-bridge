@@ -177,7 +177,7 @@ export class BrowserEventCapture {
       this.cleanups.push(installResourceErrorCapture(emit));
     }
     if (cfg.resourceStatus) {
-      this.cleanups.push(installResourceStatusCapture(emit));
+      this.cleanups.push(installResourceStatusCapture(emit, this));
     }
     if (cfg.webVitals) {
       this.cleanups.push(installWebVitalsCapture(emit));

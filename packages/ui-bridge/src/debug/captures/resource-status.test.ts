@@ -587,6 +587,80 @@ describe('resource-status capture', () => {
     }
   });
 
+  it('a new capture instance after the last owner left receives the page’s failures', async () => {
+    FakePerformanceObserver.record('resource', [resourceEntry('https://app.example.com/pre', 429)]);
+    const a = install();
+    await settle();
+    const [seenByA] = statusFor(a, 'https://app.example.com/pre');
+    expect(seenByA).toBeDefined();
+    a.uninstall();
+    // A provider remount: new internals, a different BrowserEventCapture.
+    const b = install();
+    await settle();
+    const seenByB = statusFor(b, 'https://app.example.com/pre');
+    expect(seenByB).toHaveLength(1);
+    expect(seenByB[0]).toMatchObject({
+      failureId: (seenByA as { failureId: string }).failureId,
+    });
+  });
+
+  it('a late joiner while armed receives the earlier failures once', async () => {
+    FakePerformanceObserver.record('resource', [resourceEntry('https://app.example.com/pre', 429)]);
+    const a = install();
+    await settle();
+    const late = install();
+    await settle();
+    expect(statusFor(late, 'https://app.example.com/pre')).toHaveLength(1);
+    FakePerformanceObserver.record('resource', [liveEntry('https://app.example.com/new', 503)]);
+    expect(statusOnly(late)).toHaveLength(2);
+    expect(statusOnly(a)).toHaveLength(2);
+  });
+
+  it('a document hidden before the deferred tick keeps its status and the previous carry', async () => {
+    sessionStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        v: 1,
+        writtenAt: Date.now(),
+        writtenBy: `${window.location.origin}${window.location.pathname}`,
+        writerToken: 't',
+        events: [
+          {
+            type: 'resource-status',
+            timestamp: 1,
+            url: 'x',
+            kind: 'status',
+            resourceUrl: 'https://app.example.com/before',
+            hasQuery: false,
+            initiatorType: 'fetch',
+            responseStatus: 503,
+            startTime: 1,
+            responseEnd: 2,
+            failureId: 'prev:0',
+          },
+        ],
+      })
+    );
+    navigationEntries = [
+      {
+        ...resourceEntry('https://app.example.com/doc', 429, 'navigation'),
+        entryType: 'navigation',
+      },
+    ];
+    const quick = install();
+    window.dispatchEvent(new Event('pagehide'));
+    quick.uninstall();
+    expect(statusFor(quick, 'https://app.example.com/before')).toHaveLength(1);
+    expect(statusFor(quick, 'https://app.example.com/doc')).toHaveLength(1);
+
+    newDocument();
+    const next = install();
+    await settle();
+    expect(statusFor(next, 'https://app.example.com/doc')).toEqual([
+      expect.objectContaining({ responseStatus: 429, fromPreviousDocument: true }),
+    ]);
+  });
+
   it('stays armed until the last of several owners uninstalls', async () => {
     const a = install();
     const b = install();
@@ -1305,7 +1379,24 @@ describe('resource-status classification', () => {
         bufferFull: true,
         resourceEntryCount: 250,
       }).severity
-    ).toBe('noise');
+    ).toBe('warning');
+    // A carried blind spot is floored at warning too.
+    expect(
+      classifyEvent({
+        ...base,
+        ...carried,
+        kind: 'observer-unavailable',
+        observerUnavailable: true,
+      }).severity
+    ).toBe('warning');
+    // One step down from crash is error.
+    expect(
+      classifyEvent({
+        ...entry(503),
+        resourceUrl: 'https://app.example.com/api/v1/auth/login',
+        ...carried,
+      }).severity
+    ).toBe('error');
   });
 
   it('a carried 429 reaches a minSeverity-warning stream subscriber', () => {
