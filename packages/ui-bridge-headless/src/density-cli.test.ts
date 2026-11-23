@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { missingOutputMessage } from '../../../test-support/build-if-stale.mjs';
+import { runDensityCli, type DensityCliIo } from './density-cli';
 
 /**
  * `ui-bridge-density measure`, run as the built bin (dist/density-cli.js) over
@@ -335,6 +336,121 @@ describe('ui-bridge-density measure --targets', () => {
     ]);
     expect(r.status).toBe(2);
     expect(r.stderr).toContain('--role supplier is not declared');
+  }, 60_000);
+});
+
+describe('runDensityCli, in process', () => {
+  /** An in-memory I/O: files by path, captured streams, recorded writes. */
+  function memoryIo(files: Record<string, string>, stdin = '') {
+    const out = { stdout: '', stderr: '', written: {} as Record<string, string> };
+    const io: DensityCliIo = {
+      readFile: (p) => {
+        const text = files[p];
+        if (text === undefined) throw new Error(`ENOENT: ${p}`);
+        return text;
+      },
+      readStdin: async () => stdin,
+      writeFile: (p, t) => {
+        out.written[p] = t;
+      },
+      stdout: (t) => {
+        out.stdout += t;
+      },
+      stderr: (t) => {
+        out.stderr += t;
+      },
+    };
+    return { io, out };
+  }
+
+  it('measure answers the capture summary as one Observation from sdk/density', async () => {
+    const { io, out } = memoryIo({ 'snap.json': JSON.stringify(ENVELOPE) });
+    const steps: string[] = [];
+    const code = await runDensityCli(
+      ['measure', '--snapshot', 'snap.json', '--role', 'buyer', '--capture-out', 'cap.json'],
+      io,
+      (s) => steps.push(s)
+    );
+    expect(code).toBe(0);
+    expect(out.stderr).toBe('');
+    const report = measured(out.stdout);
+    expect(report.captureOut).toEqual({ path: 'cap.json', written: true, reason: null });
+    expect(Object.keys(out.written)).toEqual(['cap.json']);
+    expect(steps).toEqual(['parse-args', 'read-snapshot', 'capture', 'write-capture', 'print']);
+  });
+
+  it('a snapshot with a UTF-8 byte-order mark is read', async () => {
+    const { io, out } = memoryIo({
+      'bom.json': String.fromCharCode(0xfeff) + JSON.stringify(BARE),
+    });
+    const code = await runDensityCli(['measure', '--snapshot', 'bom.json', '--role', 'buyer'], io);
+    expect(code).toBe(0);
+    measured(out.stdout);
+  });
+
+  it('a --capture-out write that fails is a usage error, with nothing on stdout', async () => {
+    const { io, out } = memoryIo({ 'snap.json': JSON.stringify(BARE) });
+    io.writeFile = () => {
+      throw new Error('ENOENT: no such file or directory');
+    };
+    const code = await runDensityCli(
+      ['measure', '--snapshot', 'snap.json', '--role', 'buyer', '--capture-out', 'no/dir/c.json'],
+      io
+    );
+    expect(code).toBe(2);
+    expect(out.stdout).toBe('');
+    expect(out.stderr).toContain('--capture-out no/dir/c.json: ENOENT');
+  });
+
+  it('-h in a value position is the value, not a request for help', async () => {
+    const { io, out } = memoryIo({ 'snap.json': JSON.stringify(BARE) });
+    const code = await runDensityCli(['measure', '--snapshot', 'snap.json', '--role', '-h'], io);
+    expect(code).toBe(0);
+    const report = JSON.parse(out.stdout) as Report;
+    expect((report.cells[0]!.cell as { role: string }).role).toBe('-h');
+  });
+
+  it('--help after a verb prints the usage', async () => {
+    const { io, out } = memoryIo({});
+    expect(await runDensityCli(['measure', '--help'], io)).toBe(0);
+    expect(out.stdout).toContain('ui-bridge-density — reach per role');
+  });
+
+  it('a whitespace-only value is a usage error', async () => {
+    const { io, out } = memoryIo({ 'snap.json': JSON.stringify(BARE) });
+    const code = await runDensityCli(['measure', '--snapshot', 'snap.json', '--role', '  '], io);
+    expect(code).toBe(2);
+    expect(out.stderr).toContain('--role expects a value');
+  });
+
+  it('a missing snapshot file is a usage error naming it', async () => {
+    const { io, out } = memoryIo({});
+    const code = await runDensityCli(['measure', '--snapshot', 'gone.json', '--role', 'buyer'], io);
+    expect(code).toBe(2);
+    expect(out.stdout).toBe('');
+    expect(out.stderr).toContain('--snapshot gone.json: ENOENT: gone.json');
+  });
+});
+
+// Windows has no catchable SIGTERM (a kill is unconditional), so CI's Linux run is the one that counts.
+describe.skipIf(process.platform === 'win32')('ui-bridge-density interrupted', () => {
+  it('SIGTERM while reading the snapshot prints a typed verdict naming the step and exits 143', async () => {
+    const child = spawn(process.execPath, [BIN, 'measure', '--snapshot', '-', '--role', 'buyer'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    child.stdout.on('data', (c: Buffer) => {
+      stdout += c.toString('utf8');
+    });
+    // Standard input stays open, so the run is parked at read-snapshot.
+    await new Promise((r) => setTimeout(r, 1500));
+    const exited = new Promise<number | null>((r) => child.on('exit', (code) => r(code)));
+    child.kill('SIGTERM');
+    expect(await exited).toBe(143);
+    expect(JSON.parse(stdout)).toEqual({
+      command: 'measure',
+      interrupted: { signal: 'SIGTERM', step: 'read-snapshot' },
+    });
   }, 60_000);
 });
 

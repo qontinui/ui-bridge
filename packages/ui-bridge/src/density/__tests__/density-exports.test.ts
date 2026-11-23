@@ -6,12 +6,12 @@
  *
  * A consumer reaches the core through `@qontinui/ui-bridge/density`, never the
  * root barrel (the core's verbs are generic names). This pins three things that
- * must move together, so that a subpath which resolves to nothing, or to a copy,
- * fails here rather than in a consumer's install:
+ * must move together, so that a subpath which resolves to nothing, or to a
+ * different surface, fails here rather than in a consumer's install:
  *   - the `exports` key names the three built files of one tsup entry;
  *   - the tsup declaration-emitting block builds that entry from the core's
  *     index;
- *   - the entry module hands out the core's own functions, not copies.
+ *   - the entry module carries exactly the core's published runtime names.
  */
 
 import { readFileSync } from 'node:fs';
@@ -45,18 +45,48 @@ describe('the ./density subpath', () => {
     const config = readFileSync(join(PACKAGE_ROOT, 'tsup.config.ts'), 'utf8');
     // The first block of the config is the one that emits declarations; the
     // entry must sit inside it, or `types` names a file no build writes.
-    const firstBlock = config.slice(config.indexOf('defineConfig(['), config.indexOf('dts: {'));
-    expect(firstBlock).toContain("'density/index': 'src/density/index.ts'");
+    const start = config.indexOf('defineConfig([');
+    const dts = config.indexOf('dts: {');
+    // Both anchors must be found, or the slice below would span the whole file.
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(dts).toBeGreaterThan(start);
+    expect(config.slice(start, dts)).toContain("'density/index': 'src/density/index.ts'");
   });
 
-  it('the entry exports the core itself, not a copy', () => {
+  it('the entry carries exactly the runtime surface the core publishes', () => {
+    // A literal list: adding, dropping or renaming a public value changes the
+    // subpath's contract, and must change this test with it.
+    expect(Object.keys(density).sort()).toEqual([
+      'DENSITY_CAPTURE_SCHEMA',
+      'DENSITY_PRODUCER_ID',
+      'DENSITY_SHAPE_RULES',
+      'DENSITY_TARGETS_SCHEMA',
+      'DensityHashError',
+      'canonicalDensityJson',
+      'captureDensityFromSnapshot',
+      'collectDensityTextMatchers',
+      'densityAsksHash',
+      'densityMatcherKey',
+      'densityShapeOf',
+      'densityTargetsHash',
+      'densityTextHash',
+      'densityTextSatisfies',
+      'evaluateDensityTextMatchers',
+      'hashDensityCanonical',
+      'parseDensityCapture',
+      'parseDensityTargets',
+      'resolveDensityMatcher',
+      'resolveDensityMatchers',
+      'sha256DensityHex',
+    ]);
+    expect(density.DENSITY_PRODUCER_ID).toBe('sdk/density');
+    expect(density.DENSITY_CAPTURE_SCHEMA).toBe('ui-bridge/density-capture@1');
+    // The entry re-exports the modules' own bindings (no wrapper in between).
     expect(density.captureDensityFromSnapshot).toBe(captureDensityFromSnapshot);
     expect(density.parseDensityTargets).toBe(parseDensityTargets);
     expect(density.parseDensityCapture).toBe(parseDensityCapture);
     expect(density.densityAsksHash).toBe(densityAsksHash);
     expect(density.sha256DensityHex).toBe(sha256DensityHex);
-    expect(density.DENSITY_PRODUCER_ID).toBe('sdk/density');
-    expect(density.DENSITY_CAPTURE_SCHEMA).toBe('ui-bridge/density-capture@1');
   });
 
   it('the root barrel does not re-export the core', () => {

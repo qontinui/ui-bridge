@@ -111,7 +111,9 @@ const VERBS_LATER = ['init', 'lint', 'fit', 'plan', 'assert', 'diff'];
 export function parseDensityArgs(argv: string[]): DensityCliArgs {
   const mkError: ArgErrorFactory = (m) => new DensityCliArgError(m);
   if (argv.length === 0) throw mkError(`a verb is required\n\n${USAGE}`);
-  if (argv.includes('--help') || argv.includes('-h')) return { verb: 'help' };
+  // `--help` is honoured as the first token or as a flag of a verb, never when
+  // it sits in a value position (`--role -h` reads `-h` as the role's value).
+  if (argv[0] === '--help' || argv[0] === '-h') return { verb: 'help' };
   if (argv[0] === '--version') return { verb: 'version' };
   const [verb, ...rest] = argv;
   if (verb !== 'measure') {
@@ -129,12 +131,15 @@ export function parseDensityArgs(argv: string[]): DensityCliArgs {
   let captureOut: string | null = null;
   const value = (flag: string, raw: string | undefined): string => {
     const v = consumeValue(flag, raw, mkError);
-    if (v === null || v === '') throw mkError(`${flag} expects a value`);
+    if (v === null || v.trim() === '') throw mkError(`${flag} expects a value`);
     return v;
   };
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i];
     switch (arg) {
+      case '--help':
+      case '-h':
+        return { verb: 'help' };
       case '--snapshot':
         snapshot = value('--snapshot', rest[++i]);
         break;
@@ -278,6 +283,11 @@ export type DensityCliStep =
   | 'write-capture'
   | 'print';
 
+/** A UTF-8 byte-order mark, which some Windows tools write, is not JSON. */
+function withoutBom(text: string): string {
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+}
+
 function parseJson(what: string, text: string): unknown {
   try {
     return JSON.parse(text) as unknown;
@@ -315,7 +325,7 @@ export async function runDensityCli(
         `--snapshot ${args.snapshot}: ${err instanceof Error ? err.message : String(err)}`
       );
     }
-    const snapshot = parseJson(`--snapshot ${args.snapshot}`, snapshotText);
+    const snapshot = parseJson(`--snapshot ${args.snapshot}`, withoutBom(snapshotText));
 
     let targets: DensityTargets | null = null;
     if (args.targets !== null) {
@@ -328,7 +338,7 @@ export async function runDensityCli(
           `--targets ${args.targets}: ${err instanceof Error ? err.message : String(err)}`
         );
       }
-      const parsed = parseDensityTargets(parseJson(`--targets ${args.targets}`, text));
+      const parsed = parseDensityTargets(parseJson(`--targets ${args.targets}`, withoutBom(text)));
       if (!parsed.ok) {
         const lines = parsed.problems.map((p) => `  ${p.path}: ${p.message}`).join('\n');
         throw new DensityCliArgError(
@@ -361,7 +371,15 @@ export async function runDensityCli(
           reason: 'the cell answered unknown, so there is no capture to write',
         };
       } else {
-        io.writeFile(args.captureOut, `${JSON.stringify(capture, null, 2)}\n`);
+        try {
+          io.writeFile(args.captureOut, `${JSON.stringify(capture, null, 2)}\n`);
+        } catch (err) {
+          // A missing directory or a denied write is the caller's environment,
+          // not a bug: a usage error, with nothing printed on stdout.
+          throw new DensityCliArgError(
+            `--capture-out ${args.captureOut}: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
         report.captureOut = { path: args.captureOut, written: true, reason: null };
       }
     }
@@ -397,12 +415,17 @@ const SIGNAL_EXIT: Record<'SIGHUP' | 'SIGINT' | 'SIGTERM', number> = {
 
 async function main(): Promise<void> {
   let step: DensityCliStep = 'parse-args';
+  // Set once the report is on stdout: an interruption after that point must
+  // not append a second JSON document to a complete one.
+  let printed = false;
   for (const signal of Object.keys(SIGNAL_EXIT) as Array<keyof typeof SIGNAL_EXIT>) {
     process.on(signal, () => {
-      process.stdout.write(
-        `${JSON.stringify({ command: 'measure', interrupted: { signal, step } }, null, 2)}\n`
-      );
-      process.exit(SIGNAL_EXIT[signal]);
+      const code = SIGNAL_EXIT[signal];
+      if (printed) process.exit(code);
+      const doc = `${JSON.stringify({ command: 'measure', interrupted: { signal, step } }, null, 2)}\n`;
+      // Exit only once the document is flushed: on a pipe, a write followed
+      // at once by process.exit can drop it.
+      process.stdout.write(doc, () => process.exit(code));
     });
   }
   const code = await runDensityCli(
@@ -411,7 +434,10 @@ async function main(): Promise<void> {
       readFile: (p) => readFileSync(p, 'utf8'),
       readStdin,
       writeFile: (p, t) => writeFileSync(p, t),
-      stdout: (t) => process.stdout.write(t),
+      stdout: (t) => {
+        process.stdout.write(t);
+        if (step === 'print') printed = true;
+      },
       stderr: (t) => process.stderr.write(t),
     },
     (s) => {

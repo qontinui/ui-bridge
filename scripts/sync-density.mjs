@@ -12,9 +12,10 @@
 //
 //   node scripts/sync-density.mjs          write the copies (and delete stale ones)
 //   node scripts/sync-density.mjs --check  exit 1 on any drift, missing copy or stale copy
+//   (any other argument exits 2, so a typo never runs the writing sync)
 //
 // Sources: every `.ts` file directly in packages/ui-bridge/src/density/ (not
-// `__tests__/`), plus packages/ui-bridge/src/observation/observation.ts.
+// `__tests__/`, and no `*.test.ts`), plus packages/ui-bridge/src/observation/observation.ts.
 // Targets: the same names under packages/ui-bridge-headless/src/density/ and
 // packages/ui-bridge-headless/src/observation/. Each copy is the source behind
 // an `@generated` header, the idiom of scripts/sync-observation.mjs.
@@ -77,10 +78,13 @@ export function maskSource(text) {
   const blank = (from, to) => {
     for (let k = from; k < to; k++) if (out[k] !== '\n') out[k] = ' ';
   };
-  // The last significant (non-space) character outside a literal or comment,
-  // used to tell a regular expression from a division.
+  // The last significant (non-space) token outside a literal or comment, used
+  // to tell a regular expression from a division: `prev` is its last
+  // character, `prevWord` the identifier or keyword when it was one.
   let prev = '';
   let prevWord = '';
+  // A `/` after one of these characters, or after one of these keywords,
+  // starts a regular expression; after anything else it is a division.
   const REGEX_AFTER = new Set([
     '',
     '(',
@@ -119,6 +123,38 @@ export function maskSource(text) {
     'yield',
     'await',
   ]);
+  // One entry per `${` substitution currently open, holding the brace depth
+  // inside it: code inside a substitution is CODE (an `import(` there is a
+  // module edge), and its closing `}` resumes the template.
+  const substitutions = [];
+
+  /** Blank a template's text from `i` (just past a backtick or a `}`) to its end or its next `${`. */
+  const templateText = (i) => {
+    let j = i;
+    while (j < text.length) {
+      if (text[j] === '\\') {
+        j += 2;
+        continue;
+      }
+      if (text[j] === '`') {
+        blank(i, j);
+        prev = '`';
+        prevWord = '';
+        return j + 1;
+      }
+      if (text[j] === '$' && text[j + 1] === '{') {
+        blank(i, j);
+        substitutions.push(0);
+        prev = '{';
+        prevWord = '';
+        return j + 2;
+      }
+      j++;
+    }
+    blank(i, text.length);
+    return text.length;
+  };
+
   let i = 0;
   while (i < text.length) {
     const c = text[i];
@@ -137,17 +173,35 @@ export function maskSource(text) {
       i = stop;
       continue;
     }
-    if (c === "'" || c === '"' || c === '`') {
+    if (c === '`') {
+      i = templateText(i + 1);
+      continue;
+    }
+    if (c === "'" || c === '"') {
       let j = i + 1;
-      while (j < text.length && text[j] !== c) {
+      while (j < text.length && text[j] !== c && text[j] !== '\n') {
         if (text[j] === '\\') j++;
-        else if (c !== '`' && text[j] === '\n') break;
         j++;
       }
       blank(i + 1, Math.min(j, text.length));
       i = j + 1;
       prev = c;
       prevWord = '';
+      continue;
+    }
+    if (substitutions.length > 0 && (c === '{' || c === '}')) {
+      const top = substitutions.length - 1;
+      if (c === '{') substitutions[top]++;
+      else if (substitutions[top] > 0) substitutions[top]--;
+      else {
+        // The `}` that closes a `${`: back into the template's text.
+        substitutions.pop();
+        i = templateText(i + 1);
+        continue;
+      }
+      prev = c;
+      prevWord = '';
+      i++;
       continue;
     }
     if (c === '/' && (REGEX_AFTER.has(prev) || REGEX_AFTER_WORDS.has(prevWord))) {
@@ -176,6 +230,16 @@ export function maskSource(text) {
       prevWord = text.slice(i, j);
       prev = text[j - 1];
       i = j;
+      continue;
+    }
+    if ((c === '+' || c === '-') && n === c) {
+      // `++` / `--`. After an operand (`i++`, `a[0]--`, `f()++`) it is
+      // postfix, and a `/` after it is a division; otherwise it is prefix and
+      // an operand must follow, so the next token is never a `/` anyway.
+      const postfix = prevWord !== '' || prev === ')' || prev === ']';
+      prev = postfix ? ')' : c;
+      prevWord = '';
+      i += 2;
       continue;
     }
     prev = c;
@@ -264,7 +328,7 @@ export function forbiddenImports(sourceRel, text, siblings, isEnvelope) {
 function densitySources(root) {
   const dir = join(root, DENSITY_SOURCE_DIR);
   return readdirSync(dir, { withFileTypes: true })
-    .filter((e) => e.isFile() && e.name.endsWith('.ts'))
+    .filter((e) => e.isFile() && e.name.endsWith('.ts') && !/\.test\.ts$/.test(e.name))
     .map((e) => e.name)
     .sort();
 }
@@ -353,6 +417,14 @@ export function syncDensityCopies(root = DEFAULT_ROOT) {
 
 /** The script's own behaviour; returns the exit code. */
 export function main(argv, root = DEFAULT_ROOT, out = console) {
+  const unknown = argv.filter((a) => a !== '--check');
+  if (unknown.length > 0) {
+    // A typo such as `--chek` must not silently run the WRITING sync.
+    out.error(
+      `ERROR: unknown argument(s): ${unknown.join(' ')}. Usage: sync-density.mjs [--check]`
+    );
+    return 2;
+  }
   const check = argv.includes('--check');
   try {
     if (check) {

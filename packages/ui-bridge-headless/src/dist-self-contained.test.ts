@@ -47,11 +47,14 @@ const OUTPUTS = [
 const SDK_SPECIFIER = /["'`]@qontinui\/ui-bridge(?:\/[^"'`]*)?["'`]/;
 
 /**
- * Source text with comments removed: prose that names the SDK (a declaration's
- * doc comment saying why it is NOT imported) is not a module specifier.
+ * Text with its doc comments and whole-line comments removed: prose that names
+ * the SDK (a declaration's doc comment saying why it is NOT imported) is not a
+ * module specifier. Only `/** … *\/` blocks and lines that START with `//` are
+ * removed — never a `//` after code, which may sit inside a string or a regex
+ * on a bundle line and would hide the rest of that line from the check.
  */
 function withoutComments(text: string): string {
-  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+  return text.replace(/\/\*\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 }
 
 function walk(dir: string, keep: (name: string) => boolean): string[] {
