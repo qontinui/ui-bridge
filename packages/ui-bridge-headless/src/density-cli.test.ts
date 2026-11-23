@@ -454,6 +454,19 @@ describe('runDensityCli, in process', () => {
     expect(out.stderr).toContain('--capture-out takes a file path, not -');
   });
 
+  it('the bin refuses --capture-out that is a hard link to --snapshot, and the snapshot is untouched', () => {
+    const snap = join(dir, 'guarded.json');
+    const alias = join(dir, 'guarded-alias.json');
+    writeFileSync(snap, JSON.stringify(BARE));
+    linkSync(snap, alias);
+    const before = readFileSync(snap, 'utf8');
+    const r = run(['measure', '--snapshot', snap, '--role', 'buyer', '--capture-out', alias]);
+    expect(r.status).toBe(2);
+    expect(r.stdout).toBe('');
+    expect(r.stderr).toContain('is the --snapshot file; refusing to overwrite an input');
+    expect(readFileSync(snap, 'utf8')).toBe(before);
+  }, 60_000);
+
   it('sameFileOnDisk sees a hard link to the snapshot as the snapshot', () => {
     const a = join(dir, 'linked-a.json');
     const b = join(dir, 'linked-b.json');

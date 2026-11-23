@@ -257,8 +257,9 @@ export function measureDensityCell(
       obs.provenance
     );
   } else {
-    // The adapter answers measured or unknown; an unknown carries no value to summarise.
-    observation = obs as Observation<DensityCaptureSummary>;
+    // An unknown or absent observation carries no value to summarise, so it
+    // passes through unchanged: neither variant has a `value` to retype.
+    observation = obs;
   }
 
   const next: DensityNextStep[] = [];
@@ -269,7 +270,8 @@ export function measureDensityCell(
   ) {
     next.push('review-targets');
   }
-  if (observation.status === 'unknown') next.push('capture');
+  // Anything short of a measured cell needs a capture to measure.
+  if (observation.status !== 'measured') next.push('capture');
 
   return {
     report: { command: 'measure', producer, cells: [{ cell, observation }], next },
@@ -478,18 +480,29 @@ async function main(): Promise<void> {
     if (pending === 0) process.exit(exitCode);
     else process.stdout.write('', () => process.exit(exitCode));
   };
-  process.stdout.on('error', (err: NodeJS.ErrnoException) => {
-    // The reader went away (`| head`, a closed terminal after SIGHUP): nothing
-    // is left to tell it, so the run ends with the code it had reached.
-    if (err.code === 'EPIPE' || err.code === 'EIO' || signalCode !== null) {
-      process.exit(signalCode ?? (typeof process.exitCode === 'number' ? process.exitCode : 0));
-    }
-    process.stderr.write(`ui-bridge-density: internal error: stdout: ${err.message}\n`);
-    process.exit(1);
-  });
+  // Set once runDensityCli has returned: the run's code is decided.
+  let finished = false;
+  const reachedCode = (): number =>
+    signalCode ?? (typeof process.exitCode === 'number' ? process.exitCode : 0);
+  for (const stream of [process.stdout, process.stderr]) {
+    stream.on('error', (err: NodeJS.ErrnoException) => {
+      // The reader went away (`| head`, a closed terminal after SIGHUP):
+      // nothing is left to tell it, so the run ends with the code it reached.
+      if (err.code === 'EPIPE' || err.code === 'EIO' || signalCode !== null) {
+        process.exit(reachedCode());
+      }
+      if (stream === process.stdout) {
+        process.stderr.write(`ui-bridge-density: internal error: stdout: ${err.message}\n`);
+      }
+      process.exit(1);
+    });
+  }
   for (const signal of Object.keys(SIGNAL_EXIT) as Array<keyof typeof SIGNAL_EXIT>) {
     process.on(signal, () => {
       const code = SIGNAL_EXIT[signal];
+      // The run already returned its code (a usage error prints nothing on
+      // stdout): it finished, so it ends with that code, not as interrupted.
+      if (finished) process.exit(reachedCode());
       // A second signal: after the answer the run is still complete (0);
       // during an interrupted flush it ends with the signal's code at once.
       if (interrupting) process.exit(printed ? 0 : code);
@@ -538,6 +551,7 @@ async function main(): Promise<void> {
     }
   );
   process.exitCode = code;
+  finished = true;
 }
 
 if (isEntryModule(import.meta.url)) {
