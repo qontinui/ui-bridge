@@ -31,6 +31,7 @@ class BufferedPerformanceObserver {
 }
 
 beforeEach(() => {
+  buffer.length = 0;
   vi.stubGlobal('PerformanceObserver', BufferedPerformanceObserver);
   sessionStorage.clear();
 });
@@ -51,8 +52,8 @@ it('a pre-install 429 reaches getBrowserEvents through BrowserEventCapture.insta
     responseEnd: 15,
   });
   const capture = new BrowserEventCapture();
-  capture.install();
   try {
+    capture.install();
     await new Promise((resolve) => setTimeout(resolve, 0));
     const statuses = capture
       .getByType('resource-status')
