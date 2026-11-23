@@ -100,7 +100,105 @@ const TABLE: Row[] = [
     relayPageNavigate: 'INVALID_URL_FORMAT',
     relayPageNavigateMessage: RELAY_FORMAT,
   },
+  // Spellings the URL parser normalizes: a leading space and mixed case, a tab
+  // inside the scheme. Both are still `javascript:`.
+  {
+    url: ' JavaScript:alert(1)',
+    gate: 'INVALID_URL_PROTOCOL',
+    gateMessage: DANGEROUS('javascript:'),
+    relayPageNavigate: 'INVALID_URL_PROTOCOL',
+    relayPageNavigateMessage: DANGEROUS('javascript:'),
+  },
+  {
+    url: 'java\tscript:x',
+    gate: 'INVALID_URL_PROTOCOL',
+    gateMessage: DANGEROUS('javascript:'),
+    relayPageNavigate: 'INVALID_URL_PROTOCOL',
+    relayPageNavigateMessage: DANGEROUS('javascript:'),
+  },
+  {
+    url: 'JAVASCRIPT:alert(1)\n',
+    gate: 'INVALID_URL_PROTOCOL',
+    gateMessage: DANGEROUS('javascript:'),
+    relayPageNavigate: 'INVALID_URL_PROTOCOL',
+    relayPageNavigateMessage: DANGEROUS('javascript:'),
+  },
+  // A percent-encoded colon is not a scheme separator: this is a relative PATH
+  // named `javascript%3Aalert(1)` on the page's own (http) origin, which runs
+  // nothing. The relay's own FORMAT rule still refuses it (no leading `/`).
+  {
+    url: 'javascript%3Aalert(1)',
+    gate: 'ok',
+    relayPageNavigate: 'INVALID_URL_FORMAT',
+    relayPageNavigateMessage: RELAY_FORMAT,
+  },
+  // A control character before a root-relative path is stripped by the parser,
+  // so the gate reads it as the path it is; the relay's FORMAT rule (a literal
+  // leading `/`) refuses it.
+  {
+    url: ' /settings',
+    gate: 'ok',
+    relayPageNavigate: 'INVALID_URL_FORMAT',
+    relayPageNavigateMessage: RELAY_FORMAT,
+  },
 ];
+
+/** The page bases a root-relative path must pass on, whatever their scheme. */
+const NON_HTTP_BASES = ['tauri://localhost/', 'file:///x', 'about:blank'];
+
+describe('checkNavigationUrl on a non-http base', () => {
+  it.each(NON_HTTP_BASES)('%s: a root-relative path passes', (base) => {
+    for (const url of ['/settings', '/a?b#c', '/', ' /settings', '/sub\tpath']) {
+      expect(checkNavigationUrl(url, base)).toEqual({ ok: true });
+    }
+  });
+
+  it.each(NON_HTTP_BASES)('%s: a script scheme is still refused', (base) => {
+    for (const url of ['javascript:alert(1)', ' JavaScript:alert(1)', 'java\tscript:x']) {
+      expect(checkNavigationUrl(url, base)).toEqual({
+        ok: false,
+        code: 'INVALID_URL_PROTOCOL',
+        message: DANGEROUS('javascript:'),
+      });
+    }
+  });
+
+  it('a protocol-relative `//host` (or `/\\host`) is not a path: it takes the base scheme', () => {
+    expect(checkNavigationUrl('//evil.test/x', 'tauri://localhost/')).toEqual({
+      ok: false,
+      code: 'INVALID_URL_PROTOCOL',
+      message: NOT_HTTP('tauri:'),
+    });
+    expect(checkNavigationUrl('/\\evil.test/x', 'tauri://localhost/')).toEqual({
+      ok: false,
+      code: 'INVALID_URL_PROTOCOL',
+      message: NOT_HTTP('tauri:'),
+    });
+    expect(checkNavigationUrl('/\t/evil.test/x', 'tauri://localhost/')).toEqual({
+      ok: false,
+      code: 'INVALID_URL_PROTOCOL',
+      message: NOT_HTTP('tauri:'),
+    });
+    expect(checkNavigationUrl('//evil.test/x', 'about:blank')).toEqual({
+      ok: false,
+      code: 'INVALID_URL_FORMAT',
+      message: UNPARSEABLE('//evil.test/x'),
+    });
+  });
+
+  it('a bare name inherits the base scheme: refused on tauri, unparseable on about:blank', () => {
+    expect(checkNavigationUrl('settings', 'tauri://localhost/')).toEqual({
+      ok: false,
+      code: 'INVALID_URL_PROTOCOL',
+      message: NOT_HTTP('tauri:'),
+    });
+    expect(checkNavigationUrl('settings', 'about:blank')).toEqual({
+      ok: false,
+      code: 'INVALID_URL_FORMAT',
+      message: UNPARSEABLE('settings'),
+    });
+  });
+});
 
 describe('checkNavigationUrl', () => {
   it.each(TABLE)('$url → $gate', ({ url, gate, gateMessage }) => {
@@ -289,5 +387,147 @@ describe("the page's navigateByAdapter (exec mode) and the in-process handler", 
       });
       expect(navigate).not.toHaveBeenCalled();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pageNavigate on the page (exec mode) and in-process
+// ---------------------------------------------------------------------------
+
+/**
+ * Swap `window.location` for a proxy that records `href` assignments (jsdom
+ * cannot navigate) and, when `href` is given, reports that as the page URL.
+ */
+function stubLocation(href?: string) {
+  const assigned: string[] = [];
+  const real = window.location;
+  const proxy = new Proxy(real, {
+    get(target, prop) {
+      if (prop === 'href' && href !== undefined) return href;
+      const value = (target as unknown as Record<PropertyKey, unknown>)[prop];
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+    set(target, prop, value) {
+      if (prop === 'href') {
+        assigned.push(value as string);
+        return true;
+      }
+      (target as unknown as Record<PropertyKey, unknown>)[prop] = value;
+      return true;
+    },
+  });
+  const original = Object.getOwnPropertyDescriptor(window, 'location')!;
+  Object.defineProperty(window, 'location', { configurable: true, value: proxy });
+  return {
+    assigned,
+    restore: () => Object.defineProperty(window, 'location', original),
+  };
+}
+
+describe('pageNavigate on the page (exec mode) and in-process: one gate', () => {
+  let location: ReturnType<typeof stubLocation> | undefined;
+
+  beforeEach(() => {
+    delete window.__uiBridgeInjected;
+    delete window.__uiBridgeInjectedConfig;
+  });
+
+  afterEach(() => {
+    location?.restore();
+    location = undefined;
+    delete window.__uiBridgeInjected;
+    delete (window as unknown as { __UI_BRIDGE__?: unknown }).__UI_BRIDGE__;
+    setGlobalRegistry(new UIBridgeRegistry());
+  });
+
+  async function pageExecute(url: string) {
+    vi.resetModules();
+    await import('../injected/bootstrap');
+    return window.__uiBridgeInjected!.execute('pageNavigate', { url });
+  }
+
+  function inProcess() {
+    const registry = new UIBridgeRegistry();
+    return createHandlers(
+      registry as unknown as RegistryLike,
+      new DefaultActionExecutor(registry) as never
+    );
+  }
+
+  it.each(TABLE)(
+    'page: $url → $gate',
+    async ({ url, gate, gateMessage }) => {
+      location = stubLocation();
+      const answer = await pageExecute(url);
+      if (gate === 'ok') {
+        expect(answer).toMatchObject({ success: true, hard: true, mode: 'hard' });
+        expect(location.assigned).toEqual([url]);
+      } else {
+        expect(answer).toMatchObject({
+          success: false,
+          error: gateMessage,
+          failureDetails: { errorCode: gate, message: gateMessage },
+        });
+        expect(location.assigned).toEqual([]);
+      }
+    },
+    30_000
+  );
+
+  it.each(TABLE)('in-process: $url → $gate', async ({ url, gate, gateMessage }) => {
+    location = stubLocation();
+    const result = await inProcess().pageNavigate({ url });
+    if (gate === 'ok') {
+      expect(result).toMatchObject({ success: true, data: { success: true, url, mode: 'hard' } });
+    } else {
+      expect(result).toMatchObject({
+        success: false,
+        error: gateMessage,
+        code: 'UB-VALIDATION-ERROR',
+        data: { failureDetails: { errorCode: gate, message: gateMessage } },
+      });
+      expect(location.assigned).toEqual([]);
+    }
+  });
+
+  it.each(NON_HTTP_BASES)(
+    'page on %s: /settings navigates, javascript: is refused',
+    async (base) => {
+      location = stubLocation(base);
+      expect(await pageExecute('/settings')).toMatchObject({ success: true, hard: true });
+      expect(location.assigned).toEqual(['/settings']);
+      expect(
+        await window.__uiBridgeInjected!.execute('pageNavigate', { url: 'javascript:alert(1)' })
+      ).toMatchObject({
+        success: false,
+        failureDetails: { errorCode: 'INVALID_URL_PROTOCOL', message: DANGEROUS('javascript:') },
+      });
+      expect(location.assigned).toEqual(['/settings']);
+    },
+    30_000
+  );
+
+  it.each(NON_HTTP_BASES)(
+    'in-process on %s: /settings navigates, javascript: is refused',
+    async (base) => {
+      location = stubLocation(base);
+      const handlers = inProcess();
+      expect(await handlers.pageNavigate({ url: '/settings' })).toMatchObject({
+        success: true,
+        data: { url: '/settings', hard: true },
+      });
+      expect(location.assigned).toEqual(['/settings']);
+      expect(await handlers.pageNavigate({ url: 'javascript:alert(1)' })).toMatchObject({
+        success: false,
+        code: 'UB-VALIDATION-ERROR',
+        data: { failureDetails: { errorCode: 'INVALID_URL_PROTOCOL' } },
+      });
+      expect(location.assigned).toEqual(['/settings']);
+    }
+  );
+
+  it('in-process: a missing url is still INVALID_REQUEST', async () => {
+    const result = await inProcess().pageNavigate({ url: '' });
+    expect(result).toMatchObject({ success: false, error: 'URL is required' });
   });
 });

@@ -8,7 +8,12 @@
  * (`server/handlers.ts`) serve `getElementReactState` from ONE projection,
  * §4.6 scrub included.
  */
-import { scrubReactProps, verdictOf } from '../core/redaction';
+import {
+  hasRedactionBoundaryBelow,
+  isValueRedacted,
+  scrubReactProps,
+  verdictOf,
+} from '../core/redaction';
 import { typeName } from './react-fiber';
 import type { ReactStateInfo } from './types';
 
@@ -153,7 +158,15 @@ export function extractReactState(element: HTMLElement): ReactStateInfo | null {
   const rawProps = reactPropsKey
     ? ((el[reactPropsKey] as Record<string, unknown> | undefined) ?? {})
     : {};
-  const props = scrubReactProps(safeSerialize(rawProps) as Record<string, unknown>, reactVerdict);
+  // `children` (and any render prop) of a NON-redacted wrapper — a `<label>`,
+  // a `<form>`, a `<div>` — can be a React element for a redacted child, and
+  // that element's own `props.value` is the child's cleartext secret. The
+  // wrapper's verdict says nothing about it, so elements are COLLAPSED to
+  // `<type>` here and never walked.
+  const props = scrubReactProps(
+    safeSerialize(rawProps, undefined, 0, true) as Record<string, unknown>,
+    reactVerdict
+  );
 
   // Walk the memoizedState linked list to extract useState/useReducer values
   const fiberState: unknown[] = [];
@@ -182,18 +195,93 @@ export function extractReactState(element: HTMLElement): ReactStateInfo | null {
       let stateCount = 0;
       const maxStates = 20; // Safety limit
       while (stateNode && stateCount < maxStates) {
-        fiberState.push(safeSerialize(stateNode.memoizedState));
+        fiberState.push(safeSerialize(stateNode.memoizedState, undefined, 0, true));
         stateNode = stateNode.next as Record<string, unknown> | null;
         stateCount++;
       }
     }
   }
 
-  return {
-    props,
-    fiberState: reactVerdict.value ? [] : fiberState,
-    componentName: reactVerdict.value ? undefined : componentName,
-  };
+  if (reactVerdict.value) {
+    return { props, fiberState: [], componentName: undefined };
+  }
+  // The same leak through STATE: the nearest component of a non-redacted
+  // wrapper is often the one holding the secret (`const [pw, setPw] =
+  // useState('')` in the form that renders the password input). A raw string
+  // cannot be told from any other, so when that component — or the wrapper
+  // itself — renders a value-redacted element, its state is withheld whole.
+  if (
+    fiberState.length > 0 &&
+    rendersRedactedElement(element, componentFiberOf(el, reactFiberKey))
+  ) {
+    return { props, fiberState: [], componentName, note: FIBER_STATE_WITHHELD_NOTE };
+  }
+  return { props, fiberState, componentName };
+}
+
+/** The `note` an answer carries when its `fiberState` was withheld. */
+export const FIBER_STATE_WITHHELD_NOTE =
+  "fiberState withheld: this component renders a redacted element (a password input or a data-bridge-redact boundary), so its state may hold that element's value";
+
+/**
+ * How many fibers {@link rendersRedactedElement} visits before it gives up and
+ * answers "renders one" — a walk it could not finish is not evidence of absence.
+ */
+const RENDERED_SUBTREE_FIBER_CAP = 10_000;
+
+type Fiber = Record<string, unknown>;
+
+/** The nearest function/class component fiber at or above `el`'s host fiber. */
+function componentFiberOf(el: Record<string, unknown>, fiberKey: string | undefined): Fiber | null {
+  let current = fiberKey ? (el[fiberKey] as Fiber | undefined) : undefined;
+  while (current) {
+    if (typeof current.type === 'function') return current;
+    current = current.return as Fiber | undefined;
+  }
+  return null;
+}
+
+/** Is `node` an element (realm-safe: no `instanceof`)? */
+function isDomElement(node: unknown): node is HTMLElement {
+  return (
+    node !== null &&
+    typeof node === 'object' &&
+    (node as { nodeType?: unknown }).nodeType === 1 &&
+    typeof (node as { querySelectorAll?: unknown }).querySelectorAll === 'function'
+  );
+}
+
+/** Does `root`, or anything in its DOM subtree, carry a VALUE redaction? */
+function domSubtreeIsValueRedacted(root: HTMLElement): boolean {
+  if (isValueRedacted(root) || hasRedactionBoundaryBelow(root)) return true;
+  for (const input of Array.from(root.querySelectorAll('input'))) {
+    if (isValueRedacted(input)) return true;
+  }
+  return false;
+}
+
+/**
+ * Does `element`'s own DOM subtree, or any host node the component fiber
+ * renders, carry a VALUE redaction? Fails closed past
+ * {@link RENDERED_SUBTREE_FIBER_CAP} fibers.
+ */
+function rendersRedactedElement(element: HTMLElement, component: Fiber | null): boolean {
+  if (domSubtreeIsValueRedacted(element)) return true;
+  if (!component) return false;
+  const stack: Fiber[] = [];
+  const first = component.child as Fiber | undefined;
+  if (first) stack.push(first);
+  let visited = 0;
+  while (stack.length > 0) {
+    const fiber = stack.pop()!;
+    if (++visited > RENDERED_SUBTREE_FIBER_CAP) return true;
+    if (isDomElement(fiber.stateNode) && domSubtreeIsValueRedacted(fiber.stateNode)) return true;
+    const sibling = fiber.sibling as Fiber | undefined;
+    if (sibling) stack.push(sibling);
+    const child = fiber.child as Fiber | undefined;
+    if (child) stack.push(child);
+  }
+  return false;
 }
 
 /**

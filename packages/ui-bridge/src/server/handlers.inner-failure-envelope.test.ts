@@ -105,6 +105,37 @@ describe('direct executeElementAction · an executor failure is an OUTER failure
     expect(data.results[1].success).toBe(true);
   });
 
+  it.each([
+    ['data with no verdict', { clicked: false }],
+    ['no data', undefined],
+    ['data saying success', { success: true }],
+  ])(
+    'a step whose envelope failed is a failed step, whatever its data says (%s)',
+    async (_name, data) => {
+      handlers.executeElementAction = async () => ({
+        success: false,
+        error: 'the action timed out',
+        code: 'UB-TIMEOUT',
+        ...(data !== undefined ? { data } : {}),
+        timestamp: 1,
+      });
+      const result = await handlers.controlBatch!({
+        actions: [{ type: 'action', id: 'save', request: { action: 'click' } }],
+      });
+      const batch = result.data as {
+        failedCount: number;
+        results: Array<{ success: boolean; error?: string; code?: string }>;
+      };
+      expect(result.success).toBe(false);
+      expect(batch.failedCount).toBe(1);
+      expect(batch.results[0]).toMatchObject({
+        success: false,
+        error: 'the action timed out',
+        code: 'UB-TIMEOUT',
+      });
+    }
+  );
+
   it("a custom-action handler's typed throw keeps its own code on the envelope", async () => {
     const host = document.createElement('div');
     container.appendChild(host);

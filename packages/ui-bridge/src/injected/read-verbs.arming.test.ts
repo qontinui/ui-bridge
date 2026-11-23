@@ -52,6 +52,21 @@ function withReactInternals<T extends HTMLElement>(el: T, props: Record<string, 
   return el;
 }
 
+/** jsdom has no layout: give a node a box so it reads as visible (and clickable). */
+function withBox<T extends HTMLElement>(el: T): T {
+  const box = { x: 10, y: 20, width: 96, height: 32 };
+  Object.defineProperty(el, 'offsetParent', { configurable: true, get: () => document.body });
+  el.getBoundingClientRect = () =>
+    ({
+      ...box,
+      top: box.y,
+      left: box.x,
+      right: box.x + box.width,
+      bottom: box.y + box.height,
+    }) as DOMRect;
+  return el;
+}
+
 interface Failure {
   success: false;
   error: string;
@@ -86,7 +101,7 @@ beforeEach(() => {
   pw.setAttribute('data-testid', 'pw');
   withReactInternals(pw, { type: 'password', value: 'hunter2', onChange: () => {} });
 
-  document.body.append(go, react, boundary, pw);
+  document.body.append(withBox(go), react, boundary, withBox(pw));
 });
 
 afterEach(() => {
@@ -194,29 +209,77 @@ describe('injected execute("getDiagnostics")', () => {
 });
 
 describe('injected execute("getElementHistory")', () => {
-  it('{elementId, options} returns the entries the registry logged, after one state change', async () => {
+  // The producer is REAL: an `executeElementAction` through the same
+  // `execute` door emits `action:started` / `action:completed` (or
+  // `action:failed`) on the global registry (`../core/element-action-events.ts`),
+  // which the bootstrap's `info`-level `ElementEventLog` records.
+  it('{elementId, options} returns the entries a real click logged', async () => {
     const api = await bootRuntime();
-    getGlobalRegistry().dispatchEvent('element:stateChanged', {
-      elementId: 'dom-go',
-      state: { focused: true },
-    });
+    let clicks = 0;
+    document.querySelector('[data-testid="go"]')!.addEventListener('click', () => clicks++);
+    const click = (await api.execute('executeElementAction', {
+      id: 'dom-go',
+      request: { action: 'click' },
+    })) as { success: boolean };
+    expect(click.success).toBe(true);
+    expect(clicks).toBe(1);
+
     const entries = (await api.execute('getElementHistory', {
       elementId: 'dom-go',
       options: {},
     })) as Array<Record<string, unknown>>;
+    expect(entries.map((e) => [e.eventType, e.level, e.message])).toEqual([
+      ['action:started', 'info', 'Action started on dom-go: click'],
+      ['action:completed', 'info', 'Action completed on dom-go: click'],
+    ]);
+    expect(entries[1]).toMatchObject({
+      elementId: 'dom-go',
+      data: { elementId: 'dom-go', action: 'click', response: { success: true } },
+    });
+  }, 30_000);
+
+  it('a failed action is logged as action:failed with its error, at the error level', async () => {
+    const api = await bootRuntime();
+    const answer = (await api.execute('executeElementAction', {
+      id: 'dom-nope',
+      request: { action: 'click' },
+    })) as { success: boolean; error: string };
+    expect(answer.success).toBe(false);
+    const entries = (await api.execute('getElementHistory', {
+      elementId: 'dom-nope',
+      options: { minLevel: 'error' },
+    })) as Array<Record<string, unknown>>;
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
-      elementId: 'dom-go',
-      eventType: 'element:stateChanged',
-      level: 'info',
-      message: 'State changed: dom-go',
-      data: { elementId: 'dom-go', state: { focused: true } },
+      eventType: 'action:failed',
+      level: 'error',
+      message: `Action failed on dom-nope: ${answer.error}`,
+      data: { elementId: 'dom-nope', action: 'click', error: answer.error },
     });
+  }, 30_000);
+
+  it('the typed text of a type action is never logged', async () => {
+    const api = await bootRuntime();
+    await api.execute('executeElementAction', {
+      id: 'dom-pw',
+      request: { action: 'type', params: { text: 'hunter2-s3cret' } },
+    });
+    const entries = await api.execute('getElementHistory', { elementId: 'dom-pw', options: {} });
+    expect((entries as unknown[]).length).toBeGreaterThan(0);
+    expect(JSON.stringify(entries)).not.toContain('hunter2-s3cret');
+  }, 30_000);
+
+  it('a refused payload names no action that ran, and logs nothing', async () => {
+    const api = await bootRuntime();
+    await api.execute('executeElementAction', { id: 'dom-go' });
+    expect(await api.execute('getElementHistory', { elementId: 'dom-go', options: {} })).toEqual(
+      []
+    );
   }, 30_000);
 
   it('the registry options are passed through (eventTypes filters the log)', async () => {
     const api = await bootRuntime();
-    getGlobalRegistry().dispatchEvent('element:stateChanged', { elementId: 'dom-go' });
+    await api.execute('executeElementAction', { id: 'dom-go', request: { action: 'click' } });
     const entries = await api.execute('getElementHistory', {
       elementId: 'dom-go',
       options: { eventTypes: ['action:failed'] },

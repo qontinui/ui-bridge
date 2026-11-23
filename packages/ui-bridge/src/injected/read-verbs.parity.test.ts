@@ -26,6 +26,21 @@ function SaveButton() {
   return null;
 }
 
+/** jsdom has no layout: give a node a box so it reads as visible (and clickable). */
+function withBox<T extends HTMLElement>(el: T): T {
+  const box = { x: 10, y: 20, width: 96, height: 32 };
+  Object.defineProperty(el, 'offsetParent', { configurable: true, get: () => document.body });
+  el.getBoundingClientRect = () =>
+    ({
+      ...box,
+      top: box.y,
+      left: box.x,
+      right: box.x + box.width,
+      bottom: box.y + box.height,
+    }) as DOMRect;
+  return el;
+}
+
 const CAPABILITY_UNAVAILABLE = {
   success: false,
   code: 'UB-CAPABILITY-UNAVAILABLE',
@@ -65,7 +80,7 @@ beforeEach(async () => {
     value: { 'data-testid': 'react', onClick: () => {} },
     enumerable: true,
   });
-  document.body.append(go, react);
+  document.body.append(withBox(go), react);
 
   vi.resetModules();
   await import('./bootstrap');
@@ -137,13 +152,23 @@ describe('getDiagnostics · one builder on the page and in-process', () => {
 });
 
 describe('getElementHistory · one command on the page and in-process', () => {
-  it('the logged entries deep-equal', async () => {
-    getGlobalRegistry().dispatchEvent('element:stateChanged', { elementId: 'dom-go' });
-    const page = await api.execute('getElementHistory', { elementId: 'dom-go', options: {} });
+  it('the logged entries deep-equal, after a real click on each transport', async () => {
+    await api.execute('executeElementAction', { id: 'dom-go', request: { action: 'click' } });
+    const inProcessClick = await handlers.executeElementAction('dom-go', { action: 'click' });
+    expect(inProcessClick.success).toBe(true);
+    const page = (await api.execute('getElementHistory', {
+      elementId: 'dom-go',
+      options: {},
+    })) as Array<{ eventType: string }>;
     const envelope = await handlers.getElementHistory('dom-go', {});
     expect(envelope.success).toBe(true);
     expect(envelope.data).toEqual(page);
-    expect(page).toHaveLength(1);
+    expect(page.map((e) => e.eventType)).toEqual([
+      'action:started',
+      'action:completed',
+      'action:started',
+      'action:completed',
+    ]);
   });
 
   it('a registry built without an event log: UB-CAPABILITY-UNAVAILABLE on both, never []', async () => {

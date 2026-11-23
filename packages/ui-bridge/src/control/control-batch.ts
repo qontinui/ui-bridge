@@ -196,6 +196,15 @@ export const CONTROL_BATCH_STEP_SHAPE =
   '(also "elementId" or "element_id" in place of "id", or a flat request beside "action"), ' +
   '{"type":"wait","ms":<milliseconds>} or {"type":"snapshot"}, each with an optional string "label"';
 
+/**
+ * The longest one `wait` step may wait, in milliseconds. A batch runs inside
+ * ONE relay command, whose budget is seconds (`CommandRelay.commandBudgetMs`,
+ * 8-10 s by default), so a wait past a minute can never finish inside any
+ * transport's answer — and above 2^31-1 ms `setTimeout` clamps the delay to
+ * 1 ms, so an unbounded `ms` would report a wait it never did.
+ */
+export const MAX_BATCH_WAIT_MS = 60_000;
+
 /** The request grammar, as a refusal quotes it. */
 export const CONTROL_BATCH_REQUEST_SHAPE =
   '{"actions":[<step>, …]} (alias "steps"), with an optional boolean ' +
@@ -282,6 +291,14 @@ function readStep(raw: unknown, index: number): ControlBatchParsedStep {
         type,
         label,
         `"ms" must be a finite, non-negative number, got ${describeKind(raw.ms)}`
+      );
+    }
+    if (raw.ms > MAX_BATCH_WAIT_MS) {
+      return invalidStep(
+        index,
+        type,
+        label,
+        `"ms" must be at most ${MAX_BATCH_WAIT_MS} (the longest one wait step may wait), got ${raw.ms}`
       );
     }
     return { kind: 'wait', type: 'wait', ...withLabel, ms: raw.ms };
