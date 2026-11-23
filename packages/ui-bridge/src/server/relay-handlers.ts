@@ -81,6 +81,7 @@ import {
   type ParsedVisionAssertRequest,
 } from '../vision/assertion-request';
 import { RESERVED_CALLER_KEY } from './reserved-caller';
+import { checkNavigationUrl, RELAY_NAVIGATION_BASE } from '../core/navigation-url';
 
 // ============================================================================
 // Helpers
@@ -106,6 +107,16 @@ function relayRoutingKeys(request: unknown): Partial<Record<string, string>> {
     if (typeof value === 'string') keys[key] = value;
   }
   return keys;
+}
+
+/** Does `url` parse on its own, with no base to resolve it against? */
+function isAbsoluteUrl(url: string): boolean {
+  try {
+    new URL(url);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function success<T>(
@@ -2417,30 +2428,18 @@ export function createRelayHandlers(
       if (!url) {
         return error('URL is required', 'INVALID_REQUEST');
       }
-      const dangerousProtocols = ['javascript:', 'data:', 'blob:', 'vbscript:'];
-      try {
-        const parsed = new URL(url);
-        if (dangerousProtocols.includes(parsed.protocol)) {
-          return error(
-            `Dangerous URL protocol rejected: "${parsed.protocol}". Only http, https, and relative paths are allowed.`,
-            'INVALID_URL_PROTOCOL'
-          );
-        }
-        if (!['http:', 'https:'].includes(parsed.protocol)) {
-          return error(
-            `Invalid URL protocol "${parsed.protocol}". Only http, https, and relative paths are allowed.`,
-            'INVALID_URL_PROTOCOL'
-          );
-        }
-      } catch {
-        // URL failed to parse as absolute — only allow relative paths starting with "/"
-        if (!url.startsWith('/')) {
-          return error(
-            'Invalid URL format. Only http, https, and relative paths starting with "/" are allowed.',
-            'INVALID_URL_FORMAT'
-          );
-        }
+      // The relay-only FORMAT rule: a URL that is not absolute must be a
+      // root-relative path. (The page resolves a bare `settings` against
+      // itself; the relay has no page to resolve it against.)
+      if (!isAbsoluteUrl(url) && !url.startsWith('/')) {
+        return error(
+          'Invalid URL format. Only http, https, and relative paths starting with "/" are allowed.',
+          'INVALID_URL_FORMAT'
+        );
       }
+      // Then the one navigation URL gate (`../core/navigation-url.ts`).
+      const verdict = checkNavigationUrl(url, RELAY_NAVIGATION_BASE);
+      if (!verdict.ok) return error(verdict.message, verdict.code);
       return relayCommand('pageNavigate', payload, { targetTabId, context });
     },
 
@@ -3303,6 +3302,14 @@ export function createRelayHandlers(
       return relayCommand('getRoutes', {}, ctxOpts(context));
     },
     async navigateByAdapter(request, context) {
+      // The page gates `page` too; refusing here means a dangerous URL never
+      // reaches a tab (`../core/navigation-url.ts`).
+      const page = (request as { page?: unknown } | undefined)?.page;
+      if (typeof page !== 'string' || page.length === 0) {
+        return error('navigateByAdapter: "page" must be a non-empty string', 'INVALID_REQUEST');
+      }
+      const verdict = checkNavigationUrl(page, RELAY_NAVIGATION_BASE);
+      if (!verdict.ok) return error(verdict.message, verdict.code);
       return relayCommand('navigateByAdapter', request, ctxOpts(context));
     },
   };

@@ -190,6 +190,10 @@ export const INTERNAL_CODE_TO_CANONICAL: Readonly<Record<string, UiBridgeErrorCo
   COMPONENT_NOT_FOUND: 'UB-ELEM-NOT-FOUND',
   INVALID_REQUEST: 'UB-VALIDATION-ERROR',
   VALIDATION_ERROR: 'UB-VALIDATION-ERROR',
+  // The navigation URL gate's refusals (`../core/navigation-url.ts`): a
+  // dangerous or non-http(s) scheme, and a URL that does not parse.
+  INVALID_URL_PROTOCOL: 'UB-VALIDATION-ERROR',
+  INVALID_URL_FORMAT: 'UB-VALIDATION-ERROR',
   NOT_IMPLEMENTED: 'UB-UNSUPPORTED-ACTION',
   // The three runner-backing causes are three different facts and get three
   // different codes (pinned by `diagnostics.runner-causes.test.ts`):

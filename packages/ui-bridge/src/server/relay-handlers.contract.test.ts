@@ -60,8 +60,6 @@ const commandHandlersSrc = readFileSync(resolve(here, '../react/commandHandlers.
  * relayed, fails the guard until it leaves this list.
  */
 const KNOWN_UNSERVED_RELAY_ACTIONS: readonly string[] = [
-  'getRoutes',
-  'navigateByAdapter',
   'query',
   'waitForElement',
 ];

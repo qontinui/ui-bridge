@@ -63,4 +63,9 @@ export const RELAY_READ_ACTIONS: ReadonlySet<string> = new Set([
   // `case 'getRecentEffects':` returns `recentEffectsCommand(...)`, the effect
   // store's newest-first slice copy (`getRecent`). It clears nothing.
   'getRecentEffects',
+  // `case 'getRoutes':` returns `getRoutesCommand(g)`
+  // (`../react/navigation-commands.ts`): the adapter's `getRoutes()` or the
+  // window's one current-page route, plus `source` / `complete`. It navigates
+  // nothing (`navigateByAdapter`, which does, is absent here).
+  'getRoutes',
 ]);
