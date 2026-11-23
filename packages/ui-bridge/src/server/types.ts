@@ -1479,26 +1479,6 @@ export interface UIBridgeServerHandlers {
   /** Tear down internal subscriptions and observers to prevent resource leaks. */
   destroy?: () => void;
 
-  // Enhanced discovery endpoints
-  query: (
-    request: {
-      selector: string;
-      limit?: number;
-      includeState?: boolean;
-    },
-    context?: HandlerContext
-  ) => Promise<APIResponse<{ elements: unknown[]; count: number }>>;
-
-  waitForElement: (
-    request: {
-      selector?: string;
-      elementId?: string;
-      timeout?: number;
-      pollInterval?: number;
-    },
-    context?: HandlerContext
-  ) => Promise<APIResponse<{ found: boolean; element?: unknown; waitedMs: number }>>;
-
   /**
    * Tier 3.1 — Wait for an element matching a structured selector to satisfy
    * a given condition (present / visible / clickable / text-matches).
@@ -2757,9 +2737,8 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
  * the SDK relays to a browser — from the TypeScript AST of each `queueCommand`
  * call and of the wrappers that forward to one (`relayCommand`,
  * `relayWithFallback`) — and fails on any that `executeCommand` does not
- * serve, unless the action is on its ratcheted `KNOWN_UNSERVED_RELAY_ACTIONS`
- * list. So every new relayed action needs its browser case, listed here or
- * not; list an app-agnostic interaction here when it should stay pinned as
+ * serve, with no exception list. So every new relayed action needs its
+ * browser case, listed here or not; list an app-agnostic interaction here when it should stay pinned as
  * both relayed and served.
  */
 export const INTERACTION_RELAY_COMMAND_ACTIONS = [

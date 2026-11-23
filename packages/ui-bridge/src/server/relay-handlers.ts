@@ -3195,15 +3195,6 @@ export function createRelayHandlers(
       return success({ events, count: events.length });
     },
 
-    // Enhanced discovery — relay to browser context
-    async query(request, context) {
-      return relayCommand('query', request, ctxOpts(context));
-    },
-
-    async waitForElement(request, context) {
-      return relayCommand('waitForElement', request, ctxOpts(context));
-    },
-
     // Tier 3.1 — relay to browser context so the JS SDK can do registry polling
     async waitForElementByCondition(request, context) {
       return relayCommand('waitForElementByCondition', request, ctxOpts(context));

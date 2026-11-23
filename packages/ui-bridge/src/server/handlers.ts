@@ -129,12 +129,9 @@ import {
   scrubContent,
   scrubContentByVerdict,
   scrubMediaMetadata,
-  scrubRecord,
   verdictOf,
   verdictFromState,
-  readScrubbedValue,
   readScrubbedText,
-  REDACTED_VALUE,
 } from '../core/redaction';
 import type { ElementState } from '../core/types';
 import { isMediaObservation } from '../core/media-observation';
@@ -298,7 +295,6 @@ import { ChangeObserver } from '../core/change-observer';
 import type { BridgeEvent } from '../core';
 import { findElements } from '../core/find';
 import type { ElementQuery } from '../core/find';
-import { classString } from '../core/class-name';
 // The identity fold, stamped onto find/discover payloads so an off-process
 // driver can read `mountEvidence` instead of guessing what its own fold saw.
 import { computeSnapshotSignature } from '../core/snapshot-signature';
@@ -6761,117 +6757,6 @@ export function createHandlers(
         'clipboardRead requires browser context — use relay-handlers',
         'NOT_IMPLEMENTED'
       );
-    },
-
-    // =========================================================================
-    // Enhanced Discovery & Navigation
-    // =========================================================================
-
-    query: async (request: { selector: string; limit?: number; includeState?: boolean }) => {
-      try {
-        const { selector, limit = 50, includeState = true } = request;
-        const found = document.querySelectorAll(selector);
-        const results: unknown[] = [];
-
-        for (let i = 0; i < Math.min(found.length, limit); i++) {
-          const el = found[i] as HTMLElement;
-          const info: Record<string, unknown> = {
-            tagName: el.tagName.toLowerCase(),
-            id: el.id || undefined,
-            className: classString(el) || undefined,
-            // §4.6: querySelector projection reaches the client — scrub cell text.
-            textContent: readScrubbedText(el, undefined, { maxLen: 200 }) ?? '',
-            visible: el.offsetParent !== null,
-          };
-          if (includeState) {
-            const rect = el.getBoundingClientRect();
-            info.rect = {
-              x: Math.round(rect.x),
-              y: Math.round(rect.y),
-              width: Math.round(rect.width),
-              height: Math.round(rect.height),
-            };
-            if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
-              // §4.6 VALUE axis: password/boundary inputs must not ship cleartext.
-              info.value = readScrubbedValue(el) ?? '';
-              // §4.6 CONTENT axis: hint text inside a boundary is content.
-              info.placeholder = scrubContent(el.placeholder, el) ?? '';
-              info.disabled = el.disabled;
-            }
-            if (el instanceof HTMLSelectElement) {
-              info.value = readScrubbedValue(el) ?? '';
-              // §4.6: a redacted <select>'s option list (and its cardinality)
-              // can itself be sensitive — collapse it to a single sentinel.
-              info.options = isContentRedacted(el)
-                ? [{ value: REDACTED_VALUE, text: REDACTED_VALUE, selected: false }]
-                : Array.from(el.options).map((o) => ({
-                    value: o.value,
-                    text: o.text,
-                    selected: o.selected,
-                  }));
-            }
-            if (el instanceof HTMLButtonElement) info.disabled = el.disabled;
-            // §4.6: `title` / `aria-label` / `placeholder` / `href` are content —
-            // inside a boundary their values collapse and the keys survive.
-            // `role` and `data-tutorial-id` are addressing and stay raw, so a
-            // redacted element stays findable by structural means.
-            const addressAttrs: Record<string, string> = {};
-            for (const a of ['data-tutorial-id', 'role']) {
-              const v = el.getAttribute(a);
-              if (v) addressAttrs[a] = v;
-            }
-            const contentAttrs: Record<string, string> = {};
-            for (const a of ['title', 'aria-label', 'href', 'placeholder']) {
-              const v = el.getAttribute(a);
-              if (v) contentAttrs[a] = v;
-            }
-            const attrs = { ...addressAttrs, ...scrubRecord(contentAttrs, verdictOf(el)) };
-            if (Object.keys(attrs).length > 0) info.attributes = attrs;
-          }
-          results.push(info);
-        }
-        return success({ elements: results, count: found.length });
-      } catch (err) {
-        return error((err as Error).message, 'QUERY_ERROR');
-      }
-    },
-
-    waitForElement: async (request: {
-      selector?: string;
-      elementId?: string;
-      timeout?: number;
-      pollInterval?: number;
-    }) => {
-      const { selector, elementId, timeout = 10000, pollInterval = 200 } = request;
-      const target = selector || (elementId ? `#${elementId}, [data-testid="${elementId}"]` : null);
-      if (!target) return error('Must provide selector or elementId', 'INVALID_REQUEST');
-
-      const start = Date.now();
-      return new Promise((resolve) => {
-        const check = () => {
-          const el = document.querySelector(target) as HTMLElement | null;
-          const waited = Date.now() - start;
-          if (el && el.offsetParent !== null) {
-            resolve(
-              success({
-                found: true,
-                element: {
-                  tagName: el.tagName.toLowerCase(),
-                  id: el.id,
-                  textContent: readScrubbedText(el, undefined, { maxLen: 200 }),
-                  visible: true,
-                },
-                waitedMs: waited,
-              })
-            );
-          } else if (waited >= timeout) {
-            resolve(success({ found: false, waitedMs: waited }));
-          } else {
-            setTimeout(check, pollInterval);
-          }
-        };
-        check();
-      });
     },
 
     // =========================================================================
