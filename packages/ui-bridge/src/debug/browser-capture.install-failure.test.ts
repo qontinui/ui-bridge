@@ -7,7 +7,7 @@
 
 import { afterEach, expect, it, vi } from 'vitest';
 
-const mode = vi.hoisted(() => ({ installThrows: true, cleanupThrows: false }));
+const mode = vi.hoisted(() => ({ installThrows: true, cleanupThrows: false, hmrThrows: false }));
 
 vi.mock('./captures/web-vitals', () => ({
   installWebVitalsCapture: () => {
@@ -18,11 +18,19 @@ vi.mock('./captures/web-vitals', () => ({
   },
 }));
 
+vi.mock('./captures/hmr', () => ({
+  installHmrCapture: () => {
+    if (mode.hmrThrows) throw new Error('hmr install failed');
+    return () => {};
+  },
+}));
+
 import { BrowserEventCapture } from './browser-capture';
 
 afterEach(() => {
   mode.installThrows = true;
   mode.cleanupThrows = false;
+  mode.hmrThrows = false;
   vi.restoreAllMocks();
 });
 
@@ -65,4 +73,16 @@ it('a throwing cleanup does not stop the others, and is reported to the restored
   expect(history.pushState).toBe(originalPushState);
   expect(warn).toHaveBeenCalledWith('[ui-bridge] capture cleanup failed', expect.any(Error));
   expect(onEvent).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'console' }));
+});
+
+it('a rollback whose cleanup also throws still rethrows the install error', () => {
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const originalFetch = window.fetch;
+  mode.installThrows = false;
+  mode.cleanupThrows = true;
+  mode.hmrThrows = true;
+  const capture = new BrowserEventCapture({ ...config, hmr: true });
+
+  expect(() => capture.install()).toThrow('hmr install failed');
+  expect(window.fetch).toBe(originalFetch);
 });
