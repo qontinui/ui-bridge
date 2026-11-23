@@ -72,6 +72,21 @@
     "MemberExpression[property.name=/^__react(Props|Fiber)\\$/]",
     "TSAsExpression[typeAnnotation.typeName.name='Scrubbed']"
   ],
+  "inlineDirectiveControls": [
+    "/* eslint no-restricted-syntax: [\"error\", { \"selector\": \"DebuggerStatement\" }] */",
+    "/* eslint no-restricted-syntax: off */",
+    "/* eslint no-restricted-syntax: warn */",
+    "/* eslint-disable */",
+    "/* eslint-disable no-console, no-restricted-syntax */",
+    "/* eslint-disable no-restricted-syntax */",
+    "/* eslint-disable no-restricted-syntax */\nvoid 0;\n/* eslint-enable no-restricted-syntax */",
+    "/* eslint-disable no-restricted-syntax -- with a justification */",
+    "/* eslint-disable-next-line no-restricted-syntax */",
+    "// eslint-disable-next-line",
+    "// eslint-disable-next-line no-restricted-syntax",
+    "void 0; /* eslint-disable-line no-console, no-restricted-syntax */",
+    "void 0; // eslint-disable-line no-restricted-syntax"
+  ],
   "routes": [
     "DELETE /ai/bookmark/:name -> deleteBookmark",
     "DELETE /ai/bookmarks/:name -> deleteBookmark",

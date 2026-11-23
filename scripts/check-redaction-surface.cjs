@@ -53,6 +53,12 @@
 // language override that blanks the code fails too; and it ratchets the two sanctioned
 // blocks' selector lists (`layer1Selectors`, `projectionSelectors`) so that
 // dropping a selector family from both blocks at once is a manifest change.
+// Finally it lints every guarded file's REAL text and refuses any inline
+// configuration (`/* eslint no-restricted-syntax: off */`, `/* eslint-disable */`,
+// `eslint-disable[-next]-line no-restricted-syntax`, ...) that suppresses,
+// weakens or replaces the guard there — directives for other rules are kept —
+// and ratchets the directive forms its positive control proves it refuses
+// (`inlineDirectiveControls`). Follow-up e9c61900.
 //
 // Usage:
 //   node scripts/check-redaction-surface.cjs            # verify (CI, before Lint)
@@ -68,7 +74,7 @@ const ts = require('typescript');
 const { execFileSync } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
 const { additiveGuardBlockProblems } = require('./lib/additive-guard-block.cjs');
-const { guardReachProblems } = require('./lib/redaction-guard-reach.cjs');
+const { guardReachProblems, trackedSuppressionInputs } = require('./lib/redaction-guard-reach.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const TYPES_TS = path.join(REPO_ROOT, 'packages/ui-bridge/src/server/types.ts');
@@ -335,6 +341,9 @@ async function liveGuardReach(lists) {
     // `npm run lint` resolves it, so a nested eslint.config.* is seen too.
     lintOptions: { cwd: REPO_ROOT },
     rootConfigFile: ESLINT_CONFIG,
+    // The comment-free twin: tracked eslint-suppressions.json files and the
+    // lint commands (package scripts, workflow lines). Required in this mode.
+    suppressionInputs: trackedSuppressionInputs(REPO_ROOT, SRC_PREFIX),
   });
 }
 
@@ -357,6 +366,7 @@ async function main() {
       globallyIgnoredSources: [],
       layer1Selectors: [],
       projectionSelectors: [],
+      inlineDirectiveControls: [],
       routes: liveRoutes(),
     };
     unratcheted = unratchetedSrcRefs();
@@ -364,6 +374,7 @@ async function main() {
     surface.globallyIgnoredSources = reach.ignoredSdkFiles;
     surface.layer1Selectors = reach.layer1Selectors;
     surface.projectionSelectors = reach.projectionSelectors;
+    surface.inlineDirectiveControls = reach.inlineDirectiveControls;
   } catch (e) {
     // Fail closed with an actionable message rather than a raw stack. Reached if
     // UI_BRIDGE_ROUTES changed shape (e.g. shorthand `{ method }`, quoted keys, a
@@ -398,6 +409,23 @@ async function main() {
     );
     console.error('       compose selectors into the two sanctioned blocks.');
     for (const p of reach.problems) console.error(`   ! ${p}`);
+    process.exit(1);
+  }
+
+  // Also both modes: the guard switched off from outside eslint.config.js.
+  if (reach.sourceBypassProblems.length) {
+    console.error('');
+    console.error(
+      'ERROR: something outside eslint.config.js switches the §4.6 Layer-1 guard off for SDK'
+    );
+    console.error(
+      '       source: an SDK file’s own inline configuration, a tracked eslint-suppressions.json,'
+    );
+    console.error(
+      '       or a lint command flag. Each line names the file. Remove it; a sanctioned reader'
+    );
+    console.error('       belongs in the package-guard-exemptions list in eslint.config.js.');
+    for (const p of reach.sourceBypassProblems) console.error(`   ! ${p}`);
     process.exit(1);
   }
 
@@ -449,6 +477,10 @@ async function main() {
   const ignoredDiff = diff(committed.globallyIgnoredSources || [], surface.globallyIgnoredSources);
   const l1SelDiff = diff(committed.layer1Selectors || [], surface.layer1Selectors);
   const projSelDiff = diff(committed.projectionSelectors || [], surface.projectionSelectors);
+  const controlDiff = diff(
+    committed.inlineDirectiveControls || [],
+    surface.inlineDirectiveControls
+  );
   // Existence-check both file lists — with opposite dispositions: a projection
   // module that no longer resolves is DEAD GUARD COVERAGE; an exemption that no
   // longer resolves is a DEAD ALLOWLIST ENTRY (a renamed sanctioned reader).
@@ -576,6 +608,24 @@ async function main() {
     for (const m of d.removed) console.error(`   - (gone from eslint) ${m.slice(0, 160)}`);
   }
 
+  if (controlDiff.added.length || controlDiff.removed.length) {
+    failed = true;
+    console.error('');
+    console.error(
+      'ERROR: the inline-directive forms the guard-reach check proves it refuses on every run'
+    );
+    console.error(
+      '       (INLINE_DIRECTIVE_CONTROLS in scripts/lib/redaction-guard-reach.cjs) drifted from the'
+    );
+    console.error(
+      '       manifest. A dropped form is a way to switch the §4.6 guard off in an SDK file that'
+    );
+    console.error('       is no longer proven caught. Confirm the change is deliberate, then run');
+    console.error('       `npm run redaction:surface:update` and commit the manifest.');
+    for (const m of controlDiff.added) console.error(`   + (new control) ${m}`);
+    for (const m of controlDiff.removed) console.error(`   - (control gone) ${m}`);
+  }
+
   if (missingModules.length) {
     failed = true;
     console.error('');
@@ -608,7 +658,9 @@ async function main() {
       `${surface.additiveGuardScopes.length} additive guard scopes, ` +
       `${surface.globallyIgnoredSources.length} globally ignored sources match the committed ` +
       `surface (${surface.layer1Selectors.length} Layer-1 / ${surface.projectionSelectors.length} projection selectors); ` +
-      `no other block reaches SDK source with no-restricted-syntax, and every guarded file reports the §4.6 canary`
+      `no other block reaches SDK source with no-restricted-syntax, every guarded file reports the §4.6 canary, ` +
+      `no guarded file's inline configuration, tracked eslint-suppressions.json or lint flag switches the guard off ` +
+      `(${surface.inlineDirectiveControls.length} directive forms proven refused)`
   );
 }
 
