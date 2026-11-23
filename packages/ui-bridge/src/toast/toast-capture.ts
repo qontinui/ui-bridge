@@ -336,11 +336,14 @@ export class ToastCapture {
    * past max-age. `reconcile` re-reads them (an extractMessage clone and a
    * style check per poll and per read, for as long as they stay connected),
    * captures one again when its text changes, and drops it once it
-   * disconnects. `uninstall` clears it, since nothing prunes it afterwards.
+   * disconnects. `uninstall` clears it, since nothing prunes it afterwards, so
+   * after a re-install the initial scan announces every persistent region
+   * again, unchanged text included.
    */
   private parked: Map<Element, string> = new Map();
   /**
-   * Guards `reconcile` against re-entry from a synchronous event listener. A
+   * Guards `reconcile` and the scan against re-entry from a synchronous event
+   * listener. A
    * read made by such a listener returns without reconciling, so it sees the
    * in-between state of the pass that is running (e.g. on a `dismissed` event
    * for a text change, the old text dismissed and the new one not yet active).
@@ -487,12 +490,24 @@ export class ToastCapture {
       elements = this.querySelectorsFallback();
     }
 
+    // The scan runs under the same guard as `reconcile`: a read made by a
+    // synchronous `onToastEvent` listener mid-scan sees the in-between state
+    // instead of reconciling, so no capture can run nested inside another one
+    // (which could overwrite an entry under a shared id).
+    if (this.reconciling) return;
+    this.reconciling = true;
+    try {
+      this.scanElements(elements);
+    } finally {
+      this.reconciling = false;
+    }
+  }
+
+  private scanElements(elements: NodeListOf<Element>): void {
     for (let i = 0; i < elements.length; i++) {
       const el = elements[i];
       // A text change on an active element belongs to `reconcile`, which
-      // dismisses the old announcement before capturing the new one. Read the
-      // live state per element: a synchronous `onToastEvent` listener may run a
-      // read (and with it `reconcile`) between two iterations of this loop.
+      // dismisses the old announcement before capturing the new one.
       if (this.isActiveElement(el)) continue;
       if (!isElementVisible(el)) continue;
 
@@ -602,9 +617,13 @@ export class ToastCapture {
           continue;
         }
         const message = extractMessage(el);
-        if (message && message !== parkedMessage) {
-          this.captureToast(el, message, now);
+        if (!message) {
+          // Same rule as an active element whose text is emptied: the same
+          // text coming back is a new announcement.
+          if (parkedMessage !== '') this.parked.set(el, '');
+          continue;
         }
+        if (message !== parkedMessage) this.captureToast(el, message, now);
       }
 
       this.pruneRecent();

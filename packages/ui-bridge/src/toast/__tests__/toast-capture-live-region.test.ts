@@ -379,4 +379,69 @@ describe('ToastCapture live-region text', () => {
     expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['health', '38 sessions']]);
     expect(events.map((e) => e.action)).toEqual(['appeared', 'dismissed', 'appeared']);
   });
+
+  // 17
+  it('an element parked by max-age, emptied and refilled with the same text, is a new announcement', async () => {
+    install({ pollInterval: 500, maxToastAgeMs: 1_000 });
+    const el = addStatus('saved', 'Saved');
+    await flushAndScan();
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(capture.getActive()).toHaveLength(0); // parked by max-age
+
+    setTextInPlace(el, '');
+    await vi.advanceTimersByTimeAsync(500);
+    setTextInPlace(el, 'Saved');
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['saved', 'Saved']]);
+    expect(capture.getSnapshot().totalCaptured).toBe(2);
+  });
+
+  // 18
+  it('a listener that reads during an id collision neither drops nor duplicates an announcement', async () => {
+    capture = new ToastCapture({ pollInterval: 500 });
+    let reading = false;
+    capture.install((data) => {
+      events.push(data);
+      if (!reading) {
+        reading = true;
+        capture.getSnapshot();
+        reading = false;
+      }
+    });
+    const e1 = addStatus('x', 'one');
+    const e2 = addStatus('x', 'two');
+    await flushAndScan();
+    expect(
+      capture
+        .getActive()
+        .map((t) => t.id)
+        .sort()
+    ).toEqual(['x', 'x#2']);
+
+    // E2 is emptied (dismissed and parked with ''), then refilled in place.
+    setTextInPlace(e2, '');
+    await vi.advanceTimersByTimeAsync(500);
+    setTextInPlace(e2, 'two again');
+    // E1 is hidden, and E3 is inserted before E2: the scan meets E3 first,
+    // whose id collision dismisses E1 (a 'dismissed' event, whose listener
+    // reads) before E3 is inserted.
+    e1.style.display = 'none';
+    const e3 = document.createElement('div');
+    e3.setAttribute('role', 'status');
+    e3.setAttribute('data-testid', 'x');
+    e3.textContent = 'three';
+    document.body.insertBefore(e3, e2);
+    await flushAndScan();
+
+    const appeared = events.filter((e) => e.action === 'appeared').map((e) => e.toast.message);
+    expect(appeared.sort()).toEqual(['one', 'three', 'two', 'two again']);
+    expect(capture.getSnapshot().totalCaptured).toBe(4);
+    expect(
+      capture
+        .getActive()
+        .map((t) => t.message)
+        .sort()
+    ).toEqual(['three', 'two again']);
+  });
 });
