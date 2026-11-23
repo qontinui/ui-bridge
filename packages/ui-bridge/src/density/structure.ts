@@ -397,14 +397,16 @@ export function resolveDensityStructure(
 
     // blockKey: the nearest block tag in the chain, self included.
     let bk: string | null = null;
-    if (p) {
+    // A chain with any ambiguous key repeats (rows under one shared test id):
+    // its block key would be the same string in every row and merge them all
+    // into one block, so it has none.
+    if (p && !p.keys.some(ambiguous)) {
       const tags = p.tags.slice();
       if (tags[tags.length - 1] === '*' || p.ownId) tags[tags.length - 1] = item.tag;
       if (a !== null && tags[0] === '*') tags[0] = items[a].tag;
       for (let k = tags.length - 1; k >= 0; k--) {
         if (!DENSITY_BLOCK_TAGS.includes(tags[k])) continue;
-        // An ambiguous key would merge every repeated row's section into one block.
-        if (!ambiguous(p.keys[k])) bk = p.keys[k];
+        bk = p.keys[k];
         break;
       }
       if (bk === null && a !== null) bk = blockKey[a] ?? null;
