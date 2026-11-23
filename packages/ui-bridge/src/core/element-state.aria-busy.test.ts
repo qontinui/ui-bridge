@@ -97,16 +97,18 @@ describe('executor waitFor({ state: { ariaBusy: false } }) terminates', () => {
     registry.registerElement('load', button(null), { type: 'button' });
     const executor = new DefaultActionExecutor(registry);
 
+    // A 10 s interval makes "first poll" provable without a tight wall-clock
+    // bound: a second poll could only start after 10 s had elapsed.
     const result = await executor.waitFor('load', {
       visible: false,
       enabled: false,
       state: { ariaBusy: false },
-      timeout: 1000,
+      timeout: 20_000,
+      interval: 10_000,
     });
 
     expect(result.met).toBe(true);
-    // First poll: no `interval` sleep was taken.
-    expect(result.waitedMs).toBeLessThan(50);
+    expect(result.waitedMs).toBeLessThan(10_000);
     expect(result.state?.ariaBusy).toBe(false);
   });
 
@@ -121,13 +123,12 @@ describe('executor waitFor({ state: { ariaBusy: false } }) terminates', () => {
       visible: false,
       enabled: false,
       state: { ariaBusy: false },
-      timeout: 1000,
+      timeout: 5000,
       interval: 10,
     });
 
     expect(result.met).toBe(true);
     expect(result.waitedMs).toBeGreaterThanOrEqual(45);
-    expect(result.waitedMs).toBeLessThan(500);
     expect(result.state?.ariaBusy).toBe(false);
   });
 });

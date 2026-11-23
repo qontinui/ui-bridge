@@ -176,8 +176,13 @@ export interface ElementState {
   textContent?: Scrubbed<string>;
   /** Inner HTML of the element (sanitized) */
   innerHTML?: string;
-  /** href for anchor elements */
-  href?: string;
+  /**
+   * href for anchor elements. §4.6 CONTENT-bearing — `Scrubbed<string>`: a
+   * URL can carry a secret (`/reset?token=…`), so inside a
+   * `data-bridge-redact` boundary it collapses to the sentinel, exactly as the
+   * render-log's `attributes.href` does.
+   */
+  href?: Scrubbed<string>;
   /**
    * All `data-*` attributes of the element, keyed camelCase per
    * `HTMLElement.dataset` (e.g. `data-claude-session-id` →
@@ -278,7 +283,12 @@ export interface ElementState {
   /** HTML5 constraint validation state (form controls only) */
   validationState?: {
     valid: boolean;
-    validationMessage?: string;
+    /**
+     * §4.6 VALUE-bearing — `Scrubbed<string>`: a browser's message can quote
+     * the entered value (e.g. an email field's "include an '@' in 'x'"), so it
+     * is hidden wherever the value is (password fields and boundaries).
+     */
+    validationMessage?: Scrubbed<string>;
     valueMissing?: boolean;
     typeMismatch?: boolean;
     patternMismatch?: boolean;
@@ -289,14 +299,19 @@ export interface ElementState {
     stepMismatch?: boolean;
     customError?: boolean;
   };
-  /** HTML5 constraint attributes (form controls only) */
+  /**
+   * HTML5 constraint attributes (form controls only). The string attributes
+   * are §4.6 CONTENT-bearing — `Scrubbed<string>`: inside a boundary every
+   * attribute value collapses (as the render-log `attributes` record does);
+   * the numeric lengths carry no text.
+   */
   constraints?: {
-    pattern?: string;
+    pattern?: Scrubbed<string>;
     minLength?: number;
     maxLength?: number;
-    min?: string;
-    max?: string;
-    step?: string;
+    min?: Scrubbed<string>;
+    max?: Scrubbed<string>;
+    step?: Scrubbed<string>;
   };
   /**
    * Media observation for images, video, canvas, SVG elements. Already

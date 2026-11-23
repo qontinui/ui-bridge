@@ -243,7 +243,12 @@ function captureElement(
   maxTextLength: number
 ): CapturedElement {
   const identifier = createElementIdentifier(element);
-  let textContent: string | undefined = readScrubbedText(element);
+  // The canonical state already read (and CONTENT-scrubbed) the subtree text;
+  // reuse it rather than walk the subtree a second time. It includes the
+  // reader's icon-only fallback (aria-label / title, scrubbed on the same
+  // axis), so a captured element's `textContent` and its `state.textContent`
+  // agree.
+  let textContent: string | undefined = state.textContent;
   if (textContent && textContent.length > maxTextLength) {
     textContent = truncateCodePoints(textContent, maxTextLength) + '...';
   }
