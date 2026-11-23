@@ -99,8 +99,18 @@ const CRITICAL_ENDPOINT_PATTERNS = [
   '/graphql',
 ];
 
+/** The path of a URL (absolute or relative); a query or fragment never matches a pattern. */
+function urlPath(url: string): string {
+  try {
+    return new URL(url, 'http://localhost/').pathname;
+  } catch {
+    return url.split(/[?#]/)[0] ?? url;
+  }
+}
+
 function isCriticalEndpoint(url: string): boolean {
-  return CRITICAL_ENDPOINT_PATTERNS.some((pattern) => url.includes(pattern));
+  const path = urlPath(url);
+  return CRITICAL_ENDPOINT_PATTERNS.some((pattern) => path.includes(pattern));
 }
 
 // ---------------------------------------------------------------------------
@@ -118,7 +128,8 @@ const COMMON_ASSET_PATTERNS = [
 ];
 
 function isCommonAsset404(url: string): boolean {
-  return COMMON_ASSET_PATTERNS.some((pattern) => url.includes(pattern));
+  const path = urlPath(url);
+  return COMMON_ASSET_PATTERNS.some((pattern) => path.includes(pattern));
 }
 
 // ---------------------------------------------------------------------------
@@ -213,16 +224,20 @@ function demoteSeverity(severity: ErrorSeverity): ErrorSeverity {
 /** Initiators graded as `classifyResourceError` grades a failed media element. */
 const MEDIA_INITIATORS = new Set(['img', 'image', 'css', 'video', 'audio', 'track']);
 
+/** Request initiators, graded as `classifyNetwork` grades a fetch status. */
+const REQUEST_INITIATORS = new Set(['fetch', 'xmlhttprequest', 'beacon', 'ping', 'other']);
+
 /**
  * Grade a failing status by what initiated it, consistent with the captures
- * that see the same failures: fetch/XHR as `classifyNetwork` grades a status
- * (4xx warning, 5xx error); media as `classifyResourceError` grades a failed
- * media element (warning); script and link (stylesheet) as it grades those
- * (error); the document itself and anything else, error.
+ * that see the same failures: a request as `classifyNetwork` grades a status
+ * (critical-endpoint 5xx crash, 5xx error, 4xx warning); media as
+ * `classifyResourceError` grades a failed media element (warning); script,
+ * link (stylesheet), the document itself and anything else, error.
  */
-function resourceStatusSeverity(initiatorType: string, status: number): ErrorSeverity {
-  if (initiatorType === 'fetch' || initiatorType === 'xmlhttprequest') {
-    return status >= 500 ? 'error' : 'warning';
+function resourceStatusSeverity(initiatorType: string, status: number, url: string): ErrorSeverity {
+  if (REQUEST_INITIATORS.has(initiatorType)) {
+    if (status >= 500) return isCriticalEndpoint(url) ? 'crash' : 'error';
+    return 'warning';
   }
   if (MEDIA_INITIATORS.has(initiatorType)) return 'warning';
   return 'error';
@@ -254,7 +269,7 @@ function classifyOwnResourceStatus(event: AnyCapturedEvent & { type: 'resource-s
         return { severity: 'noise', reason: '404 for common asset' };
       }
       return {
-        severity: resourceStatusSeverity(event.initiatorType, status),
+        severity: resourceStatusSeverity(event.initiatorType, status, event.resourceUrl),
         reason: `${event.initiatorType} HTTP ${status}`,
       };
     }
@@ -350,12 +365,13 @@ function classifyLoaf(event: AnyCapturedEvent & { type: 'long-animation-frame' }
  * Classify a single event's severity.
  *
  * Classification rules:
- * - **crash**: React error boundary, unhandled rejection, network errors on critical endpoints
+ * - **crash**: React error boundary, unhandled rejection, network errors on critical endpoints,
+ *   resource-status request 5xx on critical endpoints
  * - **error**: console.error (not noise), network 5xx, script/stylesheet load failures, HMR errors,
- *   resource-status 5xx from fetch/XHR, script/stylesheet/document 4xx/5xx
+ *   resource-status request 5xx, script/stylesheet/document 4xx/5xx
  * - **warning**: console.warn (not noise), network 4xx, image load failures, WS disconnection,
  *   long tasks >= 500ms, long animation frames with high blocking duration, resource-status
- *   fetch/XHR 4xx, media 4xx/5xx, observer unavailable / buffer full
+ *   request (fetch/XHR/beacon/ping/other) 4xx, media 4xx/5xx, observer unavailable / buffer full
  * - **noise**: Noise-pattern matches, long tasks < 100ms, navigation, memory, web vitals,
  *   HMR reconnect messages, aborted requests, WS reconnect attempts, resource-status with an
  *   unknown (null) status or the unknown-status cap

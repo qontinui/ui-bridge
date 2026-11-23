@@ -14,7 +14,7 @@ import type { AnyCapturedEvent } from './browser-capture-types';
 import type { ErrorSeverity } from './error-severity';
 import { classifyEvent } from './error-severity';
 import { computeFingerprint } from './error-fingerprint';
-import { describeResourceStatus, withoutObservedDuplicates } from './shared-utils';
+import { describeResourceStatus } from './shared-utils';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -156,8 +156,7 @@ export class ErrorImpactAssessor {
   assessEvents(events: AnyCapturedEvent[]): ErrorImpact[] {
     const results: ErrorImpact[] = [];
 
-    // One failure is assessed once (see withoutObservedDuplicates).
-    for (const event of withoutObservedDuplicates(events)) {
+    for (const event of events) {
       const { severity } = classifyEvent(event);
       if (severity === 'warning' || severity === 'noise') continue;
       results.push(this.assessImpact(event));

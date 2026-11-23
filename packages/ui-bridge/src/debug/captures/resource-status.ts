@@ -36,9 +36,14 @@
  * install → uninstall → install on one document does not replay the entries
  * the first install already emitted.
  *
- * A failure the `network` or `resource-errors` capture also reported is
- * emitted here too; counting it once is the consumers' job
- * (`withoutObservedDuplicates` in `../shared-utils`).
+ * One failure, one event: a live entry whose failure the `network` or
+ * `resource-errors` capture already reported (`../observed-reports`) is not
+ * emitted. Those captures report first in practice — fetch resolves at the
+ * response headers, before Resource Timing records `responseEnd`; an element's
+ * `error` event fires before the observer's asynchronous batch. When a sample
+ * is observed first anyway, both events are emitted (a known residual).
+ * Entries that finished before install, the navigation entry and carried
+ * events never consult the reports: no other capture saw them.
  *
  * URLs — the resource's and the page's — are redacted with
  * `redactRequestUrl`: origin + path, never the query or fragment (a page URL
@@ -55,6 +60,7 @@ import type {
 } from '../browser-capture-types';
 import { observeResources, toResourceSample, type ResourceSample } from '../../perf';
 import { redactRequestUrl } from '../../network/redact-request-url';
+import { consumeObservedReport, elementReportKey, statusReportKey } from '../observed-reports';
 
 type Emit = (event: AnyCapturedEvent) => void;
 
@@ -80,6 +86,8 @@ interface StoredEvents {
   writtenAt: number;
   /** The writing page's origin + path, compared with the next document's referrer. */
   writtenBy: string;
+  /** Random per write: lets a restored writer tell its own carry from a later one. */
+  writerToken: string;
   events: ResourceStatusCapturedEvent[];
 }
 
@@ -148,6 +156,14 @@ function getSessionStorage(): Storage | null {
   }
 }
 
+function writerToken(): string {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+}
+
 /** One Resource Timing entry's identity within a document. */
 function entryKey(sample: ResourceSample): string {
   return `${sample.initiatorType}|${sample.startTime}|${sample.name}`;
@@ -155,31 +171,65 @@ function entryKey(sample: ResourceSample): string {
 
 const isFiniteNumber = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 
-/** Every field a stored event's kind requires, with its type. Anything else is tampering. */
-function isStoredEvent(value: unknown): value is ResourceStatusCapturedEvent {
-  if (typeof value !== 'object' || value === null) return false;
+/**
+ * Rebuild a stored event from the fields its kind defines, re-redacting its
+ * URLs; `null` when a field is missing or mistyped. Nothing else stored is
+ * carried through.
+ */
+function restoreStoredEvent(value: unknown): ResourceStatusCapturedEvent | null {
+  if (typeof value !== 'object' || value === null) return null;
   const v = value as Record<string, unknown>;
   if (v.type !== 'resource-status' || !isFiniteNumber(v.timestamp) || typeof v.url !== 'string') {
-    return false;
+    return null;
   }
+  const base = {
+    type: 'resource-status' as const,
+    timestamp: v.timestamp,
+    url: redactRequestUrl(v.url).url,
+  };
   switch (v.kind) {
-    case 'status':
-      return (
-        typeof v.resourceUrl === 'string' &&
-        typeof v.hasQuery === 'boolean' &&
-        typeof v.initiatorType === 'string' &&
-        (v.responseStatus === null || isFiniteNumber(v.responseStatus)) &&
-        isFiniteNumber(v.startTime) &&
-        isFiniteNumber(v.responseEnd)
-      );
+    case 'status': {
+      if (
+        typeof v.resourceUrl !== 'string' ||
+        typeof v.hasQuery !== 'boolean' ||
+        typeof v.initiatorType !== 'string' ||
+        !(v.responseStatus === null || isFiniteNumber(v.responseStatus)) ||
+        !isFiniteNumber(v.startTime) ||
+        !isFiniteNumber(v.responseEnd)
+      ) {
+        return null;
+      }
+      const { url, hasQuery } = redactRequestUrl(v.resourceUrl);
+      return {
+        ...base,
+        kind: 'status',
+        resourceUrl: url,
+        hasQuery: v.hasQuery || hasQuery,
+        initiatorType: v.initiatorType,
+        responseStatus: v.responseStatus,
+        startTime: v.startTime,
+        responseEnd: v.responseEnd,
+      };
+    }
     case 'observer-unavailable':
-      return v.observerUnavailable === true;
+      return v.observerUnavailable === true
+        ? { ...base, kind: 'observer-unavailable', observerUnavailable: true }
+        : null;
     case 'buffer-full':
-      return v.bufferFull === true && isFiniteNumber(v.resourceEntryCount);
+      return v.bufferFull === true && isFiniteNumber(v.resourceEntryCount)
+        ? {
+            ...base,
+            kind: 'buffer-full',
+            bufferFull: true,
+            resourceEntryCount: v.resourceEntryCount,
+          }
+        : null;
     case 'unknown-status-capped':
-      return v.unknownStatusCapped === true && isFiniteNumber(v.budget);
+      return v.unknownStatusCapped === true && isFiniteNumber(v.budget)
+        ? { ...base, kind: 'unknown-status-capped', unknownStatusCapped: true, budget: v.budget }
+        : null;
     default:
-      return false;
+      return null;
   }
 }
 
@@ -187,9 +237,9 @@ function isStoredEvent(value: unknown): value is ResourceStatusCapturedEvent {
  * Whether the page that wrote a carry can have led to this document:
  * - an empty referrer (a `no-referrer` policy, a typed URL) cannot rule it out;
  * - a referrer naming the writer's page (origin + path) is the writer;
- * - an origin-only referrer (a `strict-origin` / cross-origin policy) matching
- *   the writer's origin;
  * - a reload of the writer's own page (its referrer is the original one's).
+ * Any other referrer — including an origin-only one, which cannot name the
+ * writer — drops the carry.
  */
 function precededThisDocument(writtenBy: string): boolean {
   let referrer: string;
@@ -200,12 +250,6 @@ function precededThisDocument(writtenBy: string): boolean {
   }
   if (!referrer) return true;
   if (redactRequestUrl(referrer).url === writtenBy) return true;
-  try {
-    const ref = new URL(referrer);
-    if (ref.pathname === '/' && ref.origin === new URL(writtenBy).origin) return true;
-  } catch {
-    // An unparseable referrer or stamp falls through to the reload check.
-  }
   const navigation = getEntries('navigation')?.[0] as
     | (PerformanceEntry & { type?: unknown })
     | undefined;
@@ -243,7 +287,10 @@ function takePreviousDocumentEvents(): ResourceStatusCapturedEvent[] {
     const age = isFiniteNumber(parsed.writtenAt) ? Date.now() - parsed.writtenAt : NaN;
     if (!(age >= 0 && age <= PREVIOUS_DOCUMENT_MAX_AGE_MS)) return [];
     if (typeof parsed.writtenBy !== 'string' || !precededThisDocument(parsed.writtenBy)) return [];
-    return parsed.events.filter(isStoredEvent).slice(-PREVIOUS_DOCUMENT_LIMIT);
+    return parsed.events
+      .map(restoreStoredEvent)
+      .filter((e): e is ResourceStatusCapturedEvent => e !== null)
+      .slice(-PREVIOUS_DOCUMENT_LIMIT);
   } catch {
     return [];
   }
@@ -271,7 +318,20 @@ export function installResourceStatusCapture(emit: Emit): () => void {
   };
 
   const origin = timeOrigin();
-  const onSample = (sample: ResourceSample) => {
+  // An entry that finished at or after this point may have been reported by
+  // the network or resource-errors capture, installed in the same pass.
+  const installedAt = typeof performance !== 'undefined' ? performance.now() : null;
+  /** Consume the report of a live failure another capture already emitted. */
+  const reportedElsewhere = (sample: ResourceSample, status: number): boolean => {
+    if (installedAt === null || sample.responseEnd < installedAt) return false;
+    const now = Date.now();
+    return (
+      consumeObservedReport(statusReportKey(sample.name, status), now) ||
+      consumeObservedReport(elementReportKey(sample.name, sample.initiatorType), now)
+    );
+  };
+
+  const onSample = (sample: ResourceSample, isNavigation = false) => {
     const status = sample.responseStatus;
     if (status !== null && status < 400) return;
     const key = entryKey(sample);
@@ -293,6 +353,7 @@ export function installResourceStatusCapture(emit: Emit): () => void {
       doc.unknownEmitted++;
     }
     doc.seen.add(key);
+    if (status !== null && !isNavigation && reportedElsewhere(sample, status)) return;
     const { url, hasQuery } = redactRequestUrl(sample.name);
     const event: ResourceStatusEntryEvent = {
       type: 'resource-status',
@@ -321,7 +382,7 @@ export function installResourceStatusCapture(emit: Emit): () => void {
   // 2. The document's own status, read once.
   const navigation = getEntries('navigation');
   if (navigation && navigation.length > 0) {
-    onSample(toResourceSample(navigation[0]!));
+    onSample(toResourceSample(navigation[0]!), true);
   }
 
   // 3. Buffer fullness at install: at or above the default size, the buffered
@@ -359,7 +420,7 @@ export function installResourceStatusCapture(emit: Emit): () => void {
 
   // 5. Carry this document's events across a same-tab navigation.
   /** What the last pagehide wrote, so a back/forward-cache restore can take it back. */
-  let written: ResourceStatusCapturedEvent[] | null = null;
+  let written: { token: string; events: ResourceStatusCapturedEvent[] } | null = null;
   const onPageHide = () => {
     handle?.flush();
     if (doc.recent.length === 0) return;
@@ -370,29 +431,38 @@ export function installResourceStatusCapture(emit: Emit): () => void {
         v: STORAGE_VERSION,
         writtenAt: Date.now(),
         writtenBy: pageUrl(),
+        writerToken: writerToken(),
         events: doc.recent.slice(),
       };
       storage.setItem(STORAGE_KEY, JSON.stringify(payload));
       // Carried once: the events now live in storage, not here.
-      written = doc.recent.splice(0);
+      written = { token: payload.writerToken, events: doc.recent.splice(0) };
     } catch {
       // Quota or a blocked storage: the carry-over is lost, the live events were emitted.
     }
   };
-  // A document restored from the back/forward cache is the same document: it
-  // withdraws its carry from storage and takes the events back, so its next
-  // pagehide carries them (once) with whatever happened since.
+  // A document restored from the back/forward cache is the same document. If
+  // its carry is still in storage — no later document took it — it withdraws
+  // the carry and takes the events back, so its next pagehide carries them
+  // once with whatever happened since. If a later document took it (and may
+  // have written its own carry since), those events were delivered: storage
+  // is left alone and nothing is taken back.
   const onPageShow = (event: PageTransitionEvent) => {
     if (!event.persisted || written === null) return;
-    const withdrawn = written;
+    const mine = written;
     written = null;
+    const storage = getSessionStorage();
     try {
-      getSessionStorage()?.removeItem(STORAGE_KEY);
+      const raw = storage?.getItem(STORAGE_KEY) ?? null;
+      const stored = raw === null ? null : (JSON.parse(raw) as Partial<StoredEvents>);
+      if (stored?.writerToken !== mine.token) return;
+      storage?.removeItem(STORAGE_KEY);
     } catch {
-      // Blocked storage: nothing was readable for a later document either.
+      // Unreadable or blocked storage: ownership is unknown, so nothing is taken back.
+      return;
     }
     const since = doc.recent.splice(0);
-    pushRecent([...withdrawn, ...since]);
+    pushRecent([...mine.events, ...since]);
   };
   window.addEventListener('pagehide', onPageHide);
   window.addEventListener('pageshow', onPageShow);
