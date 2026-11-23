@@ -15,7 +15,10 @@
  */
 
 import {
+  densityNearestRepeats,
   densityRepeatScopes,
+  isDensityFilterControl,
+  isDensityNavControl,
   densityRepeatTargets,
   densityRepeats,
   type DensityRepeat,
@@ -73,8 +76,11 @@ export const DENSITY_AFFORDANCE_RULES: Readonly<
   summary: { kind: 'disclosure', definition: 'a `summary` element (the toggle of a `details`)' },
   'aria-expanded': { kind: 'disclosure', definition: 'an item that states `aria-expanded`' },
   'role-tab': { kind: 'tab', definition: 'role `tab`' },
-  'role-menu': { kind: 'menu', definition: 'role `menu`' },
-  'role-menuitem': { kind: 'menu', definition: 'role `menuitem`' },
+  'role-menu': { kind: 'menu', definition: 'role `menu` or `menubar`' },
+  'role-menuitem': {
+    kind: 'menu',
+    definition: 'role `menuitem`, `menuitemcheckbox` or `menuitemradio`',
+  },
   'role-searchbox': {
     kind: 'search',
     definition: 'role `searchbox` (what an `input[type=search]` computes to)',
@@ -82,22 +88,22 @@ export const DENSITY_AFFORDANCE_RULES: Readonly<
   'declared-filters': {
     kind: 'filter',
     definition:
-      'a select, combobox, listbox, checkbox or radio with a declared `filters` relationship to a repeat, its parent or a row',
+      'a select, combobox, checkbox or radio with a declared `filters` relationship to a repeat, its parent or a row',
   },
   'declared-controls': {
     kind: 'filter',
     definition:
-      'a select, combobox, listbox, checkbox or radio with a declared `controls` or `toggles` relationship to a repeat, its parent or a row',
+      'a select, combobox, checkbox or radio with a declared `controls` or `toggles` relationship to a repeat, its parent or a row',
   },
   'control-above-repeat': {
     kind: 'filter',
     definition:
-      "a select, combobox, listbox, checkbox or radio in the repeat's scope (its block, else a near ancestor; never another repeat's rows), centred above its first row",
+      "a select, combobox, checkbox or radio in the repeat's scope (its block, else a near ancestor; never another repeat's rows), centred above its first row, and nearer that repeat than any other",
   },
   'nav-after-repeat': {
     kind: 'pager',
     definition:
-      "an interactive item in a `nav` (tag or navigation landmark), in the repeat's scope, centred below its last row and within one viewport height of it: one entry per control, not per pager",
+      "an interactive item in a `nav` (tag or navigation landmark), in the repeat's scope, centred below its last row, nearer it than any other repeat and within one viewport height of it: one entry per control, not per pager",
   },
   'scroll-width': {
     kind: 'truncation',
@@ -143,13 +149,6 @@ export interface DensityAffordanceInputs {
   repeats?: readonly DensityRepeat[];
 }
 
-const FILTER_ROLES = new Set(['combobox', 'listbox', 'checkbox', 'radio']);
-
-/** A select, combobox, listbox, checkbox or radio. */
-export function isDensityFilterControl(item: DensityItem): boolean {
-  return item.tag === 'select' || (item.role !== null && FILTER_ROLES.has(item.role));
-}
-
 const HIDES_FROM_SNAPSHOT: DensityUnknownQuantity = {
   unknown: 'input_missing',
   reason:
@@ -159,6 +158,9 @@ const HIDES_FROM_SNAPSHOT: DensityUnknownQuantity = {
 function centreY(item: DensityItem): number | null {
   return item.rect === null ? null : item.rect.y + item.rect.h / 2;
 }
+
+const MENU_ROLES = new Set(['menu', 'menubar']);
+const MENU_ITEM_ROLES = new Set(['menuitem', 'menuitemcheckbox', 'menuitemradio']);
 
 function menuState(item: DensityItem): DensityAffordanceState {
   if (item.visibility === 'hidden' || item.visibility === 'no-layout') return 'closed';
@@ -197,7 +199,7 @@ export function densityAffordances(
     const seen = new Set<string>();
     let cur = item.parent === null ? undefined : byId.get(item.parent);
     while (cur && !seen.has(cur.id)) {
-      if (cur.role === 'menu') return menuState(cur);
+      if (cur.role !== null && MENU_ROLES.has(cur.role)) return menuState(cur);
       seen.add(cur.id);
       cur = cur.parent === null ? undefined : byId.get(cur.parent);
     }
@@ -231,8 +233,10 @@ export function densityAffordances(
       add(item, 'role-tab', item.selected === null ? null : item.selected ? 'active' : 'inactive');
     }
     // menu
-    if (item.role === 'menu') add(item, 'role-menu', menuState(item));
-    else if (item.role === 'menuitem') add(item, 'role-menuitem', itemMenuState(item));
+    if (item.role !== null && MENU_ROLES.has(item.role)) add(item, 'role-menu', menuState(item));
+    else if (item.role !== null && MENU_ITEM_ROLES.has(item.role)) {
+      add(item, 'role-menuitem', itemMenuState(item));
+    }
     // search
     if (item.role === 'searchbox') add(item, 'role-searchbox', null);
     // truncation
@@ -249,6 +253,9 @@ export function densityAffordances(
   // filters and pagers: per repeat
   const children = densityChildren(capture);
   const scopes = densityRepeatScopes(capture, repeats, blocks);
+  // By position a control acts on the nearest repeat only.
+  const nearestBelow = densityNearestRepeats(capture, repeats, scopes, 'below');
+  const nearestAbove = densityNearestRepeats(capture, repeats, scopes, 'above');
   const H = capture.viewport.height;
   for (const rep of repeats) {
     const scope = scopes.get(rep.id)!;
@@ -265,7 +272,7 @@ export function densityAffordances(
         scope.ids.has(item.id) &&
         item.interactive &&
         filterControl &&
-        (centreY(item) ?? Infinity) < rep.firstRow.topPx
+        nearestBelow.get(item.id) === rep.id
       ) {
         add(item, 'control-above-repeat', null, { repeat: rep.id });
       }
@@ -273,10 +280,9 @@ export function densityAffordances(
       const cy = centreY(item);
       if (
         scope.ids.has(item.id) &&
-        item.interactive &&
-        ((item.path !== null && item.path.includes('nav')) || item.landmark === 'navigation') &&
+        isDensityNavControl(item) &&
+        nearestAbove.get(item.id) === rep.id &&
         cy !== null &&
-        cy > rep.lastRow.bottomPx &&
         cy <= rep.lastRow.bottomPx + H
       ) {
         add(item, 'nav-after-repeat', null, { repeat: rep.id });

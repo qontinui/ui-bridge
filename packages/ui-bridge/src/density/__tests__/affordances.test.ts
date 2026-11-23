@@ -327,8 +327,9 @@ describe('affordances', () => {
       ['app.orders.state', 'control-above-repeat', 'repeat:app.orders.row-1'],
       ['app.side.sort', 'declared-filters', 'repeat:app.orders.row-1'],
     ]);
+    // Both carry the edge; a search box outranks a select as the finder.
     expect(densityRepeats(c, null)[0].finder).toEqual({
-      id: 'app.side.sort',
+      id: 'app.side.search',
       by: 'relationship',
     });
   });
@@ -401,6 +402,42 @@ describe('affordances', () => {
       ['app.t.state', 'control-above-repeat'],
       ['app.t.next', 'nav-after-repeat'],
     ]);
+  });
+
+  it('a sort button in the table header does not stop the scope at the table', () => {
+    const S = '/html/body/main/section';
+    const els: DensityTestElementSpec[] = [
+      { id: 'app.t', tag: 'section', xpath: S, rect: [0, 100, 800, 600], text: '' },
+      {
+        id: 'app.t.state',
+        tag: 'select',
+        role: 'combobox',
+        category: 'interactive',
+        xpath: `${S}/select`,
+        rect: [0, 100, 200, 28],
+        text: 'All',
+      },
+      { id: 'app.t.table', tag: 'table', xpath: `${S}/table`, rect: [0, 140, 800, 160], text: '' },
+      {
+        id: 'app.t.sort',
+        tag: 'button',
+        category: 'interactive',
+        xpath: `${S}/table/thead/tr/th/button`,
+        rect: [0, 140, 80, 40],
+        text: 'Sort',
+      },
+      ...[1, 2, 3].map(
+        (k): DensityTestElementSpec => ({
+          id: `app.t.row-${k}`,
+          tag: 'tr',
+          xpath: `${S}/table/tbody/tr[${k}]`,
+          rect: [0, 180 + 40 * (k - 1), 800, 40],
+          text: `Row ${k}`,
+        })
+      ),
+    ];
+    const [rep] = densityRepeats(capture(els), null);
+    expect([rep.scope, rep.finder]).toEqual(['ancestor', { id: 'app.t.state', by: 'position' }]);
   });
 
   it('a pager more than a screen below the last row is not the pager of the list', () => {
@@ -523,6 +560,12 @@ describe('affordances', () => {
     );
     expect(filters.map((a) => [a.id, a.repeat])).toEqual([
       ['app.orders.state', 'repeat:app.orders.row-1'],
+    ]);
+    // The pager below both lists is the nearer list's only.
+    const pagers = densityAffordances(c, null, { repeats: reps }).filter((a) => a.kind === 'pager');
+    expect(pagers.map((a) => [a.id, a.repeat])).toEqual([
+      ['app.orders.prev', 'repeat:app.orders.row-1'],
+      ['app.orders.next', 'repeat:app.orders.row-1'],
     ]);
   });
 

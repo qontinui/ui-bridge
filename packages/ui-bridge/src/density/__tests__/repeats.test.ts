@@ -391,6 +391,65 @@ describe('repeats', () => {
     expect([rep.rows, rep.rowsEstimated, rep.valuesPerRow]).toEqual([3, 2, 2]);
   });
 
+  it('a CSS grid of sibling cards is one repeat, three per row', () => {
+    const cardsEls: DensityTestElementSpec[] = [
+      { id: 'app.cards', tag: 'ul', xpath: '/html/body/ul', rect: [0, 100, 1000, 400], text: '' },
+    ];
+    for (let n = 0; n < 12; n++) {
+      cardsEls.push({
+        id: `app.cards.card-${n + 1}`,
+        tag: 'li',
+        xpath: `/html/body/ul/li[${n + 1}]`,
+        rect: [20 + 320 * (n % 3), 110 + 90 * Math.floor(n / 3), 300, 80],
+        text: '',
+      });
+    }
+    const reps = densityRepeats(capture(cardsEls), null);
+    expect(reps.map((r) => [r.by, r.rows, r.perRow, r.members.length])).toEqual([
+      ['path', 4, 3, 12],
+    ]);
+  });
+
+  it('links inside list items nobody registered are one repeat', () => {
+    const links: DensityTestElementSpec[] = [1, 2, 3, 4].map((k) => ({
+      id: `app.nav.link-${k}`,
+      tag: 'a',
+      xpath: `/html/body/nav/ul/li[${k}]/a`,
+      rect: [16, 100 + 28 * (k - 1), 120, 20],
+      text: `Link ${k}`,
+    }));
+    const reps = densityRepeats(capture(links), null);
+    expect(reps.map((r) => [r.id, r.by, r.rows])).toEqual([['repeat:app.nav.link-1', 'path', 4]]);
+  });
+
+  it('cells of table rows nobody registered are one repeat, two per row', () => {
+    const cells: DensityTestElementSpec[] = [];
+    for (let k = 1; k <= 3; k++) {
+      for (let j = 1; j <= 2; j++) {
+        cells.push({
+          id: `app.t.r${k}c${j}`,
+          tag: 'td',
+          xpath: `/html/body/table/tbody/tr[${k}]/td[${j}]`,
+          rect: [400 * (j - 1), 100 + 40 * (k - 1), 400, 40],
+          text: j === 1 ? `R${k}` : '12,50 €',
+        });
+      }
+    }
+    const reps = densityRepeats(capture(cells), null);
+    expect(reps.map((r) => [r.rows, r.perRow, r.members.length, r.valuesPerRow])).toEqual([
+      [3, 2, 6, 2],
+    ]);
+  });
+
+  it('a truncated or nowrap cell is not estimated past its measured height', () => {
+    const els = orderList(3).map((e) =>
+      e.id.endsWith('.sum') ? { ...e, text: 'x'.repeat(40) } : e
+    );
+    // 40 characters at 14 px over 100 px would wrap to 3 lines; the cell is 20 px tall.
+    const [rep] = densityRepeats(capture(els), null);
+    expect([rep.linesPerRow, rep.rowTextPx, rep.rowFill]).toEqual([1, 20, 0.5]);
+  });
+
   it('a hidden leaf in a row draws no line band', () => {
     const els = orderList(3).map((e): DensityTestElementSpec => {
       if (!e.id.endsWith('.sum')) return e;
