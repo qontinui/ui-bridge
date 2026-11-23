@@ -884,12 +884,13 @@ describe('ui-bridge-density measure: repeats and affordances', () => {
           valuesPerRow: 0,
           widthFill: 1,
           rowsPerScreen: 18.5,
+          rowsPerScreenBasis: 'measured',
           extentPx: 116,
           extentAtVolume: {
             unknown: 'no_expectation',
             reason: 'no row volume was declared (the budget names the rows each list is judged at)',
           },
-          scope: 'block+parent',
+          scope: 'block',
           finder: { id: 'app.orders.state', by: 'position' },
           renderedOf: {
             unknown: 'input_missing',

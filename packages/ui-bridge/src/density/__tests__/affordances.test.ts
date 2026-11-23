@@ -310,7 +310,7 @@ describe('affordances', () => {
     expect([rep.id, rep.rows, rep.scope, rep.finder]).toEqual([
       'repeat:app.orders.row-1',
       5,
-      'block+parent',
+      'block',
       { id: 'app.orders.state', by: 'position' },
     ]);
   });
@@ -357,7 +357,7 @@ describe('affordances', () => {
     ]);
   });
 
-  it('a menu reads open or closed from its visibility', () => {
+  it('a menu reads open or closed from its visibility, and its item from the menu', () => {
     const els: DensityTestElementSpec[] = [
       {
         id: 'app.menu',
@@ -381,7 +381,64 @@ describe('affordances', () => {
     ];
     expect(densityAffordances(capture(els), null).map((a) => [a.id, a.rule, a.state])).toEqual([
       ['app.menu', 'role-menu', 'closed'],
-      ['app.menu.item', 'role-menuitem', 'open'],
+      ['app.menu.item', 'role-menuitem', 'closed'],
+    ]);
+    // A menu item in no registered menu: its menu's state is unknown.
+    const lone = densityAffordances(capture([{ ...els[1], xpath: '/html/body/li' }]), null);
+    expect(lone.map((a) => [a.id, a.rule, a.state])).toEqual([
+      ['app.menu.item', 'role-menuitem', null],
+    ]);
+  });
+
+  it('the finder is the control nearest above the first row, not the topmost', () => {
+    const els: DensityTestElementSpec[] = [
+      {
+        id: 'app.page-search',
+        tag: 'input',
+        role: 'searchbox',
+        category: 'interactive',
+        xpath: `${SECTION}/input`,
+        rect: [0, 60, 300, 28],
+        text: '',
+      },
+      ...PAGE.filter((e) => e.xpath!.startsWith(SECTION)),
+    ];
+    const [rep] = densityRepeats(capture(els), null);
+    expect(rep.finder).toEqual({ id: 'app.orders.state', by: 'position' });
+  });
+
+  it("a control inside another repeat's rows is not this repeat's filter", () => {
+    // A list above the orders list, each row holding a checkbox, in the same section.
+    const pick: DensityTestElementSpec[] = [];
+    for (let k = 1; k <= 3; k++) {
+      const y = 20 + 24 * (k - 1);
+      pick.push(
+        {
+          id: `app.picks.row-${k}`,
+          tag: 'div',
+          xpath: `${SECTION}/div[${k + 1}]`,
+          rect: [0, y, 300, 20],
+          text: `Pick ${k}`,
+        },
+        {
+          id: `app.picks.row-${k}.box`,
+          tag: 'input',
+          role: 'checkbox',
+          category: 'interactive',
+          xpath: `${SECTION}/div[${k + 1}]/input`,
+          rect: [0, y, 20, 20],
+          text: '',
+        }
+      );
+    }
+    const c = capture([...PAGE, ...pick], RELATIONSHIPS);
+    const reps = densityRepeats(c, null);
+    expect(reps.map((r) => r.id)).toEqual(['repeat:app.picks.row-1', 'repeat:app.orders.row-1']);
+    const filters = densityAffordances(c, null, { repeats: reps }).filter(
+      (a) => a.kind === 'filter'
+    );
+    expect(filters.map((a) => [a.id, a.repeat])).toEqual([
+      ['app.orders.state', 'repeat:app.orders.row-1'],
     ]);
   });
 

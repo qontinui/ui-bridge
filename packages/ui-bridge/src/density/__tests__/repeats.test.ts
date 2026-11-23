@@ -136,9 +136,10 @@ describe('repeats', () => {
         // [0, 200) and [300, 400) of [0, 600).
         widthFill: 0.5,
         rowsPerScreen: 20,
+        rowsPerScreenBasis: 'measured',
         extentPx: 196,
         extentAtVolume: { volume: 50, px: 1996 },
-        scope: 'block+parent',
+        scope: 'block',
         finder: null,
         renderedOf: {
           unknown: 'input_missing',
@@ -253,6 +254,70 @@ describe('repeats', () => {
         : e
     );
     expect(densityRepeats(capture(els), null)).toEqual([]);
+  });
+
+  it('a row holding a redacted leaf is not estimated, never zero', () => {
+    const els = orderList(3).map((e) =>
+      e.id === 'app.orders.row-2.sum' ? { ...e, redacted: true } : e
+    );
+    const [rep] = densityRepeats(capture(els), null);
+    expect([rep.rows, rep.rowsEstimated, rep.linesPerRow, rep.valuesPerRow]).toEqual([3, 2, 1, 2]);
+    // Every row redacted: the quantities are unknown (null), not zero.
+    const all = orderList(3).map((e) => (e.id.endsWith('.sum') ? { ...e, redacted: true } : e));
+    const [none] = densityRepeats(capture(all), null);
+    expect([
+      none.rowsEstimated,
+      none.linesPerRow,
+      none.rowTextPx,
+      none.rowFill,
+      none.valuesPerRow,
+      none.widthFill,
+    ]).toEqual([0, null, null, null, null, null]);
+  });
+
+  it('three stacked siblings of different widths are not a repeat, nor is a run of paragraphs', () => {
+    const wrappers: DensityTestElementSpec[] = [
+      { id: 'app.a', tag: 'div', xpath: '/html/body/div[1]', rect: [0, 0, 1280, 60], text: 'Top' },
+      { id: 'app.b', tag: 'div', xpath: '/html/body/div[2]', rect: [0, 60, 900, 600], text: 'Mid' },
+      { id: 'app.c', tag: 'div', xpath: '/html/body/div[3]', rect: [0, 660, 400, 80], text: 'End' },
+    ];
+    expect(densityRepeats(capture(wrappers), null)).toEqual([]);
+    const prose: DensityTestElementSpec[] = [1, 2, 3].map((k) => ({
+      id: `app.p-${k}`,
+      tag: 'p',
+      xpath: `/html/body/article/p[${k}]`,
+      rect: [0, 100 * k, 600, 80],
+      text: `Synthetic paragraph ${k}`,
+    }));
+    expect(densityRepeats(capture(prose), null)).toEqual([]);
+  });
+
+  it('a geometry grid of two columns and three rows is one repeat, two per row', () => {
+    const grid: DensityTestElementSpec[] = [
+      {
+        id: 'app.grid',
+        tag: 'div',
+        xpath: '//*[@id="grid"]',
+        rect: [0, 100, 700, 400],
+        text: '',
+      },
+    ];
+    for (let row = 0; row < 3; row++) {
+      for (let col = 0; col < 2; col++) {
+        const n = row * 2 + col + 1;
+        grid.push({
+          id: `app.grid.card-${n}`,
+          tag: 'div',
+          xpath: `//*[@id="card-${n}"]`,
+          rect: [20 + 320 * col, 110 + 100 * row, 300, 80],
+          text: '',
+        });
+      }
+    }
+    const reps = densityRepeats(capture(grid), null);
+    expect(reps.map((r) => [r.id, r.by, r.rows, r.perRow, r.members.length, r.rowPitchPx])).toEqual(
+      [['repeat:app.grid.card-1', 'geometry', 3, 2, 6, 100]]
+    );
   });
 
   it('a hidden leaf in a row draws no line band', () => {
