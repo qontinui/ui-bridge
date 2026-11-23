@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 import { missingOutputMessage } from '../../../test-support/build-if-stale.mjs';
 
 /**
@@ -40,21 +41,46 @@ const OUTPUTS = [
   'index.d.ts',
 ].map((name) => join(DIST_DIR, name));
 /**
- * Any quoted module specifier naming the SDK itself (or a subpath of it, such
- * as `@qontinui/ui-bridge/density`), but not a sibling package whose name only
- * starts with it (`@qontinui/ui-bridge-headless`, `-cli-args`).
+ * The SDK itself, or a subpath of it such as `@qontinui/ui-bridge/density` —
+ * but not a sibling package whose name only starts with it
+ * (`@qontinui/ui-bridge-headless`, `-cli-args`).
  */
-const SDK_SPECIFIER = /["'`]@qontinui\/ui-bridge(?:\/[^"'`]*)?["'`]/;
+const SDK_SPECIFIER = /^@qontinui\/ui-bridge(?:\/|$)/;
 
 /**
- * Text with its doc comments and whole-line comments removed: prose that names
- * the SDK (a declaration's doc comment saying why it is NOT imported) is not a
- * module specifier. Only `/** … *\/` blocks and lines that START with `//` are
- * removed — never a `//` after code, which may sit inside a string or a regex
- * on a bundle line and would hide the rest of that line from the check.
+ * Every module specifier a shipped file loads, read from TypeScript's own
+ * parse of it: `import`/`export … from`, `import x = require()`, `import('…')`
+ * (value or type), and `require('…')`. A comment or a string that merely names
+ * a package is not a specifier, so prose saying the SDK is NOT imported cannot
+ * trip the check, and no comment-stripping can hide one that is.
  */
-function withoutComments(text: string): string {
-  return text.replace(/\/\*\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+function moduleSpecifiers(file: string): string[] {
+  const text = readFileSync(file, 'utf8');
+  const kind = /\.d\.(?:c|m)?ts$/.test(file) ? ts.ScriptKind.TS : ts.ScriptKind.JS;
+  const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, kind);
+  const out: string[] = [];
+  const literal = (n: ts.Node | undefined): void => {
+    if (n !== undefined && ts.isStringLiteralLike(n)) out.push(n.text);
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) literal(node.moduleSpecifier);
+    else if (
+      ts.isImportEqualsDeclaration(node) &&
+      ts.isExternalModuleReference(node.moduleReference)
+    )
+      literal(node.moduleReference.expression);
+    else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument))
+      literal(node.argument.literal);
+    else if (
+      ts.isCallExpression(node) &&
+      (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+        (ts.isIdentifier(node.expression) && node.expression.text === 'require'))
+    )
+      literal(node.arguments[0]);
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return out;
 }
 
 function walk(dir: string, keep: (name: string) => boolean): string[] {
@@ -95,9 +121,14 @@ describe('cli-args is bundled into dist, not a runtime dependency', () => {
     // The SDK depends on this package (an optional peer), so headless must
     // never load it: `ui-bridge-density` runs the generated copy of the density
     // core (scripts/sync-density.mjs, plan D-A), bundled into its own output.
-    const offenders = walk(DIST_DIR, (name) => SHIPPED.test(name))
-      .filter((f) => SDK_SPECIFIER.test(withoutComments(readFileSync(f, 'utf8'))))
-      .map((f) => relative(PKG_DIR, f));
+    const shipped = walk(DIST_DIR, (name) => SHIPPED.test(name));
+    // The reader is not vacuous: the CLI bundle's own imports are found.
+    expect(moduleSpecifiers(join(DIST_DIR, 'density-cli.js'))).toContain('fs');
+    const offenders = shipped.flatMap((f) =>
+      moduleSpecifiers(f)
+        .filter((s) => SDK_SPECIFIER.test(s))
+        .map((s) => `${relative(PKG_DIR, f)}: ${s}`)
+    );
     expect(offenders).toEqual([]);
   });
 

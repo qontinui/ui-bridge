@@ -415,8 +415,8 @@ const SIGNAL_EXIT: Record<'SIGHUP' | 'SIGINT' | 'SIGTERM', number> = {
 
 async function main(): Promise<void> {
   let step: DensityCliStep = 'parse-args';
-  // Set once the report is on stdout: an interruption after that point must
-  // not append a second JSON document to a complete one.
+  // Set once anything is on stdout (the report, the usage, the version): an
+  // interruption after that point must not append a second document.
   let printed = false;
   // The first signal decides the verdict; a second one while that verdict is
   // still flushing prints nothing more and exits at once (a flush to a reader
@@ -442,7 +442,9 @@ async function main(): Promise<void> {
       writeFile: (p, t) => writeFileSync(p, t),
       stdout: (t) => {
         process.stdout.write(t);
-        if (step === 'print') printed = true;
+        // Any document on stdout (the report, the usage, the version) is the
+        // run's answer; an interruption after it prints nothing more.
+        printed = true;
       },
       stderr: (t) => process.stderr.write(t),
     },
