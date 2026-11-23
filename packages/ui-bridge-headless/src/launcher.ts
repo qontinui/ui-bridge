@@ -179,7 +179,10 @@ export interface LaunchHeadlessTabOptions {
    * the Node process's stderr. Default `true`.
    *
    * Every console type (`log`, `info`, `debug`, `warning`, `error`, …) is
-   * written to **stderr** as `[browser.<type>] <text>`, and uncaught page
+   * written to **stderr** as `[browser.<type>] <text>`, followed by
+   * ` @ <url>` when the message carries a source location — for a
+   * `Failed to load resource` error that URL is the resource that failed, so
+   * the line names what returned the 429 or 404. Uncaught page
    * errors as `[browser.pageerror] <message>`. Nothing is forwarded to stdout:
    * stdout is reserved for the embedding process's machine output, which a
    * browser `console.log` would otherwise corrupt.
@@ -606,6 +609,34 @@ function closeAfterFailedLaunch(browser: Browser): Promise<void> {
 }
 
 /**
+ * The subset of Playwright's `ConsoleMessage` the forwarder reads.
+ * `location` is optional so a message without one still forwards its text.
+ */
+interface ForwardedConsoleMessage {
+  type(): string;
+  text(): string;
+  location?(): { url?: string } | undefined;
+}
+
+/**
+ * Render one forwarded console line: `[browser.<type>] <text>`, plus
+ * ` @ <url>` when Playwright reports a source location. The text of a
+ * `Failed to load resource: ... status of 429` error names no URL; the
+ * location does, and without it a failed load on stderr cannot be attributed.
+ * A location that is absent, empty or throws is omitted, never guessed.
+ */
+function formatConsoleLine(msg: ForwardedConsoleMessage): string {
+  let url = '';
+  try {
+    url = msg.location?.()?.url ?? '';
+  } catch {
+    url = '';
+  }
+  const suffix = url ? ` @ ${url}` : '';
+  return `[browser.${msg.type()}] ${msg.text()}${suffix}\n`;
+}
+
+/**
  * Launch a Playwright Chromium browser and keep the tab open until `close()`
  * is called. Resolves once the page has loaded and (optionally) UI Bridge
  * has confirmed the tab's registration.
@@ -736,7 +767,7 @@ export async function launchHeadlessTab(
       // caller such as inject-cli emits one JSON line per action there, and a
       // `[browser.log]` line interleaved with them breaks its consumer's parse.
       page.on('console', (msg) => {
-        process.stderr.write(`[browser.${msg.type()}] ${msg.text()}\n`);
+        process.stderr.write(formatConsoleLine(msg));
       });
       page.on('pageerror', (err) => {
         process.stderr.write(`[browser.pageerror] ${err.message}\n`);
