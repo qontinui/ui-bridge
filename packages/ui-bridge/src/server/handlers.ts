@@ -100,7 +100,13 @@ import {
   type NavigationSlots,
   type RoutesAnswer,
 } from '../react/navigation-commands';
-import { checkNavigationUrl } from '../core/navigation-url';
+import {
+  checkNavigationUrl,
+  isBareRouteName,
+  navigationPathForm,
+  parserNormalized,
+  softNavigationPath,
+} from '../core/navigation-url';
 import { recordingActionExecutor } from '../core/element-action-events';
 import { extractReactState, noReactInternals } from '../control/extract-react-state';
 import { buildSdkDiagnostics, type SdkDiagnostics } from '../core/sdk-diagnostics';
@@ -3980,7 +3986,8 @@ export function createHandlers(
       request: PageNavigateRequest
     ): Promise<APIResponse<PageNavigationResponse>> => {
       try {
-        if (!request.url) {
+        // A url that is only whitespace / control characters names nothing.
+        if (typeof request.url !== 'string' || navigationPathForm(request.url) === '') {
           return error('URL is required', 'INVALID_REQUEST');
         }
         // F1: optional `mode` ("hard" | "soft"). Default: "hard" for back-compat.
@@ -3989,6 +3996,26 @@ export function createHandlers(
           return error(`invalid mode: "${rawMode}" (expected "hard" or "soft")`, 'INVALID_REQUEST');
         }
         const mode: 'hard' | 'soft' = rawMode ?? 'hard';
+
+        // A bare name in hard mode is a TAB ID (the runner's
+        // `activity-timeline`): served by the ui-bridge-navigate event and
+        // never assigned. It is decided BEFORE the URL gate, which checks only
+        // what will be assigned — on a tauri:// or file:// page the gate would
+        // resolve the name against the page and refuse its scheme.
+        if (mode === 'hard' && isBareRouteName(request.url)) {
+          window.dispatchEvent(
+            new CustomEvent('ui-bridge-navigate', {
+              detail: { page: request.url, url: request.url },
+            })
+          );
+          return success({
+            success: true,
+            url: request.url,
+            hard: true,
+            mode: 'hard',
+            timestamp: Date.now(),
+          });
+        }
 
         // The one navigation URL gate (`../core/navigation-url.ts`), as the
         // page's `pageNavigate` and every `navigateByAdapter` ask it: one rule,
@@ -4003,15 +4030,12 @@ export function createHandlers(
           // SPA-friendly navigation: pushState + synthetic popstate event so
           // React Router v6 picks up the change without a full reload. This
           // preserves injected test state (fetch patches, `window.__*` globals).
-          let pathname = request.url;
-          try {
-            const target = new URL(request.url, window.location.origin);
-            if (target.origin === window.location.origin) {
-              pathname = target.pathname + target.search + target.hash;
-            }
-          } catch {
-            // Relative URL — use as-is.
-          }
+          // The same-origin path, re-checked (`softNavigationPath`): a URL on
+          // another origin, or one whose path the parser collapses to
+          // `//host/…`, is refused rather than pushed.
+          const soft = softNavigationPath(request.url, window.location.href);
+          if (!soft.ok) return liftInnerFailure(navigationRefusal(soft.code, soft.message));
+          const pathname = soft.path;
           window.history.pushState(null, '', pathname);
           try {
             window.dispatchEvent(new PopStateEvent('popstate'));
@@ -4039,10 +4063,12 @@ export function createHandlers(
           })
         );
 
-        // Only perform location.href navigation for actual URLs (not tab IDs)
-        if (request.url.startsWith('/') || request.url.startsWith('http')) {
-          window.location.href = request.url;
-        }
+        // Every gated target that is not a tab ID is assigned, in the
+        // normalized form the gate checked: a path, an absolute http(s) URL,
+        // or a relative reference (`?q=1`, `#h`, `./x`, `../x`, resolved by
+        // the browser against this page). A bare name never reaches here: it
+        // is a tab ID, answered (event only) before the gate.
+        window.location.href = parserNormalized(request.url);
         return success({
           success: true,
           url: request.url,

@@ -195,7 +195,16 @@ import { readControlBatchRequest, runControlBatch } from '../control/control-bat
 import { extractReactState, noReactInternals } from '../control/extract-react-state';
 import { buildSdkDiagnostics } from '../core/sdk-diagnostics';
 import { elementHistoryCommand, recentEffectsCommand } from './history-commands';
-import { checkNavigationUrl } from '../core/navigation-url';
+import {
+  checkNavigationUrl,
+  isBareRouteName,
+  navigationPathForm,
+  originChangingPathMessage,
+  parserNormalized,
+  sameOriginPathOf,
+  softNavigationPath,
+  softResolutionBase,
+} from '../core/navigation-url';
 import { withElementActionEvents } from '../core/element-action-events';
 import type { NavigationAdapter } from '../navigation/navigation-adapter';
 import {
@@ -4496,8 +4505,11 @@ export async function executeCommand(
       // The one navigation URL gate (`../core/navigation-url.ts`): a URL that
       // could execute script in the tab (or break the SSE relay) is refused
       // with its code under `failureDetails`, before anything navigates.
-      if (typeof url !== 'string' || url.length === 0) {
-        return navigationRefusal('INVALID_REQUEST', 'pageNavigate: "url" must be a non-empty string');
+      if (typeof url !== 'string' || navigationPathForm(url) === '') {
+        return navigationRefusal(
+          'INVALID_REQUEST',
+          'pageNavigate: "url" must be a non-empty string'
+        );
       }
       const urlVerdict = checkNavigationUrl(url, window.location.href);
       if (!urlVerdict.ok) return navigationRefusal(urlVerdict.code, urlVerdict.message);
@@ -4507,15 +4519,12 @@ export async function executeCommand(
       // drives the router without destroying window state (fetch patches,
       // spies, `window.__*` globals).
       if (rawMode === 'soft') {
-        let pathname = url;
-        try {
-          const target = new URL(url, window.location.origin);
-          if (target.origin === window.location.origin) {
-            pathname = target.pathname + target.search + target.hash;
-          }
-        } catch {
-          // Relative URL — use as-is.
-        }
+        // The same-origin path, re-checked (`softNavigationPath`): a URL on
+        // another origin, or one whose path the parser collapses to
+        // `//host/…`, is refused rather than handed to the router.
+        const soft = softNavigationPath(url, window.location.href);
+        if (!soft.ok) return navigationRefusal(soft.code, soft.message);
+        const pathname = soft.path;
         const softBridge = getBridge();
         if (softBridge.navigateHandler) {
           try {
@@ -4555,14 +4564,20 @@ export async function executeCommand(
       // SSE/WebSocket connection. Callers that need a full, SDK-reinitialising
       // reload (e.g. automation capture loops hitting pages that unmount the
       // UI Bridge provider tree) can pass `hard: true` to bypass the handler.
-      if (!hard) {
+      if (!hard && g.navigateHandler) {
+        // Resolved as soft navigation is (`softResolutionBase`): a bare name
+        // against the origin root, anything else against the full page URL.
+        const pageUrl = window.location.href;
+        const samePath = sameOriginPathOf(url, softResolutionBase(url, pageUrl) ?? pageUrl);
+        if (samePath === null) {
+          return navigationRefusal('INVALID_URL_FORMAT', originChangingPathMessage(url));
+        }
         try {
-          const target = new URL(url, window.location.origin);
-          if (target.origin === window.location.origin && g.navigateHandler) {
-            g.navigateHandler(target.pathname + target.search + target.hash);
+          if (samePath !== undefined) {
+            g.navigateHandler(samePath);
             return {
               success: true,
-              url: target.pathname,
+              url: new URL(samePath, window.location.href).pathname,
               clientSideNavigation: true,
               hard: false,
               mode: 'hard',
@@ -4573,7 +4588,11 @@ export async function executeCommand(
           // Invalid URL — fall through to hard navigation
         }
       }
-      window.location.href = url;
+      // Assigned as every other site resolves it: a bare route name as its
+      // root-relative path form (`settings` → `/settings`, not
+      // `/app/settings`), anything else cleaned as the gate read it — a
+      // relative reference keeps its page-relative meaning.
+      window.location.href = isBareRouteName(url) ? navigationPathForm(url) : parserNormalized(url);
       return { success: true, url, hard: true, mode: 'hard', timestamp: Date.now() };
     }
 
