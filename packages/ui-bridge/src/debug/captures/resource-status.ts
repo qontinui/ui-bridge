@@ -34,7 +34,20 @@
  *
  * What this capture has seen is document state, not install state: an
  * install → uninstall → install on one document does not replay the entries
- * the first install already emitted.
+ * an earlier install already observed: a live observer sees every entry, so
+ * an entry that ended before the last uninstall was observed then (a
+ * watermark, so no per-entry memory grows with the page). One
+ * capture per document is assumed: a second concurrent install is a no-op
+ * that warns once.
+ *
+ * Install-time events (the carry, the document's own status, `bufferFull`,
+ * `observerUnavailable`) are emitted on a macrotask after `install()`, so a
+ * host that wires its event callback right after installing — the React
+ * provider installs during render and wires it in an effect — receives them.
+ *
+ * Each `status` event carries a `failureId` (a per-document nonce plus the
+ * entry's identity) that its carried copy keeps, so a consumer that sees
+ * both documents counts distinct `failureId`s.
  *
  * One failure, one event: a live entry whose failure the `network` or
  * `resource-errors` capture already reported (`../observed-reports`) is not
@@ -99,8 +112,21 @@ interface StoredEvents {
  * dies with the document — so a re-install does not replay it.
  */
 interface DocumentState {
-  /** Identities of the entries already emitted (see {@link entryKey}). */
-  seen: Set<string>;
+  /** Random per document: the prefix of every `failureId` it mints. */
+  nonce: string;
+  /** Whether a capture is installed on this document (one per document). */
+  installed: boolean;
+  /** Whether the duplicate-install warning was already logged. */
+  warnedDuplicate: boolean;
+  /**
+   * `performance.now()` at the last uninstall: an entry that ended by then was
+   * observed by that install. `null` before any uninstall.
+   */
+  observedUntil: number | null;
+  /** Whether the document's own navigation entry was read. */
+  navigationRead: boolean;
+  /** The blind-spot and cap events already emitted (at most one of each). */
+  blindSpots: Set<string>;
   /** Carry candidates, newest last, bounded by {@link PREVIOUS_DOCUMENT_LIMIT}. */
   recent: ResourceStatusCapturedEvent[];
   unknownEmitted: number;
@@ -111,7 +137,12 @@ interface DocumentState {
 
 function freshDocumentState(): DocumentState {
   return {
-    seen: new Set(),
+    nonce: randomToken(),
+    installed: false,
+    warnedDuplicate: false,
+    observedUntil: null,
+    navigationRead: false,
+    blindSpots: new Set(),
     recent: [],
     unknownEmitted: 0,
     unknownCapped: false,
@@ -159,7 +190,7 @@ function getSessionStorage(): Storage | null {
   }
 }
 
-function writerToken(): string {
+function randomToken(): string {
   try {
     return crypto.randomUUID();
   } catch {
@@ -167,10 +198,15 @@ function writerToken(): string {
   }
 }
 
-/** One Resource Timing entry's identity within a document. */
+/** One Resource Timing entry's identity within a document; the URL is redacted. */
 function entryKey(sample: ResourceSample): string {
-  return `${sample.initiatorType}|${sample.startTime}|${sample.name}`;
+  return `${sample.initiatorType}|${sample.startTime}|${redactRequestUrl(sample.name).url}`;
 }
+
+/** Initiators whose failure the network capture reports with a status. */
+const REQUEST_INITIATORS = new Set(['fetch', 'xmlhttprequest', 'beacon', 'ping', 'other']);
+/** Initiators whose failure the resource-errors capture reports as an element error. */
+const ELEMENT_INITIATORS = new Set(['img', 'script', 'link', 'css']);
 
 const isFiniteNumber = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 
@@ -198,7 +234,8 @@ function restoreStoredEvent(value: unknown): ResourceStatusCapturedEvent | null 
         typeof v.initiatorType !== 'string' ||
         !(v.responseStatus === null || isFiniteNumber(v.responseStatus)) ||
         !isFiniteNumber(v.startTime) ||
-        !isFiniteNumber(v.responseEnd)
+        !isFiniteNumber(v.responseEnd) ||
+        typeof v.failureId !== 'string'
       ) {
         return null;
       }
@@ -212,6 +249,7 @@ function restoreStoredEvent(value: unknown): ResourceStatusCapturedEvent | null 
         responseStatus: v.responseStatus,
         startTime: v.startTime,
         responseEnd: v.responseEnd,
+        failureId: v.failureId,
       };
     }
     case 'observer-unavailable':
@@ -242,7 +280,10 @@ function restoreStoredEvent(value: unknown): ResourceStatusCapturedEvent | null 
  * - a referrer naming the writer's page (origin + path) is the writer;
  * - a reload of the writer's own page (its referrer is the original one's).
  * Any other referrer — including an origin-only one, which cannot name the
- * writer — drops the carry.
+ * writer — drops the carry. A known gap: a back/forward navigation that misses
+ * the back/forward cache loads a new document whose referrer is the original
+ * one's, so a carry written by the page it came back from cannot be
+ * attributed and is dropped.
  */
 function precededThisDocument(writtenBy: string): boolean {
   let referrer: string;
@@ -304,6 +345,17 @@ export function installResourceStatusCapture(emit: Emit): () => void {
     return () => {};
   }
   const doc = documentState;
+  if (doc.installed) {
+    if (!doc.warnedDuplicate) {
+      doc.warnedDuplicate = true;
+      console.warn(
+        '[ui-bridge] resource-status capture is already installed on this document; ' +
+          'a second concurrent install is a no-op (one capture per document).'
+      );
+    }
+    return () => {};
+  }
+  doc.installed = true;
 
   const pushRecent = (events: ResourceStatusCapturedEvent[]) => {
     doc.recent.push(...events.filter(isCarried));
@@ -314,8 +366,8 @@ export function installResourceStatusCapture(emit: Emit): () => void {
 
   /** Emit a blind-spot or cap event once per document. */
   const recordOnce = (key: string, event: ResourceStatusCapturedEvent) => {
-    if (doc.seen.has(key)) return;
-    doc.seen.add(key);
+    if (doc.blindSpots.has(key)) return;
+    doc.blindSpots.add(key);
     pushRecent([event]);
     emit(event);
   };
@@ -328,17 +380,21 @@ export function installResourceStatusCapture(emit: Emit): () => void {
   const reportedElsewhere = (sample: ResourceSample, status: number): boolean => {
     if (installedAt === null || sample.responseEnd < installedAt) return false;
     const now = Date.now();
-    return (
-      consumeObservedReport(statusReportKey(sample.name, status), now) ||
-      consumeObservedReport(elementReportKey(sample.name, sample.initiatorType), now)
-    );
+    if (REQUEST_INITIATORS.has(sample.initiatorType)) {
+      return consumeObservedReport(statusReportKey(sample.name, status), now);
+    }
+    if (ELEMENT_INITIATORS.has(sample.initiatorType)) {
+      return consumeObservedReport(elementReportKey(sample.name, sample.initiatorType), now);
+    }
+    return false;
   };
 
   const onSample = (sample: ResourceSample, isNavigation = false) => {
     const status = sample.responseStatus;
     if (status !== null && status < 400) return;
-    const key = entryKey(sample);
-    if (doc.seen.has(key)) return;
+    if (!isNavigation && doc.observedUntil !== null && sample.responseEnd <= doc.observedUntil) {
+      return;
+    }
     if (status === null) {
       if (doc.unknownCapped) return;
       if (doc.unknownEmitted >= UNKNOWN_STATUS_BUDGET) {
@@ -355,7 +411,6 @@ export function installResourceStatusCapture(emit: Emit): () => void {
       }
       doc.unknownEmitted++;
     }
-    doc.seen.add(key);
     const { url, hasQuery } = redactRequestUrl(sample.name);
     const event: ResourceStatusEntryEvent = {
       type: 'resource-status',
@@ -368,6 +423,7 @@ export function installResourceStatusCapture(emit: Emit): () => void {
       responseStatus: status,
       startTime: sample.startTime,
       responseEnd: sample.responseEnd,
+      failureId: `${doc.nonce}:${entryKey(sample)}`,
     };
     // Carried either way: the other capture's report dies with this page.
     pushRecent([event]);
@@ -375,35 +431,8 @@ export function installResourceStatusCapture(emit: Emit): () => void {
     emit(event);
   };
 
-  // 1. The previous same-tab document's failures, re-emitted once per document.
-  if (!doc.carryTaken) {
-    doc.carryTaken = true;
-    for (const previous of takePreviousDocumentEvents()) {
-      emit({ ...previous, fromPreviousDocument: true });
-    }
-  }
-
-  // 2. The document's own status, read once.
-  const navigation = getEntries('navigation');
-  if (navigation && navigation.length > 0) {
-    onSample(toResourceSample(navigation[0]!), true);
-  }
-
-  // 3. Buffer fullness at install: at or above the default size, the buffered
-  //    replay below may be missing pre-install entries (a page that changed
-  //    its buffer size cannot be judged). A buffer that fills later is no gap —
-  //    the live observer receives every entry regardless.
-  const preInstall = getEntries('resource');
-  if (preInstall && preInstall.length >= DEFAULT_RESOURCE_TIMING_BUFFER_SIZE) {
-    recordOnce('buffer-full', {
-      type: 'resource-status',
-      timestamp: Date.now(),
-      url: pageUrl(),
-      kind: 'buffer-full',
-      bufferFull: true,
-      resourceEntryCount: preInstall.length,
-    });
-  }
+  // Read at install, emitted on a macrotask (see the module doc).
+  const resourceCountAtInstall = getEntries('resource')?.length ?? null;
 
   // 4. Every resource, including those recorded before install.
   const handle = observeResources(
@@ -412,15 +441,51 @@ export function installResourceStatusCapture(emit: Emit): () => void {
     },
     { buffered: true }
   );
-  if (handle === null) {
-    recordOnce('observer-unavailable', {
-      type: 'resource-status',
-      timestamp: Date.now(),
-      url: pageUrl(),
-      kind: 'observer-unavailable',
-      observerUnavailable: true,
-    });
-  }
+
+  const deferred = setTimeout(() => {
+    // 1. The previous same-tab document's failures, re-emitted once per document.
+    if (!doc.carryTaken) {
+      doc.carryTaken = true;
+      for (const previous of takePreviousDocumentEvents()) {
+        emit({ ...previous, fromPreviousDocument: true });
+      }
+    }
+
+    // 2. The document's own status, read once.
+    const navigation = getEntries('navigation');
+    if (!doc.navigationRead && navigation && navigation.length > 0) {
+      doc.navigationRead = true;
+      onSample(toResourceSample(navigation[0]!), true);
+    }
+
+    // 3. Buffer fullness at install: at or above the default size, the
+    //    buffered replay may be missing pre-install entries (a page that
+    //    changed its buffer size cannot be judged). A buffer that fills later
+    //    is no gap — the live observer receives every entry regardless.
+    if (
+      resourceCountAtInstall !== null &&
+      resourceCountAtInstall >= DEFAULT_RESOURCE_TIMING_BUFFER_SIZE
+    ) {
+      recordOnce('buffer-full', {
+        type: 'resource-status',
+        timestamp: Date.now(),
+        url: pageUrl(),
+        kind: 'buffer-full',
+        bufferFull: true,
+        resourceEntryCount: resourceCountAtInstall,
+      });
+    }
+
+    if (handle === null) {
+      recordOnce('observer-unavailable', {
+        type: 'resource-status',
+        timestamp: Date.now(),
+        url: pageUrl(),
+        kind: 'observer-unavailable',
+        observerUnavailable: true,
+      });
+    }
+  }, 0);
 
   // 5. Carry this document's events across a same-tab navigation.
   /** What the last pagehide wrote, so a back/forward-cache restore can take it back. */
@@ -435,7 +500,7 @@ export function installResourceStatusCapture(emit: Emit): () => void {
         v: STORAGE_VERSION,
         writtenAt: Date.now(),
         writtenBy: pageUrl(),
-        writerToken: writerToken(),
+        writerToken: randomToken(),
         events: doc.recent.slice(),
       };
       storage.setItem(STORAGE_KEY, JSON.stringify(payload));
@@ -472,7 +537,11 @@ export function installResourceStatusCapture(emit: Emit): () => void {
   window.addEventListener('pageshow', onPageShow);
 
   return () => {
+    clearTimeout(deferred);
+    doc.installed = false;
+    handle?.flush();
     handle?.disconnect();
+    if (typeof performance !== 'undefined') doc.observedUntil = performance.now();
     window.removeEventListener('pagehide', onPageHide);
     window.removeEventListener('pageshow', onPageShow);
   };

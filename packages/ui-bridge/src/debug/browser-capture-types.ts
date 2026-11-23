@@ -122,6 +122,13 @@ export interface ResourceStatusEntryEvent extends ResourceStatusEventBase {
   startTime: number;
   /** `performance.now()`-clock end of the response, in the observing document's clock. */
   responseEnd: number;
+  /**
+   * Stable identity of this failure: a per-document nonce plus the entry's
+   * identity. A carried copy (`fromPreviousDocument`) keeps the id of the
+   * event its own document emitted, so COUNT DISTINCT `failureId`s — not
+   * events — when a consumer may see both documents.
+   */
+  failureId: string;
 }
 
 /** This webview cannot observe Resource Timing: every status is UNKNOWN. */
