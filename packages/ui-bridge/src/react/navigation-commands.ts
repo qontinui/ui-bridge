@@ -26,7 +26,12 @@ import {
   type NavigationAdapter,
   type NavigationRoute,
 } from '../navigation/navigation-adapter';
-import { checkNavigationUrl, type NavigationUrlRefusalCode } from '../core/navigation-url';
+import {
+  checkNavigationTarget,
+  adapterNavigationTarget,
+  navigationPathForm,
+  type NavigationUrlRefusalCode,
+} from '../core/navigation-url';
 
 /** The page slots these commands read. */
 export interface NavigationSlots {
@@ -170,12 +175,32 @@ export async function navigateByAdapterCommand(
       NAVIGATE_BY_ADAPTER_PAYLOAD_SHAPE
     );
   }
-  const verdict = checkNavigationUrl(page, deps.base);
+  // A `page` that is only whitespace / control characters has an empty path
+  // form: it names nothing, and is refused here as the payload error it is.
+  if (navigationPathForm(page) === '') {
+    return navigationRefusal(
+      'INVALID_REQUEST',
+      'navigateByAdapter: "page" must be a non-empty string',
+      NAVIGATE_BY_ADAPTER_PAYLOAD_SHAPE
+    );
+  }
+  // A bare route name is gated as its path form (`checkNavigationTarget`), so
+  // `settings` navigates on a tauri:// / file:// / about:blank page too.
+  const verdict = checkNavigationTarget(page, deps.base);
   if (!verdict.ok) return navigationRefusal(verdict.code, verdict.message);
 
   const adapter = resolveNavigationAdapter(g);
   if (adapter) {
-    await adapter.navigate(page);
+    // An adapter is a SOFT navigator (a router): `adapterNavigationTarget`
+    // hands it a bare name or a relative reference cleaned and unchanged
+    // (`settings`, `?q=1`, `./x`) once every reading of it stays on this
+    // origin, and any other target only as its same-origin path; `//host`,
+    // `/\host`, another origin, or anything that collapses to `//host/…`
+    // is refused.
+    const adapterTarget = adapterNavigationTarget(page, deps.base);
+    if (!adapterTarget.ok) return navigationRefusal(adapterTarget.code, adapterTarget.message);
+    const target = adapterTarget.path;
+    await adapter.navigate(target);
     return { navigated: true, route: adapter.getCurrentRoute() };
   }
   const answer = await deps.pageNavigate(windowLocationPath(page));

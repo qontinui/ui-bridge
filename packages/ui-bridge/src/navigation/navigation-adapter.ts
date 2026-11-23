@@ -10,6 +10,8 @@
  * Fallback: window.location.href assignment when no adapter is registered.
  */
 
+import { checkNavigationTarget, navigationPathForm } from '../core/navigation-url';
+
 export interface NavigationRoute {
   name: string;
   path: string;
@@ -33,12 +35,16 @@ export interface NavigationAdapter {
 }
 
 /**
- * The path a bare navigation target names, as {@link WindowLocationAdapter}
- * navigates it: `/x` and `http…` are used as given, anything else is taken
- * as a root-relative page name (`settings` → `/settings`).
+ * The path a navigation target names, as {@link WindowLocationAdapter}
+ * navigates it: `navigationPathForm` (`../core/navigation-url.ts`) — the
+ * target normalized as the URL parser would, with a bare route name made
+ * root-relative (`settings` → `/settings`, `httpbin` → `/httpbin`,
+ * `" /settings"` → `/settings`) and anything else (a path, `//host`, an
+ * absolute URL of any scheme) unchanged. It is the same string the
+ * `navigateByAdapter` gate checks, so what navigates is what was approved.
  */
 export function windowLocationPath(target: string): string {
-  return target.startsWith('/') || target.startsWith('http') ? target : '/' + target;
+  return navigationPathForm(target);
 }
 
 /**
@@ -55,7 +61,14 @@ export class WindowLocationAdapter implements NavigationAdapter {
     ];
   }
 
+  /**
+   * Navigate the window to `target`'s path form — through the one navigation
+   * gate first (`checkNavigationTarget`), so a `javascript:` / `data:` target
+   * handed to this public adapter throws instead of running in the page.
+   */
   async navigate(target: string): Promise<void> {
+    const verdict = checkNavigationTarget(target, window.location.href);
+    if (!verdict.ok) throw new Error(verdict.message);
     window.location.href = windowLocationPath(target);
   }
 

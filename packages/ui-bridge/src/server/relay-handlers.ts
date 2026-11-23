@@ -81,7 +81,12 @@ import {
   type ParsedVisionAssertRequest,
 } from '../vision/assertion-request';
 import { RESERVED_CALLER_KEY } from './reserved-caller';
-import { checkNavigationUrl, RELAY_NAVIGATION_BASE } from '../core/navigation-url';
+import {
+  checkNavigationTarget,
+  checkNavigationUrl,
+  navigationPathForm,
+  RELAY_NAVIGATION_BASE,
+} from '../core/navigation-url';
 
 // ============================================================================
 // Helpers
@@ -3296,10 +3301,13 @@ export function createRelayHandlers(
       // The page gates `page` too; refusing here means a dangerous URL never
       // reaches a tab (`../core/navigation-url.ts`).
       const page = (request as { page?: unknown } | undefined)?.page;
-      if (typeof page !== 'string' || page.length === 0) {
+      if (typeof page !== 'string' || navigationPathForm(page) === '') {
         return error('navigateByAdapter: "page" must be a non-empty string', 'INVALID_REQUEST');
       }
-      const verdict = checkNavigationUrl(page, RELAY_NAVIGATION_BASE);
+      // The page's own gate (`checkNavigationTarget`): a bare route name is
+      // checked as its path form, so the relay never refuses a name the page
+      // accepts.
+      const verdict = checkNavigationTarget(page, RELAY_NAVIGATION_BASE);
       if (!verdict.ok) return error(verdict.message, verdict.code);
       return relayCommand('navigateByAdapter', request, ctxOpts(context));
     },
