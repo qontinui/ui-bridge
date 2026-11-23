@@ -226,6 +226,32 @@ before the browser, whether or not `recordHar` is set.
 | `--user-agent <ua>`   | string            | (Chromium default) | UA override                                         |
 | `--quiet`             | boolean           | `false`            | Suppress browser console forwarding                 |
 
+## `ui-bridge-density`
+
+A second bin measures, from a UI Bridge control snapshot, how much effort it
+takes an audience role to reach what it came for. In this release it has one
+verb, which reads the snapshot and reports the capture summary:
+
+```bash
+ui-bridge-density measure --snapshot snapshot.json --role buyer \
+  [--fixture <name>] [--targets targets.json] [--capture-out capture.json]
+```
+
+- `--snapshot` takes a `GET /control/snapshot` answer, either in the relay's
+  `{ success, data, _meta }` envelope or bare. `-` reads standard input.
+- Standard output is one JSON document: each cell's `Observation` from producer
+  `sdk/density`, and `next[]`.
+- `--capture-out` writes the text-free `ui-bridge/density-capture@1` capture.
+- Exit codes: 0 for an answer (an `unknown` observation is an answer), 2 for a
+  usage error, 1 for an internal error. On SIGHUP, SIGINT or SIGTERM it prints
+  an `interrupted` document naming the step it had reached and exits 129, 130
+  or 143.
+
+It runs a generated copy of the density core and does not load
+`@qontinui/ui-bridge`. A capture holds no page text, but its text hashes are
+equality tokens, so keep captures of a real app's pages in that app's own
+store.
+
 ## License
 
 MIT.

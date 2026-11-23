@@ -257,6 +257,26 @@ const FORBIDDEN = [
     "const a = [4];\nexport const r = a[0]-- / 2; const fs = require('fs'); const z = 1 / 3;\n",
     'x.ts:2: require() is not allowed',
   ],
+  [
+    'a require() after a regex holding a backtick, following a condition',
+    "if (a) /`/.test(s);\nconst fs = require('fs');\nconst t = `q`;\n",
+    'x.ts:2: require() is not allowed',
+  ],
+  [
+    'an import after a closing brace on the same line',
+    "export {} import { x } from 'lodash';\n",
+    "'lodash' is a bare specifier",
+  ],
+  [
+    'a triple-slash reference directive',
+    '/// <reference types="node" />\nexport {};\n',
+    'x.ts:1: a triple-slash reference directive is not allowed',
+  ],
+  [
+    'an unterminated template (the rest of the file cannot be read)',
+    "export const t = `open;\nconst fs = require('fs');\n",
+    'x.ts:1: an unterminated template',
+  ],
 ];
 
 for (const [what, text, expected] of FORBIDDEN) {
@@ -304,6 +324,11 @@ const ALLOWED = [
     'a substitution holding an object literal',
     "export const s = `${JSON.stringify({ a: 'require(x)' })}`;\n",
   ],
+  [
+    'a division after a non-null assertion',
+    'export const r = (w: number | undefined) => w! / 2 / 3;\n',
+  ],
+  ['a division after a call', 'export const r = Math.max(1, 2) / 2 / 3;\n'],
   ['a regex after a prefix increment', 'let i = 0;\nexport const r = [++i, /require\\(/];\n'],
 ];
 

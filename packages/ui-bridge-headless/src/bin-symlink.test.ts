@@ -45,17 +45,21 @@ function run(entry: string): { status: number | null; output: string } {
   return { status: r.status, output: (r.stdout ?? '') + (r.stderr ?? '') };
 }
 
-describe.skipIf(!SYMLINKS_AVAILABLE)('the entry guard survives the bin symlink', () => {
-  beforeAll(() => {
-    // Built once by vitest.global-setup.ts before any worker starts.
-    for (const bin of BINS) expect(existsSync(bin.dist), missingOutputMessage(bin.dist)).toBe(true);
-  });
-
+// Needs no symlink, so it runs everywhere: a bin added to the manifest without
+// a row here would otherwise go unguarded on every box.
+describe('the bin list', () => {
   it('the list covers every bin in the manifest', () => {
     const manifest = JSON.parse(readFileSync(join(PKG_DIR, 'package.json'), 'utf8')) as {
       bin: Record<string, string>;
     };
     expect(Object.keys(manifest.bin).sort()).toEqual(BINS.map((b) => b.name).sort());
+  });
+});
+
+describe.skipIf(!SYMLINKS_AVAILABLE)('the entry guard survives the bin symlink', () => {
+  beforeAll(() => {
+    // Built once by vitest.global-setup.ts before any worker starts.
+    for (const bin of BINS) expect(existsSync(bin.dist), missingOutputMessage(bin.dist)).toBe(true);
   });
 
   it.each(BINS)(
