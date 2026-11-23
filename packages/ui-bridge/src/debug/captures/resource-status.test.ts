@@ -413,9 +413,9 @@ describe('resource-status capture', () => {
     // The live one is the network report's: consumed.
     FakePerformanceObserver.record('resource', [liveEntry(url, 503)]);
     expect(statusFor(capture, url)).toHaveLength(1);
-    // A report older than 30 s matches nothing.
+    // A report older than the TTL (5 s) matches nothing.
     await window.fetch(url);
-    const later = Date.now() + 31_000;
+    const later = Date.now() + 6_000;
     const spy = vi.spyOn(Date, 'now').mockReturnValue(later);
     FakePerformanceObserver.record('resource', [liveEntry(url, 503)]);
     spy.mockRestore();
@@ -614,6 +614,42 @@ describe('resource-status capture', () => {
     FakePerformanceObserver.record('resource', [liveEntry('https://app.example.com/new', 503)]);
     expect(statusOnly(late)).toHaveLength(2);
     expect(statusOnly(a)).toHaveLength(2);
+  });
+
+  it('a live failure before a joiner’s replay tick does not cost it the backlog', async () => {
+    FakePerformanceObserver.record('resource', [resourceEntry('https://app.example.com/pre', 429)]);
+    install();
+    await settle();
+    const late = install();
+    FakePerformanceObserver.record('resource', [liveEntry('https://app.example.com/live', 503)]);
+    await settle();
+    expect(statusOnly(late).map((e) => (e.kind === 'status' ? e.resourceUrl : ''))).toEqual([
+      'https://app.example.com/pre',
+      'https://app.example.com/live',
+    ]);
+  });
+
+  it('a remounted capture receives a failure suppressed live, tagged reportedLiveAs', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('', { status: 429 }))
+    );
+    const url = 'https://app.example.com/api/v1/suppressed';
+    const a = install(WITH_NETWORK_AND_RESOURCE_ERRORS);
+    await settle();
+    await window.fetch(url);
+    FakePerformanceObserver.record('resource', [liveEntry(url, 429)]);
+    expect(statusFor(a, url)).toHaveLength(0);
+    a.uninstall();
+    const b = install(WITH_NETWORK_AND_RESOURCE_ERRORS);
+    await settle();
+    expect(statusFor(b, url)).toEqual([
+      expect.objectContaining({ responseStatus: 429, reportedLiveAs: 'network' }),
+    ]);
+    // The same instance re-installed does not receive it: its own capture reported it.
+    a.install();
+    await settle();
+    expect(statusFor(a, url)).toHaveLength(0);
   });
 
   it('a document hidden before the deferred tick keeps its status and the previous carry', async () => {

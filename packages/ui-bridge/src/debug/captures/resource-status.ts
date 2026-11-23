@@ -459,7 +459,9 @@ function replayTo(doc: DocumentState, owner: Owner): void {
  * new capture, or a second install while armed — is replayed, on the next
  * tick, the document's last {@link EMITTED_REPLAY_LIMIT} events its identity
  * (`ownerKey`, the capture instance) has not received; a re-install of the
- * same instance receives nothing twice.
+ * same instance receives nothing twice. That replay includes failures another
+ * capture reported live, tagged `reportedLiveAs` — a consumer that also sees
+ * that capture's events dedupes them.
  */
 export function installResourceStatusCapture(
   ownerEmit: Emit,
@@ -488,11 +490,26 @@ export function installResourceStatusCapture(
   if (doc.teardown !== null) return release;
 
   /** Fan out to every owner, and keep the event for owners that join later. */
-  const emit = (event: AnyCapturedEvent) => {
+  // An owner whose replay is still pending gets it now, before anything new:
+  // the replay delivers its backlog and this event in index order, so a live
+  // event never advances it past an undelivered backlog. A `live: false`
+  // event (a failure another capture reported live) goes to no up-to-date
+  // owner but is kept for owners that join later.
+  const emit = (event: AnyCapturedEvent, live = true) => {
     const index = doc.nextIndex++;
     doc.emitted.push({ index, event });
     if (doc.emitted.length > EMITTED_REPLAY_LIMIT) doc.emitted.shift();
-    for (const current of [...doc.owners]) deliver(doc, current, index, event);
+    for (const current of [...doc.owners]) {
+      if (current.replay !== null) {
+        clearTimeout(current.replay);
+        current.replay = null;
+        replayTo(doc, current);
+      } else if (live) {
+        deliver(doc, current, index, event);
+      } else {
+        doc.deliveredIndex.set(current.key, index);
+      }
+    }
   };
   const carries = isTopLevelDocument();
 
@@ -578,8 +595,13 @@ export function installResourceStatusCapture(
     // Carried either way: the other capture's report dies with this page. The
     // carried copy says which capture reported it, so a consumer that saw
     // that report can exclude it.
-    pushRecent([reportedLiveAs ? { ...event, reportedLiveAs } : event]);
-    if (reportedLiveAs) return;
+    if (reportedLiveAs) {
+      const covered = { ...event, reportedLiveAs };
+      pushRecent([covered]);
+      emit(covered, false);
+      return;
+    }
+    pushRecent([event]);
     emit(event);
   };
 
