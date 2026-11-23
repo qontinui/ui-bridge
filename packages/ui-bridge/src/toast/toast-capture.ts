@@ -28,9 +28,11 @@
  *
  * Churn is bounded per element, beside the max-age guard: at most
  * `maxAnnouncementsPerWindow` captures of one element within
- * `announcementWindowMs`. The capture that would exceed it is withheld — the
- * current entry is dismissed (its words are no longer shown) and the element
- * is parked SUPPRESSED, its changes absorbed with no event. It is released
+ * `announcementWindowMs`. The capture that would exceed it is withheld and the
+ * element is parked SUPPRESSED, its changes absorbed with no event. Its last
+ * entry is not left in `active`: every path that reaches the budget with a
+ * changed text has already dismissed it (the active reconcile dismisses before
+ * asking; a parked or newly scanned element has no entry). It is released
  * once its observed text has been unchanged for `announcementWindowMs`; its
  * settled text, if not empty, is then captured once (the trailing
  * announcement) — even when it equals an earlier announcement, whose entry was
@@ -515,6 +517,9 @@ export class ToastCapture {
 
     // A scan debounced before uninstall must not run after it: it would
     // capture, and attach per-element observers that nothing disconnects.
+    // `scanForToasts` also returns when not installed; clearing the timeout is
+    // what keeps a stale scan from running under a NEXT install, as a second
+    // scan beside that install's own initial one.
     if (this.scanTimerId !== null) {
       clearTimeout(this.scanTimerId);
       this.scanTimerId = null;
@@ -779,9 +784,10 @@ export class ToastCapture {
    * Under `maxAnnouncementsPerWindow` captures of `el` within
    * `announcementWindowMs` it records `now` and admits the capture. Otherwise
    * — or while `el` is already suppressed — it withholds it: `el` is
-   * suppressed, any active entry for it is dismissed (its words are no longer
-   * shown, so they must not stay in `active`), and it is parked with the
-   * withheld text.
+   * suppressed and parked with the withheld text. Callers pass an element
+   * with no entry in `active` (the active reconcile dismisses the old entry
+   * before asking; the scan skips active elements; a parked element has none),
+   * so no withheld word is left in `active`.
    */
   private admitCapture(el: Element, message: string, now: number): boolean {
     let budget = this.budgets.get(el);
@@ -799,8 +805,6 @@ export class ToastCapture {
       budget.suppressed = true;
     }
     budget.lastChangedAt = now;
-    const activeId = this.activeIdOf(el);
-    if (activeId !== undefined) this.dismissToast(activeId, now);
     this.park(el, message);
     return false;
   }
