@@ -34,6 +34,7 @@
     "docs:symbol-debt:update": "node scripts/check-docs-symbols.cjs --update",
     "ci:check-manifest": "node scripts/check-ci-manifest.cjs",
     "ci:check-manifest:test": "node scripts/check-ci-manifest.test.cjs",
+    "ci:vitest-verdict:test": "node scripts/vitest-verdict.test.cjs",
     "browser-tests:check-placement": "node scripts/check-browser-test-placement.mjs",
     "browser-tests:check-placement:test": "node scripts/check-browser-test-placement.test.mjs",
     "contract:runner": "node scripts/check-runner-contract.mjs",

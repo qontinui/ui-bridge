@@ -358,6 +358,14 @@ jobs:
         # test with its own playwright import or executablePath( gate.
         run: npm run browser-tests:check-placement
 
+      - name: Vitest verdict self-test
+        # Pins scripts/vitest-verdict.cjs's classifier, which the Test step below
+        # runs through, against table cases, and runs BEFORE it for the reason the
+        # self-tests above do: a regression that labels a REAL failure "not a
+        # verdict on this PR" would not turn anything red, it would tell coord
+        # (and through it the author) that a broken diff needs only a re-run.
+        run: npm run ci:vitest-verdict:test
+
       - name: Lint
         run: npm run lint
 
@@ -389,7 +397,18 @@ jobs:
         # `test:smoke` does not select it, so a gated test outside a `*smoke*`
         # file fails HERE instead of running nowhere; the "Real-browser test
         # placement" step above refuses one with its own Chromium gate.
-        run: npm run test
+        #
+        # Run through scripts/vitest-verdict.cjs, which runs `npm run test`,
+        # streams its output and exits with its status, so the verdict is
+        # unchanged. On a pull_request run whose red's ONLY fault is a vitest
+        # worker EnvironmentTeardownError (0 failed tests in every workspace),
+        # and whose diff changes none of the test files the errors name, it adds
+        # an annotation titled "vitest worker teardown error (not a verdict on
+        # this PR)": coord reads that marker and routes the red to a re-run instead of
+        # telling the author to fix code (ui-bridge#363, coord finding cd24732d;
+        # plan 2026-11-23-ci-rework-tells-an-author-to-fix-code-when-a-rerun-would-clear-the-red).
+        # Any failed test or any other error class adds nothing.
+        run: node scripts/vitest-verdict.cjs
 
   browser-smokes:
     # The real-Chromium smokes: inject-cli frames at a DPR and the capture
