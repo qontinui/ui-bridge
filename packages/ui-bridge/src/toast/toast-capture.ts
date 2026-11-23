@@ -31,9 +31,10 @@
  * `announcementWindowMs`. The capture that would exceed it is withheld — the
  * current entry is dismissed (its words are no longer shown) and the element
  * is parked SUPPRESSED, its changes absorbed with no event. It is released
- * once its observed text has been unchanged for `announcementWindowMs`; if
- * that text differs from the last one it announced, it is captured once (the
- * trailing announcement).
+ * once its observed text has been unchanged for `announcementWindowMs`; its
+ * settled text, if not empty, is then captured once (the trailing
+ * announcement) — even when it equals an earlier announcement, whose entry was
+ * dismissed when suppression began and so is no longer in `active`.
  */
 
 import type {
@@ -47,6 +48,7 @@ import type {
 import { classString } from '../core/class-name';
 import { readAriaLabelAttr } from '../core/a11y';
 import {
+  BRIDGE_REDACT_ATTR,
   isContentRedacted,
   REDACTED_VALUE,
   textExcludingBoundaries,
@@ -115,11 +117,38 @@ const MAX_ANNOUNCEMENTS_PER_WINDOW = 4;
 /** Default budget window, and the quiet period that releases suppression. */
 const ANNOUNCEMENT_WINDOW_MS = 10_000;
 
-/** Options of each tracked element's own MutationObserver. */
+/**
+ * `maxAnnouncementsPerWindow` as used: a whole number of at least 1 (0 or a
+ * negative value would suppress every element before its first announcement);
+ * absent or not finite, the default.
+ */
+function budgetSize(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return MAX_ANNOUNCEMENTS_PER_WINDOW;
+  return Math.max(1, Math.floor(value));
+}
+
+/**
+ * `announcementWindowMs` as used: absent, not finite, or below 1 ms (which
+ * would keep no capture in the window and so disable the budget), the default.
+ */
+function budgetWindowMs(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value) || value < 1) return ANNOUNCEMENT_WINDOW_MS;
+  return value;
+}
+
+/**
+ * Options of each tracked element's own MutationObserver. `attributeFilter`
+ * names every attribute `extractMessage` reads inside the subtree: `role` and
+ * `aria-label` (which buttons are stripped), `data-bridge-redact` (a boundary
+ * reads as the sentinel), and `hidden` / `style` (a non-rendered descendant's
+ * text is excluded). The element's own visibility is checked on every pass
+ * anyway, so `class` and any other attribute changes nothing a re-read sees.
+ */
 const TRACKED_OBSERVER_OPTIONS: MutationObserverInit = {
   characterData: true,
   childList: true,
   attributes: true,
+  attributeFilter: ['role', 'aria-label', BRIDGE_REDACT_ATTR, 'hidden', 'style'],
   subtree: true,
 };
 
@@ -129,8 +158,6 @@ interface AnnouncementBudget {
   captures: number[];
   /** True while the element's changes are absorbed with no announcement. */
   suppressed: boolean;
-  /** The last text announced (captured) for the element. */
-  lastAnnounced: string;
   /** When a suppressed element's observed text last changed. */
   lastChangedAt: number;
 }
@@ -427,6 +454,7 @@ export class ToastCapture {
   private installed = false;
   private onToastEvent: ((data: ToastEventData) => void) | undefined;
   private scanScheduled = false;
+  private scanTimerId: ReturnType<typeof setTimeout> | null = null;
   private allSelectors: string[];
 
   constructor(config?: ToastCaptureConfig) {
@@ -436,8 +464,8 @@ export class ToastCapture {
       recentRetention: config?.recentRetention ?? 60000,
       pollInterval: config?.pollInterval ?? 500,
       maxToastAgeMs: config?.maxToastAgeMs ?? MAX_TOAST_AGE_MS,
-      maxAnnouncementsPerWindow: config?.maxAnnouncementsPerWindow ?? MAX_ANNOUNCEMENTS_PER_WINDOW,
-      announcementWindowMs: config?.announcementWindowMs ?? ANNOUNCEMENT_WINDOW_MS,
+      maxAnnouncementsPerWindow: budgetSize(config?.maxAnnouncementsPerWindow),
+      announcementWindowMs: budgetWindowMs(config?.announcementWindowMs),
     };
     this.allSelectors = [...BUILT_IN_SELECTORS, ...this.config.customSelectors];
   }
@@ -483,6 +511,13 @@ export class ToastCapture {
     if (this.pollTimerId !== null) {
       clearInterval(this.pollTimerId);
       this.pollTimerId = null;
+    }
+
+    // A scan debounced before uninstall must not run after it: it would
+    // capture, and attach per-element observers that nothing disconnects.
+    if (this.scanTimerId !== null) {
+      clearTimeout(this.scanTimerId);
+      this.scanTimerId = null;
     }
 
     this.onToastEvent = undefined;
@@ -549,7 +584,8 @@ export class ToastCapture {
     // Debounce with a microtask-level delay to batch rapid DOM mutations.
     // Using setTimeout(0) instead of requestAnimationFrame for better
     // compatibility with test environments (fake timers + JSDOM).
-    setTimeout(() => {
+    this.scanTimerId = setTimeout(() => {
+      this.scanTimerId = null;
       this.scanScheduled = false;
       this.scanForToasts();
     }, 0);
@@ -557,6 +593,7 @@ export class ToastCapture {
 
   private scanForToasts(): void {
     if (typeof document === 'undefined') return;
+    if (!this.installed) return;
 
     const selectorString = this.allSelectors.join(', ');
     let elements: NodeListOf<Element>;
@@ -715,10 +752,12 @@ export class ToastCapture {
         budget.lastChangedAt = now;
       }
       if (now - budget.lastChangedAt < this.config.announcementWindowMs) return;
-      // Quiet for a whole window: release, and announce the settled text if it
-      // is not the one last announced (the trailing announcement).
+      // Quiet for a whole window: release, and announce the settled text (the
+      // trailing announcement). Its last entry was dismissed when suppression
+      // began, so even a text equal to an earlier announcement is not shown in
+      // `active` until it is captured again.
       budget.suppressed = false;
-      if (message && message !== budget.lastAnnounced && this.admitCapture(el, message, now)) {
+      if (message && this.admitCapture(el, message, now)) {
         this.captureToast(el, message, now);
       }
       return;
@@ -747,7 +786,7 @@ export class ToastCapture {
   private admitCapture(el: Element, message: string, now: number): boolean {
     let budget = this.budgets.get(el);
     if (!budget) {
-      budget = { captures: [], suppressed: false, lastAnnounced: '', lastChangedAt: now };
+      budget = { captures: [], suppressed: false, lastChangedAt: now };
       this.budgets.set(el, budget);
     }
     if (!budget.suppressed) {
@@ -755,7 +794,6 @@ export class ToastCapture {
       budget.captures = budget.captures.filter((t) => now - t < windowMs);
       if (budget.captures.length < this.config.maxAnnouncementsPerWindow) {
         budget.captures.push(now);
-        budget.lastAnnounced = message;
         return true;
       }
       budget.suppressed = true;
