@@ -213,7 +213,9 @@ export class BrowserEventCapture {
   }
 
   /**
-   * Uninstall all capture sub-modules.
+   * Uninstall all capture sub-modules. A cleanup that throws is reported with
+   * `console.warn` and does not propagate: the remaining cleanups still run and
+   * the capture is marked uninstalled, so a failed cleanup's patch may remain.
    */
   uninstall(): void {
     if (!this.installed) return;
@@ -224,8 +226,9 @@ export class BrowserEventCapture {
   /**
    * Run and clear every registered cleanup, newest first; one that throws does
    * not stop the rest. Failures are reported only after every cleanup ran, so
-   * the warning goes to the restored console rather than through the console
-   * capture (whose host callback could throw and abort the remaining cleanups).
+   * — once the console capture's own cleanup has run — the warning goes to the
+   * restored console rather than through the console capture, whose host
+   * callback could throw and abort the remaining cleanups.
    */
   private runCleanups(): void {
     const cleanups = this.cleanups;
