@@ -18,7 +18,8 @@
 import { redactRequestUrl } from '../network/redact-request-url';
 
 export const OBSERVED_REPORT_LIMIT = 200;
-export const OBSERVED_REPORT_TTL_MS = 30_000;
+/** The ordering this covers is same-tick (a report just before its timing entry). */
+export const OBSERVED_REPORT_TTL_MS = 5_000;
 
 interface ObservedReport {
   key: string;
