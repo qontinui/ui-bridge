@@ -17,6 +17,23 @@
  *  - the max-age guard applies per announcement, and parks the element too.
  * Reading at snapshot time means a backgrounded tab, whose interval timer the
  * browser throttles, never serves text the page stopped showing.
+ *
+ * Re-reading is gated on mutation: every tracked (active or parked) element
+ * has its own MutationObserver, and `extractMessage` (a deep clone) runs for
+ * it only when its subtree mutated — the observer's callback marks it dirty,
+ * and a synchronous `takeRecords()` drain catches a change made in the same
+ * tick as the read — or when one of the two inputs outside its subtree, its
+ * visibility or an ancestor redaction boundary, flipped. The ancestor
+ * redaction check itself is never gated.
+ *
+ * Churn is bounded per element, beside the max-age guard: at most
+ * `maxAnnouncementsPerWindow` captures of one element within
+ * `announcementWindowMs`. The capture that would exceed it is withheld — the
+ * current entry is dismissed (its words are no longer shown) and the element
+ * is parked SUPPRESSED, its changes absorbed with no event. It is released
+ * once its observed text has been unchanged for `announcementWindowMs`; if
+ * that text differs from the last one it announced, it is captured once (the
+ * trailing announcement).
  */
 
 import type {
@@ -92,6 +109,38 @@ const BUILT_IN_SELECTORS: string[] = [
  *  2. A future SDK addition reintroduces a greedy selector into BUILT_IN_SELECTORS.
  */
 const MAX_TOAST_AGE_MS = 60_000;
+
+/** Default per-element announcement budget (captures per window). */
+const MAX_ANNOUNCEMENTS_PER_WINDOW = 4;
+/** Default budget window, and the quiet period that releases suppression. */
+const ANNOUNCEMENT_WINDOW_MS = 10_000;
+
+/** Options of each tracked element's own MutationObserver. */
+const TRACKED_OBSERVER_OPTIONS: MutationObserverInit = {
+  characterData: true,
+  childList: true,
+  attributes: true,
+  subtree: true,
+};
+
+/** Per-element announcement budget state (see the header comment). */
+interface AnnouncementBudget {
+  /** Capture timestamps inside the current window. */
+  captures: number[];
+  /** True while the element's changes are absorbed with no announcement. */
+  suppressed: boolean;
+  /** The last text announced (captured) for the element. */
+  lastAnnounced: string;
+  /** When a suppressed element's observed text last changed. */
+  lastChangedAt: number;
+}
+
+/** A tracked element's observer and its last outside-subtree verdicts. */
+interface TrackedElement {
+  observer: MutationObserver;
+  visible: boolean;
+  redacted: boolean;
+}
 
 // ============================================================================
 // Level inference helpers
@@ -324,7 +373,15 @@ function isElementVisible(el: Element): boolean {
 
 export class ToastCapture {
   private config: Required<
-    Pick<ToastCaptureConfig, 'maxRecent' | 'recentRetention' | 'pollInterval' | 'maxToastAgeMs'>
+    Pick<
+      ToastCaptureConfig,
+      | 'maxRecent'
+      | 'recentRetention'
+      | 'pollInterval'
+      | 'maxToastAgeMs'
+      | 'maxAnnouncementsPerWindow'
+      | 'announcementWindowMs'
+    >
   > & { customSelectors: string[] };
 
   private observer: MutationObserver | null = null;
@@ -333,14 +390,28 @@ export class ToastCapture {
    * Elements dismissed while still connected, with the message they were
    * dismissed with: `''` for emptied text or a hidden element (so becoming
    * visible with any text is a new announcement), the unchanged text for one
-   * past max-age. `reconcile` re-reads them (an extractMessage clone and a
-   * style check per poll and per read, for as long as they stay connected),
-   * captures one again when its text changes, and drops it once it
-   * disconnects. `uninstall` clears it, since nothing prunes it afterwards, so
-   * after a re-install the initial scan announces every persistent region
-   * again, unchanged text included.
+   * past max-age, the absorbed (withheld) text for a suppressed one.
+   * `reconcile` checks them on every poll and every read — a style check, and
+   * an extractMessage clone only when the element mutated (see `takeDirty`) —
+   * captures one again when its text changes (subject to the announcement
+   * budget), releases a suppressed one after its quiet period, and drops it
+   * once it disconnects. The scan hands a parked element to the same step.
+   * `uninstall` clears it, since nothing prunes it afterwards, so after a
+   * re-install the initial scan announces every persistent region again,
+   * unchanged text included.
    */
   private parked: Map<Element, string> = new Map();
+  /**
+   * Every tracked (active or parked) element's own MutationObserver plus its
+   * last visibility and ancestor-redaction verdicts. An entry is added when the
+   * element becomes tracked and removed by `untrack` when it ends up neither
+   * active nor parked, or at `uninstall`.
+   */
+  private tracked: Map<Element, TrackedElement> = new Map();
+  /** Tracked elements whose observer callback ran, or whose verdicts flipped. */
+  private dirty: Set<Element> = new Set();
+  /** Per-element announcement budget; a remounted node starts fresh. */
+  private budgets: WeakMap<Element, AnnouncementBudget> = new WeakMap();
   /**
    * True while a scan or reconcile pass runs (`runPass`). Listeners are
    * called only after a pass ends, so a read made from a listener reconciles
@@ -365,6 +436,8 @@ export class ToastCapture {
       recentRetention: config?.recentRetention ?? 60000,
       pollInterval: config?.pollInterval ?? 500,
       maxToastAgeMs: config?.maxToastAgeMs ?? MAX_TOAST_AGE_MS,
+      maxAnnouncementsPerWindow: config?.maxAnnouncementsPerWindow ?? MAX_ANNOUNCEMENTS_PER_WINDOW,
+      announcementWindowMs: config?.announcementWindowMs ?? ANNOUNCEMENT_WINDOW_MS,
     };
     this.allSelectors = [...BUILT_IN_SELECTORS, ...this.config.customSelectors];
   }
@@ -416,7 +489,11 @@ export class ToastCapture {
     this.scanScheduled = false;
     // Parked elements are tracking state, not captured data: with no poll left
     // to prune disconnected ones, holding them would retain detached subtrees.
+    // Every per-element observer goes with them, and so does the budget state,
+    // so a re-install starts every element with a fresh budget.
+    for (const el of [...this.tracked.keys()]) this.untrack(el);
     this.parked.clear();
+    this.budgets = new WeakMap();
     // Intentionally do NOT clear captured data — let it be readable after uninstall
   }
 
@@ -492,33 +569,41 @@ export class ToastCapture {
 
     // The scan runs as a pass like `reconcile`, so no capture can run nested
     // inside another one (which could overwrite an entry under a shared id).
-    this.runPass(() => this.scanElements(elements));
+    this.runPass(() => this.scanElements(elements, Date.now()));
   }
 
-  private scanElements(elements: NodeListOf<Element>): void {
+  private scanElements(elements: NodeListOf<Element>, now: number): void {
     for (let i = 0; i < elements.length; i++) {
       const el = elements[i];
       // A text change on an active element belongs to `reconcile`, which
       // dismisses the old announcement before capturing the new one.
-      if (this.isActiveElement(el)) continue;
+      if (this.activeIdOf(el) !== undefined) continue;
+
+      // A parked element belongs to the parked-reconcile step, which owns its
+      // re-read gate and its suppression, so a childList mutation can neither
+      // clone an unchanged element nor bypass the announcement budget.
+      const parkedMessage = this.parked.get(el);
+      if (parkedMessage !== undefined) {
+        this.reconcileParked(el, parkedMessage, now);
+        continue;
+      }
+
       if (!isElementVisible(el)) continue;
 
       // Skip elements with no meaningful text
       const message = extractMessage(el);
       if (!message) continue;
 
-      // A parked element is captured again only when its text has changed.
-      if (this.parked.has(el) && this.parked.get(el) === message) continue;
-
-      this.captureToast(el, message);
+      if (this.admitCapture(el, message, now)) this.captureToast(el, message, now);
     }
   }
 
-  private isActiveElement(el: Element): boolean {
-    for (const entry of this.activeToasts.values()) {
-      if (entry.element === el) return true;
+  /** The id of `el`'s entry in `active`, or `undefined` when it has none. */
+  private activeIdOf(el: Element): string | undefined {
+    for (const [id, entry] of this.activeToasts) {
+      if (entry.element === el) return id;
     }
-    return false;
+    return undefined;
   }
 
   private querySelectorsFallback(): NodeListOf<Element> {
@@ -546,9 +631,13 @@ export class ToastCapture {
    * `id` names the ELEMENT (its `id` or `data-testid`, which agents query by),
    * not the announcement: `recent` can hold several entries with one id.
    * Elements with neither get a fresh `toast-<n>` per announcement.
+   *
+   * Every caller asks `admitCapture` first, so the announcement budget has one
+   * owner. The element's own observer is attached here if it has none.
    */
-  private captureToast(el: Element, message: string, now: number = Date.now()): void {
+  private captureToast(el: Element, message: string, now: number): void {
     this.parked.delete(el);
+    this.track(el);
 
     const id = this.resolveId(el, now);
     const level = inferLevel(el);
@@ -594,30 +683,88 @@ export class ToastCapture {
         this.reconcileActive(id, entry, now);
       }
 
-      for (const [el, parkedMessage] of [...this.parked]) {
-        if (!this.parked.has(el)) continue;
-        if (!el.isConnected) {
-          this.parked.delete(el);
-          continue;
-        }
-        if (!isElementVisible(el)) {
-          // Same rule as an active element that is hidden: becoming visible
-          // again with any text is a new announcement.
-          if (parkedMessage !== '') this.parked.set(el, '');
-          continue;
-        }
-        const message = extractMessage(el);
-        if (!message) {
-          // Same rule as an active element whose text is emptied: the same
-          // text coming back is a new announcement.
-          if (parkedMessage !== '') this.parked.set(el, '');
-          continue;
-        }
-        if (message !== parkedMessage) this.captureToast(el, message, now);
+      for (const el of [...this.parked.keys()]) {
+        // An earlier step may already have captured or dropped this element.
+        const parkedMessage = this.parked.get(el);
+        if (parkedMessage === undefined) continue;
+        this.reconcileParked(el, parkedMessage, now);
       }
 
       this.pruneRecent();
     });
+  }
+
+  /**
+   * The parked-reconcile step, run by `reconcile` and by the scan. A hidden or
+   * emptied element is parked with `''`, so any text it shows next is a new
+   * announcement; a changed text is captured, subject to the budget. A
+   * suppressed element absorbs every change into `parked` and is released by
+   * time — checked on every pass, even when the re-read gate says clean.
+   */
+  private reconcileParked(el: Element, parkedMessage: string, now: number): void {
+    if (!el.isConnected) {
+      this.untrack(el);
+      return;
+    }
+    const message = this.trackedVisible(el) ? this.readTracked(el, parkedMessage) : '';
+
+    const budget = this.budgets.get(el);
+    if (budget?.suppressed) {
+      if (message !== parkedMessage) {
+        this.parked.set(el, message);
+        budget.lastChangedAt = now;
+      }
+      if (now - budget.lastChangedAt < this.config.announcementWindowMs) return;
+      // Quiet for a whole window: release, and announce the settled text if it
+      // is not the one last announced (the trailing announcement).
+      budget.suppressed = false;
+      if (message && message !== budget.lastAnnounced && this.admitCapture(el, message, now)) {
+        this.captureToast(el, message, now);
+      }
+      return;
+    }
+
+    if (!message) {
+      // Same rule as an active element that is hidden or whose text is
+      // emptied: the same text coming back is a new announcement.
+      if (parkedMessage !== '') this.parked.set(el, '');
+      return;
+    }
+    if (message !== parkedMessage && this.admitCapture(el, message, now)) {
+      this.captureToast(el, message, now);
+    }
+  }
+
+  /**
+   * The announcement budget's one owner, asked before every `captureToast`.
+   * Under `maxAnnouncementsPerWindow` captures of `el` within
+   * `announcementWindowMs` it records `now` and admits the capture. Otherwise
+   * — or while `el` is already suppressed — it withholds it: `el` is
+   * suppressed, any active entry for it is dismissed (its words are no longer
+   * shown, so they must not stay in `active`), and it is parked with the
+   * withheld text.
+   */
+  private admitCapture(el: Element, message: string, now: number): boolean {
+    let budget = this.budgets.get(el);
+    if (!budget) {
+      budget = { captures: [], suppressed: false, lastAnnounced: '', lastChangedAt: now };
+      this.budgets.set(el, budget);
+    }
+    if (!budget.suppressed) {
+      const windowMs = this.config.announcementWindowMs;
+      budget.captures = budget.captures.filter((t) => now - t < windowMs);
+      if (budget.captures.length < this.config.maxAnnouncementsPerWindow) {
+        budget.captures.push(now);
+        budget.lastAnnounced = message;
+        return true;
+      }
+      budget.suppressed = true;
+    }
+    budget.lastChangedAt = now;
+    const activeId = this.activeIdOf(el);
+    if (activeId !== undefined) this.dismissToast(activeId, now);
+    this.park(el, message);
+    return false;
   }
 
   /**
@@ -666,15 +813,17 @@ export class ToastCapture {
     now: number
   ): void {
     const el = entry.element;
-    if (!isElementVisible(el)) {
+    if (!this.trackedVisible(el)) {
       this.dismissToast(id, now);
       // Parked with '' — the same rule as emptied text: becoming visible again
-      // with any text is a new announcement.
+      // with any text is a new announcement. A disconnected element leaves
+      // tracking altogether.
       if (el.isConnected) this.park(el, '');
+      else this.untrack(el);
       return;
     }
 
-    const message = extractMessage(el);
+    const message = this.readTracked(el, entry.toast.message);
     if (!message) {
       this.dismissToast(id, now);
       this.park(el, '');
@@ -682,8 +831,9 @@ export class ToastCapture {
     }
     if (message !== entry.toast.message) {
       // A changed text is a new announcement: the old one goes to `recent`.
+      // Over the budget, `admitCapture` parks the element suppressed instead.
       this.dismissToast(id, now);
-      this.captureToast(el, message, now);
+      if (this.admitCapture(el, message, now)) this.captureToast(el, message, now);
       return;
     }
 
@@ -703,6 +853,89 @@ export class ToastCapture {
 
   private park(el: Element, message: string): void {
     this.parked.set(el, message);
+    this.track(el);
+  }
+
+  // ==========================================================================
+  // Private: Re-read gate (one MutationObserver per tracked element)
+  // ==========================================================================
+
+  /** Start tracking `el` (attach its own observer) if it is not tracked yet. */
+  private track(el: Element): void {
+    if (this.tracked.has(el)) return;
+    const observer = new MutationObserver(() => {
+      this.dirty.add(el);
+    });
+    observer.observe(el, TRACKED_OBSERVER_OPTIONS);
+    this.tracked.set(el, {
+      observer,
+      visible: isElementVisible(el),
+      redacted: isContentRedacted(el as HTMLElement),
+    });
+  }
+
+  /**
+   * Stop tracking `el`: disconnect its observer and forget its dirty mark and
+   * verdicts. Called wherever an element ends up neither active nor parked,
+   * and for every element at `uninstall`.
+   */
+  private untrack(el: Element): void {
+    const entry = this.tracked.get(el);
+    if (entry) {
+      entry.observer.disconnect();
+      this.tracked.delete(el);
+    }
+    this.dirty.delete(el);
+    this.parked.delete(el);
+  }
+
+  /**
+   * `true` when `el` must be re-read: its observer holds undelivered records
+   * (drained synchronously, so a change made in this tick counts), its
+   * callback already marked it, or it is not tracked at all. Both terms are
+   * needed: records are handed to the callback at the next microtask
+   * checkpoint, after which `takeRecords()` returns none.
+   */
+  private takeDirty(el: Element): boolean {
+    const entry = this.tracked.get(el);
+    if (!entry) return true;
+    const hadRecords = entry.observer.takeRecords().length > 0;
+    const marked = this.dirty.delete(el);
+    return hadRecords || marked;
+  }
+
+  /**
+   * `isElementVisible`, ungated, recording a flip of a tracked element's
+   * verdict as dirty: an ancestor's style change produces no record in the
+   * element's own observer, yet it changes what a re-read would see.
+   */
+  private trackedVisible(el: Element): boolean {
+    const visible = isElementVisible(el);
+    const entry = this.tracked.get(el);
+    if (entry && entry.visible !== visible) {
+      entry.visible = visible;
+      this.dirty.add(el);
+    }
+    return visible;
+  }
+
+  /**
+   * A tracked element's current message. The ancestor redaction check runs on
+   * every call (it is outside the subtree, so no record announces it, and a
+   * flip of it counts as dirty); the `extractMessage` clone runs only when the
+   * element is dirty. Clean, it is `stored`, the message last read.
+   */
+  private readTracked(el: Element, stored: string): string {
+    const redacted = isContentRedacted(el as HTMLElement);
+    const entry = this.tracked.get(el);
+    if (entry && entry.redacted !== redacted) {
+      entry.redacted = redacted;
+      this.dirty.add(el);
+    }
+    const dirty = this.takeDirty(el);
+    if (!entry) this.track(el);
+    if (redacted) return REDACTED_VALUE;
+    return dirty ? extractMessage(el) : stored;
   }
 
   /**
@@ -716,9 +949,10 @@ export class ToastCapture {
     const holder = this.activeToasts.get(base);
     if (!holder || holder.element === el) return base;
 
-    if (!isElementVisible(holder.element)) {
+    if (!this.trackedVisible(holder.element)) {
       this.dismissToast(base, now);
       if (holder.element.isConnected) this.park(holder.element, '');
+      else this.untrack(holder.element);
       return base;
     }
 
