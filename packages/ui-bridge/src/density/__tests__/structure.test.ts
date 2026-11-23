@@ -832,6 +832,28 @@ describe('density structure: review round 1', () => {
     expect(c['app.c1.s']).toMatchObject({ parent: 'app.c1.d', structureBy: 'geometry' });
   });
 
+  it('repeated cards with an unregistered section share no path block', () => {
+    const cap = capture([
+      {
+        id: 'app.c1.s',
+        tag: 'span',
+        xpath: '/div[@data-testid="card"]/section/span',
+        rect: [0, 0, 100, 20],
+        text: 'One',
+      },
+      {
+        id: 'app.c2.s',
+        tag: 'span',
+        xpath: '/div[@data-testid="card"]/section/span',
+        rect: [0, 500, 100, 20],
+        text: 'Two',
+      },
+    ]);
+    expect(cap.items.map((i) => i.blockKey)).toEqual([null, null]);
+    const b = densityBlocks(cap, null);
+    expect([b.blocks, b.unblocked]).toEqual([[], ['app.c1.s', 'app.c2.s']]);
+  });
+
   it("two chains anchored at each other never become each other's parent", () => {
     const c = byId(
       capture([
