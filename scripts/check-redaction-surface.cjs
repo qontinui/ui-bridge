@@ -46,6 +46,12 @@
 // sanctioned ones that sets `no-restricted-syntax` and reaches SDK source —
 // through `**/density/**`, `**/*.ts`, `packages/*/src/**`, no `files`, or a
 // spread copy of another block — fails the check in both modes.
+// It then lints a canary (one violation per selector) as every guarded SDK
+// file through ESLint's own per-file config lookup and requires every selector
+// to report, so a nested eslint.config.*, a processor, or a parser / language
+// override that blanks the code fails too; and it ratchets the two sanctioned
+// blocks' selector lists (`layer1Selectors`, `projectionSelectors`) so that
+// dropping a selector family from both blocks at once is a manifest change.
 //
 // Usage:
 //   node scripts/check-redaction-surface.cjs            # verify (CI, before Lint)
@@ -324,6 +330,9 @@ async function liveGuardReach(lists) {
       projectionFiles: lists.projectionModules,
       projectionIgnores: lists.projectionModuleIgnores,
     },
+    // What actually runs: ESLint's own per-file config lookup, exactly as
+    // `npm run lint` resolves it, so a nested eslint.config.* is seen too.
+    lintOptions: { cwd: REPO_ROOT },
   });
 }
 
@@ -344,11 +353,15 @@ async function main() {
       projectionModules: liveProjectionModules(),
       additiveGuardScopes: liveAdditiveGuardScopes(),
       globallyIgnoredSources: [],
+      layer1Selectors: [],
+      projectionSelectors: [],
       routes: liveRoutes(),
     };
     unratcheted = unratchetedSrcRefs();
     reach = await liveGuardReach(surface);
     surface.globallyIgnoredSources = reach.ignoredSdkFiles;
+    surface.layer1Selectors = reach.layer1Selectors;
+    surface.projectionSelectors = reach.projectionSelectors;
   } catch (e) {
     // Fail closed with an actionable message rather than a raw stack. Reached if
     // UI_BRIDGE_ROUTES changed shape (e.g. shorthand `{ method }`, quoted keys, a
@@ -432,6 +445,8 @@ async function main() {
   const ignoreDiff = diff(committed.projectionModuleIgnores || [], surface.projectionModuleIgnores);
   const additiveDiff = diff(committed.additiveGuardScopes || [], surface.additiveGuardScopes);
   const ignoredDiff = diff(committed.globallyIgnoredSources || [], surface.globallyIgnoredSources);
+  const l1SelDiff = diff(committed.layer1Selectors || [], surface.layer1Selectors);
+  const projSelDiff = diff(committed.projectionSelectors || [], surface.projectionSelectors);
   // Existence-check both file lists — with opposite dispositions: a projection
   // module that no longer resolves is DEAD GUARD COVERAGE; an exemption that no
   // longer resolves is a DEAD ALLOWLIST ENTRY (a renamed sanctioned reader).
@@ -540,6 +555,25 @@ async function main() {
     for (const m of ignoredDiff.removed) console.error(`   - (no longer ignored) ${m}`);
   }
 
+  for (const [what, d] of [
+    ['Layer-1', l1SelDiff],
+    ['projection', projSelDiff],
+  ]) {
+    if (!d.added.length && !d.removed.length) continue;
+    failed = true;
+    console.error('');
+    console.error(
+      `ERROR: the sanctioned ${what} block's no-restricted-syntax selectors drifted from the`
+    );
+    console.error(
+      '       manifest. A dropped selector is a §4.6 guard switched off for every file the'
+    );
+    console.error('       block reaches. Confirm the change is deliberate, then run');
+    console.error('       `npm run redaction:surface:update` and commit the manifest.');
+    for (const m of d.added) console.error(`   + (new in eslint) ${m.slice(0, 160)}`);
+    for (const m of d.removed) console.error(`   - (gone from eslint) ${m.slice(0, 160)}`);
+  }
+
   if (missingModules.length) {
     failed = true;
     console.error('');
@@ -571,7 +605,8 @@ async function main() {
       `${surface.projectionModuleIgnores.length} projection ignores, ` +
       `${surface.additiveGuardScopes.length} additive guard scopes, ` +
       `${surface.globallyIgnoredSources.length} globally ignored sources match the committed ` +
-      `surface; no other config block reaches SDK source with ${'`'}no-restricted-syntax${'`'}`
+      `surface (${surface.layer1Selectors.length} Layer-1 / ${surface.projectionSelectors.length} projection selectors); ` +
+      `no other block reaches SDK source with no-restricted-syntax, and every guarded file reports the §4.6 canary`
   );
 }
 

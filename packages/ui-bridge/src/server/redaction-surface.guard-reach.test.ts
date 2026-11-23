@@ -12,12 +12,15 @@
  * (follow-up 0df8fd16; coord finding 9e2ca54a).
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import tseslint from 'typescript-eslint';
 import { describe, expect, it } from 'vitest';
 // A static relative import, so the real-browser placement check can follow it.
 import guardReach from '../../../../scripts/lib/redaction-guard-reach.cjs';
+import liveConfig from '../../../../eslint.config.js';
 
 type Block = Record<string, unknown>;
 type Sanctioned = {
@@ -32,7 +35,13 @@ const { guardReachProblems } = guardReach as {
     cwd: string;
     sdkFiles: string[];
     sanctioned: Sanctioned;
-  }) => Promise<{ problems: string[]; ignoredSdkFiles: string[] }>;
+    lintOptions?: Record<string, unknown>;
+  }) => Promise<{
+    problems: string[];
+    ignoredSdkFiles: string[];
+    layer1Selectors: string[];
+    projectionSelectors: string[];
+  }>;
 };
 
 const ROOT = join(__dirname, '..', '..', '..', '..');
@@ -82,15 +91,16 @@ async function problemsOf(configs: unknown[]): Promise<string> {
 }
 // Like typescript-eslint's recommended block: what makes a .ts file linted at
 // all (a file no `files` pattern matches is ignored, so a sanctioned reader the
-// Layer-1 block ignores would otherwise read as unlinted).
-const TS_BASE: Block = { files: ['**/*.ts', '**/*.tsx'], rules: {} };
+// Layer-1 block ignores would otherwise read as unlinted), with the TS parser
+// the canary needs.
+const TS_BASE: Block = {
+  files: ['**/*.ts', '**/*.tsx'],
+  languageOptions: { parser: tseslint.parser },
+};
 const BASE = [TS_BASE, LAYER1, PROJECTION, PURITY];
 
 describe('the match-based guard-reach check of the redaction-surface ratchet', () => {
   it('passes the live eslint.config.js over the tracked SDK sources', async () => {
-    const live = (await import(pathToFileURL(join(ROOT, 'eslint.config.js')).href)) as {
-      default: Block[];
-    };
     const manifest = JSON.parse(
       readFileSync(join(ROOT, 'packages/ui-bridge/redaction-surface.manifest.json'), 'utf8')
     ) as Record<string, string[]>;
@@ -102,7 +112,7 @@ describe('the match-based guard-reach check of the redaction-surface ratchet', (
       .filter((f) => /\.(ts|tsx)$/.test(f));
     expect(sdkFiles.length).toBeGreaterThan(0);
     const result = await guardReachProblems({
-      configs: live.default,
+      configs: liveConfig as unknown[],
       cwd: ROOT,
       sdkFiles,
       sanctioned: {
@@ -111,13 +121,103 @@ describe('the match-based guard-reach check of the redaction-surface ratchet', (
         projectionFiles: manifest.projectionModules,
         projectionIgnores: manifest.projectionModuleIgnores,
       },
+      // The CLI's own lookup, as the ratchet runs it.
+      lintOptions: { cwd: ROOT },
     });
     expect(result.problems).toEqual([]);
     expect(result.ignoredSdkFiles).toEqual(manifest.globallyIgnoredSources);
+    expect(result.layer1Selectors).toEqual(manifest.layer1Selectors);
+    expect(result.projectionSelectors).toEqual(manifest.projectionSelectors);
   });
 
   it('passes a synthetic config with only the sanctioned and additive blocks', async () => {
-    expect(await check(BASE)).toEqual({ problems: [], ignoredSdkFiles: [] });
+    expect(await check(BASE)).toEqual({
+      problems: [],
+      ignoredSdkFiles: [],
+      layer1Selectors: [L1_SEL[0].selector],
+      projectionSelectors: [L1_SEL[0].selector, L2_SEL[0].selector].sort(),
+    });
+  });
+
+  // ---- shapes that blank the code instead of touching the rule ---------------
+  it('refuses a processor that hands the rule no code for SDK files', async () => {
+    const out = await problemsOf([
+      ...BASE,
+      { files: ['**/density/**/*.ts'], processor: { preprocess: () => [], postprocess: () => [] } },
+    ]);
+    expect(out).toContain('do not report every §4.6 selector');
+    expect(out).toContain(`${SRC}density/reach.ts`);
+  });
+
+  it('refuses a parser that yields an empty program for SDK files', async () => {
+    const empty = {
+      parseForESLint: (_code: string, options: Record<string, unknown>) =>
+        tseslint.parser.parseForESLint('', options),
+    };
+    const out = await problemsOf([
+      ...BASE,
+      { files: ['**/density/**/*.ts'], languageOptions: { parser: empty } },
+    ]);
+    expect(out).toContain('do not report every §4.6 selector');
+  });
+
+  it('refuses a nested eslint.config.* that replaces the root config for SDK files', async () => {
+    // ESLint looks a config file up from each linted file's directory, so a
+    // nested one replaces the root config there. Built on disk in a temp tree.
+    const dir = mkdtempSync(join(tmpdir(), 'guard-reach-'));
+    try {
+      // The temp tree has no node_modules, so its configs import the repo's
+      // typescript-eslint parser by absolute URL.
+      const parserPath = join(
+        ROOT,
+        'node_modules',
+        '@typescript-eslint',
+        'parser',
+        'dist',
+        'index.js'
+      );
+      expect(existsSync(parserPath)).toBe(true);
+      const parserUrl = pathToFileURL(parserPath).href;
+      const importParser = `import parser from ${JSON.stringify(parserUrl)};\n`;
+      // The root config is BASE, with the parser imported rather than inlined.
+      writeFileSync(
+        join(dir, 'eslint.config.mjs'),
+        importParser +
+          `const ts = { files: ['**/*.ts', '**/*.tsx'], languageOptions: { parser } };\n` +
+          `export default [ts, ...${JSON.stringify(BASE.slice(1))}];\n`
+      );
+      // The bypass: a nested config with the parser and no rules at all.
+      const nested = join(dir, SRC, 'density');
+      mkdirSync(nested, { recursive: true });
+      writeFileSync(
+        join(nested, 'eslint.config.mjs'),
+        importParser + `export default [{ files: ['**/*.ts'], languageOptions: { parser } }];\n`
+      );
+      const result = await guardReachProblems({
+        configs: BASE,
+        cwd: dir,
+        sdkFiles: SDK,
+        sanctioned: SANCTIONED,
+        lintOptions: { cwd: dir },
+      });
+      const out = result.problems.join('\n');
+      expect(out).toContain('1 guarded SDK file(s) do not report every §4.6 selector');
+      expect(out).toContain(`${SRC}density/reach.ts`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports the sanctioned selector lists, so dropping a family from both blocks moves the ratchet', async () => {
+    const extra = { selector: 'DebuggerStatement', message: 'L1b' };
+    const result = await check([
+      TS_BASE,
+      { ...LAYER1, rules: { 'no-restricted-syntax': ['error', ...L1_SEL, extra] } },
+      { ...PROJECTION, rules: { 'no-restricted-syntax': ['error', ...L1_SEL, extra, ...L2_SEL] } },
+      PURITY,
+    ]);
+    expect(result.layer1Selectors).toEqual(['DebuggerStatement', L1_SEL[0].selector].sort());
+    expect(result.layer1Selectors).not.toEqual((await check(BASE)).layer1Selectors);
   });
 
   // ---- the bypass shapes (each passed the text-only script) ------------------

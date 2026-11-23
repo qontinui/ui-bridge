@@ -42,6 +42,34 @@
   "globallyIgnoredSources": [
     "packages/ui-bridge/src/diagnostics/codes.generated.ts"
   ],
+  "layer1Selectors": [
+    "BinaryExpression[operator='in'][left.value='disabled']",
+    "CallExpression > MemberExpression[property.name=/^(split|toLowerCase|toUpperCase|trim|indexOf|includes|replace|replaceAll|match|startsWith|endsWith|substring|slice|charAt)$/] > MemberExpression[property.name='className']",
+    "CallExpression > MemberExpression[property.name=/^(split|toLowerCase|toUpperCase|trim|indexOf|includes|replace|replaceAll|match|startsWith|endsWith|substring|slice|charAt)$/] > MemberExpression[property.name='className'][optional=true]",
+    "CallExpression[callee.property.name='getAttribute'][arguments.0.value=/^(aria-label|aria-labelledby|placeholder|title|alt)$/]",
+    "CallExpression[callee.property.name=/^(getAttribute|hasAttribute)$/][arguments.0.value='aria-disabled']",
+    "MemberExpression[computed=false][property.name='ariaDisabled']:not(AssignmentExpression > .left):not([object.name=/^(disabledSignals|signals|sig|blockers|s|state)$/]):not([object.property.name='state'])",
+    "MemberExpression[computed=false][property.name='disabled'][object.type=/^(TSAsExpression|TSTypeAssertion)$/]:not(AssignmentExpression > .left), MemberExpression[computed=false][property.name='disabled'][object.type='TSNonNullExpression'][object.expression.type=/^(TSAsExpression|TSTypeAssertion)$/]:not(AssignmentExpression > .left)",
+    "MemberExpression[computed=false][property.name='innerText']:not(AssignmentExpression > .left):not(UnaryExpression[operator='typeof'] > .argument)",
+    "MemberExpression[property.name='pointerEvents'][object.type='CallExpression'][object.callee.name='getComputedStyle'], MemberExpression[property.name='pointerEvents'][object.type='CallExpression'][object.callee.property.name='getComputedStyle']",
+    "MemberExpression[property.name=/^__react(Props|Fiber)\\$/]",
+    "TSAsExpression[typeAnnotation.typeName.name='Scrubbed']"
+  ],
+  "projectionSelectors": [
+    "BinaryExpression[operator='in'][left.value='disabled']",
+    "CallExpression > MemberExpression[property.name=/^(split|toLowerCase|toUpperCase|trim|indexOf|includes|replace|replaceAll|match|startsWith|endsWith|substring|slice|charAt)$/] > MemberExpression[property.name='className']",
+    "CallExpression > MemberExpression[property.name=/^(split|toLowerCase|toUpperCase|trim|indexOf|includes|replace|replaceAll|match|startsWith|endsWith|substring|slice|charAt)$/] > MemberExpression[property.name='className'][optional=true]",
+    "CallExpression[callee.property.name='getAttribute'][arguments.0.value=/^(aria-label|aria-labelledby|placeholder|title|alt)$/]",
+    "CallExpression[callee.property.name=/^(getAttribute|hasAttribute)$/][arguments.0.value='aria-disabled']",
+    "MemberExpression[computed=false][property.name='ariaDisabled']:not(AssignmentExpression > .left):not([object.name=/^(disabledSignals|signals|sig|blockers|s|state)$/]):not([object.property.name='state'])",
+    "MemberExpression[computed=false][property.name='disabled'][object.type=/^(TSAsExpression|TSTypeAssertion)$/]:not(AssignmentExpression > .left), MemberExpression[computed=false][property.name='disabled'][object.type='TSNonNullExpression'][object.expression.type=/^(TSAsExpression|TSTypeAssertion)$/]:not(AssignmentExpression > .left)",
+    "MemberExpression[computed=false][property.name='innerText']:not(AssignmentExpression > .left):not(UnaryExpression[operator='typeof'] > .argument)",
+    "MemberExpression[computed=false][property.name='textContent']:not(AssignmentExpression > .left):not(UnaryExpression[operator='typeof'] > .argument):not([object.name=/^(state|searchable|criteria|verdict|reactVerdict|redactionVerdict|options|option|opt|spec|request|params|info|event|capturedEvent|parsed|updates|changes|acc|bv|av|existing|iter|o|sel)$/]):not([object.property.name=/^(state|params)$/])",
+    "MemberExpression[computed=false][property.name='value']:not(AssignmentExpression > .left):not(UnaryExpression[operator='typeof'] > .argument):not(UpdateExpression > .argument):not(MemberExpression > .object):not([object.type='CallExpression']):not([object.name=/^(state|searchable|criteria|verdict|reactVerdict|redactionVerdict|options|option|opt|spec|request|params|info|event|capturedEvent|parsed|updates|changes|acc|bv|av|existing|iter|o|sel)$/]):not([object.property.name=/^(state|params)$/])",
+    "MemberExpression[property.name='pointerEvents'][object.type='CallExpression'][object.callee.name='getComputedStyle'], MemberExpression[property.name='pointerEvents'][object.type='CallExpression'][object.callee.property.name='getComputedStyle']",
+    "MemberExpression[property.name=/^__react(Props|Fiber)\\$/]",
+    "TSAsExpression[typeAnnotation.typeName.name='Scrubbed']"
+  ],
   "routes": [
     "DELETE /ai/bookmark/:name -> deleteBookmark",
     "DELETE /ai/bookmarks/:name -> deleteBookmark",
