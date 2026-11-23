@@ -89,12 +89,12 @@ export const DENSITY_AFFORDANCE_RULES: Readonly<
   'control-above-repeat': {
     kind: 'filter',
     definition:
-      "a select, combobox, listbox, checkbox or radio in the repeat's block or parent, centred above its first row",
+      "a select, combobox, listbox, checkbox or radio in the repeat's block (else its parent), outside every other repeat's rows, centred above its first row",
   },
   'nav-after-repeat': {
     kind: 'pager',
     definition:
-      "an interactive item inside a `nav`, in the repeat's block or parent, centred below its last row",
+      "an interactive item inside a `nav`, in the repeat's block (else its parent), centred below its last row: one entry per control, not per pager",
   },
   'scroll-width': {
     kind: 'truncation',
@@ -183,6 +183,22 @@ export function densityAffordances(
   const blocks = inputs.blocks ?? densityBlocks(capture, targets, leaves);
   const repeats = inputs.repeats ?? densityRepeats(capture, targets, { leaves, blocks });
   const leafSet = new Set(leaves.ids);
+  const byId = new Map(capture.items.map((i) => [i.id, i]));
+  /**
+   * A menu item is as open as the nearest `menu` it sits in (by parent links);
+   * `null` with no such ancestor, since an item's own visibility does not say
+   * whether its menu is open.
+   */
+  const itemMenuState = (item: DensityItem): DensityAffordanceState => {
+    const seen = new Set<string>();
+    let cur = item.parent === null ? undefined : byId.get(item.parent);
+    while (cur && !seen.has(cur.id)) {
+      if (cur.role === 'menu') return menuState(cur);
+      seen.add(cur.id);
+      cur = cur.parent === null ? undefined : byId.get(cur.parent);
+    }
+    return null;
+  };
   const out: DensityAffordance[] = [];
   const add = (
     item: DensityItem,
@@ -212,7 +228,7 @@ export function densityAffordances(
     }
     // menu
     if (item.role === 'menu') add(item, 'role-menu', menuState(item));
-    else if (item.role === 'menuitem') add(item, 'role-menuitem', menuState(item));
+    else if (item.role === 'menuitem') add(item, 'role-menuitem', itemMenuState(item));
     // search
     if (item.role === 'searchbox') add(item, 'role-searchbox', null);
     // truncation
@@ -228,7 +244,7 @@ export function densityAffordances(
 
   // filters and pagers: per repeat
   for (const rep of repeats) {
-    const scope = densityRepeatScope(capture, rep, blocks);
+    const scope = densityRepeatScope(capture, rep, blocks, repeats);
     const aimed = densityRepeatTargets(capture, rep);
     for (const item of capture.items) {
       if (scope.own.has(item.id)) continue;
