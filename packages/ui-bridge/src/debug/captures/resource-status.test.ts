@@ -19,6 +19,7 @@ import type {
 import { classifyEvent } from '../error-severity';
 import { computeFingerprint } from '../error-fingerprint';
 import { extractMessage } from '../error-snapshot';
+import { computeHealthReport } from '../health-score';
 
 const STORAGE_KEY = 'qontinui-ui-bridge:resource-status:v1';
 
@@ -95,10 +96,31 @@ const ONLY_DEFAULT_RESOURCE_STATUS: BrowserCaptureConfig = {
   frameworkOverlays: false,
 };
 
+/** resource-status beside the two captures that already report some failures. */
+const WITH_NETWORK_AND_RESOURCE_ERRORS: BrowserCaptureConfig = {
+  ...ONLY_DEFAULT_RESOURCE_STATUS,
+  network: true,
+  resourceErrors: true,
+};
+
+/** An entry the browser records after install, finishing now. */
+function liveEntry(name: string, responseStatus: number, initiatorType = 'fetch'): Entry {
+  const now = performance.now();
+  return {
+    ...resourceEntry(name, responseStatus, initiatorType),
+    startTime: now + 1,
+    responseEnd: now + 2,
+  };
+}
+
+function setReferrer(value: string): void {
+  Object.defineProperty(document, 'referrer', { configurable: true, get: () => value });
+}
+
 const installed: BrowserEventCapture[] = [];
 
-function install(): BrowserEventCapture {
-  const capture = new BrowserEventCapture(ONLY_DEFAULT_RESOURCE_STATUS);
+function install(config: BrowserCaptureConfig = ONLY_DEFAULT_RESOURCE_STATUS): BrowserEventCapture {
+  const capture = new BrowserEventCapture(config);
   capture.install();
   installed.push(capture);
   return capture;
@@ -133,6 +155,7 @@ beforeEach(() => {
 
 afterEach(() => {
   for (const c of installed.splice(0)) c.uninstall();
+  delete (document as unknown as { referrer?: unknown }).referrer;
   vi.unstubAllGlobals();
   delete (performance as unknown as { getEntriesByType?: unknown }).getEntriesByType;
   sessionStorage.clear();
@@ -251,17 +274,8 @@ describe('resource-status capture', () => {
       'resource',
       Array.from({ length: 250 }, (_, i) => resourceEntry(`https://app.example.com/a/${i}`, 200))
     );
-    // Under vitest's jsdom environment `performance` is Node's, which refuses a
-    // jsdom Event; capture the listener instead of dispatching.
-    const listeners: Array<() => void> = [];
-    const spy = vi
-      .spyOn(performance, 'addEventListener')
-      .mockImplementation((type: string, listener: unknown) => {
-        if (type === 'resourcetimingbufferfull') listeners.push(listener as () => void);
-      });
     const capture = install();
     await settle();
-    spy.mockRestore();
     let events = statusEvents(capture);
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
@@ -271,12 +285,149 @@ describe('resource-status capture', () => {
     });
 
     // A buffer that fills AFTER install is no gap: the live observer still
-    // receives every entry, so no listener is registered and nothing is emitted.
-    expect(listeners).toHaveLength(0);
+    // receives every entry, so nothing more is emitted.
     FakePerformanceObserver.record('resource', [resourceEntry('https://app.example.com/z', 429)]);
     events = statusEvents(capture);
     expect(events.filter((e) => e.kind === 'buffer-full')).toHaveLength(1);
     expect(events.at(-1)).toMatchObject({ kind: 'status', responseStatus: 429 });
+  });
+
+  it('records preInstall and which capture already covers an entry', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('', { status: 200 }))
+    );
+    FakePerformanceObserver.record('resource', [
+      resourceEntry('https://app.example.com/api/v1/early', 503),
+    ]);
+    const capture = install(WITH_NETWORK_AND_RESOURCE_ERRORS);
+    await settle();
+    FakePerformanceObserver.record('resource', [
+      liveEntry('https://app.example.com/api/v1/late', 503),
+      liveEntry('https://app.example.com/api/ui-bridge/relay', 429),
+      liveEntry('https://app.example.com/api/v1/xhr', 503, 'xmlhttprequest'),
+      liveEntry('https://app.example.com/missing.png', 404, 'img'),
+      liveEntry('https://app.example.com/bg.png', 404, 'css'),
+    ]);
+    const byUrl = new Map(
+      statusEvents(capture).map((e) => [e.kind === 'status' ? e.resourceUrl : e.kind, e])
+    );
+    const get = (path: string) => byUrl.get(`https://app.example.com${path}`);
+    expect(get('/api/v1/early')).toMatchObject({ preInstall: true });
+    expect(get('/api/v1/early')).not.toHaveProperty('coveredBy');
+    expect(get('/api/v1/late')).toMatchObject({ preInstall: false, coveredBy: 'network' });
+    // The network capture ignores /api/ui-bridge/ and wraps fetch only.
+    expect(get('/api/ui-bridge/relay')).not.toHaveProperty('coveredBy');
+    expect(get('/api/v1/xhr')).not.toHaveProperty('coveredBy');
+    expect(get('/missing.png')).toMatchObject({ preInstall: false, coveredBy: 'resource-error' });
+    expect(get('/bg.png')).not.toHaveProperty('coveredBy');
+  });
+
+  it('claims no coverage for a capture that is switched off', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('', { status: 200 }))
+    );
+    const capture = install();
+    await settle();
+    FakePerformanceObserver.record('resource', [
+      liveEntry('https://app.example.com/api/v1/late', 503),
+      liveEntry('https://app.example.com/missing.png', 404, 'img'),
+    ]);
+    for (const e of statusEvents(capture)) expect(e).not.toHaveProperty('coveredBy');
+  });
+
+  it('one failed fetch seen by network and resource-status counts as one error', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('', { status: 503 }))
+    );
+    const capture = install(WITH_NETWORK_AND_RESOURCE_ERRORS);
+    await settle();
+    await window.fetch('https://app.example.com/api/v1/sessions');
+    FakePerformanceObserver.record('resource', [
+      liveEntry('https://app.example.com/api/v1/sessions', 503),
+    ]);
+    const recent = capture.getSince(Date.now() - 60_000).map((e) => e.type);
+    expect(recent).toEqual(expect.arrayContaining(['network', 'resource-status']));
+    const report = computeHealthReport(capture);
+    expect(report.breakdown).toEqual({ crashes: 0, errors: 1, warnings: 0 });
+  });
+
+  it('one failed img seen by resource-errors and resource-status counts once', async () => {
+    const capture = install(WITH_NETWORK_AND_RESOURCE_ERRORS);
+    await settle();
+    const img = document.createElement('img');
+    img.src = 'https://app.example.com/missing.png';
+    document.body.appendChild(img);
+    img.dispatchEvent(new Event('error'));
+    img.remove();
+    FakePerformanceObserver.record('resource', [
+      liveEntry('https://app.example.com/missing.png', 404, 'img'),
+    ]);
+    const recent = capture.getSince(Date.now() - 60_000).map((e) => e.type);
+    expect(recent).toEqual(expect.arrayContaining(['resource-error', 'resource-status']));
+    const { breakdown } = computeHealthReport(capture);
+    expect(breakdown.crashes + breakdown.errors + breakdown.warnings).toBe(1);
+  });
+
+  it('carries only failures and blind spots — never unknown statuses or the cap', async () => {
+    const first = install();
+    await settle();
+    FakePerformanceObserver.record('resource', [
+      ...Array.from({ length: 30 }, (_, i) =>
+        resourceEntry(`https://cdn.example.com/${i}.png`, 0, 'img')
+      ),
+      resourceEntry('https://app.example.com/api/v1/x', 429),
+    ]);
+    window.dispatchEvent(new Event('pagehide'));
+    first.uninstall();
+
+    newDocument();
+    const second = install();
+    await settle();
+    const carried = statusEvents(second);
+    expect(carried).toHaveLength(1);
+    expect(carried[0]).toMatchObject({ responseStatus: 429, fromPreviousDocument: true });
+  });
+
+  it('carries an observer-unavailable blind spot', async () => {
+    FakePerformanceObserver.supportedEntryTypes = ['longtask'];
+    const first = install();
+    await settle();
+    window.dispatchEvent(new Event('pagehide'));
+    first.uninstall();
+
+    newDocument();
+    FakePerformanceObserver.supportedEntryTypes = ['resource'];
+    const second = install();
+    await settle();
+    const carried = statusEvents(second);
+    expect(carried).toHaveLength(1);
+    expect(carried[0]).toMatchObject({ kind: 'observer-unavailable', fromPreviousDocument: true });
+  });
+
+  it('drops a carry whose writer is not this document’s referrer', async () => {
+    const write = async () => {
+      const capture = install();
+      await settle();
+      FakePerformanceObserver.record('resource', [resourceEntry('https://app.example.com/q', 429)]);
+      window.dispatchEvent(new Event('pagehide'));
+      capture.uninstall();
+      newDocument();
+    };
+
+    await write();
+    setReferrer('https://elsewhere.example/other?x=1');
+    expect(statusEvents(install())).toHaveLength(0);
+    await settle();
+    expect(sessionStorage.getItem(STORAGE_KEY)).toBeNull();
+
+    await write();
+    setReferrer(`${window.location.origin}${window.location.pathname}?from=nav#frag`);
+    const kept = install();
+    await settle();
+    expect(statusEvents(kept)).toHaveLength(1);
   });
 
   it('pageshow from the back/forward cache withdraws the carry it wrote', async () => {
@@ -339,13 +490,16 @@ describe('resource-status capture', () => {
       responseStatus: 429,
       startTime: 1,
       responseEnd: 2,
+      preInstall: true,
     };
     sessionStorage.setItem(
       STORAGE_KEY,
       JSON.stringify({
         v: 1,
         writtenAt: Date.now(),
+        writtenBy: `${window.location.origin}${window.location.pathname}`,
         events: [
+          { ...valid, preInstall: 'yes' },
           { ...valid, kind: 'bogus' },
           {
             type: 'resource-status',
@@ -466,6 +620,7 @@ describe('resource-status classification', () => {
     responseStatus,
     startTime: 1,
     responseEnd: 2,
+    preInstall: true,
   });
 
   it('grades a fetch/XHR 4xx as warning (the network capture also sees it), 5xx as error', () => {
@@ -489,6 +644,43 @@ describe('resource-status classification', () => {
         kind: 'buffer-full',
         bufferFull: true,
         resourceEntryCount: 250,
+      }).severity
+    ).toBe('noise');
+  });
+
+  it('grades an entry another capture already reports as noise, unless carried over', () => {
+    const live = { preInstall: false };
+    expect(classifyEvent({ ...entry(503), ...live, coveredBy: 'network' as const }).severity).toBe(
+      'noise'
+    );
+    expect(
+      classifyEvent({
+        ...entry(404),
+        ...live,
+        initiatorType: 'img',
+        coveredBy: 'resource-error' as const,
+      }).severity
+    ).toBe('noise');
+    // Uncovered after install (an ignored relay URL): full severity.
+    expect(classifyEvent({ ...entry(503), ...live }).severity).toBe('error');
+    // The previous document's network event is gone with it: full severity, one step down.
+    expect(
+      classifyEvent({
+        ...entry(503),
+        ...live,
+        coveredBy: 'network' as const,
+        fromPreviousDocument: true as const,
+      }).severity
+    ).toBe('warning');
+  });
+
+  it('grades the unknown-status cap as noise', () => {
+    expect(
+      classifyEvent({
+        ...base,
+        kind: 'unknown-status-capped',
+        unknownStatusCapped: true,
+        budget: 25,
       }).severity
     ).toBe('noise');
   });

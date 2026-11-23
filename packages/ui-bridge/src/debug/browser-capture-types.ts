@@ -113,15 +113,28 @@ export interface ResourceStatusEntryEvent extends ResourceStatusEventBase {
   /** What initiated the fetch (`fetch`, `xmlhttprequest`, `script`, `navigation`, …). */
   initiatorType: string;
   /**
-   * The HTTP status, or `null` when the browser reported none (no
-   * `Timing-Allow-Origin` on a cross-origin response, or an engine without
-   * `responseStatus`). `null` is UNKNOWN — never a success.
+   * The HTTP status, or `null` when the browser reported none: `0` (reported
+   * for some cross-origin responses) or missing (an engine that does not
+   * report `responseStatus`). `null` is UNKNOWN — never a success.
    */
   responseStatus: number | null;
   /** `performance.now()`-clock start of the fetch, in the observing document's clock. */
   startTime: number;
   /** `performance.now()`-clock end of the response, in the observing document's clock. */
   responseEnd: number;
+  /**
+   * The request started before the capture was installed (a buffered replay
+   * entry, or the document's own navigation entry), so no other capture saw it.
+   */
+  preInstall: boolean;
+  /**
+   * The capture that already reports this failure in this document, recorded
+   * at capture time: `network` for a fetch after install whose URL the network
+   * capture does not ignore, `resource-error` for an img/script/link after
+   * install. Such an entry scores as noise so one failure counts once. Absent
+   * when no other capture saw it.
+   */
+  coveredBy?: 'network' | 'resource-error';
 }
 
 /** This webview cannot observe Resource Timing: every status is UNKNOWN. */
@@ -131,10 +144,11 @@ export interface ResourceStatusObserverUnavailableEvent extends ResourceStatusEv
 }
 
 /**
- * The Resource Timing buffer was already full when the capture was installed,
- * so failures from before install may be missing: the pre-install window is
- * UNKNOWN. A buffer that fills after install is not reported — the live
- * observer still receives every entry.
+ * At install the Resource Timing buffer held at or above the default buffer
+ * size (250) entries, so failures from before install may be missing: the
+ * pre-install window is UNKNOWN. A page that changed its buffer size cannot be
+ * judged this way. A buffer that fills after install is not reported — the
+ * live observer still receives every entry.
  */
 export interface ResourceStatusBufferFullEvent extends ResourceStatusEventBase {
   kind: 'buffer-full';

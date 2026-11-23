@@ -14,7 +14,17 @@ interface NetworkOptions {
   ignorePatterns?: string[];
 }
 
-const DEFAULT_IGNORE = ['/api/dev-debug/', '/api/ui-bridge/', 'localhost:9876'];
+/** URL substrings the network capture skips unless `ignorePatterns` overrides them. */
+export const DEFAULT_NETWORK_IGNORE_PATTERNS: readonly string[] = [
+  '/api/dev-debug/',
+  '/api/ui-bridge/',
+  'localhost:9876',
+];
+
+/** Whether the network capture, configured with `ignorePatterns`, skips `url`. */
+export function isIgnoredByNetworkCapture(url: string, ignorePatterns: readonly string[]): boolean {
+  return ignorePatterns.some((p) => url.includes(p));
+}
 
 export function installNetworkCapture(emit: Emit, options?: NetworkOptions): () => void {
   if (typeof window === 'undefined' || typeof window.fetch !== 'function') {
@@ -22,10 +32,10 @@ export function installNetworkCapture(emit: Emit, options?: NetworkOptions): () 
   }
 
   const originalFetch = window.fetch;
-  const ignorePatterns = options?.ignorePatterns ?? DEFAULT_IGNORE;
+  const ignorePatterns = options?.ignorePatterns ?? DEFAULT_NETWORK_IGNORE_PATTERNS;
 
   function shouldIgnore(url: string): boolean {
-    return ignorePatterns.some((p) => url.includes(p));
+    return isIgnoredByNetworkCapture(url, ignorePatterns);
   }
 
   function getMethod(input: RequestInfo | URL, init?: RequestInit): string {
