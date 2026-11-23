@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { extractReactState } from './action-executor';
+import { extractReactState } from './extract-react-state';
 
 /**
  * Regression tests for the `extractReactState` IPC-timeout bug surfaced by

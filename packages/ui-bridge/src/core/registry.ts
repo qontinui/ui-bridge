@@ -2129,6 +2129,16 @@ export class UIBridgeRegistry {
   }
 
   /**
+   * Does this registry keep element history at all? `false` when it was built
+   * without an `elementEventLog`, so {@link getElementHistory}'s `[]` means
+   * "nothing is recorded here", not "nothing happened" — the history reads
+   * (`react/history-commands.ts`) answer that as a capability statement.
+   */
+  hasElementHistory(): boolean {
+    return this.options.elementEventLog !== undefined;
+  }
+
+  /**
    * Set the log level override for a specific element.
    */
   setElementLogLevel(elementId: string, level: ElementLogLevel): void {

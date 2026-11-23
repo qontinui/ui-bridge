@@ -349,6 +349,8 @@ export default tseslint.config(
           'packages/ui-bridge/src/ai/search-engine.ts',
           'packages/ui-bridge/src/ai/semantic-snapshot.ts',
           'packages/ui-bridge/src/control/action-executor.ts',
+          // `getElementReactState`'s React-internals projection (§4.6 scrub).
+          'packages/ui-bridge/src/control/extract-react-state.ts',
           'packages/ui-bridge/src/control/media-override.ts',
           'packages/ui-bridge/src/adapters/formik.ts',
           'packages/ui-bridge/src/adapters/react-hook-form.ts',

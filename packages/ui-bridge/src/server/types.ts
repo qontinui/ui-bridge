@@ -26,6 +26,7 @@ import type {
 import type { ElementState, FillResult } from '../core/types';
 import type { ControlBatchRequest, ControlBatchResponse } from '../control/control-batch';
 import type { ElementProjection } from '../core/element-projection';
+import type { SdkDiagnostics } from '../core/sdk-diagnostics';
 import type {
   ComponentCapture,
   ComponentCaptureRefusal,
@@ -1658,22 +1659,7 @@ export interface UIBridgeServerHandlers {
   >;
 
   // Diagnostics endpoint
-  getDiagnostics: (context?: HandlerContext) => Promise<
-    APIResponse<{
-      sdk_initialized: boolean;
-      auto_register_active: boolean;
-      registered_elements: number;
-      dom_interactive_elements: number;
-      mutation_observer_active: boolean;
-      navigation_adapter: string;
-      page_title: string;
-      page_url: string;
-      page_ready: boolean;
-      providers_mounted: string[];
-      last_discover_at: string | null;
-      capabilities: string[];
-    }>
-  >;
+  getDiagnostics: (context?: HandlerContext) => Promise<APIResponse<SdkDiagnostics>>;
 
   // Navigation adapter endpoints
   getRoutes: (
