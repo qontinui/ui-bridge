@@ -225,6 +225,23 @@ name = "observation-vendoring-check"
 command = ["npm", "run", "observation:check"]
 
 [[steps]]
+name = "density-vendoring-self-test"
+# parity: ci.yml lint-and-test "Density core vendoring self-test"
+# ci.yml "Density core vendoring self-test" → `density:check:test` =
+# `node scripts/sync-density.test.mjs`. Pins the vendoring check against fixture
+# trees (drift, missing, stale, forbidden imports) before the check runs.
+command = ["npm", "run", "density:check:test"]
+
+[[steps]]
+name = "density-vendoring-check"
+# parity: ci.yml lint-and-test "Density core vendoring check"
+# ci.yml "Density core vendoring check" → `density:check` =
+# `node scripts/sync-density.mjs --check`. Fails if ui-bridge-headless's
+# generated copy of the density core drifts from packages/ui-bridge/src/density/
+# and the Observation envelope.
+command = ["npm", "run", "density:check"]
+
+[[steps]]
 name = "redaction-surface-ratchet"
 # parity: ci.yml lint-and-test "Redaction surface ratchet"
 # ci.yml "Redaction surface ratchet" → `redaction:check-surface` =

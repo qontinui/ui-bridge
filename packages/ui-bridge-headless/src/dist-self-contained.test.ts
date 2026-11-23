@@ -28,9 +28,31 @@ const RUNTIME_BLOCKS = ['dependencies', 'peerDependencies', 'optionalDependencie
 const SPECIFIER = /["'`]@qontinui\/ui-bridge-cli-args(?:\/[^"'`]*)?["'`]/;
 /** What ships from dist and is loaded by node or by tsc: bundles and declarations. */
 const SHIPPED = /\.(?:c|m)?js$|\.d\.(?:c|m)?ts$/;
-const OUTPUTS = ['cli.js', 'cli.cjs', 'cli.d.ts', 'index.js', 'index.cjs', 'index.d.ts'].map(
-  (name) => join(DIST_DIR, name)
-);
+const OUTPUTS = [
+  'cli.js',
+  'cli.cjs',
+  'cli.d.ts',
+  'density-cli.js',
+  'density-cli.cjs',
+  'density-cli.d.ts',
+  'index.js',
+  'index.cjs',
+  'index.d.ts',
+].map((name) => join(DIST_DIR, name));
+/**
+ * Any quoted module specifier naming the SDK itself (or a subpath of it, such
+ * as `@qontinui/ui-bridge/density`), but not a sibling package whose name only
+ * starts with it (`@qontinui/ui-bridge-headless`, `-cli-args`).
+ */
+const SDK_SPECIFIER = /["'`]@qontinui\/ui-bridge(?:\/[^"'`]*)?["'`]/;
+
+/**
+ * Source text with comments removed: prose that names the SDK (a declaration's
+ * doc comment saying why it is NOT imported) is not a module specifier.
+ */
+function withoutComments(text: string): string {
+  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+}
 
 function walk(dir: string, keep: (name: string) => boolean): string[] {
   const out: string[] = [];
@@ -66,10 +88,30 @@ describe('cli-args is bundled into dist, not a runtime dependency', () => {
     expect(offenders).toEqual([]);
   });
 
+  it('no built bundle or declaration file references the SDK as a module specifier', () => {
+    // The SDK depends on this package (an optional peer), so headless must
+    // never load it: `ui-bridge-density` runs the generated copy of the density
+    // core (scripts/sync-density.mjs, plan D-A), bundled into its own output.
+    const offenders = walk(DIST_DIR, (name) => SHIPPED.test(name))
+      .filter((f) => SDK_SPECIFIER.test(withoutComments(readFileSync(f, 'utf8'))))
+      .map((f) => relative(PKG_DIR, f));
+    expect(offenders).toEqual([]);
+  });
+
+  it('the density bundle carries the core itself', () => {
+    // Positive control for the test above: with no SDK import, the core's code
+    // must be inside the bundle — its capture schema id is a literal of it.
+    for (const bundle of ['density-cli.js', 'density-cli.cjs']) {
+      expect(readFileSync(join(DIST_DIR, bundle), 'utf8'), `dist/${bundle}`).toContain(
+        'ui-bridge/density-capture@1'
+      );
+    }
+  });
+
   it('the CLI bundle carries the inlined parser', () => {
     // Positive control: the CLI uses cli-args, so with the import gone its code
     // must be inside the bundle — otherwise the import was dropped, not inlined.
-    for (const bundle of ['cli.js', 'cli.cjs']) {
+    for (const bundle of ['cli.js', 'cli.cjs', 'density-cli.js', 'density-cli.cjs']) {
       const text = readFileSync(join(DIST_DIR, bundle), 'utf8');
       expect(text, `dist/${bundle} lacks the inlined consumeValue`).toMatch(
         /function consumeValue\d*\b/

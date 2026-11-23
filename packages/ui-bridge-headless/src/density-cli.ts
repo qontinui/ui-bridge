@@ -1,0 +1,431 @@
+#!/usr/bin/env node
+/**
+ * `ui-bridge-density` — measure how much effort it takes a role to reach what
+ * it came for, from a UI Bridge control snapshot.
+ *
+ *   ui-bridge-density measure --snapshot <file|-> --role <role>
+ *                             [--fixture <name>] [--targets <file>] [--capture-out <file>]
+ *
+ * `--snapshot` reads a `GET /control/snapshot` answer from any relay or runner,
+ * in the relay's `{ success, data, _meta }` envelope or bare (the form the
+ * wrapper's `--capture-matrix` writes as `snapshot-<n>.json`); `-` reads
+ * standard input. Standard output is ONE JSON document: the cells in order,
+ * each with its `Observation` from producer `sdk/density`, and `next[]`.
+ *
+ * In this release `measure` answers the capture summary — the cell, the
+ * viewport, the bases and the coverage. `--capture-out` writes the text-free
+ * `ui-bridge/density-capture@1`, which is how a cell is kept for a later
+ * `diff` without keeping the snapshot (which carries the page's text).
+ *
+ * Exit: 0 an answer (an `unknown` observation IS an answer), 1 an internal
+ * error (a bug, with its stack on stderr), 2 a usage error,
+ * 129 / 130 / 143 interrupted by SIGHUP / SIGINT / SIGTERM, after printing a
+ * typed `interrupted` document naming the step it reached.
+ *
+ * The density core is the generated copy under `./density/` (scripts/sync-density.mjs),
+ * never `@qontinui/ui-bridge`: the SDK depends on this package, not the reverse.
+ *
+ * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change, Phase 2.
+ */
+
+import { readFileSync, writeFileSync } from 'node:fs';
+import { consumeValue, type ArgErrorFactory } from '@qontinui/ui-bridge-cli-args';
+import { isEntryModule } from './entry-guard.js';
+import {
+  DENSITY_PRODUCER_ID,
+  captureDensityFromSnapshot,
+  densityAsksHash,
+  parseDensityTargets,
+  type DensityCapture,
+  type DensityCaptureBases,
+  type DensityCaptureViewport,
+  type DensityCell,
+  type DensityCoverage,
+  type DensityProbeResult,
+  type DensityProducer,
+  type DensityTargets,
+} from './density/index.js';
+import { Observation } from './observation/observation.js';
+
+/** Replaced at build time with this package's version (tsup `define`, mirrored in vitest.config.ts). */
+declare const __HEADLESS_VERSION__: string;
+
+export const DENSITY_CLI_PACKAGE = '@qontinui/ui-bridge-headless';
+
+/** Who ran the core (plan D-E): `sdk/density`, at this package's version. */
+export function densityCliProducer(): DensityProducer {
+  return { id: DENSITY_PRODUCER_ID, version: __HEADLESS_VERSION__, package: DENSITY_CLI_PACKAGE };
+}
+
+/** Raised on bad CLI input; `main()` maps it to stderr and exit 2. */
+export class DensityCliArgError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DensityCliArgError';
+  }
+}
+
+const USAGE = `ui-bridge-density — reach per role, from a UI Bridge control snapshot
+
+Usage:
+  ui-bridge-density measure --snapshot <file|-> --role <role> [options]
+  ui-bridge-density --help | --version
+
+measure:
+  --snapshot <file|->      A GET /control/snapshot answer (relay envelope or bare);
+                           '-' reads standard input
+  --role <role>            The audience role this snapshot is read as
+  --fixture <name>         The data state the page was loaded with
+  --targets <file>         A ui-bridge/density-targets@1 file: checks the role's
+                           probe and evaluates its text matchers
+  --capture-out <file>     Write the text-free ui-bridge/density-capture@1
+
+Output: one JSON document on standard output — the cells, each with its
+Observation (producer sdk/density), and next[].
+Exit: 0 an answer (unknown included), 1 internal error, 2 usage error,
+129/130/143 interrupted.
+`;
+
+/** The closed vocabulary of follow-up steps a report may name (plan "Budget half"). */
+export type DensityNextStep =
+  | 'write-targets'
+  | 'review-targets'
+  | 'set-limit'
+  | 'capture'
+  | 'apply'
+  | 're-measure';
+
+export interface DensityMeasureArgs {
+  verb: 'measure';
+  snapshot: string;
+  role: string;
+  fixture: string | null;
+  targets: string | null;
+  captureOut: string | null;
+}
+
+export type DensityCliArgs = DensityMeasureArgs | { verb: 'help' } | { verb: 'version' };
+
+const VERBS_LATER = ['init', 'lint', 'fit', 'plan', 'assert', 'diff'];
+
+export function parseDensityArgs(argv: string[]): DensityCliArgs {
+  const mkError: ArgErrorFactory = (m) => new DensityCliArgError(m);
+  if (argv.length === 0) throw mkError(`a verb is required\n\n${USAGE}`);
+  if (argv.includes('--help') || argv.includes('-h')) return { verb: 'help' };
+  if (argv[0] === '--version') return { verb: 'version' };
+  const [verb, ...rest] = argv;
+  if (verb !== 'measure') {
+    if (verb !== undefined && VERBS_LATER.includes(verb)) {
+      throw mkError(`the verb '${verb}' is not in this release; this build has: measure`);
+    }
+    if (verb !== undefined && verb.startsWith('--'))
+      throw mkError(`Unknown flag: ${verb}\n\n${USAGE}`);
+    throw mkError(`Unknown verb: ${verb ?? ''}\n\n${USAGE}`);
+  }
+  let snapshot: string | null = null;
+  let role: string | null = null;
+  let fixture: string | null = null;
+  let targets: string | null = null;
+  let captureOut: string | null = null;
+  const value = (flag: string, raw: string | undefined): string => {
+    const v = consumeValue(flag, raw, mkError);
+    if (v === null || v === '') throw mkError(`${flag} expects a value`);
+    return v;
+  };
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i];
+    switch (arg) {
+      case '--snapshot':
+        snapshot = value('--snapshot', rest[++i]);
+        break;
+      case '--role':
+        role = value('--role', rest[++i]);
+        break;
+      case '--fixture':
+        fixture = value('--fixture', rest[++i]);
+        break;
+      case '--targets':
+        targets = value('--targets', rest[++i]);
+        break;
+      case '--capture-out':
+        captureOut = value('--capture-out', rest[++i]);
+        break;
+      default:
+        if (arg !== undefined && arg.startsWith('-') && arg !== '-') {
+          throw mkError(`Unknown flag: ${arg}\n\n${USAGE}`);
+        }
+        throw mkError(`Unexpected argument: ${arg ?? ''}\n\n${USAGE}`);
+    }
+  }
+  if (snapshot === null) throw mkError(`measure: --snapshot is required\n\n${USAGE}`);
+  if (role === null) throw mkError(`measure: --role is required\n\n${USAGE}`);
+  return { verb: 'measure', snapshot, role, fixture, targets, captureOut };
+}
+
+/** What `measure` reports for a cell in this release. Holds no page text. */
+export interface DensityCaptureSummary {
+  scope: DensityCapture['scope'];
+  cell: DensityCell;
+  viewport: DensityCaptureViewport;
+  bases: DensityCaptureBases;
+  coverage: DensityCoverage;
+  probe: DensityProbeResult | null;
+  items: number;
+  structureResolved: boolean;
+  snapshotId: string | null;
+  observedAt: string | null;
+  targetsHash: string | null;
+}
+
+export interface DensityReportCell {
+  /** `null` viewport while the observation is unknown: the snapshot gave none to trust. */
+  cell: {
+    role: string | null;
+    viewport: { width: number; height: number } | null;
+    fixture: string | null;
+  };
+  observation: Observation<DensityCaptureSummary>;
+}
+
+export interface DensityReport {
+  command: 'measure';
+  producer: DensityProducer;
+  cells: DensityReportCell[];
+  next: DensityNextStep[];
+  captureOut?: { path: string; written: boolean; reason: string | null };
+}
+
+export interface DensityMeasureInput {
+  snapshot: unknown;
+  role: string;
+  fixture: string | null;
+  targets: DensityTargets | null;
+}
+
+/** The pure half of `measure`: a parsed snapshot in, the report and the capture out. */
+export function measureDensityCell(
+  input: DensityMeasureInput,
+  producer: DensityProducer = densityCliProducer()
+): { report: DensityReport; capture: DensityCapture | null } {
+  const obs = captureDensityFromSnapshot(input.snapshot, {
+    producer,
+    role: input.role,
+    fixture: input.fixture,
+    targets: input.targets,
+  });
+  let observation: Observation<DensityCaptureSummary>;
+  let capture: DensityCapture | null = null;
+  let cell: DensityReportCell['cell'] = {
+    role: input.role,
+    viewport: null,
+    fixture: input.fixture,
+  };
+  if (obs.status === 'measured') {
+    capture = obs.value;
+    cell = capture.cell;
+    observation = Observation.measured<DensityCaptureSummary>(
+      {
+        scope: capture.scope,
+        cell: capture.cell,
+        viewport: capture.viewport,
+        bases: capture.bases,
+        coverage: capture.coverage,
+        probe: capture.probe,
+        items: capture.items.length,
+        structureResolved: capture.structureResolved,
+        snapshotId: capture.snapshotId,
+        observedAt: capture.observedAt,
+        targetsHash: capture.targetsHash,
+      },
+      obs.provenance
+    );
+  } else {
+    // The adapter answers measured or unknown; an unknown carries no value to summarise.
+    observation = obs as Observation<DensityCaptureSummary>;
+  }
+
+  const next: DensityNextStep[] = [];
+  if (input.targets === null) next.push('write-targets');
+  else if (
+    input.targets.review === null ||
+    input.targets.review.asksHash !== densityAsksHash(input.targets)
+  ) {
+    next.push('review-targets');
+  }
+  if (observation.status === 'unknown') next.push('capture');
+
+  return {
+    report: { command: 'measure', producer, cells: [{ cell, observation }], next },
+    capture,
+  };
+}
+
+/** The I/O `runDensityCli` performs, injectable for tests. */
+export interface DensityCliIo {
+  readFile(path: string): string;
+  readStdin(): Promise<string>;
+  writeFile(path: string, text: string): void;
+  stdout(text: string): void;
+  stderr(text: string): void;
+}
+
+/** The step a run has reached, named in an interrupted verdict. */
+export type DensityCliStep =
+  | 'parse-args'
+  | 'read-snapshot'
+  | 'read-targets'
+  | 'capture'
+  | 'write-capture'
+  | 'print';
+
+function parseJson(what: string, text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch (err) {
+    throw new DensityCliArgError(
+      `${what} is not JSON: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
+
+/** Runs one invocation; returns the exit code. `onStep` is told each step as it starts. */
+export async function runDensityCli(
+  argv: string[],
+  io: DensityCliIo,
+  onStep: (step: DensityCliStep) => void = () => {}
+): Promise<number> {
+  try {
+    onStep('parse-args');
+    const args = parseDensityArgs(argv);
+    if (args.verb === 'help') {
+      io.stdout(USAGE);
+      return 0;
+    }
+    if (args.verb === 'version') {
+      io.stdout(`ui-bridge-density ${__HEADLESS_VERSION__}\n`);
+      return 0;
+    }
+
+    onStep('read-snapshot');
+    let snapshotText: string;
+    try {
+      snapshotText = args.snapshot === '-' ? await io.readStdin() : io.readFile(args.snapshot);
+    } catch (err) {
+      throw new DensityCliArgError(
+        `--snapshot ${args.snapshot}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+    const snapshot = parseJson(`--snapshot ${args.snapshot}`, snapshotText);
+
+    let targets: DensityTargets | null = null;
+    if (args.targets !== null) {
+      onStep('read-targets');
+      let text: string;
+      try {
+        text = io.readFile(args.targets);
+      } catch (err) {
+        throw new DensityCliArgError(
+          `--targets ${args.targets}: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+      const parsed = parseDensityTargets(parseJson(`--targets ${args.targets}`, text));
+      if (!parsed.ok) {
+        const lines = parsed.problems.map((p) => `  ${p.path}: ${p.message}`).join('\n');
+        throw new DensityCliArgError(
+          `--targets ${args.targets} is not a valid targets file:\n${lines}`
+        );
+      }
+      targets = parsed.value;
+      if (!targets.roles.some((r) => r.role === args.role)) {
+        const declared = targets.roles.map((r) => r.role).join(', ');
+        throw new DensityCliArgError(
+          `--role ${args.role} is not declared in ${args.targets} (declared: ${declared})`
+        );
+      }
+    }
+
+    onStep('capture');
+    const { report, capture } = measureDensityCell({
+      snapshot,
+      role: args.role,
+      fixture: args.fixture,
+      targets,
+    });
+
+    if (args.captureOut !== null) {
+      onStep('write-capture');
+      if (capture === null) {
+        report.captureOut = {
+          path: args.captureOut,
+          written: false,
+          reason: 'the cell answered unknown, so there is no capture to write',
+        };
+      } else {
+        io.writeFile(args.captureOut, `${JSON.stringify(capture, null, 2)}\n`);
+        report.captureOut = { path: args.captureOut, written: true, reason: null };
+      }
+    }
+
+    onStep('print');
+    io.stdout(`${JSON.stringify(report, null, 2)}\n`);
+    return 0;
+  } catch (err) {
+    if (err instanceof DensityCliArgError) {
+      io.stderr(`ui-bridge-density: ${err.message}\n`);
+      return 2;
+    }
+    throw err;
+  }
+}
+
+function readStdin(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    process.stdin.on('data', (c: Buffer | string) =>
+      chunks.push(typeof c === 'string' ? Buffer.from(c) : c)
+    );
+    process.stdin.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    process.stdin.on('error', reject);
+  });
+}
+
+const SIGNAL_EXIT: Record<'SIGHUP' | 'SIGINT' | 'SIGTERM', number> = {
+  SIGHUP: 129,
+  SIGINT: 130,
+  SIGTERM: 143,
+};
+
+async function main(): Promise<void> {
+  let step: DensityCliStep = 'parse-args';
+  for (const signal of Object.keys(SIGNAL_EXIT) as Array<keyof typeof SIGNAL_EXIT>) {
+    process.on(signal, () => {
+      process.stdout.write(
+        `${JSON.stringify({ command: 'measure', interrupted: { signal, step } }, null, 2)}\n`
+      );
+      process.exit(SIGNAL_EXIT[signal]);
+    });
+  }
+  const code = await runDensityCli(
+    process.argv.slice(2),
+    {
+      readFile: (p) => readFileSync(p, 'utf8'),
+      readStdin,
+      writeFile: (p, t) => writeFileSync(p, t),
+      stdout: (t) => process.stdout.write(t),
+      stderr: (t) => process.stderr.write(t),
+    },
+    (s) => {
+      step = s;
+    }
+  );
+  process.exitCode = code;
+}
+
+if (isEntryModule(import.meta.url)) {
+  main().catch((err: unknown) => {
+    process.stderr.write(
+      `ui-bridge-density: internal error: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`
+    );
+    process.exit(1);
+  });
+}

@@ -12,9 +12,8 @@
  * or `--keep-alive <seconds>` elapses. On exit, the browser is closed.
  */
 
-import { realpathSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { consumeValue, parsePositiveInt, type ArgErrorFactory } from '@qontinui/ui-bridge-cli-args';
+import { isEntryModule } from './entry-guard.js';
 import { launchHeadlessTab, type LaunchHeadlessTabResult } from './launcher.js';
 
 /**
@@ -243,28 +242,9 @@ async function main(): Promise<void> {
 }
 
 // Execute only when run as the bin — importing this module (e.g. from a unit
-// test that exercises `parseArgs`) must NOT launch a browser.
-//
-// This entry ships as ESM (`"bin": { "ui-bridge-tab": "./dist/cli.js" }` in a
-// `"type": "module"` package), so there is no `require.main` to compare
-// against and the check has to go through `process.argv[1]`. That is the path
-// AS INVOKED, and Node never resolves symlinks in it: running through the
-// installed bin symlink — `node_modules/.bin/ui-bridge-tab`, which is exactly
-// what `npx ... ui-bridge-tab` resolves to — made a raw comparison against
-// `import.meta.url` false, so `main()` never ran and the process exited 0
-// having printed nothing at all. Compare REAL paths so the symlink collapses.
-const isMain = (() => {
-  try {
-    const invokedAs = process.argv[1];
-    if (invokedAs === undefined) return false;
-    const here = fileURLToPath(import.meta.url);
-    if (invokedAs === here) return true;
-    return realpathSync(invokedAs) === realpathSync(here);
-  } catch {
-    return false;
-  }
-})();
-
-if (isMain) {
+// test that exercises `parseArgs`) must NOT launch a browser. The guard
+// compares real paths so the installed bin symlink still runs main()
+// (`entry-guard.ts`).
+if (isEntryModule(import.meta.url)) {
   void main();
 }

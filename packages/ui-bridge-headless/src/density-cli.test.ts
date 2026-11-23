@@ -1,0 +1,387 @@
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { missingOutputMessage } from '../../../test-support/build-if-stale.mjs';
+
+/**
+ * `ui-bridge-density measure`, run as the built bin (dist/density-cli.js) over
+ * a synthetic control snapshot — from a file and from standard input, in the
+ * relay's `{ success, data, _meta }` envelope and in the bare form the
+ * wrapper's `--capture-matrix` writes — plus the usage errors.
+ *
+ * Every id and text here is synthetic (plan D5). Every expected value is a
+ * literal spelled in this file.
+ *
+ * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change, Phase 2.
+ */
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const PKG_DIR = resolve(HERE, '..');
+const BIN = join(PKG_DIR, 'dist', 'density-cli.js');
+const VERSION = (
+  JSON.parse(readFileSync(join(PKG_DIR, 'package.json'), 'utf8')) as { version: string }
+).version;
+
+/** A bare snapshot: one registered value row, unscrolled, at 360x740. */
+const BARE = {
+  timestamp: 1763900000000,
+  snapshotId: 'snap-synthetic-1',
+  viewport: {
+    viewportWidth: 360,
+    viewportHeight: 740,
+    scrollX: 0,
+    scrollY: 0,
+    documentWidth: 360,
+    documentHeight: 1200,
+    container: 'viewport',
+  },
+  elements: [
+    {
+      id: 'app.orders.open-1',
+      type: 'generic',
+      label: 'open order',
+      tagName: 'div',
+      category: 'content',
+      identifier: { xpath: '/html/body/div[1]' },
+      state: {
+        visible: true,
+        rect: { x: 0, y: 100, width: 360, height: 40, top: 100, left: 0, right: 360, bottom: 140 },
+        textContent: 'Order 4711',
+        scrollWidth: 360,
+        clientWidth: 360,
+        computedStyles: {
+          fontSize: '14px',
+          lineHeight: '20px',
+          position: 'static',
+          overflow: 'visible',
+        },
+      },
+    },
+  ],
+  components: [],
+};
+
+const ENVELOPE = { success: true, data: BARE, _meta: { stale: false, cacheAgeMs: 12 } };
+
+const EXPECTED_VALUE = {
+  scope: 'registered',
+  cell: { role: 'buyer', viewport: { width: 360, height: 740 }, fixture: null },
+  viewport: {
+    width: 360,
+    height: 740,
+    scrollX: 0,
+    scrollY: 0,
+    documentWidth: 360,
+    documentHeight: 1200,
+    container: 'viewport',
+  },
+  bases: {
+    foldBasis: 'measured',
+    pinBasis: 'registered-only',
+    scrollBasis: 'page',
+    scroller: null,
+    contentCap: { status: 'unreported', contentRows: 1 },
+  },
+  coverage: { considered: 1, measured: 1, unmeasured: [] },
+  probe: null,
+  items: 1,
+  structureResolved: false,
+  snapshotId: 'snap-synthetic-1',
+  observedAt: '2025-11-23T12:13:20.000Z',
+  targetsHash: null,
+};
+
+let dir: string;
+
+function run(
+  args: string[],
+  input?: string
+): { status: number | null; stdout: string; stderr: string } {
+  const r = spawnSync(process.execPath, [BIN, ...args], {
+    encoding: 'utf8',
+    input,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    timeout: 60_000,
+  });
+  return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+}
+
+interface Report {
+  command: string;
+  producer: { id: string; version: string; package: string };
+  cells: Array<{
+    cell: unknown;
+    observation: {
+      status: string;
+      value?: unknown;
+      unknown?: { code: string };
+      provenance: { producer: unknown; source: Record<string, unknown> };
+    };
+  }>;
+  next: string[];
+  captureOut?: { path: string; written: boolean; reason: string | null };
+}
+
+function measured(stdout: string): Report {
+  const report = JSON.parse(stdout) as Report;
+  expect(report.command).toBe('measure');
+  expect(report.producer).toEqual({
+    id: 'sdk/density',
+    version: VERSION,
+    package: '@qontinui/ui-bridge-headless',
+  });
+  expect(report.cells).toHaveLength(1);
+  const obs = report.cells[0]!.observation;
+  expect(obs.status).toBe('measured');
+  expect(obs.value).toEqual(EXPECTED_VALUE);
+  expect(obs.provenance.producer).toEqual({ id: 'sdk/density', version: VERSION });
+  expect(obs.provenance.source).toEqual({
+    package: '@qontinui/ui-bridge-headless',
+    schema: 'ui-bridge/density-capture@1',
+    snapshotId: 'snap-synthetic-1',
+    targetsHash: null,
+  });
+  expect(report.cells[0]!.cell).toEqual(EXPECTED_VALUE.cell);
+  expect(report.next).toEqual(['write-targets']);
+  return report;
+}
+
+beforeAll(() => {
+  // Built once by vitest.global-setup.ts before any worker starts.
+  expect(existsSync(BIN), missingOutputMessage(BIN)).toBe(true);
+  dir = mkdtempSync(join(tmpdir(), 'ui-bridge-density-cli-'));
+  writeFileSync(join(dir, 'bare.json'), JSON.stringify(BARE));
+  writeFileSync(join(dir, 'envelope.json'), JSON.stringify(ENVELOPE));
+});
+
+afterAll(() => {
+  if (dir) rmSync(dir, { recursive: true, force: true });
+});
+
+describe('ui-bridge-density measure', () => {
+  it('reads the bare snapshot from a file', () => {
+    const r = run(['measure', '--snapshot', join(dir, 'bare.json'), '--role', 'buyer']);
+    expect(r.stderr).toBe('');
+    expect(r.status).toBe(0);
+    measured(r.stdout);
+  }, 60_000);
+
+  it('reads the relay envelope from a file', () => {
+    const r = run(['measure', '--snapshot', join(dir, 'envelope.json'), '--role', 'buyer']);
+    expect(r.status).toBe(0);
+    measured(r.stdout);
+  }, 60_000);
+
+  it('reads the bare snapshot from standard input', () => {
+    const r = run(['measure', '--snapshot', '-', '--role', 'buyer'], JSON.stringify(BARE));
+    expect(r.status).toBe(0);
+    measured(r.stdout);
+  }, 60_000);
+
+  it('reads the relay envelope from standard input', () => {
+    const r = run(['measure', '--snapshot', '-', '--role', 'buyer'], JSON.stringify(ENVELOPE));
+    expect(r.status).toBe(0);
+    measured(r.stdout);
+  }, 60_000);
+
+  it('--fixture names the cell', () => {
+    const r = run([
+      'measure',
+      '--snapshot',
+      join(dir, 'bare.json'),
+      '--role',
+      'buyer',
+      '--fixture',
+      'empty-cart',
+    ]);
+    expect(r.status).toBe(0);
+    const report = JSON.parse(r.stdout) as Report;
+    expect(report.cells[0]!.cell).toEqual({
+      role: 'buyer',
+      viewport: { width: 360, height: 740 },
+      fixture: 'empty-cart',
+    });
+  }, 60_000);
+
+  it('--capture-out writes the text-free capture', () => {
+    const out = join(dir, 'capture.json');
+    const r = run([
+      'measure',
+      '--snapshot',
+      join(dir, 'bare.json'),
+      '--role',
+      'buyer',
+      '--capture-out',
+      out,
+    ]);
+    expect(r.status).toBe(0);
+    const report = JSON.parse(r.stdout) as Report;
+    expect(report.captureOut).toEqual({ path: out, written: true, reason: null });
+    const written = readFileSync(out, 'utf8');
+    const capture = JSON.parse(written) as {
+      schema: string;
+      items: Array<{ id: string; chars: number }>;
+    };
+    expect(capture.schema).toBe('ui-bridge/density-capture@1');
+    expect(capture.items.map((i) => [i.id, i.chars])).toEqual([['app.orders.open-1', 10]]);
+    // The snapshot's text is not in the capture.
+    expect(written).not.toContain('Order 4711');
+  }, 60_000);
+
+  it('a stale relay answer is unknown{stale_input}, still exit 0, and asks for a capture', () => {
+    const stale = { ...ENVELOPE, _meta: { stale: true, cacheAgeMs: 90_000 } };
+    const out = join(dir, 'stale-capture.json');
+    const r = run(
+      ['measure', '--snapshot', '-', '--role', 'buyer', '--capture-out', out],
+      JSON.stringify(stale)
+    );
+    expect(r.status).toBe(0);
+    const report = JSON.parse(r.stdout) as Report;
+    expect(report.cells[0]!.observation.status).toBe('unknown');
+    expect(report.cells[0]!.observation.unknown?.code).toBe('stale_input');
+    expect(report.cells[0]!.cell).toEqual({ role: 'buyer', viewport: null, fixture: null });
+    expect(report.next).toEqual(['write-targets', 'capture']);
+    expect(report.captureOut).toEqual({
+      path: out,
+      written: false,
+      reason: 'the cell answered unknown, so there is no capture to write',
+    });
+    expect(existsSync(out)).toBe(false);
+  }, 60_000);
+});
+
+/** A targets file whose buyer probe reads the open-order row, with no review block. */
+const TARGETS = {
+  schema: 'ui-bridge/density-targets@1',
+  surface: '/',
+  profile: 'audience_profile/synthetic@1',
+  roles: [
+    {
+      role: 'buyer',
+      probe: { id: 'app.orders.open-1', includes: 'Order' },
+      asks: [
+        {
+          id: 'B1',
+          rank: 1,
+          weight: 5,
+          kind: 'state',
+          question: 'Which of my open orders need action today?',
+          source: {
+            doc: 'audience_profile/synthetic@1',
+            quote: 'Buyers act on open orders daily.',
+          },
+          answer: { idPrefix: 'app.orders.open-' },
+        },
+      ],
+    },
+  ],
+};
+
+describe('ui-bridge-density measure --targets', () => {
+  it('checks the role probe and, with no review block, asks for a review', () => {
+    writeFileSync(join(dir, 'targets.json'), JSON.stringify(TARGETS));
+    const r = run([
+      'measure',
+      '--snapshot',
+      join(dir, 'bare.json'),
+      '--role',
+      'buyer',
+      '--targets',
+      join(dir, 'targets.json'),
+    ]);
+    expect(r.stderr).toBe('');
+    expect(r.status).toBe(0);
+    const report = JSON.parse(r.stdout) as Report;
+    const value = report.cells[0]!.observation.value as { probe: unknown; targetsHash: string };
+    expect(value.probe).toEqual({ role: 'buyer', id: 'app.orders.open-1', matched: true });
+    expect(value.targetsHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(report.next).toEqual(['review-targets']);
+  }, 60_000);
+
+  it('a probe that does not match is unknown{input_missing}', () => {
+    const other = {
+      ...TARGETS,
+      roles: [{ ...TARGETS.roles[0]!, probe: { id: 'app.orders.open-1', includes: 'Supplier' } }],
+    };
+    writeFileSync(join(dir, 'targets-other.json'), JSON.stringify(other));
+    const r = run([
+      'measure',
+      '--snapshot',
+      join(dir, 'bare.json'),
+      '--role',
+      'buyer',
+      '--targets',
+      join(dir, 'targets-other.json'),
+    ]);
+    expect(r.status).toBe(0);
+    const report = JSON.parse(r.stdout) as Report;
+    expect(report.cells[0]!.observation.unknown?.code).toBe('input_missing');
+    expect(report.next).toEqual(['review-targets', 'capture']);
+  }, 60_000);
+
+  it('a role the targets do not declare is a usage error', () => {
+    writeFileSync(join(dir, 'targets.json'), JSON.stringify(TARGETS));
+    const r = run([
+      'measure',
+      '--snapshot',
+      join(dir, 'bare.json'),
+      '--role',
+      'supplier',
+      '--targets',
+      join(dir, 'targets.json'),
+    ]);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('--role supplier is not declared');
+  }, 60_000);
+});
+
+describe('ui-bridge-density usage', () => {
+  it('an unknown flag is a usage error: exit 2, named on stderr, nothing on stdout', () => {
+    const r = run(['measure', '--snapshot', join(dir, 'bare.json'), '--role', 'buyer', '--colour']);
+    expect(r.status).toBe(2);
+    expect(r.stdout).toBe('');
+    expect(r.stderr).toContain('Unknown flag: --colour');
+  }, 60_000);
+
+  it('no argument is a usage error: exit 2 with the usage text', () => {
+    const r = run([]);
+    expect(r.status).toBe(2);
+    expect(r.stdout).toBe('');
+    expect(r.stderr).toContain('a verb is required');
+    expect(r.stderr).toContain('ui-bridge-density measure --snapshot <file|-> --role <role>');
+  }, 60_000);
+
+  it('measure without --role is a usage error', () => {
+    const r = run(['measure', '--snapshot', join(dir, 'bare.json')]);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('measure: --role is required');
+  }, 60_000);
+
+  it('a snapshot file that is not JSON is a usage error', () => {
+    writeFileSync(join(dir, 'broken.json'), '{ not json');
+    const r = run(['measure', '--snapshot', join(dir, 'broken.json'), '--role', 'buyer']);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('is not JSON');
+  }, 60_000);
+
+  it('a verb of a later release says so', () => {
+    const r = run(['fit']);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain("the verb 'fit' is not in this release");
+  }, 60_000);
+
+  it('--version prints the package version', () => {
+    const r = run(['--version']);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe(`ui-bridge-density ${VERSION}\n`);
+  }, 60_000);
+
+  it('--help prints the usage on stdout and exits 0', () => {
+    const r = run(['--help']);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('ui-bridge-density — reach per role');
+  }, 60_000);
+});
