@@ -216,7 +216,7 @@ client.ai.assert_min_spacing("Save button", "Cancel button", 8)
 
 Every single-target `assert_*` and `wait_for_*` helper takes either a natural-language
 description or a `SearchCriteria`, the same as the TypeScript SDK's
-`string | SearchCriteria`. In `assert_batch`, pass an `AssertionRequest` to use one:
+`string | SearchCriteria` (in `assert_batch`, wrap one in an `AssertionRequest`):
 
 ```python
 from ui_bridge import SearchCriteria
