@@ -11,7 +11,7 @@ import type { AnyCapturedEvent } from './browser-capture-types';
 import type { BrowserEventCaptureLike } from './error-timeline';
 import type { ErrorSeverity } from './error-severity';
 import { classifyEvent, SEVERITY_RANK } from './error-severity';
-import { describeResourceStatus, withoutObservedDuplicates } from './shared-utils';
+import { describeResourceStatus } from './shared-utils';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -148,9 +148,7 @@ export function computeHealthReport(
   const since = now - windowMs;
 
   // 1. Get events from the assessment window
-  //    One failure counts once: a resource-status event another capture also
-  //    reported is dropped.
-  const events = withoutObservedDuplicates(capture.getSince(since));
+  const events = capture.getSince(since);
 
   // 2. Classify each event and count by severity
   let crashes = 0;

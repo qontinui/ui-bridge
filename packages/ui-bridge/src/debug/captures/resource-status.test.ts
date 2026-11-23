@@ -20,7 +20,7 @@ import { classifyEvent } from '../error-severity';
 import { computeFingerprint } from '../error-fingerprint';
 import { extractMessage } from '../error-snapshot';
 import { computeHealthReport } from '../health-score';
-import { withoutObservedDuplicates } from '../shared-utils';
+import * as observedReportsModule from '../observed-reports';
 import * as resourceStatusModule from './resource-status';
 
 const STORAGE_KEY = 'qontinui-ui-bridge:resource-status:v1';
@@ -106,6 +106,14 @@ function newDocument(): void {
   (
     resourceStatusModule as { __resetResourceStatusDocumentForTest?: () => void }
   ).__resetResourceStatusDocumentForTest?.();
+  (
+    observedReportsModule as { __resetObservedReportsForTest?: () => void }
+  ).__resetObservedReportsForTest?.();
+}
+
+/** The `status` events (not blind spots) a capture emitted for `url`. */
+function statusFor(capture: BrowserEventCapture, url: string): ResourceStatusCapturedEvent[] {
+  return statusEvents(capture).filter((e) => e.kind === 'status' && e.resourceUrl === url);
 }
 
 /** Every capture but resource-status off, resource-status left at its default. */
@@ -328,10 +336,51 @@ describe('resource-status capture', () => {
     FakePerformanceObserver.record('resource', [
       liveEntry('https://app.example.com/api/v1/sessions', 503),
     ]);
-    const recent = capture.getSince(Date.now() - 60_000).map((e) => e.type);
-    expect(recent).toEqual(expect.arrayContaining(['network', 'resource-status']));
+    // Deduplicated at emission: every consumer sees one event for one failure.
+    expect(capture.getByType('network')).toHaveLength(1);
+    expect(statusFor(capture, 'https://app.example.com/api/v1/sessions')).toHaveLength(0);
     const report = computeHealthReport(capture);
     expect(report.breakdown).toEqual({ crashes: 0, errors: 1, warnings: 0 });
+  });
+
+  it('a failure observed before the network report is emitted by both (documented residual)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('', { status: 503 }))
+    );
+    const capture = install(WITH_NETWORK_AND_RESOURCE_ERRORS);
+    await settle();
+    FakePerformanceObserver.record('resource', [
+      liveEntry('https://app.example.com/api/v1/early-timing', 503),
+    ]);
+    await window.fetch('https://app.example.com/api/v1/early-timing');
+    expect(capture.getByType('network')).toHaveLength(1);
+    expect(statusFor(capture, 'https://app.example.com/api/v1/early-timing')).toHaveLength(1);
+  });
+
+  it('a pre-install entry never consumes a report; a stale report matches nothing', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('', { status: 503 }))
+    );
+    const url = 'https://app.example.com/api/v1/twice';
+    const capture = install(WITH_NETWORK_AND_RESOURCE_ERRORS);
+    await settle();
+    await window.fetch(url);
+    // An entry that finished before install (responseEnd 15) is its own
+    // failure, whenever the observer delivers it: emitted, report untouched.
+    FakePerformanceObserver.record('resource', [resourceEntry(url, 503)]);
+    expect(statusFor(capture, url)).toHaveLength(1);
+    // The live one is the network report's: consumed.
+    FakePerformanceObserver.record('resource', [liveEntry(url, 503)]);
+    expect(statusFor(capture, url)).toHaveLength(1);
+    // A report older than 30 s matches nothing.
+    await window.fetch(url);
+    const later = Date.now() + 31_000;
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(later);
+    FakePerformanceObserver.record('resource', [liveEntry(url, 503)]);
+    spy.mockRestore();
+    expect(statusFor(capture, url)).toHaveLength(2);
   });
 
   it('one failed img seen by resource-errors and resource-status counts once', async () => {
@@ -345,8 +394,8 @@ describe('resource-status capture', () => {
     FakePerformanceObserver.record('resource', [
       liveEntry('https://app.example.com/missing.png', 404, 'img'),
     ]);
-    const recent = capture.getSince(Date.now() - 60_000).map((e) => e.type);
-    expect(recent).toEqual(expect.arrayContaining(['resource-error', 'resource-status']));
+    expect(capture.getByType('resource-error')).toHaveLength(1);
+    expect(statusFor(capture, 'https://app.example.com/missing.png')).toHaveLength(0);
     const { breakdown } = computeHealthReport(capture);
     expect(breakdown.crashes + breakdown.errors + breakdown.warnings).toBe(1);
   });
@@ -398,42 +447,21 @@ describe('resource-status capture', () => {
     expect(computeHealthReport(capture).breakdown).toEqual({ crashes: 0, errors: 0, warnings: 1 });
   });
 
-  it('two failures of one URL with one observed report count as two', () => {
-    const t = Date.now();
-    const network = {
-      type: 'network' as const,
-      timestamp: t,
-      url: 'x',
-      method: 'GET',
-      requestUrl: 'https://app.example.com/api/v1/x?q=1',
-      status: 503,
-      durationMs: 1,
-      kind: 'http-error' as const,
-    };
-    const status = {
-      type: 'resource-status' as const,
-      timestamp: t,
-      url: 'x',
-      kind: 'status' as const,
-      resourceUrl: 'https://app.example.com/api/v1/x',
-      hasQuery: true,
-      initiatorType: 'fetch',
-      responseStatus: 503,
-      startTime: 1,
-      responseEnd: 2,
-    };
-    expect(withoutObservedDuplicates([network, status, { ...status }])).toHaveLength(2);
-    // Outside the window, or a different status, nothing is absorbed.
-    expect(withoutObservedDuplicates([network, { ...status, timestamp: t + 6_000 }])).toHaveLength(
-      2
+  it('two failures of one URL with one observed report emit one resource-status', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('', { status: 503 }))
     );
-    expect(withoutObservedDuplicates([network, { ...status, responseStatus: 500 }])).toHaveLength(
-      2
-    );
-    // A previous document's event is never matched.
-    expect(
-      withoutObservedDuplicates([network, { ...status, fromPreviousDocument: true as const }])
-    ).toHaveLength(2);
+    const url = 'https://app.example.com/api/v1/x';
+    const capture = install(WITH_NETWORK_AND_RESOURCE_ERRORS);
+    await settle();
+    await window.fetch(`${url}?q=1`);
+    FakePerformanceObserver.record('resource', [liveEntry(url, 503), liveEntry(url, 503)]);
+    expect(statusFor(capture, url)).toHaveLength(1);
+    // A different status is a different failure.
+    await window.fetch(url);
+    FakePerformanceObserver.record('resource', [liveEntry(url, 500)]);
+    expect(statusFor(capture, url)).toHaveLength(2);
   });
 
   it('carries only failures and blind spots — never unknown statuses or the cap', async () => {
@@ -522,6 +550,43 @@ describe('resource-status capture', () => {
     const carried = statusEvents(second);
     expect(carried).toHaveLength(1);
     expect(carried[0]).toMatchObject({ responseStatus: 429, fromPreviousDocument: true });
+  });
+
+  it('a restored document leaves the next document’s carry alone', async () => {
+    // A: draws a 429, leaves (bfcache), writes its carry.
+    const a = install();
+    await settle();
+    FakePerformanceObserver.record('resource', [resourceEntry('https://app.example.com/a', 429)]);
+    window.dispatchEvent(new Event('pagehide'));
+
+    // B: takes A's carry, draws a 503, leaves, writes its own.
+    newDocument();
+    const b = install();
+    await settle();
+    expect(statusEvents(b)).toEqual([
+      expect.objectContaining({
+        resourceUrl: 'https://app.example.com/a',
+        fromPreviousDocument: true,
+      }),
+    ]);
+    FakePerformanceObserver.record('resource', [resourceEntry('https://app.example.com/b', 503)]);
+    window.dispatchEvent(new Event('pagehide'));
+    b.uninstall();
+    const bCarry = sessionStorage.getItem(STORAGE_KEY);
+    expect(bCarry).toContain('https://app.example.com/b');
+
+    // A is restored from the cache, then leaves again.
+    window.dispatchEvent(Object.assign(new Event('pageshow'), { persisted: true }));
+    expect(sessionStorage.getItem(STORAGE_KEY)).toBe(bCarry);
+    window.dispatchEvent(new Event('pagehide'));
+    a.uninstall();
+
+    // C: B's carry survives; A's 429 (already delivered to B) does not come again.
+    newDocument();
+    const c = install();
+    await settle();
+    const carried = statusEvents(c).map((e) => (e.kind === 'status' ? e.resourceUrl : e.kind));
+    expect(carried).toEqual(['https://app.example.com/b']);
   });
 
   it('pagehide flushes entries the observer has not dispatched yet', async () => {
@@ -625,7 +690,12 @@ describe('resource-status capture', () => {
             kind: 'status',
           },
           { ...valid, initiatorType: 7 },
-          valid,
+          {
+            ...valid,
+            url: 'https://app.example.com/page?code=s3cret#t',
+            resourceUrl: 'https://app.example.com/ok?token=s3cret',
+            injected: '<script>',
+          },
         ],
       })
     );
@@ -633,10 +703,14 @@ describe('resource-status capture', () => {
     await settle();
     const carried = statusEvents(capture);
     expect(carried).toHaveLength(1);
-    expect(carried[0]).toMatchObject({
-      resourceUrl: 'https://app.example.com/ok',
+    // Rebuilt from known fields only, URLs re-redacted.
+    expect(carried[0]).toEqual({
+      ...valid,
+      url: 'https://app.example.com/page',
+      hasQuery: true,
       fromPreviousDocument: true,
     });
+    expect(JSON.stringify(carried)).not.toContain('s3cret');
   });
 
   it('drops a carry stamped in the future', async () => {
@@ -662,7 +736,7 @@ describe('resource-status capture', () => {
     expect(statusEvents(capture)).toHaveLength(0);
   });
 
-  it('accepts a carry on a reload of its writer, and from an origin-only referrer', async () => {
+  it('accepts a carry on a reload of its writer; an origin-only referrer is ambiguous', async () => {
     const carry = (writtenBy: string) =>
       sessionStorage.setItem(
         STORAGE_KEY,
@@ -695,11 +769,11 @@ describe('resource-status capture', () => {
     ];
     expect(statusEvents(install())).toHaveLength(1);
 
-    // An origin-only referrer (strict-origin policy) matching the writer's origin.
+    // An origin-only referrer cannot name the writer: ambiguous, dropped.
     newDocument();
     carry(`${window.location.origin}/some/page`);
     setReferrer(`${window.location.origin}/`);
-    expect(statusEvents(install())).toHaveLength(1);
+    expect(statusEvents(install())).toHaveLength(0);
 
     // An origin-only referrer from another origin did not precede it.
     newDocument();
@@ -823,9 +897,42 @@ describe('resource-status classification', () => {
     // Script and stylesheet as classifyResourceError: error.
     expect(as('script', 404)).toBe('error');
     expect(as('link', 404)).toBe('error');
+    // Other request initiators as fetch: 4xx warning, 5xx error.
+    for (const request of ['beacon', 'ping', 'other']) {
+      expect(as(request, 404)).toBe('warning');
+      expect(as(request, 500)).toBe('error');
+    }
     // The document itself, and anything else: error.
     expect(as('navigation', 403)).toBe('error');
-    expect(as('beacon', 500)).toBe('error');
+    expect(as('iframe', 404)).toBe('error');
+  });
+
+  it('a request 5xx on a critical endpoint is a crash, as classifyNetwork grades it', () => {
+    const critical = { ...entry(503), resourceUrl: 'https://app.example.com/api/v1/auth/login' };
+    expect(classifyEvent(critical).severity).toBe('crash');
+    expect(classifyEvent({ ...critical, responseStatus: 401 }).severity).toBe('warning');
+    expect(classifyEvent({ ...critical, initiatorType: 'img' }).severity).toBe('warning');
+  });
+
+  it('matches critical endpoints and common assets on the URL path, not the query', () => {
+    const network = (requestUrl: string, status: number) =>
+      classifyEvent({
+        type: 'network',
+        timestamp: 1,
+        url: 'x',
+        method: 'GET',
+        requestUrl,
+        status,
+        durationMs: 1,
+        kind: 'http-error',
+      }).severity;
+    expect(network('https://app.example.com/search?next=/api/v1/auth/', 503)).toBe('error');
+    expect(network('https://app.example.com/api/v1/auth/me', 503)).toBe('crash');
+    expect(network('https://app.example.com/api/v1/items?f=a.map', 404)).toBe('warning');
+    expect(network('https://app.example.com/app.js.map', 404)).toBe('noise');
+    expect(
+      classifyEvent({ ...entry(404), resourceUrl: 'https://app.example.com/favicon.ico' }).severity
+    ).toBe('noise');
   });
 
   it('grades a previous document’s event one step down', () => {

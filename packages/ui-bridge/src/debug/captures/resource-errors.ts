@@ -6,6 +6,7 @@
  */
 
 import type { AnyCapturedEvent } from '../browser-capture-types';
+import { elementReportKey, recordObservedReport } from '../observed-reports';
 
 type Emit = (event: AnyCapturedEvent) => void;
 
@@ -29,6 +30,8 @@ export function installResourceErrorCapture(emit: Emit): () => void {
 
     if (!resourceUrl) return;
 
+    // Reported here, so resource-status does not report it again.
+    recordObservedReport(elementReportKey(resourceUrl, target.tagName));
     emit({
       type: 'resource-error',
       timestamp: Date.now(),

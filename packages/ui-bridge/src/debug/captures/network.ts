@@ -7,6 +7,7 @@
  */
 
 import type { NetworkCapturedEvent, AnyCapturedEvent } from '../browser-capture-types';
+import { recordObservedReport, statusReportKey } from '../observed-reports';
 
 type Emit = (event: AnyCapturedEvent) => void;
 
@@ -57,8 +58,7 @@ export function installNetworkCapture(emit: Emit, options?: NetworkOptions): () 
     if (shouldIgnore(rawUrl)) {
       return originalFetch.call(window, input, init);
     }
-    // Recorded absolute, so it compares with the resource-status capture's
-    // Resource Timing URL for the same request.
+    // Recorded absolute, the same form as a Resource Timing entry's URL.
     const requestUrl = toAbsoluteUrl(rawUrl);
 
     const method = getMethod(input, init);
@@ -69,6 +69,8 @@ export function installNetworkCapture(emit: Emit, options?: NetworkOptions): () 
       const durationMs = Math.round(performance.now() - start);
 
       if (response.status >= 400) {
+        // Reported here, so resource-status does not report it again.
+        recordObservedReport(statusReportKey(requestUrl, response.status));
         const event: NetworkCapturedEvent = {
           type: 'network',
           timestamp: Date.now(),
