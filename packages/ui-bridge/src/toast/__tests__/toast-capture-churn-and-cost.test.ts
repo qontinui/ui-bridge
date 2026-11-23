@@ -454,9 +454,31 @@ describe('ToastCapture churn budget and re-read gate', () => {
     // R3 (A3)
     it('a budget below 1 is clamped to 1 and a window below 1 ms falls back to the default', async () => {
       install({ pollInterval: 500, maxAnnouncementsPerWindow: 0 });
-      addStatus('one', 'First');
+      const one = addStatus('one', 'First');
       await flushAndScan();
       expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['one', 'First']]);
+      // Clamped to exactly 1 (not the default 4): further changes are withheld.
+      await tick(one, 1, 3);
+      expect(appearedFor('one')).toHaveLength(1);
+      capture.uninstall();
+      document.body.innerHTML = '';
+      events = [];
+
+      // A fraction floors (1.9 -> 1); a non-finite value means the default 4.
+      install({ pollInterval: 500, maxAnnouncementsPerWindow: 1.9 });
+      const frac = addStatus('frac', '0:00');
+      await flushAndScan();
+      await tick(frac, 1, 3);
+      expect(appearedFor('frac')).toHaveLength(1);
+      capture.uninstall();
+      document.body.innerHTML = '';
+      events = [];
+
+      install({ pollInterval: 500, maxAnnouncementsPerWindow: Infinity });
+      const inf = addStatus('inf', '0:00');
+      await flushAndScan();
+      await tick(inf, 1, 10);
+      expect(appearedFor('inf')).toHaveLength(4);
       capture.uninstall();
       document.body.innerHTML = '';
       events = [];
