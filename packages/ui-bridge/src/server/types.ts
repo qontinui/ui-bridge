@@ -11,8 +11,6 @@ import type {
   ControlActionResponse,
   ComponentActionRequest,
   ComponentActionResponse,
-  BatchActionRequest,
-  BatchActionResponse,
   FindRequest,
   FindResponse,
   ControlSnapshot,
@@ -26,6 +24,7 @@ import type {
   ComponentActionPredictResponse,
 } from '../control';
 import type { ElementState, FillResult } from '../core/types';
+import type { ControlBatchRequest, ControlBatchResponse } from '../control/control-batch';
 import type { ElementProjection } from '../core/element-projection';
 import type {
   ComponentCapture,
@@ -618,10 +617,6 @@ export interface UIBridgeServerHandlers {
     request: ControlActionRequest,
     context?: HandlerContext
   ) => Promise<APIResponse<ControlActionResponse>>;
-  executeBatchAction: (
-    request: BatchActionRequest,
-    context?: HandlerContext
-  ) => Promise<APIResponse<BatchActionResponse>>;
   /**
    * Rank snapshot elements by natural-language query against the
    * structured disambiguation metadata (variant, position, color,
@@ -1545,7 +1540,9 @@ export interface UIBridgeServerHandlers {
 
   /**
    * Tier 3.2 — Execute a heterogeneous sequence of actions, waits, and
-   * snapshots in one round-trip.
+   * snapshots in one round-trip (`../control/control-batch.ts`). A batch with
+   * a failed or skipped step answers `success: false`, its full
+   * {@link ControlBatchResponse} kept under `data`.
    */
   controlBatch: (
     request: ControlBatchRequest,
@@ -1861,56 +1858,17 @@ export interface WaitForElementSuccessResponse {
   elapsedMs: number;
 }
 
-/**
- * A single step in a Tier 3.2 control batch request.
- */
-export type ControlBatchStep =
-  | {
-      type: 'action';
-      /** ID of the element to act on */
-      element_id: string;
-      /** Action name (click, type, focus, …) */
-      action: string;
-      /** Optional action parameters */
-      params?: Record<string, unknown>;
-    }
-  | {
-      type: 'wait';
-      /** Milliseconds to sleep */
-      ms: number;
-    }
-  | {
-      type: 'snapshot';
-    };
-
-/**
- * Request body for POST /control/batch (Tier 3.2)
- */
-export interface ControlBatchRequest {
-  actions: ControlBatchStep[];
-  /** When true (default), stop executing on the first error */
-  stop_on_error?: boolean;
-}
-
-/**
- * Per-step result in a Tier 3.2 batch response
- */
-export interface ControlBatchStepResult {
-  index: number;
-  success: boolean;
-  data?: unknown;
-  error?: string;
-}
-
-/**
- * Response body for POST /control/batch (Tier 3.2)
- */
-export interface ControlBatchResponse {
-  results: ControlBatchStepResult[];
-  completed: number;
-  total: number;
-}
-
+// The `controlBatch` contract (`POST /control/batch-execute`) has ONE
+// definition, shared by the in-page dispatcher and the in-process handler.
+export type {
+  ControlBatchActionStep,
+  ControlBatchRequest,
+  ControlBatchResponse,
+  ControlBatchSnapshotStep,
+  ControlBatchStep,
+  ControlBatchStepResult,
+  ControlBatchWaitStep,
+} from '../control/control-batch';
 /**
  * Route definition.
  *
@@ -2029,12 +1987,6 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     method: 'POST',
     path: '/control/sdk/spawn-headless',
     handler: 'spawnHeadless',
-    bodyRequired: true,
-  },
-  {
-    method: 'POST',
-    path: '/control/actions/batch',
-    handler: 'executeBatchAction',
     bodyRequired: true,
   },
   {

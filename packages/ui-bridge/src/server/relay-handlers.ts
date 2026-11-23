@@ -150,7 +150,7 @@ function error(message: string, code?: string, suggestions?: string[]): APIRespo
  * This is deliberately NOT per-action. The seam is shared by every relayed
  * command, so a hole here is a hole for all of them; a `sendKeys`-shaped patch
  * would leave the same lie in place for the other eighteen element verbs, for
- * `executeBatchAction`, `executeComponentAction`, the workflow commands, and
+ * `controlBatch`, `executeComponentAction`, the workflow commands, and
  * everything else routed through this function.
  *
  * Returns `undefined` for anything that is not an object carrying a literal
@@ -1534,10 +1534,6 @@ export function createRelayHandlers(
         }
       }
       return relayCommand('executeElementAction', { id, request }, ctxOpts(context));
-    },
-
-    async executeBatchAction(request, context) {
-      return relayCommand('executeBatchAction', { request }, ctxOpts(context));
     },
 
     // ========================================================================
@@ -3269,7 +3265,10 @@ export function createRelayHandlers(
       };
     },
 
-    // Tier 3.2 — relay batch to browser context
+    // Tier 3.2 — relay batch to browser context. The page runs it through
+    // `../control/control-batch.ts`; a failed or skipped step answers
+    // `success: false`, which `relayCommand` lifts to a failure envelope that
+    // keeps the batch body (every step result) under `data`.
     async controlBatch(request, context) {
       return relayCommand('controlBatch', request, ctxOpts(context));
     },

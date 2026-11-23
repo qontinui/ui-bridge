@@ -51,7 +51,7 @@ const commandHandlersSrc = readFileSync(resolve(here, '../react/commandHandlers.
  * with `fallback: true`, which reads as an empty answer.
  *
  * Owned by plan `2026-11-08-relayed-ui-bridge-actions-have-no-browser-case`,
- * which covers all ten listed here: each one is served in the dispatcher or its
+ * which covers the actions listed here: each one is served in the dispatcher or its
  * relay route is deleted (delete over deprecate). Most reach the browser through
  * `relayCommand`; `getElementHistory` and `getRecentEffects` go through
  * `relayWithFallback`, which only this AST extraction reads.
@@ -60,8 +60,6 @@ const commandHandlersSrc = readFileSync(resolve(here, '../react/commandHandlers.
  * relayed, fails the guard until it leaves this list.
  */
 const KNOWN_UNSERVED_RELAY_ACTIONS: readonly string[] = [
-  'controlBatch',
-  'executeBatchAction',
   'getDiagnostics',
   'getElementHistory',
   'getElementReactState',
@@ -77,7 +75,7 @@ const KNOWN_UNSERVED_RELAY_ACTIONS: readonly string[] = [
  * only together with the relay call sites it counts: a drop with no relay
  * route removed means the extraction lost sight of a call shape.
  */
-const RELAYED_ACTION_COUNT = 157;
+const RELAYED_ACTION_COUNT = 156;
 
 /** The relay wrappers in the SDK — functions that forward their first parameter to `queueCommand`. */
 const RELAY_WRAPPERS = [

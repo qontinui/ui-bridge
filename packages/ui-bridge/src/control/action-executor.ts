@@ -157,9 +157,6 @@ import type {
   ComponentActionRequest,
   ComponentActionResponse,
   ComponentActionInvokeOptions,
-  BatchActionRequest,
-  BatchActionResponse,
-  BatchActionStepResult,
   WaitResult,
   FindRequest,
   FindResponse,
@@ -3745,65 +3742,6 @@ export class DefaultActionExecutor implements ActionExecutor {
       readTitleAttr(element) || readScrubbedText(element, undefined, { maxLen: 50 }) || undefined
     );
   }
-
-  // ---------------------------------------------------------------------------
-  // Batch execution
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Execute multiple actions sequentially in a single call, reducing IPC round-trips.
-   */
-  async executeBatch(request: BatchActionRequest): Promise<BatchActionResponse> {
-    const startTime = performance.now();
-    const { steps, stopOnFailure = true, delayBetweenMs = 0 } = request;
-    const results: BatchActionStepResult[] = [];
-    let succeededCount = 0;
-    let failedCount = 0;
-    let skippedCount = 0;
-    let stopped = false;
-
-    for (let i = 0; i < steps.length; i++) {
-      if (stopped) {
-        skippedCount++;
-        continue;
-      }
-
-      const step = steps[i];
-
-      // Inter-step delay (skip before first step)
-      if (i > 0 && delayBetweenMs > 0) {
-        await new Promise((resolve) => setTimeout(resolve, delayBetweenMs));
-      }
-
-      const response = await this.executeAction(step.elementId, step.action);
-      const stepResult: BatchActionStepResult = {
-        index: i,
-        label: step.label,
-        elementId: step.elementId,
-        response,
-      };
-      results.push(stepResult);
-
-      if (response.success) {
-        succeededCount++;
-      } else {
-        failedCount++;
-        if (stopOnFailure) {
-          stopped = true;
-        }
-      }
-    }
-
-    return {
-      success: failedCount === 0,
-      results,
-      succeededCount,
-      failedCount,
-      skippedCount,
-      durationMs: performance.now() - startTime,
-      timestamp: Date.now(),
-    };
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -4172,9 +4110,9 @@ export const MAX_BATCH_SIZE = 50;
  * Execute multiple UI Bridge operations in a single HTTP round-trip via the
  * server-side batch endpoint (`POST /ui-bridge/batch`).
  *
- * This is distinct from `ActionExecutor.executeBatch()` which executes
- * browser-side actions sequentially in the SDK. This function sends operations
- * to the Rust relay server, which dispatches each operation through its
+ * This is distinct from the SDK's `controlBatch` command
+ * (`./control-batch.ts`), which runs action / wait / snapshot steps in the
+ * page. This function sends operations to the Rust relay server, which dispatches each operation through its
  * standard IPC path (including circuit breaker, concurrency, and timeout logic).
  *
  * @param baseUrl - Base URL of the UI Bridge server (e.g., "http://localhost:1420")

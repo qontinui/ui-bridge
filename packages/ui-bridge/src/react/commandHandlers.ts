@@ -191,6 +191,7 @@ import {
 } from '../specs/design-request';
 import type { StyleGuideConfig } from '../specs/style-types';
 import { sdkDispatch } from '../core/sdk-dispatch';
+import { readControlBatchRequest, runControlBatch } from '../control/control-batch';
 import {
   ELEMENT_ACTION_PAYLOAD_SHAPE,
   ELEMENT_READ_PAYLOAD_SHAPE,
@@ -1813,6 +1814,18 @@ export async function executeCommand(
       }
       return serializeRegisteredElement(el);
     }
+
+    case 'controlBatch':
+      // One batch contract for every transport (`../control/control-batch.ts`).
+      // Each step runs through THIS dispatcher's own `executeElementAction` /
+      // `getControlSnapshot`, so a batched step is settled, grammar-checked,
+      // redacted and hover-released exactly as the single command is. A failed
+      // batch is a RETURNED `success: false` carrying every step result.
+      return runControlBatch(readControlBatchRequest(payload), {
+        runAction: (step) => executeCommand('executeElementAction', { ...step }, bridge),
+        snapshot: () => executeCommand('getControlSnapshot', {}, bridge),
+        now: () => performance.now(),
+      });
 
     case 'executeElementAction': {
       const startTime = performance.now();
