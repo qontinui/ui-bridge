@@ -210,6 +210,24 @@ function demoteSeverity(severity: ErrorSeverity): ErrorSeverity {
   return severity;
 }
 
+/** Initiators graded as `classifyResourceError` grades a failed media element. */
+const MEDIA_INITIATORS = new Set(['img', 'image', 'css', 'video', 'audio', 'track']);
+
+/**
+ * Grade a failing status by what initiated it, consistent with the captures
+ * that see the same failures: fetch/XHR as `classifyNetwork` grades a status
+ * (4xx warning, 5xx error); media as `classifyResourceError` grades a failed
+ * media element (warning); script and link (stylesheet) as it grades those
+ * (error); the document itself and anything else, error.
+ */
+function resourceStatusSeverity(initiatorType: string, status: number): ErrorSeverity {
+  if (initiatorType === 'fetch' || initiatorType === 'xmlhttprequest') {
+    return status >= 500 ? 'error' : 'warning';
+  }
+  if (MEDIA_INITIATORS.has(initiatorType)) return 'warning';
+  return 'error';
+}
+
 function classifyResourceStatus(event: AnyCapturedEvent & { type: 'resource-status' }): {
   severity: ErrorSeverity;
   reason: string;
@@ -235,22 +253,10 @@ function classifyOwnResourceStatus(event: AnyCapturedEvent & { type: 'resource-s
       if (status === 404 && isCommonAsset404(event.resourceUrl)) {
         return { severity: 'noise', reason: '404 for common asset' };
       }
-      // Already reported by the network or resource-errors capture in this
-      // document: one failure counts once. A carried event's original report
-      // left with its document, so it keeps its own grade.
-      if (event.coveredBy && !event.fromPreviousDocument) {
-        return { severity: 'noise', reason: `already reported by the ${event.coveredBy} capture` };
-      }
-      // A fetch/XHR 4xx no other capture reported (pre-install, an XHR, or a URL
-      // the network capture ignores) is graded as the network capture grades
-      // a 4xx: warning.
-      if (
-        status < 500 &&
-        (event.initiatorType === 'fetch' || event.initiatorType === 'xmlhttprequest')
-      ) {
-        return { severity: 'warning', reason: `${event.initiatorType} HTTP ${status}` };
-      }
-      return { severity: 'error', reason: `${event.initiatorType} HTTP ${status}` };
+      return {
+        severity: resourceStatusSeverity(event.initiatorType, status),
+        reason: `${event.initiatorType} HTTP ${status}`,
+      };
     }
     case 'observer-unavailable':
       return { severity: 'warning', reason: 'resource statuses unobservable' };
@@ -346,15 +352,14 @@ function classifyLoaf(event: AnyCapturedEvent & { type: 'long-animation-frame' }
  * Classification rules:
  * - **crash**: React error boundary, unhandled rejection, network errors on critical endpoints
  * - **error**: console.error (not noise), network 5xx, script/stylesheet load failures, HMR errors,
- *   resource-status 5xx and non-fetch/XHR 4xx that no other capture reported
+ *   resource-status 5xx from fetch/XHR, script/stylesheet/document 4xx/5xx
  * - **warning**: console.warn (not noise), network 4xx, image load failures, WS disconnection,
  *   long tasks >= 500ms, long animation frames with high blocking duration, resource-status
- *   uncovered fetch/XHR 4xx and observer unavailable / buffer full
- *   (a previous document's resource-status event scores one step lower)
+ *   fetch/XHR 4xx, media 4xx/5xx, observer unavailable / buffer full
  * - **noise**: Noise-pattern matches, long tasks < 100ms, navigation, memory, web vitals,
  *   HMR reconnect messages, aborted requests, WS reconnect attempts, resource-status with an
- *   unknown (null) status, the unknown-status cap, or one another capture already reports
- *   (a previous document's resource-status event scores one step lower)
+ *   unknown (null) status or the unknown-status cap
+ * A previous document's resource-status event scores one step lower.
  */
 export function classifyEvent(event: AnyCapturedEvent): {
   severity: ErrorSeverity;

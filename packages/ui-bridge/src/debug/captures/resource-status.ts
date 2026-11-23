@@ -18,8 +18,8 @@
  *   with the writing page's origin + path; the next document's install
  *   re-emits them tagged `fromPreviousDocument: true` and clears the key, so
  *   the failures of the page that triggered a navigation are not lost with it.
- *   A carry whose writer is not this document's referrer did not precede it
- *   and is dropped.
+ *   A carry that cannot have preceded this document (see
+ *   {@link precededThisDocument}) is dropped.
  *
  * Every "could not look" is an event, never silence: an engine with no
  * resource observer emits `observerUnavailable`, a Resource Timing buffer at
@@ -32,10 +32,13 @@
  * is unknown, and unbounded they would evict every other captured event — and
  * spending the budget is itself one event.
  *
- * One failure counts once: an entry the `network` capture (a fetch after
- * install whose URL it does not ignore) or the `resource-errors` capture (an
- * img/script/link after install) already reports records that in
- * `coveredBy`, and is graded as noise.
+ * What this capture has seen is document state, not install state: an
+ * install → uninstall → install on one document does not replay the entries
+ * the first install already emitted.
+ *
+ * A failure the `network` or `resource-errors` capture also reported is
+ * emitted here too; counting it once is the consumers' job
+ * (`withoutObservedDuplicates` in `../shared-utils`).
  *
  * URLs — the resource's and the page's — are redacted with
  * `redactRequestUrl`: origin + path, never the query or fragment (a page URL
@@ -52,8 +55,6 @@ import type {
 } from '../browser-capture-types';
 import { observeResources, toResourceSample, type ResourceSample } from '../../perf';
 import { redactRequestUrl } from '../../network/redact-request-url';
-import { isIgnoredByNetworkCapture } from './network';
-import { RESOURCE_ERROR_INITIATOR_TYPES } from './resource-errors';
 
 type Emit = (event: AnyCapturedEvent) => void;
 
@@ -70,13 +71,6 @@ export const UNKNOWN_STATUS_BUDGET = 25;
 /** A previous document's carry older than this is dropped unread. */
 export const PREVIOUS_DOCUMENT_MAX_AGE_MS = 5 * 60_000;
 
-const RESOURCE_STATUS_KINDS: ReadonlySet<string> = new Set<ResourceStatusCapturedEvent['kind']>([
-  'status',
-  'observer-unavailable',
-  'buffer-full',
-  'unknown-status-capped',
-]);
-
 /** The Resource Timing spec's recommended initial buffer size (250 or greater). */
 const DEFAULT_RESOURCE_TIMING_BUFFER_SIZE = 250;
 
@@ -87,6 +81,38 @@ interface StoredEvents {
   /** The writing page's origin + path, compared with the next document's referrer. */
   writtenBy: string;
   events: ResourceStatusCapturedEvent[];
+}
+
+/**
+ * What this document has seen, kept at module scope — module state lives and
+ * dies with the document — so a re-install does not replay it.
+ */
+interface DocumentState {
+  /** Identities of the entries already emitted (see {@link entryKey}). */
+  seen: Set<string>;
+  /** Carry candidates, newest last, bounded by {@link PREVIOUS_DOCUMENT_LIMIT}. */
+  recent: ResourceStatusCapturedEvent[];
+  unknownEmitted: number;
+  unknownCapped: boolean;
+  /** Whether the previous document's carry was already taken. */
+  carryTaken: boolean;
+}
+
+function freshDocumentState(): DocumentState {
+  return {
+    seen: new Set(),
+    recent: [],
+    unknownEmitted: 0,
+    unknownCapped: false,
+    carryTaken: false,
+  };
+}
+
+let documentState = freshDocumentState();
+
+/** Test-only: simulate a new document (module state survives jsdom "navigations"). */
+export function __resetResourceStatusDocumentForTest(): void {
+  documentState = freshDocumentState();
 }
 
 /** The page URL, redacted: origin + path only. */
@@ -122,38 +148,48 @@ function getSessionStorage(): Storage | null {
   }
 }
 
+/** One Resource Timing entry's identity within a document. */
+function entryKey(sample: ResourceSample): string {
+  return `${sample.initiatorType}|${sample.startTime}|${sample.name}`;
+}
+
+const isFiniteNumber = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+
+/** Every field a stored event's kind requires, with its type. Anything else is tampering. */
 function isStoredEvent(value: unknown): value is ResourceStatusCapturedEvent {
   if (typeof value !== 'object' || value === null) return false;
-  const v = value as {
-    type?: unknown;
-    kind?: unknown;
-    timestamp?: unknown;
-    url?: unknown;
-    resourceUrl?: unknown;
-    initiatorType?: unknown;
-  };
-  if (
-    v.type !== 'resource-status' ||
-    typeof v.kind !== 'string' ||
-    !RESOURCE_STATUS_KINDS.has(v.kind) ||
-    typeof v.timestamp !== 'number' ||
-    typeof v.url !== 'string'
-  ) {
+  const v = value as Record<string, unknown>;
+  if (v.type !== 'resource-status' || !isFiniteNumber(v.timestamp) || typeof v.url !== 'string') {
     return false;
   }
-  const e = v as typeof v & { preInstall?: unknown };
-  return (
-    v.kind !== 'status' ||
-    (typeof v.resourceUrl === 'string' &&
-      typeof v.initiatorType === 'string' &&
-      typeof e.preInstall === 'boolean')
-  );
+  switch (v.kind) {
+    case 'status':
+      return (
+        typeof v.resourceUrl === 'string' &&
+        typeof v.hasQuery === 'boolean' &&
+        typeof v.initiatorType === 'string' &&
+        (v.responseStatus === null || isFiniteNumber(v.responseStatus)) &&
+        isFiniteNumber(v.startTime) &&
+        isFiniteNumber(v.responseEnd)
+      );
+    case 'observer-unavailable':
+      return v.observerUnavailable === true;
+    case 'buffer-full':
+      return v.bufferFull === true && isFiniteNumber(v.resourceEntryCount);
+    case 'unknown-status-capped':
+      return v.unknownStatusCapped === true && isFiniteNumber(v.budget);
+    default:
+      return false;
+  }
 }
 
 /**
- * Whether the page that wrote a carry can have led to this document. An empty
- * referrer (a `no-referrer` policy, a typed URL) cannot rule it out; a
- * referrer naming another page can.
+ * Whether the page that wrote a carry can have led to this document:
+ * - an empty referrer (a `no-referrer` policy, a typed URL) cannot rule it out;
+ * - a referrer naming the writer's page (origin + path) is the writer;
+ * - an origin-only referrer (a `strict-origin` / cross-origin policy) matching
+ *   the writer's origin;
+ * - a reload of the writer's own page (its referrer is the original one's).
  */
 function precededThisDocument(writtenBy: string): boolean {
   let referrer: string;
@@ -163,7 +199,17 @@ function precededThisDocument(writtenBy: string): boolean {
     return true;
   }
   if (!referrer) return true;
-  return redactRequestUrl(referrer).url === writtenBy;
+  if (redactRequestUrl(referrer).url === writtenBy) return true;
+  try {
+    const ref = new URL(referrer);
+    if (ref.pathname === '/' && ref.origin === new URL(writtenBy).origin) return true;
+  } catch {
+    // An unparseable referrer or stamp falls through to the reload check.
+  }
+  const navigation = getEntries('navigation')?.[0] as
+    | (PerformanceEntry & { type?: unknown })
+    | undefined;
+  return navigation?.type === 'reload' && writtenBy === pageUrl();
 }
 
 /** Whether an event belongs in the carry: a failure or a blind spot, never an unknown. */
@@ -177,20 +223,6 @@ function isCarried(event: ResourceStatusCapturedEvent): boolean {
     case 'unknown-status-capped':
       return false;
   }
-}
-
-/** What the capture knows about the captures installed beside it. */
-export interface ResourceStatusCaptureOptions {
-  /**
-   * `performance.now()` when the capture set was installed; an entry that
-   * started earlier is pre-install. `null` when unknown — every entry is then
-   * treated as pre-install (full severity).
-   */
-  installedAt: number | null;
-  /** The network capture's ignore patterns, or `null` when it does not wrap fetch. */
-  networkIgnorePatterns: readonly string[] | null;
-  /** Whether the resource-errors capture is installed. */
-  resourceErrors: boolean;
 }
 
 /** Read and clear the previous document's events. Never throws. */
@@ -208,7 +240,7 @@ function takePreviousDocumentEvents(): ResourceStatusCapturedEvent[] {
   try {
     const parsed = JSON.parse(raw) as Partial<StoredEvents>;
     if (parsed.v !== STORAGE_VERSION || !Array.isArray(parsed.events)) return [];
-    const age = typeof parsed.writtenAt === 'number' ? Date.now() - parsed.writtenAt : NaN;
+    const age = isFiniteNumber(parsed.writtenAt) ? Date.now() - parsed.writtenAt : NaN;
     if (!(age >= 0 && age <= PREVIOUS_DOCUMENT_MAX_AGE_MS)) return [];
     if (typeof parsed.writtenBy !== 'string' || !precededThisDocument(parsed.writtenBy)) return [];
     return parsed.events.filter(isStoredEvent).slice(-PREVIOUS_DOCUMENT_LIMIT);
@@ -217,51 +249,38 @@ function takePreviousDocumentEvents(): ResourceStatusCapturedEvent[] {
   }
 }
 
-export function installResourceStatusCapture(
-  emit: Emit,
-  options: ResourceStatusCaptureOptions
-): () => void {
+export function installResourceStatusCapture(emit: Emit): () => void {
   if (typeof window === 'undefined') {
     return () => {};
   }
+  const doc = documentState;
 
-  /** This document's own events, newest last, bounded for the carry-over. */
-  const recent: ResourceStatusCapturedEvent[] = [];
-  let unknownEmitted = 0;
-  let unknownCapped = false;
-  let wroteStorage = false;
-
-  const record = (event: ResourceStatusCapturedEvent) => {
-    if (isCarried(event)) {
-      recent.push(event);
-      if (recent.length > PREVIOUS_DOCUMENT_LIMIT) recent.shift();
+  const pushRecent = (events: ResourceStatusCapturedEvent[]) => {
+    doc.recent.push(...events.filter(isCarried));
+    if (doc.recent.length > PREVIOUS_DOCUMENT_LIMIT) {
+      doc.recent.splice(0, doc.recent.length - PREVIOUS_DOCUMENT_LIMIT);
     }
+  };
+
+  /** Emit a blind-spot or cap event once per document. */
+  const recordOnce = (key: string, event: ResourceStatusCapturedEvent) => {
+    if (doc.seen.has(key)) return;
+    doc.seen.add(key);
+    pushRecent([event]);
     emit(event);
   };
 
-  const coveredBy = (sample: ResourceSample): ResourceStatusEntryEvent['coveredBy'] => {
-    if (
-      sample.initiatorType === 'fetch' &&
-      options.networkIgnorePatterns !== null &&
-      !isIgnoredByNetworkCapture(sample.name, options.networkIgnorePatterns)
-    ) {
-      return 'network';
-    }
-    if (options.resourceErrors && RESOURCE_ERROR_INITIATOR_TYPES.has(sample.initiatorType)) {
-      return 'resource-error';
-    }
-    return undefined;
-  };
-
   const origin = timeOrigin();
-  const onSample = (sample: ResourceSample, isNavigation = false) => {
+  const onSample = (sample: ResourceSample) => {
     const status = sample.responseStatus;
     if (status !== null && status < 400) return;
+    const key = entryKey(sample);
+    if (doc.seen.has(key)) return;
     if (status === null) {
-      if (unknownCapped) return;
-      if (unknownEmitted >= UNKNOWN_STATUS_BUDGET) {
-        unknownCapped = true;
-        record({
+      if (doc.unknownCapped) return;
+      if (doc.unknownEmitted >= UNKNOWN_STATUS_BUDGET) {
+        doc.unknownCapped = true;
+        recordOnce('unknown-status-capped', {
           type: 'resource-status',
           timestamp: Date.now(),
           url: pageUrl(),
@@ -271,12 +290,10 @@ export function installResourceStatusCapture(
         });
         return;
       }
-      unknownEmitted++;
+      doc.unknownEmitted++;
     }
+    doc.seen.add(key);
     const { url, hasQuery } = redactRequestUrl(sample.name);
-    const preInstall =
-      isNavigation || options.installedAt === null || sample.startTime < options.installedAt;
-    const covered = preInstall ? undefined : coveredBy(sample);
     const event: ResourceStatusEntryEvent = {
       type: 'resource-status',
       timestamp: origin !== null ? Math.round(origin + sample.responseEnd) : Date.now(),
@@ -288,32 +305,23 @@ export function installResourceStatusCapture(
       responseStatus: status,
       startTime: sample.startTime,
       responseEnd: sample.responseEnd,
-      preInstall,
-      ...(covered ? { coveredBy: covered } : {}),
     };
-    record(event);
+    pushRecent([event]);
+    emit(event);
   };
 
-  const emitBufferFull = (resourceEntryCount: number) => {
-    record({
-      type: 'resource-status',
-      timestamp: Date.now(),
-      url: pageUrl(),
-      kind: 'buffer-full',
-      bufferFull: true,
-      resourceEntryCount,
-    });
-  };
-
-  // 1. The previous same-tab document's failures, re-emitted once.
-  for (const previous of takePreviousDocumentEvents()) {
-    emit({ ...previous, fromPreviousDocument: true });
+  // 1. The previous same-tab document's failures, re-emitted once per document.
+  if (!doc.carryTaken) {
+    doc.carryTaken = true;
+    for (const previous of takePreviousDocumentEvents()) {
+      emit({ ...previous, fromPreviousDocument: true });
+    }
   }
 
   // 2. The document's own status, read once.
   const navigation = getEntries('navigation');
   if (navigation && navigation.length > 0) {
-    onSample(toResourceSample(navigation[0]!), true);
+    onSample(toResourceSample(navigation[0]!));
   }
 
   // 3. Buffer fullness at install: at or above the default size, the buffered
@@ -322,7 +330,14 @@ export function installResourceStatusCapture(
   //    the live observer receives every entry regardless.
   const preInstall = getEntries('resource');
   if (preInstall && preInstall.length >= DEFAULT_RESOURCE_TIMING_BUFFER_SIZE) {
-    emitBufferFull(preInstall.length);
+    recordOnce('buffer-full', {
+      type: 'resource-status',
+      timestamp: Date.now(),
+      url: pageUrl(),
+      kind: 'buffer-full',
+      bufferFull: true,
+      resourceEntryCount: preInstall.length,
+    });
   }
 
   // 4. Every resource, including those recorded before install.
@@ -333,7 +348,7 @@ export function installResourceStatusCapture(
     { buffered: true }
   );
   if (handle === null) {
-    record({
+    recordOnce('observer-unavailable', {
       type: 'resource-status',
       timestamp: Date.now(),
       url: pageUrl(),
@@ -343,9 +358,11 @@ export function installResourceStatusCapture(
   }
 
   // 5. Carry this document's events across a same-tab navigation.
+  /** What the last pagehide wrote, so a back/forward-cache restore can take it back. */
+  let written: ResourceStatusCapturedEvent[] | null = null;
   const onPageHide = () => {
     handle?.flush();
-    if (recent.length === 0) return;
+    if (doc.recent.length === 0) return;
     const storage = getSessionStorage();
     if (!storage) return;
     try {
@@ -353,27 +370,29 @@ export function installResourceStatusCapture(
         v: STORAGE_VERSION,
         writtenAt: Date.now(),
         writtenBy: pageUrl(),
-        events: recent.slice(),
+        events: doc.recent.slice(),
       };
       storage.setItem(STORAGE_KEY, JSON.stringify(payload));
-      wroteStorage = true;
-      // Carried once: a back/forward-cache restore and a second pagehide must
-      // not hand the same events to the next document again.
-      recent.length = 0;
+      // Carried once: the events now live in storage, not here.
+      written = doc.recent.splice(0);
     } catch {
       // Quota or a blocked storage: the carry-over is lost, the live events were emitted.
     }
   };
-  // A document restored from the back/forward cache is the same document: the
-  // events it wrote on pagehide must not be re-emitted by a later one.
+  // A document restored from the back/forward cache is the same document: it
+  // withdraws its carry from storage and takes the events back, so its next
+  // pagehide carries them (once) with whatever happened since.
   const onPageShow = (event: PageTransitionEvent) => {
-    if (!event.persisted || !wroteStorage) return;
-    wroteStorage = false;
+    if (!event.persisted || written === null) return;
+    const withdrawn = written;
+    written = null;
     try {
       getSessionStorage()?.removeItem(STORAGE_KEY);
     } catch {
       // Blocked storage: nothing was readable for a later document either.
     }
+    const since = doc.recent.splice(0);
+    pushRecent([...withdrawn, ...since]);
   };
   window.addEventListener('pagehide', onPageHide);
   window.addEventListener('pageshow', onPageShow);

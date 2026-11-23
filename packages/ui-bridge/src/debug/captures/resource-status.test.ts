@@ -20,6 +20,8 @@ import { classifyEvent } from '../error-severity';
 import { computeFingerprint } from '../error-fingerprint';
 import { extractMessage } from '../error-snapshot';
 import { computeHealthReport } from '../health-score';
+import { withoutObservedDuplicates } from '../shared-utils';
+import * as resourceStatusModule from './resource-status';
 
 const STORAGE_KEY = 'qontinui-ui-bridge:resource-status:v1';
 
@@ -32,6 +34,8 @@ class FakePerformanceObserver {
   /** Entries the browser recorded before any observer existed, per type. */
   static buffers: Record<string, Entry[]> = {};
   type: string | null = null;
+  /** Recorded but not yet dispatched; `takeRecords` hands these over. */
+  pending: Entry[] = [];
   constructor(private readonly callback: Callback) {}
   observe(init: { type: string; buffered?: boolean }): void {
     this.type = init.type;
@@ -49,7 +53,24 @@ class FakePerformanceObserver {
     FakePerformanceObserver.live.delete(this);
   }
   takeRecords(): PerformanceEntry[] {
-    return [];
+    return this.pending.splice(0) as unknown as PerformanceEntry[];
+  }
+  /**
+   * Record entries the browser has not dispatched yet: they reach observers
+   * on a later microtask unless `takeRecords` takes them first.
+   */
+  static queue(type: string, entries: Entry[]): void {
+    (FakePerformanceObserver.buffers[type] ??= []).push(...entries);
+    for (const obs of FakePerformanceObserver.live) {
+      if (obs.type !== type) continue;
+      obs.pending.push(...entries);
+      queueMicrotask(() => {
+        const due = obs.pending.splice(0);
+        if (due.length > 0 && FakePerformanceObserver.live.has(obs)) {
+          obs.callback({ getEntries: () => due as unknown as PerformanceEntry[] });
+        }
+      });
+    }
   }
   /** Record entries now, delivering them to live observers of `type`. */
   static record(type: string, entries: Entry[]): void {
@@ -81,6 +102,10 @@ function newDocument(): void {
   FakePerformanceObserver.buffers = {};
   FakePerformanceObserver.live.clear();
   navigationEntries = [];
+  // Module state belongs to the document; jsdom keeps one module instance.
+  (
+    resourceStatusModule as { __resetResourceStatusDocumentForTest?: () => void }
+  ).__resetResourceStatusDocumentForTest?.();
 }
 
 /** Every capture but resource-status off, resource-status left at its default. */
@@ -292,51 +317,6 @@ describe('resource-status capture', () => {
     expect(events.at(-1)).toMatchObject({ kind: 'status', responseStatus: 429 });
   });
 
-  it('records preInstall and which capture already covers an entry', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => new Response('', { status: 200 }))
-    );
-    FakePerformanceObserver.record('resource', [
-      resourceEntry('https://app.example.com/api/v1/early', 503),
-    ]);
-    const capture = install(WITH_NETWORK_AND_RESOURCE_ERRORS);
-    await settle();
-    FakePerformanceObserver.record('resource', [
-      liveEntry('https://app.example.com/api/v1/late', 503),
-      liveEntry('https://app.example.com/api/ui-bridge/relay', 429),
-      liveEntry('https://app.example.com/api/v1/xhr', 503, 'xmlhttprequest'),
-      liveEntry('https://app.example.com/missing.png', 404, 'img'),
-      liveEntry('https://app.example.com/bg.png', 404, 'css'),
-    ]);
-    const byUrl = new Map(
-      statusEvents(capture).map((e) => [e.kind === 'status' ? e.resourceUrl : e.kind, e])
-    );
-    const get = (path: string) => byUrl.get(`https://app.example.com${path}`);
-    expect(get('/api/v1/early')).toMatchObject({ preInstall: true });
-    expect(get('/api/v1/early')).not.toHaveProperty('coveredBy');
-    expect(get('/api/v1/late')).toMatchObject({ preInstall: false, coveredBy: 'network' });
-    // The network capture ignores /api/ui-bridge/ and wraps fetch only.
-    expect(get('/api/ui-bridge/relay')).not.toHaveProperty('coveredBy');
-    expect(get('/api/v1/xhr')).not.toHaveProperty('coveredBy');
-    expect(get('/missing.png')).toMatchObject({ preInstall: false, coveredBy: 'resource-error' });
-    expect(get('/bg.png')).not.toHaveProperty('coveredBy');
-  });
-
-  it('claims no coverage for a capture that is switched off', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => new Response('', { status: 200 }))
-    );
-    const capture = install();
-    await settle();
-    FakePerformanceObserver.record('resource', [
-      liveEntry('https://app.example.com/api/v1/late', 503),
-      liveEntry('https://app.example.com/missing.png', 404, 'img'),
-    ]);
-    for (const e of statusEvents(capture)) expect(e).not.toHaveProperty('coveredBy');
-  });
-
   it('one failed fetch seen by network and resource-status counts as one error', async () => {
     vi.stubGlobal(
       'fetch',
@@ -369,6 +349,91 @@ describe('resource-status capture', () => {
     expect(recent).toEqual(expect.arrayContaining(['resource-error', 'resource-status']));
     const { breakdown } = computeHealthReport(capture);
     expect(breakdown.crashes + breakdown.errors + breakdown.warnings).toBe(1);
+  });
+
+  it('an img that starts before install and fails after counts once', async () => {
+    const capture = install(WITH_NETWORK_AND_RESOURCE_ERRORS);
+    await settle();
+    const img = document.createElement('img');
+    img.src = 'https://app.example.com/slow.png';
+    document.body.appendChild(img);
+    img.dispatchEvent(new Event('error'));
+    img.remove();
+    const now = performance.now();
+    FakePerformanceObserver.record('resource', [
+      {
+        ...resourceEntry('https://app.example.com/slow.png', 404, 'img'),
+        startTime: 1,
+        responseEnd: now,
+      },
+    ]);
+    const { breakdown } = computeHealthReport(capture);
+    expect(breakdown.crashes + breakdown.errors + breakdown.warnings).toBe(1);
+  });
+
+  it('a relative fetch with a host-bearing ignore pattern counts once', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('', { status: 503 }))
+    );
+    const capture = install({
+      ...WITH_NETWORK_AND_RESOURCE_ERRORS,
+      networkOptions: { ignorePatterns: [`${window.location.host}/api/ui-bridge/`] },
+    });
+    await settle();
+    await window.fetch('/api/v1/relative?x=1');
+    FakePerformanceObserver.record('resource', [
+      liveEntry(`${window.location.origin}/api/v1/relative?x=1`, 503),
+    ]);
+    expect(computeHealthReport(capture).breakdown).toEqual({ crashes: 0, errors: 1, warnings: 0 });
+  });
+
+  it('a detached Image failure with no resource-error event still counts', async () => {
+    const capture = install(WITH_NETWORK_AND_RESOURCE_ERRORS);
+    await settle();
+    FakePerformanceObserver.record('resource', [
+      liveEntry('https://app.example.com/pixel.gif', 404, 'img'),
+    ]);
+    expect(capture.getByType('resource-error')).toHaveLength(0);
+    expect(computeHealthReport(capture).breakdown).toEqual({ crashes: 0, errors: 0, warnings: 1 });
+  });
+
+  it('two failures of one URL with one observed report count as two', () => {
+    const t = Date.now();
+    const network = {
+      type: 'network' as const,
+      timestamp: t,
+      url: 'x',
+      method: 'GET',
+      requestUrl: 'https://app.example.com/api/v1/x?q=1',
+      status: 503,
+      durationMs: 1,
+      kind: 'http-error' as const,
+    };
+    const status = {
+      type: 'resource-status' as const,
+      timestamp: t,
+      url: 'x',
+      kind: 'status' as const,
+      resourceUrl: 'https://app.example.com/api/v1/x',
+      hasQuery: true,
+      initiatorType: 'fetch',
+      responseStatus: 503,
+      startTime: 1,
+      responseEnd: 2,
+    };
+    expect(withoutObservedDuplicates([network, status, { ...status }])).toHaveLength(2);
+    // Outside the window, or a different status, nothing is absorbed.
+    expect(withoutObservedDuplicates([network, { ...status, timestamp: t + 6_000 }])).toHaveLength(
+      2
+    );
+    expect(withoutObservedDuplicates([network, { ...status, responseStatus: 500 }])).toHaveLength(
+      2
+    );
+    // A previous document's event is never matched.
+    expect(
+      withoutObservedDuplicates([network, { ...status, fromPreviousDocument: true as const }])
+    ).toHaveLength(2);
   });
 
   it('carries only failures and blind spots — never unknown statuses or the cap', async () => {
@@ -441,20 +506,61 @@ describe('resource-status capture', () => {
     capture.uninstall();
   });
 
-  it('a back/forward-cache round trip does not re-carry already-carried events', async () => {
+  it('a back/forward-cache round trip carries its events exactly once', async () => {
     const first = install();
     await settle();
     FakePerformanceObserver.record('resource', [resourceEntry('https://app.example.com/q', 429)]);
     window.dispatchEvent(new Event('pagehide'));
     window.dispatchEvent(Object.assign(new Event('pageshow'), { persisted: true }));
-    // Leaving the restored document again: nothing new happened on it.
+    // The restored document took its events back; leaving again carries them once.
     window.dispatchEvent(new Event('pagehide'));
     first.uninstall();
 
     newDocument();
     const second = install();
     await settle();
-    expect(statusEvents(second)).toHaveLength(0);
+    const carried = statusEvents(second);
+    expect(carried).toHaveLength(1);
+    expect(carried[0]).toMatchObject({ responseStatus: 429, fromPreviousDocument: true });
+  });
+
+  it('pagehide flushes entries the observer has not dispatched yet', async () => {
+    const first = install();
+    await settle();
+    FakePerformanceObserver.queue('resource', [resourceEntry('https://app.example.com/late', 503)]);
+    window.dispatchEvent(new Event('pagehide'));
+    first.uninstall();
+
+    newDocument();
+    const second = install();
+    await settle();
+    expect(statusEvents(second)).toEqual([
+      expect.objectContaining({
+        resourceUrl: 'https://app.example.com/late',
+        fromPreviousDocument: true,
+      }),
+    ]);
+  });
+
+  it('install → uninstall → install on one document does not replay', async () => {
+    FakePerformanceObserver.record('resource', [resourceEntry('https://app.example.com/a', 429)]);
+    navigationEntries = [
+      {
+        ...resourceEntry('https://app.example.com/page', 403, 'navigation'),
+        entryType: 'navigation',
+      },
+    ];
+    const capture = new BrowserEventCapture(ONLY_DEFAULT_RESOURCE_STATUS);
+    installed.push(capture);
+    capture.install();
+    await settle();
+    expect(statusEvents(capture)).toHaveLength(2);
+    capture.uninstall();
+    capture.install();
+    await settle();
+    expect(statusEvents(capture)).toHaveLength(2);
+    FakePerformanceObserver.record('resource', [resourceEntry('https://app.example.com/b', 500)]);
+    expect(statusEvents(capture)).toHaveLength(3);
   });
 
   it('redacts the page url: no query or fragment in events or in the carry', async () => {
@@ -490,7 +596,6 @@ describe('resource-status capture', () => {
       responseStatus: 429,
       startTime: 1,
       responseEnd: 2,
-      preInstall: true,
     };
     sessionStorage.setItem(
       STORAGE_KEY,
@@ -499,7 +604,19 @@ describe('resource-status capture', () => {
         writtenAt: Date.now(),
         writtenBy: `${window.location.origin}${window.location.pathname}`,
         events: [
-          { ...valid, preInstall: 'yes' },
+          { ...valid, responseStatus: '429' },
+          { ...valid, hasQuery: 'no' },
+          { ...valid, startTime: '1' },
+          { ...valid, responseEnd: null },
+          {
+            type: 'resource-status',
+            timestamp: 1,
+            url: 'x',
+            kind: 'buffer-full',
+            bufferFull: true,
+          },
+          { type: 'resource-status', timestamp: 1, url: 'x', kind: 'unknown-status-capped' },
+          { type: 'resource-status', timestamp: 1, url: 'x', kind: 'observer-unavailable' },
           { ...valid, kind: 'bogus' },
           {
             type: 'resource-status',
@@ -520,6 +637,75 @@ describe('resource-status capture', () => {
       resourceUrl: 'https://app.example.com/ok',
       fromPreviousDocument: true,
     });
+  });
+
+  it('drops a carry stamped in the future', async () => {
+    sessionStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        v: 1,
+        writtenAt: Date.now() + 60_000,
+        writtenBy: `${window.location.origin}${window.location.pathname}`,
+        events: [
+          {
+            type: 'resource-status',
+            timestamp: 1,
+            url: 'x',
+            kind: 'observer-unavailable',
+            observerUnavailable: true,
+          },
+        ],
+      })
+    );
+    const capture = install();
+    await settle();
+    expect(statusEvents(capture)).toHaveLength(0);
+  });
+
+  it('accepts a carry on a reload of its writer, and from an origin-only referrer', async () => {
+    const carry = (writtenBy: string) =>
+      sessionStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({
+          v: 1,
+          writtenAt: Date.now(),
+          writtenBy,
+          events: [
+            {
+              type: 'resource-status',
+              timestamp: 1,
+              url: 'x',
+              kind: 'observer-unavailable',
+              observerUnavailable: true,
+            },
+          ],
+        })
+      );
+    const here = `${window.location.origin}${window.location.pathname}`;
+
+    // Reload: the referrer is the original navigation's, not the writer.
+    carry(here);
+    setReferrer('https://elsewhere.example/start');
+    navigationEntries = [
+      {
+        ...resourceEntry(window.location.href, 200, 'navigation'),
+        entryType: 'navigation',
+        type: 'reload',
+      },
+    ];
+    expect(statusEvents(install())).toHaveLength(1);
+
+    // An origin-only referrer (strict-origin policy) matching the writer's origin.
+    newDocument();
+    carry(`${window.location.origin}/some/page`);
+    setReferrer(`${window.location.origin}/`);
+    expect(statusEvents(install())).toHaveLength(1);
+
+    // An origin-only referrer from another origin did not precede it.
+    newDocument();
+    carry(`${window.location.origin}/some/page`);
+    setReferrer('https://elsewhere.example/');
+    expect(statusEvents(install())).toHaveLength(0);
   });
 
   it('drops a carry written more than 5 minutes ago', async () => {
@@ -620,17 +806,26 @@ describe('resource-status classification', () => {
     responseStatus,
     startTime: 1,
     responseEnd: 2,
-    preInstall: true,
   });
 
-  it('grades a fetch/XHR 4xx as warning (the network capture also sees it), 5xx as error', () => {
-    expect(classifyEvent(entry(429)).severity).toBe('warning');
-    expect(classifyEvent({ ...entry(429), initiatorType: 'xmlhttprequest' }).severity).toBe(
-      'warning'
-    );
-    expect(classifyEvent(entry(503)).severity).toBe('error');
-    expect(classifyEvent({ ...entry(429), initiatorType: 'script' }).severity).toBe('error');
-    expect(classifyEvent({ ...entry(403), initiatorType: 'navigation' }).severity).toBe('error');
+  it('grades by initiator, as the capture that sees the same failure grades it', () => {
+    const as = (initiatorType: string, status: number) =>
+      classifyEvent({ ...entry(status), initiatorType }).severity;
+    // fetch/XHR as classifyNetwork: 4xx warning, 5xx error.
+    expect(as('fetch', 429)).toBe('warning');
+    expect(as('xmlhttprequest', 404)).toBe('warning');
+    expect(as('fetch', 503)).toBe('error');
+    // Media as classifyResourceError grades a failed media element: warning.
+    for (const media of ['img', 'css', 'video', 'audio']) {
+      expect(as(media, 404)).toBe('warning');
+      expect(as(media, 503)).toBe('warning');
+    }
+    // Script and stylesheet as classifyResourceError: error.
+    expect(as('script', 404)).toBe('error');
+    expect(as('link', 404)).toBe('error');
+    // The document itself, and anything else: error.
+    expect(as('navigation', 403)).toBe('error');
+    expect(as('beacon', 500)).toBe('error');
   });
 
   it('grades a previous document’s event one step down', () => {
@@ -646,32 +841,6 @@ describe('resource-status classification', () => {
         resourceEntryCount: 250,
       }).severity
     ).toBe('noise');
-  });
-
-  it('grades an entry another capture already reports as noise, unless carried over', () => {
-    const live = { preInstall: false };
-    expect(classifyEvent({ ...entry(503), ...live, coveredBy: 'network' as const }).severity).toBe(
-      'noise'
-    );
-    expect(
-      classifyEvent({
-        ...entry(404),
-        ...live,
-        initiatorType: 'img',
-        coveredBy: 'resource-error' as const,
-      }).severity
-    ).toBe('noise');
-    // Uncovered after install (an ignored relay URL): full severity.
-    expect(classifyEvent({ ...entry(503), ...live }).severity).toBe('error');
-    // The previous document's network event is gone with it: full severity, one step down.
-    expect(
-      classifyEvent({
-        ...entry(503),
-        ...live,
-        coveredBy: 'network' as const,
-        fromPreviousDocument: true as const,
-      }).severity
-    ).toBe('warning');
   });
 
   it('grades the unknown-status cap as noise', () => {

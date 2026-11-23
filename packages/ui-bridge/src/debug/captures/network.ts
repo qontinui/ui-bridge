@@ -14,17 +14,7 @@ interface NetworkOptions {
   ignorePatterns?: string[];
 }
 
-/** URL substrings the network capture skips unless `ignorePatterns` overrides them. */
-export const DEFAULT_NETWORK_IGNORE_PATTERNS: readonly string[] = [
-  '/api/dev-debug/',
-  '/api/ui-bridge/',
-  'localhost:9876',
-];
-
-/** Whether the network capture, configured with `ignorePatterns`, skips `url`. */
-export function isIgnoredByNetworkCapture(url: string, ignorePatterns: readonly string[]): boolean {
-  return ignorePatterns.some((p) => url.includes(p));
-}
+const DEFAULT_IGNORE = ['/api/dev-debug/', '/api/ui-bridge/', 'localhost:9876'];
 
 export function installNetworkCapture(emit: Emit, options?: NetworkOptions): () => void {
   if (typeof window === 'undefined' || typeof window.fetch !== 'function') {
@@ -32,10 +22,10 @@ export function installNetworkCapture(emit: Emit, options?: NetworkOptions): () 
   }
 
   const originalFetch = window.fetch;
-  const ignorePatterns = options?.ignorePatterns ?? DEFAULT_NETWORK_IGNORE_PATTERNS;
+  const ignorePatterns = options?.ignorePatterns ?? DEFAULT_IGNORE;
 
   function shouldIgnore(url: string): boolean {
-    return isIgnoredByNetworkCapture(url, ignorePatterns);
+    return ignorePatterns.some((p) => url.includes(p));
   }
 
   function getMethod(input: RequestInfo | URL, init?: RequestInit): string {
@@ -51,14 +41,25 @@ export function installNetworkCapture(emit: Emit, options?: NetworkOptions): () 
     return String(input);
   }
 
+  function toAbsoluteUrl(url: string): string {
+    try {
+      return new URL(url, window.location.href).href;
+    } catch {
+      return url;
+    }
+  }
+
   window.fetch = async function patchedFetch(
     input: RequestInfo | URL,
     init?: RequestInit
   ): Promise<Response> {
-    const requestUrl = getUrl(input);
-    if (shouldIgnore(requestUrl)) {
+    const rawUrl = getUrl(input);
+    if (shouldIgnore(rawUrl)) {
       return originalFetch.call(window, input, init);
     }
+    // Recorded absolute, so it compares with the resource-status capture's
+    // Resource Timing URL for the same request.
+    const requestUrl = toAbsoluteUrl(rawUrl);
 
     const method = getMethod(input, init);
     const start = performance.now();
