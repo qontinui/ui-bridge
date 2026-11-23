@@ -294,13 +294,11 @@ export function resolveDensityStructure(
     }
     let found: number | null = null;
     let depth = -1;
-    let crossed = false;
-    for (let k = p.keys.length - 2; k >= 0; k--) {
-      if (ambiguous(p.keys[k])) {
-        // An ambiguous prefix: whichever item it is, the chain cannot say.
-        crossed = true;
-        break;
-      }
+    // Any key of the chain, its own included, claimed by several items proves
+    // the chain repeats (rows under one shared test id): then even a deeper
+    // key that one row alone registered cannot say which row this item is in.
+    const crossed = p.keys.some(ambiguous);
+    for (let k = p.keys.length - 2; k >= 0 && !crossed; k--) {
       const j = lookup(p.keys[k]);
       if (j !== null && j !== i) {
         found = j;
@@ -531,8 +529,9 @@ export interface DensityPins {
   ids: string[];
   /**
    * Items wide enough to be a pin whose pin status cannot be read: no computed
-   * `position`, or a `sticky` item touching an edge in a capture taken scrolled
-   * (a pin is judged at scroll 0, where that item's place is not known). The
+   * `position`; a `fixed` or `sticky` item whose visibility is unknown; or any
+   * `sticky` item in a capture taken scrolled (a pin is judged at scroll 0,
+   * where that item's place is not known). The
    * pin heights above exclude them, so they are lower bounds while this is
    * not empty.
    */
@@ -557,7 +556,14 @@ export function densityPins(capture: DensityCapture): DensityPins {
     const r = item.rect;
     if (r === null || r.w < W / 2) continue;
     if (item.visibility === 'hidden' || item.visibility === 'no-layout') continue;
-    if (item.position === null) {
+    const mayPin = item.position === 'fixed' || item.position === 'sticky';
+    // No computed position, or a would-be pin whose visibility is unknown.
+    if (item.position === null || (mayPin && item.visibility === null)) {
+      unknown.push(item.id);
+      continue;
+    }
+    if (item.position === 'sticky' && scrollY !== 0) {
+      // Judged at scroll 0, where a sticky item's place is not in a scrolled capture.
       unknown.push(item.id);
       continue;
     }
@@ -569,11 +575,6 @@ export function densityPins(capture: DensityCapture): DensityPins {
     } else if (item.position === 'sticky') {
       if (Math.abs(vTop) <= 1) edge = 'top';
       else if (Math.abs(vBottom - H) <= 1) edge = 'bottom';
-      if (edge !== null && scrollY !== 0) {
-        // Stuck here now; where it sits at scroll 0 the capture cannot say.
-        unknown.push(item.id);
-        continue;
-      }
     }
     if (edge === null) continue;
     ids.push(item.id);
