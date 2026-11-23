@@ -18,9 +18,10 @@
  *   1. EVERY relayed action — every action literal the SDK queues for a
  *      browser, read from the TypeScript AST (never a regex: one missed the
  *      nested generic of `relayCommand<{… Record<string, unknown> …}>('expectElement'`)
- *      — has a browser case in `executeCommand`, or is on the ratcheted
- *      `KNOWN_UNSERVED_RELAY_ACTIONS` list. The count is ratcheted exactly, so
- *      an extraction that silently loses call sites fails too.
+ *      — has a browser case in `executeCommand`. There is no exception list:
+ *      plan 2026-11-08-relayed-ui-bridge-actions-have-no-browser-case served or
+ *      deleted every action that was once on one. The count is ratcheted
+ *      exactly, so an extraction that silently loses call sites fails too.
  *
  *   2. STATIC parity for the canonical interactions — every action in
  *      `INTERACTION_RELAY_COMMAND_ACTIONS` (server/types.ts) is both relayed
@@ -45,31 +46,11 @@ const SRC_ROOT = resolve(here, '..');
 const commandHandlersSrc = readFileSync(resolve(here, '../react/commandHandlers.ts'), 'utf8');
 
 /**
- * Relayed actions the in-page dispatcher does not serve. Each reaches a browser
- * that answers `Unknown command action`: a typed error through `relayCommand`,
- * or, through `relayWithFallback`, a `success` carrying the fallback default
- * with `fallback: true`, which reads as an empty answer.
- *
- * Owned by plan `2026-11-08-relayed-ui-bridge-actions-have-no-browser-case`,
- * which covers the actions listed here: each one is served in the dispatcher or its
- * relay route is deleted (delete over deprecate). Most reach the browser through
- * `relayCommand`; `getElementHistory` and `getRecentEffects` go through
- * `relayWithFallback`, which only this AST extraction reads.
- *
- * Ratcheted both ways: an action that gains a browser case, or stops being
- * relayed, fails the guard until it leaves this list.
- */
-const KNOWN_UNSERVED_RELAY_ACTIONS: readonly string[] = [
-  'query',
-  'waitForElement',
-];
-
-/**
  * How many distinct action literals the SDK relays to a browser. Change it
  * only together with the relay call sites it counts: a drop with no relay
  * route removed means the extraction lost sight of a call shape.
  */
-const RELAYED_ACTION_COUNT = 156;
+const RELAYED_ACTION_COUNT = 154;
 
 /** The relay wrappers in the SDK — functions that forward their first parameter to `queueCommand`. */
 const RELAY_WRAPPERS = [
@@ -303,28 +284,13 @@ describe('relay ↔ commandHandlers drift guard · every relayed action has a br
     ).toBe(RELAYED_ACTION_COUNT);
   });
 
-  it('every relayed action is served by executeCommand, or is a known unserved one', () => {
-    const missing = [...relayed.actions.keys()]
-      .filter((a) => !served.has(a) && !KNOWN_UNSERVED_RELAY_ACTIONS.includes(a))
-      .sort();
+  it('every relayed action is served by executeCommand, with no exception list', () => {
+    const missing = [...relayed.actions.keys()].filter((a) => !served.has(a)).sort();
     expect(
       missing,
       `relayed with no browser case, so the browser answers 'Unknown command action': ` +
         `${withSites(missing)}. Serve each in executeCommand (react/commandHandlers.ts) or ` +
         `delete its relay route.`
-    ).toEqual([]);
-  });
-
-  it('KNOWN_UNSERVED_RELAY_ACTIONS is ratcheted both ways', () => {
-    const nowServed = KNOWN_UNSERVED_RELAY_ACTIONS.filter((a) => served.has(a));
-    const noLongerRelayed = KNOWN_UNSERVED_RELAY_ACTIONS.filter((a) => !relayed.actions.has(a));
-    expect(
-      nowServed,
-      'now have a browser case — remove them from KNOWN_UNSERVED_RELAY_ACTIONS'
-    ).toEqual([]);
-    expect(
-      noLongerRelayed,
-      'are no longer relayed — remove them from KNOWN_UNSERVED_RELAY_ACTIONS'
     ).toEqual([]);
   });
 });
