@@ -9,10 +9,11 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
+from .diagnostics import UiBridgeErrorCode
 from .observation import UnknownCode
-from .types import ElementState
+from .types import ActionErrorCodeValue, ElementState
 
 # ============================================================================
 # Search Types
@@ -327,6 +328,16 @@ class AssertionUnmeasured(BaseModel):
     detail: str
 
 
+class AssertionSearchDetails(BaseModel):
+    """Element-lookup metadata on an assertion result (TS ``searchDetails``)."""
+
+    confidence: float
+    match_reasons: list[str] = Field(alias="matchReasons")
+    candidate_count: int = Field(alias="candidateCount")
+
+    model_config = {"populate_by_name": True}
+
+
 class AssertionResult(BaseModel):
     """Assertion result."""
 
@@ -349,12 +360,35 @@ class AssertionResult(BaseModel):
     actual: Any = None
     """What was measured. Absent on the wire for an ``unmeasured`` check, which has no value."""
     failure_reason: str | None = Field(None, alias="failureReason")
+    failure_code: ActionErrorCodeValue | None = Field(None, alias="failureCode")
+    """Stable machine-readable diagnostic code, set on every ``passed == False`` result.
+
+    A ``UB-ASSERT-*`` code for a check that compared a value and failed; the
+    ``UB-OBS-*`` code of ``unmeasured.code`` for an unmeasured one; or
+    ``UB-VALIDATION-ERROR`` when the request named nothing it could compare
+    (e.g. ``noOverlap`` / ``minSpacing`` without a ``related_target``). A known
+    code is promoted to ``UiBridgeErrorCode``; one this build does not know
+    stays a ``str``.
+    """
     suggestion: str | None = None
     element_state: ElementState | None = Field(None, alias="elementState")
+    search_details: AssertionSearchDetails | None = Field(None, alias="searchDetails")
+    """How the target was resolved: match confidence, reasons, candidate count."""
     duration_ms: float = Field(alias="durationMs")
     timestamp: int
 
     model_config = {"populate_by_name": True}
+
+    @field_validator("failure_code", mode="before")
+    @classmethod
+    def _coerce_failure_code(cls, v: Any) -> Any:
+        """Promote a known code to the enum; pass an unrecognised one through."""
+        if isinstance(v, str):
+            try:
+                return UiBridgeErrorCode(v)
+            except ValueError:
+                return v
+        return v
 
 
 class BatchAssertionRequest(BaseModel):

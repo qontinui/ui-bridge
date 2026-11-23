@@ -342,7 +342,7 @@ class AIClient:
 
     def assert_that(
         self,
-        target: str,
+        target: str | SearchCriteria,
         assertion: str | AssertionType,
         expected: Any = None,
         *,
@@ -361,7 +361,7 @@ class AIClient:
         Make an assertion about an element.
 
         Args:
-            target: Element ID or natural language description
+            target: Element ID, natural language description, or ``SearchCriteria``
             assertion: Assertion type (e.g., "visible", "hidden", "enabled")
             expected: Expected value (for hasText, hasValue, count, etc.)
             timeout: Wait timeout in milliseconds
@@ -464,7 +464,7 @@ class AIClient:
 
     def assert_no_overlap(
         self,
-        target: str,
+        target: str | SearchCriteria,
         related_target: str | SearchCriteria,
         *,
         timeout: int | None = None,
@@ -476,7 +476,7 @@ class AIClient:
 
     def assert_min_spacing(
         self,
-        target: str,
+        target: str | SearchCriteria,
         related_target: str | SearchCriteria,
         min_gap: float,
         *,

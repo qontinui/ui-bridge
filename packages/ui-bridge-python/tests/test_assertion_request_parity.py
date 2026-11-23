@@ -17,7 +17,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from ui_bridge import AssertionRange, AssertionRequest, AssertionType
+from ui_bridge import (
+    AssertionRange,
+    AssertionRequest,
+    AssertionResult,
+    AssertionType,
+    BatchAssertionResult,
+    SearchCriteria,
+    UiBridgeErrorCode,
+)
 from ui_bridge.async_client import AsyncUIBridgeClient
 from ui_bridge.client import UIBridgeClient
 
@@ -71,6 +79,55 @@ class TestParityWithTsSource:
         py_fields = {f.alias or name for name, f in AssertionRequest.model_fields.items()}
         # Both directions: a Python field the TS request lacks is one the server never reads.
         assert py_fields == ts_fields
+
+    @pytest.mark.parametrize(
+        ("interface", "model"),
+        [("AssertionResult", AssertionResult), ("BatchAssertionResult", BatchAssertionResult)],
+    )
+    def test_result_models_read_every_ts_field(self, interface: str, model: Any) -> None:
+        # The result side too: a field the SDK sends that Python does not model is
+        # dropped on parse (``failureCode`` was, so a Python caller never saw the
+        # ``UB-VALIDATION-ERROR`` a spatial check without ``relatedTarget`` returns).
+        src = _ts_source()
+        body = re.search(rf"export interface {interface} \{{(.*?)\n\}}", src, re.S)
+        assert body, f"{interface} interface not found in types.ts"
+        # Top-level members only: nested object literals are indented deeper.
+        ts_fields = set(re.findall(r"^  ([A-Za-z]+)\??:", body.group(1), re.M))
+        assert ts_fields, f"{interface} interface parsed empty"
+        py_fields = {f.alias or name for name, f in model.model_fields.items()}
+        assert py_fields == ts_fields
+
+
+class TestResultDecoding:
+    def test_failure_code_and_search_details_are_read(self) -> None:
+        result = AssertionResult.model_validate(
+            {
+                **_result_data(),
+                "passed": False,
+                "outcome": "failed",
+                "failureCode": "UB-VALIDATION-ERROR",
+                "searchDetails": {
+                    "confidence": 0.9,
+                    "matchReasons": ["text"],
+                    "candidateCount": 3,
+                },
+            }
+        )
+        assert result.failure_code == UiBridgeErrorCode.VALIDATION_ERROR
+        assert result.search_details is not None
+        assert result.search_details.candidate_count == 3
+        assert result.search_details.match_reasons == ["text"]
+
+    def test_unknown_failure_code_passes_through_as_str(self) -> None:
+        result = AssertionResult.model_validate(
+            {**_result_data(), "passed": False, "failureCode": "UB-FUTURE-CODE"}
+        )
+        assert result.failure_code == "UB-FUTURE-CODE"
+
+    def test_result_without_new_fields_still_parses(self) -> None:
+        result = AssertionResult.model_validate(_result_data())
+        assert result.failure_code is None
+        assert result.search_details is None
 
 
 class TestWireShape:
@@ -141,6 +198,16 @@ class TestSyncClientSendsEveryField:
         assert payloads[2]["range"] == {"min": 1, "max": 9}
         assert payloads[3]["tokenPath"] == "c.p"
         assert payloads[4]["attributeName"] == "alt"
+
+    def test_assert_that_accepts_search_criteria_target(self) -> None:
+        client = UIBridgeClient(base_url="http://localhost:9876")
+        client._request = MagicMock(return_value=_result_data())  # type: ignore[method-assign]
+        client.ai.assert_no_overlap(SearchCriteria(role="banner"), "footer")
+        assert client._request.call_args.kwargs["json"] == {
+            "target": {"role": "banner", "fuzzy": True},
+            "type": "noOverlap",
+            "relatedTarget": "footer",
+        }
 
     def test_assert_batch_accepts_request_objects_beside_tuples(self) -> None:
         client = UIBridgeClient(base_url="http://localhost:9876")
