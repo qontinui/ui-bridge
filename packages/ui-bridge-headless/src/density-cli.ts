@@ -419,13 +419,14 @@ async function main(): Promise<void> {
   // not append a second JSON document to a complete one.
   let printed = false;
   // The first signal decides the verdict; a second one while that verdict is
-  // still flushing must not print another document.
+  // still flushing prints nothing more and exits at once (a flush to a reader
+  // that stopped reading may never complete).
   let interrupting = false;
   for (const signal of Object.keys(SIGNAL_EXIT) as Array<keyof typeof SIGNAL_EXIT>) {
     process.on(signal, () => {
-      if (interrupting) return;
-      interrupting = true;
       const code = SIGNAL_EXIT[signal];
+      if (interrupting) process.exit(code);
+      interrupting = true;
       if (printed) process.exit(code);
       const doc = `${JSON.stringify({ command: 'measure', interrupted: { signal, step } }, null, 2)}\n`;
       // Exit only once the document is flushed: on a pipe, a write followed
