@@ -6,7 +6,7 @@
  */
 
 import type { AIDiscoveredElement, DataType, FormatDescriptor, FormatMismatch } from './types';
-import { classifyDataType } from './data-extraction';
+import { classifyDataType, parseNumberForm } from './data-extraction';
 
 export interface FormatAnalysisConfig {
   /** Treat minor format differences (e.g., comma vs period for thousands) as warnings rather than errors */
@@ -47,6 +47,7 @@ export function detectFormatPattern(value: string, dataType: DataType): string {
       if (/^\d{4}-\d{2}-\d{2}/.test(trimmed)) return 'YYYY-MM-DD';
       if (/^\d{2}\/\d{2}\/\d{4}$/.test(trimmed)) return 'MM/DD/YYYY';
       if (/^\d{2}\.\d{2}\.\d{4}$/.test(trimmed)) return 'DD.MM.YYYY';
+      if (/^\d{2}-\d{2}-\d{4}$/.test(trimmed)) return 'DD-MM-YYYY';
       if (/^\d{1,2}\/\d{1,2}\/\d{2}$/.test(trimmed)) return 'M/D/YY';
       if (/^\w{3,9}\s+\d{1,2},?\s+\d{4}$/.test(trimmed)) return 'Month DD, YYYY';
       return 'date';
@@ -56,6 +57,14 @@ export function detectFormatPattern(value: string, dataType: DataType): string {
       return /\s%$/.test(trimmed) ? '#.## %' : '#.##%';
 
     case 'number': {
+      // Name the separators the value was written with: 1.234,56 is
+      // `#.###,##`, 1,234.56 is `#,###.##`.
+      const form = parseNumberForm(trimmed);
+      if (form) {
+        const integer = form.thousands ? `#${form.thousands}###` : '#';
+        const fraction = form.decimal ? form.decimal + '#'.repeat(form.decimals) : '';
+        return integer + fraction;
+      }
       const hasCommas = /,/.test(trimmed);
       const decimalPlaces = trimmed.includes('.') ? trimmed.split('.')[1]?.length || 0 : 0;
       return (
