@@ -205,6 +205,25 @@ client.ai.assert_exists("form")
 client.ai.assert_not_exists("error")
 client.ai.assert_checked("checkbox")
 client.ai.assert_unchecked("checkbox")
+client.ai.assert_count("list item", 3)
+
+# Layout relations between two targets
+client.ai.assert_no_overlap("header", "main content")
+client.ai.assert_min_spacing("Save button", "Cancel button", 8)
+```
+
+### Structured Targets
+
+Every `assert_*` and `wait_for_*` helper takes either a natural-language
+description or a `SearchCriteria`, the same as the TypeScript SDK's
+`string | SearchCriteria`:
+
+```python
+from ui_bridge import SearchCriteria
+
+client.ai.assert_visible(SearchCriteria(role="button", text="Submit"))
+client.ai.assert_count(SearchCriteria(role="listitem", within="cart"), 3)
+client.ai.wait_for_hidden(SearchCriteria(id_pattern="loading-*"), timeout=5000)
 ```
 
 ### With Timeout
