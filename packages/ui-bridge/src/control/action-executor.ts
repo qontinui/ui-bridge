@@ -9,6 +9,7 @@
  * executor never hands an action to it.
  */
 
+import { BUILT_IN_ACTION_VERBS } from '../core/action-verbs';
 import { pageScrollContainer } from './page-scroll-container';
 import {
   NO_SCROLL_EFFECT,
@@ -240,31 +241,7 @@ type ExecutorFindCandidate = DiscoveredElement & { element: HTMLElement };
 /**
  * Set of supported built-in action names for early validation.
  */
-const SUPPORTED_ACTIONS = new Set<string>([
-  'click',
-  'hoverClick',
-  'doubleClick',
-  'rightClick',
-  'middleClick',
-  'type',
-  'sendKeys',
-  'clear',
-  'select',
-  'focus',
-  'blur',
-  'hover',
-  'unhover',
-  'scroll',
-  'scrollIntoView',
-  'check',
-  'uncheck',
-  'toggle',
-  'drag',
-  'setValue',
-  'submit',
-  'reset',
-  'autocomplete',
-]);
+const SUPPORTED_ACTIONS: ReadonlySet<string> = BUILT_IN_ACTION_VERBS;
 
 /**
  * Unknown-action refusal for one element: lists the element's own verbs
