@@ -342,13 +342,13 @@ export class ToastCapture {
    */
   private parked: Map<Element, string> = new Map();
   /**
-   * Guards `reconcile` and the scan against re-entry from a synchronous event
-   * listener. A
-   * read made by such a listener returns without reconciling, so it sees the
-   * in-between state of the pass that is running (e.g. on a `dismissed` event
-   * for a text change, the old text dismissed and the new one not yet active).
+   * True while a scan or reconcile pass runs (`runPass`). Listeners are
+   * called only after a pass ends, so a read made from a listener reconciles
+   * normally and sees the completed state of the pass that raised the event.
    */
   private reconciling = false;
+  /** Events raised during the running pass, delivered when it ends. */
+  private pendingEvents: ToastEventData[] | null = null;
   private activeToasts: Map<string, { toast: CapturedToast; element: Element }> = new Map();
   private recentToasts: CapturedToast[] = [];
   private totalCaptured = 0;
@@ -490,17 +490,9 @@ export class ToastCapture {
       elements = this.querySelectorsFallback();
     }
 
-    // The scan runs under the same guard as `reconcile`: a read made by a
-    // synchronous `onToastEvent` listener mid-scan sees the in-between state
-    // instead of reconciling, so no capture can run nested inside another one
-    // (which could overwrite an entry under a shared id).
-    if (this.reconciling) return;
-    this.reconciling = true;
-    try {
-      this.scanElements(elements);
-    } finally {
-      this.reconciling = false;
-    }
+    // The scan runs as a pass like `reconcile`, so no capture can run nested
+    // inside another one (which could overwrite an entry under a shared id).
+    this.runPass(() => this.scanElements(elements));
   }
 
   private scanElements(elements: NodeListOf<Element>): void {
@@ -578,7 +570,7 @@ export class ToastCapture {
     this.activeToasts.set(id, { toast, element: el });
     this.totalCaptured++;
 
-    this.onToastEvent?.({ toast: { ...toast }, action: 'appeared' });
+    this.emit({ toast: { ...toast }, action: 'appeared' });
   }
 
   // ==========================================================================
@@ -595,9 +587,7 @@ export class ToastCapture {
    * timer having fired.
    */
   private reconcile(now: number): void {
-    if (this.reconciling) return;
-    this.reconciling = true;
-    try {
+    this.runPass(() => {
       for (const [id, entry] of [...this.activeToasts]) {
         // An earlier step may already have dismissed or replaced this entry.
         if (this.activeToasts.get(id) !== entry) continue;
@@ -627,9 +617,47 @@ export class ToastCapture {
       }
 
       this.pruneRecent();
+    });
+  }
+
+  /**
+   * Run one scan or reconcile pass. Passes do not nest: a pass started while
+   * one is running returns at once. Events are queued during the pass and
+   * delivered only after it ends, so every state transition (dismiss, then
+   * park or recapture) completes before any listener runs. A listener that
+   * reads therefore sees consistent state, and one that throws cannot leave an
+   * element neither active nor parked. Every queued event is delivered even if
+   * a listener throws; the first error is rethrown afterwards.
+   */
+  private runPass(pass: () => void): void {
+    if (this.reconciling) return;
+    this.reconciling = true;
+    const queued: ToastEventData[] = [];
+    this.pendingEvents = queued;
+    try {
+      pass();
     } finally {
+      this.pendingEvents = null;
       this.reconciling = false;
     }
+    let firstError: unknown;
+    let failed = false;
+    for (const event of queued) {
+      try {
+        this.onToastEvent?.(event);
+      } catch (err) {
+        if (!failed) {
+          failed = true;
+          firstError = err;
+        }
+      }
+    }
+    if (failed) throw firstError;
+  }
+
+  private emit(event: ToastEventData): void {
+    if (this.pendingEvents) this.pendingEvents.push(event);
+    else this.onToastEvent?.(event);
   }
 
   private reconcileActive(
@@ -716,7 +744,7 @@ export class ToastCapture {
       this.recentToasts = this.recentToasts.slice(0, this.config.maxRecent);
     }
 
-    this.onToastEvent?.({ toast: { ...toast }, action: 'dismissed' });
+    this.emit({ toast: { ...toast }, action: 'dismissed' });
   }
 
   private pruneRecent(): void {

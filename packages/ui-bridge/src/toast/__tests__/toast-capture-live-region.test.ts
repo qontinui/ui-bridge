@@ -295,8 +295,8 @@ describe('ToastCapture live-region text', () => {
     const eventsBefore = events.length;
 
     // A's text changes in place (no scan), then B is inserted BEFORE A (a
-    // scan). The scan captures B first; B's listener reads, which reconciles
-    // and captures A; the scan must then skip A.
+    // scan). The scan captures B and then A; B's listener runs after the scan
+    // pass, and its read must not capture A a second time.
     setTextInPlace(a, 'A2');
     const b = document.createElement('div');
     b.setAttribute('role', 'status');
@@ -443,5 +443,30 @@ describe('ToastCapture live-region text', () => {
         .map((t) => t.message)
         .sort()
     ).toEqual(['three', 'two again']);
+  });
+
+  // 19
+  it('a listener that throws leaves no element neither active nor parked', async () => {
+    capture = new ToastCapture({ pollInterval: 500 });
+    let thrown = false;
+    capture.install((data) => {
+      events.push(data);
+      if (data.action === 'dismissed' && !thrown) {
+        thrown = true;
+        throw new Error('host listener failed');
+      }
+    });
+    const el = addStatus('saved', 'Saved');
+    await flushAndScan();
+
+    el.style.display = 'none';
+    expect(() => capture.getSnapshot()).toThrow('host listener failed');
+    expect(capture.getActive()).toHaveLength(0);
+
+    // Shown again with no scan (a style change is not a childList mutation):
+    // only the parked loop can see it, so it must have been parked.
+    el.style.display = '';
+    expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['saved', 'Saved']]);
+    expect(events.map((e) => e.action)).toEqual(['appeared', 'dismissed', 'appeared']);
   });
 });
