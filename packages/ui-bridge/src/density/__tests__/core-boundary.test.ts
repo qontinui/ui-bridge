@@ -35,14 +35,16 @@ describe('density core boundary', () => {
     expect(names.filter((n) => !/density/i.test(n))).toEqual([]);
   });
 
-  it('the core is the six files the plan names', () => {
+  it('the core is the eight files the plan names', () => {
     expect(CORE_FILES.sort()).toEqual([
       'capture-from-snapshot.ts',
+      'classify.ts',
       'hash.ts',
       'index.ts',
       'match.ts',
       'schema.ts',
       'shape.ts',
+      'structure.ts',
     ]);
   });
 

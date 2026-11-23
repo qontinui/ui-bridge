@@ -1,0 +1,811 @@
+/**
+ * Structure of a capture: who contains whom, which items are leaves, what is
+ * pinned to the viewport, and which leaves form a block.
+ *
+ * Two halves. {@link resolveDensityStructure} runs at CAPTURE time, because it
+ * reads the snapshot's xpath and stable ref, which the capture does not keep:
+ * it writes each item's `parent`, `path`, `structureBy`, `landmark`,
+ * `ownChars` and `blockKey`. Everything else here reads the capture alone, so a
+ * capture written to a file measures the same as the snapshot it came from.
+ *
+ * Ancestry comes from the xpath only (`generateXPath`,
+ * `core/element-identifier.ts`): either `//*[@id="X"]` — the element has its
+ * own id, and the xpath says nothing about its ancestors — or a chain of
+ * `tag[n]` segments that starts at the nearest ancestor with an `id` or a
+ * `data-testid`, or at the document root. The semantic path
+ * (`stableRef.semanticPath`) stops after 8 levels, renders its anchor without
+ * a tag and skips React-generated ids, so it contributes landmark hints and
+ * never decides a parent.
+ *
+ * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change (Phase 3).
+ */
+
+import { resolveDensityMatcher, type DensityUnresolvedReason } from './match';
+import type {
+  DensityCapture,
+  DensityItem,
+  DensityLandmark,
+  DensityRect,
+  DensityTargets,
+} from './schema';
+
+// ============================================================================
+// Capture-time structure
+// ============================================================================
+
+/** What the snapshot row says about an item's place in the DOM, read once at capture time. */
+export interface DensityStructureHint {
+  /** `identifier.xpath`. */
+  xpath: string | null;
+  /** `identifier.htmlId`: the element's own `id` attribute. */
+  htmlId: string | null;
+  /** `identifier.testId`: the element's own `data-testid`. */
+  testId: string | null;
+  /** `stableRef.semanticPath`: landmark hints only. */
+  semanticPath: string | null;
+}
+
+/** The tags that open a block by path (`by: path`). */
+export const DENSITY_BLOCK_TAGS: readonly string[] = [
+  'section',
+  'article',
+  'aside',
+  'form',
+  'fieldset',
+  'table',
+  'dialog',
+];
+
+const LANDMARK_ROLES: readonly DensityLandmark[] = [
+  'banner',
+  'navigation',
+  'main',
+  'contentinfo',
+  'complementary',
+];
+
+/** Tags that scope a `header` / `footer` so it is no longer the page's banner / contentinfo (HTML-AAM). */
+const SECTIONING_TAGS = new Set(['article', 'aside', 'main', 'nav', 'section']);
+
+interface ParsedChain {
+  /** Normalised key of each segment prefix: `keys[i]` names the element at depth `i` of the chain. */
+  keys: string[];
+  /** Tag of each segment (`*` when the xpath does not name it). */
+  tags: string[];
+}
+
+/** One xpath segment: `div`, `div[2]`, `section[@id="x"]`, `div[@data-testid="y"]`. */
+const SEGMENT = /^([^[\]/]+)(?:\[(\d+)\]|\[@(id|data-testid)="(.*)"\])?$/s;
+
+/** Split on `/` outside brackets, so an id holding `/` stays one segment. */
+function splitSegments(text: string): string[] | null {
+  const out: string[] = [];
+  let cur = '';
+  let depth = 0;
+  let quoted = false;
+  for (const ch of text) {
+    if (ch === '"' && depth > 0) quoted = !quoted;
+    else if (!quoted && ch === '[') depth++;
+    else if (!quoted && ch === ']') depth--;
+    if (ch === '/' && depth === 0 && !quoted) {
+      out.push(cur);
+      cur = '';
+    } else {
+      cur += ch;
+    }
+    if (depth < 0) return null;
+  }
+  out.push(cur);
+  return depth === 0 && !quoted ? out : null;
+}
+
+function anchorKey(kind: string, value: string): string {
+  return kind === 'id' ? `@id=${value}` : `@testid=${value}`;
+}
+
+/**
+ * The item's own key and, for a chain, the key of every prefix. `null` when the
+ * xpath is not one `generateXPath` writes. An own-id xpath is a chain of one
+ * whose ancestry is unknown (`ownId`).
+ */
+function parseXPath(xpath: string): (ParsedChain & { ownId: boolean }) | null {
+  const own = /^\/\/\*\[@id="(.*)"\]$/s.exec(xpath);
+  if (own) return { keys: [anchorKey('id', own[1])], tags: ['*'], ownId: true };
+  let rest: string;
+  const keys: string[] = [];
+  const tags: string[] = [];
+  // `//*[@id="X"]/...` is not what generateXPath writes, but it names the same
+  // anchor, so it is read as one.
+  const anchored = /^\/\/\*\[@id="([^"]*)"\]\/(.+)$/s.exec(xpath);
+  if (anchored) {
+    keys.push(anchorKey('id', anchored[1]));
+    tags.push('*');
+    rest = anchored[2];
+  } else if (xpath.startsWith('/') && !xpath.startsWith('//')) {
+    rest = xpath.slice(1);
+  } else {
+    return null;
+  }
+  const segments = splitSegments(rest);
+  if (segments === null || segments.some((s) => s === '')) return null;
+  for (let i = 0; i < segments.length; i++) {
+    const m = SEGMENT.exec(segments[i]);
+    if (!m) return null;
+    const tag = m[1].toLowerCase();
+    tags.push(tag);
+    if (m[3] !== undefined) {
+      // An attribute anchor is only ever the chain's first segment.
+      if (keys.length > 0) return null;
+      keys.push(anchorKey(m[3] === 'id' ? 'id' : 'testid', m[4]));
+    } else {
+      const seg = m[2] !== undefined ? `${tag}[${m[2]}]` : tag;
+      keys.push(keys.length === 0 ? `/${seg}` : `${keys[keys.length - 1]}/${seg}`);
+    }
+  }
+  return { keys, tags, ownId: false };
+}
+
+function landmarkOfRole(role: string | null): DensityLandmark | null {
+  return role !== null && (LANDMARK_ROLES as readonly string[]).includes(role)
+    ? (role as DensityLandmark)
+    : null;
+}
+
+/** The landmark a tag opens, given the tags above it (outermost first). */
+function landmarkOfTag(tag: string, above: readonly string[] | null): DensityLandmark | null {
+  switch (tag) {
+    case 'nav':
+      return 'navigation';
+    case 'main':
+      return 'main';
+    case 'aside':
+      return 'complementary';
+    case 'header':
+    case 'footer': {
+      if (above !== null && above.some((t) => SECTIONING_TAGS.has(t))) return null;
+      return tag === 'header' ? 'banner' : 'contentinfo';
+    }
+    default:
+      return null;
+  }
+}
+
+/** `[role="…"]` hints of a semantic path, innermost first. */
+function semanticRoleHints(semanticPath: string | null): DensityLandmark[] {
+  if (semanticPath === null) return [];
+  const out: DensityLandmark[] = [];
+  const parts = semanticPath.split(' > ').reverse();
+  for (const part of parts) {
+    const m = /\[role="([^"]*)"\]/.exec(part);
+    const lm = m ? landmarkOfRole(m[1]) : null;
+    if (lm !== null) out.push(lm);
+  }
+  return out;
+}
+
+function contains(outer: DensityRect, inner: DensityRect): boolean {
+  return (
+    outer.x <= inner.x &&
+    outer.y <= inner.y &&
+    outer.x + outer.w >= inner.x + inner.w &&
+    outer.y + outer.h >= inner.y + inner.h
+  );
+}
+
+/**
+ * Resolve the structure of `items` in place of their unresolved fields, and
+ * answer new items (the inputs are not mutated). `hints[i]` belongs to
+ * `items[i]`.
+ *
+ * - **Parent by path.** The parent is the registered item whose chain is the
+ *   longest proper segment-prefix of this item's chain. The first segment of a
+ *   chain anchored at `tag[@id="X"]` (or `tag[@data-testid="T"]`) is the item
+ *   whose own id (test id) is that value, so a chain with no longer registered
+ *   prefix takes that item as its parent. A chain that reaches the document
+ *   root with no registered prefix is a root. `structureBy: xpath`.
+ * - **Parent by geometry.** An item with no chain — an own-id xpath, none at
+ *   all, or a chain anchored at an element nobody registered — takes the
+ *   registered item with the smallest rect, of nonzero area, that contains its
+ *   own (no cycle).
+ *   `structureBy: geometry`. `path` keeps whatever ancestor tags the chain gave.
+ * - **path.** The tags of the chain above the item, after the parent's path
+ *   when the chain is anchored at the parent's own id; `null` when the xpath
+ *   gives no ancestor.
+ * - **landmark.** The innermost of: the item's own role or tag, the tags of
+ *   `path`, the `[role="…"]` hints of the semantic path, and (for a parent read
+ *   from the xpath) the parent's landmark.
+ * - **ownChars.** `chars` minus the registered children's `chars` and the
+ *   collapsed separators between them, not below 0; `null` when any term is
+ *   `null`.
+ * - **blockKey.** The key of the nearest block-tag ancestor-or-self in the
+ *   chain, else (for a chain anchored at a registered item) that item's.
+ */
+export function resolveDensityStructure(
+  items: readonly DensityItem[],
+  hints: readonly DensityStructureHint[]
+): DensityItem[] {
+  const n = items.length;
+  const parsed = hints.map((h) => (h.xpath ? parseXPath(h.xpath) : null));
+
+  // Each item is addressable by its own chain key, and by its own id / test id
+  // (the anchor a descendant's chain starts at).
+  const byKey = new Map<string, number>();
+  const claim = (key: string, i: number) => {
+    if (!byKey.has(key)) byKey.set(key, i);
+  };
+  parsed.forEach((p, i) => {
+    if (p) claim(p.keys[p.keys.length - 1], i);
+  });
+  hints.forEach((h, i) => {
+    if (h.htmlId) claim(anchorKey('id', h.htmlId), i);
+    if (h.testId) claim(anchorKey('testid', h.testId), i);
+  });
+
+  const parent: Array<number | null> = new Array<number | null>(n).fill(null);
+  const byXPath: boolean[] = new Array<boolean>(n).fill(false);
+  /** Index of the item the chain's first segment names, when it is registered. */
+  const anchorOf: Array<number | null> = new Array<number | null>(n).fill(null);
+  const needsGeometry: number[] = [];
+
+  for (let i = 0; i < n; i++) {
+    const p = parsed[i];
+    if (!p || p.ownId) {
+      needsGeometry.push(i);
+      continue;
+    }
+    const a = byKey.get(p.keys[0]);
+    if (a !== undefined && a !== i) anchorOf[i] = a;
+    let found: number | null = null;
+    for (let k = p.keys.length - 2; k >= 0; k--) {
+      const j = byKey.get(p.keys[k]);
+      if (j !== undefined && j !== i) {
+        found = j;
+        break;
+      }
+    }
+    if (found !== null) {
+      parent[i] = found;
+      byXPath[i] = true;
+    } else if (p.keys[0].startsWith('/')) {
+      // The chain reaches the document root and nothing above the item is registered.
+      byXPath[i] = true;
+    } else {
+      needsGeometry.push(i);
+    }
+  }
+
+  const reaches = (from: number, target: number): boolean => {
+    const seen = new Set<number>();
+    let cur: number | null = from;
+    while (cur !== null && !seen.has(cur)) {
+      if (cur === target) return true;
+      seen.add(cur);
+      cur = parent[cur];
+    }
+    return false;
+  };
+
+  for (const i of needsGeometry) {
+    const rect = items[i].rect;
+    if (rect === null) continue;
+    let best: number | null = null;
+    let bestArea = Infinity;
+    for (let j = 0; j < n; j++) {
+      if (j === i) continue;
+      const r = items[j].rect;
+      // A rect with no area contains nothing (an unlaid-out element is 0x0 at the origin).
+      if (r === null || r.w <= 0 || r.h <= 0 || !contains(r, rect)) continue;
+      const area = r.w * r.h;
+      if (area >= bestArea) continue;
+      // Two identical rects contain each other; the one that would close a cycle loses.
+      if (reaches(j, i)) continue;
+      best = j;
+      bestArea = area;
+    }
+    parent[i] = best;
+  }
+
+  // ---- path, landmark and blockKey, parents first ----
+  const path: Array<string[] | null | undefined> = new Array(n).fill(undefined);
+  const landmark: Array<DensityLandmark | null | undefined> = new Array(n).fill(undefined);
+  const blockKey: Array<string | null | undefined> = new Array(n).fill(undefined);
+  const visiting = new Set<number>();
+
+  const resolveOne = (i: number): void => {
+    if (path[i] !== undefined || visiting.has(i)) return;
+    visiting.add(i);
+    const p = parsed[i];
+    const item = items[i];
+    const a = anchorOf[i];
+    if (a !== null) resolveOne(a);
+    const pa = parent[i];
+    if (pa !== null && byXPath[i]) resolveOne(pa);
+
+    // path: the chain's tags above the item, after the anchor's own path.
+    let own: string[] | null = null;
+    if (p && !p.ownId) {
+      const chainTags = p.tags.slice(0, -1);
+      if (a !== null) {
+        const anchorTag = items[a].tag !== '' ? items[a].tag : chainTags[0];
+        own = [...(path[a] ?? []), anchorTag, ...chainTags.slice(1)];
+      } else if (chainTags.length > 0 || p.keys[0].startsWith('/')) {
+        // A root chain knows every ancestor; an anchored one knows those below its anchor.
+        own = chainTags;
+      }
+    }
+    path[i] = own;
+
+    // landmark: innermost first.
+    let lm: DensityLandmark | null = landmarkOfRole(item.role);
+    if (lm === null && (item.role === null || item.role === 'generic')) {
+      lm = landmarkOfTag(item.tag, own);
+    }
+    if (lm === null && own !== null) {
+      for (let k = own.length - 1; k >= 0 && lm === null; k--) {
+        lm = landmarkOfTag(own[k], own.slice(0, k));
+      }
+    }
+    if (lm === null) lm = semanticRoleHints(hints[i].semanticPath)[0] ?? null;
+    if (lm === null && pa !== null && byXPath[i]) lm = landmark[pa] ?? null;
+    landmark[i] = lm;
+
+    // blockKey: the nearest block tag in the chain, self included.
+    let bk: string | null = null;
+    if (p) {
+      const tags = p.tags.slice();
+      if (tags[tags.length - 1] === '*' || p.ownId) tags[tags.length - 1] = item.tag;
+      if (a !== null && tags[0] === '*') tags[0] = items[a].tag;
+      for (let k = tags.length - 1; k >= 0; k--) {
+        if (DENSITY_BLOCK_TAGS.includes(tags[k])) {
+          bk = p.keys[k];
+          break;
+        }
+      }
+      if (bk === null && a !== null) bk = blockKey[a] ?? null;
+    }
+    blockKey[i] = bk;
+    visiting.delete(i);
+  };
+  for (let i = 0; i < n; i++) resolveOne(i);
+
+  // ---- ownChars: direct children only ----
+  // `chars` is the WHITESPACE-COLLAPSED length, so the text of a row of k
+  // registered spans carries up to k - 1 collapsed separators between them.
+  // Those belong to no element; counting them as the row's own text would make
+  // every row container a leaf. So up to k - 1 characters are allowed for them
+  // (k = children with text), which can undercount a container's own text by
+  // as much, never overcount it.
+  const childChars: Array<number | null> = new Array<number | null>(n).fill(0);
+  const textChildren: number[] = new Array<number>(n).fill(0);
+  for (let i = 0; i < n; i++) {
+    const pa = parent[i];
+    if (pa === null) continue;
+    const c = items[i].chars;
+    const cur = childChars[pa];
+    childChars[pa] = cur === null || c === null ? null : cur + c;
+    if (c !== null && c > 0) textChildren[pa]++;
+  }
+
+  return items.map((item, i) => {
+    const chars = item.chars;
+    const kids = childChars[i];
+    const pa = parent[i];
+    return {
+      ...item,
+      parent: pa === null ? null : items[pa].id,
+      path: path[i] ?? null,
+      structureBy: byXPath[i] ? 'xpath' : 'geometry',
+      landmark: landmark[i] ?? null,
+      ownChars:
+        chars === null || kids === null
+          ? null
+          : Math.max(0, chars - kids - Math.max(0, textChildren[i] - 1)),
+      blockKey: blockKey[i] ?? null,
+    };
+  });
+}
+
+// ============================================================================
+// Reading a resolved capture
+// ============================================================================
+
+const MEDIA_TAGS = new Set(['img', 'svg', 'video']);
+
+/** Whether the item is media by tag (`img`, `svg`, `video`). */
+export function isDensityMedia(item: DensityItem): boolean {
+  return MEDIA_TAGS.has(item.tag);
+}
+
+/** Direct registered children of each item, in capture order. */
+export function densityChildren(capture: DensityCapture): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const item of capture.items) {
+    if (item.parent === null) continue;
+    const list = out.get(item.parent);
+    if (list) list.push(item.id);
+    else out.set(item.parent, [item.id]);
+  }
+  return out;
+}
+
+/** The leaves of a capture, and the items whose leaf status cannot be read. */
+export interface DensityLeaves {
+  /** Leaf ids in capture order. */
+  ids: string[];
+  /**
+   * Items that might be leaves but whose `ownChars` is `null` (redacted text,
+   * or a child whose text is): neither counted as a leaf nor as a container.
+   */
+  unknown: string[];
+}
+
+/**
+ * An item is a leaf when `ownChars > 0`, or when it is interactive or media
+ * and has no registered descendant.
+ */
+export function densityLeaves(capture: DensityCapture): DensityLeaves {
+  const children = densityChildren(capture);
+  const ids: string[] = [];
+  const unknown: string[] = [];
+  for (const item of capture.items) {
+    const childless = !children.has(item.id);
+    if ((item.interactive || isDensityMedia(item)) && childless) ids.push(item.id);
+    else if (item.ownChars === null) unknown.push(item.id);
+    else if (item.ownChars > 0) ids.push(item.id);
+  }
+  return { ids, unknown };
+}
+
+/**
+ * Text on containers that the registry does not see: the sum of `ownChars`
+ * over items that have registered children. `null` when any of them is `null`.
+ */
+export function densityUnattributedChars(capture: DensityCapture): number | null {
+  const children = densityChildren(capture);
+  let sum = 0;
+  for (const item of capture.items) {
+    if (!children.has(item.id)) continue;
+    if (item.ownChars === null) return null;
+    sum += item.ownChars;
+  }
+  return sum;
+}
+
+/** What is pinned to the viewport's edges, and the height left between them. */
+export interface DensityPins {
+  /** Height covered from the top edge by pinned items, px. */
+  pinTopPx: number;
+  /** Height covered from the bottom edge by pinned items, px. */
+  pinBottomPx: number;
+  /** `H − pinTop − pinBottom`, px (`Hu`). */
+  usableHeightPx: number;
+  /** The pinned items, in capture order. */
+  ids: string[];
+}
+
+/**
+ * Pins: items whose `position` is `fixed`, and `sticky` items that touch an
+ * edge of the viewport, when they span at least half of `W`. A fixed item
+ * belongs to the edge its centre is nearer. Only registered items can be read
+ * (`pinBasis: registered-only` in snapshot mode).
+ */
+export function densityPins(capture: DensityCapture): DensityPins {
+  const W = capture.viewport.width;
+  const H = capture.viewport.height;
+  const scrollY = capture.viewport.scrollY;
+  let top = 0;
+  let bottom = 0;
+  const ids: string[] = [];
+  for (const item of capture.items) {
+    const r = item.rect;
+    if (r === null || r.w < W / 2) continue;
+    if (item.visibility === 'hidden' || item.visibility === 'no-layout') continue;
+    const vTop = r.y - scrollY;
+    const vBottom = vTop + r.h;
+    let edge: 'top' | 'bottom' | null = null;
+    if (item.position === 'fixed') {
+      edge = vTop + r.h / 2 <= H / 2 ? 'top' : 'bottom';
+    } else if (item.position === 'sticky') {
+      if (Math.abs(vTop) <= 1) edge = 'top';
+      else if (Math.abs(vBottom - H) <= 1) edge = 'bottom';
+    }
+    if (edge === null) continue;
+    ids.push(item.id);
+    if (edge === 'top') top = Math.max(top, Math.min(H, vBottom));
+    else bottom = Math.max(bottom, Math.min(H, H - vTop));
+  }
+  return {
+    pinTopPx: top,
+    pinBottomPx: bottom,
+    usableHeightPx: Math.max(0, H - top - bottom),
+    ids,
+  };
+}
+
+/**
+ * The pinned items and every item inside one, following parent links read
+ * from the xpath only (a geometric parent of a fixed bar is an accident of the
+ * scroll position, not containment).
+ */
+export function densityPinnedIds(
+  capture: DensityCapture,
+  pins: DensityPins = densityPins(capture)
+): Set<string> {
+  const byId = new Map(capture.items.map((i) => [i.id, i]));
+  const pinned = new Set(pins.ids);
+  const out = new Set<string>();
+  for (const item of capture.items) {
+    const seen = new Set<string>();
+    let cur: DensityItem | undefined = item;
+    while (cur && !seen.has(cur.id)) {
+      if (pinned.has(cur.id)) {
+        out.add(item.id);
+        break;
+      }
+      seen.add(cur.id);
+      if (cur.structureBy !== 'xpath' || cur.parent === null) break;
+      cur = byId.get(cur.parent);
+    }
+  }
+  return out;
+}
+
+/** Whether two rects share a column: their x-ranges overlap by more than half the narrower width. */
+export function densitySameColumn(a: DensityRect, b: DensityRect): boolean {
+  const overlap = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+  return overlap > 0.5 * Math.min(a.w, b.w);
+}
+
+/** The heading level of an item: `h1`–`h6` by tag, role `heading` at the ARIA default 2; else `null`. */
+export function densityHeadingLevel(item: DensityItem): number | null {
+  const m = /^h([1-6])$/.exec(item.tag);
+  if (m) return Number(m[1]);
+  return item.role === 'heading' ? 2 : null;
+}
+
+/** How a block was found. */
+export type DensityBlockBy = 'declared' | 'path' | 'heading';
+
+/** One block of leaves. */
+export interface DensityBlock {
+  id: string;
+  by: DensityBlockBy;
+  /** Member leaf ids, in capture order. */
+  members: string[];
+  /** Top of the highest member, document px; `null` when no member has a rect. */
+  topPx: number | null;
+  /** Length of the union of the members' vertical extents, px; `null` when no member has a rect. */
+  heightPx: number | null;
+  /** Distance to the top of the next block in the same column, px; `null` when there is none. */
+  pitchPx: number | null;
+  /** The heading block this one sits inside (`by: heading` only); `null` otherwise. */
+  parent: string | null;
+}
+
+/** A declared block whose matcher selected nothing that can be relied on. */
+export interface DensityUnresolvedBlock {
+  id: string;
+  reason: DensityUnresolvedReason;
+}
+
+export interface DensityBlocks {
+  /** In document order (top, then declaration order). */
+  blocks: DensityBlock[];
+  unresolved: DensityUnresolvedBlock[];
+  /** Leaves in no block. */
+  unblocked: string[];
+}
+
+function unionLength(intervals: Array<[number, number]>): number {
+  const sorted = intervals.slice().sort((a, b) => a[0] - b[0]);
+  let total = 0;
+  let curStart = -Infinity;
+  let curEnd = -Infinity;
+  for (const [s, e] of sorted) {
+    if (s > curEnd) {
+      if (curEnd > curStart) total += curEnd - curStart;
+      curStart = s;
+      curEnd = e;
+    } else if (e > curEnd) {
+      curEnd = e;
+    }
+  }
+  if (curEnd > curStart) total += curEnd - curStart;
+  return total;
+}
+
+interface Extent {
+  top: number;
+  bottom: number;
+  x: number;
+  right: number;
+  height: number;
+}
+
+function extentOf(members: readonly DensityItem[]): Extent | null {
+  const rects = members.map((m) => m.rect).filter((r): r is DensityRect => r !== null);
+  if (rects.length === 0) return null;
+  return {
+    top: Math.min(...rects.map((r) => r.y)),
+    bottom: Math.max(...rects.map((r) => r.y + r.h)),
+    x: Math.min(...rects.map((r) => r.x)),
+    right: Math.max(...rects.map((r) => r.x + r.w)),
+    height: unionLength(rects.map((r) => [r.y, r.y + r.h])),
+  };
+}
+
+/**
+ * Blocks, in this order of precedence for each leaf:
+ *
+ * 1. a declared `blocks[]` entry of the targets (`by: declared`): the leaves
+ *    its matcher selects, and the leaves below them; an earlier entry keeps a
+ *    leaf it claims;
+ * 2. the nearest `section`, `article`, `aside`, `form`, `fieldset`, `table` or
+ *    `dialog` ancestor-or-self in the path (`by: path`);
+ * 3. a heading and the leaves below it in its column, up to the next heading
+ *    of the same or a higher level (`by: heading`). A lower-level heading opens
+ *    a block inside it (`parent`). A leaf joins a heading's block only within
+ *    the heading's landmark, and a pinned leaf (or one inside a pin) joins
+ *    none: a footer or a sticky bar below the last heading of a column is not
+ *    that heading's content.
+ *
+ * `heightPx` is the union of the members' extents; `pitchPx` is the distance
+ * to the top of the next block in the same column (not one nested in it), so
+ * padding counts.
+ */
+export function densityBlocks(
+  capture: DensityCapture,
+  targets: DensityTargets | null,
+  leaves: DensityLeaves = densityLeaves(capture),
+  pinned: Set<string> = densityPinnedIds(capture)
+): DensityBlocks {
+  const byId = new Map(capture.items.map((i) => [i.id, i]));
+  const claimed = new Map<string, string>();
+  const blocks: Array<DensityBlock & { order: number }> = [];
+  const unresolved: DensityUnresolvedBlock[] = [];
+  const parentOf = new Map(capture.items.map((i) => [i.id, i.parent]));
+  const hasAncestorIn = (id: string, set: Set<string>): boolean => {
+    const seen = new Set<string>();
+    let cur = parentOf.get(id) ?? null;
+    while (cur !== null && !seen.has(cur)) {
+      if (set.has(cur)) return true;
+      seen.add(cur);
+      cur = parentOf.get(cur) ?? null;
+    }
+    return false;
+  };
+  let order = 0;
+  const push = (id: string, by: DensityBlockBy, members: string[], parent: string | null) => {
+    const ext = extentOf(members.map((m) => byId.get(m)!));
+    blocks.push({
+      id,
+      by,
+      members,
+      topPx: ext ? ext.top : null,
+      heightPx: ext ? ext.height : null,
+      pitchPx: null,
+      parent,
+      order: order++,
+    });
+  };
+
+  // 1. declared
+  for (const decl of targets?.blocks ?? []) {
+    const res = resolveDensityMatcher(capture, decl.match);
+    if (res.status === 'unresolved') {
+      unresolved.push({ id: decl.id, reason: res.reason });
+      continue;
+    }
+    const matched = new Set(res.ids);
+    const members = leaves.ids.filter(
+      (id) => !claimed.has(id) && (matched.has(id) || hasAncestorIn(id, matched))
+    );
+    members.forEach((m) => claimed.set(m, decl.id));
+    push(decl.id, 'declared', members, null);
+  }
+
+  // 2. path
+  const byKey = new Map<string, string[]>();
+  for (const id of leaves.ids) {
+    if (claimed.has(id)) continue;
+    const key = byId.get(id)!.blockKey;
+    if (key === null) continue;
+    const list = byKey.get(key);
+    if (list) list.push(id);
+    else byKey.set(key, [id]);
+  }
+  for (const [key, members] of byKey) {
+    const blockId = `path:${key}`;
+    members.forEach((m) => claimed.set(m, blockId));
+    push(blockId, 'path', members, null);
+  }
+
+  // 3. heading
+  const free = leaves.ids
+    .filter((id) => !claimed.has(id) && !pinned.has(id))
+    .map((id) => byId.get(id)!)
+    .filter((i) => i.rect !== null);
+  const headings = free
+    .filter((i) => densityHeadingLevel(i) !== null)
+    .sort((a, b) => a.rect!.y - b.rect!.y);
+  const headingMembers = new Map<string, string[]>();
+  for (const h of headings) {
+    const level = densityHeadingLevel(h)!;
+    const hr = h.rect!;
+    let end = Infinity;
+    for (const g of headings) {
+      if (g === h || g.rect!.y <= hr.y) continue;
+      if (!densitySameColumn(hr, g.rect!) || g.landmark !== h.landmark) continue;
+      if (densityHeadingLevel(g)! <= level) end = Math.min(end, g.rect!.y);
+    }
+    const members = free
+      .filter(
+        (l) =>
+          l === h ||
+          (l.rect!.y >= hr.y &&
+            l.rect!.y < end &&
+            l.landmark === h.landmark &&
+            densitySameColumn(hr, l.rect!))
+      )
+      .map((l) => l.id);
+    headingMembers.set(h.id, members);
+  }
+  for (const h of headings) {
+    // The enclosing heading block: the lowest-placed other heading that lists this one.
+    let parent: string | null = null;
+    let parentTop = -Infinity;
+    for (const g of headings) {
+      if (g === h) continue;
+      if (headingMembers.get(g.id)!.includes(h.id) && g.rect!.y >= parentTop) {
+        parent = `heading:${g.id}`;
+        parentTop = g.rect!.y;
+      }
+    }
+    const members = headingMembers.get(h.id)!;
+    push(`heading:${h.id}`, 'heading', members, parent);
+  }
+  const inHeading = new Set<string>();
+  for (const m of headingMembers.values()) m.forEach((id) => inHeading.add(id));
+
+  // ---- pitch ----
+  const blockParent = new Map(blocks.map((b) => [b.id, b.parent]));
+  const nested = (a: string, b: string): boolean => {
+    const up = (from: string, target: string) => {
+      let cur = blockParent.get(from) ?? null;
+      while (cur !== null) {
+        if (cur === target) return true;
+        cur = blockParent.get(cur) ?? null;
+      }
+      return false;
+    };
+    return up(a, b) || up(b, a);
+  };
+  const extents = new Map(blocks.map((b) => [b.id, extentOf(b.members.map((m) => byId.get(m)!))]));
+  for (const b of blocks) {
+    const eb = extents.get(b.id);
+    if (!eb) continue;
+    let next = Infinity;
+    for (const o of blocks) {
+      if (o === b || nested(b.id, o.id)) continue;
+      const eo = extents.get(o.id);
+      if (!eo || eo.top <= eb.top) continue;
+      const sameColumn = densitySameColumn(
+        { x: eb.x, y: eb.top, w: eb.right - eb.x, h: 0 },
+        { x: eo.x, y: eo.top, w: eo.right - eo.x, h: 0 }
+      );
+      if (sameColumn) next = Math.min(next, eo.top);
+    }
+    b.pitchPx = Number.isFinite(next) ? next - eb.top : null;
+  }
+
+  blocks.sort((a, b) => {
+    const ta = a.topPx ?? Infinity;
+    const tb = b.topPx ?? Infinity;
+    return ta !== tb ? ta - tb : a.order - b.order;
+  });
+  return {
+    blocks: blocks.map(({ order: _order, ...b }) => b),
+    unresolved,
+    unblocked: leaves.ids.filter((id) => !claimed.has(id) && !inHeading.has(id)),
+  };
+}
