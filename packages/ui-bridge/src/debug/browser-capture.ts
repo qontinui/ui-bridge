@@ -157,48 +157,55 @@ export class BrowserEventCapture {
       this.onEvent?.(event);
     };
 
-    if (cfg.console) {
-      const levels = cfg.consoleLevels ? new Set(cfg.consoleLevels) : undefined;
-      this.cleanups.push(installConsoleCapture(emit, levels ? { levels } : undefined));
-    }
-    if (cfg.network) {
-      this.cleanups.push(installNetworkCapture(emit, cfg.networkOptions));
-    }
-    if (cfg.navigation) {
-      this.cleanups.push(installNavigationCapture(emit));
-    }
-    if (cfg.longTasks) {
-      this.cleanups.push(installLongTaskCapture(emit));
-    }
-    if (cfg.longAnimationFrames) {
-      this.cleanups.push(installLoafCapture(emit));
-    }
-    if (cfg.resourceErrors) {
-      this.cleanups.push(installResourceErrorCapture(emit));
-    }
-    if (cfg.resourceStatus) {
-      this.cleanups.push(installResourceStatusCapture(emit, this));
-    }
-    if (cfg.webVitals) {
-      this.cleanups.push(installWebVitalsCapture(emit));
-    }
-    if (cfg.memory) {
-      this.memoryTrend = new MemoryTrendAnalyzer();
-      this.cleanups.push(installMemoryCapture(emit, cfg.memoryIntervalMs));
-    }
-    if (cfg.hmr) {
-      this.cleanups.push(installHmrCapture(emit));
-    }
-    if (cfg.frameworkOverlays) {
-      this.cleanups.push(installFrameworkOverlayCapture(emit));
-    }
-    if (cfg.freezeDetector) {
-      this.cleanups.push(
-        installFreezeDetectorCapture(emit, cfg.freezeIntervalMs, cfg.freezeThresholdMs)
-      );
-    }
-    if (cfg.domMetrics) {
-      this.cleanups.push(installDomMetricsCapture(emit, cfg.domMetricsIntervalMs));
+    try {
+      if (cfg.console) {
+        const levels = cfg.consoleLevels ? new Set(cfg.consoleLevels) : undefined;
+        this.cleanups.push(installConsoleCapture(emit, levels ? { levels } : undefined));
+      }
+      if (cfg.network) {
+        this.cleanups.push(installNetworkCapture(emit, cfg.networkOptions));
+      }
+      if (cfg.navigation) {
+        this.cleanups.push(installNavigationCapture(emit));
+      }
+      if (cfg.longTasks) {
+        this.cleanups.push(installLongTaskCapture(emit));
+      }
+      if (cfg.longAnimationFrames) {
+        this.cleanups.push(installLoafCapture(emit));
+      }
+      if (cfg.resourceErrors) {
+        this.cleanups.push(installResourceErrorCapture(emit));
+      }
+      if (cfg.resourceStatus) {
+        this.cleanups.push(installResourceStatusCapture(emit, this));
+      }
+      if (cfg.webVitals) {
+        this.cleanups.push(installWebVitalsCapture(emit));
+      }
+      if (cfg.memory) {
+        this.memoryTrend = new MemoryTrendAnalyzer();
+        this.cleanups.push(installMemoryCapture(emit, cfg.memoryIntervalMs));
+      }
+      if (cfg.hmr) {
+        this.cleanups.push(installHmrCapture(emit));
+      }
+      if (cfg.frameworkOverlays) {
+        this.cleanups.push(installFrameworkOverlayCapture(emit));
+      }
+      if (cfg.freezeDetector) {
+        this.cleanups.push(
+          installFreezeDetectorCapture(emit, cfg.freezeIntervalMs, cfg.freezeThresholdMs)
+        );
+      }
+      if (cfg.domMetrics) {
+        this.cleanups.push(installDomMetricsCapture(emit, cfg.domMetricsIntervalMs));
+      }
+    } catch (error) {
+      // A sub-install threw: undo the ones that already patched globals, so a
+      // failed install leaves nothing behind and a retry does not stack them.
+      this.runCleanups();
+      throw error;
     }
 
     this.installed = true;
@@ -209,11 +216,21 @@ export class BrowserEventCapture {
    */
   uninstall(): void {
     if (!this.installed) return;
-    for (const cleanup of this.cleanups) {
-      cleanup();
-    }
-    this.cleanups = [];
+    this.runCleanups();
     this.installed = false;
+  }
+
+  /** Run and clear every registered cleanup, newest first; one that throws does not stop the rest. */
+  private runCleanups(): void {
+    const cleanups = this.cleanups;
+    this.cleanups = [];
+    for (const cleanup of cleanups.reverse()) {
+      try {
+        cleanup();
+      } catch (error) {
+        console.warn('[ui-bridge] capture cleanup failed', error);
+      }
+    }
   }
 
   // -------------------------------------------------------------------------
