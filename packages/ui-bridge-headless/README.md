@@ -56,7 +56,9 @@ programmatically, `--quiet` on the CLI) writes **only to stderr**:
 
 - every page `console.*` call, whatever its type, as `[browser.<type>] <text>`
   (`[browser.log]`, `[browser.info]`, `[browser.debug]`, `[browser.warning]`,
-  `[browser.error]`, …);
+  `[browser.error]`, …), followed by ` @ <url>` when the message carries a
+  source location — for `Failed to load resource: ... status of 429` that is
+  the URL of the resource that failed, which the message text never names;
 - every uncaught page error as `[browser.pageerror] <message>`.
 
 The launcher never writes to stdout. stdout is reserved for the embedding
