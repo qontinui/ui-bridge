@@ -8,11 +8,11 @@
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
-import { createHandlers, type RegistryLike } from '../../server/handlers';
+import { createHandlers, type ActionExecutorLike, type RegistryLike } from '../../server/handlers';
 import { resetGlobalRegistry, getGlobalRegistry } from '../../core/registry';
 
-// jsdom ships no `document.elementFromPoint`; the registry's visibility
-// hit-test no-ops when it is a plain function returning null.
+// jsdom ships no `document.elementFromPoint`. The registry guards its absence,
+// so this stub only keeps the hit-test path the same as in a browser.
 beforeAll(() => {
   if (typeof document !== 'undefined' && !document.elementFromPoint) {
     Object.defineProperty(document, 'elementFromPoint', {
@@ -34,7 +34,7 @@ function makeRegistryLike(): RegistryLike {
   };
 }
 
-function makeActionExecutor() {
+function makeActionExecutor(): ActionExecutorLike {
   return {
     executeAction: async () => ({ success: true }),
     executeComponentAction: async () => ({ success: true }),
@@ -67,9 +67,7 @@ describe('createHandlers(…).analyzePageData()', () => {
       reg.registerElement(id, el);
     }
 
-    const handlers = createHandlers(makeRegistryLike(), makeActionExecutor() as never, {
-      consoleCapture: null as never,
-    });
+    const handlers = createHandlers(makeRegistryLike(), makeActionExecutor());
     const resp = await handlers.analyzePageData();
 
     expect(resp.success).toBe(true);

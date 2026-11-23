@@ -109,7 +109,13 @@ function percentageBody(text: string): string | null {
   return m && parseNumberForm(m[1]) ? m[1] : null;
 }
 
-/** ISO date, optionally followed by a time: 2026-10-16, 2026-10-16T08:00. */
+/**
+ * ISO date, optionally followed by a time: 2026-10-16, 2026-10-16T08:00. The
+ * normal form is the calendar date AS WRITTEN: an offset in a following time
+ * is not applied, so 2026-10-16T23:30:00-05:00 normalises to 2026-10-16, not
+ * to the UTC date. A page shows the date its author meant, and that is what a
+ * cross-app comparison must compare.
+ */
 const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})/;
 /** Slash form, read month first (`MM/DD/YYYY`, as `detectFormatPattern` names it). */
 const SLASH_DATE = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/;
@@ -138,13 +144,27 @@ const MONTH_NAMES = [
   'december',
 ];
 
-/** 0-based month for an English month name or its three-letter abbreviation. */
+/**
+ * 0-based month for an English month name, or for an abbreviation of at least
+ * three letters that begins exactly one month name (`Oct`, `Sept`); -1 otherwise.
+ */
 function monthIndex(name: string): number {
   const lower = name.toLowerCase();
-  const full = MONTH_NAMES.indexOf(lower);
-  if (full >= 0) return full;
-  if (lower.length !== 3) return -1;
-  return MONTH_NAMES.findIndex((n) => n.startsWith(lower));
+  if (lower.length < 3) return -1;
+  const matches = MONTH_NAMES.filter((n) => n.startsWith(lower));
+  return matches.length === 1 ? MONTH_NAMES.indexOf(matches[0]) : -1;
+}
+
+/**
+ * A two-digit year read the way the legacy `Date` parser read it, which is
+ * what this normaliser replaced: 00-49 is 20xx, 50-99 is 19xx. Any length
+ * other than two or four is no year.
+ */
+function fullYear(digits: string): number | null {
+  if (digits.length === 4) return Number(digits);
+  if (digits.length !== 2) return null;
+  const yy = Number(digits);
+  return yy < 50 ? 2000 + yy : 1900 + yy;
 }
 
 function isDateShaped(text: string): boolean {
@@ -152,7 +172,9 @@ function isDateShaped(text: string): boolean {
     ISO_DATE.test(text) ||
     SLASH_DATE.test(text) ||
     DOTTED_DATE.test(text) ||
-    HYPHEN_DATE.test(text) ||
+    // The day-first hyphen form is new, and it overlaps phone shapes such as
+    // 12-34-5678; it is a date only when it names a calendar day.
+    (HYPHEN_DATE.test(text) && isoDateFromParts(text) !== null) ||
     MONTH_NAME_DATE.test(text)
   );
 }
@@ -163,7 +185,7 @@ function isDateShaped(text: string): boolean {
  * `null` when the form is not recognised or names no real calendar day.
  */
 function isoDateFromParts(text: string): string | null {
-  let year: number;
+  let year: number | null;
   let month: number;
   let day: number;
   let m: RegExpExecArray | null;
@@ -171,11 +193,9 @@ function isoDateFromParts(text: string): string | null {
   if ((m = ISO_DATE.exec(text))) {
     [year, month, day] = [Number(m[1]), Number(m[2]), Number(m[3])];
   } else if ((m = DOTTED_DATE.exec(text) ?? HYPHEN_DATE.exec(text))) {
-    if (m[3].length !== 4) return null;
-    [day, month, year] = [Number(m[1]), Number(m[2]), Number(m[3])];
+    [day, month, year] = [Number(m[1]), Number(m[2]), fullYear(m[3])];
   } else if ((m = SLASH_DATE.exec(text))) {
-    if (m[3].length !== 4) return null;
-    [month, day, year] = [Number(m[1]), Number(m[2]), Number(m[3])];
+    [month, day, year] = [Number(m[1]), Number(m[2]), fullYear(m[3])];
   } else if ((m = MONTH_NAME_DATE.exec(text))) {
     const index = monthIndex(m[1]);
     if (index < 0) return null;
@@ -184,7 +204,7 @@ function isoDateFromParts(text: string): string | null {
     return null;
   }
 
-  if (month < 1 || month > 12 || day < 1) return null;
+  if (year === null || month < 1 || month > 12 || day < 1) return null;
   // Day 0 of the next month is the last day of this one.
   const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
   if (day > lastDay) return null;
@@ -194,13 +214,14 @@ function isoDateFromParts(text: string): string | null {
 }
 
 /**
- * A phone number has a leading `+`, or at least one space, hyphen or
- * parenthesis, and 7 to 15 digits. Digits with dots only, or bare digits, are
- * not a phone: they are numbers (`1234567`, `123456.78`).
+ * A phone number is digits with an optional leading `+` and spaces, hyphens,
+ * parentheses or dots between them, holding 7 to 15 digits (`+49 30 1234567`,
+ * `(555) 123-4567`, `555.123.4567`). The branch runs after the number and date
+ * branches, so bare digits (`1234567`) and every number form (`123456.78`)
+ * have already been claimed as numbers, and dotted dates as dates.
  */
 function isPhoneShaped(text: string): boolean {
   if (!/^\+?[\d\s\-().]+$/.test(text)) return false;
-  if (!text.startsWith('+') && !/[\s\-()]/.test(text)) return false;
   const digits = text.replace(/\D/g, '').length;
   return digits >= 7 && digits <= 15;
 }
@@ -271,12 +292,15 @@ export function normalizeValue(value: string, dataType: DataType): string {
     case 'currency':
     case 'percentage': {
       // Read the numeric body in whichever decimal convention it was written.
-      // A value classified elsewhere may carry other text; keep its digits,
-      // separators and sign and read those.
+      // A caller may pass a type for text it classified itself (`approx. 5`,
+      // `1,234 (est.)`): read the first numeric run in it, without trailing
+      // separators.
       const body =
         currencyBody(trimmed) ??
         percentageBody(trimmed) ??
-        (parseNumberForm(trimmed) ? trimmed : trimmed.replace(/[^0-9.,-]/g, ''));
+        (parseNumberForm(trimmed)
+          ? trimmed
+          : (/-?\d[\d.,]*/.exec(trimmed)?.[0] ?? '').replace(/[.,]+$/, ''));
       const form = parseNumberForm(body);
       return form ? form.value.toString() : trimmed.toLowerCase();
     }
