@@ -23,9 +23,9 @@ import {
   FORCED_PSEUDO_STATE_VERSION,
   rewritePseudoSelector,
   selectorHasPseudo,
-  composedAncestry,
   __resetForcedPseudoStateForTest,
 } from './forced-hover';
+import { composedAncestry } from '../core/composed-tree';
 
 const ATTR = 'data-ui-bridge-pseudo-hover';
 /** What every forceable `:hover` becomes. */

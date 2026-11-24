@@ -87,6 +87,29 @@ describe('isRenderedForAction', () => {
     expect(isRenderedForAction(slotted)).toBe(false);
   });
 
+  it('a display:contents node is judged by the walk, not checkVisibility() (which reads it as boxless)', () => {
+    const wrapper = document.createElement('div');
+    wrapper.style.display = 'contents';
+    wrapper.tabIndex = 0;
+    document.body.appendChild(wrapper);
+    // A browser's checkVisibility() is false for a node with no box of its own.
+    Object.defineProperty(wrapper, 'checkVisibility', { configurable: true, value: () => false });
+    expect(isRenderedForAction(wrapper)).toBe(true);
+  });
+
+  it('the fallback walk cannot see into a CLOSED shadow root: an unslotted light child of a closed host reads rendered', () => {
+    const h = document.createElement('div');
+    document.body.appendChild(h);
+    h.attachShadow({ mode: 'closed' });
+    const child = document.createElement('button');
+    h.appendChild(child);
+    // No slot takes it, so a browser renders nothing for it — but neither
+    // `assignedSlot` nor `h.shadowRoot` is readable for a closed root, so the
+    // walk (documented) treats it as rendered. `checkVisibility()` answers
+    // this case where the engine has it.
+    expect(isRenderedForAction(child)).toBe(true);
+  });
+
   it("uses the engine's checkVisibility() when it has one", () => {
     const btn = document.createElement('button');
     document.body.appendChild(btn);

@@ -545,10 +545,17 @@ type VisibilityReason = 'hidden' | 'off-screen' | 'occluded' | 'no-layout';
  * Returns `null` when the element is interactable; otherwise the specific
  * `VisibilityReason`.
  *
+ * It reads the element's OWN style only: computed `display: none` and
+ * `visibility: hidden|collapse` (`hidden`), an explicit zero inline
+ * `width`/`height` (`no-layout`), and an inline `position: absolute|fixed`
+ * with a `left`/`top` at or beyond -9999px (`off-screen`). It does not walk
+ * ancestors, so a control under a `display: none` ancestor passes. It is
+ * exported because the server wait-for-element `clickable` condition mirrors
+ * this executor's click path with it.
+ *
  * Detection is **signal-driven, not measurement-driven**: it keys off
- * environment-independent CSS facts (`display:none`,
- * `visibility:hidden|collapse`, an ancestor `display:none` collapsing
- * `offsetParent`) rather than `getBoundingClientRect()` geometry. jsdom (the
+ * environment-independent CSS facts rather than `getBoundingClientRect()`
+ * geometry. jsdom (the
  * test environment) returns an all-zero rect *and* a zero viewport for every
  * element regardless of CSS, so any rect/viewport heuristic would
  * false-positive on every element. Real browsers honour the CSS facts used

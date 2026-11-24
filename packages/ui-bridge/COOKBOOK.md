@@ -215,15 +215,20 @@ Conditions:
   below the fold is not.
 - `clickable` — the next click on THIS arm would not be refused, so it
   mirrors that arm's own click path rather than `visible`:
-  - the standalone server (HTTP executor) arm: the executor's click
-    visibility pre-check (`getClickVisibilityReason`) passes — no
-    `display: none` / `visibility: hidden|collapse` on the node, no explicit
-    zero inline size, no inline `-9999px` "visually hidden" offset;
+  - the standalone server (HTTP executor) arm: the node is still connected
+    (the executor refuses a detached one) and the executor's click
+    visibility pre-check (`getClickVisibilityReason`) passes. That reads the
+    node's OWN style only — no `display: none` / `visibility:
+    hidden|collapse` on the node, no explicit zero inline size, no inline
+    `-9999px` "visually hidden" offset — so a control under a
+    `display: none` ancestor is `clickable` here, as the HTTP click
+    dispatches on it;
   - the React relay arm: the relay dispatch gate's render check
     (`isRenderedForAction`, `core/element-state`) passes — the node is
     connected, has no `display: none` on itself or any flat-tree ancestor
     (shadow hosts and slots included), is taken by a slot when its parent
-    hosts a shadow root, and is not `visibility: hidden`.
+    hosts an open shadow root, and is not `visibility: hidden`; so a control
+    under a `display: none` ancestor is NOT `clickable` here.
   Either way a control scrolled below the fold, one at `opacity: 0`, one that
   is `position: fixed` or one partly or fully covered is `clickable`. On top
   of that, on both arms, the interaction blockers: not `disabled`, not
