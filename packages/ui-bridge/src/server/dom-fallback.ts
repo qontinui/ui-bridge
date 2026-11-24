@@ -141,8 +141,17 @@ export function computeDomFallbackLabel(
   return verdict.content ? REDACTED_VALUE : capLabel(resolveAccessibleName(el).name ?? '');
 }
 
-/** Generate a stable ID for an element. */
-function generateId(el: HTMLElement, index: number): string {
+/**
+ * Generate a stable ID for an element.
+ *
+ * §4.6: inside a content-redaction boundary (`verdict.content`) the text-slug
+ * rung is skipped, so an id never carries the text the row's `label` scrubs
+ * (`<button>123-45-6789</button>` used to be `dom-button-123-45-6789`). The
+ * element falls through to `dom-<type>-<index>`, mirroring the executor's
+ * `getElementId` (`control/action-executor.ts`). The `data-testid` and html
+ * `id` rungs are developer attributes, not page text, and keep their place.
+ */
+function generateId(el: HTMLElement, index: number, verdict: RedactionVerdict): string {
   // Prefer data-testid
   const testId = el.getAttribute('data-testid');
   if (testId) return `dom-${testId}`;
@@ -150,9 +159,11 @@ function generateId(el: HTMLElement, index: number): string {
   // Try id attribute
   if (el.id) return `dom-${el.id}`;
 
+  const type = inferElementType(el);
+  if (verdict.content) return `dom-${type}-${index}`;
+
   // Semantic fallback: tag + type + text snippet
   const tag = el.tagName.toLowerCase();
-  const type = inferElementType(el);
   const text = fallbackIdText(el)
     .slice(0, 30)
     .replace(/[^a-zA-Z0-9]/g, '-')
@@ -249,18 +260,20 @@ function defaultRoot(): HTMLElement | null {
 
 /**
  * The selector walk and id derivation every scan shares: each interactive
- * element under `container`, in document order, with its collision-free id.
- * The single source of truth for ids, so the full scan and the ref-only scan
- * cannot disagree on one.
+ * element under `container`, in document order, with its collision-free id
+ * and its §4.6 redaction verdict. The single source of truth for ids, so the
+ * full scan and the ref-only scan cannot disagree on one. The verdict is
+ * computed ONCE per element and handed to both the id derivation and `visit`.
  */
 function walkInteractive(
   container: HTMLElement,
-  visit: (el: HTMLElement, id: string) => void
+  visit: (el: HTMLElement, id: string, verdict: RedactionVerdict) => void
 ): void {
   const nodeList = container.querySelectorAll<HTMLElement>(COMBINED_SELECTOR);
   const seenIds = new Set<string>();
   nodeList.forEach((el, index) => {
-    let id = generateId(el, index);
+    const verdict = verdictOf(el);
+    let id = generateId(el, index, verdict);
     // Disambiguate collisions
     if (seenIds.has(id)) {
       let suffix = 2;
@@ -268,7 +281,7 @@ function walkInteractive(
       id = `${id}-${suffix}`;
     }
     seenIds.add(id);
-    visit(el, id);
+    visit(el, id, verdict);
   });
 }
 
@@ -292,8 +305,8 @@ export function scanDOMForInteractiveElementRefs(root?: HTMLElement): DOMFallbac
   const container = root ?? defaultRoot();
   if (!container) return [];
   const refs: DOMFallbackElementRef[] = [];
-  walkInteractive(container, (el, id) => {
-    refs.push({ id, label: computeDomFallbackLabel(el), element: el });
+  walkInteractive(container, (el, id, verdict) => {
+    refs.push({ id, label: computeDomFallbackLabel(el, verdict), element: el });
   });
   return refs;
 }
@@ -315,7 +328,7 @@ export function scanDOMForInteractiveElementsWithRefs(
 
   const elements: DOMFallbackElementWithRef[] = [];
 
-  walkInteractive(container, (el, id) => {
+  walkInteractive(container, (el, id, verdict) => {
     const type = inferElementType(el);
     // ONE canonical read per element (plan
     // `2026-11-23-ui-bridge-element-state-collapse-follow-ups`, D1). This path
@@ -330,8 +343,7 @@ export function scanDOMForInteractiveElementsWithRefs(
     // HTMLElement`, which is ALWAYS false once the ref is dropped, so it
     // redacted nothing here. Scrub AT THE SOURCE instead: `materializeElements`
     // then consumes already-safe data. CONTENT axis for text/label/aria-label,
-    // VALUE axis for the entered value.
-    const verdict = verdictOf(el);
+    // VALUE axis for the entered value. `verdict` is the walk's one read.
 
     elements.push({
       id,
