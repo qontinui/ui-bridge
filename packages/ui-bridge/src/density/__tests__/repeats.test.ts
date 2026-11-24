@@ -896,6 +896,40 @@ describe('repeats', () => {
     expect(reps.map((r) => [r.rows, r.scope, r.finder])).toEqual([[4, 'block', null]]);
   });
 
+  it('a wrapped run of chips is not a list of its line-starting chips', () => {
+    const lines: number[][] = [
+      [60, 90, 120, 70],
+      [80, 50, 140],
+      [100, 75],
+    ];
+    const els: DensityTestElementSpec[] = [];
+    let n = 0;
+    lines.forEach((widths, li) => {
+      let x = 0;
+      for (const w of widths) {
+        n++;
+        els.push({
+          id: `chip-${n}`,
+          tag: 'a',
+          category: 'interactive',
+          xpath: `/html/body/div/a[${n}]`,
+          rect: [x, 100 + 32 * li, w, 24],
+          text: `Tag ${n}`,
+        });
+        x += w + 8;
+      }
+    });
+    expect(densityRepeats(capture(els), null)).toEqual([]);
+  });
+
+  it('a row whose text leaf states a zero line height is not estimated', () => {
+    const els = orderList(3).map((e) =>
+      e.id === 'app.orders.row-2.no' ? { ...e, styles: { lineHeight: '0px' } } : e
+    );
+    const [rep] = densityRepeats(capture(els), null);
+    expect([rep.rowsEstimated, rep.linesPerRow]).toEqual([2, 1]);
+  });
+
   it('a hidden leaf in a row draws no line band', () => {
     const els = orderList(3).map((e): DensityTestElementSpec => {
       if (!e.id.endsWith('.sum')) return e;

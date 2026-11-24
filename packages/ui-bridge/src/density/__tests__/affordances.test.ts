@@ -530,6 +530,95 @@ describe('affordances', () => {
     ]);
   });
 
+  it('a header select-all does not stop the table at its own block; its search, filter and pager are found', () => {
+    const S = '/html/body/main/section';
+    const els: DensityTestElementSpec[] = [
+      { id: 't', tag: 'section', xpath: S, rect: [0, 0, 800, 500], text: '' },
+      {
+        id: 'q',
+        tag: 'input',
+        role: 'searchbox',
+        category: 'interactive',
+        xpath: `${S}/input`,
+        rect: [0, 0, 300, 28],
+        text: '',
+      },
+      {
+        id: 'status',
+        tag: 'select',
+        role: 'combobox',
+        category: 'interactive',
+        xpath: `${S}/select`,
+        rect: [400, 0, 200, 28],
+        text: 'All',
+      },
+      { id: 't.table', tag: 'table', xpath: `${S}/table`, rect: [0, 40, 800, 240], text: '' },
+      {
+        id: 't.all',
+        tag: 'input',
+        role: 'checkbox',
+        category: 'interactive',
+        xpath: `${S}/table/thead/tr/th[1]/input`,
+        rect: [0, 50, 20, 20],
+        text: '',
+      },
+      ...[1, 2, 3, 4, 5].map(
+        (k): DensityTestElementSpec => ({
+          id: `t.r${k}`,
+          tag: 'tr',
+          xpath: `${S}/table/tbody/tr[${k}]`,
+          rect: [0, 40 + 40 * k, 800, 40],
+          text: `Row ${k}`,
+        })
+      ),
+      {
+        id: 'next',
+        tag: 'a',
+        category: 'interactive',
+        xpath: `${S}/nav/a`,
+        rect: [0, 300, 60, 28],
+        text: 'Next',
+      },
+    ];
+    const c = capture(els);
+    const [rep] = densityRepeats(c, null);
+    expect([rep.scope, rep.finder]).toEqual(['ancestor', { id: 'q', by: 'position' }]);
+    const acting = densityAffordances(c, null, { repeats: [rep] }).filter((a) => a.repeat !== null);
+    expect(acting.map((a) => [a.id, a.rule])).toEqual([
+      ['status', 'control-above-repeat'],
+      ['next', 'nav-after-repeat'],
+    ]);
+  });
+
+  it('the links at the foot of a sidebar nav are not the pager of its own list', () => {
+    const N = '/html/body/aside/nav';
+    const els: DensityTestElementSpec[] = [
+      { id: 'side', tag: 'aside', xpath: '/html/body/aside', rect: [0, 0, 240, 800], text: '' },
+      ...[1, 2, 3, 4, 5, 6].map(
+        (k): DensityTestElementSpec => ({
+          id: `nav-${k}`,
+          tag: 'a',
+          category: 'interactive',
+          xpath: `${N}/ul/li[${k}]/a`,
+          rect: [16, 20 + 36 * (k - 1), 200, 28],
+          text: `Section ${k}`,
+        })
+      ),
+      {
+        id: 'settings',
+        tag: 'a',
+        category: 'interactive',
+        xpath: `${N}/div/a[1]`,
+        rect: [16, 700, 200, 28],
+        text: 'Settings',
+      },
+    ];
+    const c = capture(els);
+    const reps = densityRepeats(c, null);
+    expect(reps.map((r) => r.id)).toEqual(['repeat:nav-1']);
+    expect(densityAffordances(c, null).filter((a) => a.kind === 'pager')).toEqual([]);
+  });
+
   it('a select-all checkbox in a table header is not a filter', () => {
     const S = '/html/body/main/section';
     const els: DensityTestElementSpec[] = [
@@ -553,9 +642,20 @@ describe('affordances', () => {
           text: `Row ${k}`,
         })
       ),
+      // A pager below gives the table a scope that holds the header checkbox.
+      {
+        id: 't.next',
+        tag: 'a',
+        category: 'interactive',
+        xpath: `${S}/nav/a`,
+        rect: [0, 200, 60, 28],
+        text: 'Next',
+      },
     ];
     const found = densityAffordances(capture(els), null);
-    expect(found.filter((a) => a.kind === 'filter')).toEqual([]);
+    expect(found.filter((a) => a.repeat !== null).map((a) => [a.id, a.rule])).toEqual([
+      ['t.next', 'nav-after-repeat'],
+    ]);
   });
 
   it('a sort button in the table header does not stop the scope at the table', () => {

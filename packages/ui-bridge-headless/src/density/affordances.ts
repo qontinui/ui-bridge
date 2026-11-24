@@ -21,6 +21,8 @@
 import {
   densityCentreY,
   densityInnermostRepeats,
+  densityNavPrefix,
+  isDensityHeaderToggle,
   densityNearestRepeats,
   densityRepeatScopes,
   densityTakesSpace,
@@ -274,14 +276,13 @@ export function densityAffordances(
   for (const rep of repeats) {
     const scope = scopes.get(rep.id)!;
     const aimed = densityRepeatTargets(capture, rep, children);
+    const firstMember = capture.items.find((i) => i.id === rep.members[0]);
+    const repNav = firstMember ? densityNavPrefix(firstMember) : null;
     for (const item of capture.items) {
       if (scope.own.has(item.id)) continue;
       // A filter is a laid-out, interactive select, combobox, checkbox or radio.
       // A checkbox or radio in a table header selects rows, it filters nothing.
-      const headerToggle =
-        (item.role === 'checkbox' || item.role === 'radio') &&
-        item.path !== null &&
-        item.path.includes('thead');
+      const headerToggle = isDensityHeaderToggle(item);
       const filterControl =
         isDensityFilterControl(item) &&
         item.interactive &&
@@ -319,6 +320,9 @@ export function densityAffordances(
         scope.ids.has(item.id) &&
         isDensityNavControl(item) &&
         nearestAbove.get(item.id) === rep.id &&
+        // A link at the foot of the nav the list's own rows sit in is more of
+        // that nav, not its pager.
+        (repNav === null || densityNavPrefix(item) !== repNav) &&
         cy !== null &&
         cy <= rep.lastRow.bottomPx + H
       ) {
