@@ -19,6 +19,7 @@
  */
 
 import {
+  densityCentreY,
   densityInnermostRepeats,
   densityNearestRepeats,
   densityRepeatScopes,
@@ -165,9 +166,7 @@ const HIDES_FROM_SNAPSHOT: DensityUnknownQuantity = {
     'what a control hides is measured by the document walk; a snapshot of registered elements does not carry it',
 };
 
-function centreY(item: DensityItem): number | null {
-  return item.rect === null ? null : item.rect.y + item.rect.h / 2;
-}
+const centreY = densityCentreY;
 
 const MENU_ROLES = new Set(['menu', 'menubar']);
 const MENU_ITEM_ROLES = new Set(['menuitem', 'menuitemcheckbox', 'menuitemradio']);
