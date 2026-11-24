@@ -943,11 +943,6 @@ const LAYOUT_TAGS = new Set([
   'dialog',
 ]);
 
-/** A checkbox, radio or switch: a list of them is rows (a checklist), not a form's fields. */
-function isChoiceToggle(item: DensityItem): boolean {
-  return item.role === 'checkbox' || item.role === 'radio' || item.role === 'switch';
-}
-
 /** Tags whose stacked siblings inside one row of another repeat are still rows (a nested list). */
 const NESTED_ROW_TAGS = new Set(['li', 'tr']);
 
@@ -999,8 +994,6 @@ export function densityRepeats(
         .filter((id) => leafSet.has(id))
         .map((id) => byId.get(id)!);
       if (inner.length === 0) return false;
-      // A row of nothing but checkboxes or radios is a checklist's row.
-      if (inner.every(isChoiceToggle)) return false;
       if (inner.every(isFormPart)) return true;
       return (
         // A text-entry or choice field, not just a checkbox (a todo row is a row).
@@ -1094,13 +1087,14 @@ export function densityRepeats(
       if (wrappedRun(c, siblingRows)) continue;
       if (sameWidth(c) || c.every((m) => leafSet.has(m.id))) accept(g, c);
       // One odd-width member (a highlighted row) does not discard the column:
-      // a column where one width holds all but a small minority
-      // ({@link DENSITY_REPEAT_ODD_WIDTH_SHARE}, at least one) is a list, the
-      // odd rows included. Widths mixed beyond that are layout.
+      // a column where one width holds all but at most
+      // {@link DENSITY_REPEAT_ODD_WIDTH_SHARE} of its members (so a column of
+      // five or more may hold one odd row) is a list, the odd rows included.
+      // Widths mixed beyond that are layout.
       else {
         const dominant = clusterBy(c, (r) => r.w).reduce((a, b) => (b.length > a.length ? b : a));
         const odd = c.length - dominant.length;
-        if (odd <= Math.max(1, Math.floor(c.length * DENSITY_REPEAT_ODD_WIDTH_SHARE))) accept(g, c);
+        if (odd <= Math.floor(c.length * DENSITY_REPEAT_ODD_WIDTH_SHARE)) accept(g, c);
       }
     }
   }

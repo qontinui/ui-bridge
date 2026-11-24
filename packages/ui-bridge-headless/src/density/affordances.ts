@@ -420,8 +420,12 @@ export function summarizeDensityAffordances(
     };
   }
   const keyed = capture.repeatKeysResolved;
-  // Without repeat keys no repeat is read, so only the item-local kinds are.
-  const all = affordances ?? densityAffordances(capture, targets, keyed ? {} : { repeats: [] });
+  // Without repeat keys no repeat is read, so only the item-local kinds are:
+  // a list the caller passed is not used then (a caller that read no repeats
+  // passes `[]`, which would report every measured kind as zero).
+  const all = keyed
+    ? (affordances ?? densityAffordances(capture, targets))
+    : densityAffordances(capture, targets, { repeats: [] });
   const byKind = Object.fromEntries(DENSITY_AFFORDANCE_KINDS.map((k) => [k, 0])) as Record<
     DensityAffordanceKind,
     number
