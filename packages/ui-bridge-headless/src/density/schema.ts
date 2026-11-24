@@ -905,6 +905,11 @@ export function parseDensityCapture(value: unknown): DensityParseResult<DensityC
     .array(o.items, '$.items', (v, p) => readItem(r, v, p))
     .filter((i): i is DensityItem => i !== null);
   r.unique(items, '$.items', (i) => i.id, 'item id');
+  items.forEach((item, idx) => {
+    if ((item.cousinKey === null) !== (item.cousinRowKey === null)) {
+      r.fail(`$.items[${idx}].cousinRowKey`, 'must be null exactly when cousinKey is');
+    }
+  });
 
   const capture: DensityCapture = {
     schema: DENSITY_CAPTURE_SCHEMA,
