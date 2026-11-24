@@ -554,15 +554,23 @@ own `placeholder`, else a name derived from developer affordances (a
 `data-testid`, an `id`, an icon token). It is capped at 200 code points, and is
 the redaction sentinel inside a redaction boundary. It is the value a
 registered element reports as `state.accessibleName`; a fallback row's `state`
-does not carry that field. Where a row carries a top-level `accessibleName`, it
-is the W3C algorithm alone, without the `placeholder` and derived rungs, so it
-can be absent where `label` is filled from one of those. A fallback row's `id`
+does not carry that field. The top-level `accessibleName` differs by arm. On a
+registered snapshot row it is the same `resolveAccessibleName` name (scrubbed),
+so it equals `state.accessibleName`. On a find or discover row the action
+executor builds it with its own name chain, so it can differ. On a DOM-fallback
+row, when present, it is the W3C algorithm alone, without the `placeholder` and
+derived rungs, so it can be absent where `label` comes from one of those. A
+fallback row's `id`
 is built from a separate, frozen input so it does not move when the name does:
 `dom-<testid>`, `dom-<html id>`, a slug of the element's text
 (`dom-button-save`), or `dom-<type>-<index>`. The text slug is skipped, and the
 id falls to `dom-<type>-<index>`, when the element is inside a redaction
 boundary or its text would come from an `aria-labelledby` target that touches
-one, so an id never carries redacted text.
+one, so an id never carries redacted text. One consequence: a NON-redacted
+element whose text matches a redacted sibling's can lose its collision suffix.
+Two `Save` buttons, the first inside a boundary, used to read `dom-button-save`
+and `dom-button-save-2`; they now read `dom-button-0` and `dom-button-save`.
+Keeping the `-2` would reveal that a redacted sibling shares the text.
 
 The same rows, and so the same `visible`, feed the other in-page responses
 that fall back to a DOM scan when nothing is registered: `GET /ai/summary`
@@ -599,7 +607,12 @@ name (and `resolveAccessibleName` gained HTML-AAM's last-resort `placeholder`
 rung, `nameSource: 'placeholder'`, for a text-like input or textarea). Fallback
 ids are unchanged, except for an element whose id was a slug of redacted text
 (it was inside a redaction boundary, or labelled by an `aria-labelledby`
-target touching one): those now read `dom-<type>-<index>`.
+target touching one): those now read `dom-<type>-<index>`. A non-redacted
+element whose text matches such a redacted sibling's can lose its `-2`-style
+collision suffix (`dom-button-save-2` becomes `dom-button-save`), because
+keeping it would reveal that a redacted sibling shares the text. The derived
+name rung (an icon's `svg > title` or class) no longer reads a descendant that
+touches a redaction boundary.
 
 ## Diagnostics
 
