@@ -139,9 +139,9 @@ export interface DensityItem {
   /**
    * Opaque key shared by items that sit at the same place inside repeated,
    * UNREGISTERED ancestors (`ul > li[k] > a` with only the links registered,
-   * `tr[k] > td[j]` with only the cells): the chain with the sibling index of
-   * its deepest indexed, unregistered `li` or `tr` ancestor, and every index
-   * below it, removed. Holds no page text. `null` when no such ancestor exists, when that
+   * `tr[k] > td[j]` with only the cells): the key of the repeated row
+   * position (`ul/li[*]`) of its deepest unregistered `li` or `tr` ancestor,
+   * for the registered item nearest that row (whatever its tag). Holds no page text. `null` when no such ancestor exists, when that
    * ancestor is registered (its own rows are the repeat), for an own-id xpath
    * or an ambiguous chain, or until structure is resolved. Optional on read.
    */
@@ -282,6 +282,14 @@ export interface DensityCapture {
    * the item is a root.
    */
   structureResolved: boolean;
+  /**
+   * Whether every item's `siblingKey`, `cousinKey` and `cousinRowKey` were
+   * computed. A capture file written before Phase 4 carries none of them, and
+   * its repeats are then unknown, never "none". Optional on read: when absent,
+   * true exactly when every item carries all three keys.
+   */
+  repeatKeysResolved: boolean;
+
   coverage: DensityCoverage;
   probe: DensityProbeResult | null;
   /** Hash of the targets whose `text` matchers this capture evaluated, or `null`. */
@@ -782,7 +790,7 @@ const CAPTURE_KEYS = [
 /** Parse a `ui-bridge/density-capture@1` document. */
 export function parseDensityCapture(value: unknown): DensityParseResult<DensityCapture> {
   const r = new Reader();
-  const o = r.object(value, '$', CAPTURE_KEYS);
+  const o = r.object(value, '$', CAPTURE_KEYS, ['repeatKeysResolved']);
   if (!o) return r.result(null as unknown as DensityCapture);
 
   r.literal(o.schema, '$.schema', DENSITY_CAPTURE_SCHEMA);
@@ -881,6 +889,18 @@ export function parseDensityCapture(value: unknown): DensityParseResult<DensityC
     capturedBy,
     bases: readBases(r, o.bases, '$.bases'),
     structureResolved: r.boolean(o.structureResolved, '$.structureResolved'),
+    repeatKeysResolved:
+      o.repeatKeysResolved === undefined
+        ? Array.isArray(o.items) &&
+          o.items.every(
+            (i) =>
+              i !== null &&
+              typeof i === 'object' &&
+              'siblingKey' in i &&
+              'cousinKey' in i &&
+              'cousinRowKey' in i
+          )
+        : r.boolean(o.repeatKeysResolved, '$.repeatKeysResolved'),
     coverage: readCoverage(r, o.coverage, '$.coverage'),
     probe,
     targetsHash: readHashOrNull(r, o.targetsHash, '$.targetsHash'),

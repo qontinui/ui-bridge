@@ -564,6 +564,23 @@ describe('affordances', () => {
   it('the finder is the control nearest above the first row, not the topmost', () => {
     const els: DensityTestElementSpec[] = [
       {
+        id: 'app.page-sort',
+        tag: 'select',
+        role: 'combobox',
+        category: 'interactive',
+        xpath: `${SECTION}/select[2]`,
+        rect: [0, 60, 300, 28],
+        text: 'Newest',
+      },
+      ...PAGE.filter((e) => e.xpath!.startsWith(SECTION)),
+    ];
+    const [rep] = densityRepeats(capture(els), null);
+    expect(rep.finder).toEqual({ id: 'app.orders.state', by: 'position' });
+  });
+
+  it('a search box above the list outranks a nearer select as its finder', () => {
+    const els: DensityTestElementSpec[] = [
+      {
         id: 'app.page-search',
         tag: 'input',
         role: 'searchbox',
@@ -575,7 +592,7 @@ describe('affordances', () => {
       ...PAGE.filter((e) => e.xpath!.startsWith(SECTION)),
     ];
     const [rep] = densityRepeats(capture(els), null);
-    expect(rep.finder).toEqual({ id: 'app.orders.state', by: 'position' });
+    expect(rep.finder).toEqual({ id: 'app.page-search', by: 'position' });
   });
 
   it("a control inside another repeat's rows is not this repeat's filter", () => {

@@ -331,11 +331,12 @@ export function summarizeDensityAffordances(
   affordances?: readonly DensityAffordance[],
   cap: number = DENSITY_AFFORDANCE_LIST_CAP
 ): DensityAffordancesReport {
-  if (!capture.structureResolved) {
+  if (!capture.structureResolved || !capture.repeatKeysResolved) {
     return {
       structureResolved: false,
-      reason:
-        'filters, pagers and abbreviations are read from parent links, which this capture has not resolved',
+      reason: capture.structureResolved
+        ? 'filters and pagers act on repeats, whose sibling and cousin keys this capture predates (repeatKeysResolved: false); capture it again'
+        : 'filters, pagers and abbreviations are read from parent links, which this capture has not resolved',
     };
   }
   const all = affordances ?? densityAffordances(capture, targets);

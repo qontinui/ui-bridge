@@ -177,6 +177,20 @@ function takesSpace(item: DensityItem): boolean {
   return item.visibility !== 'hidden' && item.visibility !== 'no-layout';
 }
 
+/** The largest value, by a loop (a spread argument list has a length ceiling). */
+function maxOf(values: readonly number[]): number {
+  let out = -Infinity;
+  for (const v of values) if (v > out) out = v;
+  return out;
+}
+
+/** The smallest value, by a loop. */
+function minOf(values: readonly number[]): number {
+  let out = Infinity;
+  for (const v of values) if (v < out) out = v;
+  return out;
+}
+
 function median(values: readonly number[]): number | null {
   if (values.length === 0) return null;
   const s = values.slice().sort((a, b) => a - b);
@@ -557,7 +571,7 @@ function rowsFor(g: Pick<Group, 'members' | 'byRowKey'>): DensityItem[][] {
     if (row) row.push(m);
     else byRow.set(key, [m]);
   }
-  const top = (row: DensityItem[]) => Math.min(...row.map((m) => m.rect!.y));
+  const top = (row: DensityItem[]) => minOf(row.map((m) => m.rect!.y));
   const sorted = [...byRow.values()].sort((a, b) => top(a) - top(b));
   const bands: DensityItem[][] = [];
   let bandTop = -Infinity;
@@ -643,7 +657,8 @@ export function densityRepeats(
     members.every((m) => Math.abs(m.rect!.w - members[0].rect!.w) <= DENSITY_REPEAT_TOLERANCE_PX);
   for (const g of byPath.values()) {
     // 1. A grid: columns of one width whose rows line up, more than one column.
-    for (const oneWidth of clusterBy(g.members, (r) => r.w)) {
+    const unclaimed = g.members.filter((m) => !claimed.has(m.id));
+    for (const oneWidth of clusterBy(unclaimed, (r) => r.w)) {
       for (const c of gridsOf(oneWidth)) {
         if (clusterBy(c, (r) => r.x).length > 1) accept(g, c);
       }
@@ -677,7 +692,7 @@ export function densityRepeats(
   const linesOfOneRow = (g: Group): boolean => {
     if (NESTED_ROW_TAGS.has(g.tag)) return false;
     if (!g.members.every((m) => leafSet.has(m.id))) return false;
-    if (Math.max(...rowsFor(g).map((r) => r.length)) > 1) return false;
+    if (maxOf(rowsFor(g).map((r) => r.length)) > 1) return false;
     const row = enclosingRow(g.members[0].id, g);
     return row !== null && g.members.every((m) => enclosingRow(m.id, g) === row);
   };
@@ -749,8 +764,8 @@ export function densityRepeats(
       row.slice().sort((a, b) => captureIndex.get(a.id)! - captureIndex.get(b.id)!)
     );
     const bands = rows.map((row) => ({
-      topPx: Math.min(...row.map((m) => m.rect!.y)),
-      bottomPx: Math.max(...row.map((m) => m.rect!.y + m.rect!.h)),
+      topPx: minOf(row.map((m) => m.rect!.y)),
+      bottomPx: maxOf(row.map((m) => m.rect!.y + m.rect!.h)),
     }));
     const pitches: number[] = [];
     for (let i = 1; i < bands.length; i++) pitches.push(bands[i].topPx - bands[i - 1].topPx);
@@ -772,15 +787,15 @@ export function densityRepeats(
         textPx.push(est.textPx);
       }
       values.push(rowLeaves.filter((l) => kindOf.get(l.id) === 'value').length);
-      const left = Math.min(...row.map((m) => m.rect!.x));
-      const right = Math.max(...row.map((m) => m.rect!.x + m.rect!.w));
+      const left = minOf(row.map((m) => m.rect!.x));
+      const right = maxOf(row.map((m) => m.rect!.x + m.rect!.w));
       const fill = widthFillOf(rowLeaves, left, right);
       if (fill !== null) fills.push(fill);
     }
     const rowTextPx = median(textPx);
     const first = bands[0];
     const last = bands[bands.length - 1];
-    const bottom = Math.max(...g.members.map((m) => m.rect!.y + m.rect!.h));
+    const bottom = maxOf(g.members.map((m) => m.rect!.y + m.rect!.h));
     const extentPx = bottom - first.topPx;
     return {
       id: `repeat:${ordered[0].id}`,
@@ -789,7 +804,7 @@ export function densityRepeats(
       tag: g.tag,
       members: ordered.map((m) => m.id),
       rows: rows.length,
-      perRow: Math.max(...rows.map((r) => r.length)),
+      perRow: maxOf(rows.map((r) => r.length)),
       firstRow: first,
       lastRow: last,
       rowPitchPx,
@@ -855,9 +870,13 @@ export function densityRepeats(
           const y = centreY(i);
           return y !== null && y < rep.firstRow.topPx;
         })
-        // The nearest above the first row: the lowest centre, then capture order.
+        // A search box first, then a text field, then the rest; within a rank
+        // the nearest above the first row (the lowest centre), then capture order.
         .sort(
-          (a, b) => centreY(b)! - centreY(a)! || captureIndex.get(a.id)! - captureIndex.get(b.id)!
+          (a, b) =>
+            finderRank(a) - finderRank(b) ||
+            centreY(b)! - centreY(a)! ||
+            captureIndex.get(a.id)! - captureIndex.get(b.id)!
         );
       if (above.length > 0) finder = { id: above[0].id, by: 'position' };
     }
@@ -897,6 +916,13 @@ export function summarizeDensityRepeats(
     return {
       structureResolved: false,
       reason: 'repeats are read from parent links, which this capture has not resolved',
+    };
+  }
+  if (!capture.repeatKeysResolved) {
+    return {
+      structureResolved: false,
+      reason:
+        'this capture predates the sibling and cousin keys repeats are read from (repeatKeysResolved: false); capture it again',
     };
   }
   const all = repeats ?? densityRepeats(capture, targets);

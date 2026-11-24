@@ -250,9 +250,10 @@ function siblingKeyOf(p: (ParsedChain & { ownId: boolean }) | null): string | nu
  *   element, registered or not), so that items sharing it are DOM siblings;
  *   `null` for an own-id xpath, a one-segment chain, or a chain through an
  *   ambiguous key.
- * - **cousinKey.** The chain with the sibling index of its deepest indexed
- *   ancestor that nobody registered, and every index below it, replaced:
- *   items at one place inside repeated unregistered rows share it.
+ * - **cousinKey.** The key of the repeated row position (`ul/li[*]`) of the
+ *   deepest unregistered `li` / `tr` the chain passes through, for the
+ *   registered item nearest that row: items inside repeated unregistered rows
+ *   of one list share it, whatever their tags.
  * - **blockKey.** The key of the nearest block-tag ancestor-or-self in the
  *   chain, else (for a chain anchored at a registered item) that item's.
  */
@@ -455,9 +456,9 @@ export function resolveDensityStructure(
       for (let j = k + 1; j < p.keys.length - 1; j++) {
         if (lookup(p.keys[j]) !== null) return [null, null];
       }
-      const below: string[] = [];
-      for (let j = k + 1; j < p.keys.length; j++) below.push(unindexed(segmentOf(p, j)));
-      return [[k > 0 ? p.keys[k - 1] : '', `${unindexed(seg)}[*]`, ...below].join('/'), p.keys[k]];
+      // Keyed by the row's place alone: every registered item nearest a row
+      // (a link in one cell, a value in the next) belongs to that one list.
+      return [[k > 0 ? p.keys[k - 1] : '', `${unindexed(seg)}[*]`].join('/'), p.keys[k]];
     }
     return [null, null];
   };
