@@ -29,12 +29,6 @@ export function stubBox(el: Element, width: number, height: number, x = 0, y = 0
     configurable: true,
     value: () => rect,
   });
-  // The canonical filter's live visibility check reads offsetParent, which
-  // jsdom leaves null for every element.
-  Object.defineProperty(el, 'offsetParent', {
-    configurable: true,
-    get: () => document.body,
-  });
 }
 
 export interface ImageInit {
