@@ -3,8 +3,6 @@ import {
   __resetObservedReportsForTest,
   consumeObservedReport,
   elementReportKey,
-  OBSERVED_REPORT_LIMIT,
-  OBSERVED_REPORT_TTL_MS,
   recordObservedReport,
   statusReportKey,
 } from './observed-reports';
@@ -24,20 +22,42 @@ describe('observed reports', () => {
     );
   });
 
-  it('consumes each report once, within the TTL', () => {
+  it('matches a report inside [startTime - 100, responseEnd + 5000], once', () => {
     const key = statusReportKey('https://a.example/x', 503);
-    recordObservedReport(key, 1_000);
-    expect(consumeObservedReport(key, 1_000 + OBSERVED_REPORT_TTL_MS)).toBe(true);
-    expect(consumeObservedReport(key, 1_001)).toBe(false);
-    recordObservedReport(key, 1_000);
-    expect(consumeObservedReport(key, 1_001 + OBSERVED_REPORT_TTL_MS)).toBe(false);
+    const entry = { startTime: 10_000, responseEnd: 20_000 };
+    recordObservedReport(key, 10_000 - 100);
+    expect(consumeObservedReport(key, entry)).toBe(true);
+    // Consumed once.
+    expect(consumeObservedReport(key, entry)).toBe(false);
+    recordObservedReport(key, 20_000 + 5_000);
+    expect(consumeObservedReport(key, entry)).toBe(true);
+    recordObservedReport(key, 15_000);
+    expect(consumeObservedReport(key, entry)).toBe(true);
+  });
+
+  it('a report outside the interval matches nothing and stays unconsumed', () => {
+    const key = statusReportKey('https://a.example/x', 503);
+    const entry = { startTime: 10_000, responseEnd: 20_000 };
+    recordObservedReport(key, 10_000 - 101);
+    expect(consumeObservedReport(key, entry)).toBe(false);
+    // Still there for the request it belongs to.
+    expect(consumeObservedReport(key, { startTime: 9_899, responseEnd: 9_950 })).toBe(true);
+    recordObservedReport(key, 20_000 + 5_001);
+    expect(consumeObservedReport(key, entry)).toBe(false);
+  });
+
+  it('a report taken 1 ms before the entry start matches', () => {
+    const key = statusReportKey('https://a.example/x', 503);
+    recordObservedReport(key, 9_999);
+    expect(consumeObservedReport(key, { startTime: 10_000, responseEnd: 10_005 })).toBe(true);
   });
 
   it('is a bounded ring: the oldest report is evicted', () => {
-    for (let i = 0; i <= OBSERVED_REPORT_LIMIT; i++) {
+    const entry = { startTime: 1_000, responseEnd: 1_000 };
+    for (let i = 0; i <= 200; i++) {
       recordObservedReport(statusReportKey(`https://a.example/${i}`, 500), 1_000);
     }
-    expect(consumeObservedReport(statusReportKey('https://a.example/0', 500), 1_000)).toBe(false);
-    expect(consumeObservedReport(statusReportKey('https://a.example/1', 500), 1_000)).toBe(true);
+    expect(consumeObservedReport(statusReportKey('https://a.example/0', 500), entry)).toBe(false);
+    expect(consumeObservedReport(statusReportKey('https://a.example/1', 500), entry)).toBe(true);
   });
 });
