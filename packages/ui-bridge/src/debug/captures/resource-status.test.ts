@@ -127,6 +127,19 @@ function statusFor(capture: BrowserEventCapture, url: string): ResourceStatusCap
   return statusEvents(capture).filter((e) => e.kind === 'status' && e.resourceUrl === url);
 }
 
+/** The `replay-truncated` markers a capture received. */
+function replayTruncated(capture: BrowserEventCapture): ResourceStatusCapturedEvent[] {
+  return statusEvents(capture).filter((e) => e.kind === 'replay-truncated');
+}
+
+/** Record `count` live failures, each with its own URL (`/f/<i>`). */
+function recordFailures(count: number): void {
+  FakePerformanceObserver.record(
+    'resource',
+    Array.from({ length: count }, (_, i) => liveEntry(`https://app.example.com/f/${i}`, 503))
+  );
+}
+
 /** Every capture but resource-status off, resource-status left at its default. */
 const ONLY_DEFAULT_RESOURCE_STATUS: BrowserCaptureConfig = {
   console: false,
@@ -656,6 +669,7 @@ describe('resource-status capture', () => {
     expect(seenByB[0]).toMatchObject({
       failureId: (seenByA as { failureId: string }).failureId,
     });
+    expect(replayTruncated(b)).toHaveLength(0);
   });
 
   it('a late joiner while armed receives the earlier failures once', async () => {
@@ -668,6 +682,63 @@ describe('resource-status capture', () => {
     FakePerformanceObserver.record('resource', [liveEntry('https://app.example.com/new', 503)]);
     expect(statusOnly(late)).toHaveLength(2);
     expect(statusOnly(a)).toHaveLength(2);
+    expect(replayTruncated(late)).toHaveLength(0);
+    expect(replayTruncated(a)).toHaveLength(0);
+  });
+
+  it('a late joiner past the replay bound is told how many events it missed, first', async () => {
+    const a = install();
+    await settle();
+    recordFailures(105);
+    const late = install();
+    await settle();
+    const markers = replayTruncated(late);
+    expect(markers).toHaveLength(1);
+    expect(markers[0]).toMatchObject({ replayTruncated: true, droppedCount: 5 });
+    // Ordered before the first replayed status.
+    expect(statusEvents(late)[0]).toMatchObject({ kind: 'replay-truncated' });
+    expect(statusOnly(late)).toHaveLength(100);
+    expect(statusOnly(late)[0]).toMatchObject({ resourceUrl: 'https://app.example.com/f/5' });
+    // The owner that saw everything live is told nothing.
+    expect(statusOnly(a)).toHaveLength(105);
+    expect(replayTruncated(a)).toHaveLength(0);
+  });
+
+  it('a rejoining instance past the replay bound is told how many events it missed', async () => {
+    const a = install();
+    install();
+    await settle();
+    a.uninstall();
+    // The other install keeps the capture armed.
+    recordFailures(105);
+    a.install();
+    await settle();
+    const markers = replayTruncated(a);
+    expect(markers).toHaveLength(1);
+    expect(markers[0]).toMatchObject({ replayTruncated: true, droppedCount: 5 });
+    expect(statusEvents(a)[0]).toMatchObject({ kind: 'replay-truncated' });
+    expect(statusOnly(a)).toHaveLength(100);
+  });
+
+  it('a replay of exactly the bound is complete; one past it drops one', async () => {
+    install();
+    await settle();
+    recordFailures(100);
+    const full = install();
+    await settle();
+    expect(replayTruncated(full)).toHaveLength(0);
+    expect(statusOnly(full)).toHaveLength(100);
+
+    newDocument();
+    install();
+    await settle();
+    recordFailures(101);
+    const over = install();
+    await settle();
+    const markers = replayTruncated(over);
+    expect(markers).toHaveLength(1);
+    expect(markers[0]).toMatchObject({ droppedCount: 1 });
+    expect(statusOnly(over)).toHaveLength(100);
   });
 
   it('a live failure before a joiner’s replay tick does not cost it the backlog', async () => {
@@ -681,6 +752,7 @@ describe('resource-status capture', () => {
       'https://app.example.com/pre',
       'https://app.example.com/live',
     ]);
+    expect(replayTruncated(late)).toHaveLength(0);
   });
 
   it('a remounted capture receives a failure suppressed live, tagged reportedLiveAs', async () => {
@@ -1556,6 +1628,23 @@ describe('resource-status classification', () => {
         budget: 25,
       }).severity
     ).toBe('noise');
+  });
+
+  it('grades a truncated replay as a warning and names what it dropped', () => {
+    const marker = {
+      ...base,
+      kind: 'replay-truncated' as const,
+      replayTruncated: true as const,
+      droppedCount: 5,
+    };
+    expect(classifyEvent(marker)).toEqual({
+      severity: 'warning',
+      reason: 'resource-status replay truncated',
+    });
+    expect(extractMessage(marker)).toBe(
+      'Replay truncated: 5 earlier resource-status events were not replayed'
+    );
+    expect(computeFingerprint(marker)).toBe('resource-status:replay-truncated');
   });
 
   it('classifies an unknown status as noise and a blind spot as warning', () => {

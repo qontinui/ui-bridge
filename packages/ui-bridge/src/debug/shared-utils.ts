@@ -27,5 +27,7 @@ export function describeResourceStatus(event: ResourceStatusCapturedEvent): stri
       return `Resource timing buffer full (${event.resourceEntryCount} entries): earlier statuses may be missing`;
     case 'unknown-status-capped':
       return `Over ${event.budget} resources with an unreported status`;
+    case 'replay-truncated':
+      return `Replay truncated: ${event.droppedCount} earlier resource-status events were not replayed`;
   }
 }
