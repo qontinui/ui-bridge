@@ -661,12 +661,17 @@ export function densityRepeats(
   const containers = new Set(children.keys());
   const pathGroups: Group[] = [];
   const claimed = new Set<string>();
+  /**
+   * One test for every arm: a run of paragraphs, or of headings, is text; a
+   * form's fields or their labels are a form. Neither is a list of rows.
+   */
+  const rejectsAsRows = (members: readonly DensityItem[]): boolean =>
+    members.every((m) => kindOf.get(m.id) === 'prose') ||
+    members.every((m) => kindOf.get(m.id) === 'heading') ||
+    members.every(isFormPart);
   const accept = (g: Group, members: DensityItem[]): boolean => {
     if (rowsFor({ members, byRowKey: g.byRowKey }).length < DENSITY_REPEAT_MIN_ROWS) return false;
-    // A run of paragraphs is text, not rows.
-    if (members.every((m) => kindOf.get(m.id) === 'prose')) return false;
-    // A form's fields, or their labels, are a form, not a list.
-    if (members.every(isFormPart)) return false;
+    if (rejectsAsRows(members)) return false;
     pathGroups.push({ ...g, members });
     members.forEach((m) => claimed.add(m.id));
     return true;
@@ -763,8 +768,8 @@ export function densityRepeats(
     for (const sameWidth of clusterBy(list, (r) => r.w)) {
       for (const c of gridsOf(sameWidth)) {
         if (rowsOf(c).length < DENSITY_REPEAT_MIN_ROWS) continue;
-        // A run of paragraphs is text, not rows.
-        if (c.every((m) => kindOf.get(m.id) === 'prose')) continue;
+        // Text or a form, not rows.
+        if (rejectsAsRows(c)) continue;
         const g: Group = { by: 'geometry', parent: c[0].parent, tag: c[0].tag, members: c };
         for (const m of c) memberOf.set(m.id, g);
         if (!linesOfOneRow(g)) groups.push(g);
@@ -776,7 +781,7 @@ export function densityRepeats(
     const rest = list.filter((m) => !placed.has(m.id) && leafSet.has(m.id));
     for (const c of clusterBy(rest, (r) => r.x)) {
       if (rowsOf(c).length < DENSITY_REPEAT_MIN_ROWS) continue;
-      if (c.every((m) => kindOf.get(m.id) === 'prose')) continue;
+      if (rejectsAsRows(c)) continue;
       const g: Group = { by: 'geometry', parent: c[0].parent, tag: c[0].tag, members: c };
       for (const m of c) memberOf.set(m.id, g);
       if (!linesOfOneRow(g)) groups.push(g);
