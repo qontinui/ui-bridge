@@ -647,6 +647,38 @@ describe('affordances', () => {
     expect(pagers.map((a) => a.id)).toEqual(['app.orders.next']);
   });
 
+  it('a horizontal scroll pane around a wide table is not a truncation', () => {
+    const els: DensityTestElementSpec[] = [
+      {
+        id: 'pane',
+        tag: 'div',
+        xpath: '/html/body/div',
+        rect: [0, 0, 400, 200],
+        text: 'A B',
+        scrollWidth: 1200,
+        clientWidth: 400,
+        styles: { overflow: 'auto' },
+      },
+      {
+        id: 'pane.a',
+        tag: 'span',
+        xpath: '/html/body/div/span[1]',
+        rect: [0, 0, 600, 20],
+        text: 'A',
+      },
+      {
+        id: 'pane.b',
+        tag: 'span',
+        xpath: '/html/body/div/span[2]',
+        rect: [600, 0, 600, 20],
+        text: 'B',
+      },
+    ];
+    expect(densityAffordances(capture(els), null).filter((a) => a.kind === 'truncation')).toEqual(
+      []
+    );
+  });
+
   it('a select-all checkbox in a table header is not a filter', () => {
     const S = '/html/body/main/section';
     const els: DensityTestElementSpec[] = [

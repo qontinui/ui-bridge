@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import { captureDensityFromSnapshot } from '../capture-from-snapshot';
 import { densityRepeats, summarizeDensityRepeats } from '../repeats';
-import { parseDensityCapture, type DensityCapture } from '../schema';
+import { parseDensityCapture, parseDensityTargets, type DensityCapture } from '../schema';
 import {
   DENSITY_TEST_PRODUCER,
   densityTestSnapshot,
@@ -1112,6 +1112,42 @@ describe('repeats', () => {
     }
     const reps = densityRepeats(capture(els), null);
     expect(reps.map((r) => [r.tag, r.rows])).toEqual([['tr', 5]]);
+  });
+
+  it('a declared value rule the capture could not resolve makes valuesPerRow unknown', () => {
+    // A `text` matcher the capture never evaluated: it is unresolved.
+    const t = parseDensityTargets({
+      schema: 'ui-bridge/density-targets@1',
+      surface: '/',
+      profile: 'audience_profile/synthetic@1',
+      classify: [{ match: { text: 'Pending' }, kind: 'value' }],
+      roles: [],
+    });
+    if (!t.ok) throw new Error(JSON.stringify(t.problems));
+    const [rep] = densityRepeats(capture(orderList(3)), t.value);
+    expect(rep.valuesPerRow).toBeNull();
+    expect(densityRepeats(capture(orderList(3)), null)[0].valuesPerRow).toBe(2);
+  });
+
+  it('an inline leaf wrapping to two lines counts two', () => {
+    const els = orderList(3).map((e) =>
+      e.id.endsWith('.sum')
+        ? {
+            ...e,
+            text: 'x'.repeat(20),
+            rect: [300, e.rect![1], 100, 34] as [number, number, number, number],
+          }
+        : e
+    );
+    // 20 characters at 14 px over 100 px is 2 lines; 34 px = one 20 px line + one 14 px content box.
+    const [rep] = densityRepeats(capture(els), null);
+    expect(rep.linesPerRow).toBe(2);
+  });
+
+  it('a capture whose cousinRowKey disagrees with its cousinKey does not parse', () => {
+    const c = capture(orderList(3));
+    const bad = { ...c, items: c.items.map((i, n) => (n === 0 ? { ...i, cousinRowKey: 'x' } : i)) };
+    expect(parseDensityCapture(JSON.parse(JSON.stringify(bad))).ok).toBe(false);
   });
 
   it('a hidden leaf in a row draws no line band', () => {

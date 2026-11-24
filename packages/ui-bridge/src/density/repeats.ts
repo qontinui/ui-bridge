@@ -136,7 +136,11 @@ export interface DensityRepeat {
    * line height, a width or a readable text length (a redacted leaf).
    */
   rowsEstimated: number;
-  /** Median count of `value` leaves per row, over rows with no unreadable item; `null` when every row has one. */
+  /**
+   * Median count of `value` leaves per row, over rows with no unreadable item;
+   * `null` when every row has one, or when a declared `classify` rule could
+   * not be resolved (the leaves it would have made values are unknown).
+   */
   valuesPerRow: number | null;
   /** Median share of a row's width its leaves cover, over rows with no unreadable item; `null` when none qualifies. */
   widthFill: number | null;
@@ -260,7 +264,9 @@ function rowLines(
     // truncated leaf (nowrap, ellipsis) is one line.
     const wrapped = Math.max(1, Math.ceil((n * DENSITY_CHAR_WIDTH_EM * leaf.fontPx) / r.w));
     // Whole lines only (padding is not a line), with room for sub-pixel heights.
-    const fits = Math.max(1, Math.floor(r.h / leaf.lineHeightPx + 0.01));
+    // The last line counts by its content box (an inline leaf wrapping to two
+    // lines is one line height plus one font height tall).
+    const fits = Math.max(1, 1 + Math.floor((r.h - leaf.fontPx) / leaf.lineHeightPx + 0.01));
     const lines = leaf.truncated === true ? 1 : Math.min(wrapped, fits);
     for (let k = 0; k < lines; k++)
       spans.push({ top: r.y + k * leaf.lineHeightPx, lh: leaf.lineHeightPx });
@@ -1011,7 +1017,7 @@ export function densityRepeats(
       rowTextPx,
       rowFill: median(rowFills),
       rowsEstimated: lineCounts.length,
-      valuesPerRow: median(values),
+      valuesPerRow: classes.unresolved.length > 0 ? null : median(values),
       widthFill: median(fills),
       rowsPerScreen: usable / rowPitchPx,
       rowsPerScreenBasis: pins.unknown.length > 0 ? 'upper-bound' : 'measured',

@@ -256,7 +256,9 @@ export function densityAffordances(
     // search
     if (item.role === 'searchbox') add(item, 'role-searchbox', null);
     // truncation
-    if (item.truncated === true) {
+    // Text cut short in place: a leaf. A container that overflows (a scroll
+    // pane around a wide table) is a scroller, not a truncation.
+    if (item.truncated === true && leafSet.has(item.id)) {
       add(item, 'scroll-width', null, { recoverable: item.recoverable });
     }
     // abbreviation
