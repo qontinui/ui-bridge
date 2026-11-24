@@ -59,11 +59,17 @@
  *
  * One failure, one event: a live entry whose failure the `network` or
  * `resource-errors` capture already reported (`../observed-reports`) is not
- * emitted. This ASSUMES those captures report first — fetch resolves at the
- * response headers, before Resource Timing should record `responseEnd`; an
- * element's `error` event should fire before the observer's asynchronous
- * batch. That order is reasoned from the specs, not measured here. When a
- * sample is observed first anyway, both events are emitted (a known residual).
+ * emitted. A report matches an entry when it falls in the entry's interval on
+ * the Resource Timing clock — from just before `startTime` to shortly after
+ * `responseEnd` (`../observed-reports` holds the bounds) — so a fetch whose
+ * body arrives long after its headers, or an observer batch delivered late,
+ * still matches, and a report never absorbs a request that started after it.
+ * This ASSUMES those captures report before the entry is observed — fetch
+ * resolves at the response headers, before Resource Timing should record
+ * `responseEnd`; an element's `error` event should fire before the observer's
+ * asynchronous batch. That order is reasoned from the specs, not measured
+ * here. When a sample is observed first anyway, both events are emitted (a
+ * known residual).
  * Entries that finished before install, the navigation entry and carried
  * events never consult the reports: no other capture saw them. A suppressed
  * failure is still carried across a navigation — the other capture's report
@@ -538,15 +544,16 @@ export function installResourceStatusCapture(
     status: number
   ): ResourceStatusEntryEvent['reportedLiveAs'] => {
     if (installedAt === null || sample.responseEnd < installedAt) return undefined;
-    const now = Date.now();
+    // Matched against this entry's own interval, not against delivery time.
+    const interval = { startTime: sample.startTime, responseEnd: sample.responseEnd };
     // The network capture wraps fetch only.
     if (sample.initiatorType === 'fetch') {
-      return consumeObservedReport(statusReportKey(sample.name, status), now)
+      return consumeObservedReport(statusReportKey(sample.name, status), interval)
         ? 'network'
         : undefined;
     }
     if (ELEMENT_INITIATORS.has(sample.initiatorType)) {
-      return consumeObservedReport(elementReportKey(sample.name, sample.initiatorType), now)
+      return consumeObservedReport(elementReportKey(sample.name, sample.initiatorType), interval)
         ? 'resource-error'
         : undefined;
     }

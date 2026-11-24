@@ -398,7 +398,7 @@ describe('resource-status capture', () => {
     expect(statusFor(capture, 'https://app.example.com/api/v1/early-timing')).toHaveLength(1);
   });
 
-  it('a pre-install entry never consumes a report; a stale report matches nothing', async () => {
+  it('a pre-install entry never consumes a report; a report never absorbs a later request', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => new Response('', { status: 503 }))
@@ -414,12 +414,17 @@ describe('resource-status capture', () => {
     // The live one is the network report's: consumed.
     FakePerformanceObserver.record('resource', [liveEntry(url, 503)]);
     expect(statusFor(capture, url)).toHaveLength(1);
-    // A report older than the TTL (5 s) matches nothing.
+    // A report recorded before a later request started is not that request's:
+    // the later entry is emitted, and the leftover report stays unconsumed.
     await window.fetch(url);
-    const later = Date.now() + 6_000;
-    const spy = vi.spyOn(Date, 'now').mockReturnValue(later);
-    FakePerformanceObserver.record('resource', [liveEntry(url, 503)]);
-    spy.mockRestore();
+    const reportedBy = performance.now();
+    FakePerformanceObserver.record('resource', [
+      {
+        ...resourceEntry(url, 503),
+        startTime: reportedBy + 1_000,
+        responseEnd: reportedBy + 1_010,
+      },
+    ]);
     expect(statusFor(capture, url)).toHaveLength(2);
   });
 
@@ -438,6 +443,54 @@ describe('resource-status capture', () => {
     expect(statusFor(capture, 'https://app.example.com/missing.png')).toHaveLength(0);
     const { breakdown } = computeHealthReport(capture);
     expect(breakdown.crashes + breakdown.errors + breakdown.warnings).toBe(1);
+  });
+
+  it('a fetch whose body ends more than 5 s after its headers counts once', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('', { status: 503 }))
+    );
+    const url = 'https://app.example.com/api/v1/slow-body';
+    const capture = install(WITH_NETWORK_AND_RESOURCE_ERRORS);
+    await settle();
+    const t = performance.now();
+    await window.fetch(url);
+    // The entry is recorded at responseEnd, 6 s after the headers the network
+    // capture reported at; the observer delivers it then.
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 6_000);
+    FakePerformanceObserver.record('resource', [
+      { ...resourceEntry(url, 503), startTime: t, responseEnd: t + 6_000 },
+    ]);
+    spy.mockRestore();
+    expect(capture.getByType('network')).toHaveLength(1);
+    expect(statusFor(capture, url)).toHaveLength(0);
+  });
+
+  it('an img error reported just after responseEnd, delivered in a late batch, counts once', async () => {
+    const capture = install(WITH_NETWORK_AND_RESOURCE_ERRORS);
+    await settle();
+    // The error fires 10 s after install, so the entry finished after install.
+    const nowSpy = vi.spyOn(performance, 'now').mockReturnValue(performance.now() + 10_000);
+    const src = 'https://app.example.com/late-batch.png';
+    const img = document.createElement('img');
+    img.src = src;
+    document.body.appendChild(img);
+    img.dispatchEvent(new Event('error'));
+    img.remove();
+    const errorAt = performance.now();
+    nowSpy.mockRestore();
+    // An element's error fires after responseEnd; the observer batch arrives 6 s later.
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 6_000);
+    FakePerformanceObserver.record('resource', [
+      {
+        ...resourceEntry(src, 404, 'img'),
+        startTime: errorAt - 2_000,
+        responseEnd: errorAt - 1_000,
+      },
+    ]);
+    spy.mockRestore();
+    expect(capture.getByType('resource-error')).toHaveLength(1);
+    expect(statusFor(capture, src)).toHaveLength(0);
   });
 
   it('install-time events reach an onEvent set synchronously after install()', async () => {
