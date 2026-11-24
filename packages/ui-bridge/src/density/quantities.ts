@@ -67,12 +67,20 @@ export type DensityQuantityRead =
   | 'unweighted-mean'
   | 'length';
 
-/** A field beside the value that makes it a bound: `up`, a lower bound (no upper); `down`, an upper bound (down to 0). */
+/**
+ * A field that makes the value a bound: `up`, a lower bound (no upper);
+ * `down`, an upper bound (down to 0); `both`, neither (`[0, ∞)`).
+ */
 export interface DensityQuantityWiden {
+  /** Where `field` is read: beside the value (default), on the ask it belongs to, or on the role section. */
+  of?: 'parent' | 'ask' | 'role';
   field: string;
-  /** The value of `field` that widens: `true`, a string, or `nonzero` (a count above 0). */
-  when: true | 'nonzero' | string;
-  direction: 'up' | 'down';
+  /**
+   * The value of `field` that widens: `true`, a string, `nonzero` (a count
+   * above 0), or `some-partial` (a list holding an entry with `partial: true`).
+   */
+  when: true | 'nonzero' | 'some-partial' | string;
+  direction: 'up' | 'down' | 'both';
 }
 
 export interface DensityQuantity {
@@ -87,10 +95,11 @@ export interface DensityQuantity {
    */
   path: string;
   read: DensityQuantityRead;
-  widen?: DensityQuantityWiden;
+  /** Each condition that makes the value only a bound; several compose. */
+  widen?: readonly DensityQuantityWiden[];
   /** The bound a `--draft` rule writes for it (with a null limit); absent: not drafted. */
   draft?: 'max' | 'min';
-  /** A rule on it compacts the page: it is held to the budget's floors, or to a stated waiver. */
+  /** A rule on it compacts the page: it is judged only when the budget states floors, or a waiver of them. */
   compaction?: true;
 }
 
@@ -118,7 +127,17 @@ const ANSWERED_AT = [0, 1, 2, 3].map((k) =>
 function reach(which: 'first' | 'all'): DensityQuantity[] {
   const of =
     which === 'first' ? "the ask's first answering leaf" : "the last of the ask's answering leaves";
-  const draftScroll = which === 'first' ? ({ draft: 'max' } as const) : {};
+  // A partial ask (some answer matchers unresolved) may have a nearer answer
+  // unseen, so its first reach is an upper bound, and a missing answer unseen,
+  // so its all reach is a lower bound.
+  const partial: DensityQuantityWiden = {
+    of: 'ask',
+    field: 'partial',
+    when: true,
+    direction: which === 'first' ? 'down' : 'up',
+  };
+  const w = (extra: DensityQuantityWiden[] = []) => ({ widen: [partial, ...extra] });
+  const draftScroll = which === 'first' ? ({ ...w(), draft: 'max' } as const) : w();
   return [
     q(
       `ask.${which}.scrollPx`,
@@ -133,7 +152,8 @@ function reach(which: 'first' | 'all'): DensityQuantity[] {
       'gestures',
       'ask',
       `role.asks[].${which}.gestures`,
-      `Scroll gestures of 0.8 usable viewport heights to reach ${of}.`
+      `Scroll gestures of 0.8 usable viewport heights to reach ${of}.`,
+      w()
     ),
     q(
       `ask.${which}.interactions`,
@@ -141,28 +161,31 @@ function reach(which: 'first' | 'all'): DensityQuantity[] {
       'ask',
       `role.asks[].${which}.interactions`,
       `Disclosures, tabs, menus, truncation expansions and find-field focuses between the role and ${of}, read statically.`,
-      which === 'first' ? { draft: 'max' } : {}
+      which === 'first' ? { ...w(), draft: 'max' } : w()
     ),
     q(
       `ask.${which}.keystrokes`,
       'keystrokes',
       'ask',
       `role.asks[].${which}.keystrokes`,
-      `Characters typed into a find field to reach ${of} (the ask's declared findChars).`
+      `Characters typed into a find field to reach ${of} (the ask's declared findChars).`,
+      w()
     ),
     q(
       `ask.${which}.actions`,
       'actions',
       'ask',
       `role.asks[].${which}.actions`,
-      `Gestures plus interactions to reach ${of}.`
+      `Gestures plus interactions to reach ${of}.`,
+      w()
     ),
     q(
       `ask.${which}.foreignPx`,
       'px',
       'ask',
       `role.asks[].${which}.foreignPx`,
-      `Chrome height plus unclaimed block height above ${of} in its column.`
+      `Chrome height plus unclaimed block height above ${of} in its column; a lower bound while uncertain weight keeps blocks from reading as unclaimed.`,
+      w([{ of: 'role', field: 'foreignBasis', when: 'chrome-only', direction: 'up' }])
     ),
   ];
 }
@@ -300,7 +323,7 @@ export const DENSITY_QUANTITIES: readonly DensityQuantity[] = Object.freeze([
     'structure',
     'structure.pins.pinTopPx',
     'Height of the bars pinned to the top edge; a lower bound while any pin status is unknown.',
-    { widen: { field: 'unknown', when: 'nonzero', direction: 'up' } }
+    { widen: [{ field: 'unknown', when: 'nonzero', direction: 'up' }] }
   ),
   q(
     'structure.pinBottomPx',
@@ -308,7 +331,7 @@ export const DENSITY_QUANTITIES: readonly DensityQuantity[] = Object.freeze([
     'structure',
     'structure.pins.pinBottomPx',
     'Height of the bars pinned to the bottom edge; a lower bound while any pin status is unknown.',
-    { widen: { field: 'unknown', when: 'nonzero', direction: 'up' } }
+    { widen: [{ field: 'unknown', when: 'nonzero', direction: 'up' }] }
   ),
   q(
     'structure.usableHeightPx',
@@ -316,7 +339,7 @@ export const DENSITY_QUANTITIES: readonly DensityQuantity[] = Object.freeze([
     'structure',
     'structure.pins.usableHeightPx',
     'Viewport height less the pinned bars (Hu); an upper bound while any pin status is unknown.',
-    { widen: { field: 'unknown', when: 'nonzero', direction: 'down' } }
+    { widen: [{ field: 'unknown', when: 'nonzero', direction: 'down' }] }
   ),
   q('structure.pins', 'count', 'structure', 'structure.pins.items', 'Pinned items.'),
   q(
@@ -386,32 +409,46 @@ export const DENSITY_QUANTITIES: readonly DensityQuantity[] = Object.freeze([
     'px',
     'role',
     'role.meanScrollPx',
-    "The weight-weighted mean scroll to the role's answered asks; bounded from below while any ask's reach is unknown.",
-    { read: 'weighted-mean', draft: 'max' }
+    "The weight-weighted mean scroll to the role's answered asks; bounded from below while any ask's reach is unknown, and unbounded while an ask is partial.",
+    {
+      read: 'weighted-mean',
+      draft: 'max',
+      widen: [{ of: 'role', field: 'asks', when: 'some-partial', direction: 'both' }],
+    }
   ),
   q(
     'role.meanInteractions',
     'interactions',
     'role',
     'role.meanInteractions',
-    "The weight-weighted mean interactions to the role's answered asks; bounded from below while any ask's reach is unknown.",
-    { read: 'weighted-mean', draft: 'max' }
+    "The weight-weighted mean interactions to the role's answered asks; bounded from below while any ask's reach is unknown, and unbounded while an ask is partial.",
+    {
+      read: 'weighted-mean',
+      draft: 'max',
+      widen: [{ of: 'role', field: 'asks', when: 'some-partial', direction: 'both' }],
+    }
   ),
   q(
     'role.unweighted.meanScrollPx',
     'px',
     'role',
     'role.unweighted.meanScrollPx',
-    "The unweighted mean scroll to the role's answered asks; bounded from below while any ask's reach is unknown.",
-    { read: 'unweighted-mean' }
+    "The unweighted mean scroll to the role's answered asks; bounded from below while any ask's reach is unknown, and unbounded while an ask is partial.",
+    {
+      read: 'unweighted-mean',
+      widen: [{ of: 'role', field: 'asks', when: 'some-partial', direction: 'both' }],
+    }
   ),
   q(
     'role.unweighted.meanInteractions',
     'interactions',
     'role',
     'role.unweighted.meanInteractions',
-    "The unweighted mean interactions to the role's answered asks; bounded from below while any ask's reach is unknown.",
-    { read: 'unweighted-mean' }
+    "The unweighted mean interactions to the role's answered asks; bounded from below while any ask's reach is unknown, and unbounded while an ask is partial.",
+    {
+      read: 'unweighted-mean',
+      widen: [{ of: 'role', field: 'asks', when: 'some-partial', direction: 'both' }],
+    }
   ),
   q(
     'role.unresolvedWeight',
@@ -440,8 +477,11 @@ export const DENSITY_QUANTITIES: readonly DensityQuantity[] = Object.freeze([
     'count',
     'role',
     'unclaimed.total',
-    "Blocks on the first screen that answer none of the role's asks and displace answers below them.",
-    { draft: 'max' }
+    "Blocks on the first screen that answer none of the role's asks and displace answers below them; a lower bound while uncertain weight keeps the detector from firing.",
+    {
+      draft: 'max',
+      widen: [{ of: 'role', field: 'foreignBasis', when: 'chrome-only', direction: 'up' }],
+    }
   ),
   q(
     'role.possiblyUnclaimedBlocks',
@@ -512,7 +552,8 @@ export const DENSITY_QUANTITIES: readonly DensityQuantity[] = Object.freeze([
     'weight',
     'block',
     'blocks.list[].claimedWeight',
-    "The weight of the role's asks answered inside the block."
+    "The weight of the role's asks answered inside the block; a lower bound while uncertain weight could be answered inside it.",
+    { widen: [{ of: 'role', field: 'foreignBasis', when: 'chrome-only', direction: 'up' }] }
   ),
   q(
     'block.displacementPx',
@@ -520,7 +561,7 @@ export const DENSITY_QUANTITIES: readonly DensityQuantity[] = Object.freeze([
     'block',
     'blocks.list[].displacementPx',
     'The scroll the block costs the role per visit: Σ below w·min(pitch, scroll) / Σ w; a lower bound while reach is unknown.',
-    { widen: { field: 'displacementIsLowerBound', when: true, direction: 'up' }, draft: 'max' }
+    { widen: [{ field: 'displacementIsLowerBound', when: true, direction: 'up' }], draft: 'max' }
   ),
   q(
     'block.invariance.identical',
@@ -641,7 +682,7 @@ export const DENSITY_QUANTITIES: readonly DensityQuantity[] = Object.freeze([
     'repeats.list[].rowsPerScreen',
     'Rows that fit the usable viewport height (Hu / rowPitchPx); an upper bound while a pin status is unknown.',
     {
-      widen: { field: 'rowsPerScreenBasis', when: 'upper-bound', direction: 'down' },
+      widen: [{ field: 'rowsPerScreenBasis', when: 'upper-bound', direction: 'down' }],
       draft: 'min',
       compaction: true,
     }
@@ -824,10 +865,10 @@ export function densityQuantity(id: string): DensityQuantity | undefined {
 /** The `where` fields a quantity can be selected by, beyond the cell's role, viewport and fixture. */
 export function densityQuantityDims(
   quantity: DensityQuantity
-): Array<'rank' | 'kind' | 'block' | 'repeat'> {
-  const dims: Array<'rank' | 'kind' | 'block' | 'repeat'> = [];
+): Array<'ask' | 'rank' | 'kind' | 'block' | 'repeat'> {
+  const dims: Array<'ask' | 'rank' | 'kind' | 'block' | 'repeat'> = [];
   const p = quantity.path;
-  if (p.startsWith('role.asks[]')) dims.push('rank', 'kind');
+  if (p.startsWith('role.asks[]')) dims.push('ask', 'rank', 'kind');
   else if (p.includes('*') || p.startsWith('affordances.list[]')) dims.push('kind');
   if (p.startsWith('blocks.list[]')) dims.push('block');
   if (p.startsWith('repeats.list[]')) dims.push('repeat');
@@ -842,6 +883,13 @@ export interface DensityQuantityAt {
   block?: string;
   repeat?: string;
   affordance?: string;
+  /**
+   * The entries of a capped list past its cap: one unknown standing for them.
+   * A `where` naming a block, repeat or ask does not select it (a named entry
+   * past the cap matches nothing, which is unknown too); one selecting by kind
+   * or rank does, since the remainder may hold such entries.
+   */
+  remainder?: true;
 }
 
 /** An unknown value of a quantity: the code and why. */
@@ -915,29 +963,55 @@ function atOf(top: string, key: string, el: unknown, at: DensityQuantityAt): Den
   return at;
 }
 
+/** The records a widen may read its field from. */
+interface WidenScope {
+  parent: Record<string, unknown> | null;
+  ask: Record<string, unknown> | null;
+  role: Record<string, unknown> | null;
+}
+
+function widenHits(w: DensityQuantityWiden, scope: WidenScope): boolean {
+  const rec = scope[w.of ?? 'parent'];
+  if (!rec) return false;
+  const f = rec[w.field];
+  if (w.when === 'nonzero') return typeof f === 'number' && f > 0;
+  if (w.when === 'some-partial') {
+    return Array.isArray(f) && f.some((e) => asRecord(e)?.partial === true);
+  }
+  return f === w.when;
+}
+
 function widened(
   interval: DensityInterval,
-  widen: DensityQuantityWiden | undefined,
-  parent: Record<string, unknown> | null
+  widen: readonly DensityQuantityWiden[] | undefined,
+  scope: WidenScope
 ): DensityInterval {
-  if (!widen || !parent) return interval;
-  const f = parent[widen.field];
-  const hit = widen.when === 'nonzero' ? typeof f === 'number' && f > 0 : f === widen.when;
-  if (!hit) return interval;
-  return widen.direction === 'up' ? { lo: interval.lo, hi: null } : { lo: 0, hi: interval.hi };
+  let out = interval;
+  for (const w of widen ?? []) {
+    if (!widenHits(w, scope)) continue;
+    if (w.direction !== 'down') out = { lo: out.lo, hi: null };
+    if (w.direction !== 'up') out = { lo: 0, hi: out.hi };
+  }
+  return out;
 }
 
 function readLeaf(
   quantity: DensityQuantity,
   leaf: unknown,
-  parent: Record<string, unknown> | null
+  scope: WidenScope
+): DensityInterval | DensityQuantityUnknown {
+  const v = readRaw(quantity, leaf);
+  return 'unknown' in v ? v : widened(v, quantity.widen, scope);
+}
+
+function readRaw(
+  quantity: DensityQuantity,
+  leaf: unknown
 ): DensityInterval | DensityQuantityUnknown {
   const p = quantity.path;
   switch (quantity.read) {
     case 'value': {
-      if (typeof leaf === 'number' && Number.isFinite(leaf)) {
-        return widened({ lo: leaf, hi: leaf }, quantity.widen, parent);
-      }
+      if (typeof leaf === 'number' && Number.isFinite(leaf)) return { lo: leaf, hi: leaf };
       if (leaf === null) return missing(p, 'the report gives no value (null)');
       return { unknown: 'not_reported', reason: `${p}: the report holds no number here` };
     }
@@ -955,8 +1029,16 @@ function readLeaf(
       const excluded = asRecord(o?.excluded);
       if (!o || !over || !excluded) return missing(p, 'the report holds no mean here');
       const by = quantity.read === 'weighted-mean' ? 'weight' : 'asks';
-      const wOver = Number(over[by]);
-      const wExcluded = Number(excluded[by]);
+      const wOver = over[by];
+      const wExcluded = excluded[by];
+      if (
+        typeof wOver !== 'number' ||
+        !Number.isFinite(wOver) ||
+        typeof wExcluded !== 'number' ||
+        !Number.isFinite(wExcluded)
+      ) {
+        return missing(p, 'the mean does not say what it was taken over');
+      }
       const value = typeof o.value === 'number' ? o.value : null;
       if (!(wExcluded > 0)) {
         return value === null ? missing(p, 'no ask has a known value') : { lo: value, hi: value };
@@ -976,9 +1058,9 @@ function readLeaf(
 
 /**
  * Every value of `quantity` in `report`. A capped list that was truncated adds
- * one unknown value, which no `where` naming a block, repeat or ask selects,
- * so that a rule over all of a list's entries is never passed on the shown
- * ones alone. A section the report does not carry (no targets: no role) is
+ * one unknown value (`at.remainder`), so that a rule over all of a list's
+ * entries — or over those of one kind — is never passed on the shown ones
+ * alone. A section the report does not carry (no targets: no role) is
  * one unknown value.
  */
 export function densityQuantityValues(
@@ -988,19 +1070,21 @@ export function densityQuantityValues(
   const segs = segments(quantity.path);
   const top = segs[0].mode === 'any-key' ? '' : segs[0].key;
   const out: DensityQuantityValue[] = [];
+  const role = asRecord((report as unknown as Record<string, unknown>).role);
   const walk = (
     node: unknown,
     i: number,
     at: DensityQuantityAt,
     parent: Record<string, unknown> | null,
-    where: string
+    where: string,
+    ask: Record<string, unknown> | null = null
   ): void => {
     if (isUnknownQuantity(node)) {
       out.push({ at, value: { unknown: node.unknown, reason: `${where}: ${node.reason}` } });
       return;
     }
     if (i === segs.length) {
-      out.push({ at, value: readLeaf(quantity, node, parent) });
+      out.push({ at, value: readLeaf(quantity, node, { parent, ask, role }) });
       return;
     }
     if (node === undefined || node === null) {
@@ -1021,14 +1105,14 @@ export function densityQuantityValues(
         return;
       }
       for (const [k, v] of Object.entries(rec)) {
-        walk(v, i + 1, { ...at, kind: k }, rec, `${where}.${k}`);
+        walk(v, i + 1, { ...at, kind: k }, rec, `${where}.${k}`, ask);
       }
       return;
     }
     const child = rec ? rec[seg.key] : undefined;
     const here = where === '' ? seg.key : `${where}.${seg.key}`;
     if (seg.mode === 'key') {
-      walk(child, i + 1, at, rec, here);
+      walk(child, i + 1, at, rec, here, ask);
       return;
     }
     if (!Array.isArray(child)) {
@@ -1043,15 +1127,22 @@ export function densityQuantityValues(
         out.push({ at, value: missing(here, `holds no entry k=${seg.k}`) });
         return;
       }
-      walk(el, i + 1, at, asRecord(el), `${here}[k=${seg.k}]`);
+      walk(el, i + 1, at, asRecord(el), `${here}[k=${seg.k}]`, ask);
       return;
     }
     child.forEach((el, n) =>
-      walk(el, i + 1, atOf(top, seg.key, el, at), asRecord(el), `${here}[${n}]`)
+      walk(
+        el,
+        i + 1,
+        atOf(top, seg.key, el, at),
+        asRecord(el),
+        `${here}[${n}]`,
+        seg.key === 'asks' ? asRecord(el) : ask
+      )
     );
     if (rec && rec.truncated === true) {
       out.push({
-        at,
+        at: { ...at, remainder: true },
         value: {
           unknown: 'input_missing',
           reason: `${here}: the list is capped at ${String(rec.shown)} of ${String(rec.total)}; the entries past the cap are not in the report`,

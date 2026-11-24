@@ -8,9 +8,12 @@
  * `unknown{input_missing}` when the interval straddles the limit (unresolved
  * asks widen an interval; they never decide it). A null limit is
  * `unknown{no_expectation}` — never a pass. A compaction rule (its quantity
- * shrinks the page) with neither floors nor a stated waiver is
- * `unknown{no_expectation}` and flagged `unbounded`. A declared matrix cell
- * with no capture is unknown. Each cell's results sit beside that cell's
+ * shrinks the page) is judged only when the budget states floors or a waiver
+ * of them; with neither it is `unknown{no_expectation}` and flagged
+ * `unbounded`. (Holding a compaction to the floors themselves is the planning
+ * half's: no generator goes under a floor.) A declared matrix cell with no
+ * capture, or one measured as unknown, is unknown — counted once even when no
+ * rule reaches it. Each cell's results sit beside that cell's
  * legibility bounds. The roll-up is three counts; nothing is combined into a
  * score, and the tool never supplies a limit (`--draft` writes null ones).
  *
@@ -125,6 +128,12 @@ function cellMatches(where: DensityBudgetWhere, cell: DensityCell | DensityBudge
 }
 
 function atMatches(where: DensityBudgetWhere, at: DensityQuantityAt): boolean {
+  if (at.remainder) {
+    // The entries past a list's cap: they may hold any kind or rank, and no
+    // named entry is known to be among them.
+    return where.ask === undefined && where.block === undefined && where.repeat === undefined;
+  }
+  if (where.ask !== undefined && at.ask !== where.ask) return false;
   if (where.rank !== undefined && at.rank !== where.rank) return false;
   if (where.kind !== undefined && at.kind !== where.kind) return false;
   if (where.block !== undefined && at.block !== where.block) return false;
@@ -154,7 +163,7 @@ export function densityBudgetProblems(budget: DensityBudget): DensityProblem[] {
       return;
     }
     const dims = densityQuantityDims(quantity);
-    for (const dim of ['rank', 'kind', 'block', 'repeat'] as const) {
+    for (const dim of ['ask', 'rank', 'kind', 'block', 'repeat'] as const) {
       if (rule.where[dim] !== undefined && !dims.includes(dim)) {
         problems.push({
           path: `${path}.where.${dim}`,
@@ -345,6 +354,10 @@ export function evaluateDensityBudget(
         .map((v) => judge(c.rule, v));
       results.push(resultOf(ctx, values, null));
     }
+    // A required cell that is not measured is unknown even when no rule
+    // reaches it: the budget requires it, so its absence is never clean.
+    const counts = countsOf(results);
+    if (required && observation?.status !== 'measured' && results.length === 0) counts.unknown++;
     const status: DensityBudgetCellReport['status'] =
       observation === null
         ? 'not-captured'
@@ -361,7 +374,7 @@ export function evaluateDensityBudget(
       bounds:
         observation !== null && observation.status === 'measured' ? observation.value.bounds : null,
       results,
-      counts: countsOf(results),
+      counts,
     });
   };
 
@@ -416,10 +429,10 @@ export function densityBudgetExitCode(counts: DensityBudgetCounts): 0 | 1 | 3 {
 
 function atKey(at: DensityQuantityAt): string {
   return [
-    at.rank !== undefined ? `rank=${at.rank}` : null,
+    at.ask !== undefined ? `ask=${at.ask}` : null,
     at.block !== undefined ? `block=${at.block}` : null,
     at.repeat !== undefined ? `repeat=${at.repeat}` : null,
-    at.kind !== undefined && at.rank === undefined ? `kind=${at.kind}` : null,
+    at.kind !== undefined && at.ask === undefined ? `kind=${at.kind}` : null,
   ]
     .filter((s): s is string => s !== null)
     .join(',');
@@ -435,7 +448,7 @@ export function draftDensityBudget(cells: readonly DensityBudgetInputCell[]): De
   const matrix: DensityBudgetCell[] = [];
   const ids = new Set<string>();
   for (const { cell, observation } of cells) {
-    if (cell.role === null) continue;
+    if (cell.role === null || observation.status !== 'measured') continue;
     if (
       !matrix.some(
         (m) =>
@@ -446,7 +459,6 @@ export function draftDensityBudget(cells: readonly DensityBudgetInputCell[]): De
     ) {
       matrix.push({ role: cell.role, viewport: { ...cell.viewport }, fixture: cell.fixture });
     }
-    if (observation.status !== 'measured') continue;
     for (const quantity of DENSITY_QUANTITIES) {
       if (quantity.draft === undefined) continue;
       for (const v of densityQuantityValues(observation.value, quantity)) {
@@ -454,15 +466,15 @@ export function draftDensityBudget(cells: readonly DensityBudgetInputCell[]): De
         // A value no where can select (a truncated list's remainder) is not a rule.
         if (dims.includes('block') && v.at.block === undefined) continue;
         if (dims.includes('repeat') && v.at.repeat === undefined) continue;
-        if (dims.includes('rank') && v.at.rank === undefined) continue;
+        if (dims.includes('ask') && v.at.ask === undefined) continue;
         const where: DensityBudgetWhere = {
           role: cell.role,
           viewport: { ...cell.viewport },
           ...(cell.fixture !== null ? { fixture: cell.fixture } : {}),
-          ...(v.at.rank !== undefined ? { rank: v.at.rank } : {}),
+          ...(v.at.ask !== undefined ? { ask: v.at.ask } : {}),
           ...(v.at.block !== undefined ? { block: v.at.block } : {}),
           ...(v.at.repeat !== undefined ? { repeat: v.at.repeat } : {}),
-          ...(v.at.kind !== undefined && dims.includes('kind') && v.at.rank === undefined
+          ...(v.at.kind !== undefined && dims.includes('kind') && v.at.ask === undefined
             ? { kind: v.at.kind }
             : {}),
         };

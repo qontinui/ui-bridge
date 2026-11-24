@@ -191,8 +191,10 @@ describe('density budget: the matrix', () => {
   it('each result sits beside its cell bounds', () => {
     const b = budget({ rules: [{ id: 'r', quantity: 'bounds.fontPx.min', min: 10 }] });
     const cell = evaluateDensityBudget(b, [cellOf(measurePageTargets())]).cells[0];
-    expect(cell.bounds).not.toBeNull();
+    // The cell's bounds are the measured report's own.
+    expect(cell.bounds!.fontPx).toMatchObject({ min: 13, of: 4 });
     expect(cell.results[0].measured).toEqual({ lo: 13, hi: 13 });
+    expect(cell.results[0].result).toBe('pass');
   });
 
   it('a rule no cell matches is unknown, never silently dropped', () => {
@@ -372,6 +374,21 @@ describe('density lint', () => {
     expect(densityLintExitCode(report)).toBe(0);
   });
 
+  it('a quote is found within one paragraph or item, and only on word boundaries', () => {
+    const report = lintDensityTargets(
+      targets([
+        // Spans two paragraphs of the profile.
+        ['audience_profile/synthetic@1', 'every morning. They rarely read the help. They compare'],
+        // Sits inside a word ("Buyers" holds "uyers").
+        ['audience_profile/synthetic@1', 'uyers check their open orders'],
+        // A whole-word piece of one sentence.
+        ['audience_profile/synthetic@1', 'They rarely read the help.'],
+      ]),
+      PROFILE
+    );
+    expect(report.asks.map((a) => a.status)).toEqual(['missing', 'missing', 'found']);
+  });
+
   it('an ask citing another document is not checked against this text, and is never found', () => {
     const report = lintDensityTargets(
       targets([['audience_profile/other@2', 'Buyers check their open orders every morning.']]),
@@ -395,5 +412,159 @@ describe('density lint', () => {
     );
     expect(stale.review).toBe('stale');
     expect(stale.next).toEqual(['review-targets']);
+  });
+});
+
+describe('density budget: a value that is only a bound is never judged as a point', () => {
+  it('the unclaimed-block count is a lower bound while weight is uncertain, so max 0 is unknown', () => {
+    const rule = { id: 'none', quantity: 'role.unclaimedBlocks', max: 0 };
+    const capture = (t: DensityTargets) => {
+      const c = measurePageCapture({ blocks: ['promo', 'orders'] }, t);
+      return {
+        cell: c.cell,
+        observation: measureDensity(c, {
+          producer: DENSITY_TEST_PRODUCER,
+          targets: t,
+          evaluatedAt: '2026-11-24T10:00:00.000Z',
+        }),
+      };
+    };
+    const uncertain = evaluateDensityBudget(budget({ rules: [rule] }), [capture(UNRESOLVED)])
+      .cells[0].results[0];
+    expect(uncertain.measured).toEqual({ lo: 0, hi: null });
+    expect(uncertain.result).toBe('unknown');
+    // With every ask resolved the promo block is known unclaimed: the rule fails.
+    const known = evaluateDensityBudget(budget({ rules: [rule] }), [capture(measurePageTargets())])
+      .cells[0].results[0];
+    expect(known.measured).toEqual({ lo: 1, hi: 1 });
+    expect(known.result).toBe('fail');
+  });
+
+  it('a partial ask bounds its first reach from above and its all reach from below', () => {
+    const t = measurePageTargets([
+      {
+        id: 'B6',
+        rank: 6,
+        weight: 1,
+        kind: 'state',
+        answer: [{ idPrefix: 'app.orders.row' }, { idPrefix: 'app.missing.' }],
+        need: 'all',
+      },
+    ]);
+    const b = budget({
+      rules: [
+        { id: 'first', quantity: 'ask.first.scrollPx', where: { ask: 'B6' }, min: 1 },
+        { id: 'all', quantity: 'ask.all.scrollPx', where: { ask: 'B6' }, max: 10 },
+        { id: 'mean', quantity: 'role.meanScrollPx', max: 1000 },
+      ],
+    });
+    const byRule = Object.fromEntries(
+      evaluateDensityBudget(b, [cellOf(t)]).cells[0].results.map((r) => [r.rule, r])
+    );
+    // The rows sit at scroll 0; an unseen nearer answer can only lower the
+    // first reach, an unseen missing one only raise the all reach.
+    expect(byRule.first.measured).toEqual({ lo: 0, hi: 0 });
+    expect(byRule.first.result).toBe('fail');
+    expect(byRule.all.measured).toEqual({ lo: 0, hi: null });
+    expect(byRule.all.result).toBe('unknown');
+    expect(byRule.mean.measured).toEqual({ lo: 0, hi: null });
+    expect(byRule.mean.result).toBe('unknown');
+  });
+
+  it('the entries past a capped list stand as one unknown that a where.kind still selects', () => {
+    const cell = cellOf(measurePageTargets());
+    if (cell.observation.status !== 'measured') throw new Error('expected measured');
+    const capped = {
+      ...cell.observation.value,
+      affordances: {
+        ...cell.observation.value.affordances,
+        shown: 1,
+        total: 2,
+        truncated: true,
+        list: [
+          {
+            kind: 'disclosure' as const,
+            rule: 'aria-expanded' as const,
+            id: 'app.more',
+            state: 'closed' as const,
+            controls: null,
+            repeat: null,
+            recoverable: null,
+            hides: { items: 0, values: 0, chars: 0 },
+          },
+        ],
+      },
+    };
+    const b = budget({
+      rules: [
+        { id: 'k', quantity: 'affordance.hidesChars', where: { kind: 'disclosure' }, max: 10 },
+      ],
+    });
+    const r = evaluateDensityBudget(b, [
+      { cell: cell.cell, observation: { ...cell.observation, value: capped } },
+    ]).cells[0].results[0];
+    expect(r.values.list.map((v) => [v.at, v.result])).toEqual([
+      [{ affordance: 'app.more', kind: 'disclosure' }, 'pass'],
+      [{ remainder: true }, 'unknown'],
+    ]);
+    expect(r.result).toBe('unknown');
+  });
+
+  it('a required matrix cell no rule reaches still counts one unknown', () => {
+    const b = budget({
+      matrix: [{ role: 'buyer', viewport: { width: 360, height: 740 } }],
+      rules: [
+        {
+          id: 'desktop',
+          quantity: 'cell.items',
+          where: { viewport: { width: 1280, height: 800 } },
+          min: 1,
+        },
+      ],
+    });
+    const report = evaluateDensityBudget(b, [cellOf(measurePageTargets())]);
+    expect(report.cells.map((c) => [c.status, c.results.length, c.counts])).toEqual([
+      ['measured', 1, { pass: 1, fail: 0, unknown: 0 }],
+      ['not-captured', 0, { pass: 0, fail: 0, unknown: 1 }],
+    ]);
+    expect(report.counts).toEqual({ pass: 1, fail: 0, unknown: 1 });
+    expect(densityBudgetExitCode(report.counts)).toBe(3);
+  });
+
+  it('asks that share a rank draft one rule each, selected by ask id', () => {
+    const t = measurePageTargets([
+      { id: 'B7', rank: 1, weight: 1, kind: 'state', answer: { ids: ['app.help.p'] } },
+    ]);
+    const draft = draftDensityBudget([cellOf(t)]);
+    const rules = draft.rules.filter((r) => r.quantity === 'ask.first.scrollPx');
+    expect(rules.map((r) => [r.id, r.where.ask, r.where.rank])).toEqual([
+      ['ask.first.scrollPx@buyer@1280x800#ask=B1', 'B1', undefined],
+      ['ask.first.scrollPx@buyer@1280x800#ask=B2', 'B2', undefined],
+      ['ask.first.scrollPx@buyer@1280x800#ask=B3', 'B3', undefined],
+      ['ask.first.scrollPx@buyer@1280x800#ask=B7', 'B7', undefined],
+    ]);
+    // B3 is unanswered, so its reach is unknown and carries no current value.
+    expect(rules.map((r) => r.current)).toEqual([
+      { lo: 0, hi: 0 },
+      { lo: 124, hi: 124 },
+      null,
+      { lo: 124, hi: 124 },
+    ]);
+  });
+
+  it('a cell measured as unknown drafts no matrix cell and no rule', () => {
+    const unknownCell: DensityBudgetInputCell = {
+      cell: { role: 'buyer', viewport: { width: 0, height: 0 }, fixture: null },
+      observation: {
+        status: 'unknown',
+        unknown: { code: 'input_missing', detail: 'no viewport block' },
+      } as DensityBudgetInputCell['observation'],
+    };
+    const draft = draftDensityBudget([unknownCell]);
+    expect(draft.matrix).toEqual([]);
+    expect(draft.rules).toEqual([]);
+    expect(parseDensityBudget(JSON.parse(JSON.stringify(densityBudgetDocument(draft)))).ok).toBe(
+      true
+    );
   });
 });

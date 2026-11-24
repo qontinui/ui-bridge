@@ -1227,7 +1227,8 @@ export interface DensityBudgetCell {
 
 /**
  * Where a rule applies. Every given field must hold: `role`, `viewport` and
- * `fixture` select cells; `rank` an ask; `kind` the key a quantity is read
+ * `fixture` select cells; `ask` an ask by id, `rank` the asks of a rank (ranks
+ * need not be unique); `kind` the key a quantity is read
  * under (a ledger kind, an affordance kind, a basis) or an ask's kind; `block`
  * and `repeat` one block or repeat by id.
  */
@@ -1235,6 +1236,7 @@ export interface DensityBudgetWhere {
   role?: string;
   viewport?: { width: number; height: number };
   fixture?: string;
+  ask?: string;
   rank?: number;
   kind?: string;
   block?: string;
@@ -1293,7 +1295,16 @@ function readViewport(r: Reader, value: unknown, path: string): { width: number;
   };
 }
 
-const WHERE_KEYS = ['role', 'viewport', 'fixture', 'rank', 'kind', 'block', 'repeat'] as const;
+const WHERE_KEYS = [
+  'role',
+  'viewport',
+  'fixture',
+  'ask',
+  'rank',
+  'kind',
+  'block',
+  'repeat',
+] as const;
 
 function readWhere(r: Reader, value: unknown, path: string): DensityBudgetWhere {
   const o = r.object(value, path, [], WHERE_KEYS);
@@ -1302,6 +1313,7 @@ function readWhere(r: Reader, value: unknown, path: string): DensityBudgetWhere 
   if ('role' in o) w.role = r.string(o.role, `${path}.role`, { nonEmpty: true });
   if ('viewport' in o) w.viewport = readViewport(r, o.viewport, `${path}.viewport`);
   if ('fixture' in o) w.fixture = r.string(o.fixture, `${path}.fixture`, { nonEmpty: true });
+  if ('ask' in o) w.ask = r.string(o.ask, `${path}.ask`, { nonEmpty: true });
   if ('rank' in o) w.rank = r.number(o.rank, `${path}.rank`, { integer: true, min: 1 });
   if ('kind' in o) w.kind = r.string(o.kind, `${path}.kind`, { nonEmpty: true });
   if ('block' in o) w.block = r.string(o.block, `${path}.block`, { nonEmpty: true });

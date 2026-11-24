@@ -10,7 +10,8 @@
  * counts and `next[]`. Exit 0 when every result passes, 1 when any fails, 3
  * when the only non-passes are unknowns (or nothing was judged), 2 on a usage
  * error. `--draft` writes a budget whose rules hold the current values and null
- * limits — the tool never supplies a limit — and exits 0.
+ * limits — the tool never supplies a limit — and exits 0, or 3 when a cell
+ * answered unknown (nothing is drafted for it) or nothing was drafted at all.
  *
  * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change (Phase 6).
  */
@@ -195,19 +196,30 @@ export async function runDensityAssert(
       args.draft,
       `${JSON.stringify(densityBudgetDocument(draft), null, 2)}\n`
     );
+    // A cell that answered unknown drafts nothing: the draft then misses it,
+    // and says so (exit 3, `capture`) rather than reading complete.
+    const unmeasured = measured.report.cells.filter(
+      (c) => c.observation.status !== 'measured'
+    ).length;
+    const complete = unmeasured === 0 && draft.rules.length > 0;
     onStep('print');
     io.stdout(
       `${JSON.stringify(
         {
           command: 'assert',
-          draft: { path: args.draft, rules: draft.rules.length, cells: draft.matrix.length },
-          next: ['set-limit'],
+          draft: {
+            path: args.draft,
+            rules: draft.rules.length,
+            cells: draft.matrix.length,
+            unmeasuredCells: unmeasured,
+          },
+          next: complete ? ['set-limit'] : ['capture', 'set-limit'],
         },
         null,
         2
       )}\n`
     );
-    return 0;
+    return complete ? 0 : 3;
   }
   if (budget === null) throw new DensityCliArgError('assert: --budget or --draft is required');
   onStep('evaluate');

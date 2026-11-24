@@ -67,6 +67,17 @@ const UNIT_START = /^\s*(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>\s?)/;
  * no letter (a rule, a number) is not a sentence.
  */
 export function densityProfileSentences(text: string): string[] {
+  const sentences: string[] = [];
+  for (const unit of profileUnits(text)) {
+    for (const piece of unit.split(/(?<=[.!?])\s+/)) {
+      if (/\p{L}/u.test(piece)) sentences.push(piece);
+    }
+  }
+  return sentences;
+}
+
+/** The profile's units (paragraphs, headings, list items, quoted lines), markers dropped, collapsed. */
+function profileUnits(text: string): string[] {
   const units: string[] = [];
   let current: string[] = [];
   const flush = () => {
@@ -87,13 +98,21 @@ export function densityProfileSentences(text: string): string[] {
     current.push(line);
   }
   flush();
-  const sentences: string[] = [];
-  for (const unit of units) {
-    for (const piece of collapse(unit).split(/(?<=[.!?])\s+/)) {
-      if (/\p{L}/u.test(piece)) sentences.push(piece);
-    }
+  return units.map(collapse);
+}
+
+const WORD = /[\p{L}\p{N}]/u;
+
+/** Whether `unit` holds `quote` with no letter or digit glued to either end. */
+function holds(unit: string, quote: string): boolean {
+  for (let at = unit.indexOf(quote); at >= 0; at = unit.indexOf(quote, at + 1)) {
+    const before = at > 0 ? unit[at - 1] : '';
+    const after = unit[at + quote.length] ?? '';
+    const gluedBefore = before !== '' && WORD.test(before) && WORD.test(quote[0]);
+    const gluedAfter = after !== '' && WORD.test(after) && WORD.test(quote[quote.length - 1]);
+    if (!gluedBefore && !gluedAfter) return true;
   }
-  return sentences;
+  return false;
 }
 
 /** Lint `targets` against the text of its audience profile. */
@@ -106,8 +125,8 @@ export function lintDensityTargets(
   const cap = options.cap ?? DENSITY_LINT_SENTENCE_CAP;
   const sentences = densityProfileSentences(profileText);
   // Quotes are looked for in each unit's collapsed text, so a quote may span
-  // a sentence boundary but not a paragraph.
-  const haystack = collapse(sentences.join(' '));
+  // a sentence boundary but not a paragraph, a heading or a list item.
+  const units = profileUnits(profileText);
   const asks: DensityLintAsk[] = [];
   const quotes: string[] = [];
   for (const role of targets.roles) {
@@ -115,7 +134,7 @@ export function lintDensityTargets(
       const quote = collapse(ask.source.quote);
       let status: DensityQuoteStatus;
       if (ask.source.doc !== doc) status = 'other-doc';
-      else if (quote !== '' && haystack.includes(quote)) {
+      else if (quote !== '' && units.some((u) => holds(u, quote))) {
         status = 'found';
         quotes.push(quote);
       } else status = 'missing';
