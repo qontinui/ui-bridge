@@ -244,8 +244,9 @@ describe('applyCanonicalFindFilter · unit semantics', () => {
  * The filter used to judge a live node by `offsetParent !== null ||
  * position === 'fixed'`, a fifth `visible` algorithm: an occluded or
  * off-screen element survived a visible-only find while the row it returned
- * said `visible: false`, and a `display:none` element inside a fixed container
- * passed. jsdom has no layout, `offsetParent` or `elementFromPoint`; all three
+ * said `visible: false`, and a `display:none` element that is itself
+ * `position: fixed` passed (its `offsetParent` is null, but the second clause
+ * read its own `position`). jsdom has no layout, `offsetParent` or `elementFromPoint`; all three
  * are stubbed as in `server/dom-fallback.visible.test.ts`. `offsetParent` is
  * set on every placed node, so the OLD check would have kept each of them.
  */
@@ -353,15 +354,16 @@ describe('include_hidden:false reads the canonical visibility verdict', () => {
       ).toEqual(['fixed', 'clear']);
     });
 
-    it('drops a display:none node inside a position:fixed parent (the old check kept it)', () => {
-      const parent = document.createElement('div');
-      parent.style.position = 'fixed';
-      place(parent, 0, 0, 300, 100);
-      const child = button('hidden-child');
-      child.style.position = 'fixed';
-      child.style.display = 'none';
-      place(child, 10, 10, 80, 24, parent);
-      expect(keptIds([{ id: 'hidden-child', element: child }])).toEqual([]);
+    it('drops a display:none node that is itself position:fixed (the old check kept it)', () => {
+      // No `place()`: a display:none node has no box and a null offsetParent,
+      // exactly as jsdom leaves it. The old check kept it through its second
+      // clause, the node's own `position: fixed`.
+      const hidden = button('hidden-fixed');
+      hidden.style.position = 'fixed';
+      hidden.style.display = 'none';
+      document.body.appendChild(hidden);
+      expect(hidden.offsetParent).toBeNull();
+      expect(keptIds([{ id: 'hidden-fixed', element: hidden }])).toEqual([]);
     });
 
     it('keeps a partially covered node (its canonical visible is true)', () => {
