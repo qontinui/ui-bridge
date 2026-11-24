@@ -323,9 +323,10 @@ describe('ToastCapture churn budget and re-read gate', () => {
 
     // A9c — A9b's quiet-start step with no reconcile between the removal and
     // the remount, so no prune can drop the budget first. The removal's own
-    // debounced scan still runs before the remount, so this pins the
-    // same-batch rule (a guard beside A16), not the warmth term; A9d is the
-    // test that decides on `isWarm` alone.
+    // debounced scan still runs before the remount, and by then the budget
+    // is also cold, so both the same-batch rule and warmth refuse here: this
+    // pins only their conjunction. A16 isolates the same-batch rule and A9d
+    // the warmth term.
     it('a remount after quiet starts fresh even when no reconcile ran in between', async () => {
       install({ pollInterval: 60_000 });
       const timer = addStatus('timer', 'r0');

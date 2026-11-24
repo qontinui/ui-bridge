@@ -683,9 +683,10 @@ export class ToastCapture {
       // own observer), so later scans re-read it only when it mutates, and an
       // in-place fill — a characterData change the document observer never
       // sees — reaches the poll's parked step. The cost moves from a clone
-      // per scan to the parked step's per-poll visibility and redaction check
-      // for each such element (e.g. a permanently empty role="alert" form
-      // placeholder), which is bounded by the number of visible empty matches.
+      // per scan to the parked step's visibility and redaction check, paid on
+      // every pass (each poll, each public read and each scan) for every
+      // connected element parked empty (e.g. a permanently empty role="alert"
+      // form placeholder), including one that has since been hidden.
       const message = extractMessage(el);
       if (!message) {
         this.park(el, '');

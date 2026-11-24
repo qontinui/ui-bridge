@@ -25,11 +25,13 @@
  * A key holds a small list of entries, one per chain of nodes, so a churner's
  * replacement chain inherits from its own vanished predecessor even while a
  * static sibling holds the same key. "The same mutation batch" is the scan's
- * debounce window (every mutation before the `setTimeout(0)` scan runs), and
- * within one window a new node takes the FIRST warm vanished entry in scan
- * (document) order: an unrelated new node on the key sighted before the
- * churner's own replacement takes the churner's budget, and the replacement
- * starts fresh. That is an accepted edge of the batch heuristic.
+ * debounce window (every mutation before the `setTimeout(0)` scan runs).
+ * Within one window the first new node the scan sights on a key (scan order:
+ * document order, or per selector on the fallback path) takes the first warm
+ * vanished entry in the key's registration order: an unrelated new node on
+ * the key sighted before the churner's own replacement takes the churner's
+ * budget, and the replacement starts fresh. That is an accepted edge of the
+ * batch heuristic.
  *
  * The admit/suppress/park decision stays in `ToastCapture.admitCapture`; this
  * module only decides WHICH budget object an element reads.
