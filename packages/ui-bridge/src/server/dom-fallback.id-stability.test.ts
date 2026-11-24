@@ -92,7 +92,7 @@ const CANONICAL_LABELS = [
   'Subscribe', // old chain: '' (it ignored a wrapping <label>)
   'Email address',
   'Print page',
-  '', // old chain: 'Search docs' (accname gives a placeholder no name here; no derived rung)
+  'Search docs', // the placeholder rung (nameSource 'placeholder'); the old chain gave the same
   'Upload avatar', // old chain: '' (it ignored <img alt>)
   'Send this message to every member of the team now',
   'trash', // old chain: '' (the derived icon-token rung, nameSource 'derived')

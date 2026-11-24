@@ -140,7 +140,7 @@ export interface ElementState {
   role?: string;
   /**
    * Computed accessible name (aria-label > aria-labelledby > associated label
-   * > title > text). §4.6 CONTENT-bearing — `Scrubbed<string>`: a raw DOM
+   * > title > text > a text-like input's placeholder > derived). §4.6 CONTENT-bearing — `Scrubbed<string>`: a raw DOM
    * string cannot be assigned here, only a value routed through the
    * `core/redaction` minters (`scrubContent`).
    */
@@ -2230,7 +2230,7 @@ export interface BridgeSnapshot {
     accessibleName?: Scrubbed<string>;
     /**
      * WHICH RUNG produced `accessibleName` — `'aria-label'`, `'aria-labelledby'`,
-     * `'label'`, `'title'`, `'text'`, `'derived'`, or `'none'`.
+     * `'label'`, `'title'`, `'placeholder'`, `'text'`, `'derived'`, or `'none'`.
      *
      * Always present. `'none'` is an explicit statement that the element has no
      * name, which is a finding the page owner should act on — before this field
