@@ -532,4 +532,22 @@ describe('ElementState clip reporting', () => {
     expect(st.visibilityReason).toBe('clipped');
     expect(st.clippedPct).toBe(100);
   });
+
+  it('(m) a fractional rect beside a snapped offsetWidth is not read as a transform', () => {
+    // Chrome snaps offsetWidth from the box edges: rect 100.7 wide, offsetWidth
+    // 100. Read as untransformed, the 5px border is excluded, so a sliver
+    // between the padding edge (x=95) and the border edge is clipped.
+    const registry = new UIBridgeRegistry();
+    const card = placeIn(document.body, 'fractional', 0, 0, 100.7, 100, {
+      style: { 'overflow-x': 'hidden', 'overflow-y': 'hidden' },
+    });
+    paddingBox(card, { width: 100, height: 100, clientLeft: 5, clientTop: 5 });
+    Object.defineProperty(card, 'offsetWidth', { value: 100, configurable: true });
+    const sliver = placeIn(card, 'sliver', 96, 20, 4, 4, { hittable: false });
+    registry.registerElement('sliver', sliver, { type: 'generic' });
+
+    const st = stateOf(registry, 'sliver');
+    expect(st.visibilityReason).toBe('clipped');
+    expect(st.clippedPct).toBe(100);
+  });
 });

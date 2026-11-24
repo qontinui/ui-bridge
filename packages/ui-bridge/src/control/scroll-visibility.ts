@@ -44,21 +44,56 @@ export function isVisibleInScrollContext(el: Element): boolean {
   // the intersection may still stick out of one of the wider clippers. An axis
   // a clipper leaves open is ±Infinity, which `axisOk` always accepts.
   //
-  // On an axis a clipper SCROLLS, the element must fit inside it: scrolling
-  // can bring the rest in. On an axis it cuts with `overflow: hidden` / `clip`,
-  // a partial cut (a child bleeding over a card's border, a truncated label)
-  // is final and no scroll changes it, so overlapping the clip region is as
-  // visible as it gets; an element entirely outside it stays not visible, and
-  // its scrollIntoView then fails honestly with NO_SCROLL_EFFECT.
+  // The question is "could a scroll reveal more". The element must fit inside
+  // a clipper on each axis that some scroll could still move toward the cut:
+  // `auto` / `scroll`, and `hidden` too, which `scrollIntoView` and script do
+  // scroll. Where no scroll can (a `clip` cut, paint containment, or a
+  // container with no scroll range left in the direction the element sticks
+  // out — a child bleeding over a card's border), overlapping the clip region
+  // is as visible as it gets. An element entirely outside it stays not
+  // visible; its scrollIntoView then moves nothing and fails with
+  // NO_SCROLL_EFFECT.
   const overlaps = (lo: number, hi: number, boxLo: number, boxHi: number): boolean =>
     hi > boxLo + TOLERANCE && lo < boxHi - TOLERANCE;
-  const axis = (scrolls: boolean, lo: number, hi: number, boxLo: number, boxHi: number) =>
-    scrolls ? axisOk(lo, hi, boxLo, boxHi) : overlaps(lo, hi, boxLo, boxHi);
-  return clipBoxOf(el).clippers.every(
-    (c) =>
-      axis(c.scrollsY, rect.top, rect.bottom, c.box.top, c.box.bottom) &&
-      axis(c.scrollsX, rect.left, rect.right, c.box.left, c.box.right)
-  );
+  const axis = (
+    container: boolean,
+    pos: number,
+    max: number,
+    lo: number,
+    hi: number,
+    boxLo: number,
+    boxHi: number
+  ): boolean => {
+    if (axisOk(lo, hi, boxLo, boxHi)) return true;
+    const reachBefore = container && lo < boxLo - TOLERANCE && pos > TOLERANCE;
+    const reachAfter = container && hi > boxHi + TOLERANCE && pos < max - TOLERANCE;
+    return !reachBefore && !reachAfter && overlaps(lo, hi, boxLo, boxHi);
+  };
+  return clipBoxOf(el).clippers.every((c) => {
+    const s = c.element;
+    const maxY = (s.scrollHeight || 0) - (s.clientHeight || 0);
+    const maxX = (s.scrollWidth || 0) - (s.clientWidth || 0);
+    return (
+      axis(
+        c.scrollContainerY,
+        s.scrollTop || 0,
+        maxY,
+        rect.top,
+        rect.bottom,
+        c.box.top,
+        c.box.bottom
+      ) &&
+      axis(
+        c.scrollContainerX,
+        s.scrollLeft || 0,
+        maxX,
+        rect.left,
+        rect.right,
+        c.box.left,
+        c.box.right
+      )
+    );
+  });
 }
 
 /** Every ancestor's scroll offsets plus the window's, as one comparable string. */

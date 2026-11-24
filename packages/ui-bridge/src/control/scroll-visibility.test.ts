@@ -128,7 +128,36 @@ describe('isVisibleInScrollContext — only a scrollable cut needs a scroll', ()
     const child = document.createElement('div');
     scroller.appendChild(child);
     rect(child, 100, 280, 300, 40);
+    // Content runs past the box, so there is scroll range toward the cut.
+    Object.defineProperty(scroller, 'scrollHeight', { value: 400, configurable: true });
     expect(isVisibleInScrollContext(child)).toBe(false);
+  });
+
+  it('a half-cut child of an overflow:hidden container with scroll range still needs a scroll', () => {
+    // `hidden` is a scroll container: scrollIntoView and script scroll it.
+    const box = document.createElement('div');
+    box.style.overflowX = 'hidden';
+    box.style.overflowY = 'hidden';
+    document.body.appendChild(box);
+    rect(box, 100, 100, 300, 200);
+    Object.defineProperty(box, 'scrollHeight', { value: 400, configurable: true });
+    const child = document.createElement('div');
+    box.appendChild(child);
+    rect(child, 100, 280, 300, 40);
+    expect(isVisibleInScrollContext(child)).toBe(false);
+  });
+
+  it('the same half-cut child under overflow:clip is already as visible as it gets', () => {
+    const box = document.createElement('div');
+    box.style.overflowX = 'clip';
+    box.style.overflowY = 'clip';
+    document.body.appendChild(box);
+    rect(box, 100, 100, 300, 200);
+    Object.defineProperty(box, 'scrollHeight', { value: 400, configurable: true });
+    const child = document.createElement('div');
+    box.appendChild(child);
+    rect(child, 100, 280, 300, 40);
+    expect(isVisibleInScrollContext(child)).toBe(true);
   });
 
   it('a propagating <body> is ignored, and a non-propagating one clips', () => {
