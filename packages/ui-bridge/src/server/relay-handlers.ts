@@ -2889,7 +2889,7 @@ export function createRelayHandlers(
     // to track the code; sharing one function is what fixes that.)
     //
     // The hit-test survives the trip because the page already ran it and
-    // stamped `occludedBy` / `occludedPct` onto each element's state, so this
+    // stamped `occludedBy` / `occludedPct` / `clippedPct` onto each element's state, so this
     // is a projection of a measurement, not a re-derivation of one.
     async visibility(
       params?: {
@@ -2937,6 +2937,8 @@ export function createRelayHandlers(
           state?: {
             occludedBy?: string;
             occludedPct?: number;
+            clippedPct?: number;
+            clipScrollable?: boolean;
             textContent?: string;
           };
         }>;
@@ -2948,6 +2950,10 @@ export function createRelayHandlers(
               label: el.label,
               occludedBy: el.state?.occludedBy,
               occludedPct: el.state?.occludedPct,
+              // Stamped by the page beside `occludedBy`, so the relay reads the
+              // page's clip measurement rather than re-deriving one.
+              clippedPct: el.state?.clippedPct,
+              clipScrollable: el.state?.clipScrollable,
               textContent: el.state?.textContent,
             })),
             modalContext: snapshot?.modalStack,

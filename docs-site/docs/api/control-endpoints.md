@@ -595,7 +595,7 @@ not tell you which one the user can actually read.
 
 | Field             | Type    | Default               | Meaning                                                                                                                                                                                                                                                                                        |
 | ----------------- | ------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `minRatio`        | number  | `0.02`                | Drop occlusions covering less than this fraction of the covered element. Filters hairline overlaps.                                                                                                                                                                                            |
+| `minRatio`        | number  | `0.02`                | Drop occlusions covering less than this fraction of the covered element, and clipped entries clipped less than it. Filters hairline overlaps.                                                                                                                                                  |
 | `includeExpected` | boolean | `false`               | Keep occlusions caused by a tracked modal. See [Expected overlays](#expected-overlays).                                                                                                                                                                                                        |
 | `recency`         | string  | relay cache TTL (5 s) | **Relay transport only.** How fresh the backing snapshot must be: `"any"` (accept any non-empty cache), `"current"` (always refetch), or a max age in ms. Omitted, it falls back to the relay's configured `cacheTtlMs`. Ignored by the in-page handler, which always reads the live registry. |
 
@@ -617,6 +617,15 @@ not tell you which one the user can actually read.
         "source": "hit-test"
       }
     ],
+    "clipped": [
+      {
+        "element": "button-gates-12",
+        "label": "Gates",
+        "text": "Gates",
+        "ratio": 1,
+        "scrollReachable": true
+      }
+    ],
     "elementCount": 184,
     "minRatio": 0.02,
     "includeExpected": false,
@@ -636,6 +645,34 @@ and so catches `clip-path`, transformed ancestors and scroll clipping that a
 bounding-box model cannot derive. The field is a union (`"geometry" | "hit-test"`)
 because a consumer merging these findings with `@qontinui/ui-bridge-auto`'s
 geometric z-order model needs to say which probe produced which entry.
+
+#### Clipped is not covered
+
+An element whose own paint is cut off by an ancestor's `overflow` — a nav item
+scrolled out of its sidebar, the tail of a `truncate`d label — is **not
+occluded**: nothing paints over it. The sample pass tells the two apart. A
+sample point outside the element's **clip box** (the padding box of every
+ancestor whose overflow applies to it, following the containing-block chain, so
+a `position: fixed` or escaping `absolute` element is not clipped by a scroller
+it does not belong to) counts as clipped and is never hit-tested or blamed.
+
+Clipped elements are listed in `clipped`, never in `occlusions`:
+
+| Field             | Meaning                                                                                                                                |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `element`         | Registry id of the clipped element.                                                                                                    |
+| `label`, `text`   | As for an occlusion entry.                                                                                                             |
+| `ratio`           | Fraction of the element's sample points clipped away, 0..1. Filtered by `minRatio`; worst first.                                       |
+| `scrollReachable` | `true` when every clipping ancestor is `auto`/`scroll` on the clipped axis (scroll to reveal it); `false` for a `hidden`/`clip` cut. |
+
+`clipped` never affects `verdict` or `hidesText`: a page whose only findings are
+clipped entries reads `clear`, with the list beside it. An element both partly
+clipped and partly covered appears in both lists; its `occlusions` ratio is
+measured over the in-clip sample points only.
+
+The same measurement is on each element's state: `visibilityReason: "clipped"`
+(with `visible: false`) when every sample is clipped, otherwise
+`clippedPct` (0-100) and `clipScrollable` beside `visible: true`.
 
 #### Verdicts
 

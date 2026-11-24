@@ -21,7 +21,7 @@
  *
  * The sweep is sourced entirely from the registry's `elementFromPoint`
  * hit-test (`state.occludedBy` / `occludedPct`, computed in
- * `computeVisibilityVerdict`, core/registry.ts).
+ * `computeVisibilityVerdict`, core/element-state.ts).
  *
  * That is deliberate, and not a reduced version of something better.
  * ui-bridge-auto's `computeVisibility` models stacking geometrically, but
@@ -38,17 +38,27 @@
  * ran it and stamped `occludedBy` / `occludedPct` onto each element's state —
  * a projection of a measurement, not a re-derivation of one.
  *
+ * ## Clipping is not occlusion
+ *
+ * The same sample pass separates two states: an ancestor's overflow CUT OFF
+ * the element (`state.clippedPct` / `clipScrollable`) and another element
+ * COVERS it (`occludedBy`). Clipped elements go to `clipped[]`, never to
+ * `occlusions[]`, and never move `verdict`: a scrolled sidebar nav or a
+ * `truncate`d label is the layout working, and listing it as "X occludes Y"
+ * made the sweep unable to say `clear` on any page with a scrolled nav.
+ *
  * ## §4.6 redaction disposition
  *
  * The response echoes `text`, which is the covered element's
  * `state.textContent`. That field is minted through `scrubContentByVerdict` in
- * `getElementState` (core/registry.ts), so a redacted element reaches this
+ * `getElementState` (core/element-state.ts), so a redacted element reaches this
  * module already scrubbed and no additional scrubbing happens — or is needed —
  * here. Echoing the text is the point: "something is covered" is not
  * actionable, "the string `Zone 8: qontinui-web` is covered" is.
  */
 
 import type {
+  VisibilityClippedEntry,
   VisibilityOcclusionEntry,
   VisibilityReport,
 } from './types';
@@ -66,6 +76,10 @@ export interface VisibilityElementInput {
   label?: string;
   occludedBy?: string;
   occludedPct?: number;
+  /** `state.clippedPct` — share of samples an ancestor's overflow cuts off, 0-100. */
+  clippedPct?: number;
+  /** `state.clipScrollable` — the clipped part can be scrolled into view. */
+  clipScrollable?: boolean;
   textContent?: string;
 }
 
@@ -88,7 +102,7 @@ export interface BuildVisibilityReportInput {
  * Identifiers by which a tracked modal can be recognised in an `occludedBy`
  * string.
  *
- * `occludedBy` is produced by `describeOccluder` (core/registry.ts) and is one
+ * `occludedBy` is produced by `describeOccluder` (core/element-state.ts) and is one
  * of: a ui-bridge registry id (when the occluder or an ancestor carries
  * `data-ui-bridge-id`), `tag#domId`, `tag.firstClass`, or a bare `tag`.
  * `ModalInfo.id` is the modal element's DOM id, its `data-testid`, or a
@@ -144,10 +158,29 @@ export function buildVisibilityReport(
     : new Set<string>();
 
   const occlusions: VisibilityOcclusionEntry[] = [];
+  const clipped: VisibilityClippedEntry[] = [];
   let expectedOverlaysFiltered = 0;
 
   for (const el of input.elements) {
-    if (!el?.occludedBy) continue;
+    if (!el) continue;
+    const text = typeof el.textContent === 'string' ? el.textContent.trim() : '';
+
+    // Clipping is recorded independently of covering: an element can be both
+    // partly cut off by its scroller and partly covered inside it.
+    if (typeof el.clippedPct === 'number' && el.clippedPct > 0) {
+      const clipRatio = el.clippedPct / 100;
+      if (clipRatio >= minRatio) {
+        clipped.push({
+          element: el.id,
+          label: el.label,
+          text: text || undefined,
+          ratio: clipRatio,
+          scrollReachable: el.clipScrollable === true,
+        });
+      }
+    }
+
+    if (!el.occludedBy) continue;
     const ratio = (el.occludedPct ?? 0) / 100;
     if (ratio < minRatio) continue;
 
@@ -160,7 +193,6 @@ export function buildVisibilityReport(
       continue;
     }
 
-    const text = typeof el.textContent === 'string' ? el.textContent.trim() : '';
     occlusions.push({
       element: el.id,
       label: el.label,
@@ -179,17 +211,21 @@ export function buildVisibilityReport(
     (a, b) => Number(b.hidesText) - Number(a.hidesText) || b.ratio - a.ratio
   );
 
+  // Worst first. Stable, so equal ratios keep the input (registry) order.
+  clipped.sort((a, b) => b.ratio - a.ratio);
+
   const elementCount = input.elements.length;
 
   return {
     occlusions,
+    clipped,
     elementCount,
     minRatio,
     includeExpected,
     expectedOverlayDetection: detectionAvailable ? 'modal-stack' : 'unavailable',
     expectedOverlaysFiltered,
     // An empty list from a registry with no elements is UNKNOWN, not
-    // "nothing is covered" — say which one this is.
+    // "nothing is covered" — say which one this is. `clipped` never moves it.
     verdict:
       elementCount === 0
         ? 'unknown_empty_registry'

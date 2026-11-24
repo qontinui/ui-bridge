@@ -617,8 +617,8 @@ export interface NativeBridgeSnapshot {
      * Shares the web SDK's vocabulary verbatim (`@qontinui/ui-bridge`
      * `VisibilityReason`) so native and web snapshots stay comparable — see
      * `NativeVisibilityReason` in `core/registry.ts` for why it is duplicated
-     * rather than imported, and why `'occluded'` is declared but never
-     * produced here.
+     * rather than imported, and why `'occluded'` and `'clipped'` are declared
+     * but never produced here.
      *
      * - `"hidden"` — `state.visible === false`; not on screen at all.
      * - `"off-screen"` — measured, but entirely outside the clip region
@@ -631,7 +631,7 @@ export interface NativeBridgeSnapshot {
      * ADDITIVE and optional: `visibility` keeps its three values, so no
      * existing consumer of that union has to change.
      */
-    visibilityReason?: 'hidden' | 'off-screen' | 'occluded' | 'no-layout';
+    visibilityReason?: 'hidden' | 'off-screen' | 'occluded' | 'clipped' | 'no-layout';
     /**
      * Pixel-space bounding box, runner-native `{x, y, w, h}` shape (see
      * {@link NativeElementBbox}). Projected from `state.layout` (logical dp)

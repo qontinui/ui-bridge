@@ -323,13 +323,20 @@ export interface ElementState {
   /** Whether this element is within the viewport bounds (separate from `visible` which also checks display/opacity) */
   inViewport?: boolean;
   /**
-   * Why `visible` is false, when it is. `visible` folds six different
+   * Why `visible` is false, when it is. `visible` folds seven different
    * causes together (zero-size, `display:none`, `visibility:hidden`,
-   * `opacity:0`, out-of-viewport, covered by another element) and a
-   * consumer reading the bare boolean cannot tell "scrolled away" from
-   * "a widget is on top of it" — which are opposite bugs.
+   * `opacity:0`, out-of-viewport, cut off by an ancestor's overflow,
+   * covered by another element) and a consumer reading the bare boolean
+   * cannot tell "scrolled away" from "a widget is on top of it" — which
+   * are opposite bugs.
+   *
+   * `clipped` — every sampled point lies outside the region the element's
+   * containing-block chain lets it paint into (a nav item scrolled out of
+   * its sidebar, text past a `truncate` parent). Nothing covers it, so no
+   * `occludedBy` accompanies it; `clipScrollable` says whether scrolling
+   * reveals it.
    */
-  visibilityReason?: 'hidden' | 'off-screen' | 'occluded' | 'no-layout';
+  visibilityReason?: 'hidden' | 'off-screen' | 'occluded' | 'clipped' | 'no-layout';
   /**
    * Identifier of the element painting on top of this one, when the
    * hit-test found anything covering it. The UI Bridge registry id where
@@ -342,8 +349,26 @@ export interface ElementState {
    * vanished.
    */
   occludedBy?: string;
-  /** Share of the sampled points another element owns, 0-100. */
+  /**
+   * Share of the sampled points another element owns, 0-100 — measured over
+   * the points inside the element's clip box only, so a partly clipped label
+   * is not reported as partly covered.
+   */
   occludedPct?: number;
+  /**
+   * Share of the sampled points an ancestor's overflow cuts off, 0-100.
+   * Present only when above 0. `100` pairs with `visibilityReason: 'clipped'`;
+   * below it the element stays `visible: true` (the tail of a truncated
+   * label). Clipping is never occlusion and names no occluder.
+   */
+  clippedPct?: number;
+  /**
+   * Whether every ancestor that clipped a sample is `auto`/`scroll` on the
+   * axis it clipped — i.e. the user can scroll the clipped part into view.
+   * `false` for an `overflow: hidden` / `clip` cut (truncated text). Present
+   * only alongside `clippedPct`.
+   */
+  clipScrollable?: boolean;
   /**
    * Laid-out content width vs. the visible box, in CSS pixels. When
    * `scrollWidth > clientWidth` the text is horizontally truncated —

@@ -110,6 +110,76 @@ describe('buildVisibilityReport — the sweep', () => {
   });
 });
 
+describe('buildVisibilityReport — clipping is not occlusion', () => {
+  const navItem = (over: Partial<VisibilityElementInput> = {}): VisibilityElementInput => ({
+    id: 'button-gates-12',
+    label: 'Gates',
+    clippedPct: 100,
+    clipScrollable: true,
+    textContent: 'Gates',
+    ...over,
+  });
+
+  it('lists a clipped element in clipped[], not occlusions[], and stays clear', () => {
+    const report = buildVisibilityReport({ elements: [navItem()] });
+    expect(report.occlusions).toEqual([]);
+    expect(report.clipped).toEqual([
+      {
+        element: 'button-gates-12',
+        label: 'Gates',
+        text: 'Gates',
+        ratio: 1,
+        scrollReachable: true,
+      },
+    ]);
+    // Informational only: a clipped-only page is clear.
+    expect(report.verdict).toBe('clear');
+  });
+
+  it('scrollReachable is false unless the clip is known scrollable', () => {
+    const report = buildVisibilityReport({
+      elements: [
+        navItem({ id: 'truncated', clippedPct: 33, clipScrollable: false }),
+        navItem({ id: 'unknown', clippedPct: 50, clipScrollable: undefined }),
+      ],
+    });
+    expect(report.clipped.map((c) => [c.element, c.scrollReachable])).toEqual([
+      ['unknown', false],
+      ['truncated', false],
+    ]);
+  });
+
+  it('filters clipped entries by minRatio like occlusions, worst first', () => {
+    const elements = [
+      navItem({ id: 'hairline', clippedPct: 1 }),
+      navItem({ id: 'third', clippedPct: 33 }),
+      navItem({ id: 'all', clippedPct: 100 }),
+    ];
+    expect(buildVisibilityReport({ elements }).clipped.map((c) => c.element)).toEqual([
+      'all',
+      'third',
+    ]);
+    expect(
+      buildVisibilityReport({ elements, minRatio: 0 }).clipped.map((c) => c.element)
+    ).toEqual(['all', 'third', 'hairline']);
+  });
+
+  it('an element both partly clipped and partly covered appears in each list', () => {
+    const report = buildVisibilityReport({
+      elements: [covered({ clippedPct: 33, clipScrollable: false })],
+    });
+    expect(report.verdict).toBe('occlusions_found');
+    expect(report.occlusions.map((o) => o.element)).toEqual(['zone-label']);
+    expect(report.clipped.map((c) => c.element)).toEqual(['zone-label']);
+    // `hidesText` is an occlusion property; clipping never sets it.
+    expect(report.clipped[0]).not.toHaveProperty('hidesText');
+  });
+
+  it('an element with no clip fields contributes nothing to clipped[]', () => {
+    expect(buildVisibilityReport({ elements: [covered()] }).clipped).toEqual([]);
+  });
+});
+
 describe('buildVisibilityReport — expected overlays', () => {
   it('marks an occluder that is a tracked modal, and drops it by default', () => {
     const report = buildVisibilityReport({
@@ -219,10 +289,12 @@ describe('buildVisibilityReport — the two surfaces agree', () => {
     const live = [
       { id: 'a', label: 'A', getState: () => ({ occludedBy: 'modal-0', occludedPct: 70, textContent: 'A' }) },
       { id: 'b', label: 'B', getState: () => ({ occludedBy: 'toolbar', occludedPct: 40, textContent: 'B' }) },
+      { id: 'c', label: 'C', getState: () => ({ clippedPct: 100, clipScrollable: true, textContent: 'C' }) },
     ];
     const snapshot = [
       { id: 'a', label: 'A', state: { occludedBy: 'modal-0', occludedPct: 70, textContent: 'A' } },
       { id: 'b', label: 'B', state: { occludedBy: 'toolbar', occludedPct: 40, textContent: 'B' } },
+      { id: 'c', label: 'C', state: { clippedPct: 100, clipScrollable: true, textContent: 'C' } },
     ];
     const ctx = modalContext('modal-0');
 
@@ -239,6 +311,8 @@ describe('buildVisibilityReport — the two surfaces agree', () => {
         label: el.label,
         occludedBy: el.state?.occludedBy,
         occludedPct: el.state?.occludedPct,
+        clippedPct: el.state?.clippedPct,
+        clipScrollable: el.state?.clipScrollable,
         textContent: el.state?.textContent,
       })),
       modalContext: ctx,
@@ -246,6 +320,7 @@ describe('buildVisibilityReport — the two surfaces agree', () => {
 
     expect(relay).toEqual(inPage);
     expect(inPage.occlusions.map((o) => o.element)).toEqual(['b']);
+    expect(inPage.clipped.map((c) => c.element)).toEqual(['c']);
     expect(inPage.expectedOverlaysFiltered).toBe(1);
   });
 

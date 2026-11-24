@@ -155,7 +155,11 @@ function readVisibility(state: Rec): DensityVisibility | null {
   if (state.visible !== false) return null;
   switch (state.visibilityReason) {
     // Scrolled away is still rendered: the fold, not visibility, says where it is.
+    // An element cut off by an ancestor's overflow (a scrolled nav, a `truncate`
+    // parent) is the same: it is laid out and painted, just not inside the box
+    // that shows it — nothing covers it.
     case 'off-screen':
+    case 'clipped':
       return 'rendered';
     case 'occluded':
     case 'hidden':

@@ -383,6 +383,8 @@ describe('captureDensityFromSnapshot', () => {
   it.each([
     [true, undefined, 'rendered'],
     [false, 'off-screen', 'rendered'],
+    // Cut off by an ancestor's overflow is still painted — nothing covers it.
+    [false, 'clipped', 'rendered'],
     [false, 'occluded', 'occluded'],
     [false, 'hidden', 'hidden'],
     [false, 'no-layout', 'no-layout'],
