@@ -213,18 +213,29 @@ describe('Phase 4 follow-ups: repeats', () => {
     expect(densityRepeats(capture(els), null).map((r) => r.id)).toEqual([]);
   });
 
-  it('a list of rows holding only a checkbox each is a checklist, not a form', () => {
-    const boxes: DensityTestElementSpec[] = [1, 2, 3].map((k) => ({
-      id: `app.todo.${k}`,
-      tag: 'input',
-      role: 'checkbox',
-      category: 'interactive',
-      xpath: `${MAIN}/ul/li[${k}]/input`,
-      rect: [0, 100 + 32 * (k - 1), 20, 20],
-      text: '',
-    }));
-    const reps = densityRepeats(capture(boxes), null);
-    expect(reps.map((r) => [r.id, r.rows, r.rowPitchPx])).toEqual([['repeat:app.todo.1', 3, 32]]);
+  it('three stacked containers where only two share a width are layout, not a list', () => {
+    const els: DensityTestElementSpec[] = [];
+    [1200, 1200, 800].forEach((w, i) => {
+      const k = i + 1;
+      const y = 100 + 300 * i;
+      els.push(
+        {
+          id: `app.lay.${k}`,
+          tag: 'div',
+          xpath: `${MAIN}/div/div[${k}]`,
+          rect: [0, y, w, 280],
+          text: `Part ${k}`,
+        },
+        {
+          id: `app.lay.${k}.title`,
+          tag: 'span',
+          xpath: `${MAIN}/div/div[${k}]/span`,
+          rect: [8, y + 8, 300, 20],
+          text: `Part ${k}`,
+        }
+      );
+    });
+    expect(densityRepeats(capture(els), null).map((r) => r.id)).toEqual([]);
   });
 
   /** A grid of `n` sibling cards, three per row, whose short last row is centred. */
@@ -523,7 +534,8 @@ describe('Phase 4 follow-ups: the affordances report', () => {
     };
     const parsed = parseDensityCapture(JSON.parse(JSON.stringify(old)));
     if (!parsed.ok) throw new Error(JSON.stringify(parsed));
-    const report = summarizeDensityAffordances(parsed.value, null);
+    // The measure door passes `[]` for a capture it read no repeats from.
+    const report = summarizeDensityAffordances(parsed.value, null, []);
     expect(report).toMatchObject({
       structureResolved: true,
       repeatKeysResolved: false,
