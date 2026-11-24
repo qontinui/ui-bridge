@@ -679,6 +679,43 @@ describe('affordances', () => {
     );
   });
 
+  it('the site footer links below a list are not its pager', () => {
+    const els: DensityTestElementSpec[] = [
+      { id: 'app', tag: 'div', xpath: '/html/body/div/div', rect: [0, 0, 1000, 800], text: '' },
+      ...[1, 2, 3, 4, 5].map(
+        (k): DensityTestElementSpec => ({
+          id: `row${k}`,
+          tag: 'a',
+          category: 'interactive',
+          xpath: `/html/body/div/div/ul/li[${k}]/a`,
+          rect: [0, 40 * k, 300, 30],
+          text: `Row ${k}`,
+        })
+      ),
+      {
+        id: 'about',
+        tag: 'a',
+        category: 'interactive',
+        xpath: '/html/body/div/div/footer/nav/a[1]',
+        rect: [0, 500, 80, 20],
+        text: 'About',
+      },
+      {
+        id: 'privacy',
+        tag: 'a',
+        category: 'interactive',
+        xpath: '/html/body/div/div/footer/nav/a[2]',
+        rect: [100, 500, 80, 20],
+        text: 'Privacy',
+      },
+    ];
+    const c = capture(els);
+    expect(densityRepeats(c, null).map((r) => [r.id, r.scope])).toEqual([
+      ['repeat:row1', 'ancestor'],
+    ]);
+    expect(densityAffordances(c, null).filter((a) => a.kind === 'pager')).toEqual([]);
+  });
+
   it('a select-all checkbox in a table header is not a filter', () => {
     const S = '/html/body/main/section';
     const els: DensityTestElementSpec[] = [
