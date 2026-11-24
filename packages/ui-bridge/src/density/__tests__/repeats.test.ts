@@ -751,7 +751,12 @@ describe('repeats', () => {
     expect(densityRepeats(c, null, { volume: 1 })[0].extentAtVolume).toEqual({ volume: 1, px: 36 });
     expect(densityRepeats(c, null, { volume: 2.5 })[0].extentAtVolume).toEqual({
       unknown: 'input_missing',
-      reason: 'the declared row volume is not a positive integer',
+      reason: 'the declared row volume is not a positive safe integer',
+    });
+    // A volume whose projection would not be a finite number is refused too.
+    expect(densityRepeats(c, null, { volume: 1e308 })[0].extentAtVolume).toEqual({
+      unknown: 'input_missing',
+      reason: 'the declared row volume is not a positive safe integer',
     });
   });
 
@@ -1148,6 +1153,37 @@ describe('repeats', () => {
     const c = capture(orderList(3));
     const bad = { ...c, items: c.items.map((i, n) => (n === 0 ? { ...i, cousinRowKey: 'x' } : i)) };
     expect(parseDensityCapture(JSON.parse(JSON.stringify(bad))).ok).toBe(false);
+  });
+
+  it('a row holding a redacted control leaf is not counted, never zero', () => {
+    // Rows nobody registered: link plus value spans (row 1: one value, rows
+    // 3 and 4: two, row 2: none and its link redacted).
+    const els: DensityTestElementSpec[] = [];
+    const valuesIn = [1, 0, 2, 2];
+    valuesIn.forEach((n, i) => {
+      const k = i + 1;
+      const y = 100 + 40 * i;
+      els.push({
+        id: `r${k}.a`,
+        tag: 'a',
+        category: 'interactive',
+        xpath: `/html/body/ul/li[${k}]/a`,
+        rect: [0, y, 200, 20],
+        text: `Item ${k}`,
+        redacted: k === 2,
+      });
+      for (let j = 1; j <= n; j++) {
+        els.push({
+          id: `r${k}.v${j}`,
+          tag: 'span',
+          xpath: `/html/body/ul/li[${k}]/span[${j}]`,
+          rect: [200 + 100 * j, y, 80, 20],
+          text: '12,50 €',
+        });
+      }
+    });
+    const [rep] = densityRepeats(capture(els), null);
+    expect([rep.rows, rep.valuesPerRow]).toEqual([4, 2]);
   });
 
   it('a hidden leaf in a row draws no line band', () => {
