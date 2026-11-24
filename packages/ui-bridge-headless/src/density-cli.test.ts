@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import {
   closeSync,
   existsSync,
@@ -31,7 +31,7 @@ import { parseDensityTargets } from './density/index';
  * Every id and text here is synthetic (plan D5). Every expected value is a
  * literal spelled in this file.
  *
- * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change, Phases 2 to 4.
+ * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change, Phases 2 to 6.
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -659,56 +659,7 @@ describe('runDensityCli, in process', () => {
   });
 });
 
-// Windows has no catchable SIGTERM (a kill is unconditional), so CI's Linux run is the one that counts.
-describe.skipIf(process.platform === 'win32')('ui-bridge-density interrupted', () => {
-  /** Spawn `measure` with the trace on; resolves once the run reaches `step`. */
-  function spawnTraced(args: string[], step: string) {
-    const child = spawn(process.execPath, [BIN, ...args], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, UI_BRIDGE_DENSITY_TRACE: '1' },
-    });
-    let stdout = '';
-    child.stdout.on('data', (c: Buffer) => {
-      stdout += c.toString('utf8');
-    });
-    // 'close', not 'exit': stdio is drained only by then.
-    const closed = new Promise<number | null>((r) => child.on('close', (code) => r(code)));
-    const reached = new Promise<void>((ready) => {
-      let stderr = '';
-      child.stderr.on('data', (c: Buffer) => {
-        stderr += c.toString('utf8');
-        if (stderr.includes(`ui-bridge-density: step ${step}\n`)) ready();
-      });
-    });
-    return { child, closed, reached, stdout: () => stdout };
-  }
-
-  it.each([
-    ['SIGTERM', 143],
-    ['SIGINT', 130],
-    ['SIGHUP', 129],
-  ] as const)(
-    '%s while reading the snapshot prints a typed verdict naming the step and exits %i',
-    async (signal, code) => {
-      // Standard input stays open, so the run parks at read-snapshot. The
-      // handlers are installed before the first step, which the trace names.
-      const run = spawnTraced(['measure', '--snapshot', '-', '--role', 'buyer'], 'read-snapshot');
-      await run.reached;
-      run.child.kill(signal);
-      expect(await run.closed).toBe(code);
-      expect(JSON.parse(run.stdout())).toEqual({
-        command: 'measure',
-        interrupted: { signal, step: 'read-snapshot' },
-      });
-    },
-    60_000
-  );
-
-  // The signal-after-answer arm (exit 0, the answer whole) is not pinned here:
-  // the run normally exits before a signal sent after its 'print' step lands,
-  // so such a test would pass whatever the handler does. It was observed on
-  // Linux against the built bin instead (PR body).
-});
+// The interruption of every verb is tested in density-cli.signal.test.ts.
 
 describe('ui-bridge-density usage', () => {
   it('an unknown flag is a usage error: exit 2, named on stderr, nothing on stdout', () => {

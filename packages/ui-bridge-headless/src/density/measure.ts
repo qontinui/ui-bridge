@@ -243,6 +243,8 @@ export interface DensityMeasureOptions {
   captures?: readonly DensityCapture[];
   /** Floors an answer is held to; without them availability does not read size. */
   floors?: DensityFloors | null;
+  /** The number of rows each list is judged at (the budget's `volume`); a repeat's extent is projected at it. */
+  volume?: number | null;
   /** The longest list the report prints (blocks, unclaimed blocks); the rest is counted. */
   cap?: number;
   evaluatedAt?: ObservationTime;
@@ -588,7 +590,10 @@ export function measureDensity(
 
   // ---- repeats, affordances, bounds ----
   const keyed = capture.repeatKeysResolved;
-  const repeats = keyed ? densityRepeats(capture, targets, { leaves, pins, blocks, classes }) : [];
+  const volume = options.volume ?? undefined;
+  const repeats = keyed
+    ? densityRepeats(capture, targets, { leaves, pins, blocks, classes, volume })
+    : [];
   const affordances = keyed
     ? densityAffordances(capture, targets, { leaves, blocks, repeats })
     : [];

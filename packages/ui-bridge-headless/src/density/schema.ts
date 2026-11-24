@@ -4,8 +4,9 @@
 
 /**
  * The density core's documents: `ui-bridge/density-capture@1` (one text-free
- * capture per cell) and `ui-bridge/density-targets@1` (the audience profile
- * made executable). Types, and the parsers that turn untrusted JSON into them.
+ * capture per cell), `ui-bridge/density-targets@1` (the audience profile
+ * made executable) and `ui-bridge/density-budget@1` (the limits a surface is
+ * held to). Types, and the parsers that turn untrusted JSON into them.
  *
  * A parser answers the typed value or the list of every problem it found, each
  * naming its JSON path (`$.roles[0].asks[2].weight`). An unknown key is a
@@ -14,7 +15,8 @@
  * change what the document says.
  *
  * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change
- * (Phase 1). The design section "Inputs" is the source of every field.
+ * (Phase 1; the budget, Phase 6). The design sections "Inputs" and "Budget
+ * half" are the source of every field.
  */
 
 import { isUnknownCode, type UnknownCode } from '../observation/observation';
@@ -28,6 +30,8 @@ import type { DensityShape } from './shape';
 export const DENSITY_CAPTURE_SCHEMA = 'ui-bridge/density-capture@1' as const;
 /** Schema id of a targets document. */
 export const DENSITY_TARGETS_SCHEMA = 'ui-bridge/density-targets@1' as const;
+/** Schema id of a budget document. */
+export const DENSITY_BUDGET_SCHEMA = 'ui-bridge/density-budget@1' as const;
 /** The producer id on every door that runs the density core (D-E). */
 export const DENSITY_PRODUCER_ID = 'sdk/density' as const;
 
@@ -1210,5 +1214,197 @@ export function parseDensityTargets(value: unknown): DensityParseResult<DensityT
     blocks,
     roles,
     review,
+  });
+}
+
+// ============================================================================
+// The budget (Phase 6)
+// ============================================================================
+
+/** One cell a budget requires: a role at a viewport, optionally with a data fixture. */
+export interface DensityBudgetCell {
+  role: string;
+  viewport: { width: number; height: number };
+  /** `null`: any fixture. */
+  fixture: string | null;
+}
+
+/**
+ * Where a rule applies. Every given field must hold: `role`, `viewport` and
+ * `fixture` select cells; `rank` an ask; `kind` the key a quantity is read
+ * under (a ledger kind, an affordance kind, a basis) or an ask's kind; `block`
+ * and `repeat` one block or repeat by id.
+ */
+export interface DensityBudgetWhere {
+  role?: string;
+  viewport?: { width: number; height: number };
+  fixture?: string;
+  rank?: number;
+  kind?: string;
+  block?: string;
+  repeat?: string;
+}
+
+/** A measured value as an interval; `hi: null` means no upper bound is known. */
+export interface DensityInterval {
+  lo: number;
+  hi: number | null;
+}
+
+/** One rule. Exactly one of `max` and `min` is given; `null` is a limit not yet set. */
+export interface DensityBudgetRule {
+  id: string;
+  /** An id of `DENSITY_QUANTITIES`. */
+  quantity: string;
+  where: DensityBudgetWhere;
+  bound: 'max' | 'min';
+  limit: number | null;
+  /** Where the limit came from (a clause, a document), when not the budget's own `source`. */
+  source: string | null;
+  /** The value a `--draft` measured, written for the author to read; never evaluated. */
+  current: DensityInterval | null;
+}
+
+/** The legibility floors a compaction is held to (the same shape `measure` holds answers to). */
+export interface DensityBudgetFloors {
+  fontPx: number;
+  lineHeightRatio: number;
+  targetPx: number;
+  rowPadPx: number;
+}
+
+export interface DensityBudget {
+  schema: typeof DENSITY_BUDGET_SCHEMA;
+  /** The tenant document the limits were copied from; `null` until one is named. */
+  source: string | null;
+  /** The cells the budget requires; a required cell with no capture is unknown. */
+  matrix: DensityBudgetCell[];
+  /** The legibility floors a compaction is held to, or `null` (then see `floorsWaived`). */
+  floors: DensityBudgetFloors | null;
+  /** Why the budget states no floors; `null` when it states them or says nothing. */
+  floorsWaived: string | null;
+  /** The number of rows each list is judged at; `null` when not declared. */
+  volume: number | null;
+  rules: DensityBudgetRule[];
+}
+
+function readViewport(r: Reader, value: unknown, path: string): { width: number; height: number } {
+  const v = r.object(value, path, ['width', 'height']);
+  if (!v) return { width: 0, height: 0 };
+  return {
+    width: r.number(v.width, `${path}.width`, { integer: true, min: 1 }),
+    height: r.number(v.height, `${path}.height`, { integer: true, min: 1 }),
+  };
+}
+
+const WHERE_KEYS = ['role', 'viewport', 'fixture', 'rank', 'kind', 'block', 'repeat'] as const;
+
+function readWhere(r: Reader, value: unknown, path: string): DensityBudgetWhere {
+  const o = r.object(value, path, [], WHERE_KEYS);
+  if (!o) return {};
+  const w: DensityBudgetWhere = {};
+  if ('role' in o) w.role = r.string(o.role, `${path}.role`, { nonEmpty: true });
+  if ('viewport' in o) w.viewport = readViewport(r, o.viewport, `${path}.viewport`);
+  if ('fixture' in o) w.fixture = r.string(o.fixture, `${path}.fixture`, { nonEmpty: true });
+  if ('rank' in o) w.rank = r.number(o.rank, `${path}.rank`, { integer: true, min: 1 });
+  if ('kind' in o) w.kind = r.string(o.kind, `${path}.kind`, { nonEmpty: true });
+  if ('block' in o) w.block = r.string(o.block, `${path}.block`, { nonEmpty: true });
+  if ('repeat' in o) w.repeat = r.string(o.repeat, `${path}.repeat`, { nonEmpty: true });
+  return w;
+}
+
+function readInterval(r: Reader, value: unknown, path: string): DensityInterval | null {
+  if (value === null) return null;
+  const o = r.object(value, path, ['lo', 'hi']);
+  if (!o) return null;
+  const lo = r.number(o.lo, `${path}.lo`);
+  const hi = r.numberOrNull(o.hi, `${path}.hi`);
+  if (hi !== null && hi < lo) r.fail(`${path}.hi`, 'must not be below lo');
+  return { lo, hi };
+}
+
+function readRule(r: Reader, value: unknown, path: string): DensityBudgetRule | null {
+  const o = r.object(value, path, ['id', 'quantity'], ['where', 'max', 'min', 'source', 'current']);
+  if (!o) return null;
+  const hasMax = 'max' in o;
+  const hasMin = 'min' in o;
+  if (hasMax === hasMin) r.fail(path, 'must give exactly one of max and min');
+  const bound: 'max' | 'min' = hasMin && !hasMax ? 'min' : 'max';
+  return {
+    id: r.string(o.id, `${path}.id`, { nonEmpty: true }),
+    quantity: r.string(o.quantity, `${path}.quantity`, { nonEmpty: true }),
+    where: 'where' in o ? readWhere(r, o.where, `${path}.where`) : {},
+    bound,
+    limit: bound in o ? r.numberOrNull(o[bound], `${path}.${bound}`) : null,
+    source: 'source' in o ? r.stringOrNull(o.source, `${path}.source`) : null,
+    current: 'current' in o ? readInterval(r, o.current, `${path}.current`) : null,
+  };
+}
+
+/**
+ * Parse a `ui-bridge/density-budget@1` document. Omitted optional fields take
+ * their stated defaults. Which quantities a rule may name is checked against
+ * the registry by `densityBudgetProblems` (`budget.ts`), not here.
+ */
+export function parseDensityBudget(value: unknown): DensityParseResult<DensityBudget> {
+  const r = new Reader();
+  const o = r.object(
+    value,
+    '$',
+    ['schema', 'source', 'matrix', 'rules'],
+    ['floors', 'floorsWaived', 'volume']
+  );
+  if (!o) return r.result(null as unknown as DensityBudget);
+  r.literal(o.schema, '$.schema', DENSITY_BUDGET_SCHEMA);
+
+  const matrix = r.array(o.matrix, '$.matrix', (v, p) => {
+    const c = r.object(v, p, ['role', 'viewport'], ['fixture']);
+    return {
+      role: c ? r.string(c.role, `${p}.role`, { nonEmpty: true }) : '',
+      viewport: c ? readViewport(r, c.viewport, `${p}.viewport`) : { width: 0, height: 0 },
+      fixture: c && 'fixture' in c ? r.stringOrNull(c.fixture, `${p}.fixture`) : null,
+    };
+  });
+  r.unique(
+    matrix,
+    '$.matrix',
+    (c) => JSON.stringify([c.role, c.viewport.width, c.viewport.height, c.fixture]),
+    'cell'
+  );
+
+  let floors: DensityBudgetFloors | null = null;
+  if ('floors' in o && o.floors !== null) {
+    const f = r.object(o.floors, '$.floors', ['fontPx', 'lineHeightRatio', 'targetPx', 'rowPadPx']);
+    if (f) {
+      floors = {
+        fontPx: r.number(f.fontPx, '$.floors.fontPx', { exclusiveMin: 0 }),
+        lineHeightRatio: r.number(f.lineHeightRatio, '$.floors.lineHeightRatio', {
+          exclusiveMin: 0,
+        }),
+        targetPx: r.number(f.targetPx, '$.floors.targetPx', { exclusiveMin: 0 }),
+        rowPadPx: r.number(f.rowPadPx, '$.floors.rowPadPx', { min: 0 }),
+      };
+    }
+  }
+  let floorsWaived: string | null = null;
+  if ('floorsWaived' in o && o.floorsWaived !== null) {
+    floorsWaived = r.string(o.floorsWaived, '$.floorsWaived');
+    if (floorsWaived.trim() === '') r.fail('$.floorsWaived', 'must state the reason');
+    if (floors !== null) r.fail('$.floorsWaived', 'is not taken with floors');
+  }
+
+  const rules = r
+    .array(o.rules, '$.rules', (v, p) => readRule(r, v, p))
+    .filter((x): x is DensityBudgetRule => x !== null);
+  r.unique(rules, '$.rules', (x) => x.id, 'rule id');
+
+  return r.result({
+    schema: DENSITY_BUDGET_SCHEMA,
+    source: r.stringOrNull(o.source, '$.source'),
+    matrix,
+    floors,
+    floorsWaived,
+    volume: 'volume' in o ? r.numberOrNull(o.volume, '$.volume', { integer: true, min: 1 }) : null,
+    rules,
   });
 }
