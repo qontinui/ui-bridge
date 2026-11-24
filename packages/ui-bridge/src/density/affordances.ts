@@ -20,6 +20,7 @@ import {
   densityDeclaresAnotherRepeat,
   densityInnermostRepeats,
   densityNavPrefix,
+  densitySameNav,
   isDensityChrome,
   isDensityHeaderToggle,
   densityNearestRepeats,
@@ -219,6 +220,17 @@ export function densityAffordances(
     }
     return null;
   };
+  /** The id of the nearest item (self or ancestor) with role `navigation`, or `unknown`. */
+  const navigationLandmarkOf = (item: DensityItem): string => {
+    const seen = new Set<string>();
+    let cur: DensityItem | undefined = item;
+    while (cur && !seen.has(cur.id)) {
+      if (cur.role === 'navigation') return cur.id;
+      seen.add(cur.id);
+      cur = cur.parent === null ? undefined : byId.get(cur.parent);
+    }
+    return 'unknown';
+  };
   const out: DensityAffordance[] = [];
   const add = (
     item: DensityItem,
@@ -320,7 +332,7 @@ export function densityAffordances(
         nearestAbove.get(item.id) === rep.id &&
         // A link at the foot of the nav the list's own rows sit in is more of
         // that nav, not its pager.
-        (repNav === null || densityNavPrefix(item) !== repNav) &&
+        (repNav === null || !densitySameNav(densityNavPrefix(item), repNav)) &&
         // A site footer's or header's links are page chrome, not this list's
         // pager, unless the list itself sits in that chrome.
         (!isDensityChrome(item) || repInChrome) &&
@@ -329,10 +341,11 @@ export function densityAffordances(
       ) {
         // One pager per nav: its page links and its previous / next buttons
         // are one affordance. A navigation landmark with no `nav` tag is one nav.
-        const key = densityNavPrefix(item) ?? 'landmark:navigation';
-        const list = pagers.get(key);
+        const key = densityNavPrefix(item) ?? `landmark:${navigationLandmarkOf(item)}`;
+        const home = [...pagers.keys()].find((k) => densitySameNav(k, key)) ?? key;
+        const list = pagers.get(home);
         if (list) list.push(item);
-        else pagers.set(key, [item]);
+        else pagers.set(home, [item]);
       }
     }
     for (const controls of pagers.values()) {
@@ -415,11 +428,18 @@ export function summarizeDensityAffordances(
     byRule[a.rule] = (byRule[a.rule] ?? 0) + 1;
   }
   const list = all.slice(0, Math.max(0, cap));
+  const leaves = densityLeaves(capture);
+  const leafIds = new Set(leaves.ids);
+  const unknownLeafIds = new Set(leaves.unknown);
   const listing: DensityAffordanceListing = {
     interactionsBasis: 'static',
     byRule,
     abbreviationsUndetermined: capture.items.filter(
-      (i) => i.tag !== 'abbr' && i.recoverable === true && i.chars === null
+      (i) =>
+        i.tag !== 'abbr' &&
+        i.recoverable === true &&
+        i.chars === null &&
+        (leafIds.has(i.id) || unknownLeafIds.has(i.id))
     ).length,
     shown: list.length,
     total: all.length,

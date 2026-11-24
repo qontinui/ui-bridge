@@ -75,6 +75,9 @@ export const DENSITY_REPEAT_MIN_ROWS = 3;
 /** How far, in px, two members' left edges, widths (by geometry) or tops (one row) may differ. */
 export const DENSITY_REPEAT_TOLERANCE_PX = 2;
 
+/** The share of a column's members that may differ in width from the rest, by path, and it is still one list. */
+export const DENSITY_REPEAT_ODD_WIDTH_SHARE = 0.2;
+
 /** The average glyph advance, in em, that the snapshot-mode line estimate assumes. */
 export const DENSITY_CHAR_WIDTH_EM = 0.5;
 
@@ -443,13 +446,40 @@ export function densityNavPrefix(item: DensityItem): string | null {
   const at = item.path.lastIndexOf('nav');
   if (at < 0) return null;
   const key = item.siblingKey ?? item.cousinRowKey;
-  if (key !== null) {
+  // Only a chain from the document root names every ancestor in its key; an
+  // anchored one is read by its tags, and {@link densitySameNav} compares the two.
+  if (key !== null && key.startsWith('/')) {
     const segments = key.split('/');
     for (let k = segments.length - 1; k >= 0; k--) {
       if (/^nav(\[\d+\])?$/.test(segments[k])) return `key:${segments.slice(0, k + 1).join('/')}`;
     }
   }
   return `tags:${item.path.slice(0, at + 1).join('/')}`;
+}
+
+/**
+ * Whether two {@link densityNavPrefix} answers name one nav: equal, or one a
+ * key and the other a tag path that the key's tags (its sibling indices
+ * dropped) spell — an item anchored at an id below the nav and one whose chain
+ * runs from the root, in the same nav.
+ */
+export function densitySameNav(a: string | null, b: string | null): boolean {
+  if (a === null || b === null) return false;
+  if (a === b) return true;
+  const tagsOf = (p: string): string | null =>
+    p.startsWith('key:')
+      ? p
+          .slice('key:'.length)
+          .replace(/^\//, '')
+          .split('/')
+          .map((seg) => seg.replace(/\[\d+\]$/, ''))
+          .join('/')
+      : null;
+  const ka = tagsOf(a);
+  const kb = tagsOf(b);
+  if (ka !== null && kb === null) return `tags:${ka}` === b;
+  if (kb !== null && ka === null) return `tags:${kb}` === a;
+  return false;
 }
 
 /** A control a repeat's scope is looked for by: a laid-out finder, filter or nav control. */
@@ -617,7 +647,7 @@ export function densityRepeatScopes(
             directKeys.some((k) => k.startsWith(`${pathKeyOf(b.id)}/`))
         )
         .sort((a, b) => b.id.length - a.id.length);
-      for (const b of enclosing) {
+      for (const b of enclosing.slice(0, DENSITY_REPEAT_SCOPE_LEVELS)) {
         const ids = usable(b.members);
         if (hasControl(ids)) {
           scope = { by: 'block', ids, own };
@@ -678,6 +708,7 @@ export function densityInnermostRepeats(
     id: r.id,
     first: r.members[0],
     set: densityRepeatTargets(capture, r, children),
+    rows: densitySubtree(capture, r.members, children),
   }));
   const holding = new Map<string, typeof targets>();
   for (const t of targets) {
@@ -689,8 +720,17 @@ export function densityInnermostRepeats(
   }
   const out = new Map<string, Set<string>>();
   for (const [id, list] of holding) {
+    // `o` is nested in `t` when it starts inside `t`'s rows (not merely at
+    // `t`'s parent) and `t` does not start inside `o`'s.
     const inner = list.filter(
-      (t) => !list.some((o) => o !== t && o.first !== undefined && t.set.has(o.first))
+      (t) =>
+        !list.some(
+          (o) =>
+            o !== t &&
+            o.first !== undefined &&
+            t.rows.has(o.first) &&
+            (t.first === undefined || !o.rows.has(t.first))
+        )
     );
     out.set(id, new Set(inner.map((t) => t.id)));
   }
@@ -1025,23 +1065,22 @@ export function densityRepeats(
     members.every((m) => Math.abs(m.rect!.w - members[0].rect!.w) <= DENSITY_REPEAT_TOLERANCE_PX);
   for (const g of byPath.values()) {
     // 0. A definition list: each `dd` joins the `dt` before it in reading
-    //    order (top, then left, then capture order), and the pairs are rows.
+    //    order (top, tops within the tolerance being one line; then left;
+    //    then capture order), and the pairs are rows.
     if (g.tag === 'dt' && g.members.some((m) => m.tag === 'dd')) {
       const pairOf = new Map<string, string>();
       let term: string | null = null;
-      const reading = g.members
-        .slice()
-        .sort(
-          (a, b) =>
-            a.rect!.y - b.rect!.y ||
-            a.rect!.x - b.rect!.x ||
-            captureIndex.get(a.id)! - captureIndex.get(b.id)!
-        );
+      const free = g.members.filter((m) => !claimed.has(m.id));
+      const reading = free.slice().sort((a, b) => {
+        const dy = a.rect!.y - b.rect!.y;
+        if (Math.abs(dy) > DENSITY_REPEAT_TOLERANCE_PX) return dy;
+        return a.rect!.x - b.rect!.x || captureIndex.get(a.id)! - captureIndex.get(b.id)!;
+      });
       for (const m of reading) {
         if (m.tag === 'dt') term = m.id;
         pairOf.set(m.id, m.tag === 'dt' ? m.id : (term ?? m.id));
       }
-      accept({ ...g, pairOf }, g.members);
+      accept({ ...g, pairOf }, free);
       continue;
     }
     // 1. A grid: columns of one width whose rows line up, more than one column.
@@ -1058,9 +1097,15 @@ export function densityRepeats(
     for (const c of clusterBy(rest, (r) => r.x)) {
       if (wrappedRun(c, siblingRows)) continue;
       if (sameWidth(c) || c.every((m) => leafSet.has(m.id))) accept(g, c);
-      // One odd-width member (a highlighted row) does not discard the
-      // column: each width of it is judged on its own rows.
-      else for (const w of clusterBy(c, (r) => r.w)) accept(g, w);
+      // One odd-width member (a highlighted row) does not discard the column:
+      // a column where one width holds all but a small minority
+      // ({@link DENSITY_REPEAT_ODD_WIDTH_SHARE}, at least one) is a list, the
+      // odd rows included. Widths mixed beyond that are layout.
+      else {
+        const dominant = clusterBy(c, (r) => r.w).reduce((a, b) => (b.length > a.length ? b : a));
+        const odd = c.length - dominant.length;
+        if (odd <= Math.max(1, Math.floor(c.length * DENSITY_REPEAT_ODD_WIDTH_SHARE))) accept(g, c);
+      }
     }
   }
 

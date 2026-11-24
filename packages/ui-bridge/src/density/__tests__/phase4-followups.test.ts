@@ -9,7 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import { densityAffordances, summarizeDensityAffordances } from '../affordances';
 import { captureDensityFromSnapshot } from '../capture-from-snapshot';
-import { densityRepeats } from '../repeats';
+import { densityNavPrefix, densityRepeats, densitySameNav } from '../repeats';
 import { parseDensityCapture, type DensityCapture, type DensityItem } from '../schema';
 import { densityBlocks, densityPins } from '../structure';
 import {
@@ -63,6 +63,33 @@ describe('Phase 4 follow-ups: repeats', () => {
     expect(
       reps.map((r) => [r.id, r.tag, r.rows, r.perRow, r.rowPitchPx, r.members.length, r.firstRow])
     ).toEqual([['repeat:app.facts.term-1', 'dt', 4, 2, 48, 8, { topPx: 100, bottomPx: 142 }]]);
+  });
+
+  it('a definition list whose definitions sit a pixel above their terms, side by side, is one repeat', () => {
+    const els: DensityTestElementSpec[] = [];
+    for (let k = 1; k <= 4; k++) {
+      const y = 100 + 30 * (k - 1);
+      els.push(
+        {
+          id: `app.kv.term-${k}`,
+          tag: 'dt',
+          xpath: `${MAIN}/dl/dt[${k}]`,
+          rect: [0, y, 200, 20],
+          text: `Key ${k}`,
+        },
+        {
+          id: `app.kv.def-${k}`,
+          tag: 'dd',
+          xpath: `${MAIN}/dl/dd[${k}]`,
+          rect: [220, y - 1, 300, 20],
+          text: `Value ${k}`,
+        }
+      );
+    }
+    const reps = densityRepeats(capture(els), null);
+    expect(reps.map((r) => [r.id, r.rows, r.perRow, r.members.length])).toEqual([
+      ['repeat:app.kv.term-1', 4, 2, 8],
+    ]);
   });
 
   it('a header row of th cells in tbody is not a data row', () => {
@@ -156,10 +183,34 @@ describe('Phase 4 follow-ups: repeats', () => {
     expect(reps.map((r) => [r.id, r.rows, r.members])).toEqual([
       [
         'repeat:app.rows.1',
-        5,
-        ['app.rows.1', 'app.rows.2', 'app.rows.4', 'app.rows.5', 'app.rows.6'],
+        6,
+        ['app.rows.1', 'app.rows.2', 'app.rows.3', 'app.rows.4', 'app.rows.5', 'app.rows.6'],
       ],
     ]);
+  });
+
+  it('stacked containers of two alternating widths are layout, not two lists', () => {
+    const els: DensityTestElementSpec[] = [];
+    for (let k = 1; k <= 6; k++) {
+      const y = 100 + 300 * (k - 1);
+      els.push(
+        {
+          id: `app.band.${k}`,
+          tag: 'div',
+          xpath: `${MAIN}/div/div[${k}]`,
+          rect: [0, y, k % 2 === 1 ? 1200 : 800, 280],
+          text: `Band ${k}`,
+        },
+        {
+          id: `app.band.${k}.title`,
+          tag: 'span',
+          xpath: `${MAIN}/div/div[${k}]/span`,
+          rect: [8, y + 8, 300, 20],
+          text: `Band ${k}`,
+        }
+      );
+    }
+    expect(densityRepeats(capture(els), null).map((r) => r.id)).toEqual([]);
   });
 
   it('a list of rows holding only a checkbox each is a checklist, not a form', () => {
@@ -336,6 +387,75 @@ describe('Phase 4 follow-ups: finders, filters and pagers', () => {
       ['app.pick', 'declared-filters', 'repeat:app.rows.act-1'],
       ['app.pick', 'declared-filters', 'repeat:app.rows.link-1'],
     ]);
+  });
+
+  it("a controls edge to a list nested in the first row of another is that inner list's filter", () => {
+    const els: DensityTestElementSpec[] = [
+      {
+        id: 'app.pick',
+        tag: 'select',
+        role: 'combobox',
+        category: 'interactive',
+        xpath: `${MAIN}/aside/select`,
+        rect: [700, 100, 200, 28],
+        text: 'All',
+      },
+    ];
+    for (let k = 1; k <= 3; k++) {
+      const y = 100 + 200 * (k - 1);
+      els.push({
+        id: `app.outer.${k}`,
+        tag: 'li',
+        xpath: `${MAIN}/ul/li[${k}]`,
+        rect: [0, y, 600, 180],
+        text: `Group ${k}`,
+      });
+    }
+    for (let j = 1; j <= 3; j++) {
+      els.push(
+        {
+          id: `app.inner.${j}`,
+          tag: 'div',
+          xpath: `${MAIN}/ul/li[1]/div[${j}]`,
+          rect: [20, 120 + 40 * (j - 1), 500, 36],
+          text: `Item ${j}`,
+        },
+        {
+          id: `app.inner.${j}.label`,
+          tag: 'span',
+          xpath: `${MAIN}/ul/li[1]/div[${j}]/span`,
+          rect: [28, 128 + 40 * (j - 1), 200, 20],
+          text: `Item ${j}`,
+        }
+      );
+    }
+    const c = capture(els, [{ source: 'app.pick', target: 'app.inner.2', type: 'controls' }]);
+    const reps = densityRepeats(c, null);
+    expect(reps.map((r) => [r.id, r.parent])).toEqual([
+      ['repeat:app.outer.1', null],
+      ['repeat:app.inner.1', 'app.outer.1'],
+    ]);
+    expect(
+      densityAffordances(c, null, { repeats: reps })
+        .filter((a) => a.kind === 'filter')
+        .map((a) => [a.id, a.rule, a.repeat])
+    ).toEqual([['app.pick', 'declared-controls', 'repeat:app.inner.1']]);
+  });
+
+  it('a root-chain key and an anchored tag path inside one nav name one nav; sibling navs two', () => {
+    const item = (path: string[], siblingKey: string | null): DensityItem =>
+      ({ path, siblingKey, cousinRowKey: null }) as unknown as DensityItem;
+    const tags = ['html', 'body', 'main', 'section', 'nav'];
+    const rooted = densityNavPrefix(item(tags, '/html/body/main/section/nav'));
+    const anchored = densityNavPrefix(item([...tags, 'ul', 'li'], '@id=pages/li[2]'));
+    expect([rooted, anchored]).toEqual([
+      'key:/html/body/main/section/nav',
+      'tags:html/body/main/section/nav',
+    ]);
+    expect(densitySameNav(rooted, anchored)).toBe(true);
+    const first = densityNavPrefix(item(tags, '/html/body/main/section/nav[1]/ul'));
+    const second = densityNavPrefix(item(tags, '/html/body/main/section/nav[2]'));
+    expect(densitySameNav(first, second)).toBe(false);
   });
 
   it('a pager in the nav beside the nav its list sits in is the pager of that list', () => {
