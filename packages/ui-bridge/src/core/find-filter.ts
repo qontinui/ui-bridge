@@ -816,8 +816,6 @@ export function applyCanonicalFindFilter<T extends FindFilterableElement>(
       if (!isInteractive) return false;
     }
 
-    if (r.includeHidden === false && !isConsideredVisible(el)) return false;
-
     // A type the caller names answers for its whole family: `input` also finds
     // an ARIA textbox, `select` a combobox or listbox (`core/element-kind`).
     if (r.typeFilter && !answersToNamedType(el.type, r.typeFilter)) return false;
@@ -881,6 +879,14 @@ export function applyCanonicalFindFilter<T extends FindFilterableElement>(
 
     if (rootEl && !rootEl.contains(liveElement(el) ?? null)) return false;
     if (r.selector && !liveElement(el)?.matches(r.selector)) return false;
+
+    // Visibility goes after every cheap predicate: on a live node with no
+    // `state.visible` it is the canonical verdict, a multi-point hit-test, so a
+    // row a type / role / label / text / testId / scope predicate rejects must
+    // never pay for it. Before the media facts, so a hidden row is dropped,
+    // not reported as `unevaluated`. The predicates are independent, so the
+    // order changes cost, not the result.
+    if (r.includeHidden === false && !isConsideredVisible(el)) return false;
 
     // The media-fact predicates go LAST: a row is reported as unevaluated only
     // when every decidable predicate already let it through.
