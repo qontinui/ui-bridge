@@ -690,10 +690,10 @@ describe('ui-bridge-density usage', () => {
     expect(r.stderr).toContain('is not JSON');
   }, 60_000);
 
-  it('a verb of a later release says so', () => {
+  it('a planning verb without its required flags is a usage error', () => {
     const r = run(['fit']);
     expect(r.status).toBe(2);
-    expect(r.stderr).toContain("the verb 'fit' is not in this release");
+    expect(r.stderr).toContain('fit: --targets is required');
   }, 60_000);
 
   it('--version prints the package version', () => {

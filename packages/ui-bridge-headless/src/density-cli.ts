@@ -77,6 +77,13 @@ import {
   type DensityAssertArgs,
 } from './density-cli-assert.js';
 import {
+  DENSITY_PLANNING_HELP,
+  DENSITY_PLANNING_USAGE,
+  parseDensityPlanningArgs,
+  runDensityPlanningVerb,
+  type DensityPlanningArgs,
+} from './density-cli-planning.js';
+import {
   parseDensityInitArgs,
   parseDensityLintArgs,
   runDensityInit,
@@ -118,7 +125,7 @@ Usage:
   ui-bridge-density assert --draft <file> <cell flags of measure>
   ui-bridge-density lint --targets <file> --profile-text <file|-> [--profile <doc>]
   ui-bridge-density init --surface <path> --profile <doc> [--targets-out <file>] [--budget-out <file>]
-  ui-bridge-density --help | --version
+${DENSITY_PLANNING_USAGE}  ui-bridge-density --help | --version
 
 measure:
   --snapshot <file|->      A GET /control/snapshot answer (relay envelope or bare);
@@ -154,6 +161,7 @@ init:
   --budget-out <file>      Default density-budget.json
                            (never overwrites a file; writes no role, ask or limit)
 
+${DENSITY_PLANNING_HELP}
 Output: one JSON document on standard output. measure: the cells, each with its
 Observation (producer sdk/density), and next[]; with --targets, each cell
 reports per-ask reach, answeredAt[k] as intervals, the unanswered asks and the
@@ -170,12 +178,20 @@ export type DensityCliArgs =
   | DensityAssertArgs
   | DensityLintArgs
   | DensityInitArgs
+  | DensityPlanningArgs
   | { verb: 'help' }
   | { verb: 'version' };
 
 /** The verbs this build runs. */
-export const DENSITY_CLI_VERBS = ['init', 'lint', 'measure', 'assert'] as const;
-const VERBS_LATER = ['fit', 'plan', 'diff'];
+export const DENSITY_CLI_VERBS = [
+  'init',
+  'lint',
+  'measure',
+  'assert',
+  'plan',
+  'fit',
+  'diff',
+] as const;
 
 function parseMeasureArgs(rest: readonly string[]): DensityMeasureArgs | { verb: 'help' } {
   const values = readDensityFlags(rest, { ...DENSITY_CELL_FLAGS, '--capture-out': 'once' }, USAGE);
@@ -206,12 +222,11 @@ export function parseDensityArgs(argv: string[]): DensityCliArgs {
       return parseDensityLintArgs(rest, USAGE);
     case 'init':
       return parseDensityInitArgs(rest, USAGE);
+    case 'plan':
+    case 'fit':
+    case 'diff':
+      return parseDensityPlanningArgs(verb, rest, USAGE);
     default:
-      if (verb !== undefined && VERBS_LATER.includes(verb)) {
-        throw mkDensityArgError(
-          `the verb '${verb}' is not in this release; this build has: ${DENSITY_CLI_VERBS.join(', ')}`
-        );
-      }
       if (verb !== undefined && verb.startsWith('--'))
         throw mkDensityArgError(`Unknown flag: ${verb}\n\n${USAGE}`);
       throw mkDensityArgError(`Unknown verb: ${verb ?? ''}\n\n${USAGE}`);
@@ -242,6 +257,10 @@ export async function runDensityCli(
         return await runDensityLint(args, io, onStep);
       case 'init':
         return await runDensityInit(args, io, onStep);
+      case 'plan':
+      case 'fit':
+      case 'diff':
+        return await runDensityPlanningVerb(args, io, onStep);
     }
   } catch (err) {
     if (err instanceof DensityCliArgError) {

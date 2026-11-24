@@ -73,6 +73,10 @@ export type DensityCliStep =
   | 'write-capture'
   | 'write-draft'
   | 'write-files'
+  | 'read-plan'
+  | 'plan'
+  | 'fit'
+  | 'diff'
   | 'print';
 
 // Typed in this package's own terms: a declaration naming cli-args' types
