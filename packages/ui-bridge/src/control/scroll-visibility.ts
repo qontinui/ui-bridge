@@ -8,10 +8,10 @@
  * reported as `success: true`; these helpers measure instead.
  */
 
+import { clipBoxOf, type ClipRect } from '../core/clip-box';
+
 /** Error code a scroll action carries when it provably moved nothing. */
 export const NO_SCROLL_EFFECT = 'NO_SCROLL_EFFECT';
-
-import { clipBoxOf, type ClipRect } from '../core/clip-box';
 
 const TOLERANCE = 0.5;
 
