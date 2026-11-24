@@ -26,7 +26,7 @@ import { serializeElementCustomActions } from '../core/element-actions';
 // `2026-11-08-ui-bridge-element-state-has-two-readers-and-no-aria-busy`, D1).
 // It reads the LIVE element, not the registry's action overlay: a wait must
 // observe fields change, and the overlay freezes the ones an action wrote.
-import { getElementState } from '../core/element-state';
+import { getElementState, isRenderedForAction } from '../core/element-state';
 import type {
   WaitOptions,
   ElementState,
@@ -545,13 +545,16 @@ type VisibilityReason = 'hidden' | 'off-screen' | 'occluded' | 'no-layout';
  * Returns `null` when the element is interactable; otherwise the specific
  * `VisibilityReason`.
  *
- * It reads the element's OWN style only: computed `display: none` and
+ * It first applies the shared render check (`isRenderedForAction`,
+ * `core/element-state`: connected, no `display: none` on the node or a
+ * flat-tree ancestor, slotted where its parent hosts an open shadow root, not
+ * `visibility: hidden`), answering `hidden` when that fails. Then the
+ * element's OWN style: computed `display: none` and
  * `visibility: hidden|collapse` (`hidden`), an explicit zero inline
  * `width`/`height` (`no-layout`), and an inline `position: absolute|fixed`
- * with a `left`/`top` at or beyond -9999px (`off-screen`). It does not walk
- * ancestors, so a control under a `display: none` ancestor passes. It is
- * exported because the server wait-for-element `clickable` condition mirrors
- * this executor's click path with it.
+ * with a `left`/`top` at or beyond -9999px (`off-screen`). It is exported
+ * because the server wait-for-element `clickable` condition mirrors this
+ * executor's click path with it.
  *
  * Detection is **signal-driven, not measurement-driven**: it keys off
  * environment-independent CSS facts rather than `getBoundingClientRect()`
@@ -566,6 +569,12 @@ type VisibilityReason = 'hidden' | 'off-screen' | 'occluded' | 'no-layout';
  * Precedence: hidden > no-layout > off-screen.
  */
 export function getClickVisibilityReason(element: HTMLElement): VisibilityReason | null {
+  // Not rendered at all: disconnected, `display: none` on a flat-tree
+  // ancestor (or itself), unslotted, or `visibility: hidden` — the same check
+  // the relay dispatch gate applies (`core/element-state`), so a click inside
+  // a `display: none` subtree is refused on both arms instead of dispatched to
+  // a node no user can reach.
+  if (!isRenderedForAction(element)) return 'hidden';
   let style: CSSStyleDeclaration;
   try {
     style = window.getComputedStyle(element);
@@ -1211,6 +1220,97 @@ export class DefaultActionExecutor implements ActionExecutor {
   /**
    * Execute an action on an element
    */
+  /**
+   * The node an element action on `elementId` would act on, resolved exactly
+   * as {@link executeAction} resolves it: a connected registry node, else a
+   * node found by identifier, else the Central Target Registry, else this
+   * executor's discovery cache, else (for `scroll`) a page sentinel. `null`
+   * when nothing resolves. Shared so a caller asking "would the next click
+   * land" (the server wait-for-element `clickable` condition) reads the same
+   * node the click would, not the registry's possibly detached one.
+   *
+   * `onHit` is called for each strategy that produced a node (the first is the
+   * one returned); with `wantAlternates` every later arm is probed too, for the
+   * response's resolution alternates.
+   */
+  resolveActionTarget(
+    elementId: string,
+    options: {
+      wantAlternates?: boolean;
+      action?: string;
+      onHit?: (strategy: ElementResolutionStrategy) => void;
+    } = {}
+  ): HTMLElement | null {
+    const wantAlternates = options.wantAlternates === true;
+    const recordHit = (strategy: ElementResolutionStrategy): void => options.onHit?.(strategy);
+    let element: HTMLElement | null = null;
+
+    const registered = this.registry.getElement(elementId);
+    // Verify element is still in the live DOM (React re-renders can detach elements)
+    if (registered?.element && registered.element.isConnected) {
+      element = registered.element;
+      recordHit('registry-id');
+    }
+
+    // If not registered or detached, try to find by identifier
+    if (!element || wantAlternates) {
+      const byIdentifier = findElementByIdentifier(elementId);
+      if (byIdentifier) {
+        element = element ?? byIdentifier;
+        recordHit('element-identifier');
+      }
+    }
+
+    // Try CTR (Central Target Registry) — resolves logical names to DOM
+    // elements via self-healing selector fallback chains.
+    //
+    // The alternates probe deliberately goes through `probeInDOM` instead:
+    // `resolveInDOM` self-heals (promotes/demotes selectors, writes the cache,
+    // emits resolution events), which is right when the caller is about to act
+    // on the result and wrong for a diagnostic probe.
+    if (!element) {
+      const ctr = getGlobalCtr();
+      if (ctr.has(elementId)) {
+        const result = ctr.resolveInDOM(elementId);
+        if (result.resolved && result.element) {
+          element = result.element;
+          recordHit('ctr-selector');
+        }
+      }
+    } else if (wantAlternates) {
+      const ctr = getGlobalCtr();
+      if (ctr.has(elementId) && ctr.probeInDOM(elementId)) {
+        recordHit('ctr-selector');
+      }
+    }
+
+    // If still not found, check the discovery cache (elements found via
+    // find()/discover() that weren't in the registry)
+    const cached = this.discoveryCache.get(elementId);
+    if (cached && cached.isConnected) {
+      if (element === null || wantAlternates) {
+        element = element ?? cached;
+        recordHit('discovery-cache');
+      }
+    } else if (cached && element === null) {
+      // Clean up stale entry
+      this.discoveryCache.delete(elementId);
+    }
+
+    // Resolve page-level sentinel IDs for scroll actions: "document", "body"
+    // and "window" name the page scroll container directly, without a
+    // registered element — only when nothing above resolved the id, the
+    // precedence every sentinel site applies (core/page-sentinel.ts).
+    if (!element && options.action === 'scroll') {
+      const page = resolvePageSentinel(elementId, 'scroll');
+      if (page) {
+        element = page;
+        recordHit('page-sentinel');
+      }
+    }
+    return element;
+  }
+
   async executeAction(
     elementId: string,
     request: ControlActionRequest
@@ -1336,74 +1436,14 @@ export class DefaultActionExecutor implements ActionExecutor {
       // calibrated probabilities.
       const wantAlternates = request.includeResolutionAlternates === true;
       const hits: ElementResolutionCandidate[] = [];
-      let element: HTMLElement | null = null;
-      const recordHit = (strategy: ElementResolutionStrategy): void => {
-        hits.push(scoreResolution(strategy, elementId));
-      };
-
+      // The registration (connected or not) still feeds the action itself and
+      // the effect signature below.
       const registered = this.registry.getElement(elementId);
-      // Verify element is still in the live DOM (React re-renders can detach elements)
-      if (registered?.element && registered.element.isConnected) {
-        element = registered.element;
-        recordHit('registry-id');
-      }
-
-      // If not registered or detached, try to find by identifier
-      if (!element || wantAlternates) {
-        const byIdentifier = findElementByIdentifier(elementId);
-        if (byIdentifier) {
-          element = element ?? byIdentifier;
-          recordHit('element-identifier');
-        }
-      }
-
-      // Try CTR (Central Target Registry) — resolves logical names to DOM
-      // elements via self-healing selector fallback chains.
-      //
-      // The alternates probe deliberately goes through `probeInDOM` instead:
-      // `resolveInDOM` self-heals (promotes/demotes selectors, writes the cache,
-      // emits resolution events), which is right when the caller is about to act
-      // on the result and wrong for a diagnostic probe.
-      if (!element) {
-        const ctr = getGlobalCtr();
-        if (ctr.has(elementId)) {
-          const result = ctr.resolveInDOM(elementId);
-          if (result.resolved && result.element) {
-            element = result.element;
-            recordHit('ctr-selector');
-          }
-        }
-      } else if (wantAlternates) {
-        const ctr = getGlobalCtr();
-        if (ctr.has(elementId) && ctr.probeInDOM(elementId)) {
-          recordHit('ctr-selector');
-        }
-      }
-
-      // If still not found, check the discovery cache (elements found via
-      // find()/discover() that weren't in the registry)
-      const cached = this.discoveryCache.get(elementId);
-      if (cached && cached.isConnected) {
-        if (element === null || wantAlternates) {
-          element = element ?? cached;
-          recordHit('discovery-cache');
-        }
-      } else if (cached && element === null) {
-        // Clean up stale entry
-        this.discoveryCache.delete(elementId);
-      }
-
-      // Resolve page-level sentinel IDs for scroll actions: "document", "body"
-      // and "window" name the page scroll container directly, without a
-      // registered element — only when nothing above resolved the id, the
-      // precedence every sentinel site applies (core/page-sentinel.ts).
-      if (!element && request.action === 'scroll') {
-        const page = resolvePageSentinel(elementId, 'scroll');
-        if (page) {
-          element = page;
-          recordHit('page-sentinel');
-        }
-      }
+      const element = this.resolveActionTarget(elementId, {
+        wantAlternates,
+        action: request.action,
+        onHit: (strategy) => hits.push(scoreResolution(strategy, elementId)),
+      });
 
       // First hit wins, exactly as before — `hits[0]` is the arm that actually
       // produced `element`. Later entries exist only when the caller asked for

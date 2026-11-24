@@ -26,6 +26,7 @@ import { findByTextPrimitive } from './page-primitives';
 import { createHandlers, type RegistryLike } from './handlers';
 import { executeCommand, type BridgeAccess } from '../react/commandHandlers';
 import { getGlobalRegistry, resetGlobalRegistry } from '../core/registry';
+import { createActionExecutor } from '../control/action-executor';
 
 interface Box {
   el: HTMLElement;
@@ -311,20 +312,53 @@ describe('clickable per arm', () => {
     expect((await serverArm('gone-later', 'clickable')).matched).toBe(false);
   });
 
-  it('a control under a display:none ancestor: server clickable, relay not — each arm mirrors its own click path', async () => {
-    // The HTTP executor's click pre-check (`getClickVisibilityReason`) reads
-    // the control's OWN style only, so the server's next click dispatches and
-    // the server arm says clickable. The relay's dispatch gate
-    // (`isRenderedForAction`) walks the ancestors and refuses, so the relay
-    // arm says not clickable. Pinned so the divergence stays deliberate.
+  it('a control under a display:none ancestor is clickable on neither arm, and the HTTP click is refused', async () => {
+    // Both click paths now refuse a node inside a display:none subtree: the
+    // relay dispatch gate and the HTTP executor's pre-check share
+    // isRenderedForAction, so both `clickable` arms say no.
     const shell = document.createElement('div');
     shell.style.display = 'none';
     document.body.appendChild(shell);
     const inner = button('inner-x', 'Pay inner');
     shell.appendChild(inner);
     getGlobalRegistry().registerElement('inner-x', inner, { type: 'button', label: 'inner' });
-    expect((await serverArm('inner-x', 'clickable')).matched).toBe(true);
+    expect((await serverArm('inner-x', 'clickable')).matched).toBe(false);
     expect((await relayArm('inner-x', 'clickable')).matched).toBe(false);
+    const clicked: string[] = [];
+    inner.addEventListener('click', () => clicked.push('inner-x'));
+    const result = (await createActionExecutor(getGlobalRegistry()).executeAction('inner-x', {
+      action: 'click',
+    })) as { success: boolean; error?: string; failureDetails?: { errorCode?: string } };
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('not visible');
+    expect(clicked).toEqual([]);
+  });
+
+  it('server clickable resolves the node the executor would click: a detached registry node with a same-id replacement is clickable; with nothing to resolve it is not', async () => {
+    const registry = getGlobalRegistry();
+    const original = button('swap', 'Pay swap');
+    place(original, 0, 300, 80, 24);
+    registry.registerElement('swap', original, { type: 'button', label: 'swap' });
+    const withExecutor = async () => {
+      const handlers = createHandlers(registryLike(), createActionExecutor(registry), {
+        consoleCapture: null as never,
+      });
+      const resp = await handlers.waitForElementByCondition({
+        selector: { id: 'swap' },
+        condition: 'clickable',
+        timeout_ms: 150,
+      });
+      return (resp.data as { matched: boolean }).matched;
+    };
+    expect(await withExecutor()).toBe(true);
+    // Detached, and nothing else answers to the id: the click would fail too.
+    original.remove();
+    expect(await withExecutor()).toBe(false);
+    // A re-render puts a same-id node back: the executor resolves it by
+    // identifier and clicks it, so the wait must say clickable.
+    const replacement = button('swap', 'Pay swap');
+    place(replacement, 0, 300, 80, 24);
+    expect(await withExecutor()).toBe(true);
   });
 
   it('relay: a fixed and a below-the-fold control are clickable; one under a display:none ancestor is not', async () => {

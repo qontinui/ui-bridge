@@ -196,16 +196,17 @@ export function readElementVisibility(element: HTMLElement): ElementVisibility {
  * and an `opacity: 0` control (a styled file input) still takes input, so the
  * canonical verdict would refuse actions that dispatch.
  *
- * Used by the RELAY arm only: its `executeElementAction` dispatch gate and its
- * wait-for-element `clickable` condition, so the relay's "clickable" means
- * "the relay's next action would not be refused as not rendered". The server
- * arm's `clickable` mirrors the HTTP executor's own pre-check instead
- * (`getClickVisibilityReason`).
+ * Used by the relay's `executeElementAction` dispatch gate and its
+ * wait-for-element `clickable` condition, and by the HTTP executor's click
+ * pre-check (`getClickVisibilityReason`, which the server `clickable`
+ * condition reads), so both arms refuse a click inside a `display: none`
+ * subtree and both `clickable` conditions agree on it.
  *
  * Where the engine has `Element.checkVisibility()`, its default answer is used
- * (it sees through closed shadow roots), except for a node whose own display
- * is `contents`: such a node has no box of its own, so `checkVisibility()`
- * reads it as hidden although its children render, and the walk answers.
+ * (it sees through closed shadow roots). A node whose own display is
+ * `contents` has no box of its own, so `checkVisibility()` would read it as
+ * hidden although its children render; for it the nearest flat-tree ancestor
+ * that is not `display: contents` is asked instead.
  * The fallback walk cannot see into a CLOSED shadow root: `assignedSlot` and
  * the host's `shadowRoot` both read `null` for it, so a light-DOM child of a
  * closed host is treated as rendered whether or not a slot takes it, and the
@@ -225,8 +226,21 @@ export function isRenderedForAction(el: HTMLElement): boolean {
   // FLAT-tree ancestor (a shadow host, a slot), or a light-DOM child no slot
   // takes — and, with `checkOpacity` / `checkVisibilityCSS` left off, ignores
   // `opacity: 0` exactly as this check means to.
-  if (typeof el.checkVisibility === 'function' && own.display !== 'contents') {
-    return el.checkVisibility();
+  // A `display: contents` node has no box of its own, so `checkVisibility()`
+  // reads it as hidden although its children render: ask the nearest
+  // flat-tree ancestor that does have a box instead.
+  let probe: Element | null = el;
+  if (own.display === 'contents') {
+    probe = null;
+    for (const node of composedAncestry(el).slice(1)) {
+      if (view.getComputedStyle(node).display !== 'contents') {
+        probe = node;
+        break;
+      }
+    }
+  }
+  if (probe && typeof probe.checkVisibility === 'function') {
+    return probe.checkVisibility();
   }
   // Fallback (jsdom, older engines, a `display: contents` node): the same
   // question by hand, walking the flat tree (`composedAncestry`: a slotted

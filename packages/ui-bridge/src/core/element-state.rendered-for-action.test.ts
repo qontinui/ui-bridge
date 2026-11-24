@@ -87,14 +87,24 @@ describe('isRenderedForAction', () => {
     expect(isRenderedForAction(slotted)).toBe(false);
   });
 
-  it('a display:contents node is judged by the walk, not checkVisibility() (which reads it as boxless)', () => {
+  it("a display:contents node asks its nearest boxed flat-tree ancestor's checkVisibility()", () => {
+    const parent = document.createElement('section');
     const wrapper = document.createElement('div');
     wrapper.style.display = 'contents';
     wrapper.tabIndex = 0;
-    document.body.appendChild(wrapper);
+    parent.appendChild(wrapper);
+    document.body.appendChild(parent);
     // A browser's checkVisibility() is false for a node with no box of its own.
     Object.defineProperty(wrapper, 'checkVisibility', { configurable: true, value: () => false });
+    let parentAnswer = true;
+    Object.defineProperty(parent, 'checkVisibility', {
+      configurable: true,
+      value: () => parentAnswer,
+    });
     expect(isRenderedForAction(wrapper)).toBe(true);
+    // The ancestor's answer decides, both ways.
+    parentAnswer = false;
+    expect(isRenderedForAction(wrapper)).toBe(false);
   });
 
   it('the fallback walk cannot see into a CLOSED shadow root: an unslotted light child of a closed host reads rendered', () => {
