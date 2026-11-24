@@ -91,12 +91,12 @@ function collapse(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
-/** Code points, not UTF-16 units: an emoji is one character to a reader. */
 /** Code points that are not whitespace. */
 function inkLength(text: string): number {
   return codePointLength(text.replace(/\s+/g, ''));
 }
 
+/** Code points, not UTF-16 units: an emoji is one character to a reader. */
 function codePointLength(text: string): number {
   let n = 0;
   for (const _ of text) n++;

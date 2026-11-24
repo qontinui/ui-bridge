@@ -464,7 +464,15 @@ export function densityAskReach(
   if (reaches.length > 0) {
     const unknownItems = reaches.filter((r) => r.actions === null).length;
     const scrolls = reaches.map((r) => r.scrollPx);
-    const scrollPx = scrolls.some((s) => s === null) ? null : Math.max(...(scrolls as number[]));
+    // A loop, not a spread: an ask's answering items are not capped.
+    let scrollPx: number | null = scrolls.length > 0 ? -Infinity : null;
+    for (const s of scrolls) {
+      if (s === null) {
+        scrollPx = null;
+        break;
+      }
+      if (s > (scrollPx as number)) scrollPx = s;
+    }
     // The item reached last: the largest scroll, then the lowest on the page.
     let last: DensityItemReach | null = null;
     const topOf = (r: DensityItemReach) => ctx.placed.get(r.id)?.y ?? -Infinity;

@@ -28,6 +28,7 @@ import {
 } from './density/index.js';
 import {
   DensityCliArgError,
+  densitySameFile,
   densityFlag,
   mkDensityArgError,
   readDensityFile,
@@ -138,8 +139,7 @@ export async function runDensityInit(
   onStep: (step: DensityCliStep) => void
 ): Promise<number> {
   onStep('write-files');
-  const same = io.sameFile ?? ((a: string, b: string) => a === b);
-  if (same(args.targetsOut, args.budgetOut) || args.targetsOut === args.budgetOut) {
+  if (densitySameFile(io, args.targetsOut, args.budgetOut) || args.targetsOut === args.budgetOut) {
     throw new DensityCliArgError('init: --targets-out and --budget-out name one file');
   }
   for (const [flag, path] of [

@@ -430,7 +430,7 @@ describe('ui-bridge-density init', () => {
 });
 
 describe('runDensityInit when the second write fails', () => {
-  function failingIo(removable: boolean) {
+  function failingIo(removable: boolean | 'throws') {
     const out = { stdout: '', stderr: '', files: new Map<string, string>() };
     const io: DensityCliIo = {
       readFile: () => {
@@ -445,6 +445,7 @@ describe('runDensityInit when the second write fails', () => {
       ...(removable
         ? {
             removeFile: (p: string) => {
+              if (removable === 'throws') throw new Error('EBUSY: resource busy');
               out.files.delete(p);
             },
           }
@@ -471,6 +472,30 @@ describe('runDensityInit when the second write fails', () => {
     expect(out.stderr).toContain(
       '--budget-out b.json: EACCES: permission denied; t.json was removed, so init wrote nothing'
     );
+  });
+
+  it('says the targets file stays, and why, when removing it fails', async () => {
+    const { io, out } = failingIo('throws');
+    const code = await runDensityCli(
+      [...ARGS, '--targets-out', 't.json', '--budget-out', 'b.json'],
+      io
+    );
+    expect(code).toBe(2);
+    expect([...out.files.keys()]).toEqual(['t.json']);
+    expect(out.stderr).toContain(
+      't.json could not be removed (EBUSY: resource busy): remove it before running init again'
+    );
+  });
+
+  it('two spellings of one output file are refused before anything is written', async () => {
+    const { io, out } = failingIo(true);
+    const code = await runDensityCli(
+      [...ARGS, '--targets-out', 'x.json', '--budget-out', './x.json'],
+      io
+    );
+    expect(code).toBe(2);
+    expect([...out.files.keys()]).toEqual([]);
+    expect(out.stderr).toContain('init: --targets-out and --budget-out name one file');
   });
 
   it('says the targets file stays when the host cannot remove it', async () => {

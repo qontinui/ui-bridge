@@ -400,16 +400,29 @@ describe('density follow-ups: pagers', () => {
         text: `Page ${k}`,
       });
     }
+    // A third, in an unregistered landmark under a registered bar of its own.
+    els.push(
+      { id: 'app.s.bar', tag: 'div', xpath: `${S}/div[3]`, rect: [0, 280, 600, 40], text: '' },
+      {
+        id: 'app.s.page-3',
+        tag: 'button',
+        category: 'interactive',
+        xpath: `${S}/div[3]/div/button`,
+        semanticPath: `section > div > div[role="navigation"] > button`,
+        rect: [0, 286, 80, 28],
+        text: 'Page 3',
+      }
+    );
     return els;
   }
 
-  it('controls in navigation landmarks nobody registered are one pager each', () => {
+  it('controls in navigation landmarks nobody registered are one pager per registered parent', () => {
     const pagers = densityAffordances(capture(unregisteredNavs()), null).filter(
       (a) => a.kind === 'pager'
     );
     expect(pagers.map((a) => [a.id, a.rule, a.members])).toEqual([
-      ['app.s.page-1', 'nav-after-repeat', ['app.s.page-1']],
-      ['app.s.page-2', 'nav-after-repeat', ['app.s.page-2']],
+      ['app.s.page-1', 'nav-after-repeat', ['app.s.page-1', 'app.s.page-2']],
+      ['app.s.page-3', 'nav-after-repeat', ['app.s.page-3']],
     ]);
   });
 
