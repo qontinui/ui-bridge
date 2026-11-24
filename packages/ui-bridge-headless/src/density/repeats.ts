@@ -317,6 +317,8 @@ const FILTER_ROLES = new Set(['combobox', 'checkbox', 'radio']);
 
 /** A select, combobox, checkbox or radio. */
 export function isDensityFilterControl(item: DensityItem): boolean {
+  // A `select` with a `size` computes to `listbox`: a finder, not a filter.
+  if (item.role === 'listbox') return false;
   return item.tag === 'select' || (item.role !== null && FILTER_ROLES.has(item.role));
 }
 
@@ -515,6 +517,14 @@ export function densityInnermostRepeats(
   return out;
 }
 
+/** The tag of a cousin row (`li`, `tr`) from its key's last segment. */
+function rowTagOf(rowKey: string | null): string | null {
+  if (rowKey === null) return null;
+  const last = rowKey.split('/').pop() ?? '';
+  const tag = last.replace(/\[\d+\]$/, '');
+  return tag === '' || tag.startsWith('@') ? null : tag;
+}
+
 function finderRank(item: DensityItem): number {
   return item.role === 'searchbox' ? 0 : item.role === 'textbox' ? 1 : 2;
 }
@@ -607,11 +617,24 @@ function rowsFor(g: Pick<Group, 'members' | 'byRowKey'>): DensityItem[][] {
   return bands;
 }
 
+const FORM_TAGS = new Set(['input', 'textarea', 'select', 'label']);
+
+/** A form field or its label: stacked, they are a form, not a list. */
+function isFormPart(item: DensityItem): boolean {
+  return (
+    FORM_TAGS.has(item.tag) ||
+    (item.interactive && (isDensityFinderControl(item) || isDensityFilterControl(item)))
+  );
+}
+
 /** Tags whose stacked siblings inside one row of another repeat are still rows (a nested list). */
 const NESTED_ROW_TAGS = new Set(['li', 'tr']);
 
 /**
- * Every repeat of `capture`, in document order. `targets` supplies the
+ * Every repeat of `capture`, in document order. Precondition: the capture's
+ * structure and repeat keys are resolved (`structureResolved`,
+ * `repeatKeysResolved`); otherwise the answer is `[]` for want of keys, not
+ * for want of repeats, and {@link summarizeDensityRepeats} says so. `targets` supplies the
  * declared blocks and kinds; `inputs` reuses what the caller already computed
  * and carries the row `volume` the extent is projected at.
  */
@@ -642,6 +665,8 @@ export function densityRepeats(
     if (rowsFor({ members, byRowKey: g.byRowKey }).length < DENSITY_REPEAT_MIN_ROWS) return false;
     // A run of paragraphs is text, not rows.
     if (members.every((m) => kindOf.get(m.id) === 'prose')) return false;
+    // A form's fields, or their labels, are a form, not a list.
+    if (members.every(isFormPart)) return false;
     pathGroups.push({ ...g, members });
     members.forEach((m) => claimed.add(m.id));
     return true;
@@ -658,7 +683,7 @@ export function densityRepeats(
       byCousin.set(item.cousinKey, {
         by: 'path',
         parent: item.parent,
-        tag: item.tag,
+        tag: rowTagOf(item.cousinRowKey) ?? item.tag,
         members: [item],
         byRowKey: true,
       });
@@ -711,8 +736,8 @@ export function densityRepeats(
   // Only a single column of leaves inside one row is that row's lines: a
   // grid, or a column of containers (cards, comments), is a list of its own.
   const linesOfOneRow = (g: Group): boolean => {
-    // A cousin group's rows are unregistered li / tr by construction.
-    if (g.byRowKey || NESTED_ROW_TAGS.has(g.tag)) return false;
+    // A cousin group's tag is its row's (li / tr), so it is never dropped here.
+    if (NESTED_ROW_TAGS.has(g.tag)) return false;
     if (!g.members.every((m) => leafSet.has(m.id))) return false;
     if (maxOf(rowsFor(g).map((r) => r.length)) > 1) return false;
     const row = enclosingRow(g.members[0].id, g);
@@ -786,10 +811,19 @@ export function densityRepeats(
   };
 
   const usable = pins.usableHeightPx;
-  const volume =
-    inputs.volume !== undefined && Number.isInteger(inputs.volume) && inputs.volume >= 1
-      ? inputs.volume
-      : null;
+  const volumeValid =
+    inputs.volume !== undefined && Number.isInteger(inputs.volume) && inputs.volume >= 1;
+  const volume = volumeValid ? inputs.volume! : null;
+  const noVolume: DensityUnknownQuantity =
+    inputs.volume === undefined
+      ? {
+          unknown: 'no_expectation',
+          reason: 'no row volume was declared (the budget names the rows each list is judged at)',
+        }
+      : {
+          unknown: 'input_missing',
+          reason: 'the declared row volume is not a positive integer',
+        };
 
   const repeats = groups.map((g): DensityRepeat => {
     const rows = rowsFor(g);
@@ -837,7 +871,8 @@ export function densityRepeats(
       tag: g.tag,
       members: ordered.map((m) => m.id),
       rows: rows.length,
-      perRow: maxOf(rows.map((r) => r.length)),
+      // Columns, by left edge: two lines stacked in one list item are one column.
+      perRow: maxOf(rows.map((r) => clusterBy(r, (x) => x.x).length)),
       firstRow: first,
       lastRow: last,
       rowPitchPx,
@@ -853,12 +888,16 @@ export function densityRepeats(
       extentPx,
       extentAtVolume:
         volume === null
-          ? {
-              unknown: 'no_expectation',
-              reason:
-                'no row volume was declared (the budget names the rows each list is judged at)',
-            }
-          : { volume, px: extentPx + (volume - rows.length) * rowPitchPx },
+          ? noVolume
+          : {
+              volume,
+              // Fewer rows than rendered: the measured extent of the first
+              // `volume` rows; more: the measured extent plus whole pitches.
+              px:
+                volume <= rows.length
+                  ? bands[volume - 1].bottomPx - first.topPx
+                  : extentPx + (volume - rows.length) * rowPitchPx,
+            },
       scope: null,
       finder: null,
       renderedOf: {

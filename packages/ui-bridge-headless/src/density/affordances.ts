@@ -86,7 +86,7 @@ export const DENSITY_AFFORDANCE_RULES: Readonly<
       'an item that states `aria-expanded`, other than a combobox (whose popup is its options)',
   },
   'role-tab': { kind: 'tab', definition: 'role `tab`' },
-  'role-menu': { kind: 'menu', definition: 'role `menu` or `menubar`' },
+  'role-menu': { kind: 'menu', definition: 'role `menu` or `menubar` (the design names `menu`)' },
   'role-menuitem': {
     kind: 'menu',
     definition: 'role `menuitem`, `menuitemcheckbox` or `menuitemradio`',

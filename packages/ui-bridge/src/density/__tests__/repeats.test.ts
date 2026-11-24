@@ -493,7 +493,8 @@ describe('repeats', () => {
   it('stacked lines inside rows nobody registered are one repeat, counted in its rows', () => {
     const reps = densityRepeats(capture(stackedRows(false)), null);
     expect(reps.map((r) => [r.id, r.rows, r.perRow, r.members.length, r.rowPitchPx])).toEqual([
-      ['repeat:app.r1.t', 6, 3, 18, 70],
+      // Three lines stacked in each item are one column.
+      ['repeat:app.r1.t', 6, 1, 18, 70],
     ]);
   });
 
@@ -684,6 +685,74 @@ describe('repeats', () => {
     ];
     const reps = densityRepeats(capture(els), null);
     expect(reps.map((r) => [r.id, r.by, r.rows])).toEqual([['repeat:side.l1', 'geometry', 4]]);
+  });
+
+  it('a card grid in list items with a title and a price each has three columns, row tag li', () => {
+    const els: DensityTestElementSpec[] = [];
+    for (let n = 0; n < 9; n++) {
+      const x = 20 + 320 * (n % 3);
+      const y = 100 + 120 * Math.floor(n / 3);
+      els.push(
+        {
+          id: `c${n + 1}.title`,
+          tag: 'a',
+          xpath: `/html/body/main/ul/li[${n + 1}]/a`,
+          rect: [x, y, 300, 24],
+          text: `Card ${n + 1}`,
+        },
+        {
+          id: `c${n + 1}.price`,
+          tag: 'span',
+          xpath: `/html/body/main/ul/li[${n + 1}]/span`,
+          rect: [x, y + 30, 100, 20],
+          text: '12,50 €',
+        }
+      );
+    }
+    const reps = densityRepeats(capture(els), null);
+    expect(reps.map((r) => [r.tag, r.rows, r.perRow, r.members.length])).toEqual([
+      ['li', 3, 3, 18],
+    ]);
+  });
+
+  it('the fields of a form, and their labels, are not repeats', () => {
+    const els: DensityTestElementSpec[] = [];
+    for (let k = 1; k <= 3; k++) {
+      els.push(
+        {
+          id: `lab${k}`,
+          tag: 'label',
+          xpath: `/html/body/form/label[${k}]`,
+          rect: [0, 80 * k, 60 + 20 * k, 20],
+          text: `Field ${k}`,
+        },
+        {
+          id: `in${k}`,
+          tag: 'input',
+          role: 'textbox',
+          category: 'interactive',
+          xpath: `/html/body/form/input[${k}]`,
+          rect: [0, 80 * k + 24, 400, 32],
+          text: '',
+        }
+      );
+    }
+    expect(densityRepeats(capture(els), null)).toEqual([]);
+  });
+
+  it('a volume below the rendered rows is the measured extent of that many rows', () => {
+    // The first row is taller than the pitch: projecting backwards would give 36.
+    const els = orderList(5).map((e): DensityTestElementSpec => {
+      if (e.id !== 'app.orders.row-1') return e;
+      const [x, y, w] = e.rect!;
+      return { ...e, rect: [x, y, w, 60] };
+    });
+    const c = capture(els);
+    expect(densityRepeats(c, null, { volume: 1 })[0].extentAtVolume).toEqual({ volume: 1, px: 60 });
+    expect(densityRepeats(c, null, { volume: 2.5 })[0].extentAtVolume).toEqual({
+      unknown: 'input_missing',
+      reason: 'the declared row volume is not a positive integer',
+    });
   });
 
   it('a hidden leaf in a row draws no line band', () => {
