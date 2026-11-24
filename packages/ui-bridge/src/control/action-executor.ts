@@ -548,11 +548,11 @@ type VisibilityReason = 'hidden' | 'off-screen' | 'occluded' | 'no-layout';
  * It first applies the shared render check (`isRenderedForAction`,
  * `core/element-state`: connected, no `display: none` on the node or a
  * flat-tree ancestor, slotted where its parent hosts an open shadow root, not
- * `visibility: hidden`), answering `hidden` when that fails. Then the
- * element's OWN style: computed `display: none` and
- * `visibility: hidden|collapse` (`hidden`), an explicit zero inline
- * `width`/`height` (`no-layout`), and an inline `position: absolute|fixed`
- * with a `left`/`top` at or beyond -9999px (`off-screen`). It is exported
+ * `visibility: hidden` or `collapse`; the node's own computed style included),
+ * answering `hidden` when that fails. It then adds two inline-style reads the
+ * shared check does not make: an explicit zero inline `width`/`height`
+ * (`no-layout`), and an inline `position: absolute|fixed` with a `left`/`top`
+ * at or beyond -9999px (`off-screen`). It is exported
  * because the server wait-for-element `clickable` condition mirrors this
  * executor's click path with it.
  *
@@ -577,20 +577,6 @@ export function getClickVisibilityReason(element: HTMLElement): VisibilityReason
   // so both arms refuse a click inside a `display: none` subtree and both
   // accept an option in a closed dropdown.
   if (!isRenderedForAction(element)) return 'hidden';
-  let style: CSSStyleDeclaration;
-  try {
-    style = window.getComputedStyle(element);
-  } catch {
-    // Without computed style we cannot make a confident call — don't block.
-    return null;
-  }
-
-  // display:none / visibility:hidden|collapse — the strongest, fully
-  // portable hiddenness signals (jsdom honours these via getComputedStyle).
-  if (style.display === 'none') return 'hidden';
-  if (style.visibility === 'hidden' || style.visibility === 'collapse') {
-    return 'hidden';
-  }
 
   // A zero-size box is `no-layout` — but ONLY when the environment actually
   // computes layout. jsdom returns an all-zero rect for every element

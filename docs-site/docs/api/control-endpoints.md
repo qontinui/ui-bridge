@@ -673,6 +673,13 @@ because its select is. The server
 it never re-ranks Central Target Registry selectors, emits `ctr:*` events or
 prunes the discovery cache.
 
+On the React relay, the `executeElementAction` dispatch gate runs this render
+check before every action, not only clicks. So a relay `type`, `focus` or
+`setValue` on a node whose computed visibility is `collapse` (including one
+inside a collapsed table row) is now refused, as one on a `visibility: hidden`
+node already was. The HTTP click pre-check gates click-like actions only, so
+over HTTP those non-click actions still dispatch.
+
 ## Diagnostics
 
 Two page-level diagnostic routes share the `diagnostics` category in
