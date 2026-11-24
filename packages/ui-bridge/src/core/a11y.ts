@@ -364,8 +364,8 @@ function placeholderName(node: Element): string | undefined {
   const tag = node.tagName.toLowerCase();
   const applies =
     tag === 'textarea' ||
-    (tag === 'input' &&
-      PLACEHOLDER_INPUT_TYPES.has((node.getAttribute('type') ?? 'text').toLowerCase()));
+    // The REFLECTED `type`: an empty or unknown attribute reads as `text`.
+    (node instanceof HTMLInputElement && PLACEHOLDER_INPUT_TYPES.has(node.type));
   if (!applies) return undefined;
   return normalizeWhitespace(readPlaceholderAttr(node) ?? '') || undefined;
 }
@@ -396,11 +396,18 @@ function deriveStructuralName(node: Element): string | undefined {
   if (id) return id;
 
   // An inline icon often carries the only human-meaningful token on the node.
-  const svgTitle = node.querySelector('svg > title')?.textContent?.trim();
-  if (svgTitle) return svgTitle;
+  // §4.6: both icon arms read a DESCENDANT, and the node's own verdict only
+  // looks up, so a descendant that touches a redaction boundary (inside one,
+  // or holding one) is never read — its `<title>` or class can be the very
+  // text the boundary hides.
+  const titleEl = node.querySelector('svg > title');
+  if (titleEl && !touchesRedactionBoundary(titleEl)) {
+    const svgTitle = titleEl.textContent?.trim();
+    if (svgTitle) return svgTitle;
+  }
 
   const iconHost = node.matches('svg') ? node : node.querySelector('svg');
-  if (iconHost) {
+  if (iconHost && (iconHost === node || !touchesRedactionBoundary(iconHost))) {
     // `SVGElement.className` is an SVGAnimatedString, not a string — read the
     // attribute so both HTML and SVG hosts behave the same.
     const classes = (iconHost.getAttribute('class') ?? '').split(/\s+/);
