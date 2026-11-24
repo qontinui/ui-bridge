@@ -13,10 +13,20 @@
  *
  * Every id below is a LITERAL captured from ui-bridge `origin/main` cefa490d,
  * before the label moved to the canonical name. It must stay byte-identical.
+ *
+ * The same fixture pins D3: the row's `label` (and the seeded registry
+ * element's `label`) is the canonical accessible name — the value
+ * `state.accessibleName` carries — not the frozen id input.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { scanDOMForInteractiveElementsWithRefs } from './dom-fallback';
+import {
+  scanDOMForInteractiveElementRefs,
+  scanDOMForInteractiveElementsWithRefs,
+} from './dom-fallback';
+import { getElementState } from '../core/element-state';
+import { UIBridgeRegistry } from '../core/registry';
+import { seedRegistryFromDom } from '../injected/seed-registry';
 
 /** Document order is the scan order, so each row is addressed by its index. */
 const ID_FIXTURE = `
@@ -66,5 +76,74 @@ describe('DOM-fallback id stability', () => {
   it('generates the origin/main cefa490d id for every rung and name-difference case', () => {
     const ids = scanDOMForInteractiveElementsWithRefs().map((row) => row.id);
     expect(ids).toEqual(ID_FIXTURE_IDS);
+  });
+});
+
+/**
+ * The canonical name of every fixture row, in scan order, as LITERALS. Where
+ * the pre-D3 chain (now only the frozen id input) gave something else, the old
+ * value is in the comment.
+ */
+const CANONICAL_LABELS = [
+  'Save order',
+  'Checkout now',
+  'Archive',
+  'Delete draft', // old chain: 'Remove' (it resolved only a single-id aria-labelledby)
+  'Subscribe', // old chain: '' (it ignored a wrapping <label>)
+  'Email address',
+  'Print page',
+  '', // old chain: 'Search docs' (accname gives a placeholder no name here; no derived rung)
+  'Upload avatar', // old chain: '' (it ignored <img alt>)
+  'Send this message to every member of the team now',
+  'trash', // old chain: '' (the derived icon-token rung, nameSource 'derived')
+  'Duplicate',
+  'Duplicate',
+];
+
+describe('DOM-fallback label is the canonical accessible name', () => {
+  it('a multi-id aria-labelledby and a wrapping <label> read the canonical literal', () => {
+    const rows = scanDOMForInteractiveElementsWithRefs();
+    // Old chain: 'Remove' — the whole "lbl-a lbl-b" was looked up as ONE id.
+    expect(rows[3].label).toBe('Delete draft');
+    // Old chain: '' — a wrapping <label> was never read.
+    expect(rows[4].label).toBe('Subscribe');
+  });
+
+  it('every row reads the canonical literal', () => {
+    expect(scanDOMForInteractiveElementsWithRefs().map((row) => row.label)).toEqual(
+      CANONICAL_LABELS
+    );
+  });
+
+  it("every row's label equals its state.accessibleName (all names are under 200 code points)", () => {
+    for (const row of scanDOMForInteractiveElementsWithRefs()) {
+      expect(row.label).toBe(getElementState(row.element).accessibleName ?? '');
+    }
+  });
+
+  it('caps a long canonical name at 200 code points plus an ellipsis', () => {
+    document.body.innerHTML = `<button aria-label="${'n'.repeat(250)}">x</button>`;
+    const [row] = scanDOMForInteractiveElementsWithRefs();
+    expect(row.label).toBe('n'.repeat(200) + '…');
+    // The id input is frozen: aria-label first, sliced to the 30-char slug.
+    expect(row.id).toBe('dom-button-' + 'n'.repeat(30));
+  });
+
+  it('the ref-only scan agrees with the full scan on (id, label)', () => {
+    const full = scanDOMForInteractiveElementsWithRefs().map(({ id, label }) => ({ id, label }));
+    const refs = scanDOMForInteractiveElementRefs().map(({ id, label }) => ({ id, label }));
+    expect(refs).toEqual(full);
+    expect(refs.map((r) => r.id)).toEqual(ID_FIXTURE_IDS);
+  });
+
+  it('the injected seeder registers the canonical label under the unchanged id', () => {
+    const registry = new UIBridgeRegistry();
+    seedRegistryFromDom(registry, document.body);
+    const byId = (id: string) => registry.getElement(id);
+    expect(byId('dom-button-remove')?.label).toBe('Delete draft');
+    expect(byId('dom-checkbox-4')?.label).toBe('Subscribe');
+    expect(byId('dom-button-8')?.label).toBe('Upload avatar');
+    expect(byId('dom-button-10')?.label).toBe('trash');
+    expect(byId('dom-save-order')?.label).toBe('Save order');
   });
 });

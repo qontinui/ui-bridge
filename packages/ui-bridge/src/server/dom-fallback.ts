@@ -25,6 +25,7 @@ import {
   readAriaLabelAttr,
   readAriaLabelledbyAttr,
   readTitleAttr,
+  resolveAccessibleName,
 } from '../core/a11y';
 
 /** Selectors for standard interactive DOM elements. */
@@ -57,20 +58,33 @@ const INTERACTIVE_SELECTORS = [
 
 const COMBINED_SELECTOR = INTERACTIVE_SELECTORS.join(', ');
 
-/** Get the accessible label for an element. */
-function getLabel(el: HTMLElement): string {
+/**
+ * The frozen ADDRESSING-KEY input for {@link generateId}'s text-slug rung.
+ *
+ * This is NOT a name and must never be displayed or reported as one. It is
+ * the label chain the DOM fallback used before its `label` moved to the
+ * canonical accessible name (`core/a11y` `resolveAccessibleName`), kept
+ * byte-for-byte because fallback ids (`dom-button-save`) are addressing keys
+ * that agents, workflows and the runner hold across releases. The canonical
+ * name differs from this chain (multi-id `aria-labelledby`, a wrapping
+ * `<label>`, `alt`, `placeholder`, the `derived` rung), so building ids from
+ * it would move them. Frozen: do not "fix" it to match accname — that is the
+ * id change `dom-fallback.id-stability.test.ts` exists to catch (plan
+ * `2026-11-24-ui-bridge-find-visibility-and-fallback-label-read-the-canonical-verdicts`, D4).
+ */
+function fallbackIdText(el: HTMLElement): string {
   // aria-label takes precedence
   const ariaLabel = readAriaLabelAttr(el);
   if (ariaLabel) return ariaLabel;
 
-  // aria-labelledby
+  // aria-labelledby (a single id only — frozen, see above)
   const labelledBy = readAriaLabelledbyAttr(el);
   if (labelledBy) {
     const labelEl = document.getElementById(labelledBy);
     if (labelEl) return computeVisibleText(labelEl) ?? '';
   }
 
-  // Associated <label> for form inputs
+  // Associated <label for> for form inputs
   if (
     el instanceof HTMLInputElement ||
     el instanceof HTMLSelectElement ||
@@ -96,9 +110,22 @@ function getLabel(el: HTMLElement): string {
   return text.length > 200 ? truncateCodePoints(text, 200) + '…' : text;
 }
 
+/** The fallback label's cap: 200 code points, then `…` (the cap the old chain applied). */
+const LABEL_MAX_CODE_POINTS = 200;
+
+function capLabel(name: string): string {
+  const cut = truncateCodePoints(name, LABEL_MAX_CODE_POINTS);
+  return cut === name ? name : cut + '…';
+}
+
 /**
- * The DOM-fallback label derivation **with** the §4.6 CONTENT scrub applied —
- * exactly what the scan below writes into `DOMFallbackElement.label`.
+ * The DOM-fallback `label`: the element's CANONICAL accessible name
+ * (`core/a11y` `resolveAccessibleName`, the one name algorithm the package
+ * has, and so the same value as `state.accessibleName`) capped at 200 code
+ * points, **with** the §4.6 CONTENT scrub applied — exactly what the scan
+ * below writes into `DOMFallbackElement.label`. It includes the `derived`
+ * rung (a `data-testid` or icon token) because `state.accessibleName` does;
+ * `state.nameSource` says which rung produced it.
  *
  * Exported so the injected registry seeder can hand the registry a
  * re-derivation closure (`registerElement({ labelSource })`). Without that,
@@ -111,7 +138,7 @@ export function computeDomFallbackLabel(
   el: HTMLElement,
   verdict: RedactionVerdict = verdictOf(el)
 ): string {
-  return verdict.content ? REDACTED_VALUE : getLabel(el);
+  return verdict.content ? REDACTED_VALUE : capLabel(resolveAccessibleName(el).name ?? '');
 }
 
 /** Generate a stable ID for an element. */
@@ -126,7 +153,7 @@ function generateId(el: HTMLElement, index: number): string {
   // Semantic fallback: tag + type + text snippet
   const tag = el.tagName.toLowerCase();
   const type = inferElementType(el);
-  const text = getLabel(el)
+  const text = fallbackIdText(el)
     .slice(0, 30)
     .replace(/[^a-zA-Z0-9]/g, '-')
     .replace(/-+/g, '-')
