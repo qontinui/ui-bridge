@@ -25,12 +25,13 @@
  */
 
 import { resolveDensityMatcher, type DensityUnresolvedReason } from './match';
-import type {
-  DensityCapture,
-  DensityItem,
-  DensityLandmark,
-  DensityRect,
-  DensityTargets,
+import {
+  DENSITY_MAX_COORDINATE_PX,
+  type DensityCapture,
+  type DensityItem,
+  type DensityLandmark,
+  type DensityRect,
+  type DensityTargets,
 } from './schema';
 
 // ============================================================================
@@ -182,16 +183,22 @@ function landmarkOfTag(
   }
 }
 
-/** `[role="…"]` hints of a semantic path, innermost first. */
-function semanticRoleHints(semanticPath: string | null): DensityLandmark[] {
+/**
+ * `[role="…"]` landmark hints of a semantic path, innermost first, each with
+ * its distance above the item: `buildSemanticPath` (`core/stable-ref.ts`)
+ * writes one part per DOM level, the item's own part last.
+ */
+function semanticRoleHintsByDistance(
+  semanticPath: string | null
+): Array<{ distance: number; landmark: DensityLandmark }> {
   if (semanticPath === null) return [];
-  const out: DensityLandmark[] = [];
+  const out: Array<{ distance: number; landmark: DensityLandmark }> = [];
   const parts = semanticPath.split(' > ').reverse();
-  for (const part of parts) {
+  parts.forEach((part, distance) => {
     const m = /\[role="([^"]*)"\]/.exec(part);
     const lm = m ? landmarkOfRole(m[1]) : null;
-    if (lm !== null) out.push(lm);
-  }
+    if (lm !== null) out.push({ distance, landmark: lm });
+  });
   return out;
 }
 
@@ -202,6 +209,12 @@ function contains(outer: DensityRect, inner: DensityRect): boolean {
     outer.x + outer.w >= inner.x + inner.w &&
     outer.y + outer.h >= inner.y + inner.h
   );
+}
+
+/** The key of the chain's parent segment; see `siblingKey` below. */
+function siblingKeyOf(p: (ParsedChain & { ownId: boolean }) | null): string | null {
+  if (!p || p.ownId || p.keys.length < 2) return null;
+  return p.keys[p.keys.length - 2];
 }
 
 /**
@@ -229,10 +242,13 @@ function contains(outer: DensityRect, inner: DensityRect): boolean {
  * - **path.** The tags of the chain above the item, after the anchor's path
  *   when the chain is anchored at a registered item; `null` when the xpath
  *   gives no ancestor. `*` is an ancestor whose tag the xpath does not name.
- * - **landmark.** The innermost of: the item's own role or tag; the chain's
- *   tags between the item and its xpath parent; the parent's landmark; (with
- *   no xpath parent) the rest of `path`; then the `[role="…"]` hints of the
- *   semantic path. A `header` / `footer` is the banner / contentinfo only when
+ * - **landmark.** The item's own role or tag; else the innermost of — by
+ *   distance above the item — the chain's tags between the item and its xpath
+ *   parent, the parent's landmark (at the parent's distance), (with no xpath
+ *   parent) the rest of `path`, and the `[role="…"]` hints of the semantic
+ *   path, a role hint winning a tie. So an unregistered `div[role=navigation]`
+ *   between an item and its parent in `main` makes the item navigation. A
+ *   `header` / `footer` is the banner / contentinfo only when
  *   its whole ancestry is known (a chain from the document root) and holds no
  *   sectioning element; with unknown ancestry it is no landmark, never a
  *   default.
@@ -240,8 +256,19 @@ function contains(outer: DensityRect, inner: DensityRect): boolean {
  *   collapsed separators between them, not below 0; `null` when any term is
  *   `null`. A child read from geometry is assumed to be a DOM descendant; the
  *   summary counts the items for which that assumption was made.
+ * - **siblingKey.** The key of the chain's parent segment (the item's parent
+ *   element, registered or not), so that items sharing it are DOM siblings;
+ *   `null` for an own-id xpath, a one-segment chain, or a chain through an
+ *   ambiguous key.
+ * - **cousinKey.** The key of the repeated row position (`ul/li[*]`) of the
+ *   deepest unregistered `li` / `tr` the chain passes through, for the
+ *   registered item nearest that row: items inside repeated unregistered rows
+ *   of one list share it, whatever their tags.
  * - **blockKey.** The key of the nearest block-tag ancestor-or-self in the
  *   chain, else (for a chain anchored at a registered item) that item's.
+ *   `null` for a chain through an ambiguous key, and for a chain anchored at a
+ *   `data-testid` no registered item carries (a test id may repeat, one per
+ *   card, so no key below it says which card an item is in).
  */
 export function resolveDensityStructure(
   items: readonly DensityItem[],
@@ -381,22 +408,39 @@ export function resolveDensityStructure(
     path[i] = own;
     complete[i] = full;
 
-    // landmark: innermost first.
+    // landmark: the innermost candidate wins, measured as the distance above
+    // the item (0 is the item itself). At one distance a `[role="…"]` hint of
+    // the semantic path beats a tag, because an explicit role overrides it.
     let lm: DensityLandmark | null = landmarkOfRole(item.role);
     if (lm === null && (item.role === null || item.role === 'generic')) {
       lm = landmarkOfTag(item.tag, own, full);
     }
-    if (lm === null && own !== null && p) {
-      // The chain's own tags are the END of `own`; those after the parent's
-      // segment are deeper than the parent, the rest are the parent's to answer.
-      const offset = own.length - (p.tags.length - 1);
-      const stop = viaParent ? offset + parentDepth[i] + 1 : 0;
-      for (let k = own.length - 1; k >= stop && lm === null; k--) {
-        lm = landmarkOfTag(own[k], own.slice(0, k), full);
+    if (lm === null) {
+      let bestDistance = Infinity;
+      const consider = (distance: number, found: DensityLandmark | null): void => {
+        if (found !== null && distance < bestDistance) {
+          bestDistance = distance;
+          lm = found;
+        }
+      };
+      // Semantic-path hints: one part per DOM level, the item's own part last.
+      for (const hint of semanticRoleHintsByDistance(hints[i].semanticPath)) {
+        if (hint.distance > 0) consider(hint.distance, hint.landmark);
+      }
+      if (own !== null && p) {
+        // The chain's own tags are the END of `own`; those after the parent's
+        // segment are deeper than the parent, the rest are the parent's to answer.
+        const offset = own.length - (p.tags.length - 1);
+        const stop = viaParent ? offset + parentDepth[i] + 1 : 0;
+        for (let k = own.length - 1; k >= stop; k--) {
+          consider(own.length - k, landmarkOfTag(own[k], own.slice(0, k), full));
+        }
+        // The xpath parent answers for itself and everything above it, at its own distance.
+        if (pa !== null && viaParent) {
+          consider(p.tags.length - 1 - parentDepth[i], landmark[pa] ?? null);
+        }
       }
     }
-    if (lm === null && pa !== null && viaParent) lm = landmark[pa] ?? null;
-    if (lm === null) lm = semanticRoleHints(hints[i].semanticPath)[0] ?? null;
     landmark[i] = lm;
 
     // blockKey: the nearest block tag in the chain, self included.
@@ -404,7 +448,13 @@ export function resolveDensityStructure(
     // A chain with any ambiguous key repeats (rows under one shared test id):
     // its block key would be the same string in every row and merge them all
     // into one block, so it has none.
-    if (p && !p.keys.some(ambiguous)) {
+    // A chain anchored at a `data-testid` that no registered item carries
+    // has no block key either: unlike an `id`, a test id may repeat (one per
+    // card), and with the anchor unregistered nothing can say which instance
+    // an item is in — two cards that each register a different child would
+    // share every key below the anchor. Such leaves fall to the heading rule.
+    const unprovenAnchor = p !== null && p.keys[0].startsWith('@testid=') && !byKey.has(p.keys[0]);
+    if (p && !p.keys.some(ambiguous) && !unprovenAnchor) {
       const tags = p.tags.slice();
       if (tags[tags.length - 1] === '*' || p.ownId) tags[tags.length - 1] = item.tag;
       if (a !== null && tags[0] === '*') tags[0] = items[a].tag;
@@ -419,6 +469,66 @@ export function resolveDensityStructure(
     visiting.delete(i);
   };
   for (let i = 0; i < n; i++) resolveOne(i);
+
+  const ROW_TAGS = new Set(['li', 'tr']);
+  /** The text of chain segment `k` (`li[3]`), read back from the prefix keys. */
+  const segmentOf = (p: ParsedChain, k: number): string =>
+    k === 0 ? p.keys[0].replace(/^\//, '') : p.keys[k].slice(p.keys[k - 1].length + 1);
+  const unindexed = (seg: string): string => seg.replace(/\[\d+\]$/, '');
+  /** `[cousinKey, cousinRowKey, whether the row's cell on the way is a th]`, or `[null, null, false]`. */
+  const cousinOf = (
+    p: (ParsedChain & { ownId: boolean }) | null
+  ): [string, string, boolean] | [null, null, false] => {
+    if (!p || p.ownId || p.keys.some(ambiguous)) return [null, null, false];
+    // An item that is itself a registered list item or table row is a row:
+    // the path arm reads it with its siblings, inside whatever group it is in.
+    const ownSeg = segmentOf(p, p.keys.length - 1);
+    if (/\[\d+\]$/.test(ownSeg) && ROW_TAGS.has(unindexed(ownSeg))) return [null, null, false];
+    for (let k = p.keys.length - 2; k >= 0; k--) {
+      const seg = segmentOf(p, k);
+      // Only a list item or a table row is a row nobody registered: an
+      // indexed wrapper div is as likely three unrelated sections.
+      if (!/\[\d+\]$/.test(seg) || !ROW_TAGS.has(unindexed(seg))) continue;
+      // A registered row is read by the path arm through its own siblings.
+      if (lookup(p.keys[k]) !== null) return [null, null, false];
+      // Only the registered item nearest the row is its cousin: one registered
+      // between the row and this item (a card holding this link) already is.
+      for (let j = k + 1; j < p.keys.length - 1; j++) {
+        if (lookup(p.keys[j]) !== null) return [null, null, false];
+      }
+      // Keyed by the row's place alone: every registered item nearest a row
+      // (a link in one cell, a value in the next) belongs to that one list.
+      return [
+        [k > 0 ? p.keys[k - 1] : '', `${unindexed(seg)}[*]`].join('/'),
+        p.keys[k],
+        unindexed(seg) === 'tr' && unindexed(segmentOf(p, k + 1)) === 'th',
+      ];
+    }
+    return [null, null, false];
+  };
+  const cousinRows = parsed.map(cousinOf);
+  // A table row whose every cousin sits in a `th` is a header row (a table
+  // with no `thead` keeps its header row in `tbody`), not a data row — when it
+  // comes before the table's first row holding a cell that is not a `th`. A
+  // row-header-only row after that (a data row whose `td` nobody registered)
+  // is a data row, and a table whose only registered cells are `th` (row
+  // headers) keeps them all.
+  const rowIndexOf = (r: string): number => {
+    const m = /\[(\d+)\]$/.exec(r);
+    return m ? Number(m[1]) : Infinity;
+  };
+  const rowAllTh = new Map<string, boolean>();
+  const firstDataRow = new Map<string, number>();
+  for (const [c, r, viaTh] of cousinRows) {
+    if (c === null) continue;
+    rowAllTh.set(r, (rowAllTh.get(r) ?? true) && viaTh);
+    if (!viaTh) firstDataRow.set(c, Math.min(firstDataRow.get(c) ?? Infinity, rowIndexOf(r)));
+  }
+  const isHeaderRow = (c: string, r: string): boolean =>
+    rowAllTh.get(r) === true && rowIndexOf(r) < (firstDataRow.get(c) ?? -Infinity);
+  const cousins = cousinRows.map(([c, r]): [string, string] | [null, null] =>
+    c !== null && !isHeaderRow(c, r) ? [c, r] : [null, null]
+  );
 
   // ---- ownChars: direct children only ----
   // `chars` is the WHITESPACE-COLLAPSED length, so the text of a row of k
@@ -453,6 +563,9 @@ export function resolveDensityStructure(
           ? null
           : Math.max(0, chars - kids - Math.max(0, textChildren[i] - 1)),
       blockKey: blockKey[i] ?? null,
+      siblingKey: parsed[i]?.keys.some(ambiguous) ? null : siblingKeyOf(parsed[i]),
+      cousinKey: cousins[i][0],
+      cousinRowKey: cousins[i][1],
     };
   });
 }
@@ -462,6 +575,22 @@ export function resolveDensityStructure(
 // ============================================================================
 
 const MEDIA_TAGS = new Set(['img', 'svg', 'video']);
+
+/**
+ * The item's rect when a page can lay it out: every coordinate and size finite
+ * and within {@link DENSITY_MAX_COORDINATE_PX}; `null` otherwise. Both doors
+ * bound a capture (`boundDensityItem`), but these readers take any
+ * `DensityCapture`, so a forged rect handed to them directly is no rect,
+ * never an Infinity in a pin height or a block extent.
+ */
+export function densityLayoutRect(item: DensityItem): DensityRect | null {
+  const r = item.rect;
+  if (r === null) return null;
+  const ok = [r.x, r.y, r.w, r.h].every(
+    (v) => Number.isFinite(v) && Math.abs(v) <= DENSITY_MAX_COORDINATE_PX
+  );
+  return ok ? r : null;
+}
 
 /** Whether the item is media by tag (`img`, `svg`, `video`). */
 export function isDensityMedia(item: DensityItem): boolean {
@@ -547,8 +676,11 @@ export interface DensityPins {
 /**
  * Pins: items whose `position` is `fixed`, and `sticky` items that touch an
  * edge of the viewport, when they span at least half of `W`. A fixed item
- * belongs to the edge its centre is nearer. Only registered items can be read
- * (`pinBasis: registered-only` in snapshot mode).
+ * belongs to the edge its centre is nearer. A sticky item touches the top edge
+ * when its top lies on the bottom of what is already pinned there (the
+ * viewport's edge, or a fixed header above it: a bar stuck at `top: 64px`
+ * under a 64 px header is pinned too), and the bottom edge likewise. Only
+ * registered items can be read (`pinBasis: registered-only` in snapshot mode).
  */
 export function densityPins(capture: DensityCapture): DensityPins {
   const W = capture.viewport.width;
@@ -556,10 +688,11 @@ export function densityPins(capture: DensityCapture): DensityPins {
   const scrollY = capture.viewport.scrollY;
   let top = 0;
   let bottom = 0;
-  const ids: string[] = [];
+  const pinned = new Set<string>();
   const unknown: string[] = [];
+  const sticky: Array<{ id: string; vTop: number; vBottom: number }> = [];
   for (const item of capture.items) {
-    const r = item.rect;
+    const r = densityLayoutRect(item);
     if (r === null || r.w < W / 2) continue;
     if (item.visibility === 'hidden' || item.visibility === 'no-layout') continue;
     const mayPin = item.position === 'fixed' || item.position === 'sticky';
@@ -575,23 +708,34 @@ export function densityPins(capture: DensityCapture): DensityPins {
     }
     const vTop = r.y - scrollY;
     const vBottom = vTop + r.h;
-    let edge: 'top' | 'bottom' | null = null;
     if (item.position === 'fixed') {
-      edge = vTop + r.h / 2 <= H / 2 ? 'top' : 'bottom';
+      pinned.add(item.id);
+      if (vTop + r.h / 2 <= H / 2) top = Math.max(top, Math.min(H, vBottom));
+      else bottom = Math.max(bottom, Math.min(H, H - vTop));
     } else if (item.position === 'sticky') {
-      if (Math.abs(vTop) <= 1) edge = 'top';
-      else if (Math.abs(vBottom - H) <= 1) edge = 'bottom';
+      sticky.push({ id: item.id, vTop, vBottom });
     }
-    if (edge === null) continue;
-    ids.push(item.id);
-    if (edge === 'top') top = Math.max(top, Math.min(H, vBottom));
-    else bottom = Math.max(bottom, Math.min(H, H - vTop));
+  }
+  // Sticky bars stack on what is already pinned: top-down from the top edge,
+  // bottom-up from the bottom edge, each one moving the edge it lies on.
+  for (const s of sticky.slice().sort((a, b) => a.vTop - b.vTop)) {
+    if (Math.abs(s.vTop - top) <= 1) {
+      pinned.add(s.id);
+      top = Math.max(top, Math.min(H, s.vBottom));
+    }
+  }
+  for (const s of sticky.slice().sort((a, b) => b.vBottom - a.vBottom)) {
+    if (pinned.has(s.id)) continue;
+    if (Math.abs(s.vBottom - (H - bottom)) <= 1) {
+      pinned.add(s.id);
+      bottom = Math.max(bottom, Math.min(H, H - s.vTop));
+    }
   }
   return {
     pinTopPx: top,
     pinBottomPx: bottom,
     usableHeightPx: Math.max(0, H - top - bottom),
-    ids,
+    ids: capture.items.filter((i) => pinned.has(i.id)).map((i) => i.id),
     unknown,
   };
 }
@@ -678,22 +822,41 @@ export interface DensityBlocks {
   unblocked: string[];
 }
 
-function unionLength(intervals: Array<[number, number]>): number {
-  const sorted = intervals.slice().sort((a, b) => a[0] - b[0]);
+// Geometry the density modules share, by loops: a spread argument list has a
+// length ceiling (a block of a few hundred thousand leaves would throw).
+
+/** Union length of `[s, e)` intervals; an empty or inverted interval adds nothing. */
+export function densityIntervalUnion(intervals: ReadonlyArray<readonly [number, number]>): number {
+  const sorted = intervals.filter(([s, e]) => e > s).sort((a, b) => a[0] - b[0]);
   let total = 0;
-  let curStart = -Infinity;
-  let curEnd = -Infinity;
+  let cs = -Infinity;
+  let ce = -Infinity;
   for (const [s, e] of sorted) {
-    if (s > curEnd) {
-      if (curEnd > curStart) total += curEnd - curStart;
-      curStart = s;
-      curEnd = e;
-    } else if (e > curEnd) {
-      curEnd = e;
-    }
+    if (s > ce) {
+      if (ce > cs) total += ce - cs;
+      cs = s;
+      ce = e;
+    } else if (e > ce) ce = e;
   }
-  if (curEnd > curStart) total += curEnd - curStart;
+  if (ce > cs) total += ce - cs;
   return total;
+}
+
+/** The smallest rect holding every one of `rects`; `null` with none. */
+export function densityRectExtent(rects: Iterable<DensityRect>): DensityRect | null {
+  let x = Infinity;
+  let y = Infinity;
+  let right = -Infinity;
+  let bottom = -Infinity;
+  let any = false;
+  for (const r of rects) {
+    any = true;
+    if (r.x < x) x = r.x;
+    if (r.y < y) y = r.y;
+    if (r.x + r.w > right) right = r.x + r.w;
+    if (r.y + r.h > bottom) bottom = r.y + r.h;
+  }
+  return any ? { x, y, w: right - x, h: bottom - y } : null;
 }
 
 interface Extent {
@@ -704,16 +867,28 @@ interface Extent {
   height: number;
 }
 
+/**
+ * The members' extent, by loops: a spread argument list has a length ceiling
+ * (a block of a few hundred thousand leaves would throw). Only rects a page
+ * can lay out count.
+ */
 function extentOf(members: readonly DensityItem[]): Extent | null {
-  const rects = members.map((m) => m.rect).filter((r): r is DensityRect => r !== null);
-  if (rects.length === 0) return null;
-  return {
-    top: Math.min(...rects.map((r) => r.y)),
-    bottom: Math.max(...rects.map((r) => r.y + r.h)),
-    x: Math.min(...rects.map((r) => r.x)),
-    right: Math.max(...rects.map((r) => r.x + r.w)),
-    height: unionLength(rects.map((r) => [r.y, r.y + r.h])),
-  };
+  let top = Infinity;
+  let bottom = -Infinity;
+  let x = Infinity;
+  let right = -Infinity;
+  const spans: Array<[number, number]> = [];
+  for (const m of members) {
+    const r = densityLayoutRect(m);
+    if (r === null) continue;
+    top = Math.min(top, r.y);
+    bottom = Math.max(bottom, r.y + r.h);
+    x = Math.min(x, r.x);
+    right = Math.max(right, r.x + r.w);
+    spans.push([r.y, r.y + r.h]);
+  }
+  if (spans.length === 0) return null;
+  return { top, bottom, x, right, height: densityIntervalUnion(spans) };
 }
 
 /**
@@ -808,7 +983,7 @@ export function densityBlocks(
   const free = leaves.ids
     .filter((id) => !claimed.has(id) && !pinned.has(id))
     .map((id) => byId.get(id)!)
-    .filter((i) => i.rect !== null);
+    .filter((i) => densityLayoutRect(i) !== null);
   // Headings in document order: top, then capture order. A heading's block
   // holds only what comes after it in this order, so two headings at one `y`
   // never list each other, and the nesting below cannot cycle.

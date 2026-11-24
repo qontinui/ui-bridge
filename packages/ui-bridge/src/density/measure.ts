@@ -1,0 +1,694 @@
+/**
+ * `measure`: the full report of one cell, as the `value` of its `Observation`.
+ *
+ * It composes the model: structure and kinds (`structure.ts`, `classify.ts`),
+ * repeats and affordances, the ledger, reach per ask, the role and block
+ * quantities, and the legibility bounds. With no targets file the ledger,
+ * blocks, repeats, affordances and bounds are still measured, the ask and role
+ * sections are absent, and `next[]` holds `write-targets`.
+ *
+ * **Role quantities** are never combined with each other, across roles or
+ * across cells:
+ *
+ * - `answeredAt[k]`, k = 0..3: the weight share of the role's asks answered
+ *   within k actions, as an interval `[lo, hi]`. An ask counts in `lo` when it
+ *   certainly is (its reach is known and within k, and its answer available),
+ *   in `hi` when it may be. Unresolved weight therefore widens the interval;
+ *   an unanswered ask (`answer: null`) counts in neither, and widens nothing.
+ * - `meanScrollPx` and `meanInteractions`, weighted by ask weight, with their
+ *   unweighted twins, over the asks whose reach is known (the rest counted).
+ * - `unresolvedWeight`, and `unanswered[]`.
+ *
+ * **Block quantities**, per role: `firstScreenPx` (the block's height on the
+ * first screen); `claimedWeight` (the weight of the asks answered inside it);
+ * `displacementPx = Σ_below w · min(pitchPx, scrollPx) / Σ w` over the asks
+ * reached below it in its column (the scroll the block costs the role per
+ * visit); `invariance` across the captures of one invocation.
+ *
+ * **The unclaimed-block observation** is `firstScreenPx > 0 ∧ claimedWeight =
+ * 0 ∧ displacementPx > 0`. It fires only when `claimedWeight` is KNOWN to be
+ * zero: while the role has unresolved asks their answers could be inside the
+ * block, so it is listed as possibly unclaimed, with the unresolved weight
+ * beside it, and never as unclaimed (served policy
+ * `verification-and-evidence` `an-unknown-input-must-not-fire-a-detector`).
+ *
+ * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change (Phase 5).
+ */
+
+import { Observation, type ObservationTime } from '../observation/observation';
+import {
+  densityAffordances,
+  summarizeDensityAffordances,
+  type DensityAffordancesReport,
+} from './affordances';
+import { densityBounds, type DensityBounds } from './bounds';
+import {
+  DENSITY_BLOCK_LIST_CAP,
+  DENSITY_KIND_BASES,
+  classifyDensityItems,
+  summarizeDensityStructure,
+  type DensityKindBy,
+  type DensityStructureSummary,
+} from './classify';
+import { densityAsksHash, densityTargetsHash, hashDensityCanonical } from './hash';
+import {
+  densityLedger,
+  densityPlacedRects,
+  type DensityLedger,
+  type DensityLedgerKind,
+} from './ledger';
+import {
+  DENSITY_ANSWER_ITEM_CAP,
+  densityAnsweredWithin,
+  densityAskAnswer,
+  densityAskReach,
+  densityForeignPx,
+  densityReachContext,
+  type DensityAskReach,
+  type DensityFloors,
+  type DensityItemReach,
+} from './reach';
+import {
+  densityRepeats,
+  summarizeDensityRepeats,
+  type DensityRepeatsReport,
+  type DensityUnknownQuantity,
+} from './repeats';
+import {
+  DENSITY_CAPTURE_SCHEMA,
+  type DensityCapture,
+  type DensityCaptureBases,
+  type DensityCaptureViewport,
+  type DensityCell,
+  type DensityCoverage,
+  type DensityProbeResult,
+  type DensityProducer,
+  type DensityRect,
+  type DensityTargets,
+} from './schema';
+import {
+  densityBlocks,
+  densityIntervalUnion,
+  densityLeaves,
+  densityPinnedIds,
+  densityPins,
+  densityRectExtent,
+  densitySameColumn,
+  type DensityBlock,
+  type DensityBlockBy,
+} from './structure';
+
+/** The closed vocabulary of follow-up steps a report may name (plan "Budget half"). */
+export type DensityNextStep =
+  | 'write-targets'
+  | 'review-targets'
+  | 'set-limit'
+  | 'capture'
+  | 'apply'
+  | 're-measure';
+
+/** The ks of `answeredAt`. */
+export const DENSITY_ANSWERED_AT_KS: readonly number[] = [0, 1, 2, 3];
+
+/** The bases a report is read under: the capture's, plus how interactions and kinds were read. */
+export interface DensityReportBases extends DensityCaptureBases {
+  /** Interactions are read from structure and ARIA state; no control was operated. */
+  interactionsBasis: 'static';
+  structureBy: { xpath: number; geometry: number };
+  /** How many leaves took their kind by each rule. */
+  kindBy: Record<DensityKindBy, number>;
+}
+
+/** Whether a block's text varies across the captures of one invocation. */
+export type DensityInvariance =
+  | {
+      /** The most captures that hold this block with byte-identical text. */
+      identical: number;
+      /** The captures that hold this block. */
+      of: number;
+      /** The cell dimensions that differ among those captures. */
+      across: Array<'role' | 'viewport' | 'fixture'>;
+    }
+  | DensityUnknownQuantity;
+
+/** One block as the report gives it. */
+export interface DensityBlockReport {
+  id: string;
+  by: DensityBlockBy;
+  members: number;
+  topPx: number | null;
+  heightPx: number | null;
+  pitchPx: number | null;
+  parent: string | null;
+  /** The block's height on the first screen (document `y` in `[0, H)`), px. */
+  firstScreenPx: number;
+  /** Present with a role: the weight of the asks answered inside the block. */
+  claimedWeight?: number;
+  /**
+   * Present with a role: the scroll the block costs the role per visit, px.
+   * `null` when the role's asks weigh nothing in total: a mean over no weight.
+   */
+  displacementPx?: number | null;
+  /** Present with a role: true when asks whose reach is unknown could add to `displacementPx`. */
+  displacementIsLowerBound?: boolean;
+  invariance: DensityInvariance;
+}
+
+/** A block that sits in a role's way while answering nothing it asks. */
+export interface DensityUnclaimedBlock {
+  block: string;
+  firstScreenPx: number;
+  displacementPx: number;
+}
+
+/** A block that may be unclaimed: the role has unresolved asks, which could be answered inside it. */
+export interface DensityPossiblyUnclaimedBlock extends DensityUnclaimedBlock {
+  /** The weight whose answers could be inside the block: unresolved asks, and asks answered by an item no block can hold. */
+  unresolvedWeight: number;
+}
+
+/** A mean over the asks whose quantity is known. */
+export interface DensityMean {
+  value: number | null;
+  over: { asks: number; weight: number };
+  excluded: { asks: number; weight: number };
+}
+
+/** What a role's asks cost it, in this cell. */
+export interface DensityRoleReport {
+  role: string;
+  totalWeight: number;
+  asks: DensityAskReach[];
+  /** `lo` / `hi` are `null` when the role's asks weigh nothing in total: a share of nothing. */
+  answeredAt: Array<{ k: number; lo: number | null; hi: number | null }>;
+  meanScrollPx: DensityMean;
+  meanInteractions: DensityMean;
+  unweighted: { meanScrollPx: DensityMean; meanInteractions: DensityMean };
+  unresolvedWeight: number;
+  /** Weight of resolved asks answered by an item no block can hold (its block claim is unknown). */
+  unplacedWeight: number;
+  unanswered: string[];
+  /** `chrome-and-unclaimed`, or `chrome-only` while unresolved or unplaced asks keep every block from reading as unclaimed. */
+  foreignBasis: 'chrome-and-unclaimed' | 'chrome-only';
+  /** Whether availability was held to the caller's floors. */
+  floorsChecked: boolean;
+}
+
+/** A capped list of entries. */
+export interface DensityCappedList<T> {
+  shown: number;
+  total: number;
+  truncated: boolean;
+  list: T[];
+}
+
+/** The full report of one cell. Holds no page text. */
+export interface DensityMeasureReport {
+  scope: DensityCapture['scope'];
+  cell: DensityCell;
+  viewport: DensityCaptureViewport;
+  observedAt: string | null;
+  snapshotId: string | null;
+  /** The hash of the targets this report was measured against, or `null`. */
+  targetsHash: string | null;
+  /** The hash of the targets whose `text` matchers the capture evaluated; a mismatch leaves those matchers unresolved. */
+  captureTargetsHash: string | null;
+  probe: DensityProbeResult | null;
+  coverage: DensityCoverage;
+  items: number;
+  bases: DensityReportBases;
+  structure: DensityStructureSummary;
+  ledger: DensityLedger;
+  /** Absent with no targets, or when the cell's role is not declared in them (then `roleAbsent` says why). */
+  role?: DensityRoleReport;
+  roleAbsent?: string;
+  blocks: DensityCappedList<DensityBlockReport>;
+  /** Present with a role. */
+  unclaimed?: DensityCappedList<DensityUnclaimedBlock>;
+  /** Present with a role. */
+  possiblyUnclaimed?: DensityCappedList<DensityPossiblyUnclaimedBlock>;
+  repeats: DensityRepeatsReport;
+  affordances: DensityAffordancesReport;
+  bounds: DensityBounds;
+  next: DensityNextStep[];
+}
+
+export type DensityMeasureObservation = Observation<DensityMeasureReport>;
+
+export interface DensityMeasureOptions {
+  /** Who is running the core (D-E). */
+  producer: DensityProducer;
+  targets?: DensityTargets | null;
+  /** Every capture of this invocation, this one included: `invariance` is computed across them. */
+  captures?: readonly DensityCapture[];
+  /** Floors an answer is held to; without them availability does not read size. */
+  floors?: DensityFloors | null;
+  /** The number of rows each list is judged at (the budget's `volume`); a repeat's extent is projected at it. */
+  volume?: number | null;
+  /** The longest list the report prints (blocks, unclaimed blocks); the rest is counted. */
+  cap?: number;
+  evaluatedAt?: ObservationTime;
+}
+
+function cappedList<T>(all: T[], cap: number): DensityCappedList<T> {
+  const list = all.slice(0, Math.max(0, cap));
+  return { shown: list.length, total: all.length, truncated: list.length < all.length, list };
+}
+
+/** Each block's members' placed rects. */
+function memberRects(block: DensityBlock, placed: ReadonlyMap<string, DensityRect>): DensityRect[] {
+  return block.members.map((m) => placed.get(m)).filter((r): r is DensityRect => r !== undefined);
+}
+
+/** The text signature of a block in one capture; `null` when a member's text is unreadable. */
+function blockSignature(capture: DensityCapture, block: DensityBlock): string | null {
+  const byId = new Map(capture.items.map((i) => [i.id, i]));
+  const parts: string[] = [];
+  for (const m of block.members) {
+    const item = byId.get(m);
+    if (!item || item.chars === null) return null;
+    parts.push(item.textHash ?? '');
+  }
+  return hashDensityCanonical(parts);
+}
+
+function invarianceOf(
+  blockId: string,
+  captures: readonly DensityCapture[],
+  blocksOf: (c: DensityCapture) => Map<string, DensityBlock>
+): DensityInvariance {
+  if (captures.length < 2) {
+    return {
+      unknown: 'input_missing',
+      reason: 'invariance is read across captures, and this invocation measured one',
+    };
+  }
+  const holding: Array<{ c: DensityCapture; sig: string | null }> = [];
+  for (const c of captures) {
+    const b = blocksOf(c).get(blockId);
+    if (b) holding.push({ c, sig: blockSignature(c, b) });
+  }
+  if (holding.length < 2) {
+    return {
+      unknown: 'input_missing',
+      reason: 'only one capture of this invocation holds this block',
+    };
+  }
+  if (holding.some((h) => h.sig === null)) {
+    return {
+      unknown: 'not_attempted_by_policy',
+      reason: 'a member of this block is redacted in some capture, so its text cannot be compared',
+    };
+  }
+  const groups = new Map<string, number>();
+  for (const h of holding) groups.set(h.sig!, (groups.get(h.sig!) ?? 0) + 1);
+  const across: Array<'role' | 'viewport' | 'fixture'> = [];
+  const cells = holding.map((h) => h.c.cell);
+  if (new Set(cells.map((c) => c.role)).size > 1) across.push('role');
+  if (new Set(cells.map((c) => `${c.viewport.width}x${c.viewport.height}`)).size > 1)
+    across.push('viewport');
+  if (new Set(cells.map((c) => c.fixture)).size > 1) across.push('fixture');
+  return { identical: Math.max(...groups.values()), of: holding.length, across };
+}
+
+function meanOf(
+  asks: ReadonlyArray<{ weight: number; v: number | null }>,
+  weighted: boolean
+): DensityMean {
+  const known = asks.filter((a) => a.v !== null);
+  const unknown = asks.filter((a) => a.v === null);
+  const w = (a: { weight: number }) => (weighted ? a.weight : 1);
+  const denom = known.reduce((s, a) => s + w(a), 0);
+  return {
+    value: denom > 0 ? known.reduce((s, a) => s + w(a) * (a.v as number), 0) / denom : null,
+    over: { asks: known.length, weight: known.reduce((s, a) => s + a.weight, 0) },
+    excluded: { asks: unknown.length, weight: unknown.reduce((s, a) => s + a.weight, 0) },
+  };
+}
+
+/** The decisive reach of an ask: its first item for `need: any`, all of them for `need: all`. */
+function decisive(r: DensityAskReach): {
+  item: string | null;
+  scrollPx: number | null;
+  interactions: number | null;
+} {
+  if (r.need === 'all') {
+    return {
+      item: r.all?.lastItem ?? null,
+      scrollPx: r.all?.scrollPx ?? null,
+      interactions: r.all?.interactions ?? null,
+    };
+  }
+  return {
+    item: r.first?.id ?? null,
+    scrollPx: r.first?.scrollPx ?? null,
+    interactions: r.first?.interactions ?? null,
+  };
+}
+
+/** One ask's reach, and every one of its answering items' reach. */
+type DensityAskResult = { reach: DensityAskReach; items: DensityItemReach[] };
+
+/**
+ * What a block costs the role: the weight of the asks it answers, and the
+ * scroll it puts between the role and the answers below it
+ * (`Σ_below w·min(pitchPx, scrollPx) / Σ w`).
+ */
+function blockClaimOf(
+  b: DensityBlock,
+  asks: readonly DensityAskResult[],
+  placed: ReadonlyMap<string, DensityRect>,
+  totalWeight: number,
+  reachUnknown: boolean
+): Pick<DensityBlockReport, 'claimedWeight' | 'displacementPx' | 'displacementIsLowerBound'> {
+  const members = new Set(b.members);
+  let claimed = 0;
+  for (const a of asks) {
+    if (a.reach.state !== 'rendered' && a.reach.state !== 'hidden') continue;
+    if (a.items.some((r) => members.has(r.id))) claimed += a.reach.weight;
+  }
+  const ext = densityRectExtent(memberRects(b, placed));
+  // A mean over the role's weight: with none, there is no mean (never 0).
+  let displaced: number | null = totalWeight > 0 ? 0 : null;
+  let stepUnknown = false;
+  const step = b.pitchPx ?? b.heightPx;
+  if (step === null) stepUnknown = true;
+  else if (ext !== null && totalWeight > 0) {
+    let sum = 0;
+    for (const a of asks) {
+      const d = decisive(a.reach);
+      if (d.item === null || d.scrollPx === null || members.has(d.item)) continue;
+      const r = placed.get(d.item);
+      if (r === undefined || r.y < ext.y + ext.h || !densitySameColumn(ext, r)) continue;
+      sum += a.reach.weight * Math.min(step, d.scrollPx);
+    }
+    displaced = sum / totalWeight;
+  }
+  return {
+    claimedWeight: claimed,
+    displacementPx: displaced,
+    displacementIsLowerBound: reachUnknown || stepUnknown,
+  };
+}
+
+/**
+ * The unclaimed-block observation: `firstScreenPx > 0 ∧ claimedWeight = 0 ∧
+ * displacementPx > 0`. While some weight is uncertain its answers could be
+ * inside the block, so the block is only possibly unclaimed.
+ */
+function unclaimedBlocksOf(
+  blockReports: readonly DensityBlockReport[],
+  uncertainWeight: number
+): { unclaimedAll: DensityUnclaimedBlock[]; possiblyAll: DensityPossiblyUnclaimedBlock[] } {
+  const unclaimedAll: DensityUnclaimedBlock[] = [];
+  const possiblyAll: DensityPossiblyUnclaimedBlock[] = [];
+  for (const b of blockReports) {
+    if (!(b.firstScreenPx > 0 && b.claimedWeight === 0 && (b.displacementPx ?? 0) > 0)) continue;
+    const entry = {
+      block: b.id,
+      firstScreenPx: b.firstScreenPx,
+      displacementPx: b.displacementPx ?? 0,
+    };
+    // An unknown claimedWeight never fires the detector.
+    if (uncertainWeight > 0) possiblyAll.push({ ...entry, unresolvedWeight: uncertainWeight });
+    else unclaimedAll.push(entry);
+  }
+  return { unclaimedAll, possiblyAll };
+}
+
+/** The role quantities: `answeredAt[k]` as intervals, the means and their unweighted twins. */
+function roleReportOf(
+  role: string,
+  asks: readonly DensityAskResult[],
+  w: {
+    totalWeight: number;
+    unresolvedWeight: number;
+    unplacedWeight: number;
+    floorsChecked: boolean;
+  }
+): DensityRoleReport {
+  const { totalWeight } = w;
+  const answeredAt = DENSITY_ANSWERED_AT_KS.map((k) => {
+    let lo = 0;
+    let hi = 0;
+    for (const a of asks) {
+      const within = densityAnsweredWithin(a.reach, k, a.items);
+      if (within.lo) lo += a.reach.weight;
+      if (within.hi) hi += a.reach.weight;
+    }
+    return {
+      k,
+      lo: totalWeight > 0 ? lo / totalWeight : null,
+      hi: totalWeight > 0 ? hi / totalWeight : null,
+    };
+  });
+  const reached = asks.filter((a) => a.reach.state !== 'unanswered');
+  const scrolls = reached.map((a) => ({
+    weight: a.reach.weight,
+    v: a.reach.state === 'unresolved' ? null : decisive(a.reach).scrollPx,
+  }));
+  const interactions = reached.map((a) => ({
+    weight: a.reach.weight,
+    v: a.reach.state === 'unresolved' ? null : decisive(a.reach).interactions,
+  }));
+  return {
+    role,
+    totalWeight,
+    asks: asks.map((a) => a.reach),
+    answeredAt,
+    meanScrollPx: meanOf(scrolls, true),
+    meanInteractions: meanOf(interactions, true),
+    unweighted: {
+      meanScrollPx: meanOf(scrolls, false),
+      meanInteractions: meanOf(interactions, false),
+    },
+    unresolvedWeight: w.unresolvedWeight,
+    unplacedWeight: w.unplacedWeight,
+    unanswered: asks.filter((a) => a.reach.state === 'unanswered').map((a) => a.reach.id),
+    foreignBasis:
+      w.unresolvedWeight + w.unplacedWeight > 0 ? 'chrome-only' : 'chrome-and-unclaimed',
+    floorsChecked: w.floorsChecked,
+  };
+}
+
+/** Measure one capture. A capture whose structure is not resolved answers `unknown{input_missing}`. */
+export function measureDensity(
+  capture: DensityCapture,
+  options: DensityMeasureOptions
+): DensityMeasureObservation {
+  const targets = options.targets ?? null;
+  const cap = options.cap ?? DENSITY_BLOCK_LIST_CAP;
+  const requestedAt = options.evaluatedAt;
+  const evaluatedAt =
+    requestedAt !== undefined && Number.isFinite(new Date(requestedAt).getTime())
+      ? requestedAt
+      : new Date();
+  const targetsHash = targets ? densityTargetsHash(targets) : null;
+  const prov = Observation.provenance({
+    producer: { id: options.producer.id, version: options.producer.version },
+    observedAt: capture.observedAt,
+    evaluatedAt,
+    coverage: capture.coverage,
+    source: {
+      package: options.producer.package,
+      schema: DENSITY_CAPTURE_SCHEMA,
+      snapshotId: capture.snapshotId,
+      targetsHash,
+    },
+  });
+  if (!capture.structureResolved) {
+    return Observation.unknown(
+      'input_missing',
+      'the capture was written before its structure was resolved (structureResolved: false); capture it again',
+      prov
+    );
+  }
+
+  const H = capture.viewport.height;
+  const leaves = densityLeaves(capture);
+  const pins = densityPins(capture);
+  const pinned = densityPinnedIds(capture, pins);
+  const blocks = densityBlocks(capture, targets, leaves, pinned);
+  const classes = classifyDensityItems(capture, targets, leaves, pins);
+  const placed = densityPlacedRects(capture, pins);
+  const byId = new Map(capture.items.map((i) => [i.id, i]));
+
+  // ---- the role and its asks ----
+  const declared =
+    targets && capture.cell.role !== null
+      ? (targets.roles.find((r) => r.role === capture.cell.role) ?? null)
+      : null;
+  const ctx = densityReachContext(capture, pins, leaves, placed, options.floors ?? null);
+  const asks: DensityAskResult[] = declared
+    ? declared.asks.map((a) =>
+        densityAskReach(ctx, densityAskAnswer(ctx, a), DENSITY_ANSWER_ITEM_CAP)
+      )
+    : [];
+  const answerIds = new Set<string>();
+  for (const a of asks) {
+    if (a.reach.state === 'rendered' || a.reach.state === 'hidden') {
+      for (const r of a.items) answerIds.add(r.id);
+    }
+  }
+
+  // ---- ledger kinds ----
+  const kinds = new Map<string, DensityLedgerKind>();
+  for (const c of classes.items) kinds.set(c.id, answerIds.has(c.id) ? 'answer' : c.kind);
+  const ledger = densityLedger(capture, kinds, placed, leaves.unknown);
+
+  // ---- blocks ----
+  const totalWeight = declared ? declared.asks.reduce((s, a) => s + a.weight, 0) : 0;
+  const unresolved = asks.filter((a) => a.reach.state === 'unresolved' || a.reach.partial);
+  const unresolvedWeight = unresolved.reduce((s, a) => s + a.reach.weight, 0);
+  // Asks answered by an item no block can hold (a leaf of unknown status, or a
+  // matched container with no leaf below it): which block they claim is
+  // unknown, so like unresolved asks they keep every block from reading as
+  // unclaimed.
+  const leafIds = new Set(leaves.ids);
+  const unplacedWeight = asks
+    .filter(
+      (a) =>
+        (a.reach.state === 'rendered' || a.reach.state === 'hidden') &&
+        !a.reach.partial &&
+        a.items.some((r) => !leafIds.has(r.id))
+    )
+    .reduce((s, a) => s + a.reach.weight, 0);
+  const uncertainWeight = unresolvedWeight + unplacedWeight;
+  const reachUnknown = asks.some(
+    (a) =>
+      a.reach.state !== 'unanswered' &&
+      (a.reach.state === 'unresolved' || decisive(a.reach).scrollPx === null)
+  );
+  const blocksOfCache = new Map<DensityCapture, Map<string, DensityBlock>>();
+  const blocksOf = (c: DensityCapture): Map<string, DensityBlock> => {
+    let m = blocksOfCache.get(c);
+    if (!m) {
+      const bs = c === capture ? blocks : densityBlocks(c, targets);
+      m = new Map(bs.blocks.map((b) => [b.id, b]));
+      blocksOfCache.set(c, m);
+    }
+    return m;
+  };
+  const captures = options.captures ?? [capture];
+
+  const blockReports: DensityBlockReport[] = blocks.blocks.map((b) => {
+    // What the block shows: its members that are laid out.
+    const rects = b.members
+      .filter((m) => {
+        const v = byId.get(m)?.visibility;
+        return v !== 'hidden' && v !== 'no-layout';
+      })
+      .map((m) => placed.get(m))
+      .filter((r): r is DensityRect => r !== undefined);
+    const firstScreenPx = densityIntervalUnion(
+      rects.map((r) => [Math.max(0, r.y), Math.min(H, r.y + r.h)] as [number, number])
+    );
+    const report: DensityBlockReport = {
+      id: b.id,
+      by: b.by,
+      members: b.members.length,
+      topPx: b.topPx,
+      heightPx: b.heightPx,
+      pitchPx: b.pitchPx,
+      parent: b.parent,
+      firstScreenPx,
+      invariance: invarianceOf(b.id, captures, blocksOf),
+    };
+    if (declared) Object.assign(report, blockClaimOf(b, asks, placed, totalWeight, reachUnknown));
+    return report;
+  });
+
+  // ---- the unclaimed-block observation ----
+  const { unclaimedAll, possiblyAll } = declared
+    ? unclaimedBlocksOf(blockReports, uncertainWeight)
+    : { unclaimedAll: [], possiblyAll: [] };
+
+  // ---- foreignPx: chrome, and the blocks known to be unclaimed ----
+  const foreign = new Set<string>();
+  for (const c of classes.items) if (kinds.get(c.id) === 'chrome') foreign.add(c.id);
+  const blockById = new Map(blocks.blocks.map((b) => [b.id, b]));
+  for (const u of unclaimedAll) for (const m of blockById.get(u.block)!.members) foreign.add(m);
+  for (const a of asks) {
+    for (const r of a.items) r.foreignPx = densityForeignPx(ctx, r.id, foreign);
+    const all = a.reach.all;
+    if (all !== null && all.lastItem !== null) {
+      all.foreignPx = a.items.find((r) => r.id === all.lastItem)?.foreignPx ?? null;
+    }
+  }
+
+  // ---- role quantities ----
+  let role: DensityRoleReport | undefined;
+  let roleAbsent: string | undefined;
+  if (declared) {
+    role = roleReportOf(declared.role, asks, {
+      totalWeight,
+      unresolvedWeight,
+      unplacedWeight,
+      floorsChecked: options.floors !== undefined && options.floors !== null,
+    });
+  } else if (targets) {
+    roleAbsent =
+      capture.cell.role === null
+        ? 'the capture has no role, so no asks are read'
+        : `the role "${capture.cell.role}" is not declared in the targets`;
+  }
+
+  // ---- repeats, affordances, bounds ----
+  const keyed = capture.repeatKeysResolved;
+  const volume = options.volume ?? undefined;
+  const repeats = keyed
+    ? densityRepeats(capture, targets, { leaves, pins, blocks, classes, volume })
+    : [];
+  // Unkeyed, no repeat is read, so only the item-local affordances are.
+  const affordances = densityAffordances(capture, targets, { leaves, blocks, repeats });
+
+  const kindBy = Object.fromEntries(DENSITY_KIND_BASES.map((b) => [b, 0])) as Record<
+    DensityKindBy,
+    number
+  >;
+  for (const c of classes.items) kindBy[c.kindBy]++;
+
+  const next: DensityNextStep[] = [];
+  if (targets === null) next.push('write-targets');
+  else if (targets.review === null || targets.review.asksHash !== densityAsksHash(targets)) {
+    next.push('review-targets');
+  }
+
+  const report: DensityMeasureReport = {
+    scope: capture.scope,
+    cell: capture.cell,
+    viewport: capture.viewport,
+    observedAt: capture.observedAt,
+    snapshotId: capture.snapshotId,
+    targetsHash,
+    captureTargetsHash: capture.targetsHash,
+    probe: capture.probe,
+    coverage: capture.coverage,
+    items: capture.items.length,
+    bases: {
+      ...capture.bases,
+      interactionsBasis: 'static',
+      structureBy: {
+        xpath: capture.items.filter((i) => i.structureBy === 'xpath').length,
+        geometry: capture.items.filter((i) => i.structureBy === 'geometry').length,
+      },
+      kindBy,
+    },
+    structure: summarizeDensityStructure(capture, targets),
+    ledger,
+    ...(role ? { role } : {}),
+    ...(roleAbsent !== undefined ? { roleAbsent } : {}),
+    blocks: cappedList(blockReports, cap),
+    ...(declared
+      ? {
+          unclaimed: cappedList(unclaimedAll, cap),
+          possiblyUnclaimed: cappedList(possiblyAll, cap),
+        }
+      : {}),
+    repeats: summarizeDensityRepeats(capture, targets, repeats),
+    affordances: summarizeDensityAffordances(capture, targets, affordances),
+    bounds: densityBounds(capture, kinds, placed, cap, leaves.unknown),
+    next,
+  };
+  return Observation.measured(report, prov);
+}

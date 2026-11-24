@@ -1065,3 +1065,121 @@ describe('density structure: review round 1', () => {
     expect(s.leaves).toEqual({ count: 3, unknown: 0, geometryOwnChars: 1 });
   });
 });
+
+describe('density structure: Phase 3 follow-ups', () => {
+  it('a semantic-path role hint between an item and its xpath parent outranks the parent landmark', () => {
+    const c = byId(
+      capture([
+        {
+          id: 'app.main',
+          tag: 'main',
+          xpath: '/html/body/main',
+          rect: [0, 0, 1280, 800],
+        },
+        // The unregistered `div role=navigation` between them shows only in
+        // the semantic path: the xpath names its tag, not its role.
+        {
+          id: 'app.main.link',
+          tag: 'span',
+          xpath: '/html/body/main/div/span',
+          semanticPath: 'main > div[role="navigation"] > span',
+          rect: [0, 0, 50, 20],
+          text: 'Home',
+        },
+        // A hint ABOVE the xpath parent loses to the parent's landmark.
+        {
+          id: 'app.main.value',
+          tag: 'span',
+          xpath: '/html/body/main/span',
+          semanticPath: 'div[role="complementary"] > main > span',
+          rect: [0, 40, 50, 20],
+          text: '42',
+        },
+      ])
+    );
+    expect(c['app.main'].landmark).toBe('main');
+    expect(c['app.main.link'].landmark).toBe('navigation');
+    expect(c['app.main.value'].landmark).toBe('main');
+  });
+
+  it('a sticky bar stuck just below a fixed header is a pin', () => {
+    const cap = capture([
+      {
+        id: 'app.header',
+        tag: 'header',
+        xpath: '/html/body/header',
+        rect: [0, 0, 1280, 64],
+        styles: { position: 'fixed' },
+      },
+      {
+        id: 'app.filters',
+        tag: 'div',
+        xpath: '/html/body/div',
+        rect: [0, 64, 1280, 40],
+        styles: { position: 'sticky' },
+      },
+      // Sticky, but not on the pinned stack's edge: not a pin.
+      {
+        id: 'app.section-head',
+        tag: 'div',
+        xpath: '/html/body/main/div',
+        rect: [0, 300, 1280, 40],
+        styles: { position: 'sticky' },
+      },
+    ]);
+    expect(densityPins(cap)).toEqual({
+      pinTopPx: 104,
+      pinBottomPx: 0,
+      usableHeightPx: 696,
+      ids: ['app.header', 'app.filters'],
+      unknown: [],
+    });
+  });
+
+  it('repeated cards under an unregistered shared test id do not share one path block', () => {
+    // Each card registers a different child, so no key is claimed twice, and
+    // the chains alone cannot say whether these are two cards or one.
+    const cap = capture([
+      {
+        id: 'app.card1.title',
+        tag: 'span',
+        xpath: '/article[@data-testid="card"]/div/span[1]',
+        rect: [0, 0, 300, 20],
+        text: 'Synthetic one',
+      },
+      {
+        id: 'app.card2.price',
+        tag: 'span',
+        xpath: '/article[@data-testid="card"]/div/span[2]',
+        rect: [0, 400, 300, 20],
+        text: '12,50',
+      },
+      // A registered test-id anchor is proven, and still opens a path block.
+      {
+        id: 'app.orders',
+        tag: 'section',
+        xpath: '/html/body/section',
+        testId: 'orders',
+        rect: [400, 0, 400, 300],
+      },
+      {
+        id: 'app.orders.total',
+        tag: 'span',
+        xpath: '/section[@data-testid="orders"]/span',
+        rect: [400, 0, 100, 20],
+        text: '7',
+      },
+    ]);
+    const keys = byId(cap);
+    expect([keys['app.card1.title'].blockKey, keys['app.card2.price'].blockKey]).toEqual([
+      null,
+      null,
+    ]);
+    expect(keys['app.orders.total'].blockKey).toBe('@testid=orders');
+    const b = densityBlocks(cap, null);
+    expect(b.blocks.map((x) => [x.id, x.members])).toEqual([
+      ['path:@testid=orders', ['app.orders.total']],
+    ]);
+    expect(b.unblocked).toEqual(['app.card1.title', 'app.card2.price']);
+  });
+});

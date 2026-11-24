@@ -1,0 +1,218 @@
+/**
+ * The ledger: what the first screen and the whole page are spent on.
+ *
+ * An 8 px grid over document space. Each grid cell goes to the smallest leaf
+ * covering its centre, and takes that leaf's ledger kind; a cell no leaf
+ * covers is `uncovered`. Shares sum to 1 over a region. In snapshot mode
+ * (`scope: registered`) `uncovered` means *unregistered or empty*, because an
+ * element the app never registered is not in the capture; in document mode it
+ * means *empty*. The report says which.
+ *
+ * Geometry is DOCUMENT space throughout, at scroll 0: the first screen is
+ * document `y` in `[0, H)`, wherever the capture was scrolled. A pinned item
+ * (and everything inside one) is the exception — it stays where the viewport
+ * put it, so its place at scroll 0 is its viewport position
+ * ({@link densityPlacedRects}).
+ *
+ * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change (Phase 5).
+ */
+
+import type { DensityItemKind, DensityCapture, DensityRect } from './schema';
+import { densityPinnedIds, type DensityPins } from './structure';
+
+/** The ledger's grid pitch, px. */
+export const DENSITY_GRID_PX = 8;
+
+/** A ledger kind: an item kind, `answer` (a leaf answering an ask of this role), or `uncovered`. */
+export type DensityLedgerKind = DensityItemKind | 'answer' | 'uncovered';
+
+/** Every ledger kind, in report order. */
+export const DENSITY_LEDGER_KINDS: readonly DensityLedgerKind[] = [
+  'chrome',
+  'answer',
+  'value',
+  'control',
+  'label',
+  'heading',
+  'prose',
+  'media',
+  'other',
+  'uncovered',
+];
+
+/**
+ * Each item's rect at scroll 0, in document space: its own rect, except that a
+ * pinned item and every item inside one is moved back by `scrollY` (a fixed
+ * bar sits at the same viewport place at every scroll position). Items with
+ * no rect are absent.
+ */
+export function densityPlacedRects(
+  capture: DensityCapture,
+  pins: DensityPins
+): Map<string, DensityRect> {
+  const scrollY = capture.viewport.scrollY;
+  const pinned = scrollY === 0 ? new Set<string>() : densityPinnedIds(capture, pins);
+  const out = new Map<string, DensityRect>();
+  for (const item of capture.items) {
+    if (item.rect === null) continue;
+    out.set(item.id, pinned.has(item.id) ? { ...item.rect, y: item.rect.y - scrollY } : item.rect);
+  }
+  return out;
+}
+
+/** One region of the ledger. */
+export interface DensityLedgerRegion {
+  widthPx: number;
+  heightPx: number;
+  /** Grid cells in the region (those whose centre lies inside it). */
+  cells: number;
+  /** Cells and share per kind; shares sum to 1, or are `null` for a region with no cell. */
+  byKind: Record<DensityLedgerKind, { cells: number; share: number | null }>;
+}
+
+export interface DensityLedger {
+  gridPx: number;
+  /** What an `uncovered` cell is: in snapshot mode an unregistered element is indistinguishable from empty space. */
+  uncoveredMeans: 'unregistered-or-empty' | 'empty';
+  /** Document `y` in `[0, H)`, `x` in `[0, W)`. */
+  firstScreen: DensityLedgerRegion;
+  /** Document `[0, max(W, documentWidth)) × [0, max(H, documentHeight))`. */
+  page: DensityLedgerRegion;
+  /** Top of the first non-chrome painted leaf, document px; `null` when there is none. */
+  contentTopPx: number | null;
+  /**
+   * Leaves the grid does not paint: no rect, hidden or not laid out, or a
+   * visibility the capture does not know (counted apart: it may cover cells
+   * that read `uncovered`). `leafUnknown`: items whose leaf status
+   * is unknown (`ownChars` unreadable, e.g. redacted text), which are not
+   * painted and may cover cells that read `uncovered`.
+   */
+  unpainted: { noRect: number; hidden: number; visibilityUnknown: number; leafUnknown: number };
+}
+
+/** Cells whose centre lies in `[0, length)`. */
+function cellCount(length: number): number {
+  return Math.max(0, Math.ceil((length - DENSITY_GRID_PX / 2) / DENSITY_GRID_PX));
+}
+
+/** First cell index whose centre is at or after `px`. */
+function cellIndex(px: number): number {
+  return Math.ceil((px - DENSITY_GRID_PX / 2) / DENSITY_GRID_PX);
+}
+
+interface Painted {
+  kind: DensityLedgerKind;
+  /** Covered cells, as half-open index ranges. */
+  sx: number;
+  ex: number;
+  sy: number;
+  ey: number;
+  area: number;
+  order: number;
+}
+
+function emptyByKind(): Record<DensityLedgerKind, { cells: number; share: number | null }> {
+  return Object.fromEntries(
+    DENSITY_LEDGER_KINDS.map((k) => [k, { cells: 0, share: null }])
+  ) as Record<DensityLedgerKind, { cells: number; share: number | null }>;
+}
+
+function region(
+  leaves: ReadonlyArray<{ rect: DensityRect; kind: DensityLedgerKind; order: number }>,
+  widthPx: number,
+  heightPx: number
+): DensityLedgerRegion {
+  const wc = cellCount(widthPx);
+  const hc = cellCount(heightPx);
+  const painted: Painted[] = [];
+  for (const l of leaves) {
+    const sx = Math.max(0, cellIndex(l.rect.x));
+    const ex = Math.min(wc, cellIndex(l.rect.x + l.rect.w));
+    const sy = Math.max(0, cellIndex(l.rect.y));
+    const ey = Math.min(hc, cellIndex(l.rect.y + l.rect.h));
+    if (ex <= sx || ey <= sy) continue;
+    painted.push({ kind: l.kind, sx, ex, sy, ey, area: l.rect.w * l.rect.h, order: l.order });
+  }
+  // The smallest leaf wins a cell; capture order breaks a tie.
+  painted.sort((a, b) => a.area - b.area || a.order - b.order);
+
+  const byKind = emptyByKind();
+  const total = wc * hc;
+  // Bands between every leaf's top and bottom: inside one band the set of
+  // leaves spanning it is constant, so the band is painted segment by segment.
+  const ys = Array.from(new Set([0, hc, ...painted.flatMap((p) => [p.sy, p.ey])])).sort(
+    (a, b) => a - b
+  );
+  let covered = 0;
+  for (let b = 0; b + 1 < ys.length; b++) {
+    const y0 = ys[b];
+    const y1 = ys[b + 1];
+    const active = painted.filter((p) => p.sy <= y0 && p.ey >= y1);
+    if (active.length === 0) continue;
+    const xs = Array.from(new Set(active.flatMap((p) => [p.sx, p.ex]))).sort((a, c) => a - c);
+    for (let s = 0; s + 1 < xs.length; s++) {
+      const x0 = xs[s];
+      const x1 = xs[s + 1];
+      const winner = active.find((p) => p.sx <= x0 && p.ex >= x1);
+      if (!winner) continue;
+      const n = (x1 - x0) * (y1 - y0);
+      byKind[winner.kind].cells += n;
+      covered += n;
+    }
+  }
+  byKind.uncovered.cells = total - covered;
+  for (const k of DENSITY_LEDGER_KINDS) {
+    byKind[k].share = total > 0 ? byKind[k].cells / total : null;
+  }
+  return { widthPx, heightPx, cells: total, byKind };
+}
+
+/**
+ * The ledger of one capture. `kinds` gives each LEAF its ledger kind (the
+ * caller has already turned the leaves answering this role's asks into
+ * `answer`); an item absent from it is not a leaf and paints nothing.
+ */
+export function densityLedger(
+  capture: DensityCapture,
+  kinds: ReadonlyMap<string, DensityLedgerKind>,
+  placed: ReadonlyMap<string, DensityRect>,
+  leafUnknown: readonly string[] = []
+): DensityLedger {
+  const W = capture.viewport.width;
+  const H = capture.viewport.height;
+  const unpainted = { noRect: 0, hidden: 0, visibilityUnknown: 0, leafUnknown: leafUnknown.length };
+  const leaves: Array<{ rect: DensityRect; kind: DensityLedgerKind; order: number }> = [];
+  let contentTopPx: number | null = null;
+  capture.items.forEach((item, order) => {
+    const kind = kinds.get(item.id);
+    if (kind === undefined) return;
+    const rect = placed.get(item.id);
+    if (rect === undefined) {
+      unpainted.noRect++;
+      return;
+    }
+    if (item.visibility === 'hidden' || item.visibility === 'no-layout') {
+      unpainted.hidden++;
+      return;
+    }
+    if (item.visibility === null) {
+      unpainted.visibilityUnknown++;
+      return;
+    }
+    leaves.push({ rect, kind, order });
+    if (kind !== 'chrome' && (contentTopPx === null || rect.y < contentTopPx))
+      contentTopPx = rect.y;
+  });
+  return {
+    gridPx: DENSITY_GRID_PX,
+    uncoveredMeans: capture.scope === 'document' ? 'empty' : 'unregistered-or-empty',
+    firstScreen: region(leaves, W, H),
+    page: region(
+      leaves,
+      Math.max(W, capture.viewport.documentWidth),
+      Math.max(H, capture.viewport.documentHeight)
+    ),
+    contentTopPx,
+    unpainted,
+  };
+}
