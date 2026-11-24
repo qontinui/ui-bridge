@@ -456,6 +456,7 @@ describe('density budget: a value that is only a bound is never judged as a poin
         { id: 'first', quantity: 'ask.first.scrollPx', where: { ask: 'B6' }, min: 1 },
         { id: 'all', quantity: 'ask.all.scrollPx', where: { ask: 'B6' }, max: 10 },
         { id: 'mean', quantity: 'role.meanScrollPx', max: 1000 },
+        { id: 'items', quantity: 'ask.answerItems', where: { ask: 'B6' }, max: 3 },
       ],
     });
     const byRule = Object.fromEntries(
@@ -469,6 +470,9 @@ describe('density budget: a value that is only a bound is never judged as a poin
     expect(byRule.all.result).toBe('unknown');
     expect(byRule.mean.measured).toEqual({ lo: 0, hi: null });
     expect(byRule.mean.result).toBe('unknown');
+    // Its unresolved matcher may hold more answering leaves.
+    expect(byRule.items.measured).toEqual({ lo: 3, hi: null });
+    expect(byRule.items.result).toBe('unknown');
   });
 
   it('the entries past a capped list stand as one unknown that a where.kind still selects', () => {

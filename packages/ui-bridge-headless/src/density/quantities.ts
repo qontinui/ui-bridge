@@ -502,21 +502,24 @@ export const DENSITY_QUANTITIES: readonly DensityQuantity[] = Object.freeze([
     'count',
     'ask',
     'role.asks[].all.unknownItems',
-    "The ask's answering leaves whose reach is unknown."
+    "The ask's answering leaves whose reach is unknown.",
+    { widen: [{ of: 'ask', field: 'partial', when: true, direction: 'up' }] }
   ),
   q(
     'ask.answerItems',
     'count',
     'ask',
     'role.asks[].answerItems.total',
-    'Leaves answering the ask.'
+    'Leaves answering the ask; a lower bound while the ask is partial.',
+    { widen: [{ of: 'ask', field: 'partial', when: true, direction: 'up' }] }
   ),
   q(
     'ask.answerItemsFirstScreen',
     'count',
     'ask',
     'role.asks[].answerItems.firstScreen',
-    'Leaves answering the ask that lie on the first screen.'
+    'Leaves answering the ask that lie on the first screen.',
+    { widen: [{ of: 'ask', field: 'partial', when: true, direction: 'up' }] }
   ),
   // ---- blocks ----
   q('cell.blocks', 'count', 'cell', 'blocks.total', 'Blocks.'),
