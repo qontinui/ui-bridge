@@ -1794,7 +1794,7 @@ export function createHandlers(
       // The scan keeps each node until filtering is done, so `root` and
       // `selector` still evaluate against it. `include_hidden: false` reads
       // each row's own `state.visible` (the canonical verdict the scan already
-      // computed), so the filter and the returned `visible` cannot disagree.
+      // computed), so the filter and the returned `state.visible` agree.
       if (elements.length === 0) {
         const domElements = scanDOMForInteractiveElementsWithRefs();
         if (domElements.length > 0) {

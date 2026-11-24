@@ -36,12 +36,14 @@
  *   `includeHidden: false`). Previously the React command path silently
  *   filtered hidden elements by default, which broke the superset invariant.
  *   When `include_hidden === false`, the row is kept or dropped by the ONE
- *   canonical visibility verdict (`core/element-state`): the row's own
- *   `state.visible` when it carries one, else `readElementVisibility` on its
- *   live node, else the top-level `visible`. So an occluded, off-screen
- *   (below the fold) or fully ancestor-clipped row is dropped — exactly the
- *   rows whose `state.visible` is `false` — and a partially covered one is
- *   kept. (Before plan
+ *   canonical visibility verdict (`core/element-state`), read from where
+ *   the arm reports the row's `state`: a registry row's `getState().visible`
+ *   (post-action overlay included), else the row's own `state.visible`, else
+ *   `readElementVisibility` on its live node, else the top-level `visible`.
+ *   So an occluded, off-screen (below the fold) or fully ancestor-clipped row
+ *   is dropped — on every arm, the rows whose reported `state.visible` is
+ *   `false` (the relay's cached rows: their cached `state.visible`, else the
+ *   top-level `visible`) — and a partially covered one is kept. (Before plan
  *   `2026-11-24-ui-bridge-find-visibility-and-fallback-label-read-the-canonical-verdicts`
  *   a live node was judged by `offsetParent !== null || position === 'fixed'`,
  *   a fifth algorithm that kept occluded and off-screen rows and a
@@ -144,6 +146,12 @@ export interface FindFilterableElement {
   identifiers?: { testId?: string };
   /** Live DOM node when available (RegisteredElement / DiscoveredElement). */
   element?: unknown;
+  /**
+   * The registry's live state read (a `RegisteredElement`), overlay included.
+   * When present, its `visible` is what the arm reports and what
+   * `include_hidden: false` reads.
+   */
+  getState?: () => { visible?: boolean } | undefined;
   /** Content metadata — `contentRole` is what the `contentRole` option reads. */
   contentMetadata?: { contentRole?: string };
   /**
@@ -365,21 +373,36 @@ function elementText(el: FindFilterableElement): string {
 /**
  * Visibility check used ONLY when the caller explicitly passed
  * `include_hidden: false`. It reads the ONE canonical verdict
- * (`core/element-state`), so the filter cannot disagree with the `visible`
- * the returned row reports (plan
+ * (`core/element-state`), taken from the SAME place the arm reports the row's
+ * `state` from, so the filter and the returned `state.visible` agree (plan
  * `2026-11-24-ui-bridge-find-visibility-and-fallback-label-read-the-canonical-verdicts`, D1).
  * In order:
- *  1. the row's own boolean `state.visible` — fallback rows, executor rows
+ *  1. `getState().visible`, when the row has a `getState` (a registry
+ *     `RegisteredElement`). The registry arms report exactly that read as the
+ *     row's `state` (`materializeElements` reads `getState?.() ?? state`, the
+ *     React arm's `elementToFindResult` reads `getState()`), and it carries the
+ *     post-action overlay (`refreshElement`), so a live-node read would
+ *     disagree with the reported row after a mutation action;
+ *  2. the row's own boolean `state.visible` — fallback rows, executor rows
  *     and serialized snapshot rows already carry the canonical verdict, so it
  *     is read, not recomputed (and no second hit-test runs);
- *  2. a live node and no `state.visible` (a registry `RegisteredElement`, which
- *     carries `getState()`, not `state`) — `readElementVisibility(node)`;
- *  3. the top-level `visible`;
- *  4. no signal at all — kept (unknown ≠ hidden).
+ *  3. a live node and neither of the above — `readElementVisibility(node)`;
+ *  4. the top-level `visible`;
+ *  5. no signal at all — kept (unknown ≠ hidden).
  * An occluded, off-screen or fully ancestor-clipped row is therefore dropped,
- * and a partially covered one kept, exactly as its `state.visible` says.
+ * and a partially covered one kept, exactly as its reported `state.visible`
+ * says.
  */
 function isConsideredVisible(el: FindFilterableElement): boolean {
+  if (typeof el.getState === 'function') {
+    let reported: boolean | undefined;
+    try {
+      reported = el.getState()?.visible;
+    } catch {
+      reported = undefined;
+    }
+    if (typeof reported === 'boolean') return reported;
+  }
   const own = el.state?.visible;
   if (typeof own === 'boolean') return own;
   const dom = domNode(el);
