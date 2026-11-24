@@ -31,6 +31,55 @@ export const DENSITY_TARGETS_SCHEMA = 'ui-bridge/density-targets@1' as const;
 /** The producer id on every door that runs the density core (D-E). */
 export const DENSITY_PRODUCER_ID = 'sdk/density' as const;
 
+/** The largest coordinate or size, in px, a capture may carry (no page lays out beyond it). */
+export const DENSITY_MAX_COORDINATE_PX = 1e7;
+
+/** The smallest font size or line height, in px, a page draws text at. */
+export const DENSITY_MIN_TEXT_PX = 1;
+
+/**
+ * The input boundary for every numeric field of a capture item: each must be
+ * finite and inside its declared range, or it becomes `null` and its
+ * dimension is reported unmeasured (`input_missing`). Everything downstream
+ * then reads it as unknown, never as a number it cannot hold.
+ *
+ * | field | range |
+ * |---|---|
+ * | `rect.x`, `rect.y` | ±{@link DENSITY_MAX_COORDINATE_PX} (the whole rect is nulled) |
+ * | `rect.w`, `rect.h` | 0 … {@link DENSITY_MAX_COORDINATE_PX} (the whole rect is nulled) |
+ * | `fontPx`, `lineHeightPx` | {@link DENSITY_MIN_TEXT_PX} … {@link DENSITY_MAX_COORDINATE_PX} |
+ *
+ * `chars` and `ownChars` are integers ≥ 0 by the parser; the adapter counts them.
+ */
+export function boundDensityItem(item: DensityItem): { item: DensityItem; gaps: string[] } {
+  const gaps: string[] = [];
+  const within = (v: number, min: number) =>
+    Number.isFinite(v) && v >= min && v <= DENSITY_MAX_COORDINATE_PX;
+  let { rect, fontPx, lineHeightPx } = item;
+  if (
+    rect !== null &&
+    !(
+      within(rect.x, -DENSITY_MAX_COORDINATE_PX) &&
+      within(rect.y, -DENSITY_MAX_COORDINATE_PX) &&
+      within(rect.w, 0) &&
+      within(rect.h, 0)
+    )
+  ) {
+    rect = null;
+    gaps.push('rect');
+  }
+  if (fontPx !== null && !within(fontPx, DENSITY_MIN_TEXT_PX)) {
+    fontPx = null;
+    gaps.push('fontSize');
+  }
+  if (lineHeightPx !== null && !within(lineHeightPx, DENSITY_MIN_TEXT_PX)) {
+    lineHeightPx = null;
+    gaps.push('lineHeight');
+  }
+  if (gaps.length === 0) return { item, gaps };
+  return { item: { ...item, rect, fontPx, lineHeightPx }, gaps };
+}
+
 /**
  * Who is running the core. Required by every entry point (plan D-E): the core
  * is copied into more than one package, so it cannot know its own version, and
@@ -124,6 +173,19 @@ export interface DensityItem {
   /** `chars` minus the registered children's, not below 0; `null` when a term is, or until structure is resolved. */
   ownChars: number | null;
   /**
+   * Whether the text `chars` counts is drawn on the page. The serializer
+   * fills `state.textContent` from `aria-label` / `title` when an element has
+   * no text (an icon-only control), and `textContent` also counts text inside
+   * hidden descendants; neither is drawn. `true` when `chars` is 0 or the
+   * row's visible text (`text`, the innerText-equivalent) is non-empty;
+   * `false` when the item counts characters but its row carries no visible
+   * text; `null` when unknown (redacted text, or a serializer too old to say).
+   * The ledger still lays the item out; a reader of TEXT (an answer's
+   * legibility, the font bounds) never counts an undrawn one. Optional on read,
+   * where absence is `null`.
+   */
+  charsDrawn: boolean | null;
+  /**
    * Opaque key of the nearest `section`, `article`, `aside`, `form`,
    * `fieldset`, `table` or `dialog` ancestor-or-self in the xpath chain: items
    * that share it share a block by path. Built from tags, sibling indices and
@@ -131,6 +193,31 @@ export interface DensityItem {
    * has none, or until structure is resolved.
    */
   blockKey: string | null;
+  /**
+   * Opaque key of the item's parent ELEMENT in the xpath chain, registered or
+   * not: items that share it are DOM siblings. Built from tags, sibling indices
+   * and the anchor's id or test id; it holds no page text. `null` for an
+   * own-id xpath, a chain of one segment, a chain through a key several items
+   * claim, or until structure is resolved. Optional on read, where absence is
+   * `null`.
+   */
+  siblingKey: string | null;
+  /**
+   * Opaque key shared by items that sit at the same place inside repeated,
+   * UNREGISTERED ancestors (`ul > li[k] > a` with only the links registered,
+   * `tr[k] > td[j]` with only the cells): the key of the repeated row
+   * position (`ul/li[*]`) of its deepest unregistered `li` or `tr` ancestor,
+   * for the registered item nearest that row (whatever its tag). Holds no page text. `null` when no such ancestor exists, when that
+   * ancestor is registered (its own rows are the repeat), for an own-id xpath
+   * or an ambiguous chain, or until structure is resolved. Optional on read.
+   */
+  cousinKey: string | null;
+  /**
+   * With `cousinKey`: the key of the repeated row the item sits in (the
+   * unregistered `li` / `tr`), so that cousins are counted in their rows rather
+   * than by their tops. `null` exactly when `cousinKey` is. Optional on read.
+   */
+  cousinRowKey: string | null;
   /** SHA-256 hex of the collapsed text; `null` when the text is redacted or empty. */
   textHash: string | null;
   shape: DensityShape | null;
@@ -147,6 +234,17 @@ export interface DensityItem {
   expanded: boolean | null;
   /** The id this item controls or toggles, from the snapshot's relationships. */
   controls: string | null;
+  /**
+   * `aria-selected`, when stated (a tab, an option, a list row). `null` when the
+   * snapshot does not state it; optional on read, where absence is `null`.
+   */
+  selected: boolean | null;
+  /**
+   * The id whose content this item narrows, from a declared `filters` edge of
+   * the snapshot's relationships (search -> list). Optional on read, where
+   * absence is `null`.
+   */
+  filters: string | null;
   /** SHA-256 hex of the `href`, never the URL itself. */
   href: string | null;
 }
@@ -249,6 +347,13 @@ export interface DensityCapture {
    * the item is a root.
    */
   structureResolved: boolean;
+  /**
+   * Whether every item's `siblingKey`, `cousinKey` and `cousinRowKey` were
+   * computed. A capture file written before Phase 4 carries none of them, and
+   * its repeats are then unknown, never "none". Optional on read: when absent,
+   * true exactly when every item carries all three keys.
+   */
+  repeatKeysResolved: boolean;
   coverage: DensityCoverage;
   probe: DensityProbeResult | null;
   /** Hash of the targets whose `text` matchers this capture evaluated, or `null`. */
@@ -414,7 +519,7 @@ class Reader {
   number(
     value: unknown,
     path: string,
-    opts: { integer?: boolean; min?: number; exclusiveMin?: number } = {}
+    opts: { integer?: boolean; min?: number; exclusiveMin?: number; max?: number } = {}
   ): number {
     if (typeof value !== 'number' || !Number.isFinite(value)) {
       this.fail(path, 'must be a finite number');
@@ -422,6 +527,7 @@ class Reader {
     }
     if (opts.integer && !Number.isSafeInteger(value)) this.fail(path, 'must be an integer');
     if (opts.min !== undefined && value < opts.min) this.fail(path, `must be at least ${opts.min}`);
+    if (opts.max !== undefined && value > opts.max) this.fail(path, `must be at most ${opts.max}`);
     if (opts.exclusiveMin !== undefined && value <= opts.exclusiveMin) {
       this.fail(path, `must be greater than ${opts.exclusiveMin}`);
     }
@@ -574,7 +680,15 @@ const ITEM_KEYS = [
 ] as const;
 
 function readItem(r: Reader, value: unknown, path: string): DensityItem | null {
-  const o = r.object(value, path, ITEM_KEYS, ['blockKey']);
+  const o = r.object(value, path, ITEM_KEYS, [
+    'blockKey',
+    'charsDrawn',
+    'siblingKey',
+    'cousinKey',
+    'cousinRowKey',
+    'selected',
+    'filters',
+  ]);
   if (!o) return null;
   return {
     id: r.string(o.id, `${path}.id`, { nonEmpty: true }),
@@ -590,9 +704,16 @@ function readItem(r: Reader, value: unknown, path: string): DensityItem | null {
     visibility: r.oneOfOrNull(o.visibility, `${path}.visibility`, DENSITY_VISIBILITIES),
     chars: r.numberOrNull(o.chars, `${path}.chars`, { integer: true, min: 0 }),
     ownChars: r.numberOrNull(o.ownChars, `${path}.ownChars`, { integer: true, min: 0 }),
+    charsDrawn:
+      o.charsDrawn === undefined ? null : r.booleanOrNull(o.charsDrawn, `${path}.charsDrawn`),
     // Optional on read: a capture written before the structure pass carried
     // no `blockKey`, and its absence is the same statement as `null`.
     blockKey: o.blockKey === undefined ? null : r.stringOrNull(o.blockKey, `${path}.blockKey`),
+    siblingKey:
+      o.siblingKey === undefined ? null : r.stringOrNull(o.siblingKey, `${path}.siblingKey`),
+    cousinKey: o.cousinKey === undefined ? null : r.stringOrNull(o.cousinKey, `${path}.cousinKey`),
+    cousinRowKey:
+      o.cousinRowKey === undefined ? null : r.stringOrNull(o.cousinRowKey, `${path}.cousinRowKey`),
     textHash: readHashOrNull(r, o.textHash, `${path}.textHash`),
     shape: r.oneOfOrNull(o.shape, `${path}.shape`, DENSITY_SHAPES),
     fontPx: r.numberOrNull(o.fontPx, `${path}.fontPx`, { min: 0 }),
@@ -602,6 +723,10 @@ function readItem(r: Reader, value: unknown, path: string): DensityItem | null {
     recoverable: r.booleanOrNull(o.recoverable, `${path}.recoverable`),
     expanded: r.booleanOrNull(o.expanded, `${path}.expanded`),
     controls: r.stringOrNull(o.controls, `${path}.controls`),
+    // Optional on read: a capture written before Phase 4 carried neither, and
+    // their absence is the same statement as `null` (not stated).
+    selected: o.selected === undefined ? null : r.booleanOrNull(o.selected, `${path}.selected`),
+    filters: o.filters === undefined ? null : r.stringOrNull(o.filters, `${path}.filters`),
     href: readHashOrNull(r, o.href, `${path}.href`),
   };
 }
@@ -729,10 +854,49 @@ const CAPTURE_KEYS = [
   'items',
 ] as const;
 
+/** Whether every item of a raw capture carries `siblingKey`, `cousinKey` and `cousinRowKey`. */
+function itemsHaveRepeatKeys(items: unknown): boolean {
+  return (
+    Array.isArray(items) &&
+    items.every(
+      (i) =>
+        i !== null &&
+        typeof i === 'object' &&
+        'siblingKey' in i &&
+        'cousinKey' in i &&
+        'cousinRowKey' in i
+    )
+  );
+}
+
+/** An explicit `repeatKeysResolved: true` must be true of every item. */
+function readRepeatKeysResolved(r: Reader, value: unknown, items: unknown): boolean {
+  const v = r.boolean(value, '$.repeatKeysResolved');
+  if (v && !itemsHaveRepeatKeys(items)) {
+    r.fail(
+      '$.repeatKeysResolved',
+      'is true, but an item lacks siblingKey, cousinKey or cousinRowKey'
+    );
+  }
+  return v;
+}
+
+/** Coverage with the boundary's nulled dimensions added (`input_missing`). */
+function withBoundGaps(coverage: DensityCoverage, gaps: Map<string, number>): DensityCoverage {
+  if (gaps.size === 0) return coverage;
+  const unmeasured = coverage.unmeasured.map((u) => ({ ...u }));
+  for (const [dimension, count] of gaps) {
+    const cur = unmeasured.find((u) => u.dimension === dimension && u.code === 'input_missing');
+    if (cur) cur.count += count;
+    else unmeasured.push({ dimension, count, code: 'input_missing' });
+  }
+  return { ...coverage, unmeasured };
+}
+
 /** Parse a `ui-bridge/density-capture@1` document. */
 export function parseDensityCapture(value: unknown): DensityParseResult<DensityCapture> {
   const r = new Reader();
-  const o = r.object(value, '$', CAPTURE_KEYS);
+  const o = r.object(value, '$', CAPTURE_KEYS, ['repeatKeysResolved']);
   if (!o) return r.result(null as unknown as DensityCapture);
 
   r.literal(o.schema, '$.schema', DENSITY_CAPTURE_SCHEMA);
@@ -745,10 +909,16 @@ export function parseDensityCapture(value: unknown): DensityParseResult<DensityC
     role: cellObj ? r.stringOrNull(cellObj.role, '$.cell.role') : null,
     viewport: {
       width: cellViewport
-        ? r.number(cellViewport.width, '$.cell.viewport.width', { exclusiveMin: 0 })
+        ? r.number(cellViewport.width, '$.cell.viewport.width', {
+            min: 1,
+            max: DENSITY_MAX_COORDINATE_PX,
+          })
         : 0,
       height: cellViewport
-        ? r.number(cellViewport.height, '$.cell.viewport.height', { exclusiveMin: 0 })
+        ? r.number(cellViewport.height, '$.cell.viewport.height', {
+            min: 1,
+            max: DENSITY_MAX_COORDINATE_PX,
+          })
         : 0,
     },
     fixture: cellObj ? r.stringOrNull(cellObj.fixture, '$.cell.fixture') : null,
@@ -764,12 +934,38 @@ export function parseDensityCapture(value: unknown): DensityParseResult<DensityC
     'container',
   ]);
   const viewport: DensityCaptureViewport = {
-    width: vp ? r.number(vp.width, '$.viewport.width', { exclusiveMin: 0 }) : 0,
-    height: vp ? r.number(vp.height, '$.viewport.height', { exclusiveMin: 0 }) : 0,
-    scrollX: vp ? r.number(vp.scrollX, '$.viewport.scrollX') : 0,
-    scrollY: vp ? r.number(vp.scrollY, '$.viewport.scrollY') : 0,
-    documentWidth: vp ? r.number(vp.documentWidth, '$.viewport.documentWidth', { min: 0 }) : 0,
-    documentHeight: vp ? r.number(vp.documentHeight, '$.viewport.documentHeight', { min: 0 }) : 0,
+    // The numeric boundary for the viewport, as the snapshot door applies it:
+    // a capture whose viewport is outside its range does not parse.
+    width: vp
+      ? r.number(vp.width, '$.viewport.width', { min: 1, max: DENSITY_MAX_COORDINATE_PX })
+      : 0,
+    height: vp
+      ? r.number(vp.height, '$.viewport.height', { min: 1, max: DENSITY_MAX_COORDINATE_PX })
+      : 0,
+    scrollX: vp
+      ? r.number(vp.scrollX, '$.viewport.scrollX', {
+          min: -DENSITY_MAX_COORDINATE_PX,
+          max: DENSITY_MAX_COORDINATE_PX,
+        })
+      : 0,
+    scrollY: vp
+      ? r.number(vp.scrollY, '$.viewport.scrollY', {
+          min: -DENSITY_MAX_COORDINATE_PX,
+          max: DENSITY_MAX_COORDINATE_PX,
+        })
+      : 0,
+    documentWidth: vp
+      ? r.number(vp.documentWidth, '$.viewport.documentWidth', {
+          min: 0,
+          max: DENSITY_MAX_COORDINATE_PX,
+        })
+      : 0,
+    documentHeight: vp
+      ? r.number(vp.documentHeight, '$.viewport.documentHeight', {
+          min: 0,
+          max: DENSITY_MAX_COORDINATE_PX,
+        })
+      : 0,
     container: vp
       ? r.oneOfOrNull(vp.container, '$.viewport.container', ['viewport', 'body'] as const)
       : null,
@@ -815,10 +1011,23 @@ export function parseDensityCapture(value: unknown): DensityParseResult<DensityC
     }
   }
 
+  // The numeric boundary (boundDensityItem): an out-of-range value read from
+  // a file is nulled and counted, exactly as the adapter does.
+  const boundGaps = new Map<string, number>();
   const items = r
     .array(o.items, '$.items', (v, p) => readItem(r, v, p))
-    .filter((i): i is DensityItem => i !== null);
+    .filter((i): i is DensityItem => i !== null)
+    .map((i) => {
+      const bounded = boundDensityItem(i);
+      for (const g of bounded.gaps) boundGaps.set(g, (boundGaps.get(g) ?? 0) + 1);
+      return bounded.item;
+    });
   r.unique(items, '$.items', (i) => i.id, 'item id');
+  items.forEach((item, idx) => {
+    if ((item.cousinKey === null) !== (item.cousinRowKey === null)) {
+      r.fail(`$.items[${idx}].cousinRowKey`, 'must be null exactly when cousinKey is');
+    }
+  });
 
   const capture: DensityCapture = {
     schema: DENSITY_CAPTURE_SCHEMA,
@@ -831,7 +1040,11 @@ export function parseDensityCapture(value: unknown): DensityParseResult<DensityC
     capturedBy,
     bases: readBases(r, o.bases, '$.bases'),
     structureResolved: r.boolean(o.structureResolved, '$.structureResolved'),
-    coverage: readCoverage(r, o.coverage, '$.coverage'),
+    repeatKeysResolved:
+      o.repeatKeysResolved === undefined
+        ? itemsHaveRepeatKeys(o.items)
+        : readRepeatKeysResolved(r, o.repeatKeysResolved, o.items),
+    coverage: withBoundGaps(readCoverage(r, o.coverage, '$.coverage'), boundGaps),
     probe,
     targetsHash: readHashOrNull(r, o.targetsHash, '$.targetsHash'),
     textMatches,
