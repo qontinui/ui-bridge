@@ -1791,8 +1791,10 @@ export function createHandlers(
       let projection: ElementProjectionRequest | undefined = filterCtx.projection;
 
       // DOM fallback: when registry returns 0 elements, scan the DOM directly.
-      // The scan keeps each node until filtering is done, so `root`,
-      // `selector` and the live visibility check still evaluate against it.
+      // The scan keeps each node until filtering is done, so `root` and
+      // `selector` still evaluate against it. `include_hidden: false` reads
+      // each row's own `state.visible` (the canonical verdict the scan already
+      // computed), so the filter and the returned `visible` cannot disagree.
       if (elements.length === 0) {
         const domElements = scanDOMForInteractiveElementsWithRefs();
         if (domElements.length > 0) {

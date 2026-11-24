@@ -35,10 +35,17 @@
  *   unless the caller explicitly passes `include_hidden: false` (or camelCase
  *   `includeHidden: false`). Previously the React command path silently
  *   filtered hidden elements by default, which broke the superset invariant.
- *   When `include_hidden === false`, the live DOM check
- *   (`offsetParent !== null || position === 'fixed'`) is used when a DOM node
- *   is available; otherwise the serialized `state.visible !== false`
- *   (falling back to the top-level `visible` field) decides.
+ *   When `include_hidden === false`, the row is kept or dropped by the ONE
+ *   canonical visibility verdict (`core/element-state`): the row's own
+ *   `state.visible` when it carries one, else `readElementVisibility` on its
+ *   live node, else the top-level `visible`. So an occluded, off-screen
+ *   (below the fold) or fully ancestor-clipped row is dropped — exactly the
+ *   rows whose returned `visible` is `false` — and a partially covered one is
+ *   kept. (Before plan
+ *   `2026-11-24-ui-bridge-find-visibility-and-fallback-label-read-the-canonical-verdicts`
+ *   a live node was judged by `offsetParent !== null || position === 'fixed'`,
+ *   a fifth algorithm that kept occluded and off-screen rows and a
+ *   `display:none` element inside a fixed container.)
  *
  * A filter acts only on what it can evaluate. An EXCLUSION drops only rows it
  * can prove fail: an element with no visibility signal at all survives
@@ -77,6 +84,7 @@ import {
 import { isMediaObservation, mediaFactsOf, unmeasuredMediaDimension } from './media-observation';
 import { hasNestedQuantifiers } from './param-schema';
 import { answersToNamedType, impliedAriaRole } from './element-kind';
+import { readElementVisibility } from './element-state';
 import {
   scrubMediaMetadata,
   textExcludingBoundaries,
@@ -356,18 +364,27 @@ function elementText(el: FindFilterableElement): string {
 
 /**
  * Visibility check used ONLY when the caller explicitly passed
- * `include_hidden: false`. Live DOM check when a node is available
- * (`offsetParent` is null for `display:none` subtrees and detached nodes,
- * but also for `position:fixed` elements — hence the second clause);
- * serialized `state.visible` / top-level `visible` otherwise. Elements with
- * no visibility signal at all are kept (unknown ≠ hidden).
+ * `include_hidden: false`. It reads the ONE canonical verdict
+ * (`core/element-state`), so the filter cannot disagree with the `visible`
+ * the returned row reports (plan
+ * `2026-11-24-ui-bridge-find-visibility-and-fallback-label-read-the-canonical-verdicts`, D1).
+ * In order:
+ *  1. the row's own boolean `state.visible` — fallback rows, executor rows
+ *     and serialized snapshot rows already carry the canonical verdict, so it
+ *     is read, not recomputed (and no second hit-test runs);
+ *  2. a live node and no `state.visible` (a registry `RegisteredElement`, which
+ *     carries `getState()`, not `state`) — `readElementVisibility(node)`;
+ *  3. the top-level `visible`;
+ *  4. no signal at all — kept (unknown ≠ hidden).
+ * An occluded, off-screen or fully ancestor-clipped row is therefore dropped,
+ * and a partially covered one kept, exactly as its `visible` says.
  */
 function isConsideredVisible(el: FindFilterableElement): boolean {
+  const own = el.state?.visible;
+  if (typeof own === 'boolean') return own;
   const dom = domNode(el);
-  if (dom) {
-    return dom.offsetParent !== null || getComputedStyle(dom).position === 'fixed';
-  }
-  return (el.state?.visible ?? el.visible) !== false;
+  if (dom) return readElementVisibility(dom).visible;
+  return el.visible !== false;
 }
 
 function isContentRow(el: FindFilterableElement): boolean {

@@ -10,7 +10,9 @@
  *    exactly the scrubbed capped read the scan used to build. For an element
  *    with none (an icon-only button) it is the canonical fallback, the
  *    scrubbed `aria-label` or `title`, where the old read gave "". The
- *    top-level `label` is unchanged.
+ *    top-level `label` (the canonical accessible name since plan
+ *    `2026-11-24-ui-bridge-find-visibility-and-fallback-label-read-the-canonical-verdicts`)
+ *    is a separate value and keeps its own reading.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';

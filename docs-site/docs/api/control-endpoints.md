@@ -540,15 +540,20 @@ When the registry has no elements, the snapshot (and the DOM fallback of
 row's `visible` and `state.visible` are the same verdict every other path
 reports. It accounts for the viewport and for occlusion, so a fallback button
 that is off-screen or covered reads `visible: false`. `state` carries
-`visibilityReason` (`hidden`, `off-screen`, `occluded` or `no-layout`),
+`visibilityReason` (`hidden`, `off-screen`, `occluded`, `clipped` or `no-layout`),
 `occludedBy` and `occludedPct`, as a registered element's state does. A fallback
 row's `state.textContent` is the canonical text capped at 500 code points: an
 element with no text (an icon-only button) reads its scrubbed `aria-label` or
 `title`, and inside a redaction boundary the redaction sentinel. `state.checked`
 is the canonical one: set for a checkbox or radio input and for an
 `aria-checked` checkbox, radio, switch, menuitemcheckbox or menuitemradio role,
-absent for anything else. The
-top-level `label` is unchanged.
+absent for anything else. The top-level `label` is the element's canonical
+accessible name, the same value as `state.accessibleName` (capped at 200 code
+points, and the redaction sentinel inside a redaction boundary). A fallback
+row's `id` is built from a separate, frozen input so it does not move when the
+name does: `dom-<testid>`, `dom-<html id>`, a slug of the element's text
+(`dom-button-save`), or `dom-<type>-<index>`. Inside a redaction boundary the
+text slug is skipped, so an id never carries redacted text.
 
 The same rows, and so the same `visible`, feed the other in-page responses
 that fall back to a DOM scan when nothing is registered: `GET /ai/summary`
@@ -557,10 +562,14 @@ and visible-link lists skip it) and the visible-only filter that
 `POST /ai/search` and `POST /ai/find` apply by default to a non-fuzzy search. The semantic snapshot
 (`GET /ai/snapshot`) reads the registry only, never these rows.
 
-One filter does not use this verdict yet: `include_hidden: false` on
-`POST /control/find` still applies its own check (`isConsideredVisible` in
-`core/find-filter.ts`, an `offsetParent` test), so an occluded fallback row
-can still pass it. That is tracked as a follow-up.
+`include_hidden: false` on `POST /control/find` filters on this same verdict,
+on every find arm: it drops exactly the rows whose returned `visible` is
+`false`, so an occluded, off-screen (scrolled out of the viewport) or fully
+ancestor-clipped row is left out, and a partially covered one is kept. A row
+that carries `state.visible` is judged by it; a registered element with a live
+node is judged by the same canonical verdict computed on that node; a row with
+no visibility signal at all is kept. To get below-the-fold rows, pass
+`include_hidden: true`, which is the default.
 
 Unreleased (after 0.61.0). Up to 0.61.0, a fallback row's `visible` only
 checked `offsetParent` and a non-zero size, so an off-screen or covered
@@ -568,6 +577,16 @@ fallback button read `visible: true`. Its `state` carried none of the three
 fields, `state.textContent` was `""` for an element with no text, and
 `state.checked` read the `checked` property of any element that has one (so a
 text input read `false`) and ignored `aria-checked`.
+Also unreleased: `include_hidden: false` used to judge a live node by its own
+check (`offsetParent !== null || position: fixed`), so it kept occluded and
+off-screen rows (and a `display: none` element inside a fixed container) while
+those rows read `visible: false`. It now drops occluded, off-screen and fully
+clipped rows. A fallback row's `label` used to come from a separate label chain
+that read only a single-id `aria-labelledby` and ignored a wrapping `<label>`,
+`alt` and the rest of the accessible-name algorithm; it is now the canonical
+name. Fallback ids are unchanged, except for elements inside a redaction
+boundary whose id was a slug of their (redacted) text: those now read
+`dom-<type>-<index>`.
 
 ## Diagnostics
 

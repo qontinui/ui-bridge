@@ -534,10 +534,14 @@ export interface FindRequest {
    * **Defaults to TRUE (breaking change in 0.22.0).** Hidden elements are
    * INCLUDED unless the caller explicitly passes `false` — so
    * `find/discover {interactive_only: false}` returns a superset of the
-   * registry elements `/control/snapshot` returns. When `false`, elements
-   * failing the live DOM visibility check (`offsetParent !== null ||
-   * position === 'fixed'`; serialized `state.visible !== false` when no DOM
-   * node is available) are filtered out. See `src/core/find-filter.ts`.
+   * registry elements `/control/snapshot` returns. When `false`, every row
+   * whose canonical visibility verdict is `visible: false` is filtered out —
+   * occluded, off-screen and fully ancestor-clipped rows included, exactly the
+   * rows the response would report as not visible. The row's own
+   * `state.visible` decides when it carries one; otherwise
+   * `readElementVisibility` on its live node (`core/element-state.ts`), then
+   * the top-level `visible`; a row with no signal is kept. See
+   * `src/core/find-filter.ts`.
    */
   includeHidden?: boolean;
   /** snake_case wire alias for {@link includeHidden}. Same TRUE default. */

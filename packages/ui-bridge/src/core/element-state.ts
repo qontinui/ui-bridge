@@ -5,8 +5,10 @@
  * and so every snapshot entry), the action executor
  * (`control/action-executor.ts`, action responses, find/discover rows and the
  * wait loop), the render-log capture (`render-log/dom-capture.ts`), the
- * debug inspector (`debug/inspector.tsx`) and the un-registered DOM-fallback
- * scan (`server/dom-fallback.ts`) all delegate here. Before this
+ * debug inspector (`debug/inspector.tsx`), the un-registered DOM-fallback
+ * scan (`server/dom-fallback.ts`) and the find filter's `include_hidden: false`
+ * arm (`core/find-filter.ts`, through {@link readElementVisibility}) all
+ * delegate here. Before this
  * module existed each of those carried its own copy, with four different
  * `visible` algorithms behind one field name (plan
  * `2026-11-08-ui-bridge-element-state-has-two-readers-and-no-aria-busy`, D1).
@@ -128,13 +130,22 @@ function readAriaBusy(element: Element): boolean {
   return element.getAttribute('aria-busy') === 'true';
 }
 
-/**
- * Get the current state of an element
- */
-export function getElementState(element: HTMLElement): ElementState {
+/** The visibility family of {@link ElementState}: what {@link readElementVisibility} returns. */
+export type ElementVisibility = Pick<
+  ElementState,
+  'visible' | 'visibilityReason' | 'occludedBy' | 'occludedPct' | 'clippedPct' | 'clipScrollable'
+>;
+
+/** The layout reads the visibility verdict is built from, taken once per element. */
+interface LayoutReads {
+  rect: DOMRect;
+  computedStyle: CSSStyleDeclaration;
+  inViewport: boolean;
+}
+
+function readLayout(element: HTMLElement): LayoutReads {
   const rect = element.getBoundingClientRect();
   const computedStyle = window.getComputedStyle(element);
-
   const inViewport =
     rect.width > 0 &&
     rect.height > 0 &&
@@ -142,6 +153,41 @@ export function getElementState(element: HTMLElement): ElementState {
     rect.bottom > 0 &&
     rect.left < window.innerWidth &&
     rect.right > 0;
+  return { rect, computedStyle, inViewport };
+}
+
+function visibilityFields(element: HTMLElement, layout: LayoutReads): ElementVisibility {
+  const v = computeVisibilityVerdict(element, layout.rect, layout.computedStyle, layout.inViewport);
+  return {
+    visible: v.visible,
+    visibilityReason: v.reason,
+    occludedBy: v.occludedBy,
+    occludedPct: v.occludedPct,
+    clippedPct: v.clippedPct,
+    clipScrollable: v.clipScrollable,
+  };
+}
+
+/**
+ * The canonical visibility verdict ALONE — the exact `visible`,
+ * `visibilityReason`, `occludedBy`, `occludedPct`, `clippedPct` and
+ * `clipScrollable` {@link getElementState} reports (it delegates here), without
+ * the accessible name, text, style projection and form state a full read also
+ * builds. For a caller that needs only "is this element visible", such as the
+ * find filter's `include_hidden: false` arm over a live node (plan
+ * `2026-11-24-ui-bridge-find-visibility-and-fallback-label-read-the-canonical-verdicts`,
+ * D1). One algorithm: do not derive `visible` any other way.
+ */
+export function readElementVisibility(element: HTMLElement): ElementVisibility {
+  return visibilityFields(element, readLayout(element));
+}
+
+/**
+ * Get the current state of an element
+ */
+export function getElementState(element: HTMLElement): ElementState {
+  const layout = readLayout(element);
+  const { rect, computedStyle, inViewport } = layout;
 
   // §4.6 redaction boundary — when this element (or an ancestor) carries
   // `data-bridge-redact="true"`, we must scrub not just `state.value` but
@@ -180,11 +226,11 @@ export function getElementState(element: HTMLElement): ElementState {
   // Occlusion is computed once here and carried on the state, so every
   // consumer — discover, snapshot, page-health, the CI style gate, the
   // vision-core projection — sees the same verdict AND the same occluder.
-  const visibility = computeVisibilityVerdict(element, rect, computedStyle, inViewport);
+  const visibility = visibilityFields(element, layout);
 
   const state: ElementState = {
     visible: visibility.visible,
-    visibilityReason: visibility.reason,
+    visibilityReason: visibility.visibilityReason,
     occludedBy: visibility.occludedBy,
     occludedPct: visibility.occludedPct,
     clippedPct: visibility.clippedPct,
