@@ -13,7 +13,8 @@ import { applyCanonicalFindFilter } from './find-filter';
  *    reads the row's own field and recomputes nothing.
  *  - `live-node rows`: the filter alone over bare rows with a live node and
  *    neither `getState` nor `state`, which `readElementVisibility` judges with
- *    one hit-test per row. The registry arms (the server registry pass and the
+ *    the nine-point probe per row (every fixture rect is at least
+ *    `OCCLUSION_PERIMETER_MIN_PX` wide). The registry arms (the server registry pass and the
  *    React `find` command) do NOT take this path: their rows are judged by
  *    `getState()`, read once and reused for the returned row — bounded by
  *    `find-filter.hit-test-cost.test.ts`, which runs in CI.
