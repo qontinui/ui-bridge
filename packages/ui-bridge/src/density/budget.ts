@@ -1,0 +1,540 @@
+/**
+ * The budget half: a `ui-bridge/density-budget@1` evaluated over the measured
+ * cells of one invocation.
+ *
+ * A rule answers `{ measured, limit, result: pass | fail | unknown, code? }`
+ * per matching cell, evaluated on intervals: it passes only when EVERY value
+ * in the interval satisfies the limit, fails only when none does, and is
+ * `unknown{input_missing}` when the interval straddles the limit (unresolved
+ * asks widen an interval; they never decide it). A null limit is
+ * `unknown{no_expectation}` — never a pass. A compaction rule (its quantity
+ * shrinks the page) is judged only when the budget states floors or a waiver
+ * of them; with neither it is `unknown{no_expectation}` and flagged
+ * `unbounded`. (Holding a compaction to the floors themselves is the planning
+ * half's: no generator goes under a floor.) A declared matrix cell with no
+ * capture, or one measured as unknown, is unknown — counted once even when no
+ * rule reaches it. Each cell's results sit beside that cell's
+ * legibility bounds. The roll-up is three counts; nothing is combined into a
+ * score, and the tool never supplies a limit (`--draft` writes null ones).
+ *
+ * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change (Phase 6).
+ */
+
+import type { UnknownCode } from '../observation/observation';
+import type { DensityBounds } from './bounds';
+import { hashDensityCanonical } from './hash';
+import type { DensityCappedList, DensityMeasureObservation, DensityNextStep } from './measure';
+import {
+  DENSITY_QUANTITIES,
+  densityQuantity,
+  densityQuantityDims,
+  densityQuantityValues,
+  type DensityQuantity,
+  type DensityQuantityAt,
+  type DensityQuantityValue,
+} from './quantities';
+import {
+  DENSITY_BUDGET_SCHEMA,
+  type DensityBudget,
+  type DensityBudgetCell,
+  type DensityBudgetRule,
+  type DensityBudgetWhere,
+  type DensityCell,
+  type DensityInterval,
+  type DensityProblem,
+} from './schema';
+
+/** The longest list of values one rule result prints; the rest is counted. */
+export const DENSITY_RULE_VALUE_CAP = 20;
+
+export type DensityRuleVerdict = 'pass' | 'fail' | 'unknown';
+
+/** One value a rule judged. */
+export interface DensityRuleValue {
+  at: DensityQuantityAt;
+  measured: DensityInterval | null;
+  result: DensityRuleVerdict;
+  code?: UnknownCode;
+  reason?: string;
+}
+
+/** One rule, in one cell. */
+export interface DensityRuleResult {
+  rule: string;
+  quantity: string;
+  bound: 'max' | 'min';
+  limit: number | null;
+  /** The hull of the values judged; `null` when none was known. */
+  measured: DensityInterval | null;
+  result: DensityRuleVerdict;
+  code?: UnknownCode;
+  reason?: string;
+  /** A compaction rule judged with neither floors nor a stated waiver. */
+  unbounded?: true;
+  source: string | null;
+  values: DensityCappedList<DensityRuleValue>;
+}
+
+export interface DensityBudgetCounts {
+  pass: number;
+  fail: number;
+  unknown: number;
+}
+
+/** One cell's results. */
+export interface DensityBudgetCellReport {
+  cell: DensityCell | DensityBudgetCell;
+  /** `measured`; `unknown` (the cell's observation was); `not-captured` (a matrix cell with no capture). */
+  status: 'measured' | 'unknown' | 'not-captured';
+  unknown?: { code: UnknownCode; detail: string };
+  /** In the budget's matrix. */
+  required: boolean;
+  /** The cell's legibility bounds, beside every result of it; `null` when the cell was not measured. */
+  bounds: DensityBounds | null;
+  results: DensityRuleResult[];
+  counts: DensityBudgetCounts;
+}
+
+export interface DensityBudgetReport {
+  schema: typeof DENSITY_BUDGET_SCHEMA;
+  budgetHash: string;
+  source: string | null;
+  /** What a compaction is held to. */
+  floorsBasis: 'floors' | 'waived' | 'none';
+  volume: number | null;
+  cells: DensityBudgetCellReport[];
+  /** Rules whose `where` no cell of this invocation matches: each is unknown. */
+  unmatched: DensityRuleResult[];
+  counts: DensityBudgetCounts;
+  next: DensityNextStep[];
+}
+
+/** A measured cell, as the budget reads it. */
+export interface DensityBudgetInputCell {
+  cell: DensityCell;
+  observation: DensityMeasureObservation;
+}
+
+const sameViewport = (
+  a: { width: number; height: number },
+  b: { width: number; height: number }
+): boolean => a.width === b.width && a.height === b.height;
+
+function cellMatches(where: DensityBudgetWhere, cell: DensityCell | DensityBudgetCell): boolean {
+  if (where.role !== undefined && cell.role !== where.role) return false;
+  if (where.viewport !== undefined && !sameViewport(cell.viewport, where.viewport)) return false;
+  if (where.fixture !== undefined && cell.fixture !== where.fixture) return false;
+  return true;
+}
+
+function atMatches(where: DensityBudgetWhere, at: DensityQuantityAt): boolean {
+  if (at.remainder) {
+    // The entries past a list's cap: they may hold any kind or rank, and no
+    // named entry is known to be among them.
+    return where.ask === undefined && where.block === undefined && where.repeat === undefined;
+  }
+  if (where.ask !== undefined && at.ask !== where.ask) return false;
+  if (where.rank !== undefined && at.rank !== where.rank) return false;
+  if (where.kind !== undefined && at.kind !== where.kind) return false;
+  if (where.block !== undefined && at.block !== where.block) return false;
+  if (where.repeat !== undefined && at.repeat !== where.repeat) return false;
+  return true;
+}
+
+function matrixCovers(m: DensityBudgetCell, cell: DensityCell): boolean {
+  return (
+    m.role === cell.role &&
+    sameViewport(m.viewport, cell.viewport) &&
+    (m.fixture === null || m.fixture === cell.fixture)
+  );
+}
+
+/** Problems a parsed budget has against the registry: an unknown quantity, a `where` its quantity cannot be selected by. */
+export function densityBudgetProblems(budget: DensityBudget): DensityProblem[] {
+  const problems: DensityProblem[] = [];
+  budget.rules.forEach((rule, i) => {
+    const path = `$.rules[${i}]`;
+    const quantity = densityQuantity(rule.quantity);
+    if (!quantity) {
+      problems.push({
+        path: `${path}.quantity`,
+        message: `is not a quantity of DENSITY_QUANTITIES: ${JSON.stringify(rule.quantity)}`,
+      });
+      return;
+    }
+    const dims = densityQuantityDims(quantity);
+    for (const dim of ['ask', 'rank', 'kind', 'block', 'repeat'] as const) {
+      if (rule.where[dim] !== undefined && !dims.includes(dim)) {
+        problems.push({
+          path: `${path}.where.${dim}`,
+          message: `${quantity.id} is not selected by ${dim}`,
+        });
+      }
+    }
+  });
+  return problems;
+}
+
+function judge(rule: DensityBudgetRule, v: DensityQuantityValue): DensityRuleValue {
+  if ('unknown' in v.value) {
+    return {
+      at: v.at,
+      measured: null,
+      result: 'unknown',
+      code: v.value.unknown,
+      reason: v.value.reason,
+    };
+  }
+  const { lo, hi } = v.value;
+  const base = { at: v.at, measured: v.value };
+  if (rule.limit === null) return { ...base, result: 'unknown', code: 'no_expectation' };
+  const L = rule.limit;
+  if (rule.bound === 'max') {
+    if (hi !== null && hi <= L) return { ...base, result: 'pass' };
+    if (lo > L) return { ...base, result: 'fail' };
+  } else {
+    if (lo >= L) return { ...base, result: 'pass' };
+    if (hi !== null && hi < L) return { ...base, result: 'fail' };
+  }
+  return {
+    ...base,
+    result: 'unknown',
+    code: 'input_missing',
+    reason: 'the interval straddles the limit: unresolved input decides it',
+  };
+}
+
+function hull(values: readonly DensityRuleValue[]): DensityInterval | null {
+  const known = values.map((v) => v.measured).filter((m): m is DensityInterval => m !== null);
+  if (known.length === 0) return null;
+  return {
+    lo: Math.min(...known.map((m) => m.lo)),
+    hi: known.some((m) => m.hi === null) ? null : Math.max(...known.map((m) => m.hi as number)),
+  };
+}
+
+function capped<T>(all: T[], cap: number): DensityCappedList<T> {
+  const list = all.slice(0, cap);
+  return { shown: list.length, total: all.length, truncated: list.length < all.length, list };
+}
+
+interface RuleContext {
+  rule: DensityBudgetRule;
+  /** `undefined` for a rule naming no registered quantity. */
+  quantity: DensityQuantity | undefined;
+  unbounded: boolean;
+}
+
+function resultOf(
+  ctx: RuleContext,
+  values: DensityRuleValue[],
+  fallback: { code: UnknownCode; reason: string } | null
+): DensityRuleResult {
+  const { rule } = ctx;
+  const base = {
+    rule: rule.id,
+    quantity: rule.quantity,
+    bound: rule.bound,
+    limit: rule.limit,
+    measured: hull(values),
+    source: rule.source,
+    values: capped(values, DENSITY_RULE_VALUE_CAP),
+  };
+  if (fallback) return { ...base, result: 'unknown', code: fallback.code, reason: fallback.reason };
+  if (values.length === 0) {
+    return {
+      ...base,
+      result: 'unknown',
+      code: 'input_missing',
+      reason: 'no value of the quantity matches the rule in this cell',
+    };
+  }
+  if (ctx.unbounded) {
+    return {
+      ...base,
+      result: 'unknown',
+      code: 'no_expectation',
+      reason: 'a compaction rule needs the budget to state floors, or floorsWaived with its reason',
+      unbounded: true,
+    };
+  }
+  if (rule.limit === null) {
+    return {
+      ...base,
+      result: 'unknown',
+      code: 'no_expectation',
+      reason: 'the limit is not set (null)',
+    };
+  }
+  if (values.some((v) => v.result === 'fail')) return { ...base, result: 'fail' };
+  const unknown = values.find((v) => v.result === 'unknown');
+  if (unknown) {
+    return {
+      ...base,
+      result: 'unknown',
+      code: unknown.code ?? 'input_missing',
+      reason: unknown.reason ?? 'a value is unknown',
+    };
+  }
+  return { ...base, result: 'pass' };
+}
+
+function countsOf(results: readonly DensityRuleResult[]): DensityBudgetCounts {
+  const c: DensityBudgetCounts = { pass: 0, fail: 0, unknown: 0 };
+  for (const r of results) c[r.result]++;
+  return c;
+}
+
+function add(a: DensityBudgetCounts, b: DensityBudgetCounts): DensityBudgetCounts {
+  return { pass: a.pass + b.pass, fail: a.fail + b.fail, unknown: a.unknown + b.unknown };
+}
+
+/**
+ * Evaluate `budget` over `cells`. The caller checked the budget with
+ * {@link densityBudgetProblems}; a rule naming an unknown quantity is unknown
+ * here (`not_reported`) rather than thrown on.
+ */
+export function evaluateDensityBudget(
+  budget: DensityBudget,
+  cells: readonly DensityBudgetInputCell[]
+): DensityBudgetReport {
+  const floorsBasis: DensityBudgetReport['floorsBasis'] =
+    budget.floors !== null ? 'floors' : budget.floorsWaived !== null ? 'waived' : 'none';
+  const contexts = budget.rules.map((rule): RuleContext => {
+    const quantity = densityQuantity(rule.quantity);
+    return {
+      rule,
+      quantity,
+      unbounded: quantity?.compaction === true && floorsBasis === 'none',
+    };
+  });
+
+  const matched = new Set<string>();
+  const reports: DensityBudgetCellReport[] = [];
+  const evaluateCell = (
+    cell: DensityCell | DensityBudgetCell,
+    observation: DensityMeasureObservation | null,
+    required: boolean
+  ): void => {
+    const results: DensityRuleResult[] = [];
+    for (const c of contexts) {
+      if (!cellMatches(c.rule.where, cell)) continue;
+      matched.add(c.rule.id);
+      if (!c.quantity) {
+        results.push(
+          resultOf(c, [], {
+            code: 'not_reported',
+            reason: `${c.rule.quantity} is not a registered quantity`,
+          })
+        );
+        continue;
+      }
+      const ctx = c;
+      const quantity = c.quantity;
+      if (observation === null) {
+        results.push(
+          resultOf(ctx, [], { code: 'input_missing', reason: 'no capture of this matrix cell' })
+        );
+        continue;
+      }
+      if (observation.status !== 'measured') {
+        results.push(
+          resultOf(ctx, [], {
+            code: observation.status === 'unknown' ? observation.unknown.code : 'input_missing',
+            reason:
+              observation.status === 'unknown'
+                ? `the cell was not measured: ${observation.unknown.detail}`
+                : 'the cell was not measured',
+          })
+        );
+        continue;
+      }
+      const values = densityQuantityValues(observation.value, quantity)
+        .filter((v) => atMatches(c.rule.where, v.at))
+        .map((v) => judge(c.rule, v));
+      results.push(resultOf(ctx, values, null));
+    }
+    // A required cell that is not measured is unknown even when no rule
+    // reaches it: the budget requires it, so its absence is never clean.
+    const counts = countsOf(results);
+    if (required && observation?.status !== 'measured' && results.length === 0) counts.unknown++;
+    const status: DensityBudgetCellReport['status'] =
+      observation === null
+        ? 'not-captured'
+        : observation.status === 'measured'
+          ? 'measured'
+          : 'unknown';
+    reports.push({
+      cell,
+      status,
+      ...(observation !== null && observation.status === 'unknown'
+        ? { unknown: { code: observation.unknown.code, detail: observation.unknown.detail } }
+        : {}),
+      required,
+      bounds:
+        observation !== null && observation.status === 'measured' ? observation.value.bounds : null,
+      results,
+      counts,
+    });
+  };
+
+  for (const input of cells) {
+    const required = budget.matrix.some((m) => matrixCovers(m, input.cell));
+    evaluateCell(input.cell, input.observation, required);
+  }
+  for (const m of budget.matrix) {
+    if (!cells.some((input) => matrixCovers(m, input.cell))) evaluateCell(m, null, true);
+  }
+
+  const unmatched = contexts
+    .filter((c) => !matched.has(c.rule.id))
+    .map((c) =>
+      resultOf(c, [], {
+        code: 'input_missing',
+        reason: 'no cell of this invocation matches the rule (its role, viewport or fixture)',
+      })
+    );
+
+  let counts = countsOf(unmatched);
+  for (const r of reports) counts = add(counts, r.counts);
+
+  const next: DensityNextStep[] = [];
+  if (budget.rules.some((r) => r.limit === null)) next.push('set-limit');
+  if (reports.some((r) => r.status !== 'measured') || unmatched.length > 0) next.push('capture');
+
+  return {
+    schema: DENSITY_BUDGET_SCHEMA,
+    budgetHash: hashDensityCanonical(budget),
+    source: budget.source,
+    floorsBasis,
+    volume: budget.volume,
+    cells: reports,
+    unmatched,
+    counts,
+    next,
+  };
+}
+
+/**
+ * The exit code of an `assert`: 1 when any rule fails, 3 when the only
+ * non-passes are unknowns — or when nothing was judged at all (no rule: the
+ * verdict is unknown, never passed) — and 0 when every result passes.
+ */
+export function densityBudgetExitCode(counts: DensityBudgetCounts): 0 | 1 | 3 {
+  if (counts.fail > 0) return 1;
+  if (counts.unknown > 0) return 3;
+  if (counts.pass === 0) return 3;
+  return 0;
+}
+
+function atKey(at: DensityQuantityAt): string {
+  return [
+    at.ask !== undefined ? `ask=${at.ask}` : null,
+    at.block !== undefined ? `block=${at.block}` : null,
+    at.repeat !== undefined ? `repeat=${at.repeat}` : null,
+    at.kind !== undefined && at.ask === undefined ? `kind=${at.kind}` : null,
+  ]
+    .filter((s): s is string => s !== null)
+    .join(',');
+}
+
+/**
+ * A draft budget from measured cells: the cells as its matrix, and one rule
+ * per drafted quantity and value, holding the CURRENT value and a null limit.
+ * The tool supplies no limit; an author sets each one from a tenant document.
+ */
+export function draftDensityBudget(cells: readonly DensityBudgetInputCell[]): DensityBudget {
+  const rules: DensityBudgetRule[] = [];
+  const matrix: DensityBudgetCell[] = [];
+  const ids = new Set<string>();
+  for (const { cell, observation } of cells) {
+    if (cell.role === null || observation.status !== 'measured') continue;
+    if (
+      !matrix.some(
+        (m) =>
+          m.role === cell.role &&
+          sameViewport(m.viewport, cell.viewport) &&
+          m.fixture === cell.fixture
+      )
+    ) {
+      matrix.push({ role: cell.role, viewport: { ...cell.viewport }, fixture: cell.fixture });
+    }
+    for (const quantity of DENSITY_QUANTITIES) {
+      if (quantity.draft === undefined) continue;
+      for (const v of densityQuantityValues(observation.value, quantity)) {
+        const dims = densityQuantityDims(quantity);
+        // A value no where can select (a truncated list's remainder) is not a rule.
+        if (dims.includes('block') && v.at.block === undefined) continue;
+        if (dims.includes('repeat') && v.at.repeat === undefined) continue;
+        if (dims.includes('ask') && v.at.ask === undefined) continue;
+        const where: DensityBudgetWhere = {
+          role: cell.role,
+          viewport: { ...cell.viewport },
+          ...(cell.fixture !== null ? { fixture: cell.fixture } : {}),
+          ...(v.at.ask !== undefined ? { ask: v.at.ask } : {}),
+          ...(v.at.block !== undefined ? { block: v.at.block } : {}),
+          ...(v.at.repeat !== undefined ? { repeat: v.at.repeat } : {}),
+          ...(v.at.kind !== undefined && dims.includes('kind') && v.at.ask === undefined
+            ? { kind: v.at.kind }
+            : {}),
+        };
+        const key = atKey(v.at);
+        const base = `${quantity.id}@${cell.role}@${cell.viewport.width}x${cell.viewport.height}${cell.fixture !== null ? `@${cell.fixture}` : ''}${key !== '' ? `#${key}` : ''}`;
+        let id = base;
+        for (let n = 2; ids.has(id); n++) id = `${base}~${n}`;
+        ids.add(id);
+        rules.push({
+          id,
+          quantity: quantity.id,
+          where,
+          bound: quantity.draft,
+          limit: null,
+          source: null,
+          current: 'unknown' in v.value ? null : { ...v.value },
+        });
+      }
+    }
+  }
+  return {
+    schema: DENSITY_BUDGET_SCHEMA,
+    source: null,
+    matrix,
+    floors: null,
+    floorsWaived: null,
+    volume: null,
+    rules,
+  };
+}
+
+/** A valid, empty budget: no cell, no floor, no rule, no limit (`init`). */
+export function emptyDensityBudget(): DensityBudget {
+  return {
+    schema: DENSITY_BUDGET_SCHEMA,
+    source: null,
+    matrix: [],
+    floors: null,
+    floorsWaived: null,
+    volume: null,
+    rules: [],
+  };
+}
+
+/** A budget as its file is written: `max` or `min` keyed by the rule's bound. */
+export function densityBudgetDocument(budget: DensityBudget): Record<string, unknown> {
+  return {
+    schema: budget.schema,
+    source: budget.source,
+    matrix: budget.matrix,
+    ...(budget.floors !== null ? { floors: budget.floors } : {}),
+    ...(budget.floorsWaived !== null ? { floorsWaived: budget.floorsWaived } : {}),
+    volume: budget.volume,
+    rules: budget.rules.map((r) => ({
+      id: r.id,
+      quantity: r.quantity,
+      where: r.where,
+      [r.bound]: r.limit,
+      ...(r.source !== null ? { source: r.source } : {}),
+      ...(r.current !== null ? { current: r.current } : {}),
+    })),
+  };
+}

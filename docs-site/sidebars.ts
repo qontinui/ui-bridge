@@ -101,6 +101,7 @@ const sidebars: SidebarsConfig = {
         'api/ai-endpoints',
         'api/state-endpoints',
         'api/design-tokens',
+        'api/density',
       ],
     },
     {
