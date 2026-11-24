@@ -107,6 +107,18 @@ describe('isRenderedForAction', () => {
     expect(isRenderedForAction(wrapper)).toBe(false);
   });
 
+  it('an unslotted display:contents light child of an open shadow host is not rendered, though the host answers true', () => {
+    const h = document.createElement('div');
+    document.body.appendChild(h);
+    h.attachShadow({ mode: 'open' });
+    const child = document.createElement('div');
+    child.style.display = 'contents';
+    h.appendChild(child);
+    Object.defineProperty(child, 'checkVisibility', { configurable: true, value: () => false });
+    Object.defineProperty(h, 'checkVisibility', { configurable: true, value: () => true });
+    expect(isRenderedForAction(child)).toBe(false);
+  });
+
   it('the fallback walk cannot see into a CLOSED shadow root: an unslotted light child of a closed host reads rendered', () => {
     const h = document.createElement('div');
     document.body.appendChild(h);

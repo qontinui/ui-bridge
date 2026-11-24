@@ -26,7 +26,8 @@ import { findByTextPrimitive } from './page-primitives';
 import { createHandlers, type RegistryLike } from './handlers';
 import { executeCommand, type BridgeAccess } from '../react/commandHandlers';
 import { getGlobalRegistry, resetGlobalRegistry } from '../core/registry';
-import { createActionExecutor } from '../control/action-executor';
+import { createActionExecutor, getClickVisibilityReason } from '../control/action-executor';
+import { createCtrEntry, getGlobalCtr, resetGlobalCtr } from '../ctr/registry';
 
 interface Box {
   el: HTMLElement;
@@ -328,9 +329,15 @@ describe('clickable per arm', () => {
     inner.addEventListener('click', () => clicked.push('inner-x'));
     const result = (await createActionExecutor(getGlobalRegistry()).executeAction('inner-x', {
       action: 'click',
-    })) as { success: boolean; error?: string; failureDetails?: { errorCode?: string } };
+    })) as {
+      success: boolean;
+      error?: string;
+      failureDetails?: { errorCode?: string; visibilityReason?: string };
+    };
     expect(result.success).toBe(false);
     expect(result.error).toContain('not visible');
+    expect(result.failureDetails?.errorCode).toBe('UB-ELEM-NOT-VISIBLE');
+    expect(result.failureDetails?.visibilityReason).toBe('hidden');
     expect(clicked).toEqual([]);
   });
 
@@ -497,5 +504,96 @@ describe('relay dispatch gate stays a rendered-at-all check', () => {
     const result = await focus('gone');
     expect(result.success).toBe(false);
     expect(result.error).toContain('not visible');
+  });
+});
+
+/**
+ * The server `clickable` wait polls, so it resolves the executor's target as a
+ * read-only PROBE (review round 13, A1): no CTR self-healing, no events, no
+ * discovery-cache pruning.
+ */
+describe('server clickable probes the executor target without mutating it', () => {
+  afterEach(() => {
+    resetGlobalCtr();
+  });
+
+  async function clickableWait(executor: ReturnType<typeof createActionExecutor>, id: string) {
+    const handlers = createHandlers(registryLike(), executor, { consoleCapture: null as never });
+    const resp = await handlers.waitForElementByCondition({
+      selector: { id },
+      condition: 'clickable',
+      timeout_ms: 150,
+    });
+    return (resp.data as { matched: boolean }).matched;
+  }
+
+  it('a CTR-resolved target: no ctr event fires and the selector order is unchanged', async () => {
+    const registry = getGlobalRegistry();
+    const original = button('ctr-pay', 'Pay ctr');
+    place(original, 0, 300, 80, 24);
+    registry.registerElement('ctr-pay', original, { type: 'button', label: 'ctr-pay' });
+    original.remove();
+    // What the CTR's second selector finds; its first misses (a self-healing
+    // resolution would demote it and promote the second).
+    const target = document.createElement('button');
+    target.setAttribute('data-testid', 'pay-target');
+    target.textContent = 'Pay';
+    place(target, 0, 400, 80, 24);
+    const ctr = getGlobalCtr();
+    ctr.register(
+      createCtrEntry('ctr-pay', [
+        { strategy: 'css', value: '#not-on-the-page' },
+        { strategy: 'data-testid', value: 'pay-target' },
+      ])
+    );
+    const before = JSON.stringify(ctr.get('ctr-pay'));
+    const events: string[] = [];
+    const off = ctr.on((event) => events.push(event.type));
+    try {
+      expect(await clickableWait(createActionExecutor(registry), 'ctr-pay')).toBe(true);
+    } finally {
+      off();
+    }
+    expect(events).toEqual([]);
+    expect(JSON.stringify(ctr.get('ctr-pay'))).toBe(before);
+  });
+
+  it('a stale discovery-cache entry is left in place', async () => {
+    const registry = getGlobalRegistry();
+    const original = button('stale-x', 'Pay stale');
+    place(original, 0, 300, 80, 24);
+    registry.registerElement('stale-x', original, { type: 'button', label: 'stale' });
+    original.remove();
+    const executor = createActionExecutor(registry);
+    const cache = (executor as unknown as { discoveryCache: Map<string, HTMLElement> })
+      .discoveryCache;
+    cache.set('stale-x', original);
+    expect(await clickableWait(executor, 'stale-x')).toBe(false);
+    expect(cache.get('stale-x')).toBe(original);
+  });
+});
+
+/**
+ * The click pre-check's render refusal exempts an <option> (round 13, A3): a
+ * browser's checkVisibility() is false for one inside a closed dropdown
+ * <select>, but clicking it to select it is supported. Content inside a
+ * closed <details> stays refused.
+ */
+describe('getClickVisibilityReason render refusal', () => {
+  it('exempts an <option> whose checkVisibility() is false; refuses a control in a closed <details>', () => {
+    const select = document.createElement('select');
+    const option = document.createElement('option');
+    option.textContent = 'Two';
+    select.appendChild(option);
+    document.body.appendChild(select);
+    Object.defineProperty(option, 'checkVisibility', { configurable: true, value: () => false });
+    expect(getClickVisibilityReason(option)).toBeNull();
+
+    const details = document.createElement('details');
+    const inside = document.createElement('button');
+    details.appendChild(inside);
+    document.body.appendChild(details);
+    Object.defineProperty(inside, 'checkVisibility', { configurable: true, value: () => false });
+    expect(getClickVisibilityReason(inside)).toBe('hidden');
   });
 });

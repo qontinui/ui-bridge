@@ -574,7 +574,11 @@ export function getClickVisibilityReason(element: HTMLElement): VisibilityReason
   // the relay dispatch gate applies (`core/element-state`), so a click inside
   // a `display: none` subtree is refused on both arms instead of dispatched to
   // a node no user can reach.
-  if (!isRenderedForAction(element)) return 'hidden';
+  // Exempt: an <option> (realm-safe tag check). In a browser,
+  // `checkVisibility()` is false for an option inside a closed dropdown
+  // <select>, yet selecting it by clicking is supported. Content inside a
+  // closed <details> stays refused: no user can reach it.
+  if (element.tagName !== 'OPTION' && !isRenderedForAction(element)) return 'hidden';
   let style: CSSStyleDeclaration;
   try {
     style = window.getComputedStyle(element);
@@ -1218,30 +1222,42 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   /**
-   * Execute an action on an element
-   */
-  /**
-   * The node an element action on `elementId` would act on, resolved exactly
-   * as {@link executeAction} resolves it: a connected registry node, else a
+   * The node an element action on `elementId` would act on, resolved by the
+   * SAME chain {@link executeAction} uses — a connected registry node, else a
    * node found by identifier, else the Central Target Registry, else this
-   * executor's discovery cache, else (for `scroll`) a page sentinel. `null`
-   * when nothing resolves. Shared so a caller asking "would the next click
-   * land" (the server wait-for-element `clickable` condition) reads the same
-   * node the click would, not the registry's possibly detached one.
+   * executor's discovery cache, else (for `scroll`) a page sentinel — but as a
+   * read-only PROBE: the CTR is walked with `probeInDOM` (no selector
+   * promote/demote, no resolution cache or timestamp writes, no
+   * `ctr:resolution-*` events) and a stale discovery-cache entry is left in
+   * place. `null` when nothing resolves.
    *
+   * For a caller asking "would the next click land" (the server
+   * wait-for-element `clickable` condition, polled every 100 ms), which must
+   * not change the state it observes the way an acting resolution does.
+   */
+  probeActionTarget(elementId: string): HTMLElement | null {
+    return this.resolveActionTarget(elementId, { probe: true });
+  }
+
+  /**
+   * The shared resolution chain behind {@link executeAction} (acting: the CTR
+   * self-heals and a stale discovery-cache entry is dropped) and
+   * {@link probeActionTarget} (`probe: true`: nothing is mutated or emitted).
    * `onHit` is called for each strategy that produced a node (the first is the
    * one returned); with `wantAlternates` every later arm is probed too, for the
    * response's resolution alternates.
    */
-  resolveActionTarget(
+  private resolveActionTarget(
     elementId: string,
     options: {
       wantAlternates?: boolean;
       action?: string;
       onHit?: (strategy: ElementResolutionStrategy) => void;
+      probe?: boolean;
     } = {}
   ): HTMLElement | null {
     const wantAlternates = options.wantAlternates === true;
+    const probe = options.probe === true;
     const recordHit = (strategy: ElementResolutionStrategy): void => options.onHit?.(strategy);
     let element: HTMLElement | null = null;
 
@@ -1271,10 +1287,18 @@ export class DefaultActionExecutor implements ActionExecutor {
     if (!element) {
       const ctr = getGlobalCtr();
       if (ctr.has(elementId)) {
-        const result = ctr.resolveInDOM(elementId);
-        if (result.resolved && result.element) {
-          element = result.element;
-          recordHit('ctr-selector');
+        if (probe) {
+          const probed = ctr.probeInDOM(elementId);
+          if (probed) {
+            element = probed;
+            recordHit('ctr-selector');
+          }
+        } else {
+          const result = ctr.resolveInDOM(elementId);
+          if (result.resolved && result.element) {
+            element = result.element;
+            recordHit('ctr-selector');
+          }
         }
       }
     } else if (wantAlternates) {
@@ -1292,8 +1316,8 @@ export class DefaultActionExecutor implements ActionExecutor {
         element = element ?? cached;
         recordHit('discovery-cache');
       }
-    } else if (cached && element === null) {
-      // Clean up stale entry
+    } else if (cached && element === null && !probe) {
+      // Clean up stale entry (an acting resolution only; a probe mutates nothing)
       this.discoveryCache.delete(elementId);
     }
 
@@ -1311,6 +1335,9 @@ export class DefaultActionExecutor implements ActionExecutor {
     return element;
   }
 
+  /**
+   * Execute an action on an element
+   */
   async executeAction(
     elementId: string,
     request: ControlActionRequest
