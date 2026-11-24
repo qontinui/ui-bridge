@@ -602,7 +602,7 @@ describe('resource-status capture', () => {
     expect(statusOnly(capture)).toHaveLength(502);
   });
 
-  it('a status report matches request initiators only, an element report elements only', async () => {
+  it('the status report of a fetch is consumed by its fetch entry, never by an img entry on the same URL', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => new Response('', { status: 404 }))
