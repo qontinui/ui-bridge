@@ -164,10 +164,31 @@ describe('the numeric input boundary', () => {
     ['scrollY', 1e308],
     ['scrollX', -1e308],
     ['documentHeight', 1e308],
-  ] as const)('from a capture file: viewport.%s = %d does not parse', (field, value) => {
+    ['documentWidth', 1e308],
+    ['documentWidth', -1],
+  ] as const)('from a capture file: viewport.%s = %s does not parse', (field, value) => {
     const good = capture({ rect: [10, 20, 100, 20] });
     const forged = { ...good, viewport: { ...good.viewport, [field]: value } };
     expect(parseDensityCapture(JSON.parse(JSON.stringify(forged))).ok).toBe(false);
+  });
+
+  it.each([
+    ['width', 1e308],
+    ['width', 0.5],
+    ['height', 1e308],
+    ['height', 0],
+  ] as const)('from a capture file: cell.viewport.%s = %s does not parse', (field, value) => {
+    const good = capture({ rect: [10, 20, 100, 20] });
+    const forged = {
+      ...good,
+      cell: { ...good.cell, viewport: { ...good.cell.viewport, [field]: value } },
+    };
+    expect(parseDensityCapture(JSON.parse(JSON.stringify(forged))).ok).toBe(false);
+  });
+
+  it('the in-range viewports of a capture file parse (the positive control of the rows above)', () => {
+    const good = capture({ rect: [10, 20, 100, 20] });
+    expect(parseDensityCapture(JSON.parse(JSON.stringify(good))).ok).toBe(true);
   });
 
   it('a viewport outside its range is no usable viewport (input_missing)', () => {

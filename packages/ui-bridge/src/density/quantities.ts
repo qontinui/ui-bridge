@@ -730,6 +730,13 @@ export const DENSITY_QUANTITIES: readonly DensityQuantity[] = Object.freeze([
   ),
   q('cell.affordances', 'count', 'cell', 'affordances.total', 'Affordances.'),
   q(
+    'cell.abbreviationsUndetermined',
+    'count',
+    'cell',
+    'affordances.abbreviationsUndetermined',
+    'Leaves named by their title whose text is redacted: an abbreviation or a title-named icon control, which the capture cannot tell apart.'
+  ),
+  q(
     'affordance.hidesItems',
     'count',
     'affordance',
