@@ -125,6 +125,16 @@ describe('a media-fact filter never passes a row it cannot evaluate — and says
     ]);
   });
 
+  it('a limit already met still reports an unmeasured row after it', () => {
+    // `limit` stops the walk early only when no media-fact filter is active;
+    // here 'loading' sits after the one row the limit keeps.
+    const ctx: CanonicalFindContext = {};
+    expect(filterIds(rows, { oversizeThreshold: 2, limit: 1 }, ctx)).toEqual(['sharp']);
+    expect(ctx.unevaluated).toEqual([
+      { id: 'loading', option: 'oversizeThreshold', code: 'input_missing' },
+    ]);
+  });
+
   it('a request every row could answer reports an EMPTY unevaluated list', () => {
     const ctx: CanonicalFindContext = {};
     filterIds([mediaRow('a', { effectiveResolution: 3 })], { oversizeThreshold: 2 }, ctx);

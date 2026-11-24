@@ -102,6 +102,13 @@ describe('include_hidden:false hit-test cost', () => {
     expect(hitTests).toBeLessThanOrEqual(ROWS * MAX_PROBES_PER_ROW);
   });
 
+  it('a met limit stops the walk: rows after it are never hit-tested', () => {
+    const kept = applyCanonicalFindFilter(liveRows(), { include_hidden: false, limit: 3 });
+    expect(kept.map((r) => r.id)).toEqual(['row-0', 'row-1', 'row-2']);
+    expect(hitTests).toBeGreaterThan(0);
+    expect(hitTests).toBeLessThanOrEqual(3 * MAX_PROBES_PER_ROW);
+  });
+
   it('a row that carries state.visible costs no hit-test', () => {
     const rows = liveRows().map((row) => ({ ...row, state: { visible: true } }));
     expect(applyCanonicalFindFilter(rows, { include_hidden: false })).toHaveLength(ROWS);
