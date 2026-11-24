@@ -558,7 +558,7 @@ type VisibilityReason = 'hidden' | 'off-screen' | 'occluded' | 'no-layout';
  * here; it remains a valid discriminator populated by other paths.
  * Precedence: hidden > no-layout > off-screen.
  */
-function getClickVisibilityReason(element: HTMLElement): VisibilityReason | null {
+export function getClickVisibilityReason(element: HTMLElement): VisibilityReason | null {
   let style: CSSStyleDeclaration;
   try {
     style = window.getComputedStyle(element);

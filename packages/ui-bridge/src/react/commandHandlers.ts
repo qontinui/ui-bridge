@@ -3907,9 +3907,11 @@ export async function executeCommand(
             return readElementVisibility(domEl).visible;
           }
           case 'clickable': {
-            // "The next click would not be refused": the dispatch gate's
-            // render check, NOT the visibility verdict (a below-the-fold or
-            // opacity:0 control is clicked), plus the interaction blockers.
+            // "The next click would not be refused" by THIS arm's click path,
+            // the relay `executeElementAction`: its dispatch gate's render
+            // check (`isRenderedForAction`), NOT the visibility verdict (a
+            // below-the-fold or opacity:0 control is clicked), plus the
+            // interaction blockers.
             if (!domEl) return false;
             if (!isRenderedForAction(domEl)) return false;
             // Same predicate as `ElementState.enabled` and the click-path

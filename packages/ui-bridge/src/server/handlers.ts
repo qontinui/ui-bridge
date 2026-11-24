@@ -133,7 +133,8 @@ import {
   readInteractionBlockers,
   readTitleAttr,
 } from '../core/a11y';
-import { isRenderedForAction, readElementVisibility } from '../core/element-state';
+import { readElementVisibility } from '../core/element-state';
+import { getClickVisibilityReason } from '../control/action-executor';
 import { measureFreshBbox } from '../core/registry';
 import {
   isContentRedacted,
@@ -6863,23 +6864,26 @@ export function createHandlers(
             return true;
 
           case 'visible': {
-            // The canonical verdict (`core/element-state`): laid out, not
-            // hidden, in the viewport and not fully occluded or clipped. The
-            // poll already materialized this row through `getState()`, so its
-            // `state.visible` IS that verdict; re-run the hit-test only for a
-            // row that carries none.
+            // The canonical verdict (`core/element-state`) read LIVE whenever
+            // there is a node: the materialized row's `state` comes from
+            // `getState()`, which carries the registry's post-action overlay
+            // (a frozen `visible` after `type`), and a wait must observe the
+            // field change (`control/action-executor.ts`'s note on
+            // `getElementState`). The row's own `state.visible` only when
+            // there is no live node.
+            if (domEl) return readElementVisibility(domEl).visible;
             const state = el.state as { visible?: unknown } | undefined;
-            if (typeof state?.visible === 'boolean') return state.visible;
-            if (!domEl) return false;
-            return readElementVisibility(domEl).visible;
+            return state?.visible === true;
           }
 
           case 'clickable': {
-            // "The next click would not be refused": the dispatch gate's
-            // render check, NOT the visibility verdict (a below-the-fold or
-            // opacity:0 control is clicked), plus the interaction blockers.
+            // "The next click would not be refused" by THIS arm's click path,
+            // the HTTP executor: its visibility pre-check
+            // (`getClickVisibilityReason`), NOT the visibility verdict (a
+            // below-the-fold or opacity:0 control is clicked), plus the
+            // interaction blockers.
             if (!domEl) return false;
-            if (!isRenderedForAction(domEl)) return false;
+            if (getClickVisibilityReason(domEl) !== null) return false;
             // Same predicate as `ElementState.enabled` and the click-path
             // pre-check, so "clickable" means the next click is not refused.
             return !isInteractionBlocked(readInteractionBlockers(domEl));
@@ -7177,12 +7181,12 @@ export function createHandlers(
           | undefined;
 
         if (requirement === 'visible') {
-          if (state && typeof state.visible === 'boolean') return state.visible;
-          if (!domEl) return false;
-          // No serialized verdict — the DOM-selector fallback's synthetic row
-          // (registry rows are materialized and carry `state`): the canonical
-          // verdict on the live node (`core/element-state`).
-          return readElementVisibility(domEl).visible;
+          // LIVE whenever there is a node: a materialized row's `state` comes
+          // from `getState()`, which carries the registry's post-action
+          // overlay, and a wait must observe the field change. The row's own
+          // `state.visible` only when there is no live node.
+          if (domEl) return readElementVisibility(domEl).visible;
+          return state?.visible === true;
         }
 
         if (requirement === 'has-layout') {

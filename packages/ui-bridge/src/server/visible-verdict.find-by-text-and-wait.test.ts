@@ -1,18 +1,24 @@
 /**
- * `findByText`'s `visible` and the wait-for-element `visible` / `clickable`
- * conditions read the canonical visibility verdict — follow-up fb196aa0 of
- * plan `2026-11-24-ui-bridge-find-visibility-and-fallback-label-read-the-canonical-verdicts`.
+ * The visibility readers outside the find filter — plan
+ * `2026-11-24-ui-bridge-find-visibility-and-fallback-label-read-the-canonical-verdicts`
+ * follow-ups fb196aa0, e11dd943 and the delta reviews after them.
  *
- * `findByTextPrimitive` computed `visible` as `offsetParent !== null ||
- * position === 'fixed'` (a sixth algorithm), and both
- * `waitForElementByCondition` arms gated `visible` / `clickable` on
- * `offsetParent !== null` plus a non-zero rect. All three now read
- * `readElementVisibility(el).visible` (`core/element-state`), so an occluded or
- * off-screen element is not visible there, exactly as every row reports it.
+ * - `findByText`'s per-hit `visible`, and the `visible` condition / requirement
+ *   of the two wait routes, read the canonical verdict LIVE
+ *   (`readElementVisibility`): an occluded or off-screen element is not
+ *   visible there, and a stale registry overlay does not override the node.
+ * - `clickable` means "this arm's next click would not be refused", so it
+ *   mirrors each arm's own click path: the server (HTTP executor) arm reads
+ *   `getClickVisibilityReason`, the relay arm the dispatch gate's
+ *   `isRenderedForAction`; both add the interaction blockers. Neither is the
+ *   visibility verdict.
+ * - The relay dispatch gate is a rendered-at-all check (`isRenderedForAction`),
+ *   not the verdict.
  *
  * jsdom has neither layout, `offsetParent` nor `elementFromPoint`; all three
  * are stubbed as in `dom-fallback.visible.test.ts`. `offsetParent` is set on
- * every placed node, so each old check would have answered visible.
+ * every placed node, so each old `offsetParent` check would have answered
+ * visible.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -189,16 +195,85 @@ describe.each([
   });
 });
 
-describe('server wait-for-element-condition visible reads the materialized row', () => {
-  it("an off-screen element whose registry state reports visible:true matches (no second hit-test overrides the row's own state)", async () => {
+describe('a stale registry overlay never overrides the live verdict', () => {
+  // A mutation action leaves `visible` in the registry overlay, which nothing
+  // expires; `getState()` reports it. The waits read the node live.
+  beforeEach(() => {
     const registry = getGlobalRegistry();
     registry.registerElement('below', document.getElementById('below')!, {
       type: 'button',
       label: 'below',
     });
-    // The post-action overlay the row reports through getState().
     registry.refreshElement('below', { visible: true });
-    expect((await serverArm('below', 'visible')).matched).toBe(true);
+  });
+
+  it.each([
+    ['server', serverArm],
+    ['relay', relayArm],
+  ] as const)(
+    'wait-for-element-condition visible (%s arm): off-screen is not visible',
+    async (_n, arm) => {
+      expect((await arm('below', 'visible')).matched).toBe(false);
+    }
+  );
+
+  it.each([
+    ['server', serverRegisteredArmLate],
+    ['relay', relayRegisteredArmLate],
+  ] as const)(
+    'wait-for-element requirement visible (%s arm): off-screen times out',
+    async (_n, arm) => {
+      expect((await arm('below')).element).toBeUndefined();
+    }
+  );
+});
+
+/**
+ * Each arm's `clickable` mirrors that arm's own click path (review A2).
+ */
+describe('clickable per arm', () => {
+  function fixedFab(): HTMLButtonElement {
+    const fab = button('fab', 'Pay fab');
+    fab.style.position = 'fixed';
+    place(fab, 1100, 600, 80, 24);
+    // A browser reports no offsetParent for a position:fixed element.
+    Object.defineProperty(fab, 'offsetParent', { configurable: true, get: () => null });
+    getGlobalRegistry().registerElement('fab', fab, { type: 'button', label: 'fab' });
+    return fab;
+  }
+
+  beforeEach(() => {
+    const registry = getGlobalRegistry();
+    registry.registerElement('below', document.getElementById('below')!, {
+      type: 'button',
+      label: 'below',
+    });
+  });
+
+  it('server: an inline visually-hidden (-9999px) control is refused, a below-the-fold one and a fixed one are clickable', async () => {
+    const sr = button('sr', 'Pay sr');
+    sr.style.position = 'absolute';
+    sr.style.left = '-10000px';
+    place(sr, -10000, 0, 80, 24);
+    getGlobalRegistry().registerElement('sr', sr, { type: 'button', label: 'sr' });
+    fixedFab();
+    expect((await serverArm('sr', 'clickable')).matched).toBe(false);
+    expect((await serverArm('below', 'clickable')).matched).toBe(true);
+    expect((await serverArm('fab', 'clickable')).matched).toBe(true);
+  });
+
+  it('relay: a fixed and a below-the-fold control are clickable; one under a display:none ancestor is not', async () => {
+    fixedFab();
+    const shell = document.createElement('div');
+    shell.style.display = 'none';
+    document.body.appendChild(shell);
+    const inner = button('inner', 'Pay inner');
+    shell.appendChild(inner);
+    Object.defineProperty(inner, 'offsetParent', { configurable: true, get: () => document.body });
+    getGlobalRegistry().registerElement('inner', inner, { type: 'button', label: 'inner' });
+    expect((await relayArm('fab', 'clickable')).matched).toBe(true);
+    expect((await relayArm('below', 'clickable')).matched).toBe(true);
+    expect((await relayArm('inner', 'clickable')).matched).toBe(false);
   });
 });
 
@@ -352,3 +427,10 @@ describe('relay dispatch gate stays a rendered-at-all check', () => {
     expect(result.error).toContain('not visible');
   });
 });
+
+function serverRegisteredArmLate(id: string) {
+  return serverRegisteredArm(id);
+}
+function relayRegisteredArmLate(id: string) {
+  return relayRegisteredArm(id);
+}

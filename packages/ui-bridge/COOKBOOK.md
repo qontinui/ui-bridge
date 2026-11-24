@@ -213,12 +213,20 @@ Conditions:
   inside the viewport, and not fully covered by another element or clipped
   away by an ancestor. A partially covered element is visible; one scrolled
   below the fold is not.
-- `clickable` — the next click would not be refused. That is NOT `visible`:
-  it is the render check the action dispatch gate uses (`isRenderedForAction`,
-  `core/element-state`: the node is connected, has no `display: none` on itself
-  or any ancestor, and is not `visibility: hidden`), so a control scrolled
-  below the fold, one at `opacity: 0` or one partly or fully covered is
-  `clickable`. On top of that the interaction blockers: not `disabled`, not
+- `clickable` — the next click on THIS arm would not be refused, so it
+  mirrors that arm's own click path rather than `visible`:
+  - the standalone server (HTTP executor) arm: the executor's click
+    visibility pre-check (`getClickVisibilityReason`) passes — no
+    `display: none` / `visibility: hidden|collapse` on the node, no explicit
+    zero inline size, no inline `-9999px` "visually hidden" offset;
+  - the React relay arm: the relay dispatch gate's render check
+    (`isRenderedForAction`, `core/element-state`) passes — the node is
+    connected, has no `display: none` on itself or any flat-tree ancestor
+    (shadow hosts and slots included), is taken by a slot when its parent
+    hosts a shadow root, and is not `visibility: hidden`.
+  Either way a control scrolled below the fold, one at `opacity: 0`, one that
+  is `position: fixed` or one partly or fully covered is `clickable`. On top
+  of that, on both arms, the interaction blockers: not `disabled`, not
   `aria-disabled="true"`, AND computed `pointer-events` is not `none`
   (including `none` inherited from an ancestor). This is the same
   predicate as `ElementState.enabled` and `UIQuery.enabled()`, and the one a
