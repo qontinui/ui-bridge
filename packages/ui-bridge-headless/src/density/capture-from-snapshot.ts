@@ -133,8 +133,8 @@ function readViewport(v: unknown): DensityCaptureViewport | null {
   const scrollY = finite(v.scrollY);
   const documentWidth = finite(v.documentWidth);
   const documentHeight = finite(v.documentHeight);
-  const inRange = (v: number | null, min: number): v is number =>
-    v !== null && v >= min && v <= DENSITY_MAX_COORDINATE_PX;
+  const inRange = (n: number | null, min: number): n is number =>
+    n !== null && n >= min && n <= DENSITY_MAX_COORDINATE_PX;
   if (
     !inRange(width, 1) ||
     !inRange(height, 1) ||

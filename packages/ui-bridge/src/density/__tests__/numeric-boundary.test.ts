@@ -41,6 +41,8 @@ type Row = {
   file: (i: DensityItem) => DensityItem;
   field: 'rect' | 'fontPx' | 'lineHeightPx';
   dimension: string;
+  /** The file door's reader already refuses this value (a negative size), so the file does not parse. */
+  fileRefused?: boolean;
 };
 
 const ROWS: Row[] = [
@@ -57,6 +59,21 @@ const ROWS: Row[] = [
     file: (i) => ({ ...i, rect: { ...i.rect!, y: 1.7e308 } }),
     field: 'rect',
     dimension: 'rect',
+  },
+  {
+    name: 'rect.x below the negative ceiling',
+    spec: { rect: [-MAX * 2, 0, 100, 20] },
+    file: (i) => ({ ...i, rect: { ...i.rect!, x: -MAX * 2 } }),
+    field: 'rect',
+    dimension: 'rect',
+  },
+  {
+    name: 'rect.w negative',
+    spec: { rect: [0, 0, -5, 20] },
+    file: (i) => ({ ...i, rect: { ...i.rect!, w: -5 } }),
+    field: 'rect',
+    dimension: 'rect',
+    fileRefused: true,
   },
   {
     name: 'rect.w beyond the ceiling',
@@ -134,10 +151,23 @@ describe('the numeric input boundary', () => {
     const good = capture({ rect: [10, 20, 100, 20] });
     const forged = { ...good, items: good.items.map(row.file) };
     const parsed = parseDensityCapture(JSON.parse(JSON.stringify(forged)));
-    expect(parsed.ok).toBe(true);
+    expect(parsed.ok).toBe(!row.fileRefused);
     if (!parsed.ok) return;
     expect(parsed.value.items[0][row.field]).toBeNull();
     expect(gap(parsed.value, row.dimension)).toBe(1);
+  });
+
+  it.each([
+    ['height', 1e308],
+    ['height', 0.5],
+    ['width', 1e308],
+    ['scrollY', 1e308],
+    ['scrollX', -1e308],
+    ['documentHeight', 1e308],
+  ] as const)('from a capture file: viewport.%s = %d does not parse', (field, value) => {
+    const good = capture({ rect: [10, 20, 100, 20] });
+    const forged = { ...good, viewport: { ...good.viewport, [field]: value } };
+    expect(parseDensityCapture(JSON.parse(JSON.stringify(forged))).ok).toBe(false);
   });
 
   it('a viewport outside its range is no usable viewport (input_missing)', () => {
