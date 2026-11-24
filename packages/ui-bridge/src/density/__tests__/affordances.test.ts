@@ -619,6 +619,23 @@ describe('affordances', () => {
     expect(densityAffordances(c, null).filter((a) => a.kind === 'pager')).toEqual([]);
   });
 
+  it('a search box whose aria-controls names its own list is the finder of that list', () => {
+    const els: DensityTestElementSpec[] = [
+      {
+        id: 'app.search',
+        tag: 'input',
+        role: 'searchbox',
+        category: 'interactive',
+        xpath: `${SECTION}/input`,
+        rect: [0, 60, 300, 28],
+        text: '',
+      },
+      ...PAGE.filter((e) => e.xpath!.startsWith(SECTION) && e.id !== 'app.orders.state'),
+    ];
+    const c = capture(els, [{ source: 'app.search', target: 'app.orders.list', type: 'controls' }]);
+    expect(densityRepeats(c, null)[0].finder).toEqual({ id: 'app.search', by: 'relationship' });
+  });
+
   it('a select-all checkbox in a table header is not a filter', () => {
     const S = '/html/body/main/section';
     const els: DensityTestElementSpec[] = [
