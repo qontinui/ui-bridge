@@ -952,8 +952,11 @@ export function densityRepeats(
       const laidOut = item.visibility !== 'hidden' && item.visibility !== 'no-layout';
       if (laidOut && item.rect === null) unreadable = true;
       else if (takesSpace(item)) {
-        if (leafSet.has(cur)) out.push(item);
-        else if (unknownLeaves.has(cur)) unreadable = true;
+        // A leaf whose text is unreadable (redacted) leaves the row unknown.
+        if (leafSet.has(cur)) {
+          if (item.ownChars === null) unreadable = true;
+          else out.push(item);
+        } else if (unknownLeaves.has(cur)) unreadable = true;
       }
       for (const c of children.get(cur) ?? []) stack.push(c);
     }
@@ -962,7 +965,7 @@ export function densityRepeats(
 
   const usable = pins.usableHeightPx;
   const volumeValid =
-    inputs.volume !== undefined && Number.isInteger(inputs.volume) && inputs.volume >= 1;
+    inputs.volume !== undefined && Number.isSafeInteger(inputs.volume) && inputs.volume >= 1;
   const volume = volumeValid ? inputs.volume! : null;
   const noVolume: DensityUnknownQuantity =
     inputs.volume === undefined
@@ -972,7 +975,7 @@ export function densityRepeats(
         }
       : {
           unknown: 'input_missing',
-          reason: 'the declared row volume is not a positive integer',
+          reason: 'the declared row volume is not a positive safe integer',
         };
 
   const repeats = groups.map((g): DensityRepeat => {
