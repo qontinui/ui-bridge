@@ -551,4 +551,59 @@ describe('CanonicalFindContext.stateReads', () => {
     applyCanonicalFindFilter([row], null, ctx);
     expect(reportedState(ctx, row)).toBeUndefined();
   });
+
+  it('a REFUSED call on a reused context leaves no earlier reads', () => {
+    const state = { visible: true };
+    const row = { id: 'r', type: 'button' as ElementType, getState: () => state };
+    const ctx: CanonicalFindContext = {};
+    applyCanonicalFindFilter([row], { includeHidden: false }, ctx);
+    expect(reportedState(ctx, row)).toBe(state);
+    // A request that contradicts itself is refused while its criteria are
+    // checked, before any row is read.
+    expect(() =>
+      applyCanonicalFindFilter(
+        [row],
+        { includeHidden: false, mediaOnly: true, interactiveOnly: true },
+        ctx
+      )
+    ).toThrow();
+    expect(reportedState(ctx, row)).toBeUndefined();
+    expect(ctx.stateReads).toBeUndefined();
+  });
+
+  it('a call refused late (in the media-fact pass) publishes no outputs', () => {
+    const state = { visible: true };
+    const row = { id: 'r', type: 'button' as ElementType, getState: () => state };
+    const legacyMedia = { id: 'm', category: 'media', mediaMetadata: { src: 'x.png' } };
+    const ctx: CanonicalFindContext = {};
+    expect(() =>
+      applyCanonicalFindFilter([row, legacyMedia], { includeHidden: false, brokenOnly: true }, ctx)
+    ).toThrow();
+    expect(ctx.stateReads).toBeUndefined();
+    expect(ctx.unevaluated).toBeUndefined();
+  });
+});
+
+describe('CanonicalFindContext.unevaluated and projection on a reused context', () => {
+  it('unevaluated does not survive into a call that asks no media fact', () => {
+    const ctx: CanonicalFindContext = {};
+    applyCanonicalFindFilter([{ id: 'b', type: 'button' }], { brokenOnly: true }, ctx);
+    expect(ctx.unevaluated).toEqual([]);
+    applyCanonicalFindFilter([{ id: 'b', type: 'button' }], { type: 'button' }, ctx);
+    expect(ctx.unevaluated).toBeUndefined();
+  });
+
+  it('projection does not survive into a call that asks none', () => {
+    const el = document.createElement('button');
+    document.body.appendChild(el);
+    try {
+      const ctx: CanonicalFindContext = {};
+      applyCanonicalFindFilter([{ id: 'b', element: el }], { attributes: ['lang'] }, ctx);
+      expect(ctx.projection).toBeDefined();
+      applyCanonicalFindFilter([{ id: 'b', element: el }], { type: 'button' }, ctx);
+      expect(ctx.projection).toBeUndefined();
+    } finally {
+      el.remove();
+    }
+  });
 });
