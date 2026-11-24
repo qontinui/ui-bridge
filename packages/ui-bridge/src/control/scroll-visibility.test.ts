@@ -62,6 +62,18 @@ describe('isVisibleInScrollContext — the containing-block chain', () => {
     expect(isVisibleInScrollContext(scrollerWithChild({ position: 'absolute' }))).toBe(true);
   });
 
+  it('a transformed display:contents wrapper is not a containing block', () => {
+    const child = scrollerWithChild({ position: 'absolute' });
+    const scroller = child.parentElement as HTMLElement;
+    const wrapper = document.createElement('div');
+    wrapper.style.display = 'contents';
+    wrapper.style.transform = 'translateX(0)';
+    scroller.insertBefore(wrapper, child);
+    wrapper.appendChild(child);
+    // No box, no containing block: the child still escapes the scroller.
+    expect(isVisibleInScrollContext(child)).toBe(true);
+  });
+
   it('a position:absolute child of a positioned scroller is clipped by it', () => {
     const child = scrollerWithChild({ position: 'absolute' });
     (child.parentElement as HTMLElement).style.position = 'relative';
@@ -90,9 +102,9 @@ describe('isVisibleInScrollContext — overflow that clips nothing', () => {
     link.style.overflowY = 'hidden';
     document.body.appendChild(link);
     rect(link, 100, 100, 200, 20);
-    // CSSOM's client box of an inline element is 0×0.
-    Object.defineProperty(link, 'clientWidth', { value: 0, configurable: true });
-    Object.defineProperty(link, 'clientHeight', { value: 0, configurable: true });
+    // Even a reported client box the icon sits outside is ignored: overflow
+    // does not apply to an inline box.
+    Object.defineProperty(link, 'clientWidth', { value: 40, configurable: true });
     const icon = document.createElement('b');
     link.appendChild(icon);
     rect(icon, 150, 100, 20, 20);

@@ -358,8 +358,9 @@ export interface ElementState {
   /**
    * Share of the sampled points an ancestor's overflow cuts off, 0-100.
    * Present only when above 0. `100` pairs with `visibilityReason: 'clipped'`;
-   * below it the element stays `visible: true` (the tail of a truncated
-   * label). Clipping is never occlusion and names no occluder.
+   * below it `visible` follows the occlusion verdict over the in-clip points
+   * (a truncated label nothing covers stays `visible: true`). Clipping is never
+   * occlusion and names no occluder.
    */
   clippedPct?: number;
   /**
