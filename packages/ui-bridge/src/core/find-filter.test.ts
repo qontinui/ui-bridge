@@ -21,6 +21,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { executeCommand, type BridgeAccess } from '../react/commandHandlers';
 import { getGlobalRegistry, resetGlobalRegistry } from './registry';
 import { applyCanonicalFindFilter, INTERACTIVE_ELEMENT_TYPES } from './find-filter';
+import { createHandlers, type RegistryLike } from '../server/handlers';
+import { createActionExecutor } from '../control/action-executor';
 import type { ElementType } from './types';
 
 const emptyBridge: BridgeAccess = {
@@ -157,26 +159,9 @@ describe('applyCanonicalFindFilter · unit semantics', () => {
     expect(ids).toEqual(['visible', 'unknown-visibility']);
   });
 
-  it('include_hidden:false uses the live DOM check when a node is attached', () => {
-    // jsdom: offsetParent is null for all elements (no layout), so only the
-    // position:fixed escape hatch keeps a DOM-attached element.
-    const fixedEl = document.createElement('button');
-    fixedEl.style.position = 'fixed';
-    document.body.appendChild(fixedEl);
-    const staticEl = document.createElement('button');
-    document.body.appendChild(staticEl);
-    try {
-      const elements = [
-        { id: 'fixed', element: fixedEl },
-        { id: 'static', element: staticEl },
-      ];
-      const ids = applyCanonicalFindFilter(elements, { include_hidden: false }).map((e) => e.id);
-      expect(ids).toEqual(['fixed']);
-    } finally {
-      document.body.removeChild(fixedEl);
-      document.body.removeChild(staticEl);
-    }
-  });
+  // The live-node arm (the old `offsetParent` / `position: fixed` check and its
+  // rewrite as the canonical verdict) is pinned in the
+  // `include_hidden:false reads the canonical visibility verdict` block below.
 
   it('interactive_only uses the unified 11-type superset (switch/tab/slider/menuitem included)', () => {
     for (const type of ['switch', 'tab', 'slider', 'menuitem']) {
@@ -248,5 +233,234 @@ describe('applyCanonicalFindFilter · unit semantics', () => {
     expect(applyCanonicalFindFilter(elements, { testId: 'cancel-x' }).map((e) => e.id)).toEqual([
       'cancel-link',
     ]);
+  });
+});
+
+/**
+ * `include_hidden: false` reads the ONE canonical visibility verdict — plan
+ * `2026-11-24-ui-bridge-find-visibility-and-fallback-label-read-the-canonical-verdicts`,
+ * D1/D2 (plan-library edge ed3caaac).
+ *
+ * The filter used to judge a live node by `offsetParent !== null ||
+ * position === 'fixed'`, a fifth `visible` algorithm: an occluded or
+ * off-screen element survived a visible-only find while the row it returned
+ * said `visible: false`, and a `display:none` element inside a fixed container
+ * passed. jsdom has no layout, `offsetParent` or `elementFromPoint`; all three
+ * are stubbed as in `server/dom-fallback.visible.test.ts`. `offsetParent` is
+ * set on every placed node, so the OLD check would have kept each of them.
+ */
+describe('include_hidden:false reads the canonical visibility verdict', () => {
+  interface Box {
+    el: HTMLElement;
+    rect: { x: number; y: number; w: number; h: number };
+  }
+  /** Later in this array = painted on top. */
+  let boxes: Box[] = [];
+  const realElementFromPoint = document.elementFromPoint;
+
+  function place(
+    el: HTMLElement,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    parent: HTMLElement = document.body
+  ): HTMLElement {
+    el.getBoundingClientRect = () =>
+      ({
+        x,
+        y,
+        width: w,
+        height: h,
+        top: y,
+        left: x,
+        right: x + w,
+        bottom: y + h,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    Object.defineProperty(el, 'offsetParent', { configurable: true, get: () => document.body });
+    if (!el.isConnected) parent.appendChild(el);
+    boxes.push({ el, rect: { x, y, w, h } });
+    return el;
+  }
+
+  function button(id: string, text = id): HTMLButtonElement {
+    const el = document.createElement('button');
+    el.id = id;
+    el.textContent = text;
+    return el;
+  }
+
+  /** An unregistered, non-interactive overlay painted over (0,0)-(200,60). */
+  function cover(): HTMLElement {
+    const el = document.createElement('div');
+    el.id = 'toast';
+    return place(el, 0, 0, 200, 60);
+  }
+
+  const keptIds = (rows: Array<{ id: string }>) =>
+    applyCanonicalFindFilter(rows, { include_hidden: false }).map((r) => r.id);
+
+  beforeEach(() => {
+    resetGlobalRegistry();
+    document.body.innerHTML = '';
+    boxes = [];
+    Object.defineProperty(window, 'innerWidth', { value: 1280, configurable: true });
+    Object.defineProperty(window, 'innerHeight', { value: 720, configurable: true });
+    document.elementFromPoint = ((px: number, py: number) => {
+      for (let i = boxes.length - 1; i >= 0; i--) {
+        const { el, rect } = boxes[i];
+        if (!el.isConnected) continue;
+        if (px >= rect.x && px < rect.x + rect.w && py >= rect.y && py < rect.y + rect.h) {
+          return el;
+        }
+      }
+      return null;
+    }) as typeof document.elementFromPoint;
+  });
+
+  afterEach(() => {
+    document.elementFromPoint = realElementFromPoint;
+    document.body.innerHTML = '';
+    resetGlobalRegistry();
+  });
+
+  describe('applyCanonicalFindFilter over live-node rows (no state)', () => {
+    it('drops a node that has an offsetParent but is fully covered', () => {
+      const covered = place(button('covered'), 0, 0, 80, 24);
+      cover();
+      expect(keptIds([{ id: 'covered', element: covered }])).toEqual([]);
+    });
+
+    it('drops a node whose real rect is below the viewport (off-screen)', () => {
+      const below = place(button('below'), 0, 900, 80, 24);
+      expect(keptIds([{ id: 'below', element: below }])).toEqual([]);
+    });
+
+    it('keeps a position:fixed node with an in-viewport rect, and keeps a clear static one', () => {
+      // Rewritten from the old `position: fixed` escape-hatch test: a fixed
+      // node is kept because its canonical verdict is visible, not because of
+      // its `position`.
+      const fixed = button('fixed');
+      fixed.style.position = 'fixed';
+      place(fixed, 10, 10, 80, 24);
+      const clear = place(button('clear'), 100, 10, 80, 24);
+      expect(
+        keptIds([
+          { id: 'fixed', element: fixed },
+          { id: 'clear', element: clear },
+        ])
+      ).toEqual(['fixed', 'clear']);
+    });
+
+    it('drops a display:none node inside a position:fixed parent (the old check kept it)', () => {
+      const parent = document.createElement('div');
+      parent.style.position = 'fixed';
+      place(parent, 0, 0, 300, 100);
+      const child = button('hidden-child');
+      child.style.position = 'fixed';
+      child.style.display = 'none';
+      place(child, 10, 10, 80, 24, parent);
+      expect(keptIds([{ id: 'hidden-child', element: child }])).toEqual([]);
+    });
+
+    it('keeps a partially covered node (its canonical visible is true)', () => {
+      // 100x50: wide enough for the nine-point probe; the overlay covers the
+      // top-left corner only.
+      const wide = place(button('wide'), 300, 300, 100, 50);
+      const corner = document.createElement('div');
+      place(corner, 300, 300, 20, 20);
+      expect(keptIds([{ id: 'wide', element: wide }])).toEqual(['wide']);
+    });
+  });
+
+  describe('precedence', () => {
+    it('the row-owned state.visible wins over the live node, both ways', () => {
+      const clear = place(button('clear'), 0, 100, 80, 24);
+      const covered = place(button('covered'), 0, 0, 80, 24);
+      cover();
+      expect(
+        keptIds([
+          // Live node reads visible; the row says false: dropped.
+          { id: 'row-says-hidden', element: clear, state: { visible: false } },
+          // Live node reads occluded; the row says true: kept.
+          { id: 'row-says-visible', element: covered, state: { visible: true } },
+        ])
+      ).toEqual(['row-says-visible']);
+    });
+
+    it('a row with no visibility signal at all is kept (unknown is not hidden)', () => {
+      expect(keptIds([{ id: 'no-signal' }, { id: 'state-no-visible', state: {} }])).toEqual([
+        'no-signal',
+        'state-no-visible',
+      ]);
+    });
+
+    it('a row with only a top-level visible uses it', () => {
+      expect(
+        keptIds([
+          { id: 'top-false', visible: false },
+          { id: 'top-true', visible: true },
+        ])
+      ).toEqual(['top-true']);
+    });
+  });
+
+  describe('end to end', () => {
+    function registryLike(): RegistryLike {
+      const reg = getGlobalRegistry();
+      return {
+        getAllElements: () => reg.getAllElements(),
+        getElement: (id) => reg.getElement(id),
+        getAllComponents: () => reg.getAllComponents(),
+        getComponent: (id) => reg.getComponent(id),
+        createSnapshot: () => reg.createSnapshot() as ReturnType<RegistryLike['createSnapshot']>,
+      };
+    }
+
+    interface FoundRow {
+      id: string;
+      visible?: boolean;
+      state?: { visible?: boolean; visibilityReason?: string };
+    }
+
+    it('createHandlers find, empty registry: an occluded fallback button is dropped by include_hidden:false and reported occluded by {}', async () => {
+      place(button('covered', 'Covered'), 0, 0, 80, 24);
+      place(button('clear', 'Clear'), 0, 100, 80, 24);
+      cover();
+      const handlers = createHandlers(registryLike(), createActionExecutor(getGlobalRegistry()));
+      expect(getGlobalRegistry().getAllElements()).toHaveLength(0);
+
+      const hiddenOff = await handlers.find({ skipSettle: true, include_hidden: false } as never);
+      expect(hiddenOff.success).toBe(true);
+      const offRows = (hiddenOff.data as unknown as { elements: FoundRow[] }).elements;
+      expect(offRows.map((r) => r.id)).toEqual(['dom-clear']);
+
+      const all = await handlers.find({ skipSettle: true } as never);
+      const rows = (all.data as unknown as { elements: FoundRow[] }).elements;
+      const coveredRow = rows.find((r) => r.id === 'dom-covered')!;
+      expect(coveredRow.visible).toBe(false);
+      expect(coveredRow.state?.visibilityReason).toBe('occluded');
+      expect(rows.map((r) => r.id)).toEqual(['dom-covered', 'dom-clear']);
+    });
+
+    it('React find command: a registered element whose live node is occluded or off-screen is dropped by includeHidden:false', async () => {
+      const registry = getGlobalRegistry();
+      const covered = place(button('covered'), 0, 0, 80, 24);
+      const below = place(button('below'), 0, 900, 80, 24);
+      const clear = place(button('clear'), 0, 100, 80, 24);
+      cover();
+      registry.registerElement('covered', covered, { type: 'button', label: 'Covered' });
+      registry.registerElement('below', below, { type: 'button', label: 'Below' });
+      registry.registerElement('clear', clear, { type: 'button', label: 'Clear' });
+
+      const visibleOnly = (await executeCommand('find', { includeHidden: false }, emptyBridge)) as {
+        elements: FoundRow[];
+      };
+      expect(visibleOnly.elements.map((e) => e.id)).toEqual(['clear']);
+
+      const all = (await executeCommand('find', {}, emptyBridge)) as { elements: FoundRow[] };
+      expect(all.elements.map((e) => e.id).sort()).toEqual(['below', 'clear', 'covered']);
+    });
   });
 });
