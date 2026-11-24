@@ -568,7 +568,10 @@ describe('repeats', () => {
       );
     }
     const reps = densityRepeats(capture(els), null);
-    expect(reps.map((r) => [r.id, r.rows])).toEqual([['repeat:app.card.1', 4]]);
+    // The cards are the rows' members; the links inside them are the cards' content.
+    expect(reps.map((r) => [r.id, r.rows, r.perRow, r.members.length])).toEqual([
+      ['repeat:app.card.1', 4, 1, 4],
+    ]);
   });
 
   it('a card grid in each of three stacked sections is a repeat of its own', () => {
@@ -615,6 +618,54 @@ describe('repeats', () => {
       ),
     ];
     expect(densityRepeats(capture(els), null)).toEqual([]);
+  });
+
+  it('a table of unregistered rows whose cells hold a link and a value is one repeat', () => {
+    const els: DensityTestElementSpec[] = [];
+    for (let k = 1; k <= 4; k++) {
+      const y = 100 + 40 * (k - 1);
+      els.push(
+        {
+          id: `app.t.r${k}.a`,
+          tag: 'a',
+          xpath: `/html/body/table/tbody/tr[${k}]/td[1]/a`,
+          rect: [0, y, 300, 40],
+          text: `A-100${k}`,
+        },
+        {
+          id: `app.t.r${k}.b`,
+          tag: 'td',
+          xpath: `/html/body/table/tbody/tr[${k}]/td[2]`,
+          rect: [400, y, 400, 40],
+          text: '12,50 €',
+        }
+      );
+    }
+    const reps = densityRepeats(capture(els), null);
+    expect(reps.map((r) => [r.rows, r.perRow, r.members.length, r.valuesPerRow])).toEqual([
+      [4, 2, 8, 2],
+    ]);
+  });
+
+  it('a capture file written before the repeat keys existed reports its repeats unknown, not none', () => {
+    const c = capture(orderList(3));
+    const old = {
+      ...c,
+      repeatKeysResolved: undefined,
+      items: c.items.map(({ siblingKey: _s, cousinKey: _c, cousinRowKey: _r, ...rest }) => rest),
+    };
+    const parsed = parseDensityCapture(JSON.parse(JSON.stringify(old)));
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value.repeatKeysResolved).toBe(false);
+    expect(summarizeDensityRepeats(parsed.value, null)).toEqual({
+      structureResolved: false,
+      reason:
+        'this capture predates the sibling and cousin keys repeats are read from (repeatKeysResolved: false); capture it again',
+    });
+    // A capture written now round-trips with its keys.
+    const fresh = parseDensityCapture(JSON.parse(JSON.stringify(c)));
+    expect(fresh.ok && fresh.value.repeatKeysResolved).toBe(true);
   });
 
   it('a hidden leaf in a row draws no line band', () => {

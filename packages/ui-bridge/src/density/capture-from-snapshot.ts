@@ -590,6 +590,7 @@ export function captureDensityFromSnapshot(
       capturedBy: { package: producer.package, version: producer.version },
       bases,
       structureResolved: true,
+      repeatKeysResolved: true,
       coverage,
       probe,
       targetsHash,
