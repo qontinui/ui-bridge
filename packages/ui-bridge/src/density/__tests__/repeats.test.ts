@@ -954,6 +954,62 @@ describe('repeats', () => {
     ]);
   });
 
+  it('wrapped chips in list items nobody registered are not a grid', () => {
+    const widths = [60, 80, 50, 90, 70, 60, 100, 55, 65, 75, 85, 45];
+    const els: DensityTestElementSpec[] = [];
+    let x = 0;
+    let line = 0;
+    widths.forEach((w, i) => {
+      if (x + w > 330) {
+        x = 0;
+        line++;
+      }
+      els.push({
+        id: `a${i + 1}`,
+        tag: 'a',
+        category: 'interactive',
+        xpath: `/html/body/article/ul/li[${i + 1}]/a`,
+        rect: [x, 100 + 30 * line, w, 24],
+        text: `Tag ${i + 1}`,
+      });
+      x += w + 8;
+    });
+    expect(densityRepeats(capture(els), null)).toEqual([]);
+  });
+
+  it('wrappers each holding a label and a field are a form, not a list', () => {
+    const els: DensityTestElementSpec[] = [];
+    for (let k = 1; k <= 4; k++) {
+      const y = 60 * (k - 1);
+      els.push(
+        {
+          id: `fw${k}`,
+          tag: 'div',
+          xpath: `/html/body/form/div[${k}]`,
+          rect: [0, y, 400, 56],
+          text: `F${k}`,
+        },
+        {
+          id: `fw${k}.l`,
+          tag: 'label',
+          xpath: `/html/body/form/div[${k}]/label`,
+          rect: [0, y, 100, 20],
+          text: `F${k}`,
+        },
+        {
+          id: `fw${k}.i`,
+          tag: 'input',
+          role: 'textbox',
+          category: 'interactive',
+          xpath: `/html/body/form/div[${k}]/input`,
+          rect: [0, y + 22, 400, 30],
+          text: '',
+        }
+      );
+    }
+    expect(densityRepeats(capture(els), null)).toEqual([]);
+  });
+
   it('a hidden leaf in a row draws no line band', () => {
     const els = orderList(3).map((e): DensityTestElementSpec => {
       if (!e.id.endsWith('.sum')) return e;

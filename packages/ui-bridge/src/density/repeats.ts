@@ -483,7 +483,11 @@ export function densityRepeatScopes(
     // top lies below the band's top is in it too.
     const firstRow = rep.members.filter((id) => {
       const r = byId.get(id)?.rect ?? null;
-      return r !== null && r.y < rep.firstRow.bottomPx - DENSITY_REPEAT_TOLERANCE_PX;
+      return (
+        r !== null &&
+        (r.y - rep.firstRow.topPx <= DENSITY_REPEAT_TOLERANCE_PX ||
+          r.y < rep.firstRow.bottomPx - DENSITY_REPEAT_TOLERANCE_PX)
+      );
     });
     const firstRowSubtree = densitySubtree(capture, firstRow, children);
     let scope: DensityRepeatScope = { by: null, ids: new Set(), own };
@@ -686,6 +690,30 @@ function wrappedRun(column: readonly DensityItem[], rows: readonly DensityItem[]
   );
 }
 
+/**
+ * Whether a cousin group is a wrapped run (chips in unregistered list items):
+ * its visual rows hold unregistered rows whose left edges do not line up as
+ * the first row's columns do. A grid's rows line up; a short last row may
+ * hold fewer.
+ */
+function wrappedCousinRun(g: Pick<Group, 'members' | 'byRowKey'>): boolean {
+  const lefts = (band: readonly DensityItem[]): number[] => {
+    const byRow = new Map<string, number>();
+    for (const m of band) {
+      const key = m.cousinRowKey ?? m.id;
+      byRow.set(key, Math.min(byRow.get(key) ?? Infinity, m.rect!.x));
+    }
+    return [...byRow.values()].sort((a, b) => a - b);
+  };
+  const bands = rowsFor(g).map(lefts);
+  if (bands.every((b) => b.length <= 1) && bands.length > 0) {
+    const x0 = bands[0][0];
+    return bands.some((b) => Math.abs(b[0] - x0) > DENSITY_REPEAT_TOLERANCE_PX);
+  }
+  const ref = bands.reduce((a, b) => (b.length > a.length ? b : a), bands[0] ?? []);
+  return bands.some((b) => b.some((x, i) => Math.abs(x - ref[i]) > DENSITY_REPEAT_TOLERANCE_PX));
+}
+
 /** Tags whose stacked siblings inside one row of another repeat are still rows (a nested list). */
 const NESTED_ROW_TAGS = new Set(['li', 'tr']);
 
@@ -727,7 +755,13 @@ export function densityRepeats(
   const rejectsAsRows = (members: readonly DensityItem[]): boolean =>
     members.every((m) => kindOf.get(m.id) === 'prose') ||
     members.every((m) => kindOf.get(m.id) === 'heading') ||
-    members.every(isFormPart);
+    // Fields, labels, or wrappers holding only those (a label and an input each).
+    members.every((m) => {
+      const inner = [...densitySubtree(capture, [m.id], children)]
+        .filter((id) => leafSet.has(id))
+        .map((id) => byId.get(id)!);
+      return inner.length > 0 && inner.every(isFormPart);
+    });
   const accept = (g: Group, members: DensityItem[]): boolean => {
     if (rowsFor({ members, byRowKey: g.byRowKey }).length < DENSITY_REPEAT_MIN_ROWS) return false;
     if (rejectsAsRows(members)) return false;
@@ -752,7 +786,10 @@ export function densityRepeats(
         byRowKey: true,
       });
   }
-  for (const g of byCousin.values()) accept(g, g.members);
+  for (const g of byCousin.values()) {
+    if (wrappedCousinRun(g)) continue;
+    accept(g, g.members);
+  }
 
   // ---- by path: DOM siblings (one parent element) of one tag ----
   const byPath = new Map<string, Group>();
