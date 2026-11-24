@@ -163,6 +163,10 @@ export interface DensityRepeatInputs {
 }
 
 /** Whether a member takes space: a rect with area, and a visibility that lays it out. */
+export function densityTakesSpace(item: DensityItem): boolean {
+  return takesSpace(item);
+}
+
 function takesSpace(item: DensityItem): boolean {
   const r = item.rect;
   if (r === null || r.w <= 0 || r.h <= 0) return false;
@@ -530,11 +534,16 @@ interface Group {
   parent: string | null;
   tag: string;
   members: DensityItem[];
-  /** Cousins are counted in the unregistered row they sit in, not by their tops. */
+  /** Cousins are gathered by the unregistered row they sit in before banding by top. */
   byRowKey?: boolean;
 }
 
-/** A group's rows: by `cousinRowKey` for cousins (ordered by top), else bands of tops. */
+/**
+ * A group's rows. Cousins are first gathered by the unregistered row they sit
+ * in (`cousinRowKey`), and those rows are then banded by their tops like any
+ * other members: list items side by side (a horizontal nav, a card grid) are
+ * one visual row. Other groups are bands of tops.
+ */
 function rowsFor(g: Pick<Group, 'members' | 'byRowKey'>): DensityItem[][] {
   if (!g.byRowKey) return rowsOf(g.members);
   const byRow = new Map<string, DensityItem[]>();
@@ -545,7 +554,18 @@ function rowsFor(g: Pick<Group, 'members' | 'byRowKey'>): DensityItem[][] {
     else byRow.set(key, [m]);
   }
   const top = (row: DensityItem[]) => Math.min(...row.map((m) => m.rect!.y));
-  return [...byRow.values()].sort((a, b) => top(a) - top(b));
+  const sorted = [...byRow.values()].sort((a, b) => top(a) - top(b));
+  const bands: DensityItem[][] = [];
+  let bandTop = -Infinity;
+  for (const row of sorted) {
+    if (bands.length > 0 && top(row) - bandTop <= DENSITY_REPEAT_TOLERANCE_PX) {
+      bands[bands.length - 1].push(...row);
+    } else {
+      bands.push(row.slice());
+      bandTop = top(row);
+    }
+  }
+  return bands;
 }
 
 /** Tags whose stacked siblings inside one row of another repeat are still rows (a nested list). */
@@ -648,12 +668,18 @@ export function densityRepeats(
     }
     return null;
   };
+  // Only a single column of leaves inside one row is that row's lines: a
+  // grid, or a column of containers (cards, comments), is a list of its own.
+  const linesOfOneRow = (g: Group): boolean => {
+    if (NESTED_ROW_TAGS.has(g.tag)) return false;
+    if (!g.members.every((m) => leafSet.has(m.id))) return false;
+    if (Math.max(...rowsFor(g).map((r) => r.length)) > 1) return false;
+    const row = enclosingRow(g.members[0].id, g);
+    return row !== null && g.members.every((m) => enclosingRow(m.id, g) === row);
+  };
   const inPathRepeat = new Set<string>();
   for (const g of pathGroups) {
-    if (!NESTED_ROW_TAGS.has(g.tag)) {
-      const row = enclosingRow(g.members[0].id, g);
-      if (row !== null && g.members.every((m) => enclosingRow(m.id, g) === row)) continue;
-    }
+    if (linesOfOneRow(g)) continue;
     groups.push(g);
     g.members.forEach((m) => inPathRepeat.add(m.id));
   }
@@ -671,7 +697,11 @@ export function densityRepeats(
     for (const sameWidth of clusterBy(list, (r) => r.w)) {
       for (const c of gridsOf(sameWidth)) {
         if (rowsOf(c).length < DENSITY_REPEAT_MIN_ROWS) continue;
-        groups.push({ by: 'geometry', parent: c[0].parent, tag: c[0].tag, members: c });
+        // A run of paragraphs is text, not rows.
+        if (c.every((m) => kindOf.get(m.id) === 'prose')) continue;
+        const g: Group = { by: 'geometry', parent: c[0].parent, tag: c[0].tag, members: c };
+        for (const m of c) memberOf.set(m.id, g);
+        if (!linesOfOneRow(g)) groups.push(g);
       }
     }
   }
