@@ -682,7 +682,10 @@ export class ToastCapture {
       // A visible element with no text yet is parked with '' (tracked by its
       // own observer), so later scans re-read it only when it mutates, and an
       // in-place fill — a characterData change the document observer never
-      // sees — reaches the poll's parked step.
+      // sees — reaches the poll's parked step. The cost moves from a clone
+      // per scan to the parked step's per-poll visibility and redaction check
+      // for each such element (e.g. a permanently empty role="alert" form
+      // placeholder), which is bounded by the number of visible empty matches.
       const message = extractMessage(el);
       if (!message) {
         this.park(el, '');
