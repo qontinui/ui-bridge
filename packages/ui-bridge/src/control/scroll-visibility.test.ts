@@ -5,7 +5,7 @@
  * stubbed.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
-import { isVisibleInScrollContext } from './scroll-visibility';
+import { isVisibleInScrollContext, scrollIntoViewVerified } from './scroll-visibility';
 
 function rect(el: HTMLElement, x: number, y: number, w: number, h: number): void {
   el.getBoundingClientRect = () =>
@@ -66,5 +66,18 @@ describe('isVisibleInScrollContext — the containing-block chain', () => {
     const child = scrollerWithChild({ position: 'absolute' });
     (child.parentElement as HTMLElement).style.position = 'relative';
     expect(isVisibleInScrollContext(child)).toBe(false);
+  });
+});
+
+describe('scrollIntoViewVerified — the action path reads the same chain', () => {
+  it('does not scroll a position:fixed child its scroller does not clip', async () => {
+    const child = scrollerWithChild({ position: 'fixed' });
+    let scrolled = false;
+    child.scrollIntoView = () => {
+      scrolled = true;
+    };
+    const result = await scrollIntoViewVerified(child, { smooth: false });
+    expect(result).toEqual({ alreadyVisible: true, scrolled: false, visible: true });
+    expect(scrolled).toBe(false);
   });
 });
