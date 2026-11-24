@@ -1200,7 +1200,11 @@ describe('repeats', () => {
   it('a leaf at a coordinate or line height no page draws makes its row unknown, never Infinity', () => {
     const els = orderList(3).map((e): DensityTestElementSpec => {
       if (e.id !== 'app.orders.row-2.sum') return e;
-      return { ...e, rect: [300, 1.7e308, 100, 20], styles: { lineHeight: '1e308px' } };
+      return {
+        ...e,
+        rect: [300, 1.7e308, 100, 20],
+        styles: { lineHeight: `1${'0'.repeat(308)}px` },
+      };
     });
     const [rep] = densityRepeats(capture(els), null);
     expect([rep.rows, rep.rowsEstimated, rep.linesPerRow, rep.rowTextPx]).toEqual([3, 2, 1, 20]);
