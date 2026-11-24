@@ -540,22 +540,22 @@ When the registry has no elements, the snapshot (and the DOM fallback of
 row's `visible` and `state.visible` are the same verdict every other path
 reports. It accounts for the viewport and for occlusion, so a fallback button
 that is off-screen or covered reads `visible: false`. `state` carries
-`visibilityReason` (`hidden`, `off-screen`, `occluded`, `clipped` or `no-layout`),
-`occludedBy` and `occludedPct`, as a registered element's state does. A fallback
-row's `state.textContent` is the canonical text capped at 500 code points: an
-element with no text (an icon-only button) reads its scrubbed `aria-label` or
-`title`, and inside a redaction boundary the redaction sentinel. `state.checked`
-is the canonical one: set for a checkbox or radio input and for an
-`aria-checked` checkbox, radio, switch, menuitemcheckbox or menuitemradio role,
-absent for anything else. The top-level `label` is the element's canonical
+`visibilityReason` (`hidden`, `off-screen`, `occluded`, `clipped` or
+`no-layout`), `occludedBy` and `occludedPct`, as a registered element's state
+does. A fallback row's `state.textContent` is the canonical text capped at 500
+code points: an element with no text (an icon-only button) reads its scrubbed
+`aria-label` or `title`, and inside a redaction boundary the redaction sentinel.
+`state.checked` is the canonical one: set for a checkbox or radio input and for
+an `aria-checked` checkbox, radio, switch, menuitemcheckbox or menuitemradio
+role, absent for anything else. The top-level `label` is the element's canonical
 accessible name, the one name algorithm every reader shares
-(`resolveAccessibleName`): the W3C accessible name, else a text-like input's
-own `placeholder`, else a name derived from developer affordances (a
-`data-testid`, an `id`, an icon token). It is capped at 200 code points, and is
-the redaction sentinel inside a redaction boundary. It is the value a
-registered element reports as `state.accessibleName`; a fallback row's `state`
-does not carry that field. The top-level `accessibleName` depends on which
-serializer produced the row:
+(`resolveAccessibleName`): the W3C accessible name, else a text-like input's own
+`placeholder`, else a name derived from developer affordances (a `data-testid`,
+an `id`, an icon token). It is capped at 200 code points, and is the redaction
+sentinel inside a redaction boundary. It is the value a registered element
+reports as `state.accessibleName`; a fallback row's `state` does not carry that
+field. The top-level `accessibleName` depends on which serializer produced the
+row:
 
 - the registry serializer (`serializeRegisteredElement`: the registry snapshot,
   the React `getControlSnapshot` command and the in-page executor's snapshot)
@@ -571,10 +571,10 @@ serializer produced the row:
 - a DOM-fallback row carries NO top-level `accessibleName`: its element
   reference is dropped before `materializeElements` runs.
 
-A fallback row's `id` is built from a separate, frozen input so it does not move when the name does:
-`dom-<testid>`, `dom-<html id>`, a slug of the element's text
-(`dom-button-save`), or `dom-<type>-<index>`. The text slug is skipped, and the
-id falls to `dom-<type>-<index>`, when the element is inside a redaction
+A fallback row's `id` is built from a separate, frozen input so it does not move
+when the name does: `dom-<testid>`, `dom-<html id>`, a slug of the element's
+text (`dom-button-save`), or `dom-<type>-<index>`. The text slug is skipped, and
+the id falls to `dom-<type>-<index>`, when the element is inside a redaction
 boundary or its text would come from an `aria-labelledby` target that touches
 one, so an id never carries redacted text. One consequence: a NON-redacted
 element whose text matches a redacted sibling's can lose its collision suffix.
@@ -582,12 +582,12 @@ Two `Save` buttons, the first inside a boundary, used to read `dom-button-save`
 and `dom-button-save-2`; they now read `dom-button-0` and `dom-button-save`.
 Keeping the `-2` would reveal that a redacted sibling shares the text.
 
-The same rows, and so the same `visible`, feed the other in-page responses
-that fall back to a DOM scan when nothing is registered: `GET /ai/summary`
-(an element that is not visible is listed as hidden, and the visible-input
-and visible-link lists skip it) and the visible-only filter that
-`POST /ai/search` and `POST /ai/find` apply by default to a non-fuzzy search. The semantic snapshot
-(`GET /ai/snapshot`) reads the registry only, never these rows.
+The same rows, and so the same `visible`, feed the other in-page responses that
+fall back to a DOM scan when nothing is registered: `GET /ai/summary` (an
+element that is not visible is listed as hidden, and the visible-input and
+visible-link lists skip it) and the visible-only filter that `POST /ai/search`
+and `POST /ai/find` apply by default to a non-fuzzy search. The semantic
+snapshot (`GET /ai/snapshot`) reads the registry only, never these rows.
 
 `include_hidden: false` on `POST /control/find` filters on this same verdict,
 read from where each arm reports the row's `state`, so it drops the rows whose
@@ -603,15 +603,15 @@ registered row's top-level `visible` is a separate bounding-box hint and is
 not what this filter reads. To get below-the-fold rows, pass
 `include_hidden: true`, which is the default.
 
-Unreleased (after 0.61.0). Up to 0.61.0, a fallback row's `visible` only
-checked `offsetParent` and a non-zero size, so an off-screen or covered
-fallback button read `visible: true`. Its `state` carried none of the three
-fields, `state.textContent` was `""` for an element with no text, and
-`state.checked` read the `checked` property of any element that has one (so a
-text input read `false`) and ignored `aria-checked`.
-Also unreleased: `include_hidden: false` used to judge a live node by its own
-check (`offsetParent !== null || position: fixed`), so it kept occluded and
-off-screen rows (and a `display: none` element that is itself `position: fixed`) while
+Unreleased (after 0.61.0). Up to 0.61.0, a fallback row's `visible` only checked
+`offsetParent` and a non-zero size, so an off-screen or covered fallback button
+read `visible: true`. Its `state` carried none of the three fields,
+`state.textContent` was `""` for an element with no text, and `state.checked`
+read the `checked` property of any element that has one (so a text input read
+`false`) and ignored `aria-checked`. Also unreleased: `include_hidden: false`
+used to judge a live node by its own check
+(`offsetParent !== null || position: fixed`), so it kept occluded and off-screen
+rows (and a `display: none` element that is itself `position: fixed`) while
 those rows read `visible: false`. It now drops occluded, off-screen and fully
 clipped rows. A fallback row's `label` used to come from a separate label chain
 that read only a single-id `aria-labelledby` and ignored a wrapping `<label>`,
@@ -619,37 +619,47 @@ that read only a single-id `aria-labelledby` and ignored a wrapping `<label>`,
 name (and `resolveAccessibleName` gained HTML-AAM's last-resort `placeholder`
 rung, `nameSource: 'placeholder'`, for a text-like input or textarea). Fallback
 ids are unchanged, except for an element whose id was a slug of redacted text
-(it was inside a redaction boundary, or labelled by an `aria-labelledby`
-target touching one): those now read `dom-<type>-<index>`. A non-redacted
-element whose text matches such a redacted sibling's can lose its `-2`-style
-collision suffix (`dom-button-save-2` becomes `dom-button-save`), because
-keeping it would reveal that a redacted sibling shares the text. The derived
-name rung (an icon's `svg > title` or class) no longer reads a descendant that
-touches a redaction boundary.
-The same canonical verdict now backs three more readers that kept their own
-check: `findByText`'s per-hit `visible` (it read `offsetParent !== null ||
-position: fixed`); the `visible` condition of
+(it was inside a redaction boundary, or labelled by an `aria-labelledby` target
+touching one): those now read `dom-<type>-<index>`. A non-redacted element whose
+text matches such a redacted sibling's can lose its `-2`-style collision suffix
+(`dom-button-save-2` becomes `dom-button-save`), because keeping it would reveal
+that a redacted sibling shares the text. The derived name rung (an icon's
+`svg > title` or class) no longer reads a descendant that touches a redaction
+boundary. The same canonical verdict now backs three more readers that kept
+their own check: `findByText`'s per-hit `visible` (it read
+`offsetParent !== null || position: fixed`); the `visible` condition of
 `POST /ai/wait-for-element-condition` (it read `offsetParent !== null` and a
-non-zero size); and `POST /ai/wait-for-element`'s `requirement: "visible"`.
-Both waits read the verdict live, on both arms, whenever the element has a
-node, because a registered row's state carries the registry's post-action
-override, which nothing expires. Without a node they differ by arm: the
-server arm of either wait falls back to the row's `state.visible`; the relay
-arm of `wait-for-element` falls back to the registry's tracked `visible` (a
+non-zero size); and `POST /ai/wait-for-element`'s `requirement: "visible"`. Both
+waits read the verdict live, on both arms, whenever the element has a node,
+because a registered row's state carries the registry's post-action override,
+which nothing expires. Without a node they differ by arm: the server arm of
+either wait falls back to the row's `state.visible`; the relay arm of
+`wait-for-element` falls back to the registry's tracked `visible` (a
 bounding-box hint); the relay arm of `wait-for-element-condition` has no
-fallback and is not visible. An occluded or off-screen element now reads `visible: false` from
-`findByText` and satisfies neither `visible` wait. The `clickable` condition is
-deliberately NOT the visibility verdict: it means the next click on that arm
-would not be refused, so it mirrors each arm's own click path. The server
-(HTTP executor) arm passes the executor's click visibility pre-check
-(`getClickVisibilityReason`); the React relay arm passes the relay dispatch
-gate's render check (connected, no `display: none` on the node or a flat-tree
-ancestor, slotted when its parent hosts a shadow root, not
-`visibility: hidden`). Both add the interaction blockers. A below-the-fold,
-`opacity: 0`, `position: fixed` or covered control is `clickable` on both
-arms. The relay's `executeElementAction` dispatch gate uses the same render
-check, so it no longer refuses a `position: fixed` control, which its old
-`offsetParent` test did.
+fallback and is not visible. An occluded or off-screen element now reads
+`visible: false` from `findByText` and satisfies neither `visible` wait. The
+`clickable` condition is deliberately NOT the visibility verdict: it means the
+next click on that arm would not be refused, so it mirrors each arm's own click
+path. Both arms share one render check: the node is connected, has no
+`display: none` on itself or a flat-tree ancestor, is taken by a slot when its
+parent hosts an open shadow root, and is not `visibility: hidden`. The server
+(HTTP executor) arm judges the node the executor's click would act on, resolved
+by the executor's own chain (a connected registry node, else by identifier, the
+target registry or its discovery cache), and runs the executor's click pre-check
+on it (`getClickVisibilityReason`: the render check, then no explicit zero
+inline size and no inline `-9999px` offset); it is not `clickable` when nothing
+resolves. The React relay arm runs the relay dispatch gate's render check. Both
+add the interaction blockers. A below-the-fold, `opacity: 0`, `position: fixed`
+or covered control is `clickable` on both arms; one inside a `display: none`
+subtree is `clickable` on neither. The relay's `executeElementAction` dispatch
+gate uses the same render check, so it no longer refuses a `position: fixed`
+control, which its old `offsetParent` test did.
+
+Behaviour change, also unreleased: an HTTP (`POST /control/element/{id}/action`)
+click-like action on a control inside a `display: none` subtree is now refused
+with `UB-ELEM-NOT-VISIBLE` (`visibilityReason: hidden`). The executor's click
+pre-check used to read only the control's own style, so it dispatched the
+click and reported success on a node no user could reach.
 
 ## Diagnostics
 

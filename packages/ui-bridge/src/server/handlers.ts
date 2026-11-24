@@ -564,6 +564,13 @@ export interface ActionExecutorLike {
    */
   executeComponentAction(componentId: string, request: ComponentActionRequest): Promise<unknown>;
   /**
+   * The node an element action on `elementId` would act on, resolved as
+   * `executeAction` resolves it, or `null`. Optional: a host executor without
+   * it gets the registry node (while connected) where this is consulted (the
+   * wait-for-element `clickable` condition).
+   */
+  resolveActionTarget?(elementId: string): HTMLElement | null;
+  /**
    * Phase 6 — the predict route's executor arm.
    *
    * **Optional on purpose, and the absence is reported rather than defaulted.**
@@ -6882,14 +6889,26 @@ export function createHandlers(
             // (`getClickVisibilityReason`), NOT the visibility verdict (a
             // below-the-fold or opacity:0 control is clicked), plus the
             // interaction blockers.
-            // The executor takes a registry node only while it is connected
-            // (a detached one is refused UB-STALE-ELEMENT), so a detached
-            // node is not clickable either.
-            if (!domEl || !domEl.isConnected) return false;
-            if (getClickVisibilityReason(domEl) !== null) return false;
+            // The node the executor's click would act on: its own resolution
+            // chain (a connected registry node, else by identifier, CTR or its
+            // discovery cache), so a detached registry node whose id now
+            // resolves to a replacement is judged on the replacement. A host
+            // executor without `resolveActionTarget` falls back to the
+            // registry node while it is connected. Not clickable only when
+            // nothing resolves.
+            const id = typeof el.id === 'string' ? el.id : undefined;
+            const target = actionExecutor.resolveActionTarget
+              ? id !== undefined
+                ? actionExecutor.resolveActionTarget(id)
+                : null
+              : domEl?.isConnected
+                ? domEl
+                : null;
+            if (!target) return false;
+            if (getClickVisibilityReason(target) !== null) return false;
             // Same predicate as `ElementState.enabled` and the click-path
             // pre-check, so "clickable" means the next click is not refused.
-            return !isInteractionBlocked(readInteractionBlockers(domEl));
+            return !isInteractionBlocked(readInteractionBlockers(target));
           }
 
           case 'text-matches': {
