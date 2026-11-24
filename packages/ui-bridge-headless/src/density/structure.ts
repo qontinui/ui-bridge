@@ -25,12 +25,13 @@
  */
 
 import { resolveDensityMatcher, type DensityUnresolvedReason } from './match';
-import type {
-  DensityCapture,
-  DensityItem,
-  DensityLandmark,
-  DensityRect,
-  DensityTargets,
+import {
+  DENSITY_MAX_COORDINATE_PX,
+  type DensityCapture,
+  type DensityItem,
+  type DensityLandmark,
+  type DensityRect,
+  type DensityTargets,
 } from './schema';
 
 // ============================================================================
@@ -439,34 +440,52 @@ export function resolveDensityStructure(
   const segmentOf = (p: ParsedChain, k: number): string =>
     k === 0 ? p.keys[0].replace(/^\//, '') : p.keys[k].slice(p.keys[k - 1].length + 1);
   const unindexed = (seg: string): string => seg.replace(/\[\d+\]$/, '');
-  /** `[cousinKey, cousinRowKey]`, or `[null, null]`. */
+  /** `[cousinKey, cousinRowKey, whether the row's cell on the way is a th]`, or `[null, null, false]`. */
   const cousinOf = (
     p: (ParsedChain & { ownId: boolean }) | null
-  ): [string, string] | [null, null] => {
-    if (!p || p.ownId || p.keys.some(ambiguous)) return [null, null];
+  ): [string, string, boolean] | [null, null, false] => {
+    if (!p || p.ownId || p.keys.some(ambiguous)) return [null, null, false];
     // An item that is itself a registered list item or table row is a row:
     // the path arm reads it with its siblings, inside whatever group it is in.
     const ownSeg = segmentOf(p, p.keys.length - 1);
-    if (/\[\d+\]$/.test(ownSeg) && ROW_TAGS.has(unindexed(ownSeg))) return [null, null];
+    if (/\[\d+\]$/.test(ownSeg) && ROW_TAGS.has(unindexed(ownSeg))) return [null, null, false];
     for (let k = p.keys.length - 2; k >= 0; k--) {
       const seg = segmentOf(p, k);
       // Only a list item or a table row is a row nobody registered: an
       // indexed wrapper div is as likely three unrelated sections.
       if (!/\[\d+\]$/.test(seg) || !ROW_TAGS.has(unindexed(seg))) continue;
       // A registered row is read by the path arm through its own siblings.
-      if (lookup(p.keys[k]) !== null) return [null, null];
+      if (lookup(p.keys[k]) !== null) return [null, null, false];
       // Only the registered item nearest the row is its cousin: one registered
       // between the row and this item (a card holding this link) already is.
       for (let j = k + 1; j < p.keys.length - 1; j++) {
-        if (lookup(p.keys[j]) !== null) return [null, null];
+        if (lookup(p.keys[j]) !== null) return [null, null, false];
       }
       // Keyed by the row's place alone: every registered item nearest a row
       // (a link in one cell, a value in the next) belongs to that one list.
-      return [[k > 0 ? p.keys[k - 1] : '', `${unindexed(seg)}[*]`].join('/'), p.keys[k]];
+      return [
+        [k > 0 ? p.keys[k - 1] : '', `${unindexed(seg)}[*]`].join('/'),
+        p.keys[k],
+        unindexed(seg) === 'tr' && unindexed(segmentOf(p, k + 1)) === 'th',
+      ];
     }
-    return [null, null];
+    return [null, null, false];
   };
-  const cousins = parsed.map(cousinOf);
+  const cousinRows = parsed.map(cousinOf);
+  // A table row whose every cousin sits in a `th` is a header row (a table
+  // with no `thead` keeps its header row in `tbody`), not a data row — when
+  // another row of the same table holds a cell that is not a `th`; a table
+  // whose only registered cells are `th` (row headers) keeps them all.
+  const rowAllTh = new Map<string, boolean>();
+  const groupHasData = new Set<string>();
+  for (const [c, r, viaTh] of cousinRows) {
+    if (c === null) continue;
+    rowAllTh.set(r, (rowAllTh.get(r) ?? true) && viaTh);
+    if (!viaTh) groupHasData.add(c);
+  }
+  const cousins = cousinRows.map(([c, r]): [string, string] | [null, null] =>
+    c !== null && !(rowAllTh.get(r) === true && groupHasData.has(c)) ? [c, r] : [null, null]
+  );
 
   // ---- ownChars: direct children only ----
   // `chars` is the WHITESPACE-COLLAPSED length, so the text of a row of k
@@ -513,6 +532,22 @@ export function resolveDensityStructure(
 // ============================================================================
 
 const MEDIA_TAGS = new Set(['img', 'svg', 'video']);
+
+/**
+ * The item's rect when a page can lay it out: every coordinate and size finite
+ * and within {@link DENSITY_MAX_COORDINATE_PX}; `null` otherwise. Both doors
+ * bound a capture (`boundDensityItem`), but these readers take any
+ * `DensityCapture`, so a forged rect handed to them directly is no rect,
+ * never an Infinity in a pin height or a block extent.
+ */
+export function densityLayoutRect(item: DensityItem): DensityRect | null {
+  const r = item.rect;
+  if (r === null) return null;
+  const ok = [r.x, r.y, r.w, r.h].every(
+    (v) => Number.isFinite(v) && Math.abs(v) <= DENSITY_MAX_COORDINATE_PX
+  );
+  return ok ? r : null;
+}
 
 /** Whether the item is media by tag (`img`, `svg`, `video`). */
 export function isDensityMedia(item: DensityItem): boolean {
@@ -610,7 +645,7 @@ export function densityPins(capture: DensityCapture): DensityPins {
   const ids: string[] = [];
   const unknown: string[] = [];
   for (const item of capture.items) {
-    const r = item.rect;
+    const r = densityLayoutRect(item);
     if (r === null || r.w < W / 2) continue;
     if (item.visibility === 'hidden' || item.visibility === 'no-layout') continue;
     const mayPin = item.position === 'fixed' || item.position === 'sticky';
@@ -755,16 +790,28 @@ interface Extent {
   height: number;
 }
 
+/**
+ * The members' extent, by loops: a spread argument list has a length ceiling
+ * (a block of a few hundred thousand leaves would throw). Only rects a page
+ * can lay out count.
+ */
 function extentOf(members: readonly DensityItem[]): Extent | null {
-  const rects = members.map((m) => m.rect).filter((r): r is DensityRect => r !== null);
-  if (rects.length === 0) return null;
-  return {
-    top: Math.min(...rects.map((r) => r.y)),
-    bottom: Math.max(...rects.map((r) => r.y + r.h)),
-    x: Math.min(...rects.map((r) => r.x)),
-    right: Math.max(...rects.map((r) => r.x + r.w)),
-    height: unionLength(rects.map((r) => [r.y, r.y + r.h])),
-  };
+  let top = Infinity;
+  let bottom = -Infinity;
+  let x = Infinity;
+  let right = -Infinity;
+  const spans: Array<[number, number]> = [];
+  for (const m of members) {
+    const r = densityLayoutRect(m);
+    if (r === null) continue;
+    top = Math.min(top, r.y);
+    bottom = Math.max(bottom, r.y + r.h);
+    x = Math.min(x, r.x);
+    right = Math.max(right, r.x + r.w);
+    spans.push([r.y, r.y + r.h]);
+  }
+  if (spans.length === 0) return null;
+  return { top, bottom, x, right, height: unionLength(spans) };
 }
 
 /**
@@ -859,7 +906,7 @@ export function densityBlocks(
   const free = leaves.ids
     .filter((id) => !claimed.has(id) && !pinned.has(id))
     .map((id) => byId.get(id)!)
-    .filter((i) => i.rect !== null);
+    .filter((i) => densityLayoutRect(i) !== null);
   // Headings in document order: top, then capture order. A heading's block
   // holds only what comes after it in this order, so two headings at one `y`
   // never list each other, and the nesting below cannot cycle.

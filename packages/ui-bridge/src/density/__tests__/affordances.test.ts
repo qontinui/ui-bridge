@@ -282,6 +282,7 @@ describe('affordances', () => {
         recoverable: null,
         hides: HIDES,
       },
+      // One pager: its previous and next buttons are its members.
       {
         kind: 'pager',
         rule: 'nav-after-repeat',
@@ -291,16 +292,7 @@ describe('affordances', () => {
         repeat: 'repeat:app.orders.row-1',
         recoverable: null,
         hides: HIDES,
-      },
-      {
-        kind: 'pager',
-        rule: 'nav-after-repeat',
-        id: 'app.orders.next',
-        state: null,
-        controls: null,
-        repeat: 'repeat:app.orders.row-1',
-        recoverable: null,
-        hides: HIDES,
+        members: ['app.orders.prev', 'app.orders.next'],
       },
     ]);
   });
@@ -442,11 +434,8 @@ describe('affordances', () => {
     const c = capture(els, RELATIONSHIPS);
     expect(densityRepeats(c, null).map((r) => r.id)).toEqual(['repeat:app.orders.row-1']);
     const found = densityAffordances(c, null);
-    expect(found.filter((a) => a.kind === 'pager').map((a) => a.id)).toEqual([
-      'app.pg.1',
-      'app.pg.2',
-      'app.pg.3',
-      'app.pg.4',
+    expect(found.filter((a) => a.kind === 'pager').map((a) => [a.id, a.members])).toEqual([
+      ['app.pg.1', ['app.pg.1', 'app.pg.2', 'app.pg.3', 'app.pg.4']],
     ]);
     expect(found.filter((a) => a.kind === 'disclosure').map((a) => a.id)).toEqual([
       'app.side.more',
@@ -933,7 +922,6 @@ describe('affordances', () => {
     const pagers = densityAffordances(c, null, { repeats: reps }).filter((a) => a.kind === 'pager');
     expect(pagers.map((a) => [a.id, a.repeat])).toEqual([
       ['app.orders.prev', 'repeat:app.orders.row-1'],
-      ['app.orders.next', 'repeat:app.orders.row-1'],
     ]);
   });
 
@@ -948,7 +936,7 @@ describe('affordances', () => {
         menu: 0,
         search: 1,
         filter: 1,
-        pager: 2,
+        pager: 1,
         truncation: 2,
         abbreviation: 1,
       },
@@ -960,10 +948,10 @@ describe('affordances', () => {
         'scroll-width': 2,
         title: 1,
         'control-above-repeat': 1,
-        'nav-after-repeat': 2,
+        'nav-after-repeat': 1,
       },
       shown: 2,
-      total: 11,
+      total: 10,
       truncated: true,
     });
   });
