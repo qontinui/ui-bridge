@@ -155,6 +155,17 @@ export function computeDomFallbackLabel(
 }
 
 /**
+ * {@link computeDomFallbackLabel} from a canonical name already resolved for
+ * this element — the full scan's `getElementState` read, whose
+ * `accessibleName` is `resolveAccessibleName(el).name` scrubbed by the same
+ * verdict — so the full scan does not run the accname algorithm twice per
+ * element. Same answer by construction.
+ */
+function fallbackLabelFromState(state: ElementState, verdict: RedactionVerdict): string {
+  return verdict.content ? REDACTED_VALUE : capLabel(state.accessibleName ?? '');
+}
+
+/**
  * Generate a stable ID for an element.
  *
  * §4.6: inside a content-redaction boundary (`verdict.content`) the text-slug
@@ -367,7 +378,7 @@ export function scanDOMForInteractiveElementsWithRefs(
     elements.push({
       id,
       type,
-      label: computeDomFallbackLabel(el, verdict),
+      label: fallbackLabelFromState(state, verdict),
       actions: inferActions(type, el),
       // The snapshot path drops the live ref and `materializeElements` reads
       // THIS field, so it must carry the same verdict as `state.visible`.
