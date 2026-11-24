@@ -10,6 +10,47 @@
 
 import { clipBoxOf } from '../core/clip-box';
 
+/**
+ * Which physical axes of a scroll container have their scroll origin at the
+ * right / bottom, so their scroll position runs [-extent, 0] rather than
+ * [0, extent]. Derived from the logical axes:
+ * - the inline axis is X in `horizontal-tb`, Y in a vertical / sideways mode;
+ *   it is reversed under `direction: rtl` (and runs bottom-to-top, reversed,
+ *   in `sideways-lr` with `ltr`);
+ * - the block axis is the other one; it is reversed in `vertical-rl` and
+ *   `sideways-rl`;
+ * - on a flex container only, a `*-reverse` flex-direction flips the main
+ *   axis (inline for `row`, block for `column`) and `flex-wrap: wrap-reverse`
+ *   flips the cross axis. `flex-direction` on a box that is not flex is ignored.
+ */
+export function scrollOriginReversed(cs: CSSStyleDeclaration): {
+  reversedX: boolean;
+  reversedY: boolean;
+} {
+  const wm = cs.writingMode || 'horizontal-tb';
+  const vertical = wm.startsWith('vertical') || wm.startsWith('sideways');
+  const rtl = cs.direction === 'rtl';
+  let inlineRev = wm === 'sideways-lr' ? !rtl : rtl;
+  let blockRev = wm === 'vertical-rl' || wm === 'sideways-rl';
+  const display = cs.display || '';
+  if (display === 'flex' || display === 'inline-flex') {
+    const fd = cs.flexDirection || 'row';
+    const mainIsInline = fd.startsWith('row');
+    const mainRev = fd.endsWith('-reverse');
+    const crossRev = cs.flexWrap === 'wrap-reverse';
+    if (mainIsInline) {
+      inlineRev = inlineRev !== mainRev;
+      blockRev = blockRev !== crossRev;
+    } else {
+      blockRev = blockRev !== mainRev;
+      inlineRev = inlineRev !== crossRev;
+    }
+  }
+  return vertical
+    ? { reversedX: blockRev, reversedY: inlineRev }
+    : { reversedX: inlineRev, reversedY: blockRev };
+}
+
 /** Error code a scroll action carries when it provably moved nothing. */
 export const NO_SCROLL_EFFECT = 'NO_SCROLL_EFFECT';
 
@@ -49,8 +90,10 @@ export function isVisibleInScrollContext(el: Element): boolean {
   // `auto` / `scroll`, and `hidden` too, which `scrollIntoView` and script do
   // scroll. Where no scroll can (a `clip` cut, paint containment, or a
   // container with no scroll range left in the direction the element sticks
-  // out — a child bleeding over a card's border), overlapping the clip region
-  // is as visible as it gets. An element entirely outside it stays not
+  // out — e.g. a child bleeding past a card's top or left edge, the side
+  // before the scroll origin), overlapping the clip region is as visible as
+  // it gets. A bleed past the far edge adds scroll range, so a scroll does
+  // move toward it. An element entirely outside it stays not
   // visible; its scrollIntoView then moves nothing and fails with
   // NO_SCROLL_EFFECT.
   const overlaps = (lo: number, hi: number, boxLo: number, boxHi: number): boolean =>
@@ -84,9 +127,7 @@ export function isVisibleInScrollContext(el: Element): boolean {
     let reversedX = false;
     let reversedY = false;
     try {
-      const cs = getComputedStyle(s);
-      reversedX = (cs.direction === 'rtl') !== (cs.flexDirection === 'row-reverse');
-      reversedY = cs.flexDirection === 'column-reverse';
+      ({ reversedX, reversedY } = scrollOriginReversed(getComputedStyle(s)));
     } catch {
       // No computed style: read the range as [0, extent].
     }

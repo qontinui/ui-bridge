@@ -21,7 +21,8 @@
  *   block (`position` ≠ `static`; `transform` / `perspective` / `filter` /
  *   `backdrop-filter` ≠ `none`; `contain` includes `layout` or `paint`, or is
  *   `strict` / `content`; `will-change` names `transform` / `perspective` /
- *   `filter`; `container-type` ≠ `normal`). That ancestor is the containing
+ *   `filter`; and the others listed in `establishesContainingBlock`. Not
+ *   `container-type`, which Chromium does not honour). That ancestor is the containing
  *   block and itself a candidate clipper.
  * - `fixed`: as `absolute`, except `position` alone never establishes it.
  * - After reaching the containing block, continue with that ancestor's own
@@ -93,7 +94,9 @@ export interface ClipBox {
  */
 function willChangeNames(willChange: string | undefined, ...props: string[]): boolean {
   if (!willChange) return false;
-  const names = willChange.split(',').map((t) => t.trim());
+  // Computed will-change keeps the author's case (`Transform`); CSS
+  // property names are ASCII case-insensitive.
+  const names = willChange.split(',').map((t) => t.trim().toLowerCase());
   return props.some((p) => names.includes(p));
 }
 
@@ -176,11 +179,24 @@ function establishesContainingBlock(
   if (nonNone(s.offsetPath)) return true;
   if (containEstablishes(s.contain)) return true;
   if (contentVisibilityContains(s.contentVisibility)) return true;
-  if (willChangeNames(s.willChange, 'transform', 'perspective', 'translate', 'rotate', 'scale')) {
+  if (
+    willChangeNames(
+      s.willChange,
+      'transform',
+      'perspective',
+      'translate',
+      'rotate',
+      'scale',
+      'transform-style',
+      'offset-path',
+      'contain'
+    )
+  ) {
     return true;
   }
-  const containerType = s.containerType;
-  if (containerType && containerType !== 'normal') return true;
+  // `container-type` is deliberately absent: Chromium does not make a size
+  // container a containing block (measured, `container-type: inline-size`
+  // and `size`), only the `contain: layout` it is sometimes paired with.
   return false;
 }
 
