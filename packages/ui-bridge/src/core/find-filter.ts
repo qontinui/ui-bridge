@@ -840,7 +840,7 @@ export function applyCanonicalFindFilter<T extends FindFilterableElement>(
     }
   }
 
-  const filtered = elements.filter((el) => {
+  const keeps = (el: T): boolean => {
     const content = isContentRow(el);
     const media = isMediaRow(el);
 
@@ -955,7 +955,17 @@ export function applyCanonicalFindFilter<T extends FindFilterableElement>(
     }
 
     return true;
-  });
+  };
 
+  // `limit` stops the walk once it is met, so the rows after it pay for no
+  // predicate (the visibility arm's state read above all). Not when a
+  // media-fact filter is active: every row it cannot evaluate must still be
+  // reported in `unevaluated`, so that walk runs to the end and is cut after.
+  const stopEarly = r.limit !== undefined && facts.length === 0;
+  const filtered: T[] = [];
+  for (const el of elements) {
+    if (stopEarly && filtered.length >= (r.limit as number)) break;
+    if (keeps(el)) filtered.push(el);
+  }
   return r.limit !== undefined ? filtered.slice(0, r.limit) : filtered;
 }
