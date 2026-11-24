@@ -163,14 +163,43 @@ describe.each([
     }
   });
 
-  it.each<Condition>(['visible', 'clickable'])(
-    '%s: an occluded or off-screen element never matches; a clear one does',
-    async (condition) => {
-      expect((await arm('covered', condition)).matched).toBe(false);
-      expect((await arm('below', condition)).matched).toBe(false);
-      expect((await arm('clear', condition)).matched).toBe(true);
-    }
-  );
+  it('visible: an occluded or off-screen element never matches; a clear one does', async () => {
+    expect((await arm('covered', 'visible')).matched).toBe(false);
+    expect((await arm('below', 'visible')).matched).toBe(false);
+    expect((await arm('clear', 'visible')).matched).toBe(true);
+  });
+
+  it('clickable means the next click would not be refused: below-the-fold, opacity:0 and covered controls are clickable; display:none is not', async () => {
+    const registry = getGlobalRegistry();
+    const faded = button('faded', 'Pay faded');
+    faded.style.opacity = '0';
+    place(faded, 0, 200, 80, 24);
+    registry.registerElement('faded', faded, { type: 'button', label: 'faded' });
+    const gone = button('gone', 'Pay gone');
+    gone.style.display = 'none';
+    document.body.appendChild(gone);
+    registry.registerElement('gone', gone, { type: 'button', label: 'gone' });
+
+    expect((await arm('below', 'clickable')).matched).toBe(true);
+    expect((await arm('faded', 'clickable')).matched).toBe(true);
+    // Occlusion was never a click-refusal signal; unchanged.
+    expect((await arm('covered', 'clickable')).matched).toBe(true);
+    expect((await arm('clear', 'clickable')).matched).toBe(true);
+    expect((await arm('gone', 'clickable')).matched).toBe(false);
+  });
+});
+
+describe('server wait-for-element-condition visible reads the materialized row', () => {
+  it("an off-screen element whose registry state reports visible:true matches (no second hit-test overrides the row's own state)", async () => {
+    const registry = getGlobalRegistry();
+    registry.registerElement('below', document.getElementById('below')!, {
+      type: 'button',
+      label: 'below',
+    });
+    // The post-action overlay the row reports through getState().
+    registry.refreshElement('below', { visible: true });
+    expect((await serverArm('below', 'visible')).matched).toBe(true);
+  });
 });
 
 /**
