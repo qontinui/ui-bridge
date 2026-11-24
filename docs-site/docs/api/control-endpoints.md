@@ -548,12 +548,21 @@ element with no text (an icon-only button) reads its scrubbed `aria-label` or
 is the canonical one: set for a checkbox or radio input and for an
 `aria-checked` checkbox, radio, switch, menuitemcheckbox or menuitemradio role,
 absent for anything else. The top-level `label` is the element's canonical
-accessible name, the same value as `state.accessibleName` (capped at 200 code
-points, and the redaction sentinel inside a redaction boundary). A fallback
-row's `id` is built from a separate, frozen input so it does not move when the
-name does: `dom-<testid>`, `dom-<html id>`, a slug of the element's text
-(`dom-button-save`), or `dom-<type>-<index>`. Inside a redaction boundary the
-text slug is skipped, so an id never carries redacted text.
+accessible name, the one name algorithm every reader shares
+(`resolveAccessibleName`): the W3C accessible name, else a text-like input's
+own `placeholder`, else a name derived from developer affordances (a
+`data-testid`, an `id`, an icon token). It is capped at 200 code points, and is
+the redaction sentinel inside a redaction boundary. It is the value a
+registered element reports as `state.accessibleName`; a fallback row's `state`
+does not carry that field. Where a row carries a top-level `accessibleName`, it
+is the W3C algorithm alone, without the `placeholder` and derived rungs, so it
+can be absent where `label` is filled from one of those. A fallback row's `id`
+is built from a separate, frozen input so it does not move when the name does:
+`dom-<testid>`, `dom-<html id>`, a slug of the element's text
+(`dom-button-save`), or `dom-<type>-<index>`. The text slug is skipped, and the
+id falls to `dom-<type>-<index>`, when the element is inside a redaction
+boundary or its text would come from an `aria-labelledby` target that touches
+one, so an id never carries redacted text.
 
 The same rows, and so the same `visible`, feed the other in-page responses
 that fall back to a DOM scan when nothing is registered: `GET /ai/summary`
@@ -563,12 +572,14 @@ and visible-link lists skip it) and the visible-only filter that
 (`GET /ai/snapshot`) reads the registry only, never these rows.
 
 `include_hidden: false` on `POST /control/find` filters on this same verdict,
-on every find arm: it drops exactly the rows whose returned `visible` is
-`false`, so an occluded, off-screen (scrolled out of the viewport) or fully
-ancestor-clipped row is left out, and a partially covered one is kept. A row
-that carries `state.visible` is judged by it; a registered element with a live
-node is judged by the same canonical verdict computed on that node; a row with
-no visibility signal at all is kept. To get below-the-fold rows, pass
+on every find arm: it drops exactly the rows whose `state.visible` (the
+canonical verdict the row carries) is `false`, so an occluded, off-screen
+(scrolled out of the viewport) or fully ancestor-clipped row is left out, and a
+partially covered one is kept. A row that carries `state.visible` is judged by
+it; a registered element with a live node is judged by the same canonical
+verdict computed on that node; a row with no visibility signal at all is kept.
+A registered row's top-level `visible` is a separate bounding-box hint and is
+not what this filter reads. To get below-the-fold rows, pass
 `include_hidden: true`, which is the default.
 
 Unreleased (after 0.61.0). Up to 0.61.0, a fallback row's `visible` only
@@ -584,9 +595,11 @@ those rows read `visible: false`. It now drops occluded, off-screen and fully
 clipped rows. A fallback row's `label` used to come from a separate label chain
 that read only a single-id `aria-labelledby` and ignored a wrapping `<label>`,
 `alt` and the rest of the accessible-name algorithm; it is now the canonical
-name. Fallback ids are unchanged, except for elements inside a redaction
-boundary whose id was a slug of their (redacted) text: those now read
-`dom-<type>-<index>`.
+name (and `resolveAccessibleName` gained HTML-AAM's last-resort `placeholder`
+rung, `nameSource: 'placeholder'`, for a text-like input or textarea). Fallback
+ids are unchanged, except for an element whose id was a slug of redacted text
+(it was inside a redaction boundary, or labelled by an `aria-labelledby`
+target touching one): those now read `dom-<type>-<index>`.
 
 ## Diagnostics
 
