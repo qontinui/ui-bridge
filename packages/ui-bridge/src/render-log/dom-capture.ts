@@ -12,9 +12,7 @@ import {
   scrubRecord,
   verdictFailClosed,
   verdictOf,
-  readScrubbedText,
 } from '../core/redaction';
-import { readAriaLabelAttr, readAriaLabelledbyAttr, readTitleAttr } from '../core/a11y';
 // The ONE `ElementState` reader (plan
 // `2026-11-08-ui-bridge-element-state-has-two-readers-and-no-aria-busy`, D1):
 // a captured element's `state` is the same state the registry snapshot reports.
@@ -22,6 +20,7 @@ import { getElementState } from '../core/element-state';
 import { createElementIdentifier, getBestIdentifier } from '../core/element-identifier';
 import { truncateCodePoints } from '../core/text';
 import { pageViewportContext } from '../control/page-scroll-container';
+import { withoutInspectorPanelRecords } from '../core/inspector-panel';
 
 /**
  * Captured DOM element information
@@ -172,56 +171,6 @@ function isInteractive(element: HTMLElement): boolean {
 }
 
 /**
- * Get the accessible name of an element
- */
-// A second accessible-name algorithm beside `core/a11y`'s: recorded as plan-library
-// follow-up edge 322eade0-cff6-460b-9011-4e0e781c712d.
-function getAccessibleName(element: HTMLElement): string | undefined {
-  // aria-label takes precedence
-  const ariaLabel = readAriaLabelAttr(element);
-  if (ariaLabel) return ariaLabel;
-
-  // aria-labelledby
-  const labelledBy = readAriaLabelledbyAttr(element);
-  if (labelledBy) {
-    const labels = labelledBy
-      .split(' ')
-      .map((id) => readScrubbedText(document.getElementById(id)))
-      .filter(Boolean);
-    if (labels.length > 0) return labels.join(' ');
-  }
-
-  // Input associated label
-  if (
-    element instanceof HTMLInputElement ||
-    element instanceof HTMLSelectElement ||
-    element instanceof HTMLTextAreaElement
-  ) {
-    const id = element.id;
-    if (id) {
-      const label = document.querySelector<HTMLLabelElement>(`label[for="${id}"]`);
-      if (label) return readScrubbedText(label);
-    }
-  }
-
-  // Title attribute
-  const title = readTitleAttr(element);
-  if (title) return title;
-
-  // Alt text for images
-  if (element instanceof HTMLImageElement) {
-    return element.alt || undefined;
-  }
-
-  // Button or link text content
-  if (element.matches('button, a, [role="button"], [role="link"]')) {
-    return readScrubbedText(element) || undefined;
-  }
-
-  return undefined;
-}
-
-/**
  * Capture attributes from an element
  */
 function captureAttributes(element: HTMLElement): Record<string, string> {
@@ -270,7 +219,10 @@ function captureElement(
     bestId: getBestIdentifier(element),
     tagName: element.tagName.toLowerCase(),
     role: element.getAttribute('role') || undefined,
-    accessibleName: scrubContent(getAccessibleName(element), element),
+    // The canonical reader's name (`core/a11y` `resolveAccessibleName`, already
+    // redaction-minted), so the top-level field and `state.accessibleName` are
+    // one value. An empty name leaves the field absent rather than `""`.
+    accessibleName: state.accessibleName || undefined,
     textContent: scrubbedText,
     state: capturedState,
     attributes: scrubRecord(captureAttributes(element), verdict),
@@ -429,7 +381,11 @@ export class DOMChangeObserver {
   start(root: HTMLElement = document.body): void {
     if (this.observer) return;
 
-    this.observer = new MutationObserver((mutations) => {
+    this.observer = new MutationObserver((records) => {
+      // The debug inspector panel's own DOM (its root's `pointer-events`
+      // toggle, its re-renders) is not a page change, so it is never logged.
+      const mutations = withoutInspectorPanelRecords(records);
+      if (mutations.length === 0) return;
       // Records are delivered after the fact, so a target's boundary status is
       // read as of NOW, not as of its mutation. A batch that un-marks or moves
       // a boundary (a `data-bridge-redact` change, or any removed node)

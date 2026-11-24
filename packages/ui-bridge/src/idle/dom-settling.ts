@@ -12,6 +12,7 @@ import type {
   SignalWaitOptions,
   SignalTransitionCallback,
 } from './types';
+import { withoutInspectorPanelRecords } from '../core/inspector-panel';
 
 export class DOMSettlingDetector implements IdleSignal<DOMSignalStatus> {
   readonly name = 'dom';
@@ -43,7 +44,11 @@ export class DOMSettlingDetector implements IdleSignal<DOMSignalStatus> {
 
     const root = this.root ?? document.body;
 
-    this.observer = new MutationObserver((mutations) => {
+    this.observer = new MutationObserver((records) => {
+      // The debug inspector panel's own DOM (its root's toggle, its
+      // re-renders) is not page activity: it must not un-settle the page.
+      const mutations = withoutInspectorPanelRecords(records);
+      if (mutations.length === 0) return;
       const now = Date.now();
       this.lastMutationAt = now;
 

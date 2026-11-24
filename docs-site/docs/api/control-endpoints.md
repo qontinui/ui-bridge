@@ -535,6 +535,40 @@ Get a full snapshot of all controllable UI.
 }
 ```
 
+When the registry has no elements, the snapshot (and the DOM fallback of
+`POST /control/find`) lists DOM-fallback rows (`_domFallback: true`). A fallback
+row's `visible` and `state.visible` are the same verdict every other path
+reports. It accounts for the viewport and for occlusion, so a fallback button
+that is off-screen or covered reads `visible: false`. `state` carries
+`visibilityReason` (`hidden`, `off-screen`, `occluded` or `no-layout`),
+`occludedBy` and `occludedPct`, as a registered element's state does. A fallback
+row's `state.textContent` is the canonical text capped at 500 code points: an
+element with no text (an icon-only button) reads its scrubbed `aria-label` or
+`title`, and inside a redaction boundary the redaction sentinel. `state.checked`
+is the canonical one: set for a checkbox or radio input and for an
+`aria-checked` checkbox, radio, switch, menuitemcheckbox or menuitemradio role,
+absent for anything else. The
+top-level `label` is unchanged.
+
+The same rows, and so the same `visible`, feed the other in-page responses
+that fall back to a DOM scan when nothing is registered: `GET /ai/summary`
+(an element that is not visible is listed as hidden, and the visible-input
+and visible-link lists skip it) and the visible-only filter that
+`POST /ai/search` and `POST /ai/find` apply by default to a non-fuzzy search. The semantic snapshot
+(`GET /ai/snapshot`) reads the registry only, never these rows.
+
+One filter does not use this verdict yet: `include_hidden: false` on
+`POST /control/find` still applies its own check (`isConsideredVisible` in
+`core/find-filter.ts`, an `offsetParent` test), so an occluded fallback row
+can still pass it. That is tracked as a follow-up.
+
+Unreleased (after 0.61.0). Up to 0.61.0, a fallback row's `visible` only
+checked `offsetParent` and a non-zero size, so an off-screen or covered
+fallback button read `visible: true`. Its `state` carried none of the three
+fields, `state.textContent` was `""` for an element with no text, and
+`state.checked` read the `checked` property of any element that has one (so a
+text input read `false`) and ignored `aria-checked`.
+
 ## Diagnostics
 
 Two page-level diagnostic routes share the `diagnostics` category in

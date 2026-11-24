@@ -89,6 +89,51 @@ describe('captureDOMSnapshot — the default capture filter is the canonical vis
   });
 });
 
+describe('captureDOMSnapshot — one accessible name per captured element', () => {
+  // Plan `2026-11-23-ui-bridge-element-state-collapse-follow-ups`, D2. The
+  // top-level `accessibleName` came from a private chain that read
+  // `aria-label` BEFORE `aria-labelledby`, the reverse of the W3C order the
+  // canonical reader follows, so the two fields disagreed on this element.
+  it('top-level accessibleName equals state.accessibleName for an aria-labelledby name', () => {
+    const label = place('label', 0, 100, 120, 24);
+    label.id = 'save-label';
+    label.textContent = 'Save draft';
+    const btn = place('save', 0, 0, 80, 24);
+    btn.setAttribute('role', 'button');
+    btn.setAttribute('aria-labelledby', 'save-label');
+    btn.setAttribute('aria-label', 'Close');
+
+    const captured = captureDOMSnapshot().elements.find((e) => e.identifier.testId === 'save')!;
+
+    expect(captured.state.accessibleName).toBe('Save draft');
+    expect(captured.accessibleName).toBe('Save draft');
+  });
+
+  it('leaves the top-level accessibleName absent when the canonical name is empty', () => {
+    // No attribute, id or text at all: no rung of the canonical chain names it.
+    const bare = document.createElement('section');
+    bare.getBoundingClientRect = () =>
+      ({
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 24,
+        top: 0,
+        left: 0,
+        right: 80,
+        bottom: 24,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    document.body.appendChild(bare);
+    boxes.push({ el: bare, rect: { x: 0, y: 0, w: 80, h: 24 } });
+
+    const captured = captureDOMSnapshot().elements.find((e) => e.tagName === 'section')!;
+    expect(captured.state.accessibleName).toBeFalsy();
+    expect(captured).not.toHaveProperty('accessibleName', '');
+    expect(captured.accessibleName).toBeUndefined();
+  });
+});
+
 describe('captureDOMSnapshot — the projected state is bounded by maxTextLength', () => {
   it('truncates state.textContent exactly as the top-level textContent', () => {
     const el = place('long', 0, 0, 600, 40);

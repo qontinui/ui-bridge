@@ -10,23 +10,21 @@
 import {
   isContentRedacted,
   readScrubbedOwnValue,
-  readScrubbedText,
+  truncateKeepingSentinel,
   REDACTED_VALUE,
   verdictOf,
   withBoundaryIndex,
   type RedactionVerdict,
 } from '../core/redaction';
 import { truncateCodePoints } from '../core/text';
-import type { ElementType, StandardAction } from '../core/types';
+import type { ElementState, ElementType, StandardAction } from '../core/types';
 import { inferActions, inferElementType } from '../core/element-kind';
-import { readAriaBusy } from '../core/element-state';
+import { getElementState } from '../core/element-state';
 import {
   computeVisibleText,
   readAriaLabelAttr,
   readAriaLabelledbyAttr,
   readTitleAttr,
-  isInteractionBlocked,
-  readInteractionBlockers,
 } from '../core/a11y';
 
 /** Selectors for standard interactive DOM elements. */
@@ -116,13 +114,6 @@ export function computeDomFallbackLabel(
   return verdict.content ? REDACTED_VALUE : getLabel(el);
 }
 
-/** Check if element is visible (not hidden/zero-size). */
-function isVisible(el: HTMLElement): boolean {
-  if (el.offsetParent === null && getComputedStyle(el).position !== 'fixed') return false;
-  const rect = el.getBoundingClientRect();
-  return rect.width > 0 && rect.height > 0;
-}
-
 /** Generate a stable ID for an element. */
 function generateId(el: HTMLElement, index: number): string {
   // Prefer data-testid
@@ -153,6 +144,7 @@ export interface DOMFallbackElement {
   label: string;
   /** The kind's verbs plus the node's own (`core/element-kind` `inferActions`). */
   actions: StandardAction[];
+  /** The canonical verdict — always equal to `state.visible` (one value per row). */
   visible: boolean;
   tagName: string;
   /**
@@ -162,16 +154,30 @@ export interface DOMFallbackElement {
    * cannot disagree about which keys exist — the divergence R8 was filed for
    * (this path emitted `disabled`, which the canonical type did not even
    * declare, while never emitting `ariaDisabled`).
+   *
+   * Those fields, `ariaBusy` and the visibility family are COPIED from one
+   * `getElementState` call (`core/element-state`, the one reader), so a
+   * fallback row's `visible` is the occlusion- and viewport-aware verdict every
+   * other path reports, and `checked` is the canonical one too (a checkbox or
+   * radio's own state, or `aria-checked` on a checkbox, radio, switch or menu-item-checkbox/radio role;
+   * absent otherwise). `textContent` is the canonical text capped at 500 code
+   * points (the canonical one is the whole subtree), so an element with no text
+   * reads its scrubbed `aria-label` or `title`, as every other path does. Only
+   * the rounding of `rect` and `value` (the element's OWN value) are this
+   * path's own.
    */
   state: {
     textContent: string;
     value?: string;
     checked?: boolean;
     visible: boolean;
+    visibilityReason?: ElementState['visibilityReason'];
+    occludedBy?: ElementState['occludedBy'];
+    occludedPct?: ElementState['occludedPct'];
     enabled: boolean;
     disabled: boolean;
     ariaDisabled: boolean;
-    /** `ElementState.ariaBusy`, by the same rule (`core/element-state` `readAriaBusy`). */
+    /** `ElementState.ariaBusy`, copied from the canonical read. */
     ariaBusy: boolean;
     focused: boolean;
     rect: {
@@ -215,9 +221,60 @@ function defaultRoot(): HTMLElement | null {
 }
 
 /**
+ * The selector walk and id derivation every scan shares: each interactive
+ * element under `container`, in document order, with its collision-free id.
+ * The single source of truth for ids, so the full scan and the ref-only scan
+ * cannot disagree on one.
+ */
+function walkInteractive(
+  container: HTMLElement,
+  visit: (el: HTMLElement, id: string) => void
+): void {
+  const nodeList = container.querySelectorAll<HTMLElement>(COMBINED_SELECTOR);
+  const seenIds = new Set<string>();
+  nodeList.forEach((el, index) => {
+    let id = generateId(el, index);
+    // Disambiguate collisions
+    if (seenIds.has(id)) {
+      let suffix = 2;
+      while (seenIds.has(`${id}-${suffix}`)) suffix++;
+      id = `${id}-${suffix}`;
+    }
+    seenIds.add(id);
+    visit(el, id);
+  });
+}
+
+/** One interactive element's identity: what {@link scanDOMForInteractiveElementRefs} returns. */
+export interface DOMFallbackElementRef {
+  id: string;
+  /** Exactly the full scan's `label` (§4.6 CONTENT-scrubbed). */
+  label: string;
+  element: HTMLElement;
+}
+
+/**
+ * The ref-only scan: the same walk, ids and labels as
+ * {@link scanDOMForInteractiveElementsWithRefs}, without building any element
+ * state. For a caller that needs only identity — the injected registry seeder,
+ * which re-runs this on every debounced re-seed and lets the registry read the
+ * state live through the ONE reader. It builds no `visible` at all, so it is
+ * not a second visibility algorithm.
+ */
+export function scanDOMForInteractiveElementRefs(root?: HTMLElement): DOMFallbackElementRef[] {
+  const container = root ?? defaultRoot();
+  if (!container) return [];
+  const refs: DOMFallbackElementRef[] = [];
+  walkInteractive(container, (el, id) => {
+    refs.push({ id, label: computeDomFallbackLabel(el), element: el });
+  });
+  return refs;
+}
+
+/**
  * Core DOM scan: returns each interactive element's structured data **and**
- * its live `HTMLElement` ref. The single source of truth for the selector
- * walk, id derivation, and collision disambiguation.
+ * its live `HTMLElement` ref. Its ids come from the same walk as
+ * {@link scanDOMForInteractiveElementRefs}.
  *
  * Use this when you need to operate on the elements (register them, act on
  * them). Use {@link scanDOMForInteractiveElements} when you only need the
@@ -229,27 +286,16 @@ export function scanDOMForInteractiveElementsWithRefs(
   const container = root ?? defaultRoot();
   if (!container) return [];
 
-  const nodeList = container.querySelectorAll<HTMLElement>(COMBINED_SELECTOR);
   const elements: DOMFallbackElementWithRef[] = [];
-  const seenIds = new Set<string>();
 
-  nodeList.forEach((el, index) => {
-    let id = generateId(el, index);
-    // Disambiguate collisions
-    if (seenIds.has(id)) {
-      let suffix = 2;
-      while (seenIds.has(`${id}-${suffix}`)) suffix++;
-      id = `${id}-${suffix}`;
-    }
-    seenIds.add(id);
-
+  walkInteractive(container, (el, id) => {
     const type = inferElementType(el);
-    const rect = el.getBoundingClientRect();
-    // The interaction blockers, unfolded once (`enabled` below is the derived
-    // fold). Same helper as the registry serializer and the click-path
-    // pre-check — see `core/a11y` — so the paths cannot drift on either value
-    // or key set.
-    const disabledSignals = readInteractionBlockers(el);
+    // ONE canonical read per element (plan
+    // `2026-11-23-ui-bridge-element-state-collapse-follow-ups`, D1). This path
+    // used to build its own `offsetParent` + size `visible`, with no viewport or
+    // occlusion arm — a second algorithm behind the same field name.
+    const state = getElementState(el);
+    const rect = state.rect;
 
     // §4.6 F5: this is the ONLY place the DOM-fallback path still holds the live
     // `element` ref — `scanDOMForInteractiveElements` drops it right after. The
@@ -265,18 +311,29 @@ export function scanDOMForInteractiveElementsWithRefs(
       type,
       label: computeDomFallbackLabel(el, verdict),
       actions: inferActions(type, el),
-      visible: isVisible(el),
+      // The snapshot path drops the live ref and `materializeElements` reads
+      // THIS field, so it must carry the same verdict as `state.visible`.
+      visible: state.visible,
       tagName: el.tagName.toLowerCase(),
       state: {
-        textContent: readScrubbedText(el, verdict, { maxLen: 500 }) ?? '',
+        // The canonical (already §4.6-scrubbed) text, capped at 500 code points
+        // with the sentinel-safe cut, the same value render-log/dom-capture.ts
+        // converges on. For an element with text it equals the old capped
+        // scrubbed read. For an element with none it is the canonical fallback,
+        // the scrubbed `aria-label` or `title` (the sentinel inside a redaction
+        // boundary), where the old read gave "".
+        textContent: truncateKeepingSentinel(state.textContent ?? '', 500),
         value: readScrubbedOwnValue(el, verdict),
-        checked: 'checked' in el ? (el as HTMLInputElement).checked : undefined,
-        visible: isVisible(el),
-        enabled: !isInteractionBlocked(disabledSignals),
-        disabled: disabledSignals.disabled,
-        ariaDisabled: disabledSignals.ariaDisabled,
-        ariaBusy: readAriaBusy(el),
-        focused: document.activeElement === el,
+        checked: state.checked,
+        visible: state.visible,
+        visibilityReason: state.visibilityReason,
+        occludedBy: state.occludedBy,
+        occludedPct: state.occludedPct,
+        enabled: state.enabled,
+        disabled: state.disabled,
+        ariaDisabled: state.ariaDisabled,
+        ariaBusy: state.ariaBusy,
+        focused: state.focused,
         rect: {
           x: Math.round(rect.x),
           y: Math.round(rect.y),

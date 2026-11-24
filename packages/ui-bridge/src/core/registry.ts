@@ -45,8 +45,9 @@ import { computeElementFingerprint } from './element-fingerprint';
 import { readAriaLabelAttr, readTitleAttr, readPlaceholderAttr } from './a11y';
 // The ONE `ElementState` reader. It lived here until plan
 // `2026-11-08-ui-bridge-element-state-has-two-readers-and-no-aria-busy` moved
-// it, verbatim, into its own module so every DOM-reading builder can delegate
-// to it rather than keep a private copy.
+// it into its own module (moved there, then extended with the §4.6 scrubs and
+// `ariaBusy`) so every DOM-reading builder can delegate to it rather than keep
+// a private copy.
 import { getElementState } from './element-state';
 import { createStableRef } from './stable-ref';
 import {

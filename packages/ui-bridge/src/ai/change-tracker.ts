@@ -46,6 +46,7 @@ import type { CompositeIdleDetector } from '../idle';
 import { detectTable, detectList } from './table-extraction';
 import { classList } from '../core/class-name';
 import { getGlobalBookmarkStore } from './bookmarks';
+import { withoutInspectorPanelRecords } from '../core/inspector-panel';
 import { probePerfEntrySupport, type PerfEntrySupport } from '../perf';
 import {
   TimelineRecorder,
@@ -1306,7 +1307,9 @@ export class ChangeTracker {
       !this.mutationObserver
     ) {
       this.mutationObserver = new MutationObserver((records) => {
-        for (const record of records) {
+        // The debug inspector panel's own DOM (its root's `pointer-events`
+        // toggle, its re-renders) is not a page change.
+        for (const record of withoutInspectorPanelRecords(records)) {
           if (this.domMutationBuffer.length >= 500) {
             // Cap at 500: drop the oldest entry
             this.domMutationBuffer.shift();

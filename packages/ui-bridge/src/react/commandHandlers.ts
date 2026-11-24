@@ -33,6 +33,7 @@ import {
 } from '../core/element-projection';
 import { pageSentinelState, resolvePageSentinel } from '../core/page-sentinel';
 import { truncateCodePoints } from '../core/text';
+import { withoutInspectorPanelRecords } from '../core/inspector-panel';
 import {
   buildKeyboardEventInit,
   normalizeKeyDescriptors,
@@ -1114,7 +1115,9 @@ function enableChangeTracking() {
   if (changeObserver) return;
   changeObserver = new MutationObserver((mutations) => {
     if (!changeBufferEnabled) return;
-    for (const m of mutations) {
+    // The debug inspector panel's own DOM (its root's `pointer-events`
+    // toggle, its re-renders) is not a page change.
+    for (const m of withoutInspectorPanelRecords(mutations)) {
       changeBuffer.push({
         timestamp: Date.now(),
         type: m.type,
@@ -3440,7 +3443,9 @@ export async function executeCommand(
       };
       const timeout = opts.timeout ?? opts.options?.timeout ?? 5000;
       return new Promise((resolve) => {
-        const observer = new MutationObserver(() => {
+        const observer = new MutationObserver((records) => {
+          // The debug inspector panel's own DOM is not a change.
+          if (withoutInspectorPanelRecords(records).length === 0) return;
           observer.disconnect();
           resolve({ changed: true, timestamp: Date.now() });
         });

@@ -106,6 +106,21 @@ Capture a DOM snapshot manually.
 }
 ```
 
+Each captured element (`captureDOMSnapshot`) carries one accessible name. The
+top-level `accessibleName` is the element's `state.accessibleName`: the
+canonical accessible name (`resolveAccessibleName` in `core/a11y`), the same
+one the registry snapshot reports. It follows the standard accessible-name
+order, so `aria-labelledby` wins over `aria-label`. When an element has no
+name, the field is absent rather than `""`.
+
+Unreleased (after 0.61.0). Up to 0.61.0, the top-level `accessibleName` came
+from a separate, shorter chain (`aria-label`, then `aria-labelledby`, a
+`label[for]`, `title`, an image's `alt`, and text only for buttons and links).
+Values can therefore differ from before beyond the `aria-labelledby` and
+`aria-label` order. For example, an element the old chain left unnamed can now
+carry a name computed from its content (a heading, a menu item) or a derived
+name (from a test id, its `id`, or an icon's title).
+
 ## Clear Render Log
 
 ```http
