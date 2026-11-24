@@ -615,9 +615,7 @@ describe('resource-status capture', () => {
     FakePerformanceObserver.record('resource', [liveEntry(url, 404, 'img')]);
     expect(statusFor(capture, url)).toHaveLength(1);
     // The fetch's own entry consumes the network report.
-    FakePerformanceObserver.record('resource', [
-      { ...liveEntry(url, 404), startTime: performance.now() - 5 },
-    ]);
+    FakePerformanceObserver.record('resource', [liveEntry(url, 404)]);
     expect(statusFor(capture, url)).toHaveLength(1);
   });
 
