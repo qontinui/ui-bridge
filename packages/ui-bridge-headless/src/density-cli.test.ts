@@ -156,6 +156,7 @@ const EXPECTED_VALUE = {
       abbreviation: 0,
     },
     byRule: {},
+    abbreviationsUndetermined: 0,
     shown: 0,
     total: 0,
     truncated: false,
@@ -928,6 +929,7 @@ describe('ui-bridge-density measure: repeats and affordances', () => {
         abbreviation: 0,
       },
       byRule: { 'role-tab': 1, 'control-above-repeat': 1, 'nav-after-repeat': 1 },
+      abbreviationsUndetermined: 0,
       shown: 3,
       total: 3,
       truncated: false,
@@ -961,6 +963,7 @@ describe('ui-bridge-density measure: repeats and affordances', () => {
           repeat: 'repeat:app.orders.row-1',
           recoverable: null,
           hides,
+          members: ['app.orders.next'],
         },
       ],
     });
