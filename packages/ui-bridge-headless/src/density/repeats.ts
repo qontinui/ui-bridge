@@ -31,7 +31,8 @@
  * rows. Siblings side by side in a single row (the cells of one table row, a
  * tab strip, a pager) are not a repeat: none of the row quantities describes
  * them. Members with no rect, no area, or a `hidden` / `no-layout` visibility
- * take no space and are left out. A row holding an item whose text or rect
+ * take no space and are left out, as is one with a coordinate or size beyond
+ * {@link DENSITY_MAX_COORDINATE_PX}. A row holding an item whose text or rect
  * cannot be read is not estimated: its lines, values and fill are unknown,
  * never zero.
  *
@@ -268,7 +269,7 @@ function rowLines(
   leaves: readonly DensityItem[],
   containers: ReadonlySet<string>
 ): { lines: number; textPx: number } | null {
-  const spans: Array<{ top: number; lh: number }> = [];
+  const spans: Array<{ top: number; bottom: number; lh: number }> = [];
   for (const leaf of leaves) {
     // A container's own text sits somewhere among its children's lines, which
     // the capture does not say: the row cannot be estimated.
@@ -280,6 +281,9 @@ function rowLines(
     if (n === 0) continue;
     if (leaf.fontPx === null || leaf.lineHeightPx === null || leaf.lineHeightPx <= 0 || r.w <= 0)
       return null;
+    // A font or line height no page draws (a forged capture) is unreadable.
+    if (leaf.fontPx > DENSITY_MAX_COORDINATE_PX || leaf.lineHeightPx > DENSITY_MAX_COORDINATE_PX)
+      return null;
     // The estimate never exceeds what the measured height can hold, and a
     // truncated leaf (nowrap, ellipsis) is one line.
     const wrapped = Math.max(1, Math.ceil((n * DENSITY_CHAR_WIDTH_EM * leaf.fontPx) / r.w));
@@ -288,8 +292,8 @@ function rowLines(
     // lines is one line height plus one font height tall).
     const fits = Math.max(1, 1 + Math.floor((r.h - leaf.fontPx) / leaf.lineHeightPx + 0.01));
     const lines = leaf.truncated === true ? 1 : Math.min(wrapped, fits);
-    for (let k = 0; k < lines; k++)
-      spans.push({ top: r.y + k * leaf.lineHeightPx, lh: leaf.lineHeightPx });
+    // A leaf's lines are contiguous: one interval, however many lines.
+    spans.push({ top: r.y, bottom: r.y + lines * leaf.lineHeightPx, lh: leaf.lineHeightPx });
   }
   // The text's height is the UNION of the line intervals [top, top + lh), so
   // lines of leaves side by side (a centred date beside a two-line title)
@@ -303,12 +307,12 @@ function rowLines(
   for (const t of spans) {
     maxLh = Math.max(maxLh, t.lh);
     if (t.top < curBottom) {
-      curBottom = Math.max(curBottom, t.top + t.lh);
+      curBottom = Math.max(curBottom, t.bottom);
       continue;
     }
     if (curBottom > curTop) textPx += curBottom - curTop;
     curTop = t.top;
-    curBottom = t.top + t.lh;
+    curBottom = t.bottom;
   }
   if (curBottom > curTop) textPx += curBottom - curTop;
   const lines = textPx > 0 && maxLh > 0 ? Math.max(1, Math.round(textPx / maxLh)) : 0;
@@ -965,7 +969,8 @@ export function densityRepeats(
       // A leaf that takes no space (a closed menu's items) draws no line in the
       // row; one whose rect is unknown, or whose text is, makes the row unknown.
       const laidOut = item.visibility !== 'hidden' && item.visibility !== 'no-layout';
-      if (laidOut && item.rect === null) unreadable = true;
+      // No rect, or one no page lays out (a forged capture): the row is unknown.
+      if (laidOut && (item.rect === null || !withinLayout(item))) unreadable = true;
       else if (takesSpace(item)) {
         // A leaf whose text is unreadable (redacted) leaves the row unknown.
         if (leafSet.has(cur)) {

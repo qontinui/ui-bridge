@@ -1186,7 +1186,7 @@ describe('repeats', () => {
     expect([rep.rows, rep.valuesPerRow]).toEqual([4, 2]);
   });
 
-  it('members at coordinates no page lays out form no repeat (no Infinity in output)', () => {
+  it('members at coordinates no page lays out form no repeat', () => {
     const els: DensityTestElementSpec[] = [0, 1e308, 1.7e308].map((y, i) => ({
       id: `far${i + 1}`,
       tag: 'li',
@@ -1195,6 +1195,16 @@ describe('repeats', () => {
       text: `Row ${i + 1}`,
     }));
     expect(densityRepeats(capture(els), null)).toEqual([]);
+  });
+
+  it('a leaf at a coordinate or line height no page draws makes its row unknown, never Infinity', () => {
+    const els = orderList(3).map((e): DensityTestElementSpec => {
+      if (e.id !== 'app.orders.row-2.sum') return e;
+      return { ...e, rect: [300, 1.7e308, 100, 20], styles: { lineHeight: '1e308px' } };
+    });
+    const [rep] = densityRepeats(capture(els), null);
+    expect([rep.rows, rep.rowsEstimated, rep.linesPerRow, rep.rowTextPx]).toEqual([3, 2, 1, 20]);
+    expect(Number.isFinite(rep.rowFill!)).toBe(true);
   });
 
   it('a hidden leaf in a row draws no line band', () => {
