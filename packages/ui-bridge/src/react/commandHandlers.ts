@@ -2028,6 +2028,15 @@ export async function executeCommand(
             startTime,
             el
           );
+        // NOT the canonical visibility verdict, deliberately: this is the
+        // dispatch gate's "is the node rendered at all" check (a `display:
+        // none` self or ancestor nulls `offsetParent`; `visibility: hidden` /
+        // `display: none` on the node itself), the relay twin of the HTTP
+        // executor's signal-driven `getClickVisibilityReason`. The canonical
+        // verdict would wrongly refuse here: an `off-screen` target is scrolled
+        // into view by the action, an `occluded` one is the click gate's (and
+        // the caller's) concern, and an `opacity: 0` control (its `hidden`
+        // reason, e.g. a styled file input) still takes input.
         const isVis =
           domEl.offsetParent !== null &&
           getComputedStyle(domEl).visibility !== 'hidden' &&
@@ -3691,9 +3700,9 @@ export async function executeCommand(
         if (requirement === 'visible') {
           if (typeof el.visible === 'boolean') return el.visible;
           if (!domEl) return false;
-          if (domEl.offsetParent === null) return false;
-          const rect = domEl.getBoundingClientRect();
-          return rect.width > 0 && rect.height > 0;
+          // No tracked `visible` yet: the canonical verdict on the live node
+          // (`core/element-state`), the one every row reports.
+          return readElementVisibility(domEl).visible;
         }
 
         if (requirement === 'has-layout') {

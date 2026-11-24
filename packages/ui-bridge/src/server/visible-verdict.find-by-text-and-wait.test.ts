@@ -172,3 +172,128 @@ describe.each([
     }
   );
 });
+
+/**
+ * The wait-for-elements `visible` requirement's live-node fallback — it ran
+ * whenever a row carried no serialized verdict (every server registry row,
+ * and a React row with no tracked `visible`) and read `offsetParent` plus a
+ * non-zero rect. It now reads the canonical verdict.
+ */
+type RegisteredArm = (id: string) => Promise<{ element?: { id: string }; reason?: string }>;
+
+const serverRegisteredArm: RegisteredArm = async (id) => {
+  const handlers = createHandlers(
+    registryLike(),
+    {
+      executeAction: async () => ({ success: true }),
+      executeComponentAction: async () => ({ success: true }),
+    } as never,
+    { consoleCapture: null as never }
+  );
+  const resp = await handlers.waitForElementRegistered({
+    predicate: { id },
+    requirement: 'visible',
+    timeoutMs: 150,
+  });
+  expect(resp.success).toBe(true);
+  return resp.data as { element?: { id: string }; reason?: string };
+};
+
+const relayRegisteredArm: RegisteredArm = async (id) =>
+  (await executeCommand(
+    'waitForElementRegistered',
+    { predicate: { id }, requirement: 'visible', timeoutMs: 150 },
+    emptyBridge
+  )) as { element?: { id: string }; reason?: string };
+
+describe.each([
+  ['server/handlers.ts', serverRegisteredArm],
+  ['react/commandHandlers.ts', relayRegisteredArm],
+])('waitForElementRegistered visible reads the canonical verdict (%s)', (_name, arm) => {
+  beforeEach(() => {
+    const registry = getGlobalRegistry();
+    for (const id of ['covered', 'below', 'clear']) {
+      registry.registerElement(id, document.getElementById(id)!, { type: 'button', label: id });
+    }
+  });
+
+  it('an occluded or off-screen element times out; a clear one resolves', async () => {
+    expect((await arm('covered')).element).toBeUndefined();
+    expect((await arm('below')).element).toBeUndefined();
+    expect((await arm('clear')).element?.id).toBe('clear');
+  });
+});
+
+describe('waitForElementRegistered visible, server DOM-selector fallback (unregistered nodes)', () => {
+  // Nothing registered: the server falls back to `document.querySelector` and
+  // judges a synthetic row with no `state`, which is where its live-node
+  // fallback runs.
+  async function waitSelector(selector: string) {
+    const handlers = createHandlers(
+      registryLike(),
+      {
+        executeAction: async () => ({ success: true }),
+        executeComponentAction: async () => ({ success: true }),
+      } as never,
+      { consoleCapture: null as never }
+    );
+    const resp = await handlers.waitForElementRegistered({
+      predicate: { selector },
+      requirement: 'visible',
+      timeoutMs: 150,
+    });
+    return resp.data as { element?: { id: string }; reason?: string };
+  }
+
+  it('an occluded or off-screen node times out; a clear one resolves', async () => {
+    expect((await waitSelector('#covered')).element).toBeUndefined();
+    expect((await waitSelector('#below')).element).toBeUndefined();
+    expect((await waitSelector('#clear')).element?.id).toBe('clear');
+  });
+});
+
+/**
+ * The relay's dispatch gate (`executeElementAction`'s `isVis`) is a
+ * render-tree check, NOT the canonical verdict, on purpose: an action on a
+ * covered, below-the-fold or `opacity: 0` control must still dispatch. Pinned
+ * so a later "make it canonical" edit cannot silently start refusing them.
+ */
+describe('relay dispatch gate stays a rendered-at-all check', () => {
+  beforeEach(() => {
+    const registry = getGlobalRegistry();
+    for (const id of ['covered', 'below', 'clear']) {
+      registry.registerElement(id, document.getElementById(id)!, { type: 'button', label: id });
+    }
+    const faded = button('faded', 'Pay faded');
+    faded.style.opacity = '0';
+    place(faded, 0, 200, 80, 24);
+    registry.registerElement('faded', faded, { type: 'button', label: 'faded' });
+  });
+
+  async function focus(id: string): Promise<{ success: boolean; error?: string }> {
+    return (await executeCommand(
+      'executeElementAction',
+      { id, request: { action: 'focus' } },
+      emptyBridge
+    )) as { success: boolean; error?: string };
+  }
+
+  it.each(['covered', 'below', 'faded', 'clear'])(
+    '%s is not refused as not visible',
+    async (id) => {
+      const result = await focus(id);
+      expect(result.error ?? '').not.toContain('not visible');
+      expect(result.success).toBe(true);
+    }
+  );
+
+  it('a display:none control is still refused', async () => {
+    const gone = button('gone', 'Pay gone');
+    gone.style.display = 'none';
+    document.body.appendChild(gone);
+    getGlobalRegistry().registerElement('gone', gone, { type: 'button', label: 'gone' });
+    const result = await focus('gone');
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('not visible');
+  });
+});
