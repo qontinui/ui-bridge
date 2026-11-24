@@ -287,6 +287,32 @@ describe('relay dispatch gate stays a rendered-at-all check', () => {
     }
   );
 
+  it('a control that is itself position:fixed is not refused (edge e11dd943)', async () => {
+    const fab = button('fab', 'Pay fab');
+    fab.style.position = 'fixed';
+    place(fab, 1100, 600, 80, 24);
+    // A browser reports no offsetParent for a position:fixed element.
+    Object.defineProperty(fab, 'offsetParent', { configurable: true, get: () => null });
+    getGlobalRegistry().registerElement('fab', fab, { type: 'button', label: 'fab' });
+    const result = await focus('fab');
+    expect(result.error ?? '').not.toContain('not visible');
+    expect(result.success).toBe(true);
+  });
+
+  it('a control under a display:none ancestor is still refused', async () => {
+    const shell = document.createElement('div');
+    shell.style.display = 'none';
+    document.body.appendChild(shell);
+    const inner = button('inner', 'Pay inner');
+    shell.appendChild(inner);
+    // As a browser reports it for a node under a display:none ancestor.
+    Object.defineProperty(inner, 'offsetParent', { configurable: true, get: () => null });
+    getGlobalRegistry().registerElement('inner', inner, { type: 'button', label: 'inner' });
+    const result = await focus('inner');
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('not visible');
+  });
+
   it('a display:none control is still refused', async () => {
     const gone = button('gone', 'Pay gone');
     gone.style.display = 'none';
