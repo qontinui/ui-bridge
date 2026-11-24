@@ -534,15 +534,15 @@ export interface FindRequest {
    * **Defaults to TRUE (breaking change in 0.22.0).** Hidden elements are
    * INCLUDED unless the caller explicitly passes `false` — so
    * `find/discover {interactive_only: false}` returns a superset of the
-   * registry elements `/control/snapshot` returns. When `false`, every row
-   * whose canonical visibility verdict is `visible: false` is filtered out —
-   * occluded, off-screen and fully ancestor-clipped rows included, exactly the
-   * rows whose `state.visible` (the canonical verdict the row carries) is
-   * `false`. A registered row's top-level `visible` is a separate bounding-box
-   * hint and is not what this filter reads for it. The row's own
-   * `state.visible` decides when it carries one; otherwise
-   * `readElementVisibility` on its live node (`core/element-state.ts`), then
-   * the top-level `visible`; a row with no signal is kept. See
+   * registry elements `/control/snapshot` returns. When `false`, the rows
+   * whose returned `state.visible` (the canonical verdict) is `false` are
+   * filtered out — occluded, off-screen and fully ancestor-clipped rows
+   * included. The verdict is read from where the arm reports `state`: a
+   * registry row's `getState().visible` (post-action overlay included), else
+   * the row's own `state.visible`, else `readElementVisibility` on its live
+   * node (`core/element-state.ts`), else the top-level `visible`; a row with no
+   * signal is kept. A registered row's top-level `visible` is a separate
+   * bounding-box hint and is not what this filter reads for it. See
    * `src/core/find-filter.ts`.
    */
   includeHidden?: boolean;

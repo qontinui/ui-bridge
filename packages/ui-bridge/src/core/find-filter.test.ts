@@ -462,5 +462,69 @@ describe('include_hidden:false reads the canonical visibility verdict', () => {
       const all = (await executeCommand('find', {}, emptyBridge)) as { elements: FoundRow[] };
       expect(all.elements.map((e) => e.id).sort()).toEqual(['below', 'clear', 'covered']);
     });
+
+    it("React find command: a registered row's getState() overlay decides, not the live node", async () => {
+      // A mutation action leaves a post-action `visible` in the registry
+      // overlay (`refreshElement`); the row reports `getState()`, so the filter
+      // must read the same value, both ways.
+      const registry = getGlobalRegistry();
+      const below = place(button('below'), 0, 900, 80, 24);
+      const clear = place(button('clear'), 0, 100, 80, 24);
+      registry.registerElement('below', below, { type: 'button', label: 'Below' });
+      registry.registerElement('clear', clear, { type: 'button', label: 'Clear' });
+      // Live: `below` is off-screen, `clear` is visible. Overlays say the reverse.
+      registry.refreshElement('below', { visible: true });
+      registry.refreshElement('clear', { visible: false });
+
+      const visibleOnly = (await executeCommand('find', { includeHidden: false }, emptyBridge)) as {
+        elements: FoundRow[];
+      };
+      expect(visibleOnly.elements.map((e) => e.id)).toEqual(['below']);
+      expect(visibleOnly.elements[0].state?.visible).toBe(true);
+    });
+
+    it('createHandlers find over REGISTERED elements: occluded and off-screen rows are dropped by include_hidden:false', async () => {
+      const registry = getGlobalRegistry();
+      const covered = place(button('covered'), 0, 0, 80, 24);
+      const below = place(button('below'), 0, 900, 80, 24);
+      const clear = place(button('clear'), 0, 100, 80, 24);
+      cover();
+      registry.registerElement('covered', covered, { type: 'button', label: 'Covered' });
+      registry.registerElement('below', below, { type: 'button', label: 'Below' });
+      registry.registerElement('clear', clear, { type: 'button', label: 'Clear' });
+      const handlers = createHandlers(registryLike(), createActionExecutor(registry));
+
+      const off = await handlers.find({ skipSettle: true, include_hidden: false } as never);
+      const offRows = (off.data as unknown as { elements: FoundRow[] }).elements;
+      expect(offRows.map((r) => r.id)).toEqual(['clear']);
+      expect(offRows[0].state?.visible).toBe(true);
+
+      // An overlay the registry reports wins here too.
+      registry.refreshElement('below', { visible: true });
+      const again = await handlers.find({ skipSettle: true, include_hidden: false } as never);
+      expect(
+        (again.data as unknown as { elements: FoundRow[] }).elements.map((r) => r.id).sort()
+      ).toEqual(['below', 'clear']);
+    });
+
+    it('executor find: rows carrying getElementState are filtered on their own state.visible', async () => {
+      const registry = getGlobalRegistry();
+      place(button('covered', 'Covered'), 0, 0, 80, 24);
+      place(button('below', 'Below'), 0, 900, 80, 24);
+      place(button('clear', 'Clear'), 0, 100, 80, 24);
+      cover();
+      const executor = createActionExecutor(registry);
+
+      const off = await executor.find({ includeHidden: false });
+      const offLabels = off.elements.map((e) => e.label);
+      expect(offLabels).toEqual(['Clear']);
+      for (const row of off.elements) expect(row.state?.visible).toBe(true);
+
+      const all = await executor.find({});
+      const byLabel = (label: string) => all.elements.find((e) => e.label === label);
+      expect(byLabel('Covered')?.state?.visible).toBe(false);
+      expect(byLabel('Covered')?.state?.visibilityReason).toBe('occluded');
+      expect(byLabel('Below')?.state?.visibilityReason).toBe('off-screen');
+    });
   });
 });
