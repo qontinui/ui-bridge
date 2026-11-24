@@ -2839,9 +2839,10 @@ export async function executeCommand(
       // each RETURNED row's live node. See `core/element-projection.ts`.
       const projection = filterCtx.projection;
       const findElements = filtered.map((e) => {
-        // `getState()` before the row is built: on a media element it
-        // re-captures the observation, so the top-level `mediaMetadata` is as
-        // fresh as `state`.
+        // The state (the filter's own read, else `getState()` here) is taken
+        // before the row is built: on a media element `getState()` re-captures
+        // the observation, so the top-level `mediaMetadata` is as fresh as
+        // `state`.
         const row = elementToFindResult(
           e,
           (reportedState(filterCtx, e) as ElementState | undefined) ?? e.getState()
