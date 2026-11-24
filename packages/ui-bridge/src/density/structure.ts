@@ -178,16 +178,22 @@ function landmarkOfTag(
   }
 }
 
-/** `[role="…"]` hints of a semantic path, innermost first. */
-function semanticRoleHints(semanticPath: string | null): DensityLandmark[] {
+/**
+ * `[role="…"]` landmark hints of a semantic path, innermost first, each with
+ * its distance above the item: `buildSemanticPath` (`core/stable-ref.ts`)
+ * writes one part per DOM level, the item's own part last.
+ */
+function semanticRoleHintsByDistance(
+  semanticPath: string | null
+): Array<{ distance: number; landmark: DensityLandmark }> {
   if (semanticPath === null) return [];
-  const out: DensityLandmark[] = [];
+  const out: Array<{ distance: number; landmark: DensityLandmark }> = [];
   const parts = semanticPath.split(' > ').reverse();
-  for (const part of parts) {
+  parts.forEach((part, distance) => {
     const m = /\[role="([^"]*)"\]/.exec(part);
     const lm = m ? landmarkOfRole(m[1]) : null;
-    if (lm !== null) out.push(lm);
-  }
+    if (lm !== null) out.push({ distance, landmark: lm });
+  });
   return out;
 }
 
@@ -231,10 +237,13 @@ function siblingKeyOf(p: (ParsedChain & { ownId: boolean }) | null): string | nu
  * - **path.** The tags of the chain above the item, after the anchor's path
  *   when the chain is anchored at a registered item; `null` when the xpath
  *   gives no ancestor. `*` is an ancestor whose tag the xpath does not name.
- * - **landmark.** The innermost of: the item's own role or tag; the chain's
- *   tags between the item and its xpath parent; the parent's landmark; (with
- *   no xpath parent) the rest of `path`; then the `[role="…"]` hints of the
- *   semantic path. A `header` / `footer` is the banner / contentinfo only when
+ * - **landmark.** The item's own role or tag; else the innermost of — by
+ *   distance above the item — the chain's tags between the item and its xpath
+ *   parent, the parent's landmark (at the parent's distance), (with no xpath
+ *   parent) the rest of `path`, and the `[role="…"]` hints of the semantic
+ *   path, a role hint winning a tie. So an unregistered `div[role=navigation]`
+ *   between an item and its parent in `main` makes the item navigation. A
+ *   `header` / `footer` is the banner / contentinfo only when
  *   its whole ancestry is known (a chain from the document root) and holds no
  *   sectioning element; with unknown ancestry it is no landmark, never a
  *   default.
@@ -252,6 +261,9 @@ function siblingKeyOf(p: (ParsedChain & { ownId: boolean }) | null): string | nu
  *   of one list share it, whatever their tags.
  * - **blockKey.** The key of the nearest block-tag ancestor-or-self in the
  *   chain, else (for a chain anchored at a registered item) that item's.
+ *   `null` for a chain through an ambiguous key, and for a chain anchored at a
+ *   `data-testid` no registered item carries (a test id may repeat, one per
+ *   card, so no key below it says which card an item is in).
  */
 export function resolveDensityStructure(
   items: readonly DensityItem[],
@@ -391,22 +403,39 @@ export function resolveDensityStructure(
     path[i] = own;
     complete[i] = full;
 
-    // landmark: innermost first.
+    // landmark: the innermost candidate wins, measured as the distance above
+    // the item (0 is the item itself). At one distance a `[role="…"]` hint of
+    // the semantic path beats a tag, because an explicit role overrides it.
     let lm: DensityLandmark | null = landmarkOfRole(item.role);
     if (lm === null && (item.role === null || item.role === 'generic')) {
       lm = landmarkOfTag(item.tag, own, full);
     }
-    if (lm === null && own !== null && p) {
-      // The chain's own tags are the END of `own`; those after the parent's
-      // segment are deeper than the parent, the rest are the parent's to answer.
-      const offset = own.length - (p.tags.length - 1);
-      const stop = viaParent ? offset + parentDepth[i] + 1 : 0;
-      for (let k = own.length - 1; k >= stop && lm === null; k--) {
-        lm = landmarkOfTag(own[k], own.slice(0, k), full);
+    if (lm === null) {
+      let bestDistance = Infinity;
+      const consider = (distance: number, found: DensityLandmark | null): void => {
+        if (found !== null && distance < bestDistance) {
+          bestDistance = distance;
+          lm = found;
+        }
+      };
+      // Semantic-path hints: one part per DOM level, the item's own part last.
+      for (const hint of semanticRoleHintsByDistance(hints[i].semanticPath)) {
+        if (hint.distance > 0) consider(hint.distance, hint.landmark);
+      }
+      if (own !== null && p) {
+        // The chain's own tags are the END of `own`; those after the parent's
+        // segment are deeper than the parent, the rest are the parent's to answer.
+        const offset = own.length - (p.tags.length - 1);
+        const stop = viaParent ? offset + parentDepth[i] + 1 : 0;
+        for (let k = own.length - 1; k >= stop; k--) {
+          consider(own.length - k, landmarkOfTag(own[k], own.slice(0, k), full));
+        }
+        // The xpath parent answers for itself and everything above it, at its own distance.
+        if (pa !== null && viaParent) {
+          consider(p.tags.length - 1 - parentDepth[i], landmark[pa] ?? null);
+        }
       }
     }
-    if (lm === null && pa !== null && viaParent) lm = landmark[pa] ?? null;
-    if (lm === null) lm = semanticRoleHints(hints[i].semanticPath)[0] ?? null;
     landmark[i] = lm;
 
     // blockKey: the nearest block tag in the chain, self included.
@@ -414,7 +443,13 @@ export function resolveDensityStructure(
     // A chain with any ambiguous key repeats (rows under one shared test id):
     // its block key would be the same string in every row and merge them all
     // into one block, so it has none.
-    if (p && !p.keys.some(ambiguous)) {
+    // A chain anchored at a `data-testid` that no registered item carries
+    // has no block key either: unlike an `id`, a test id may repeat (one per
+    // card), and with the anchor unregistered nothing can say which instance
+    // an item is in — two cards that each register a different child would
+    // share every key below the anchor. Such leaves fall to the heading rule.
+    const unprovenAnchor = p !== null && p.keys[0].startsWith('@testid=') && !byKey.has(p.keys[0]);
+    if (p && !p.keys.some(ambiguous) && !unprovenAnchor) {
       const tags = p.tags.slice();
       if (tags[tags.length - 1] === '*' || p.ownId) tags[tags.length - 1] = item.tag;
       if (a !== null && tags[0] === '*') tags[0] = items[a].tag;
@@ -594,8 +629,11 @@ export interface DensityPins {
 /**
  * Pins: items whose `position` is `fixed`, and `sticky` items that touch an
  * edge of the viewport, when they span at least half of `W`. A fixed item
- * belongs to the edge its centre is nearer. Only registered items can be read
- * (`pinBasis: registered-only` in snapshot mode).
+ * belongs to the edge its centre is nearer. A sticky item touches the top edge
+ * when its top lies on the bottom of what is already pinned there (the
+ * viewport's edge, or a fixed header above it: a bar stuck at `top: 64px`
+ * under a 64 px header is pinned too), and the bottom edge likewise. Only
+ * registered items can be read (`pinBasis: registered-only` in snapshot mode).
  */
 export function densityPins(capture: DensityCapture): DensityPins {
   const W = capture.viewport.width;
@@ -603,8 +641,9 @@ export function densityPins(capture: DensityCapture): DensityPins {
   const scrollY = capture.viewport.scrollY;
   let top = 0;
   let bottom = 0;
-  const ids: string[] = [];
+  const pinned = new Set<string>();
   const unknown: string[] = [];
+  const sticky: Array<{ id: string; vTop: number; vBottom: number }> = [];
   for (const item of capture.items) {
     const r = item.rect;
     if (r === null || r.w < W / 2) continue;
@@ -622,23 +661,34 @@ export function densityPins(capture: DensityCapture): DensityPins {
     }
     const vTop = r.y - scrollY;
     const vBottom = vTop + r.h;
-    let edge: 'top' | 'bottom' | null = null;
     if (item.position === 'fixed') {
-      edge = vTop + r.h / 2 <= H / 2 ? 'top' : 'bottom';
+      pinned.add(item.id);
+      if (vTop + r.h / 2 <= H / 2) top = Math.max(top, Math.min(H, vBottom));
+      else bottom = Math.max(bottom, Math.min(H, H - vTop));
     } else if (item.position === 'sticky') {
-      if (Math.abs(vTop) <= 1) edge = 'top';
-      else if (Math.abs(vBottom - H) <= 1) edge = 'bottom';
+      sticky.push({ id: item.id, vTop, vBottom });
     }
-    if (edge === null) continue;
-    ids.push(item.id);
-    if (edge === 'top') top = Math.max(top, Math.min(H, vBottom));
-    else bottom = Math.max(bottom, Math.min(H, H - vTop));
+  }
+  // Sticky bars stack on what is already pinned: top-down from the top edge,
+  // bottom-up from the bottom edge, each one moving the edge it lies on.
+  for (const s of sticky.slice().sort((a, b) => a.vTop - b.vTop)) {
+    if (Math.abs(s.vTop - top) <= 1) {
+      pinned.add(s.id);
+      top = Math.max(top, Math.min(H, s.vBottom));
+    }
+  }
+  for (const s of sticky.slice().sort((a, b) => b.vBottom - a.vBottom)) {
+    if (pinned.has(s.id)) continue;
+    if (Math.abs(s.vBottom - (H - bottom)) <= 1) {
+      pinned.add(s.id);
+      bottom = Math.max(bottom, Math.min(H, H - s.vTop));
+    }
   }
   return {
     pinTopPx: top,
     pinBottomPx: bottom,
     usableHeightPx: Math.max(0, H - top - bottom),
-    ids,
+    ids: capture.items.filter((i) => pinned.has(i.id)).map((i) => i.id),
     unknown,
   };
 }
