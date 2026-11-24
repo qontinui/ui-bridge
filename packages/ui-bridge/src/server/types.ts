@@ -2926,7 +2926,9 @@ export interface VisibilityClippedEntry {
   /**
    * True when every ancestor that clipped it can scroll (`auto`/`scroll` on
    * the clipped axis) — the user reaches it by scrolling. False for an
-   * `overflow: hidden`/`clip` cut the user cannot reveal.
+   * `overflow: hidden`/`clip` cut the user cannot reveal. "User" is literal:
+   * script and a `scrollIntoView` action can still reveal a `hidden` cut (a
+   * carousel item), so `false` is not "unreachable by an agent".
    */
   scrollReachable: boolean;
 }
