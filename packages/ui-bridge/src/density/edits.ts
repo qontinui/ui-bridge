@@ -775,8 +775,10 @@ export function applyDensityEdits(
   // does not reach the bottom (a main column beside a taller sidebar) leaves
   // the document's height alone.
   const lowAfter = lowestBottom(state.items, sizes);
+  // On a page whose content scrolls inside an inner scroller the document is
+  // the shell around it, which an edit of that content does not resize.
   const documentHeight =
-    lowBefore !== null && lowAfter !== null
+    capture.bases.scroller === null && lowBefore !== null && lowAfter !== null
       ? Math.max(0, state.documentHeight + (lowAfter - lowBefore))
       : state.documentHeight;
   return {

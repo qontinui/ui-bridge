@@ -7,6 +7,7 @@
  * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change (Phase 7).
  */
 import { describe, expect, it } from 'vitest';
+import { diffDensity } from '../diff';
 import { applyDensityEdits } from '../edits';
 import {
   DensityPlanError,
@@ -385,5 +386,35 @@ describe('density plan', () => {
     };
     expect(code(null)).toBe('no_expectation');
     expect(code(PLAN_FLOORS)).toBe('not_attempted_by_policy');
+  });
+
+  it("the budget's volume reaches the prediction, and diff refuses a prediction made at another", () => {
+    const capture = planCapture(listPageElements({ rows: 5, pitch: 48, helpY: 400 }));
+    const p = byId(plan([capture], planTargets(), { volume: 50 }), 'pitch:repeat:app.list.row1');
+    const value = predicted(p);
+    expect(value.volume).toBe(50);
+    const d = delta(p, 'repeat.extentAtVolumePx[repeat=repeat:app.list.row1]');
+    expect(typeof d).toBe('number');
+    expect(d as number).toBeLessThan(0);
+    const after = applyDensityEdits(capture, p.edits!);
+    if (!after.ok) throw new Error('expected the edits to apply');
+    const at = (volume: number | null) =>
+      diffDensity(capture, after.capture, {
+        producer: DENSITY_TEST_PRODUCER,
+        targets: planTargets(),
+        floors: PLAN_FLOORS,
+        volume,
+        applied: [{ id: p.id, prediction: value }],
+        evaluatedAt: AT,
+      });
+    const same = at(50);
+    const other = at(null);
+    if (same.status !== 'measured' || other.status !== 'measured')
+      throw new Error('expected measured');
+    expect(same.value.predictionError[0]).toMatchObject({ status: 'compared', misses: [] });
+    expect(other.value.predictionError[0]).toMatchObject({
+      status: 'unknown',
+      reason: 'the proposal was predicted at another row volume than this diff measures at',
+    });
   });
 });

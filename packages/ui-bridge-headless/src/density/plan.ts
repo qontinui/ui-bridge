@@ -193,6 +193,8 @@ export interface DensityCellPrediction {
   targetsHash: string | null;
   /** The floors it was measured against, or `null`; `diff` checks them. */
   floors: DensityFloors | null;
+  /** The row volume it was measured at, or `null`; `diff` checks it. */
+  volume: number | null;
   /** Every quantity the prediction changes; the rest are predicted unchanged (or unknown both sides). */
   deltas: DensityDelta[];
   unchanged: number;
@@ -973,6 +975,7 @@ export function planDensity(
     producer: options.producer,
     targets,
     floors,
+    volume,
     cap: Number.MAX_SAFE_INTEGER,
     evaluatedAt,
   };
@@ -1115,6 +1118,7 @@ export function planDensity(
             fromCapture: hashes[i],
             targetsHash: targets ? densityTargetsHash(targets) : null,
             floors,
+            volume,
             deltas,
             unchanged,
             unknownBoth,

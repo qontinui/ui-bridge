@@ -159,6 +159,8 @@ export interface DensityRecordedPrediction {
   targetsHash: string | null;
   /** The floors the prediction was measured against, or `null`. */
   floors: DensityFloors | null;
+  /** The row volume the prediction was measured at, or `null`. */
+  volume: number | null;
   /** Only the quantities the prediction changed; every other one was predicted unchanged. */
   deltas: DensityDelta[];
 }
@@ -227,6 +229,8 @@ export interface DensityDiffOptions {
   producer: DensityProducer;
   targets?: DensityTargets | null;
   floors?: DensityFloors | null;
+  /** The number of rows each list is judged at (the budget's `volume`). */
+  volume?: number | null;
   applied?: readonly DensityAppliedProposal[];
   cap?: number;
   evaluatedAt?: ObservationTime;
@@ -281,6 +285,7 @@ export function diffDensity(
     producer: options.producer,
     targets: options.targets ?? null,
     floors: options.floors ?? null,
+    volume: options.volume ?? null,
     cap: Number.MAX_SAFE_INTEGER,
     evaluatedAt,
   };
@@ -337,6 +342,14 @@ export function diffDensity(
           pf.lineHeightRatio === floors.lineHeightRatio &&
           pf.targetPx === floors.targetPx &&
           pf.rowPadPx === floors.rowPadPx;
+    if (sameFloors && p.prediction.volume !== (options.volume ?? null)) {
+      return {
+        proposal: p.id,
+        status: 'unknown',
+        code: 'input_missing',
+        reason: 'the proposal was predicted at another row volume than this diff measures at',
+      };
+    }
     if (!sameFloors) {
       return {
         proposal: p.id,

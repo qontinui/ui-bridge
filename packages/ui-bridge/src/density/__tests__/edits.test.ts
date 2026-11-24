@@ -367,8 +367,21 @@ describe('column-shift@1 on containers, sidebars and insertion points', () => {
       text: `Row ${k}`,
     }));
     const before = planCapture([...els(), ...rows], { documentHeight: 800 });
+    expect(before.bases.scroller).not.toBeNull();
     const after = applied(before, [{ op: 'remove', subject: ['app.scroll.r1'] }]);
     expect(after.viewport.documentHeight).toBe(800);
+    // Nor does an edit of the content inside the document: the shell keeps its height.
+    const grown = applied(before, [
+      {
+        op: 'insert',
+        id: 'edit.find',
+        role: 'searchbox',
+        above: ['app.sec.p1'],
+        widthPx: 600,
+        heightPx: 40,
+      },
+    ]);
+    expect(grown.viewport.documentHeight).toBe(800);
   });
 
   it('an edit that grows a page whose last item ends at the document bottom grows the document', () => {

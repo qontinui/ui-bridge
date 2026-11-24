@@ -323,6 +323,7 @@ function readApplied(
       typeof v.fromCapture !== 'string' ||
       !(v.targetsHash === null || typeof v.targetsHash === 'string') ||
       !(v.floors === null || isFloors(v.floors)) ||
+      !(v.volume === null || (typeof v.volume === 'number' && Number.isFinite(v.volume))) ||
       !Array.isArray(v.deltas) ||
       !v.deltas.every(isDelta)
     ) {
@@ -335,6 +336,7 @@ function readApplied(
         fromCapture: v.fromCapture,
         targetsHash: v.targetsHash as string | null,
         floors: v.floors as DensityFloors | null,
+        volume: v.volume as number | null,
         deltas: v.deltas as DensityDelta[],
       },
     };
@@ -464,6 +466,7 @@ export async function runDensityPlanningVerb(
     producer,
     targets,
     floors: budget?.floors ?? null,
+    volume: budget?.volume ?? null,
     applied,
   });
   const next = targetsNext(targets);
