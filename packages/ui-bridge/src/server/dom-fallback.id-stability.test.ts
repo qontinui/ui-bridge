@@ -129,6 +129,19 @@ describe('DOM-fallback label is the canonical accessible name', () => {
     expect(row.id).toBe('dom-button-' + 'n'.repeat(30));
   });
 
+  it('the 200-code-point cap never splits a redaction sentinel', () => {
+    // 195 code points of text, then a boundary: the name carries the
+    // sentinel across the cut. A split sentinel ('[RED') would be a fragment
+    // no consumer matching the sentinel recognises.
+    document.body.innerHTML = `<button>${'a'.repeat(195)}<span data-bridge-redact="true">secret</span></button>`;
+    const [row] = scanDOMForInteractiveElementsWithRefs();
+    // The name reads 'aaa… [REDACTED]'; the sentinel straddling the cut is dropped whole.
+    expect(row.label).toBe('a'.repeat(195) + ' …');
+    expect(row.label).not.toContain('[R');
+    expect(row.label).not.toContain('secret');
+    expect(scanDOMForInteractiveElementRefs()[0].label).toBe(row.label);
+  });
+
   it('the ref-only scan agrees with the full scan on (id, label)', () => {
     const full = scanDOMForInteractiveElementsWithRefs().map(({ id, label }) => ({ id, label }));
     const refs = scanDOMForInteractiveElementRefs().map(({ id, label }) => ({ id, label }));

@@ -126,8 +126,13 @@ function fallbackIdText(el: HTMLElement): string | null {
 /** The fallback label's cap: 200 code points, then `…` (the cap the old chain applied). */
 const LABEL_MAX_CODE_POINTS = 200;
 
+/**
+ * The cut never splits a `REDACTED_VALUE` sentinel the name carries (a
+ * boundary inside the named subtree): a sentinel the cut would split is
+ * dropped whole, as the scan's `textContent` cap does.
+ */
 function capLabel(name: string): string {
-  const cut = truncateCodePoints(name, LABEL_MAX_CODE_POINTS);
+  const cut = truncateKeepingSentinel(name, LABEL_MAX_CODE_POINTS);
   return cut === name ? name : cut + '…';
 }
 
