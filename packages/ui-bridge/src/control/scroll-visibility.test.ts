@@ -344,7 +344,7 @@ describe('will-change names are case-insensitive', () => {
   });
 });
 
-describe('containing-block establishers added or removed in review', () => {
+describe('which wrapper properties establish a containing block for an absolute child', () => {
   function absoluteUnderWrapper(style: Record<string, string>): HTMLElement {
     const child = scrollerWithChild({ position: 'absolute' });
     const scroller = child.parentElement as HTMLElement;

@@ -665,6 +665,13 @@ Clipped elements are listed in `clipped`, never in `occlusions`:
 | `ratio`           | Fraction of the element's sample points clipped away, 0..1. Filtered by `minRatio`; worst first.                                       |
 | `scrollReachable` | `true` when every clipping ancestor is `auto`/`scroll` on the clipped axis (scroll to reveal it); `false` for a `hidden`/`clip` cut. |
 
+`scrollReachable` speaks for a user's scroll, and it is a bound rather than a
+proof in both directions. `false` is not "unreachable by an agent": script or a
+`scrollIntoView` action can still reveal a `hidden` cut (a carousel item). `true`
+can over-report: content cut on the side before a scroller's scroll origin (above
+or left of it, or right of / below it on a reversed axis) reads `true` although
+no scroll reveals it.
+
 `clipped` never affects `verdict` or `hidesText`: a page whose only findings are
 clipped entries reads `clear`, with the list beside it. An element both partly
 clipped and partly covered appears in both lists; its `occlusions` ratio is

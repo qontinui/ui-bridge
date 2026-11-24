@@ -520,11 +520,13 @@ function computeVisibilityVerdict(
     // A point outside the viewport tells us nothing — `elementFromPoint`
     // returns null there, which is not evidence of covering.
     if (px < 0 || px >= window.innerWidth || py < 0 || py >= window.innerHeight) continue;
-    sampled++;
     const hit = safeElementFromPoint(px, py);
     // No hit is no measurement (jsdom, an unsupported environment): it is
-    // neither covering nor evidence that an ancestor clipped the point.
+    // neither covering nor evidence that an ancestor clipped the point, so it
+    // is not a sample either. Counted, one null kept a fully clipped element
+    // short of `clipped === sampled` and diluted `occludedPct`.
     if (hit === null) continue;
+    sampled++;
     if (hit === element || element.contains(hit)) continue;
     // Outside the clip box the element is not painted at all, so whatever
     // the hit-test returns there — an unrelated footer, or our own app-shell

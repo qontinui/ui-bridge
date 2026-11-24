@@ -368,6 +368,10 @@ export interface ElementState {
    * axis it clipped — i.e. the user can scroll the clipped part into view.
    * `false` for an `overflow: hidden` / `clip` cut (truncated text). Present
    * only alongside `clippedPct`.
+   *
+   * A bound, not a proof: it can over-report. Content cut on the side BEFORE a
+   * scroller's scroll origin (above or left of it, or right of / below it on a
+   * reversed axis) reads `true` although no scroll can reveal it.
    */
   clipScrollable?: boolean;
   /**

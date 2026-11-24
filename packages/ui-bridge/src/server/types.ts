@@ -2845,6 +2845,10 @@ export interface VisibilityClippedEntry {
    * `overflow: hidden`/`clip` cut the user cannot reveal. "User" is literal:
    * script and a `scrollIntoView` action can still reveal a `hidden` cut (a
    * carousel item), so `false` is not "unreachable by an agent".
+   *
+   * A bound, not a proof: `true` can over-report. Content cut on the side
+   * BEFORE a scroller's scroll origin (above or left of it, or right of /
+   * below it on a reversed axis) reads `true` although no scroll reveals it.
    */
   scrollReachable: boolean;
 }

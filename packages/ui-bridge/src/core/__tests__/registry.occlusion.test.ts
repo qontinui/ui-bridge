@@ -533,6 +533,42 @@ describe('ElementState clip reporting', () => {
     expect(st.clippedPct).toBe(100);
   });
 
+  it('(n) a sample with no hit-test answer does not stop a fully clipped element reading clipped', () => {
+    // The footer paints under the LEFT columns only; at the 0.94 column
+    // elementFromPoint answers null. A null hit is no measurement, so it must
+    // not count toward `sampled` — counted, it kept clipped < sampled and the
+    // element read `visible: true` at clippedPct 67.
+    const registry = new UIBridgeRegistry();
+    const nav = sidebar();
+    const item = placeIn(nav, 'button-gates-12', 0, 640, 256, 40, {
+      text: 'Gates',
+      hittable: false,
+    });
+    place('runner-status-footer', 0, 630, 200, 90);
+    registry.registerElement('button-gates-12', item, { type: 'button' });
+
+    const st = stateOf(registry, 'button-gates-12');
+    expect(st.visible).toBe(false);
+    expect(st.visibilityReason).toBe('clipped');
+    expect(st.clippedPct).toBe(100);
+    expect(st.occludedBy).toBeUndefined();
+  });
+
+  it('(o) null hits do not dilute occludedPct', () => {
+    // Covered at the left and centre columns, no hit-test answer at the 0.94
+    // column: every point that WAS measured is covered, so it is fully occluded.
+    const registry = new UIBridgeRegistry();
+    const label = place('wide-label', 0, 0, 256, 40, 'label');
+    boxes = boxes.filter((b) => b.el !== label);
+    place('overlay', 0, 0, 200, 40);
+    registry.registerElement('wide-label', label, { type: 'generic' });
+
+    const st = stateOf(registry, 'wide-label');
+    expect(st.occludedPct).toBe(100);
+    expect(st.visibilityReason).toBe('occluded');
+    expect(st.occludedBy).toBe('overlay');
+  });
+
   it('(m) a fractional rect beside a snapped offsetWidth is not read as a transform', () => {
     // Chrome rounds offsetWidth from the box edges (measured: a 100.6875-wide
     // rect reads 101), so the two can differ by up to a pixel. Here: rect 100.7,
