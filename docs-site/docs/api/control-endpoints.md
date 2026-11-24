@@ -611,7 +611,7 @@ fields, `state.textContent` was `""` for an element with no text, and
 text input read `false`) and ignored `aria-checked`.
 Also unreleased: `include_hidden: false` used to judge a live node by its own
 check (`offsetParent !== null || position: fixed`), so it kept occluded and
-off-screen rows (and a `display: none` element inside a fixed container) while
+off-screen rows (and a `display: none` element that is itself `position: fixed`) while
 those rows read `visible: false`. It now drops occluded, off-screen and fully
 clipped rows. A fallback row's `label` used to come from a separate label chain
 that read only a single-id `aria-labelledby` and ignored a wrapping `<label>`,

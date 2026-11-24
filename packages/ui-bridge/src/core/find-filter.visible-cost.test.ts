@@ -7,13 +7,16 @@ import { applyCanonicalFindFilter } from './find-filter';
  * `2026-11-24-ui-bridge-find-visibility-and-fallback-label-read-the-canonical-verdicts`,
  * Phase 3 (the risk that the occlusion hit-test is now on the filter's path).
  *
- * Two shapes, one per D1 table row the arms take:
+ * Two shapes:
  *  - `fallback find`: the server handler's DOM-fallback arm — the scan, then
- *    the filter over rows that already carry `state.visible` (D1 row 1, so the
- *    filter reads the row's own field and recomputes nothing).
- *  - `live-node rows`: the filter alone over rows with a live node and no
- *    `state` — the registry / React `find` arm (D1 row 2,
- *    `readElementVisibility`, which runs the hit-test per row).
+ *    the filter over rows that already carry `state.visible`, so the filter
+ *    reads the row's own field and recomputes nothing.
+ *  - `live-node rows`: the filter alone over bare rows with a live node and
+ *    neither `getState` nor `state`, which `readElementVisibility` judges with
+ *    one hit-test per row. The registry arms (the server registry pass and the
+ *    React `find` command) do NOT take this path: their rows are judged by
+ *    `getState()`, read once and reused for the returned row — bounded by
+ *    `find-filter.hit-test-cost.test.ts`, which runs in CI.
  *
  * Fixture as `server/dom-fallback.discovery-cost.test.ts`: every element has a
  * laid-out, in-viewport 100x20 rect, `offsetParent` set (so the pre-D1

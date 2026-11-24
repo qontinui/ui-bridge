@@ -47,7 +47,7 @@
  *   `2026-11-24-ui-bridge-find-visibility-and-fallback-label-read-the-canonical-verdicts`
  *   a live node was judged by `offsetParent !== null || position === 'fixed'`,
  *   a fifth algorithm that kept occluded and off-screen rows and a
- *   `display:none` element inside a fixed container.)
+ *   `display:none` element that is itself `position: fixed`.)
  *
  * A filter acts only on what it can evaluate. An EXCLUSION drops only rows it
  * can prove fail: an element with no visibility signal at all survives
