@@ -7171,9 +7171,10 @@ export function createHandlers(
         if (requirement === 'visible') {
           if (state && typeof state.visible === 'boolean') return state.visible;
           if (!domEl) return false;
-          if (domEl.offsetParent === null) return false;
-          const rect = domEl.getBoundingClientRect();
-          return rect.width > 0 && rect.height > 0;
+          // No serialized verdict — the DOM-selector fallback's synthetic row
+          // (registry rows are materialized and carry `state`): the canonical
+          // verdict on the live node (`core/element-state`).
+          return readElementVisibility(domEl).visible;
         }
 
         if (requirement === 'has-layout') {
