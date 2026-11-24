@@ -136,6 +136,22 @@ describe('dom-fallback ids inside a redaction boundary', () => {
     for (const id of ids) expect(id).not.toContain('123');
   });
 
+  it('skips the text slug when the aria-labelledby target is inside a boundary', () => {
+    // The button itself is outside the boundary (its verdict is clear); the
+    // span it is labelled by is inside one. Review round 1, finding A1.
+    document.body.innerHTML = `
+      <div data-bridge-redact="true"><span id="ssn">123-45-6789</span></div>
+      <button aria-labelledby="ssn">x</button>
+    `;
+    const rows = scanDOMForInteractiveElements();
+    expect(rows).toHaveLength(1);
+    // Before the fix: 'dom-button-123-45-6789'.
+    expect(rows[0].id).toBe('dom-button-0');
+    expect(rows[0].label).toBe(REDACTED);
+    for (const row of rows) expect(row.id).not.toContain('123');
+    expect(scanDOMForInteractiveElementRefs()[0].id).toBe('dom-button-0');
+  });
+
   it('keeps the data-testid and html id rungs inside a boundary', () => {
     document.body.innerHTML = `
       <section data-bridge-redact="true">

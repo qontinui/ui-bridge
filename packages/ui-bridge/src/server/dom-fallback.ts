@@ -12,6 +12,7 @@ import {
   readScrubbedOwnValue,
   truncateKeepingSentinel,
   REDACTED_VALUE,
+  touchesRedactionBoundary,
   verdictOf,
   withBoundaryIndex,
   type RedactionVerdict,
@@ -71,8 +72,15 @@ const COMBINED_SELECTOR = INTERACTIVE_SELECTORS.join(', ');
  * it would move them. Frozen: do not "fix" it to match accname — that is the
  * id change `dom-fallback.id-stability.test.ts` exists to catch (plan
  * `2026-11-24-ui-bridge-find-visibility-and-fallback-label-read-the-canonical-verdicts`, D4).
+ *
+ * §4.6: returns `null` when the rung that answers reads ANOTHER node's text
+ * (an `aria-labelledby` target) and that node touches a
+ * redaction boundary (`touchesRedactionBoundary`, the test `boundarySafeName`
+ * in `core/a11y` applies to the same sources). The element's own verdict only
+ * looks UP, so without this a button outside a boundary that is labelled by a
+ * span inside one slugged the span's redacted text into its id.
  */
-function fallbackIdText(el: HTMLElement): string {
+function fallbackIdText(el: HTMLElement): string | null {
   // aria-label takes precedence
   const ariaLabel = readAriaLabelAttr(el);
   if (ariaLabel) return ariaLabel;
@@ -81,7 +89,10 @@ function fallbackIdText(el: HTMLElement): string {
   const labelledBy = readAriaLabelledbyAttr(el);
   if (labelledBy) {
     const labelEl = document.getElementById(labelledBy);
-    if (labelEl) return computeVisibleText(labelEl) ?? '';
+    if (labelEl) {
+      if (touchesRedactionBoundary(labelEl)) return null;
+      return computeVisibleText(labelEl) ?? '';
+    }
   }
 
   // Associated <label for> for form inputs
@@ -92,6 +103,8 @@ function fallbackIdText(el: HTMLElement): string {
   ) {
     if (el.id) {
       const label = document.querySelector<HTMLLabelElement>(`label[for="${CSS.escape(el.id)}"]`);
+      // Never reached from `generateId`: an element with an `id` takes the html
+      // `id` rung first, so this rung cannot put a label's text into an id.
       if (label) return computeVisibleText(label) ?? '';
     }
   }
@@ -148,8 +161,12 @@ export function computeDomFallbackLabel(
  * rung is skipped, so an id never carries the text the row's `label` scrubs
  * (`<button>123-45-6789</button>` used to be `dom-button-123-45-6789`). The
  * element falls through to `dom-<type>-<index>`, mirroring the executor's
- * `getElementId` (`control/action-executor.ts`). The `data-testid` and html
- * `id` rungs are developer attributes, not page text, and keep their place.
+ * `getElementId` (`control/action-executor.ts`). The same fall-through
+ * applies when the element is outside a boundary but its id text would be
+ * read from a node that touches one (an `aria-labelledby` target —
+ * {@link fallbackIdText} answers `null`). The `data-testid`
+ * and html `id` rungs are developer attributes, not page text, and keep their
+ * place.
  */
 function generateId(el: HTMLElement, index: number, verdict: RedactionVerdict): string {
   // Prefer data-testid
@@ -164,7 +181,9 @@ function generateId(el: HTMLElement, index: number, verdict: RedactionVerdict): 
 
   // Semantic fallback: tag + type + text snippet
   const tag = el.tagName.toLowerCase();
-  const text = fallbackIdText(el)
+  const idText = fallbackIdText(el);
+  if (idText === null) return `dom-${type}-${index}`;
+  const text = idText
     .slice(0, 30)
     .replace(/[^a-zA-Z0-9]/g, '-')
     .replace(/-+/g, '-')
