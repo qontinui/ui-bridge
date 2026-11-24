@@ -51,6 +51,8 @@ import {
   type DensityTargets,
   type DensityUnmeasured,
   type DensityVisibility,
+  boundDensityItem,
+  DENSITY_MAX_COORDINATE_PX,
 } from './schema';
 import { densityShapeOf } from './shape';
 import { resolveDensityStructure, type DensityStructureHint } from './structure';
@@ -131,15 +133,15 @@ function readViewport(v: unknown): DensityCaptureViewport | null {
   const scrollY = finite(v.scrollY);
   const documentWidth = finite(v.documentWidth);
   const documentHeight = finite(v.documentHeight);
+  const inRange = (n: number | null, min: number): n is number =>
+    n !== null && n >= min && n <= DENSITY_MAX_COORDINATE_PX;
   if (
-    width === null ||
-    height === null ||
-    width <= 0 ||
-    height <= 0 ||
-    scrollX === null ||
-    scrollY === null ||
-    documentWidth === null ||
-    documentHeight === null
+    !inRange(width, 1) ||
+    !inRange(height, 1) ||
+    !inRange(scrollX, -DENSITY_MAX_COORDINATE_PX) ||
+    !inRange(scrollY, -DENSITY_MAX_COORDINATE_PX) ||
+    !inRange(documentWidth, 0) ||
+    !inRange(documentHeight, 0)
   ) {
     return null;
   }
@@ -164,17 +166,31 @@ function readVisibility(state: Rec): DensityVisibility | null {
   }
 }
 
-/** The ids each element controls or toggles, from the snapshot's relationships. */
-function controlEdges(snapshot: Rec): Map<string, string> {
-  const out = new Map<string, string>();
+/** The relationship edges the capture keeps, by source id: first edge wins. */
+interface DensityEdges {
+  /** `controls` or `toggles`. */
+  controls: Map<string, string>;
+  /** `filters` (search -> list). */
+  filters: Map<string, string>;
+}
+
+/** The ids each element controls, toggles or filters, from the snapshot's relationships. */
+function relationshipEdges(snapshot: Rec): DensityEdges {
+  const out: DensityEdges = { controls: new Map(), filters: new Map() };
   const rel = snapshot.relationships;
   if (!isRecord(rel) || !Array.isArray(rel.relationships)) return out;
   for (const edge of rel.relationships) {
     if (!isRecord(edge)) continue;
-    if (edge.type !== 'controls' && edge.type !== 'toggles') continue;
+    const map =
+      edge.type === 'controls' || edge.type === 'toggles'
+        ? out.controls
+        : edge.type === 'filters'
+          ? out.filters
+          : null;
+    if (map === null) continue;
     const source = str(edge.source);
     const target = str(edge.target);
-    if (source !== null && target !== null && !out.has(source)) out.set(source, target);
+    if (source !== null && target !== null && !map.has(source)) map.set(source, target);
   }
   return out;
 }
@@ -193,7 +209,7 @@ function buildItem(
   el: Rec,
   id: string,
   viewport: DensityCaptureViewport,
-  controls: Map<string, string>,
+  edges: DensityEdges,
   gaps: Gaps
 ): BuiltItem {
   let complete = true;
@@ -240,6 +256,23 @@ function buildItem(
     chars = codePointLength(text);
     textHash = chars > 0 ? densityTextHash(text) : null;
     shape = densityShapeOf(text);
+  }
+
+  // ---- is that text drawn? ----
+  // `state.textContent` falls back to aria-label / title for an element with
+  // no text, and counts hidden descendants' text; the row's `text` is the
+  // visible (innerText-equivalent) text, with no fallback. A serializer that
+  // writes `nameSource` (2026-09) also writes `text` (2026-05), so with
+  // `nameSource` present an absent `text` means no visible text; without it,
+  // an absent `text` may be a serializer that predates the field.
+  let charsDrawn: boolean | null = null;
+  if (chars === 0) {
+    charsDrawn = true;
+  } else if (chars !== null) {
+    const visible = typeof el.text === 'string' ? collapse(el.text) : '';
+    if (visible !== '') charsDrawn = true;
+    else if (str(state.nameSource) !== null || str(el.nameSource) !== null) charsDrawn = false;
+    else miss('charsDrawn');
   }
 
   // ---- typography and position ----
@@ -339,7 +372,11 @@ function buildItem(
       visibility,
       chars,
       ownChars: null,
+      charsDrawn,
       blockKey: null,
+      siblingKey: null,
+      cousinKey: null,
+      cousinRowKey: null,
       textHash,
       shape,
       fontPx,
@@ -348,7 +385,9 @@ function buildItem(
       truncated,
       recoverable,
       expanded: typeof state.ariaExpanded === 'boolean' ? state.ariaExpanded : null,
-      controls: controls.get(id) ?? null,
+      controls: edges.controls.get(id) ?? null,
+      selected: typeof state.ariaSelected === 'boolean' ? state.ariaSelected : null,
+      filters: edges.filters.get(id) ?? null,
       href: href !== null && href !== '' ? sha256DensityHex(href) : null,
     },
     text,
@@ -490,7 +529,7 @@ export function captureDensityFromSnapshot(
     }
 
     const gaps = new Gaps();
-    const controls = controlEdges(snapshot);
+    const edges = relationshipEdges(snapshot);
     const elements = snapshot.elements.filter(isRecord);
     const nonObjects = snapshot.elements.length - elements.length;
     for (let i = 0; i < nonObjects; i++) gaps.add('element', 'input_missing');
@@ -503,7 +542,10 @@ export function captureDensityFromSnapshot(
         continue;
       }
       seen.add(id);
-      built.push(buildItem(el, id, viewport, controls, gaps));
+      const b = buildItem(el, id, viewport, edges, gaps);
+      const bounded = boundDensityItem(b.item);
+      for (const g of bounded.gaps) gaps.add(g, 'input_missing');
+      built.push(bounded.gaps.length === 0 ? b : { ...b, item: bounded.item, complete: false });
     }
 
     // ---- the role probe ----
@@ -574,6 +616,7 @@ export function captureDensityFromSnapshot(
       capturedBy: { package: producer.package, version: producer.version },
       bases,
       structureResolved: true,
+      repeatKeysResolved: true,
       coverage,
       probe,
       targetsHash,

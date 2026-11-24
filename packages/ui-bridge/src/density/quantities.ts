@@ -1,0 +1,1158 @@
+/**
+ * `DENSITY_QUANTITIES`: the closed registry of every quantity a density report
+ * emits, each with its unit, its definition, its scope and where the report
+ * carries it. A budget rule names a quantity by its id; nothing else is
+ * evaluable, and a report field that is not here is either listed in
+ * {@link DENSITY_REPORT_NON_QUANTITIES} with the reason it is not a quantity,
+ * or a test fails.
+ *
+ * Every quantity reads as an interval `[lo, hi]`, because the report carries
+ * values it only bounds: `answeredAt[k]` is an interval that unresolved weight
+ * widens; a mean over the asks whose reach is known only bounds the mean over
+ * all of them from below; a displacement read while asks are unresolved is a
+ * lower bound. A value the report gives as `null`, as an unknown quantity, or
+ * not at all (no targets: no role section) reads as unknown, never as zero.
+ *
+ * No quantity is a score: none combines scroll, interactions and scan, and none
+ * averages across cells or roles (plan "Not in this design").
+ *
+ * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change (Phase 6).
+ */
+
+import { isUnknownCode, type UnknownCode } from '../observation/observation';
+import type { DensityMeasureReport } from './measure';
+import type { DensityInterval } from './schema';
+
+/** What a quantity is counted or measured in. */
+export type DensityQuantityUnit =
+  | 'px'
+  | 'em'
+  | 'ratio'
+  | 'share'
+  | 'count'
+  | 'chars'
+  | 'cells'
+  | 'weight'
+  | 'gestures'
+  | 'interactions'
+  | 'keystrokes'
+  | 'actions'
+  | 'lines'
+  | 'rows'
+  | 'captures';
+
+/** What one value of a quantity belongs to. */
+export type DensityQuantityScope =
+  | 'cell'
+  | 'structure'
+  | 'ledger'
+  | 'role'
+  | 'ask'
+  | 'block'
+  | 'repeat'
+  | 'affordance'
+  | 'bounds';
+
+/**
+ * How the value at `path` is read:
+ * `value` a number; `interval` an object `{ lo, hi }`; `weighted-mean` /
+ * `unweighted-mean` a mean over the asks whose quantity is known, which only
+ * bounds the mean over all of them from below while any is excluded;
+ * `length` the length of an array.
+ */
+export type DensityQuantityRead =
+  | 'value'
+  | 'interval'
+  | 'weighted-mean'
+  | 'unweighted-mean'
+  | 'length';
+
+/**
+ * A field that makes the value a bound: `up`, a lower bound (no upper);
+ * `down`, an upper bound (down to 0); `both`, neither (`[0, ∞)`).
+ */
+export interface DensityQuantityWiden {
+  /** Where `field` is read: beside the value (default), on the ask it belongs to, or on the role section. */
+  of?: 'parent' | 'ask' | 'role';
+  field: string;
+  /**
+   * The value of `field` that widens: `true`, a string, `nonzero` (a count
+   * above 0), or `some-partial` (a list holding an entry with `partial: true`).
+   */
+  when: true | 'nonzero' | 'some-partial' | string;
+  direction: 'up' | 'down' | 'both';
+}
+
+export interface DensityQuantity {
+  id: string;
+  unit: DensityQuantityUnit;
+  definition: string;
+  scope: DensityQuantityScope;
+  /**
+   * Where the report's `value` carries it: `.`-separated keys; `name[]` each
+   * element of an array; `name[k=0]` the element whose `k` is 0; `*` each key
+   * of a map (then `where.kind` selects the key).
+   */
+  path: string;
+  read: DensityQuantityRead;
+  /** Each condition that makes the value only a bound; several compose. */
+  widen?: readonly DensityQuantityWiden[];
+  /** The bound a `--draft` rule writes for it (with a null limit); absent: not drafted. */
+  draft?: 'max' | 'min';
+  /** A rule on it compacts the page: it is judged only when the budget states floors, or a waiver of them. */
+  compaction?: true;
+}
+
+const q = (
+  id: string,
+  unit: DensityQuantityUnit,
+  scope: DensityQuantityScope,
+  path: string,
+  definition: string,
+  extra: Partial<Pick<DensityQuantity, 'read' | 'widen' | 'draft' | 'compaction'>> = {}
+): DensityQuantity => Object.freeze({ id, unit, scope, path, definition, read: 'value', ...extra });
+
+const ANSWERED_AT = [0, 1, 2, 3].map((k) =>
+  q(
+    `role.answeredAt.${k}`,
+    'share',
+    'role',
+    `role.answeredAt[k=${k}]`,
+    `The weight share of the role's asks answered within ${k} actions, as an interval that unresolved weight widens.`,
+    { read: 'interval', draft: 'min' }
+  )
+);
+
+/** The reach of an ask's decisive item: `first` (the first answering leaf) or `all` (every one; the last decides). */
+function reach(which: 'first' | 'all'): DensityQuantity[] {
+  const of =
+    which === 'first' ? "the ask's first answering leaf" : "the last of the ask's answering leaves";
+  // A partial ask (some answer matchers unresolved) may have a nearer answer
+  // unseen, so its first reach is an upper bound, and a missing answer unseen,
+  // so its all reach is a lower bound.
+  const partial: DensityQuantityWiden = {
+    of: 'ask',
+    field: 'partial',
+    when: true,
+    direction: which === 'first' ? 'down' : 'up',
+  };
+  const w = (extra: DensityQuantityWiden[] = []) => ({ widen: [partial, ...extra] });
+  const draftScroll = which === 'first' ? ({ ...w(), draft: 'max' } as const) : w();
+  return [
+    q(
+      `ask.${which}.scrollPx`,
+      'px',
+      'ask',
+      `role.asks[].${which}.scrollPx`,
+      `Scroll from the top of the page until ${of} is in the usable viewport.`,
+      draftScroll
+    ),
+    q(
+      `ask.${which}.gestures`,
+      'gestures',
+      'ask',
+      `role.asks[].${which}.gestures`,
+      `Scroll gestures of 0.8 usable viewport heights to reach ${of}.`,
+      w()
+    ),
+    q(
+      `ask.${which}.interactions`,
+      'interactions',
+      'ask',
+      `role.asks[].${which}.interactions`,
+      `Disclosures, tabs, menus, truncation expansions and find-field focuses between the role and ${of}, read statically.`,
+      which === 'first' ? { ...w(), draft: 'max' } : w()
+    ),
+    q(
+      `ask.${which}.keystrokes`,
+      'keystrokes',
+      'ask',
+      `role.asks[].${which}.keystrokes`,
+      `Characters typed into a find field to reach ${of} (the ask's declared findChars).`,
+      w()
+    ),
+    q(
+      `ask.${which}.actions`,
+      'actions',
+      'ask',
+      `role.asks[].${which}.actions`,
+      `Gestures plus interactions to reach ${of}.`,
+      w()
+    ),
+    q(
+      `ask.${which}.foreignPx`,
+      'px',
+      'ask',
+      `role.asks[].${which}.foreignPx`,
+      `Chrome height plus unclaimed block height above ${of} in its column; a lower bound while uncertain weight keeps blocks from reading as unclaimed.`,
+      w([{ of: 'role', field: 'foreignBasis', when: 'chrome-only', direction: 'up' }])
+    ),
+  ];
+}
+
+function bound(
+  id: string,
+  path: string,
+  what: string,
+  unit: DensityQuantityUnit,
+  draftMin: boolean
+): DensityQuantity[] {
+  return [
+    q(
+      `bounds.${id}.min`,
+      unit,
+      'bounds',
+      `bounds.${path}.min`,
+      `The smallest ${what} of the answer and value leaves.`,
+      draftMin ? { draft: 'min' } : {}
+    ),
+    q(
+      `bounds.${id}.of`,
+      'count',
+      'bounds',
+      `bounds.${path}.of`,
+      `Answer and value leaves whose ${what} was read.`
+    ),
+    q(
+      `bounds.${id}.atMin`,
+      'count',
+      'bounds',
+      `bounds.${path}.atMin.total`,
+      `Leaves at the smallest ${what}.`
+    ),
+  ];
+}
+
+function ledgerRegion(region: 'firstScreen' | 'page'): DensityQuantity[] {
+  const area =
+    region === 'firstScreen'
+      ? 'the first screen (document y in [0, H))'
+      : 'the whole page (the document extent)';
+  return [
+    q(`ledger.${region}.widthPx`, 'px', 'ledger', `ledger.${region}.widthPx`, `Width of ${area}.`),
+    q(
+      `ledger.${region}.heightPx`,
+      'px',
+      'ledger',
+      `ledger.${region}.heightPx`,
+      `Height of ${area}.`
+    ),
+    q(
+      `ledger.${region}.cells`,
+      'cells',
+      'ledger',
+      `ledger.${region}.cells`,
+      `8 px grid cells in ${area}.`
+    ),
+    q(
+      `ledger.${region}.kindCells`,
+      'cells',
+      'ledger',
+      `ledger.${region}.byKind.*.cells`,
+      `Grid cells of ${area} whose smallest covering leaf is of kind where.kind (or uncovered).`
+    ),
+    q(
+      `ledger.${region}.share`,
+      'share',
+      'ledger',
+      `ledger.${region}.byKind.*.share`,
+      `Share of ${area} whose smallest covering leaf is of kind where.kind (or uncovered); the shares sum to 1.`
+    ),
+  ];
+}
+
+/** The closed registry. Ids are unique; every entry names a non-empty unit and definition. */
+export const DENSITY_QUANTITIES: readonly DensityQuantity[] = Object.freeze([
+  // ---- the cell ----
+  q('cell.items', 'count', 'cell', 'items', 'Items in the capture.'),
+  q('cell.coverage.considered', 'count', 'cell', 'coverage.considered', 'Items considered.'),
+  q(
+    'cell.coverage.measured',
+    'count',
+    'cell',
+    'coverage.measured',
+    'Items measured in every dimension.'
+  ),
+  q(
+    'cell.contentRows',
+    'count',
+    'cell',
+    'bases.contentCap.contentRows',
+    "Content rows in the snapshot while its content cap is unreported (the cap's binding is unknown)."
+  ),
+  q(
+    'cell.structureBy',
+    'count',
+    'cell',
+    'bases.structureBy.*',
+    'Items whose parent was read by the basis where.kind (xpath or geometry).'
+  ),
+  q(
+    'cell.kindBy',
+    'count',
+    'cell',
+    'bases.kindBy.*',
+    'Items whose kind was decided by the rule where.kind (declared, landmark, role, author-id, shape, other).'
+  ),
+  // ---- structure ----
+  q('structure.leaves', 'count', 'structure', 'structure.leaves.count', 'Leaves.'),
+  q(
+    'structure.leavesUnknown',
+    'count',
+    'structure',
+    'structure.leaves.unknown',
+    'Items whose leaf status is unknown (their own text is unreadable).'
+  ),
+  q(
+    'structure.geometryOwnChars',
+    'count',
+    'structure',
+    'structure.leaves.geometryOwnChars',
+    'Containers whose own characters subtracted a child linked by geometry, assumed to be a descendant.'
+  ),
+  q(
+    'structure.unattributedChars',
+    'chars',
+    'structure',
+    'structure.unattributedChars',
+    'Characters on registered containers that no registered child accounts for.'
+  ),
+  q(
+    'structure.pinTopPx',
+    'px',
+    'structure',
+    'structure.pins.pinTopPx',
+    'Height of the bars pinned to the top edge; a lower bound while any pin status is unknown.',
+    { widen: [{ field: 'unknown', when: 'nonzero', direction: 'up' }] }
+  ),
+  q(
+    'structure.pinBottomPx',
+    'px',
+    'structure',
+    'structure.pins.pinBottomPx',
+    'Height of the bars pinned to the bottom edge; a lower bound while any pin status is unknown.',
+    { widen: [{ field: 'unknown', when: 'nonzero', direction: 'up' }] }
+  ),
+  q(
+    'structure.usableHeightPx',
+    'px',
+    'structure',
+    'structure.pins.usableHeightPx',
+    'Viewport height less the pinned bars (Hu); an upper bound while any pin status is unknown.',
+    { widen: [{ field: 'unknown', when: 'nonzero', direction: 'down' }] }
+  ),
+  q('structure.pins', 'count', 'structure', 'structure.pins.items', 'Pinned items.'),
+  q(
+    'structure.pinsUnknown',
+    'count',
+    'structure',
+    'structure.pins.unknown',
+    'Items whose pin status could not be read.'
+  ),
+  q(
+    'structure.kindsByBasis',
+    'count',
+    'structure',
+    'structure.kinds.byBasis.*.*',
+    'Leaves of the kind where.kind, one value per rule that decided kinds.'
+  ),
+  q(
+    'structure.blocksByBasis',
+    'count',
+    'structure',
+    'structure.blocks.byBasis.*',
+    'Blocks found by the basis where.kind (declared, path, heading).'
+  ),
+  q(
+    'structure.headingLevelUnknown',
+    'count',
+    'structure',
+    'structure.blocks.headingLevelUnknown',
+    'Headings whose level the capture does not carry.'
+  ),
+  q(
+    'structure.unblockedLeaves',
+    'count',
+    'structure',
+    'structure.blocks.unblockedLeaves',
+    'Leaves in no block.'
+  ),
+  // ---- the ledger ----
+  ...ledgerRegion('firstScreen'),
+  ...ledgerRegion('page'),
+  q(
+    'ledger.contentTopPx',
+    'px',
+    'ledger',
+    'ledger.contentTopPx',
+    'Top of the first painted leaf that is not chrome, document px.',
+    { draft: 'max' }
+  ),
+  q(
+    'ledger.unpainted',
+    'count',
+    'ledger',
+    'ledger.unpainted.*',
+    'Leaves the grid does not paint, for the reason where.kind (noRect, hidden, visibilityUnknown, leafUnknown).'
+  ),
+  // ---- the role ----
+  q(
+    'role.totalWeight',
+    'weight',
+    'role',
+    'role.totalWeight',
+    "The summed weight of the role's asks."
+  ),
+  ...ANSWERED_AT,
+  q(
+    'role.meanScrollPx',
+    'px',
+    'role',
+    'role.meanScrollPx',
+    "The weight-weighted mean scroll to the role's answered asks; bounded from below while any ask's reach is unknown, and unbounded while an ask is partial.",
+    {
+      read: 'weighted-mean',
+      draft: 'max',
+      widen: [{ of: 'role', field: 'asks', when: 'some-partial', direction: 'both' }],
+    }
+  ),
+  q(
+    'role.meanInteractions',
+    'interactions',
+    'role',
+    'role.meanInteractions',
+    "The weight-weighted mean interactions to the role's answered asks; bounded from below while any ask's reach is unknown, and unbounded while an ask is partial.",
+    {
+      read: 'weighted-mean',
+      draft: 'max',
+      widen: [{ of: 'role', field: 'asks', when: 'some-partial', direction: 'both' }],
+    }
+  ),
+  q(
+    'role.unweighted.meanScrollPx',
+    'px',
+    'role',
+    'role.unweighted.meanScrollPx',
+    "The unweighted mean scroll to the role's answered asks; bounded from below while any ask's reach is unknown, and unbounded while an ask is partial.",
+    {
+      read: 'unweighted-mean',
+      widen: [{ of: 'role', field: 'asks', when: 'some-partial', direction: 'both' }],
+    }
+  ),
+  q(
+    'role.unweighted.meanInteractions',
+    'interactions',
+    'role',
+    'role.unweighted.meanInteractions',
+    "The unweighted mean interactions to the role's answered asks; bounded from below while any ask's reach is unknown, and unbounded while an ask is partial.",
+    {
+      read: 'unweighted-mean',
+      widen: [{ of: 'role', field: 'asks', when: 'some-partial', direction: 'both' }],
+    }
+  ),
+  q(
+    'role.unresolvedWeight',
+    'weight',
+    'role',
+    'role.unresolvedWeight',
+    'The weight of asks whose answer matcher resolved to nothing, or only in part.'
+  ),
+  q(
+    'role.unplacedWeight',
+    'weight',
+    'role',
+    'role.unplacedWeight',
+    'The weight of resolved asks answered by an item no block can hold.'
+  ),
+  q(
+    'role.unanswered',
+    'count',
+    'role',
+    'role.unanswered',
+    'Asks the targets state nothing on the page answers (answer: null).',
+    { read: 'length', draft: 'max' }
+  ),
+  q(
+    'role.unclaimedBlocks',
+    'count',
+    'role',
+    'unclaimed.total',
+    "Blocks on the first screen that answer none of the role's asks and displace answers below them; a lower bound while uncertain weight keeps the detector from firing.",
+    {
+      draft: 'max',
+      widen: [{ of: 'role', field: 'foreignBasis', when: 'chrome-only', direction: 'up' }],
+    }
+  ),
+  q(
+    'role.possiblyUnclaimedBlocks',
+    'count',
+    'role',
+    'possiblyUnclaimed.total',
+    'Blocks that would read as unclaimed but for the unresolved or unplaced weight that could be inside them.'
+  ),
+  // ---- asks ----
+  ...reach('first'),
+  ...reach('all'),
+  q(
+    'ask.all.unknownItems',
+    'count',
+    'ask',
+    'role.asks[].all.unknownItems',
+    "The ask's answering leaves whose reach is unknown.",
+    { widen: [{ of: 'ask', field: 'partial', when: true, direction: 'up' }] }
+  ),
+  q(
+    'ask.answerItems',
+    'count',
+    'ask',
+    'role.asks[].answerItems.total',
+    'Leaves answering the ask; a lower bound while the ask is partial.',
+    { widen: [{ of: 'ask', field: 'partial', when: true, direction: 'up' }] }
+  ),
+  q(
+    'ask.answerItemsFirstScreen',
+    'count',
+    'ask',
+    'role.asks[].answerItems.firstScreen',
+    'Leaves answering the ask that lie on the first screen.',
+    { widen: [{ of: 'ask', field: 'partial', when: true, direction: 'up' }] }
+  ),
+  // ---- blocks ----
+  q('cell.blocks', 'count', 'cell', 'blocks.total', 'Blocks.'),
+  q('block.members', 'count', 'block', 'blocks.list[].members', "The block's members."),
+  q(
+    'block.topPx',
+    'px',
+    'block',
+    'blocks.list[].topPx',
+    "Top of the block's members, document px."
+  ),
+  q(
+    'block.heightPx',
+    'px',
+    'block',
+    'blocks.list[].heightPx',
+    "Height of the union of the block's members.",
+    { compaction: true }
+  ),
+  q(
+    'block.pitchPx',
+    'px',
+    'block',
+    'blocks.list[].pitchPx',
+    "Distance from the block's top to the top of the next block in its column, padding included.",
+    { compaction: true }
+  ),
+  q(
+    'block.firstScreenPx',
+    'px',
+    'block',
+    'blocks.list[].firstScreenPx',
+    'Height of the block that lies on the first screen.'
+  ),
+  q(
+    'block.claimedWeight',
+    'weight',
+    'block',
+    'blocks.list[].claimedWeight',
+    "The weight of the role's asks answered inside the block; a lower bound while uncertain weight could be answered inside it.",
+    { widen: [{ of: 'role', field: 'foreignBasis', when: 'chrome-only', direction: 'up' }] }
+  ),
+  q(
+    'block.displacementPx',
+    'px',
+    'block',
+    'blocks.list[].displacementPx',
+    'The scroll the block costs the role per visit: Σ below w·min(pitch, scroll) / Σ w; a lower bound while reach is unknown.',
+    { widen: [{ field: 'displacementIsLowerBound', when: true, direction: 'up' }], draft: 'max' }
+  ),
+  q(
+    'block.invariance.identical',
+    'captures',
+    'block',
+    'blocks.list[].invariance.identical',
+    'The most captures of this invocation that hold the block with identical text.'
+  ),
+  q(
+    'block.invariance.of',
+    'captures',
+    'block',
+    'blocks.list[].invariance.of',
+    'The captures of this invocation that hold the block.'
+  ),
+  // ---- repeats ----
+  q(
+    'cell.repeatsByBasis',
+    'count',
+    'cell',
+    'repeats.byBasis.*',
+    'Repeats found by the basis where.kind (path, geometry).'
+  ),
+  q('cell.repeats', 'count', 'cell', 'repeats.total', 'Repeats.'),
+  q('repeat.members', 'count', 'repeat', 'repeats.list[].members', "The repeat's members."),
+  q('repeat.rows', 'rows', 'repeat', 'repeats.list[].rows', 'Rendered rows of the repeat.'),
+  q(
+    'repeat.perRow',
+    'count',
+    'repeat',
+    'repeats.list[].perRow',
+    'Columns: the most left-edge clusters a row holds.'
+  ),
+  q(
+    'repeat.firstRow.topPx',
+    'px',
+    'repeat',
+    'repeats.list[].firstRow.topPx',
+    "Top of the repeat's first row, document px."
+  ),
+  q(
+    'repeat.firstRow.bottomPx',
+    'px',
+    'repeat',
+    'repeats.list[].firstRow.bottomPx',
+    "Bottom of the repeat's first row, document px."
+  ),
+  q(
+    'repeat.lastRow.topPx',
+    'px',
+    'repeat',
+    'repeats.list[].lastRow.topPx',
+    "Top of the repeat's last row, document px."
+  ),
+  q(
+    'repeat.lastRow.bottomPx',
+    'px',
+    'repeat',
+    'repeats.list[].lastRow.bottomPx',
+    "Bottom of the repeat's last row, document px."
+  ),
+  q(
+    'repeat.rowPitchPx',
+    'px',
+    'repeat',
+    'repeats.list[].rowPitchPx',
+    'Median top-to-top distance between consecutive rows.',
+    { draft: 'max', compaction: true }
+  ),
+  q(
+    'repeat.linesPerRow',
+    'lines',
+    'repeat',
+    'repeats.list[].linesPerRow',
+    'Median distinct line bands per row (estimated from a snapshot).',
+    { compaction: true }
+  ),
+  q(
+    'repeat.rowTextPx',
+    'px',
+    'repeat',
+    'repeats.list[].rowTextPx',
+    "Median height of a row's text lines."
+  ),
+  q(
+    'repeat.rowFill',
+    'ratio',
+    'repeat',
+    'repeats.list[].rowFill',
+    "Median row text height over the row's pitch.",
+    { compaction: true }
+  ),
+  q(
+    'repeat.rowsEstimated',
+    'rows',
+    'repeat',
+    'repeats.list[].rowsEstimated',
+    'Rows whose line bands could be estimated.'
+  ),
+  q(
+    'repeat.valuesPerRow',
+    'count',
+    'repeat',
+    'repeats.list[].valuesPerRow',
+    'Median value leaves per row.'
+  ),
+  q(
+    'repeat.widthFill',
+    'ratio',
+    'repeat',
+    'repeats.list[].widthFill',
+    "Median share of a row's width its leaves cover."
+  ),
+  q(
+    'repeat.rowsPerScreen',
+    'rows',
+    'repeat',
+    'repeats.list[].rowsPerScreen',
+    'Rows that fit the usable viewport height (Hu / rowPitchPx); an upper bound while a pin status is unknown.',
+    {
+      widen: [{ field: 'rowsPerScreenBasis', when: 'upper-bound', direction: 'down' }],
+      draft: 'min',
+      compaction: true,
+    }
+  ),
+  q(
+    'repeat.extentPx',
+    'px',
+    'repeat',
+    'repeats.list[].extentPx',
+    "From the repeat's first row's top to its lowest member's bottom.",
+    { compaction: true }
+  ),
+  q(
+    'repeat.extentAtVolumePx',
+    'px',
+    'repeat',
+    'repeats.list[].extentAtVolume.px',
+    "The repeat's extent projected at the budget's row volume.",
+    { compaction: true }
+  ),
+  q(
+    'repeat.renderedOf',
+    'rows',
+    'repeat',
+    'repeats.list[].renderedOf',
+    'How many rows exist, of which the rendered ones are shown (measured by the document walk only).'
+  ),
+  // ---- affordances ----
+  q(
+    'cell.affordancesByKind',
+    'count',
+    'cell',
+    'affordances.byKind.*',
+    'Affordances of the kind where.kind (disclosure, tab, menu, search, filter, pager, truncation, abbreviation).'
+  ),
+  q(
+    'cell.affordancesByRule',
+    'count',
+    'cell',
+    'affordances.byRule.*',
+    'Affordances detected by the rule where.kind.'
+  ),
+  q('cell.affordances', 'count', 'cell', 'affordances.total', 'Affordances.'),
+  q(
+    'affordance.hidesItems',
+    'count',
+    'affordance',
+    'affordances.list[].hides.items',
+    'Items the affordance hides (measured by the document walk only).'
+  ),
+  q(
+    'affordance.hidesValues',
+    'count',
+    'affordance',
+    'affordances.list[].hides.values',
+    'Value leaves the affordance hides (measured by the document walk only).'
+  ),
+  q(
+    'affordance.hidesChars',
+    'chars',
+    'affordance',
+    'affordances.list[].hides.chars',
+    'Characters the affordance hides (measured by the document walk only).'
+  ),
+  // ---- legibility bounds ----
+  q(
+    'bounds.textLeaves',
+    'count',
+    'bounds',
+    'bounds.textLeaves.*',
+    'Answer and value leaves the text bounds considered, or left out for the reason where.kind.'
+  ),
+  ...bound('fontPx', 'fontPx', 'font size, px', 'px', true),
+  q(
+    'bounds.fontPx.p10',
+    'px',
+    'bounds',
+    'bounds.fontPx.p10',
+    'The 10th-percentile font size of the answer and value leaves.'
+  ),
+  ...bound('lineHeightRatio', 'lineHeightRatio', 'line height over font size', 'ratio', true),
+  q(
+    'bounds.lineHeightRatio.p10',
+    'ratio',
+    'bounds',
+    'bounds.lineHeightRatio.p10',
+    'The 10th-percentile line-height ratio of the answer and value leaves.'
+  ),
+  ...bound('gapEm', 'gapEm', 'vertical gap to the next leaf, in em', 'em', false),
+  q('bounds.controls', 'count', 'bounds', 'bounds.controls.count', 'Painted control leaves.'),
+  q(
+    'bounds.controls.minSidePx',
+    'px',
+    'bounds',
+    'bounds.controls.minSidePx.value',
+    'The smallest side of a painted control.',
+    { draft: 'min' }
+  ),
+  q(
+    'bounds.controls.minSidePx.atMin',
+    'count',
+    'bounds',
+    'bounds.controls.minSidePx.atMin.total',
+    'Controls at the smallest side.'
+  ),
+  q(
+    'bounds.controls.minGapPx',
+    'px',
+    'bounds',
+    'bounds.controls.minGapPx.value',
+    'The smallest gap between two painted controls that do not overlap.'
+  ),
+  q(
+    'bounds.truncated',
+    'count',
+    'bounds',
+    'bounds.truncated.total',
+    'Truncated leaves, recoverable or not.'
+  ),
+  q('bounds.occluded', 'count', 'bounds', 'bounds.occluded.total', 'Occluded leaves.'),
+]);
+
+/**
+ * Numeric report fields that are not quantities, each with the reason. The
+ * registry test fails on a numeric field in neither list, so a new field is a
+ * decision, not an accident.
+ */
+export const DENSITY_REPORT_NON_QUANTITIES: ReadonlyArray<{ path: string; reason: string }> =
+  Object.freeze([
+    { path: 'cell.viewport.width', reason: "the cell's identity, not a measurement of the page" },
+    { path: 'cell.viewport.height', reason: "the cell's identity, not a measurement of the page" },
+    { path: 'viewport.*', reason: 'the input viewport block, echoed' },
+    { path: 'bases.structureBy.*', reason: 'registered as cell.structureBy' },
+    { path: 'structure.structureBy.*', reason: 'the same counts as cell.structureBy' },
+    { path: 'structure.blocks.shown', reason: 'how many entries the cap printed' },
+    { path: 'structure.blocks.total', reason: 'the same count as cell.blocks' },
+    {
+      path: 'structure.blocks.list[].*',
+      reason: 'the same blocks as blocks.list[], registered as block.*',
+    },
+    { path: 'ledger.gridPx', reason: 'the grid constant' },
+    {
+      path: 'role.asks[].rank',
+      reason: "the targets' rank, echoed (rules select it with where.rank)",
+    },
+    { path: 'role.asks[].weight', reason: "the targets' weight, echoed" },
+    { path: 'role.asks[].answerItems.shown', reason: 'how many entries the cap printed' },
+    {
+      path: 'role.asks[].answerItems.list[].*',
+      reason:
+        "per-item detail behind the ask's first and all reach, registered as ask.first.* and ask.all.*",
+    },
+    { path: 'role.answeredAt[].k', reason: 'the index of role.answeredAt.<k>' },
+    { path: 'blocks.shown', reason: 'how many entries the cap printed' },
+    { path: 'unclaimed.shown', reason: 'how many entries the cap printed' },
+    {
+      path: 'unclaimed.list[].*',
+      reason: "the same block's firstScreenPx and displacementPx, registered as block.*",
+    },
+    { path: 'possiblyUnclaimed.shown', reason: 'how many entries the cap printed' },
+    {
+      path: 'possiblyUnclaimed.list[].*',
+      reason:
+        "the same block's firstScreenPx and displacementPx (block.*) and the role's uncertain weight",
+    },
+    { path: 'repeats.shown', reason: 'how many entries the cap printed' },
+    { path: 'repeats.list[].extentAtVolume.volume', reason: "the budget's volume, echoed" },
+    { path: 'affordances.shown', reason: 'how many entries the cap printed' },
+    { path: 'bounds.*.atMin.shown', reason: 'how many entries the cap printed' },
+    { path: 'bounds.controls.minSidePx.atMin.shown', reason: 'how many entries the cap printed' },
+    { path: 'bounds.truncated.shown', reason: 'how many entries the cap printed' },
+    { path: 'bounds.occluded.shown', reason: 'how many entries the cap printed' },
+  ]);
+
+/** Look a quantity up by id. */
+export function densityQuantity(id: string): DensityQuantity | undefined {
+  return DENSITY_QUANTITIES.find((x) => x.id === id);
+}
+
+/** The `where` fields a quantity can be selected by, beyond the cell's role, viewport and fixture. */
+export function densityQuantityDims(
+  quantity: DensityQuantity
+): Array<'ask' | 'rank' | 'kind' | 'block' | 'repeat'> {
+  const dims: Array<'ask' | 'rank' | 'kind' | 'block' | 'repeat'> = [];
+  const p = quantity.path;
+  if (p.startsWith('role.asks[]')) dims.push('ask', 'rank', 'kind');
+  else if (p.includes('*') || p.startsWith('affordances.list[]')) dims.push('kind');
+  if (p.startsWith('blocks.list[]')) dims.push('block');
+  if (p.startsWith('repeats.list[]')) dims.push('repeat');
+  return dims;
+}
+
+/** What one value of a quantity belongs to, read from the path it was found at. */
+export interface DensityQuantityAt {
+  ask?: string;
+  rank?: number;
+  kind?: string;
+  block?: string;
+  repeat?: string;
+  affordance?: string;
+  /**
+   * The entries of a capped list past its cap: one unknown standing for them.
+   * A `where` naming a block, repeat or ask does not select it (a named entry
+   * past the cap matches nothing, which is unknown too); one selecting by kind
+   * or rank does, since the remainder may hold such entries.
+   */
+  remainder?: true;
+}
+
+/** An unknown value of a quantity: the code and why. */
+export interface DensityQuantityUnknown {
+  unknown: UnknownCode;
+  reason: string;
+}
+
+/** One value of a quantity in one report. */
+export interface DensityQuantityValue {
+  at: DensityQuantityAt;
+  value: DensityInterval | DensityQuantityUnknown;
+}
+
+function isUnknownQuantity(v: unknown): v is DensityQuantityUnknown {
+  return (
+    v !== null &&
+    typeof v === 'object' &&
+    !Array.isArray(v) &&
+    isUnknownCode((v as { unknown?: unknown }).unknown) &&
+    typeof (v as { reason?: unknown }).reason === 'string'
+  );
+}
+
+type Seg =
+  | { mode: 'key'; key: string }
+  | { mode: 'each'; key: string }
+  | { mode: 'select'; key: string; k: number }
+  | { mode: 'any-key' };
+
+function segments(path: string): Seg[] {
+  return path.split('.').map((s): Seg => {
+    if (s === '*') return { mode: 'any-key' };
+    const each = /^(.+)\[\]$/.exec(s);
+    if (each) return { mode: 'each', key: each[1] };
+    const select = /^(.+)\[k=(\d+)\]$/.exec(s);
+    if (select) return { mode: 'select', key: select[1], k: Number(select[2]) };
+    return { mode: 'key', key: s };
+  });
+}
+
+const missing = (path: string, reason: string): DensityQuantityUnknown => ({
+  unknown: 'input_missing',
+  reason: `${path}: ${reason}`,
+});
+
+function asRecord(v: unknown): Record<string, unknown> | null {
+  return v !== null && typeof v === 'object' && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : null;
+}
+
+/** What an array element of a section adds to `at`. */
+function atOf(top: string, key: string, el: unknown, at: DensityQuantityAt): DensityQuantityAt {
+  const e = asRecord(el);
+  if (!e) return at;
+  const str = (k: string) => (typeof e[k] === 'string' ? (e[k] as string) : undefined);
+  if (key === 'asks') {
+    return {
+      ...at,
+      ask: str('id'),
+      rank: typeof e.rank === 'number' ? e.rank : undefined,
+      kind: str('kind'),
+    };
+  }
+  if (key !== 'list') return at;
+  if (top === 'blocks') return { ...at, block: str('id') };
+  if (top === 'unclaimed' || top === 'possiblyUnclaimed') return { ...at, block: str('block') };
+  if (top === 'repeats') return { ...at, repeat: str('id') };
+  if (top === 'affordances') return { ...at, affordance: str('id'), kind: str('kind') };
+  return at;
+}
+
+/** The records a widen may read its field from. */
+interface WidenScope {
+  parent: Record<string, unknown> | null;
+  ask: Record<string, unknown> | null;
+  role: Record<string, unknown> | null;
+}
+
+function widenHits(w: DensityQuantityWiden, scope: WidenScope): boolean {
+  const rec = scope[w.of ?? 'parent'];
+  if (!rec) return false;
+  const f = rec[w.field];
+  if (w.when === 'nonzero') return typeof f === 'number' && f > 0;
+  if (w.when === 'some-partial') {
+    return Array.isArray(f) && f.some((e) => asRecord(e)?.partial === true);
+  }
+  return f === w.when;
+}
+
+function widened(
+  interval: DensityInterval,
+  widen: readonly DensityQuantityWiden[] | undefined,
+  scope: WidenScope
+): DensityInterval {
+  let out = interval;
+  for (const w of widen ?? []) {
+    if (!widenHits(w, scope)) continue;
+    if (w.direction !== 'down') out = { lo: out.lo, hi: null };
+    if (w.direction !== 'up') out = { lo: 0, hi: out.hi };
+  }
+  return out;
+}
+
+function readLeaf(
+  quantity: DensityQuantity,
+  leaf: unknown,
+  scope: WidenScope
+): DensityInterval | DensityQuantityUnknown {
+  const v = readRaw(quantity, leaf);
+  return 'unknown' in v ? v : widened(v, quantity.widen, scope);
+}
+
+function readRaw(
+  quantity: DensityQuantity,
+  leaf: unknown
+): DensityInterval | DensityQuantityUnknown {
+  const p = quantity.path;
+  switch (quantity.read) {
+    case 'value': {
+      if (typeof leaf === 'number' && Number.isFinite(leaf)) return { lo: leaf, hi: leaf };
+      if (leaf === null) return missing(p, 'the report gives no value (null)');
+      return { unknown: 'not_reported', reason: `${p}: the report holds no number here` };
+    }
+    case 'interval': {
+      const o = asRecord(leaf);
+      if (o && typeof o.lo === 'number' && typeof o.hi === 'number') {
+        return { lo: o.lo, hi: o.hi };
+      }
+      return missing(p, 'the interval is not given (a share of nothing)');
+    }
+    case 'weighted-mean':
+    case 'unweighted-mean': {
+      const o = asRecord(leaf);
+      const over = asRecord(o?.over);
+      const excluded = asRecord(o?.excluded);
+      if (!o || !over || !excluded) return missing(p, 'the report holds no mean here');
+      const by = quantity.read === 'weighted-mean' ? 'weight' : 'asks';
+      const wOver = over[by];
+      const wExcluded = excluded[by];
+      if (
+        typeof wOver !== 'number' ||
+        !Number.isFinite(wOver) ||
+        typeof wExcluded !== 'number' ||
+        !Number.isFinite(wExcluded)
+      ) {
+        return missing(p, 'the mean does not say what it was taken over');
+      }
+      const value = typeof o.value === 'number' ? o.value : null;
+      if (!(wExcluded > 0)) {
+        return value === null ? missing(p, 'no ask has a known value') : { lo: value, hi: value };
+      }
+      // The excluded asks' values are unknown and at least 0: the mean over
+      // every ask is at least the known sum over all the weight, and has no
+      // upper bound.
+      const knownSum = value === null ? 0 : value * wOver;
+      return { lo: knownSum / (wOver + wExcluded), hi: null };
+    }
+    case 'length':
+      return Array.isArray(leaf)
+        ? { lo: leaf.length, hi: leaf.length }
+        : missing(p, 'the report holds no list here');
+  }
+}
+
+/**
+ * Every value of `quantity` in `report`. A capped list that was truncated adds
+ * one unknown value (`at.remainder`), so that a rule over all of a list's
+ * entries — or over those of one kind — is never passed on the shown ones
+ * alone. A section the report does not carry (no targets: no role) is
+ * one unknown value.
+ */
+export function densityQuantityValues(
+  report: DensityMeasureReport,
+  quantity: DensityQuantity
+): DensityQuantityValue[] {
+  const segs = segments(quantity.path);
+  const top = segs[0].mode === 'any-key' ? '' : segs[0].key;
+  const out: DensityQuantityValue[] = [];
+  const role = asRecord((report as unknown as Record<string, unknown>).role);
+  const walk = (
+    node: unknown,
+    i: number,
+    at: DensityQuantityAt,
+    parent: Record<string, unknown> | null,
+    where: string,
+    ask: Record<string, unknown> | null = null
+  ): void => {
+    if (isUnknownQuantity(node)) {
+      out.push({ at, value: { unknown: node.unknown, reason: `${where}: ${node.reason}` } });
+      return;
+    }
+    if (i === segs.length) {
+      out.push({ at, value: readLeaf(quantity, node, { parent, ask, role }) });
+      return;
+    }
+    if (node === undefined || node === null) {
+      out.push({
+        at,
+        value: missing(
+          where === '' ? quantity.path : where,
+          node === null ? 'is null' : 'is not in the report'
+        ),
+      });
+      return;
+    }
+    const rec = asRecord(node);
+    const seg = segs[i];
+    if (seg.mode === 'any-key') {
+      if (!rec) {
+        out.push({ at, value: missing(where, 'is not a map') });
+        return;
+      }
+      for (const [k, v] of Object.entries(rec)) {
+        walk(v, i + 1, { ...at, kind: k }, rec, `${where}.${k}`, ask);
+      }
+      return;
+    }
+    const child = rec ? rec[seg.key] : undefined;
+    const here = where === '' ? seg.key : `${where}.${seg.key}`;
+    if (seg.mode === 'key') {
+      walk(child, i + 1, at, rec, here, ask);
+      return;
+    }
+    if (!Array.isArray(child)) {
+      const why =
+        child === undefined ? 'is not in the report' : child === null ? 'is null' : 'is not a list';
+      out.push({ at, value: missing(here, why) });
+      return;
+    }
+    if (seg.mode === 'select') {
+      const el = child.find((e) => asRecord(e)?.k === seg.k);
+      if (el === undefined) {
+        out.push({ at, value: missing(here, `holds no entry k=${seg.k}`) });
+        return;
+      }
+      walk(el, i + 1, at, asRecord(el), `${here}[k=${seg.k}]`, ask);
+      return;
+    }
+    child.forEach((el, n) =>
+      walk(
+        el,
+        i + 1,
+        atOf(top, seg.key, el, at),
+        asRecord(el),
+        `${here}[${n}]`,
+        seg.key === 'asks' ? asRecord(el) : ask
+      )
+    );
+    if (rec && rec.truncated === true) {
+      out.push({
+        at: { ...at, remainder: true },
+        value: {
+          unknown: 'input_missing',
+          reason: `${here}: the list is capped at ${String(rec.shown)} of ${String(rec.total)}; the entries past the cap are not in the report`,
+        },
+      });
+    }
+  };
+  walk(report, 0, {}, null, '');
+  return out;
+}

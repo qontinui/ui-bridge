@@ -33,6 +33,12 @@ export interface DensityTestElementSpec {
   /** Viewport-space `[x, y, width, height]`; `null` drops `state.rect`. */
   rect?: [number, number, number, number] | null;
   text?: string;
+  /**
+   * The row's visible text (`text`, innerText-equivalent). Defaults to `text`;
+   * `null` omits it, as the serializer does for an icon-only control whose
+   * `textContent` is its aria-label / title fallback.
+   */
+  visibleText?: string | null;
   visible?: boolean | null;
   visibilityReason?: ElementState['visibilityReason'];
   /** `false` drops `state.computedStyles`. */
@@ -41,6 +47,7 @@ export interface DensityTestElementSpec {
   clientWidth?: number;
   nameSource?: ElementState['nameSource'];
   ariaExpanded?: boolean;
+  ariaSelected?: boolean;
   href?: string;
   dataset?: Record<string, string>;
   uiBridgeId?: string;
@@ -110,6 +117,7 @@ export function densityTestElement(spec: DensityTestElementSpec): DensityTestSna
   if (spec.redacted) state.redaction = { content: true };
   if (spec.nameSource !== undefined) state.nameSource = spec.nameSource;
   if (spec.ariaExpanded !== undefined) state.ariaExpanded = spec.ariaExpanded;
+  if (spec.ariaSelected !== undefined) state.ariaSelected = spec.ariaSelected;
   if (spec.href !== undefined) state.href = scrub(spec.href);
   if (spec.dataset !== undefined) state.dataset = spec.dataset;
   if (spec.scrollInfo !== undefined) state.scrollInfo = spec.scrollInfo;
@@ -139,6 +147,10 @@ export function densityTestElement(spec: DensityTestElementSpec): DensityTestSna
     };
   }
   if (spec.role !== undefined) row.role = spec.role;
+  const visibleText = spec.visibleText === undefined ? spec.text : spec.visibleText;
+  if (visibleText !== null && visibleText !== undefined && visibleText !== '') {
+    row.text = scrub(spec.redacted ? '[REDACTED]' : visibleText);
+  }
   if (spec.uiBridgeId !== undefined) row.uiBridgeId = spec.uiBridgeId;
   if (spec.origin !== undefined) row.origin = spec.origin;
   return row;
