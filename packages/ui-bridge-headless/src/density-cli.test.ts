@@ -14,7 +14,12 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { missingOutputMessage } from '../../../test-support/build-if-stale.mjs';
-import { runDensityCli, sameFileOnDisk, type DensityCliIo } from './density-cli';
+import {
+  measureDensityCell,
+  runDensityCli,
+  sameFileOnDisk,
+  type DensityCliIo,
+} from './density-cli';
 
 /**
  * `ui-bridge-density measure`, run as the built bin (dist/density-cli.js) over
@@ -960,4 +965,27 @@ describe('ui-bridge-density measure: repeats and affordances', () => {
       ],
     });
   }, 60_000);
+});
+
+describe('measureDensityCell: repeats and affordances', () => {
+  it('measure reports the repeat and each affordance with its rule, from the source', () => {
+    const { report } = measureDensityCell(
+      { snapshot: LISTED, role: 'buyer', fixture: null, targets: null },
+      { id: 'sdk/density', version: '0.0.0-test', package: '@qontinui/ui-bridge-headless' }
+    );
+    const value = report.cells[0]!.observation as {
+      value?: {
+        repeats: { total?: number; list?: Array<{ id: string; rows: number }> };
+        affordances: { list?: Array<{ id: string; rule: string }> };
+      };
+    };
+    expect(value.value?.repeats.list?.map((r) => [r.id, r.rows])).toEqual([
+      ['repeat:app.orders.row-1', 3],
+    ]);
+    expect(value.value?.affordances.list?.map((a) => [a.id, a.rule])).toEqual([
+      ['app.tabs.closed', 'role-tab'],
+      ['app.orders.state', 'control-above-repeat'],
+      ['app.orders.next', 'nav-after-repeat'],
+    ]);
+  });
 });
