@@ -126,7 +126,7 @@ export interface DensityRepeat {
   linesPerRow: number | null;
   /** Median height of a row's text line bands, px; `null` when no row could be estimated. */
   rowTextPx: number | null;
-  /** `rowTextPx / rowPitchPx`; `null` with `rowTextPx`. */
+  /** Median over estimated rows of a row's text height over its own pitch; `null` with `rowTextPx`. */
   rowFill: number | null;
   /**
    * Rows whose line bands could be estimated; the rest lacked a font size, a
@@ -241,7 +241,7 @@ function rowLines(
   leaves: readonly DensityItem[],
   containers: ReadonlySet<string>
 ): { lines: number; textPx: number } | null {
-  const tops: Array<{ top: number; lh: number }> = [];
+  const spans: Array<{ top: number; lh: number }> = [];
   for (const leaf of leaves) {
     // A container's own text sits somewhere among its children's lines, which
     // the capture does not say: the row cannot be estimated.
@@ -259,27 +259,29 @@ function rowLines(
     const fits = Math.max(1, Math.floor(r.h / leaf.lineHeightPx + 0.01));
     const lines = leaf.truncated === true ? 1 : Math.min(wrapped, fits);
     for (let k = 0; k < lines; k++)
-      tops.push({ top: r.y + k * leaf.lineHeightPx, lh: leaf.lineHeightPx });
+      spans.push({ top: r.y + k * leaf.lineHeightPx, lh: leaf.lineHeightPx });
   }
-  tops.sort((a, b) => a.top - b.top);
-  let lines = 0;
+  // The text's height is the UNION of the line intervals [top, top + lh), so
+  // lines of leaves side by side (a centred date beside a two-line title)
+  // never add up to more than the row draws; the line count is that height in
+  // lines of the row's tallest line height.
+  spans.sort((a, b) => a.top - b.top);
   let textPx = 0;
-  let bandTop = -Infinity;
-  let bandLh = 0;
-  for (const t of tops) {
-    // A line whose top falls within half a line of the band's is the same band.
-    if (lines > 0 && t.top - bandTop < bandLh / 2) {
-      if (t.lh > bandLh) {
-        textPx += t.lh - bandLh;
-        bandLh = t.lh;
-      }
+  let maxLh = 0;
+  let curTop = -Infinity;
+  let curBottom = -Infinity;
+  for (const t of spans) {
+    maxLh = Math.max(maxLh, t.lh);
+    if (t.top < curBottom) {
+      curBottom = Math.max(curBottom, t.top + t.lh);
       continue;
     }
-    lines++;
-    textPx += t.lh;
-    bandTop = t.top;
-    bandLh = t.lh;
+    if (curBottom > curTop) textPx += curBottom - curTop;
+    curTop = t.top;
+    curBottom = t.top + t.lh;
   }
+  if (curBottom > curTop) textPx += curBottom - curTop;
+  const lines = textPx > 0 && maxLh > 0 ? Math.max(1, Math.round(textPx / maxLh)) : 0;
   return { lines, textPx };
 }
 
@@ -354,13 +356,17 @@ export function isDensityNavControl(item: DensityItem): boolean {
 function isScopeControl(item: DensityItem): boolean {
   return (
     item.interactive &&
+    takesSpace(item) &&
     (isDensityFinderControl(item) || isDensityFilterControl(item) || isDensityNavControl(item))
   );
 }
 
-function centreY(item: DensityItem): number | null {
+/** The vertical centre of an item's rect, document px; `null` with no rect. */
+export function densityCentreY(item: DensityItem): number | null {
   return item.rect === null ? null : item.rect.y + item.rect.h / 2;
 }
+
+const centreY = densityCentreY;
 
 /** What a repeat's controls are looked for in. */
 export interface DensityRepeatScope {
@@ -855,9 +861,12 @@ export function densityRepeats(
 
     const lineCounts: number[] = [];
     const textPx: number[] = [];
+    /** Per row: its text height over its own pitch (to the next row; the median for the last). */
+    const rowFills: number[] = [];
     const values: number[] = [];
     const fills: number[] = [];
-    for (const row of rows) {
+    for (let ri = 0; ri < rows.length; ri++) {
+      const row = rows[ri];
       const under = row.map((m) => leavesUnder(m.id));
       // A row holding an unreadable item is not estimated: its lines, values
       // and fill are unknown, never zero.
@@ -867,6 +876,8 @@ export function densityRepeats(
       if (est !== null) {
         lineCounts.push(est.lines);
         textPx.push(est.textPx);
+        const pitch = ri + 1 < bands.length ? bands[ri + 1].topPx - bands[ri].topPx : rowPitchPx;
+        rowFills.push(est.textPx / pitch);
       }
       values.push(rowLeaves.filter((l) => kindOf.get(l.id) === 'value').length);
       const left = minOf(row.map((m) => m.rect!.x));
@@ -894,7 +905,7 @@ export function densityRepeats(
       linesBasis: 'estimated',
       linesPerRow: median(lineCounts),
       rowTextPx,
-      rowFill: rowTextPx === null ? null : rowTextPx / rowPitchPx,
+      rowFill: median(rowFills),
       rowsEstimated: lineCounts.length,
       valuesPerRow: median(values),
       widthFill: median(fills),
@@ -957,6 +968,7 @@ export function densityRepeats(
           (i) =>
             scope.ids.has(i.id) &&
             i.interactive &&
+            takesSpace(i) &&
             isDensityFinderControl(i) &&
             nearestBelow.get(i.id) === rep.id &&
             !declaresAnother(i)

@@ -836,6 +836,66 @@ describe('repeats', () => {
     expect([rep.linesPerRow, rep.rowTextPx, rep.rowFill]).toEqual([1, 20, 20 / 30]);
   });
 
+  it('a centred date beside a two-line title is two lines of text, never more than the row', () => {
+    const els: DensityTestElementSpec[] = [];
+    for (let k = 1; k <= 4; k++) {
+      const y = 48 * (k - 1);
+      els.push(
+        {
+          id: `r${k}`,
+          tag: 'li',
+          xpath: `/html/body/ul/li[${k}]`,
+          rect: [0, y, 400, 40],
+          text: '',
+        },
+        {
+          id: `r${k}.t`,
+          tag: 'span',
+          xpath: `/html/body/ul/li[${k}]/span[1]`,
+          rect: [0, y, 200, 40],
+          text: 'x'.repeat(40),
+        },
+        {
+          id: `r${k}.d`,
+          tag: 'span',
+          xpath: `/html/body/ul/li[${k}]/span[2]`,
+          rect: [300, y + 10, 80, 20],
+          text: '16.10.2026',
+        }
+      );
+    }
+    const [rep] = densityRepeats(capture(els), null);
+    expect([rep.rows, rep.linesPerRow, rep.rowTextPx, rep.rowFill]).toEqual([4, 2, 40, 40 / 48]);
+  });
+
+  it('a hidden text field above a list is not its finder', () => {
+    const els: DensityTestElementSpec[] = [
+      {
+        id: 'q.mobile',
+        tag: 'input',
+        role: 'textbox',
+        category: 'interactive',
+        xpath: `${SECTION}/input`,
+        rect: [0, 0, 0, 0],
+        visible: false,
+        visibilityReason: 'no-layout',
+        text: '',
+      },
+      ...orderList(4),
+      // A visible pager below gives the list a scope the hidden field is in.
+      {
+        id: 'next',
+        tag: 'button',
+        category: 'interactive',
+        xpath: `${SECTION}/nav/button`,
+        rect: [0, 320, 80, 28],
+        text: 'Next',
+      },
+    ];
+    const reps = densityRepeats(capture(els), null);
+    expect(reps.map((r) => [r.rows, r.scope, r.finder])).toEqual([[4, 'block', null]]);
+  });
+
   it('a hidden leaf in a row draws no line band', () => {
     const els = orderList(3).map((e): DensityTestElementSpec => {
       if (!e.id.endsWith('.sum')) return e;

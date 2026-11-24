@@ -80,6 +80,7 @@ describe('the ./density subpath', () => {
       'densityAffordances',
       'densityAsksHash',
       'densityBlocks',
+      'densityCentreY',
       'densityChildren',
       'densityHeadingLevel',
       'densityInnermostRepeats',
