@@ -8,7 +8,7 @@
  * reported as `success: true`; these helpers measure instead.
  */
 
-import { clipBoxOf, type ClipRect } from '../core/clip-box';
+import { clipBoxOf } from '../core/clip-box';
 
 /** Error code a scroll action carries when it provably moved nothing. */
 export const NO_SCROLL_EFFECT = 'NO_SCROLL_EFFECT';
@@ -36,17 +36,29 @@ export function isVisibleInScrollContext(el: Element): boolean {
     hi - lo > boxHi - boxLo + TOLERANCE
       ? lo <= boxLo + TOLERANCE && hi >= boxHi - TOLERANCE
       : lo >= boxLo - TOLERANCE && hi <= boxHi + TOLERANCE;
-  const inside = (box: ClipRect): boolean =>
-    axisOk(rect.top, rect.bottom, box.top, box.bottom) &&
-    axisOk(rect.left, rect.right, box.left, box.right);
-
-  if (!inside({ top: 0, left: 0, bottom: window.innerHeight, right: window.innerWidth })) {
-    return false;
-  }
+  const inViewport =
+    axisOk(rect.top, rect.bottom, 0, window.innerHeight) &&
+    axisOk(rect.left, rect.right, 0, window.innerWidth);
+  if (!inViewport) return false;
   // Each clipper separately, not their intersection: an element larger than
   // the intersection may still stick out of one of the wider clippers. An axis
   // a clipper leaves open is ±Infinity, which `axisOk` always accepts.
-  return clipBoxOf(el).clippers.every((c) => inside(c.box));
+  //
+  // On an axis a clipper SCROLLS, the element must fit inside it: scrolling
+  // can bring the rest in. On an axis it cuts with `overflow: hidden` / `clip`,
+  // a partial cut (a child bleeding over a card's border, a truncated label)
+  // is final and no scroll changes it, so overlapping the clip region is as
+  // visible as it gets; an element entirely outside it stays not visible, and
+  // its scrollIntoView then fails honestly with NO_SCROLL_EFFECT.
+  const overlaps = (lo: number, hi: number, boxLo: number, boxHi: number): boolean =>
+    hi > boxLo + TOLERANCE && lo < boxHi - TOLERANCE;
+  const axis = (scrolls: boolean, lo: number, hi: number, boxLo: number, boxHi: number) =>
+    scrolls ? axisOk(lo, hi, boxLo, boxHi) : overlaps(lo, hi, boxLo, boxHi);
+  return clipBoxOf(el).clippers.every(
+    (c) =>
+      axis(c.scrollsY, rect.top, rect.bottom, c.box.top, c.box.bottom) &&
+      axis(c.scrollsX, rect.left, rect.right, c.box.left, c.box.right)
+  );
 }
 
 /** Every ancestor's scroll offsets plus the window's, as one comparable string. */

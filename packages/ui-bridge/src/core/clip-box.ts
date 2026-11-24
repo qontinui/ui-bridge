@@ -140,16 +140,20 @@ function establishesContainingBlock(
     const pos = style.position || 'static';
     if (pos !== 'static') return true;
   }
-  // Transforms, filters and containment do not apply to a non-replaced
-  // inline box, so they cannot make it a containing block either.
-  if (display === 'inline') return false;
   const s = style as CSSStyleDeclaration & Record<string, string | undefined>;
-  if (nonNone(style.transform) || nonNone(style.perspective) || nonNone(style.filter)) return true;
+  // Filters apply to every element (Filter Effects 1), inline boxes included.
+  if (nonNone(style.filter) || nonNone(s.backdropFilter) || nonNone(s.webkitBackdropFilter)) {
+    return true;
+  }
+  if (s.willChange && /\b(filter|backdrop-filter)\b/.test(s.willChange)) return true;
+  // Transforms and containment do not apply to a non-replaced inline box, so
+  // they cannot make it a containing block.
+  if (display === 'inline') return false;
+  if (nonNone(style.transform) || nonNone(style.perspective)) return true;
   // The individual transform properties (Tailwind v4 emits them) and
   // `offset-path` establish one exactly as `transform` does.
   if (nonNone(s.translate) || nonNone(s.rotate) || nonNone(s.scale)) return true;
   if (nonNone(s.offsetPath)) return true;
-  if (nonNone(s.backdropFilter) || nonNone(s.webkitBackdropFilter)) return true;
   if (containEstablishes(s.contain)) return true;
   if (contentVisibilityContains(s.contentVisibility)) return true;
   if (s.willChange && ABSOLUTE_CB_WILL_CHANGE.test(s.willChange)) return true;
@@ -201,7 +205,7 @@ function regionOf(el: HTMLElement, clipsX: boolean, clipsY: boolean): ClipRect {
   // offset metrics at all, an SVG element) paints where its bounding rect is.
   // Either axis can betray a transform (`scaleY` leaves the width alone).
   const transformed =
-    !(Math.abs(rect.width - offsetWidth) <= 0.5) || !(Math.abs(rect.height - offsetHeight) <= 0.5);
+    !(Math.abs(rect.width - offsetWidth) < 1) || !(Math.abs(rect.height - offsetHeight) < 1);
   let box: ClipRect;
   if (transformed) {
     box = { top: rect.top, left: rect.left, bottom: rect.bottom, right: rect.right };
@@ -268,7 +272,9 @@ export function clippersOf(element: Element): Clipper[] {
       if (!establishesContainingBlock(style, mode)) continue;
       // `p` is the containing block: a candidate, and the new mode is its own.
     }
-    mode = modeOf(style.position);
+    // A box that does not exist (`contents`, `none`) has no position of its own.
+    const display = style.display || '';
+    if (display !== 'contents' && display !== 'none') mode = modeOf(style.position);
     if (p === body) {
       skipBody ??= bodyPropagates();
       if (skipBody) continue;
@@ -301,7 +307,9 @@ export function insideClip(box: ClipRect, x: number, y: number): boolean {
 /**
  * The per-sample `scrollable`: true iff every clipper that excluded at least
  * one of `points` is `auto`/`scroll` on the axis it excluded it on. `false`
- * when no point was excluded.
+ * when no point was excluded. A bound, not a proof: content cut on the
+ * negative side of a scroller's scroll origin (above or left of it) reads
+ * scrollable although no scroll can reveal it.
  */
 export function clipScrollableAt(
   clippers: Clipper[],

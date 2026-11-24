@@ -74,10 +74,78 @@ describe('isVisibleInScrollContext — the containing-block chain', () => {
     expect(isVisibleInScrollContext(child)).toBe(true);
   });
 
+  it('a filtered inline wrapper IS a containing block (filters apply to inline boxes)', () => {
+    const child = scrollerWithChild({ position: 'absolute' });
+    const scroller = child.parentElement as HTMLElement;
+    const wrapper = document.createElement('span');
+    wrapper.style.display = 'inline';
+    wrapper.style.filter = 'blur(1px)';
+    scroller.insertBefore(wrapper, child);
+    wrapper.appendChild(child);
+    // The wrapper sits inside the scroller, so the scroller clips the child.
+    expect(isVisibleInScrollContext(child)).toBe(false);
+  });
+
+  it('a display:contents wrapper with a position does not change the mode', () => {
+    const child = scrollerWithChild({});
+    const scroller = child.parentElement as HTMLElement;
+    const wrapper = document.createElement('div');
+    wrapper.style.display = 'contents';
+    wrapper.style.position = 'fixed';
+    scroller.insertBefore(wrapper, child);
+    wrapper.appendChild(child);
+    // In-flow child: the scroller still clips it.
+    expect(isVisibleInScrollContext(child)).toBe(false);
+  });
+
   it('a position:absolute child of a positioned scroller is clipped by it', () => {
     const child = scrollerWithChild({ position: 'absolute' });
     (child.parentElement as HTMLElement).style.position = 'relative';
     expect(isVisibleInScrollContext(child)).toBe(false);
+  });
+});
+
+describe('isVisibleInScrollContext — only a scrollable cut needs a scroll', () => {
+  it('a child bleeding 1px over an overflow:hidden card is already as visible as it gets', () => {
+    const card = document.createElement('div');
+    card.style.overflowX = 'hidden';
+    card.style.overflowY = 'hidden';
+    document.body.appendChild(card);
+    rect(card, 100, 100, 300, 200);
+    const child = document.createElement('div');
+    card.appendChild(child);
+    // -m-px: one pixel past every edge of the card's padding box.
+    rect(child, 99, 99, 302, 40);
+    expect(isVisibleInScrollContext(child)).toBe(true);
+  });
+
+  it('the same child of an overflow:auto scroller still needs a scroll', () => {
+    const scroller = document.createElement('div');
+    scroller.style.overflowX = 'auto';
+    scroller.style.overflowY = 'auto';
+    document.body.appendChild(scroller);
+    rect(scroller, 100, 100, 300, 200);
+    const child = document.createElement('div');
+    scroller.appendChild(child);
+    rect(child, 100, 280, 300, 40);
+    expect(isVisibleInScrollContext(child)).toBe(false);
+  });
+
+  it('a propagating <body> is ignored, and a non-propagating one clips', () => {
+    const child = document.createElement('div');
+    document.body.appendChild(child);
+    rect(document.body, 0, 0, 400, 300);
+    document.body.style.overflowY = 'auto';
+    rect(child, 0, 350, 100, 40);
+    // <html> overflow visible: <body>'s overflow belongs to the viewport.
+    expect(isVisibleInScrollContext(child)).toBe(true);
+    document.documentElement.style.overflowY = 'hidden';
+    try {
+      expect(isVisibleInScrollContext(child)).toBe(false);
+    } finally {
+      document.documentElement.style.overflowY = '';
+      document.body.style.overflowY = '';
+    }
   });
 });
 
