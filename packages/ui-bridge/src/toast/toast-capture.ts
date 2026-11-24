@@ -18,6 +18,10 @@
  * Reading at snapshot time means a backgrounded tab, whose interval timer the
  * browser throttles, never serves text the page stopped showing.
  *
+ * A visible element that matches a selector but has no text yet is parked
+ * with `''` by the scan, like an emptied one: it is re-read only when it
+ * mutates, and its first text is captured as an announcement.
+ *
  * Re-reading is gated on mutation: every tracked (active or parked) element
  * has its own MutationObserver (an active entry that survives uninstall has
  * none until the next install's first reconcile re-tracks it; an untracked
@@ -435,7 +439,8 @@ export class ToastCapture {
    * Elements dismissed while still connected, with the message they were
    * dismissed with: `''` for emptied text or a hidden element (so becoming
    * visible with any text is a new announcement), the unchanged text for one
-   * past max-age, the absorbed (withheld) text for a suppressed one.
+   * past max-age, the absorbed (withheld) text for a suppressed one. A
+   * visible element the scan finds with no text is parked with `''` too.
    * `reconcile` checks them on every poll and every read — a style check, and
    * an extractMessage clone only when the element mutated (see `takeDirty`) —
    * captures one again when its text changes (subject to the announcement
@@ -656,9 +661,15 @@ export class ToastCapture {
 
       if (!isElementVisible(el)) continue;
 
-      // Skip elements with no meaningful text
+      // A visible element with no text yet is parked with '' (tracked by its
+      // own observer), so later scans re-read it only when it mutates, and an
+      // in-place fill — a characterData change the document observer never
+      // sees — reaches the poll's parked step.
       const message = extractMessage(el);
-      if (!message) continue;
+      if (!message) {
+        this.park(el, '');
+        continue;
+      }
 
       if (this.admitCapture(el, message, now)) this.captureToast(el, message, now);
     }
