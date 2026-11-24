@@ -33,6 +33,12 @@ export interface DensityTestElementSpec {
   /** Viewport-space `[x, y, width, height]`; `null` drops `state.rect`. */
   rect?: [number, number, number, number] | null;
   text?: string;
+  /**
+   * The row's visible text (`text`, innerText-equivalent). Defaults to `text`;
+   * `null` omits it, as the serializer does for an icon-only control whose
+   * `textContent` is its aria-label / title fallback.
+   */
+  visibleText?: string | null;
   visible?: boolean | null;
   visibilityReason?: ElementState['visibilityReason'];
   /** `false` drops `state.computedStyles`. */
@@ -141,6 +147,10 @@ export function densityTestElement(spec: DensityTestElementSpec): DensityTestSna
     };
   }
   if (spec.role !== undefined) row.role = spec.role;
+  const visibleText = spec.visibleText === undefined ? spec.text : spec.visibleText;
+  if (visibleText !== null && visibleText !== undefined && visibleText !== '') {
+    row.text = scrub(spec.redacted ? '[REDACTED]' : visibleText);
+  }
   if (spec.uiBridgeId !== undefined) row.uiBridgeId = spec.uiBridgeId;
   if (spec.origin !== undefined) row.origin = spec.origin;
   return row;

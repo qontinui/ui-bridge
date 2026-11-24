@@ -5,6 +5,7 @@
  *
  *   ui-bridge-density measure --snapshot <file|-> --role <role>
  *                             [--fixture <name>] [--targets <file>] [--capture-out <file>]
+ *   ui-bridge-density measure --capture <file> [--capture <file>]... [--targets <file>]
  *
  * `--snapshot` reads a `GET /control/snapshot` answer from any relay or runner,
  * in the relay's `{ success, data, _meta }` envelope or bare (the form the
@@ -12,13 +13,17 @@
  * standard input. Standard output is ONE JSON document: the cells in order,
  * each with its `Observation` from producer `sdk/density`, and `next[]`.
  *
- * In this release `measure` answers the capture summary — the cell, the
- * viewport, the bases and the coverage — the structure summary: leaves,
- * kinds by the rule that decided them (`kindBy`), blocks, pins, and how many
- * items took each `structureBy` — the repeats with their row quantities, and
- * each affordance with the rule that detected it. `--capture-out` writes the text-free
- * `ui-bridge/density-capture@1`, which is how a cell is kept for a later
- * `diff` without keeping the snapshot (which carries the page's text).
+ * `measure` answers the full report of each cell (`measureDensity` in the
+ * core): the bases (with `interactionsBasis: static`), the structure, the
+ * ledger of the first screen and the page, and — with `--targets` — one entry
+ * per ask with its reach, the role quantities (`answeredAt[k]` as intervals,
+ * the means, the unanswered asks), the blocks with their claimed weight and
+ * displacement, the unclaimed and possibly unclaimed blocks; then the
+ * repeats, the affordances and the legibility bounds. `--capture-out` writes
+ * the text-free `ui-bridge/density-capture@1`, which is how a cell is kept for
+ * a later `diff` without keeping the snapshot (which carries the page's text).
+ * `--capture` (repeatable) measures saved captures instead of a snapshot, one
+ * cell each, and a block's `invariance` is read across them.
  *
  * Exit: 0 an answer (an `unknown` observation IS an answer), 1 an internal
  * error (a bug, with its stack on stderr), 2 a usage error,
@@ -35,7 +40,7 @@
  * The density core is the generated copy under `./density/` (scripts/sync-density.mjs),
  * never `@qontinui/ui-bridge`: the SDK depends on this package, not the reverse.
  *
- * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change, Phases 2 to 4.
+ * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change, Phases 2 to 5.
  */
 
 import { fstatSync, readFileSync, statSync, writeFileSync } from 'node:fs';
@@ -45,23 +50,14 @@ import { isEntryModule } from './entry-guard.js';
 import {
   DENSITY_PRODUCER_ID,
   captureDensityFromSnapshot,
-  densityAffordances,
   densityAsksHash,
-  densityRepeats,
+  measureDensity,
+  parseDensityCapture,
   parseDensityTargets,
-  summarizeDensityAffordances,
-  summarizeDensityRepeats,
-  summarizeDensityStructure,
-  type DensityAffordancesReport,
   type DensityCapture,
-  type DensityCaptureBases,
-  type DensityCaptureViewport,
-  type DensityCell,
-  type DensityCoverage,
-  type DensityProbeResult,
+  type DensityMeasureReport,
+  type DensityNextStep,
   type DensityProducer,
-  type DensityRepeatsReport,
-  type DensityStructureSummary,
   type DensityTargets,
 } from './density/index.js';
 import { Observation } from './observation/observation.js';
@@ -88,6 +84,7 @@ const USAGE = `ui-bridge-density — reach per role, from a UI Bridge control sn
 
 Usage:
   ui-bridge-density measure --snapshot <file|-> --role <role> [options]
+  ui-bridge-density measure --capture <file> [--capture <file>]... [--targets <file>]
   ui-bridge-density --help | --version
 
 measure:
@@ -98,26 +95,31 @@ measure:
   --targets <file>         A ui-bridge/density-targets@1 file: checks the role's
                            probe and evaluates its text matchers
   --capture-out <file>     Write the text-free ui-bridge/density-capture@1
+  --capture <file>         Measure a saved ui-bridge/density-capture@1 instead of
+                           a snapshot (repeatable: one cell each; block
+                           invariance is read across them). Not with --snapshot,
+                           --role, --fixture or --capture-out: a capture carries
+                           its own cell.
 
 Output: one JSON document on standard output — the cells, each with its
-Observation (producer sdk/density), and next[].
+Observation (producer sdk/density), and next[]. With --targets, each cell
+reports per-ask reach, answeredAt[k] as intervals, the unanswered asks and the
+unclaimed blocks. Interactions are read from structure and ARIA state; no
+control is operated (interactionsBasis: static).
 Exit: 0 an answer (unknown included), 1 internal error, 2 usage error,
 129/130/143 interrupted.
 `;
 
-/** The closed vocabulary of follow-up steps a report may name (plan "Budget half"). */
-export type DensityNextStep =
-  | 'write-targets'
-  | 'review-targets'
-  | 'set-limit'
-  | 'capture'
-  | 'apply'
-  | 're-measure';
+export type { DensityNextStep };
 
 export interface DensityMeasureArgs {
   verb: 'measure';
-  snapshot: string;
-  role: string;
+  /** `null` exactly when `captures` is not empty. */
+  snapshot: string | null;
+  /** Saved captures to measure instead of a snapshot. */
+  captures: string[];
+  /** `null` with `captures` (each carries its role). */
+  role: string | null;
   fixture: string | null;
   targets: string | null;
   captureOut: string | null;
@@ -148,6 +150,7 @@ export function parseDensityArgs(argv: string[]): DensityCliArgs {
   let fixture: string | null = null;
   let targets: string | null = null;
   let captureOut: string | null = null;
+  const captures: string[] = [];
   const seen = new Set<string>();
   const value = (flag: string, raw: string | undefined): string => {
     // A flag given twice is refused: keeping the last `--role` silently would
@@ -176,6 +179,14 @@ export function parseDensityArgs(argv: string[]): DensityCliArgs {
       case '--targets':
         targets = value('--targets', rest[++i]);
         break;
+      case '--capture': {
+        // Repeatable: each one is a cell.
+        const v = consumeValue('--capture', rest[++i], mkError);
+        if (v === null || v.trim() === '') throw mkError('--capture expects a value');
+        if (v === '-') throw mkError('--capture takes a file path, not -');
+        captures.push(v);
+        break;
+      }
       case '--capture-out':
         captureOut = value('--capture-out', rest[++i]);
         // Standard output already carries the report; `-` here would name a file.
@@ -188,40 +199,43 @@ export function parseDensityArgs(argv: string[]): DensityCliArgs {
         throw mkError(`Unexpected argument: ${arg ?? ''}\n\n${USAGE}`);
     }
   }
-  if (snapshot === null) throw mkError(`measure: --snapshot is required\n\n${USAGE}`);
+  if (captures.length > 0) {
+    for (const [flag, given] of [
+      ['--snapshot', snapshot],
+      ['--role', role],
+      ['--fixture', fixture],
+      ['--capture-out', captureOut],
+    ] as const) {
+      if (given !== null) {
+        throw mkError(
+          `measure: ${flag} is not taken with --capture (a capture carries its own cell)`
+        );
+      }
+    }
+    return {
+      verb: 'measure',
+      snapshot: null,
+      captures,
+      role: null,
+      fixture: null,
+      targets,
+      captureOut: null,
+    };
+  }
+  if (snapshot === null) throw mkError(`measure: --snapshot or --capture is required\n\n${USAGE}`);
   if (role === null) throw mkError(`measure: --role is required\n\n${USAGE}`);
-  return { verb: 'measure', snapshot, role, fixture, targets, captureOut };
-}
-
-/** What `measure` reports for a cell in this release. Holds no page text. */
-export interface DensityCaptureSummary {
-  scope: DensityCapture['scope'];
-  cell: DensityCell;
-  viewport: DensityCaptureViewport;
-  bases: DensityCaptureBases;
-  coverage: DensityCoverage;
-  probe: DensityProbeResult | null;
-  items: number;
-  structureResolved: boolean;
-  /** Leaves, kinds by `kindBy`, blocks, pins and the `structureBy` counts. */
-  structure: DensityStructureSummary;
-  /** Lists, tables and card stacks, with their row quantities (line bands estimated). */
-  repeats: DensityRepeatsReport;
-  /** Disclosures, tabs, menus, search, filters, pagers, truncation and abbreviation, each with its rule. */
-  affordances: DensityAffordancesReport;
-  snapshotId: string | null;
-  observedAt: string | null;
-  targetsHash: string | null;
+  return { verb: 'measure', snapshot, captures, role, fixture, targets, captureOut };
 }
 
 export interface DensityReportCell {
-  /** `null` viewport while the observation is unknown: the snapshot gave none to trust. */
+  /** `null` viewport while the observation is unknown: the input gave none to trust. */
   cell: {
     role: string | null;
     viewport: { width: number; height: number } | null;
     fixture: string | null;
   };
-  observation: Observation<DensityCaptureSummary>;
+  /** The cell's full report (`measureDensity`), or the unknown that stood in its way. */
+  observation: Observation<DensityMeasureReport>;
 }
 
 export interface DensityReport {
@@ -239,7 +253,29 @@ export interface DensityMeasureInput {
   targets: DensityTargets | null;
 }
 
-/** The pure half of `measure`: a parsed snapshot in, the report and the capture out. */
+/** `next[]` of a report: the targets' own steps, the cells', then `capture` for any cell short of measured. */
+function nextOf(
+  cells: readonly DensityReportCell[],
+  targets: DensityTargets | null
+): DensityNextStep[] {
+  const next: DensityNextStep[] = [];
+  const add = (step: DensityNextStep) => {
+    if (!next.includes(step)) next.push(step);
+  };
+  // Read from the targets too, so that a cell answering unknown still names them.
+  if (targets === null) add('write-targets');
+  else if (targets.review === null || targets.review.asksHash !== densityAsksHash(targets)) {
+    add('review-targets');
+  }
+  for (const c of cells) {
+    if (c.observation.status === 'measured') c.observation.value.next.forEach(add);
+  }
+  // Anything short of a measured cell needs a capture to measure.
+  if (cells.some((c) => c.observation.status !== 'measured')) add('capture');
+  return next;
+}
+
+/** The pure half of `measure` over a snapshot: a parsed snapshot in, the report and the capture out. */
 export function measureDensityCell(
   input: DensityMeasureInput,
   producer: DensityProducer = densityCliProducer()
@@ -250,7 +286,7 @@ export function measureDensityCell(
     fixture: input.fixture,
     targets: input.targets,
   });
-  let observation: Observation<DensityCaptureSummary>;
+  let observation: Observation<DensityMeasureReport>;
   let capture: DensityCapture | null = null;
   let cell: DensityReportCell['cell'] = {
     role: input.role,
@@ -260,51 +296,37 @@ export function measureDensityCell(
   if (obs.status === 'measured') {
     capture = obs.value;
     cell = capture.cell;
-    // Computed once: the affordances' filters and pagers act on these repeats.
-    // Not computed for a capture the summaries will report as unresolved.
-    const keyed = capture.structureResolved && capture.repeatKeysResolved;
-    const repeats = keyed ? densityRepeats(capture, input.targets) : [];
-    const affordances = keyed ? densityAffordances(capture, input.targets, { repeats }) : [];
-    observation = Observation.measured<DensityCaptureSummary>(
-      {
-        scope: capture.scope,
-        cell: capture.cell,
-        viewport: capture.viewport,
-        bases: capture.bases,
-        coverage: capture.coverage,
-        probe: capture.probe,
-        items: capture.items.length,
-        structureResolved: capture.structureResolved,
-        structure: summarizeDensityStructure(capture, input.targets),
-        repeats: summarizeDensityRepeats(capture, input.targets, repeats),
-        affordances: summarizeDensityAffordances(capture, input.targets, affordances),
-        snapshotId: capture.snapshotId,
-        observedAt: capture.observedAt,
-        targetsHash: capture.targetsHash,
-      },
-      obs.provenance
-    );
+    observation = measureDensity(capture, {
+      producer,
+      targets: input.targets,
+      captures: [capture],
+      evaluatedAt: obs.provenance.evaluatedAt,
+    });
   } else {
-    // An unknown or absent observation carries no value to summarise, so it
+    // An unknown or absent observation carries no value to measure, so it
     // passes through unchanged: neither variant has a `value` to retype.
     observation = obs;
   }
-
-  const next: DensityNextStep[] = [];
-  if (input.targets === null) next.push('write-targets');
-  else if (
-    input.targets.review === null ||
-    input.targets.review.asksHash !== densityAsksHash(input.targets)
-  ) {
-    next.push('review-targets');
-  }
-  // Anything short of a measured cell needs a capture to measure.
-  if (observation.status !== 'measured') next.push('capture');
-
+  const cells: DensityReportCell[] = [{ cell, observation }];
   return {
-    report: { command: 'measure', producer, cells: [{ cell, observation }], next },
+    report: { command: 'measure', producer, cells, next: nextOf(cells, input.targets) },
     capture,
   };
+}
+
+/** The pure half of `measure` over saved captures: one cell each, invariance read across them. */
+export function measureDensityCaptures(
+  captures: readonly DensityCapture[],
+  targets: DensityTargets | null,
+  producer: DensityProducer = densityCliProducer()
+): DensityReport {
+  const cells = captures.map(
+    (capture): DensityReportCell => ({
+      cell: capture.cell,
+      observation: measureDensity(capture, { producer, targets, captures }),
+    })
+  );
+  return { command: 'measure', producer, cells, next: nextOf(cells, targets) };
 }
 
 /** The I/O `runDensityCli` performs, injectable for tests. */
@@ -322,10 +344,48 @@ export interface DensityCliIo {
 export type DensityCliStep =
   | 'parse-args'
   | 'read-snapshot'
+  | 'read-captures'
   | 'read-targets'
   | 'capture'
+  | 'measure'
   | 'write-capture'
   | 'print';
+
+/** Read and parse a targets file; a bad one is a usage error naming every problem. */
+function readTargets(io: DensityCliIo, path: string): DensityTargets {
+  let text: string;
+  try {
+    text = io.readFile(path);
+  } catch (err) {
+    throw new DensityCliArgError(
+      `--targets ${path}: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  const parsed = parseDensityTargets(parseJson(`--targets ${path}`, withoutBom(text)));
+  if (!parsed.ok) {
+    const lines = parsed.problems.map((p) => `  ${p.path}: ${p.message}`).join('\n');
+    throw new DensityCliArgError(`--targets ${path} is not a valid targets file:\n${lines}`);
+  }
+  return parsed.value;
+}
+
+/** Read and parse a saved capture; a bad one is a usage error naming every problem. */
+function readCapture(io: DensityCliIo, path: string): DensityCapture {
+  let text: string;
+  try {
+    text = io.readFile(path);
+  } catch (err) {
+    throw new DensityCliArgError(
+      `--capture ${path}: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  const parsed = parseDensityCapture(parseJson(`--capture ${path}`, withoutBom(text)));
+  if (!parsed.ok) {
+    const lines = parsed.problems.map((p) => `  ${p.path}: ${p.message}`).join('\n');
+    throw new DensityCliArgError(`--capture ${path} is not a valid capture file:\n${lines}`);
+  }
+  return parsed.value;
+}
 
 /** A UTF-8 byte-order mark, which some Windows tools write, is not JSON. */
 function withoutBom(text: string): string {
@@ -360,40 +420,50 @@ export async function runDensityCli(
       return 0;
     }
 
+    if (args.snapshot === null) {
+      onStep('read-captures');
+      const captures = args.captures.map((path) => readCapture(io, path));
+      let targets: DensityTargets | null = null;
+      if (args.targets !== null) {
+        onStep('read-targets');
+        targets = readTargets(io, args.targets);
+        const declared = targets.roles.map((r) => r.role);
+        captures.forEach((c, i) => {
+          if (c.cell.role === null || !declared.includes(c.cell.role)) {
+            throw new DensityCliArgError(
+              `--capture ${args.captures[i]} is a cell of role ${c.cell.role ?? '(none)'}, which ${args.targets} does not declare (declared: ${declared.join(', ')})`
+            );
+          }
+        });
+      }
+      onStep('measure');
+      const report = measureDensityCaptures(captures, targets);
+      onStep('print');
+      io.stdout(`${JSON.stringify(report, null, 2)}\n`);
+      return 0;
+    }
+    const snapshotArg = args.snapshot;
+    const role = args.role as string;
+
     onStep('read-snapshot');
     let snapshotText: string;
     try {
-      snapshotText = args.snapshot === '-' ? await io.readStdin() : io.readFile(args.snapshot);
+      snapshotText = snapshotArg === '-' ? await io.readStdin() : io.readFile(snapshotArg);
     } catch (err) {
       throw new DensityCliArgError(
-        `--snapshot ${args.snapshot}: ${err instanceof Error ? err.message : String(err)}`
+        `--snapshot ${snapshotArg}: ${err instanceof Error ? err.message : String(err)}`
       );
     }
-    const snapshot = parseJson(`--snapshot ${args.snapshot}`, withoutBom(snapshotText));
+    const snapshot = parseJson(`--snapshot ${snapshotArg}`, withoutBom(snapshotText));
 
     let targets: DensityTargets | null = null;
     if (args.targets !== null) {
       onStep('read-targets');
-      let text: string;
-      try {
-        text = io.readFile(args.targets);
-      } catch (err) {
-        throw new DensityCliArgError(
-          `--targets ${args.targets}: ${err instanceof Error ? err.message : String(err)}`
-        );
-      }
-      const parsed = parseDensityTargets(parseJson(`--targets ${args.targets}`, withoutBom(text)));
-      if (!parsed.ok) {
-        const lines = parsed.problems.map((p) => `  ${p.path}: ${p.message}`).join('\n');
-        throw new DensityCliArgError(
-          `--targets ${args.targets} is not a valid targets file:\n${lines}`
-        );
-      }
-      targets = parsed.value;
-      if (!targets.roles.some((r) => r.role === args.role)) {
+      targets = readTargets(io, args.targets);
+      if (!targets.roles.some((r) => r.role === role)) {
         const declared = targets.roles.map((r) => r.role).join(', ');
         throw new DensityCliArgError(
-          `--role ${args.role} is not declared in ${args.targets} (declared: ${declared})`
+          `--role ${role} is not declared in ${args.targets} (declared: ${declared})`
         );
       }
     }
@@ -401,7 +471,7 @@ export async function runDensityCli(
     onStep('capture');
     const { report, capture } = measureDensityCell({
       snapshot,
-      role: args.role,
+      role,
       fixture: args.fixture,
       targets,
     });
@@ -411,7 +481,7 @@ export async function runDensityCli(
       // Writing the capture over an input would destroy what was measured.
       const same = io.sameFile ?? ((a: string, b: string) => resolvePath(a) === resolvePath(b));
       for (const [flag, input] of [
-        ['--snapshot', args.snapshot],
+        ['--snapshot', snapshotArg],
         ['--targets', args.targets],
       ] as const) {
         // `-` (standard input) is compared only by a host that can stat it.

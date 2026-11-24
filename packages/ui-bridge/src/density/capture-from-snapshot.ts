@@ -254,6 +254,23 @@ function buildItem(
     shape = densityShapeOf(text);
   }
 
+  // ---- is that text drawn? ----
+  // `state.textContent` falls back to aria-label / title for an element with
+  // no text, and counts hidden descendants' text; the row's `text` is the
+  // visible (innerText-equivalent) text, with no fallback. A serializer that
+  // writes `nameSource` (2026-09) also writes `text` (2026-05), so with
+  // `nameSource` present an absent `text` means no visible text; without it,
+  // an absent `text` may be a serializer that predates the field.
+  let charsDrawn: boolean | null = null;
+  if (chars === 0) {
+    charsDrawn = true;
+  } else if (chars !== null) {
+    const visible = typeof el.text === 'string' ? collapse(el.text) : '';
+    if (visible !== '') charsDrawn = true;
+    else if (str(state.nameSource) !== null || str(el.nameSource) !== null) charsDrawn = false;
+    else miss('charsDrawn');
+  }
+
   // ---- typography and position ----
   let fontPx: number | null = null;
   let lineHeightPx: number | null = null;
@@ -351,6 +368,7 @@ function buildItem(
       visibility,
       chars,
       ownChars: null,
+      charsDrawn,
       blockKey: null,
       siblingKey: null,
       cousinKey: null,

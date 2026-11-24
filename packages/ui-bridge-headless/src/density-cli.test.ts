@@ -20,6 +20,7 @@ import {
   sameFileOnDisk,
   type DensityCliIo,
 } from './density-cli';
+import { parseDensityTargets } from './density/index';
 
 /**
  * `ui-bridge-density measure`, run as the built bin (dist/density-cli.js) over
@@ -61,6 +62,8 @@ const BARE = {
       tagName: 'div',
       category: 'content',
       identifier: { xpath: '/html/body/div[1]' },
+      // The row's visible text, which a serializer since 2026-05 writes.
+      text: 'Order 4711',
       state: {
         visible: true,
         rect: { x: 0, y: 100, width: 360, height: 40, top: 100, left: 0, right: 360, bottom: 140 },
@@ -99,11 +102,89 @@ const EXPECTED_VALUE = {
     scrollBasis: 'page',
     scroller: null,
     contentCap: { status: 'unreported', contentRows: 1 },
+    interactionsBasis: 'static',
+    structureBy: { xpath: 1, geometry: 0 },
+    kindBy: { declared: 0, landmark: 0, role: 0, 'author-id': 0, shape: 0, other: 1 },
   },
   coverage: { considered: 1, measured: 1, unmeasured: [] },
   probe: null,
   items: 1,
-  structureResolved: true,
+  // 360 x 740 is 45 x 92 cells of 8 px; the row covers 45 x 5 of them.
+  ledger: {
+    gridPx: 8,
+    uncoveredMeans: 'unregistered-or-empty',
+    firstScreen: {
+      widthPx: 360,
+      heightPx: 740,
+      cells: 4140,
+      byKind: {
+        chrome: { cells: 0, share: 0 },
+        answer: { cells: 0, share: 0 },
+        value: { cells: 0, share: 0 },
+        control: { cells: 0, share: 0 },
+        label: { cells: 0, share: 0 },
+        heading: { cells: 0, share: 0 },
+        prose: { cells: 0, share: 0 },
+        media: { cells: 0, share: 0 },
+        other: { cells: 225, share: 225 / 4140 },
+        uncovered: { cells: 3915, share: 3915 / 4140 },
+      },
+    },
+    page: {
+      widthPx: 360,
+      heightPx: 1200,
+      cells: 6750,
+      byKind: {
+        chrome: { cells: 0, share: 0 },
+        answer: { cells: 0, share: 0 },
+        value: { cells: 0, share: 0 },
+        control: { cells: 0, share: 0 },
+        label: { cells: 0, share: 0 },
+        heading: { cells: 0, share: 0 },
+        prose: { cells: 0, share: 0 },
+        media: { cells: 0, share: 0 },
+        other: { cells: 225, share: 225 / 6750 },
+        uncovered: { cells: 6525, share: 6525 / 6750 },
+      },
+    },
+    contentTopPx: 100,
+    unpainted: { noRect: 0, hidden: 0, visibilityUnknown: 0 },
+  },
+  blocks: { shown: 0, total: 0, truncated: false, list: [] },
+  bounds: {
+    textLeaves: {
+      considered: 0,
+      undrawn: 0,
+      drawnUnknown: 0,
+      fontUnknown: 0,
+      lineHeightUnknown: 0,
+    },
+    fontPx: {
+      unknown: 'input_missing',
+      reason: 'no drawn answer or value leaf carries a font size',
+    },
+    lineHeightRatio: {
+      unknown: 'input_missing',
+      reason: 'no drawn answer or value leaf carries both a font size and a line height',
+    },
+    gapEm: {
+      unknown: 'input_missing',
+      reason:
+        'no drawn answer or value leaf with a font size has a painted leaf below it in its column',
+    },
+    controls: {
+      count: 0,
+      minSidePx: { unknown: 'input_missing', reason: 'no painted control leaf' },
+      minGapPx: {
+        unknown: 'input_missing',
+        reason: 'fewer than two painted control leaves that do not overlap',
+      },
+    },
+    truncated: { shown: 0, total: 0, truncated: false, ids: [], list: [] },
+    occluded: { shown: 0, total: 0, truncated: false, ids: [] },
+  },
+  next: ['write-targets'],
+  captureTargetsHash: null,
   structure: {
     structureResolved: true,
     structureBy: { xpath: 1, geometry: 0 },
@@ -987,5 +1068,271 @@ describe('measureDensityCell: repeats and affordances', () => {
       ['app.orders.state', 'control-above-repeat'],
       ['app.orders.next', 'nav-after-repeat'],
     ]);
+  });
+});
+
+/** A page whose open order sits 40 px past the fold, under a promo article that answers nothing. */
+function reachRow(id: string, xpath: string, y: number, h: number, text: string) {
+  return {
+    id,
+    type: 'generic',
+    tagName: xpath.endsWith('/p') ? 'p' : 'div',
+    category: 'content',
+    identifier: { xpath },
+    text,
+    state: {
+      visible: true,
+      rect: { x: 0, y, width: 360, height: h, top: y, left: 0, right: 360, bottom: y + h },
+      textContent: text,
+      scrollWidth: 360,
+      clientWidth: 360,
+      computedStyles: {
+        fontSize: '14px',
+        lineHeight: '20px',
+        position: 'static',
+        overflow: 'visible',
+      },
+    },
+  };
+}
+
+const REACH_PAGE = {
+  timestamp: 1763900000000,
+  snapshotId: 'snap-synthetic-reach',
+  viewport: {
+    viewportWidth: 360,
+    viewportHeight: 740,
+    scrollX: 0,
+    scrollY: 0,
+    documentWidth: 360,
+    documentHeight: 2000,
+    container: 'viewport',
+  },
+  elements: [
+    reachRow('app.promo.p', '/html/body/main/article/p', 60, 600, 'Synthetic promo'),
+    reachRow('app.orders.open-1', '/html/body/main/section[1]/div', 760, 40, 'Order 4711'),
+    reachRow('app.help.p', '/html/body/main/section[2]/p', 1500, 40, 'Synthetic help'),
+  ],
+  components: [],
+};
+
+const REACH_TARGETS = {
+  schema: 'ui-bridge/density-targets@1',
+  surface: '/',
+  profile: 'audience_profile/synthetic@1',
+  roles: [
+    {
+      role: 'buyer',
+      asks: [
+        {
+          id: 'B1',
+          rank: 1,
+          weight: 5,
+          kind: 'state',
+          question: 'Which of my open orders need action today?',
+          source: {
+            doc: 'audience_profile/synthetic@1',
+            quote: 'Buyers act on open orders daily.',
+          },
+          answer: { idPrefix: 'app.orders.open-' },
+        },
+        {
+          id: 'B2',
+          rank: 2,
+          weight: 1,
+          kind: 'lookup',
+          question: 'What did I order last year?',
+          source: { doc: 'audience_profile/synthetic@1', quote: 'Buyers look back now and then.' },
+          answer: null,
+        },
+      ],
+    },
+  ],
+};
+
+interface ReachValue {
+  role: {
+    asks: Array<{
+      id: string;
+      state: string;
+      first: {
+        id: string;
+        scrollPx: number;
+        gestures: number;
+        interactions: number;
+        actions: number;
+      } | null;
+    }>;
+    answeredAt: Array<{ k: number; lo: number; hi: number }>;
+    unanswered: string[];
+  };
+  bases: { interactionsBasis: string };
+  unclaimed: { list: Array<{ block: string; firstScreenPx: number; displacementPx: number }> };
+  blocks: { list: Array<{ id: string; invariance: unknown }> };
+}
+
+describe('ui-bridge-density measure: reach per ask (Phase 5)', () => {
+  function memoryIo(files: Record<string, string>) {
+    const out = { stdout: '', stderr: '' };
+    const io: DensityCliIo = {
+      readFile: (p) => {
+        const text = files[p];
+        if (text === undefined) throw new Error(`ENOENT: ${p}`);
+        return text;
+      },
+      readStdin: async () => '',
+      writeFile: () => {},
+      stdout: (t) => {
+        out.stdout += t;
+      },
+      stderr: (t) => {
+        out.stderr += t;
+      },
+    };
+    return { io, out };
+  }
+
+  it('--targets reports per-ask reach, answeredAt intervals, the unanswered asks and the unclaimed blocks', () => {
+    writeFileSync(join(dir, 'reach.json'), JSON.stringify(REACH_PAGE));
+    writeFileSync(join(dir, 'reach-targets.json'), JSON.stringify(REACH_TARGETS));
+    const r = run([
+      'measure',
+      '--snapshot',
+      join(dir, 'reach.json'),
+      '--role',
+      'buyer',
+      '--targets',
+      join(dir, 'reach-targets.json'),
+    ]);
+    expect(r.stderr).toBe('');
+    expect(r.status).toBe(0);
+    const report = JSON.parse(r.stdout) as Report;
+    const v = report.cells[0]!.observation.value as ReachValue;
+    expect(v.bases.interactionsBasis).toBe('static');
+    // The order's first line ends at 780, 40 px past the 740 px fold: one gesture.
+    expect(v.role.asks.map((a) => [a.id, a.state, a.first])).toEqual([
+      [
+        'B1',
+        'rendered',
+        expect.objectContaining({
+          id: 'app.orders.open-1',
+          scrollPx: 40,
+          gestures: 1,
+          interactions: 0,
+          actions: 1,
+        }),
+      ],
+      ['B2', 'unanswered', null],
+    ]);
+    expect(v.role.answeredAt).toEqual([
+      { k: 0, lo: 0, hi: 0 },
+      { k: 1, lo: 5 / 6, hi: 5 / 6 },
+      { k: 2, lo: 5 / 6, hi: 5 / 6 },
+      { k: 3, lo: 5 / 6, hi: 5 / 6 },
+    ]);
+    expect(v.role.unanswered).toEqual(['B2']);
+    // The promo fills 600 px of the first screen, answers nothing, and costs
+    // B1 (weight 5 of 6) its 40 px of scroll.
+    expect(v.unclaimed.list).toEqual([
+      { block: 'path:/html/body/main/article', firstScreenPx: 600, displacementPx: (5 * 40) / 6 },
+    ]);
+    expect(report.next).toEqual(['review-targets']);
+  }, 60_000);
+
+  it('--capture measures saved captures, one cell each, and reads invariance across them', () => {
+    const outs = ['a', 'b'].map((fixture) => {
+      const out = join(dir, `reach-capture-${fixture}.json`);
+      const w = run([
+        'measure',
+        '--snapshot',
+        join(dir, 'reach.json'),
+        '--role',
+        'buyer',
+        '--fixture',
+        fixture,
+        '--targets',
+        join(dir, 'reach-targets.json'),
+        '--capture-out',
+        out,
+      ]);
+      expect(w.status).toBe(0);
+      return out;
+    });
+    const r = run([
+      'measure',
+      '--capture',
+      outs[0]!,
+      '--capture',
+      outs[1]!,
+      '--targets',
+      join(dir, 'reach-targets.json'),
+    ]);
+    expect(r.stderr).toBe('');
+    expect(r.status).toBe(0);
+    const report = JSON.parse(r.stdout) as Report;
+    expect(report.cells.map((c) => c.cell)).toEqual([
+      { role: 'buyer', viewport: { width: 360, height: 740 }, fixture: 'a' },
+      { role: 'buyer', viewport: { width: 360, height: 740 }, fixture: 'b' },
+    ]);
+    const v = report.cells[0]!.observation.value as ReachValue;
+    expect(v.blocks.list.map((b) => [b.id, b.invariance])).toEqual([
+      ['path:/html/body/main/article', { identical: 2, of: 2, across: ['fixture'] }],
+      ['path:/html/body/main/section[1]', { identical: 2, of: 2, across: ['fixture'] }],
+      ['path:/html/body/main/section[2]', { identical: 2, of: 2, across: ['fixture'] }],
+    ]);
+    expect(v.role.answeredAt[1]).toEqual({ k: 1, lo: 5 / 6, hi: 5 / 6 });
+  }, 60_000);
+
+  it('--capture with --snapshot or --role is a usage error', async () => {
+    for (const extra of [
+      ['--snapshot', 'x.json'],
+      ['--role', 'buyer'],
+    ]) {
+      const { io, out } = memoryIo({});
+      const code = await runDensityCli(['measure', '--capture', 'c.json', ...extra], io);
+      expect(code).toBe(2);
+      expect(out.stdout).toBe('');
+      expect(out.stderr).toContain(`${extra[0]} is not taken with --capture`);
+    }
+  });
+
+  it('a capture file that is not a capture is a usage error naming the problem', async () => {
+    const { io, out } = memoryIo({ 'c.json': JSON.stringify({ schema: 'nope' }) });
+    const code = await runDensityCli(['measure', '--capture', 'c.json'], io);
+    expect(code).toBe(2);
+    expect(out.stderr).toContain('--capture c.json is not a valid capture file:');
+    expect(out.stderr).toContain('$.schema');
+  });
+});
+
+describe('measureDensityCell: reach per ask (Phase 5)', () => {
+  it('measureDensityCell reports per-ask reach, answeredAt intervals, the unanswered asks and the unclaimed blocks', () => {
+    const targets = parseDensityTargets(REACH_TARGETS);
+    if (!targets.ok) throw new Error(JSON.stringify(targets.problems));
+    const { report } = measureDensityCell(
+      { snapshot: REACH_PAGE, role: 'buyer', fixture: null, targets: targets.value },
+      { id: 'sdk/density', version: '0.0.0-test', package: '@qontinui/ui-bridge-headless' }
+    );
+    const obs = report.cells[0]!.observation;
+    if (obs.status !== 'measured') throw new Error(`expected measured, got ${obs.status}`);
+    const v = obs.value;
+    expect(v.bases.interactionsBasis).toBe('static');
+    expect(
+      v.role!.asks.map((a) => [a.id, a.state, a.first?.scrollPx ?? null, a.first?.actions ?? null])
+    ).toEqual([
+      ['B1', 'rendered', 40, 1],
+      ['B2', 'unanswered', null, null],
+    ]);
+    expect(v.role!.answeredAt).toEqual([
+      { k: 0, lo: 0, hi: 0 },
+      { k: 1, lo: 5 / 6, hi: 5 / 6 },
+      { k: 2, lo: 5 / 6, hi: 5 / 6 },
+      { k: 3, lo: 5 / 6, hi: 5 / 6 },
+    ]);
+    expect(v.role!.unanswered).toEqual(['B2']);
+    expect(v.unclaimed!.list).toEqual([
+      { block: 'path:/html/body/main/article', firstScreenPx: 600, displacementPx: (5 * 40) / 6 },
+    ]);
+    expect(v.possiblyUnclaimed!.list).toEqual([]);
   });
 });

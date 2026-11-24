@@ -173,6 +173,19 @@ export interface DensityItem {
   /** `chars` minus the registered children's, not below 0; `null` when a term is, or until structure is resolved. */
   ownChars: number | null;
   /**
+   * Whether the text `chars` counts is drawn on the page. The serializer
+   * fills `state.textContent` from `aria-label` / `title` when an element has
+   * no text (an icon-only control), and `textContent` also counts text inside
+   * hidden descendants; neither is drawn. `true` when `chars` is 0 or the
+   * row's visible text (`text`, the innerText-equivalent) is non-empty;
+   * `false` when the item counts characters but its row carries no visible
+   * text; `null` when unknown (redacted text, or a serializer too old to say).
+   * The ledger still lays the item out; a reader of TEXT (an answer's
+   * legibility, the font bounds) never counts an undrawn one. Optional on read,
+   * where absence is `null`.
+   */
+  charsDrawn: boolean | null;
+  /**
    * Opaque key of the nearest `section`, `article`, `aside`, `form`,
    * `fieldset`, `table` or `dialog` ancestor-or-self in the xpath chain: items
    * that share it share a block by path. Built from tags, sibling indices and
@@ -669,6 +682,7 @@ const ITEM_KEYS = [
 function readItem(r: Reader, value: unknown, path: string): DensityItem | null {
   const o = r.object(value, path, ITEM_KEYS, [
     'blockKey',
+    'charsDrawn',
     'siblingKey',
     'cousinKey',
     'cousinRowKey',
@@ -690,6 +704,8 @@ function readItem(r: Reader, value: unknown, path: string): DensityItem | null {
     visibility: r.oneOfOrNull(o.visibility, `${path}.visibility`, DENSITY_VISIBILITIES),
     chars: r.numberOrNull(o.chars, `${path}.chars`, { integer: true, min: 0 }),
     ownChars: r.numberOrNull(o.ownChars, `${path}.ownChars`, { integer: true, min: 0 }),
+    charsDrawn:
+      o.charsDrawn === undefined ? null : r.booleanOrNull(o.charsDrawn, `${path}.charsDrawn`),
     // Optional on read: a capture written before the structure pass carried
     // no `blockKey`, and its absence is the same statement as `null`.
     blockKey: o.blockKey === undefined ? null : r.stringOrNull(o.blockKey, `${path}.blockKey`),

@@ -56,6 +56,7 @@ describe('density adapter reads the fields the registry serializer writes', () =
         <ul id="ol" data-testid="orders-list"><li>Row one</li></ul>
         <button id="tab" role="tab" aria-selected="false">Closed orders</button>
         <input id="q" type="search" />
+        <button id="ic" aria-label="Delete order"></button>
       </main>`;
     registry = new UIBridgeRegistry();
     // The provider wires a tracker the same way (react/UIBridgeProviderInit.ts).
@@ -127,6 +128,12 @@ describe('density adapter reads the fields the registry serializer writes', () =
       actions: ['type'],
       category: 'interactive',
     });
+    // An icon-only control: the serializer fills its textContent from aria-label.
+    registry.registerElement('app.orders.delete', document.getElementById('ic')!, {
+      type: 'button',
+      actions: ['click'],
+      category: 'interactive',
+    });
     // A declared edge, as useUIRelationship writes it: the search narrows the list.
     tracker.declare('app.orders.search', 'app.orders.list', 'filters');
   });
@@ -161,6 +168,13 @@ describe('density adapter reads the fields the registry serializer writes', () =
     expect(bState.rect).toEqual(expect.objectContaining({ x: 0, y: 0, width: 0, height: 0 }));
     expect(typeof bState.visible).toBe('boolean');
     expect(bState.textContent).toBe('Refresh orders');
+    // Phase 5: the row's visible text (no aria-label / title fallback), which
+    // says whether the counted text is drawn.
+    expect(button.text).toBe('Refresh orders');
+    const icon = byId['app.orders.delete'];
+    expect((icon.state as Record<string, unknown>).textContent).toBe('Delete order');
+    expect(icon).not.toHaveProperty('text');
+    expect((icon.state as Record<string, unknown>).nameSource).toBe('aria-label');
     expect(bState.ariaExpanded).toBe(false);
     expect(typeof bState.scrollWidth).toBe('number');
     expect(typeof bState.clientWidth).toBe('number');
@@ -240,8 +254,14 @@ describe('density adapter reads the fields the registry serializer writes', () =
       position: 'sticky',
       expanded: false,
       truncated: false,
+      charsDrawn: true,
     });
     expect(button.visibility).not.toBeNull();
+    // The icon-only control counts its aria-label, which the page does not draw.
+    expect([byId['app.orders.delete'].chars, byId['app.orders.delete'].charsDrawn]).toEqual([
+      12,
+      false,
+    ]);
 
     const total = byId['app.orders.total'];
     expect(total).toMatchObject({
