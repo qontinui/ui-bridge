@@ -506,7 +506,7 @@ class Reader {
   number(
     value: unknown,
     path: string,
-    opts: { integer?: boolean; min?: number; exclusiveMin?: number } = {}
+    opts: { integer?: boolean; min?: number; exclusiveMin?: number; max?: number } = {}
   ): number {
     if (typeof value !== 'number' || !Number.isFinite(value)) {
       this.fail(path, 'must be a finite number');
@@ -514,6 +514,7 @@ class Reader {
     }
     if (opts.integer && !Number.isSafeInteger(value)) this.fail(path, 'must be an integer');
     if (opts.min !== undefined && value < opts.min) this.fail(path, `must be at least ${opts.min}`);
+    if (opts.max !== undefined && value > opts.max) this.fail(path, `must be at most ${opts.max}`);
     if (opts.exclusiveMin !== undefined && value <= opts.exclusiveMin) {
       this.fail(path, `must be greater than ${opts.exclusiveMin}`);
     }
@@ -892,10 +893,16 @@ export function parseDensityCapture(value: unknown): DensityParseResult<DensityC
     role: cellObj ? r.stringOrNull(cellObj.role, '$.cell.role') : null,
     viewport: {
       width: cellViewport
-        ? r.number(cellViewport.width, '$.cell.viewport.width', { exclusiveMin: 0 })
+        ? r.number(cellViewport.width, '$.cell.viewport.width', {
+            min: 1,
+            max: DENSITY_MAX_COORDINATE_PX,
+          })
         : 0,
       height: cellViewport
-        ? r.number(cellViewport.height, '$.cell.viewport.height', { exclusiveMin: 0 })
+        ? r.number(cellViewport.height, '$.cell.viewport.height', {
+            min: 1,
+            max: DENSITY_MAX_COORDINATE_PX,
+          })
         : 0,
     },
     fixture: cellObj ? r.stringOrNull(cellObj.fixture, '$.cell.fixture') : null,
@@ -911,12 +918,38 @@ export function parseDensityCapture(value: unknown): DensityParseResult<DensityC
     'container',
   ]);
   const viewport: DensityCaptureViewport = {
-    width: vp ? r.number(vp.width, '$.viewport.width', { exclusiveMin: 0 }) : 0,
-    height: vp ? r.number(vp.height, '$.viewport.height', { exclusiveMin: 0 }) : 0,
-    scrollX: vp ? r.number(vp.scrollX, '$.viewport.scrollX') : 0,
-    scrollY: vp ? r.number(vp.scrollY, '$.viewport.scrollY') : 0,
-    documentWidth: vp ? r.number(vp.documentWidth, '$.viewport.documentWidth', { min: 0 }) : 0,
-    documentHeight: vp ? r.number(vp.documentHeight, '$.viewport.documentHeight', { min: 0 }) : 0,
+    // The numeric boundary for the viewport, as the snapshot door applies it:
+    // a capture whose viewport is outside its range does not parse.
+    width: vp
+      ? r.number(vp.width, '$.viewport.width', { min: 1, max: DENSITY_MAX_COORDINATE_PX })
+      : 0,
+    height: vp
+      ? r.number(vp.height, '$.viewport.height', { min: 1, max: DENSITY_MAX_COORDINATE_PX })
+      : 0,
+    scrollX: vp
+      ? r.number(vp.scrollX, '$.viewport.scrollX', {
+          min: -DENSITY_MAX_COORDINATE_PX,
+          max: DENSITY_MAX_COORDINATE_PX,
+        })
+      : 0,
+    scrollY: vp
+      ? r.number(vp.scrollY, '$.viewport.scrollY', {
+          min: -DENSITY_MAX_COORDINATE_PX,
+          max: DENSITY_MAX_COORDINATE_PX,
+        })
+      : 0,
+    documentWidth: vp
+      ? r.number(vp.documentWidth, '$.viewport.documentWidth', {
+          min: 0,
+          max: DENSITY_MAX_COORDINATE_PX,
+        })
+      : 0,
+    documentHeight: vp
+      ? r.number(vp.documentHeight, '$.viewport.documentHeight', {
+          min: 0,
+          max: DENSITY_MAX_COORDINATE_PX,
+        })
+      : 0,
     container: vp
       ? r.oneOfOrNull(vp.container, '$.viewport.container', ['viewport', 'body'] as const)
       : null,
