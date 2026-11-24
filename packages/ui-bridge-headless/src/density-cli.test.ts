@@ -129,6 +129,7 @@ const EXPECTED_VALUE = {
   },
   repeats: {
     structureResolved: true,
+    repeatKeysResolved: true,
     byBasis: { path: 0, geometry: 0 },
     shown: 0,
     total: 0,
@@ -137,6 +138,7 @@ const EXPECTED_VALUE = {
   },
   affordances: {
     structureResolved: true,
+    repeatKeysResolved: true,
     interactionsBasis: 'static',
     byKind: {
       disclosure: 0,
@@ -860,6 +862,7 @@ describe('ui-bridge-density measure: repeats and affordances', () => {
     const value = report.cells[0]!.observation.value as { repeats: unknown; affordances: unknown };
     expect(value.repeats).toEqual({
       structureResolved: true,
+      repeatKeysResolved: true,
       byBasis: { path: 1, geometry: 0 },
       shown: 1,
       total: 1,
@@ -907,6 +910,7 @@ describe('ui-bridge-density measure: repeats and affordances', () => {
     };
     expect(value.affordances).toEqual({
       structureResolved: true,
+      repeatKeysResolved: true,
       interactionsBasis: 'static',
       byKind: {
         disclosure: 0,

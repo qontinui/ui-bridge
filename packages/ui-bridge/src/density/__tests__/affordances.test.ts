@@ -454,6 +454,83 @@ describe('affordances', () => {
     ]);
   });
 
+  it('a list in unregistered items inside each registered row stays; an edge to it is its filter only', () => {
+    const S = '/html/body/main/section';
+    const els: DensityTestElementSpec[] = [
+      { id: 'g', tag: 'section', xpath: S, rect: [0, 0, 800, 700], text: '' },
+      {
+        id: 'g.sel',
+        tag: 'select',
+        role: 'combobox',
+        category: 'interactive',
+        xpath: `${S}/select`,
+        rect: [0, 10, 200, 28],
+        text: 'All',
+      },
+      { id: 'g.list', tag: 'ul', xpath: `${S}/ul`, rect: [0, 50, 800, 600], text: '' },
+    ];
+    for (let k = 1; k <= 3; k++) {
+      const y = 50 + 200 * (k - 1);
+      els.push({
+        id: `g.c${k}`,
+        tag: 'li',
+        xpath: `${S}/ul/li[${k}]`,
+        rect: [0, y, 800, 180],
+        text: `Group ${k} A B C`,
+      });
+      for (let j = 1; j <= 3; j++) {
+        els.push({
+          id: `g.c${k}.l${j}`,
+          tag: 'a',
+          category: 'interactive',
+          xpath: `${S}/ul/li[${k}]/ul/li[${j}]/a`,
+          rect: [20, y + 40 + 40 * (j - 1), 200, 30],
+          text: 'ABC'[j - 1],
+        });
+      }
+    }
+    const c = capture(els, [{ source: 'g.sel', target: 'g.c2.l1', type: 'filters' }]);
+    const reps = densityRepeats(c, null);
+    expect(reps.map((r) => [r.id, r.rows])).toEqual([
+      ['repeat:g.c1', 3],
+      ['repeat:g.c1.l1', 3],
+      ['repeat:g.c2.l1', 3],
+      ['repeat:g.c3.l1', 3],
+    ]);
+    const filters = densityAffordances(c, null, { repeats: reps }).filter(
+      (a) => a.rule === 'declared-filters'
+    );
+    expect(filters.map((a) => [a.id, a.repeat])).toEqual([['g.sel', 'repeat:g.c2.l1']]);
+  });
+
+  it('a select-all checkbox in a table header is not a filter', () => {
+    const S = '/html/body/main/section';
+    const els: DensityTestElementSpec[] = [
+      { id: 't', tag: 'section', xpath: S, rect: [0, 0, 800, 400], text: '' },
+      { id: 't.table', tag: 'table', xpath: `${S}/table`, rect: [0, 0, 800, 200], text: '' },
+      {
+        id: 't.all',
+        tag: 'input',
+        role: 'checkbox',
+        category: 'interactive',
+        xpath: `${S}/table/thead/tr/th/input`,
+        rect: [0, 10, 20, 20],
+        text: '',
+      },
+      ...[1, 2, 3].map(
+        (k): DensityTestElementSpec => ({
+          id: `t.r${k}`,
+          tag: 'tr',
+          xpath: `${S}/table/tbody/tr[${k}]`,
+          rect: [0, 40 * k, 800, 40],
+          text: `Row ${k}`,
+        })
+      ),
+    ];
+    const found = densityAffordances(capture(els), null);
+    expect(found.filter((a) => a.kind === 'filter')).toEqual([]);
+  });
+
   it('a sort button in the table header does not stop the scope at the table', () => {
     const S = '/html/body/main/section';
     const els: DensityTestElementSpec[] = [

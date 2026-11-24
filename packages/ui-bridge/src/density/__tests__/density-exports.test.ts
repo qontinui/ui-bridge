@@ -82,6 +82,7 @@ describe('the ./density subpath', () => {
       'densityBlocks',
       'densityChildren',
       'densityHeadingLevel',
+      'densityInnermostRepeats',
       'densityLeaves',
       'densityMatcherKey',
       'densityNearestRepeats',
