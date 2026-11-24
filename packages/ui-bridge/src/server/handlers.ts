@@ -5974,6 +5974,8 @@ export function createHandlers(
           getState: () => {
             occludedBy?: string;
             occludedPct?: number;
+            clippedPct?: number;
+            clipScrollable?: boolean;
             textContent?: string;
           };
         }>;
@@ -5992,6 +5994,8 @@ export function createHandlers(
                 ),
                 occludedBy: state?.occludedBy,
                 occludedPct: state?.occludedPct,
+                clippedPct: state?.clippedPct,
+                clipScrollable: state?.clipScrollable,
                 textContent: state?.textContent,
               };
             }),

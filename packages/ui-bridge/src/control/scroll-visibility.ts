@@ -11,36 +11,16 @@
 /** Error code a scroll action carries when it provably moved nothing. */
 export const NO_SCROLL_EFFECT = 'NO_SCROLL_EFFECT';
 
-interface Box {
-  top: number;
-  left: number;
-  bottom: number;
-  right: number;
-}
+import { clipBoxOf, type ClipRect } from '../core/clip-box';
 
 const TOLERANCE = 0.5;
 
-function clipsOverflow(value: string): boolean {
-  return value === 'auto' || value === 'scroll' || value === 'hidden' || value === 'clip';
-}
-
 /**
- * Whether an ancestor clips its descendants' painting to its own box:
- * `auto`/`scroll` always; `hidden`/`clip` only when it really has overflowing
- * content (otherwise nothing of a descendant is cut off by it).
- */
-function clipsDescendants(el: HTMLElement): boolean {
-  const style = getComputedStyle(el);
-  const x = style.overflowX;
-  const y = style.overflowY;
-  if (!clipsOverflow(x) && !clipsOverflow(y)) return false;
-  if (x === 'auto' || x === 'scroll' || y === 'auto' || y === 'scroll') return true;
-  return el.scrollHeight > el.clientHeight || el.scrollWidth > el.clientWidth;
-}
-
-/**
- * The element is fully inside the viewport AND inside the clip box of every
- * clipping ancestor (an inner scroll container included).
+ * The element is fully inside the viewport AND inside its clip box — the
+ * region its containing-block chain lets it paint into (`core/clip-box.ts`,
+ * the same walk the visibility verdict uses). An inner scroll container
+ * clips it; a `fixed` element or an `absolute` one whose containing block
+ * lies above that container is not clipped by it.
  */
 export function isVisibleInScrollContext(el: Element): boolean {
   if (typeof window === 'undefined' || typeof el.getBoundingClientRect !== 'function') {
@@ -56,22 +36,17 @@ export function isVisibleInScrollContext(el: Element): boolean {
     hi - lo > boxHi - boxLo + TOLERANCE
       ? lo <= boxLo + TOLERANCE && hi >= boxHi - TOLERANCE
       : lo >= boxLo - TOLERANCE && hi <= boxHi + TOLERANCE;
-  const inside = (box: Box): boolean =>
+  const inside = (box: ClipRect): boolean =>
     axisOk(rect.top, rect.bottom, box.top, box.bottom) &&
     axisOk(rect.left, rect.right, box.left, box.right);
 
   if (!inside({ top: 0, left: 0, bottom: window.innerHeight, right: window.innerWidth })) {
     return false;
   }
-  let p: HTMLElement | null = el.parentElement;
-  while (p && p !== document.documentElement) {
-    if (clipsDescendants(p)) {
-      const c = p.getBoundingClientRect();
-      if (!inside({ top: c.top, left: c.left, bottom: c.bottom, right: c.right })) return false;
-    }
-    p = p.parentElement;
-  }
-  return true;
+  // Each clipper separately, not their intersection: an element larger than
+  // the intersection may still stick out of one of the wider clippers. An axis
+  // a clipper leaves open is ±Infinity, which `axisOk` always accepts.
+  return clipBoxOf(el).clippers.every((c) => inside(c.box));
 }
 
 /** Every ancestor's scroll offsets plus the window's, as one comparable string. */

@@ -1,5 +1,6 @@
 /**
- * Occlusion reporting on `ElementState` (core/registry.ts).
+ * Occlusion and clip reporting on `ElementState` (computed in
+ * core/element-state.ts, driven here through `UIBridgeRegistry`).
  *
  * The hit-test that detects "another element is painting over this one" has
  * always existed here, but it sampled ONE point (the element's centre) and
@@ -21,6 +22,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { UIBridgeRegistry } from '../registry';
+import { buildVisibilityReport } from '../../server/visibility-report';
 
 interface Box {
   el: HTMLElement;
@@ -32,18 +34,59 @@ let boxes: Box[] = [];
 const realElementFromPoint = document.elementFromPoint;
 
 function place(id: string, x: number, y: number, w: number, h: number, text = ''): HTMLElement {
+  return placeIn(document.body, id, x, y, w, h, { text });
+}
+
+/**
+ * `place` under an explicit parent. `hittable: false` keeps the element out of
+ * the stubbed `elementFromPoint`, which is how a CLIPPED region is modelled: a
+ * browser never returns the clipped element there, it returns whatever paints
+ * beneath it. `style` sets inline longhands, which jsdom's `getComputedStyle`
+ * reflects.
+ */
+function placeIn(
+  parent: HTMLElement,
+  id: string,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  opts: { text?: string; hittable?: boolean; style?: Record<string, string> } = {}
+): HTMLElement {
   const el = document.createElement('div');
   el.setAttribute('data-ui-bridge-id', id);
-  if (text) el.textContent = text;
-  document.body.appendChild(el);
+  if (opts.text) el.textContent = opts.text;
+  for (const [k, v] of Object.entries(opts.style ?? {})) el.style.setProperty(k, v);
+  parent.appendChild(el);
   el.getBoundingClientRect = () =>
     ({
       x, y, width: w, height: h,
       top: y, left: x, right: x + w, bottom: y + h,
       toJSON: () => ({}),
     }) as DOMRect;
-  boxes.push({ el, rect: { x, y, w, h } });
+  if (opts.hittable !== false) boxes.push({ el, rect: { x, y, w, h } });
   return el;
+}
+
+/**
+ * jsdom returns 0 for every client/offset metric, so a clipper's padding box
+ * has to be stated. `offsetWidth` matches the stubbed rect width, so the
+ * clipper reads as untransformed and the padding box (not the border box) is
+ * what clips.
+ */
+function paddingBox(
+  el: HTMLElement,
+  m: { width: number; height: number; clientLeft?: number; clientTop?: number }
+): void {
+  const define = (k: string, v: number) =>
+    Object.defineProperty(el, k, { value: v, configurable: true });
+  const border = { left: m.clientLeft ?? 0, top: m.clientTop ?? 0 };
+  define('clientLeft', border.left);
+  define('clientTop', border.top);
+  define('clientWidth', m.width - 2 * border.left);
+  define('clientHeight', m.height - 2 * border.top);
+  define('offsetWidth', el.getBoundingClientRect().width);
+  define('offsetHeight', el.getBoundingClientRect().height);
 }
 
 beforeEach(() => {
@@ -74,6 +117,8 @@ function stateOf(registry: UIBridgeRegistry, id: string) {
     occludedBy?: string;
     occludedPct?: number;
     visibilityReason?: string;
+    clippedPct?: number;
+    clipScrollable?: boolean;
     scrollWidth?: number;
     clientWidth?: number;
   };
@@ -191,4 +236,220 @@ describe('ElementState occlusion reporting', () => {
     expect(probes).toBe(9);
   });
 
+});
+
+/**
+ * Clipping by an ancestor's `overflow` is its own reason, not occlusion.
+ *
+ * The hit-test used to blame whatever `elementFromPoint` returned at a point
+ * the element's own scroller had cut off — the bottom-pinned footer under a
+ * scrolled sidebar nav, the page content past a `truncate` parent — and the
+ * sweep then reported "footer occludes Gates". Nothing covered those elements.
+ * Each case below is the production shape (finding 13a6c6ab) or a
+ * containing-block rule that decides whether an ancestor clips at all.
+ */
+describe('ElementState clip reporting', () => {
+  /** The sidebar scroller: visible box y 143-623, 256 wide. */
+  function sidebar(): HTMLElement {
+    const nav = placeIn(document.body, 'sidebar-nav', 0, 143, 256, 480, {
+      style: { 'overflow-y': 'auto', 'overflow-x': 'visible' },
+    });
+    paddingBox(nav, { width: 256, height: 480 });
+    return nav;
+  }
+
+  it('(a) a nav item scrolled below its scroller reads clipped and blames no footer', () => {
+    const registry = new UIBridgeRegistry();
+    const nav = sidebar();
+    const item = placeIn(nav, 'button-gates-12', 0, 640, 256, 40, { text: 'Gates' });
+    // The bottom-pinned runner-status footer is what elementFromPoint returns
+    // under the clipped item.
+    place('runner-status-footer', 0, 630, 256, 90);
+    registry.registerElement('button-gates-12', item, { type: 'button' });
+
+    const st = stateOf(registry, 'button-gates-12');
+    expect(st.visible).toBe(false);
+    expect(st.visibilityReason).toBe('clipped');
+    expect(st.occludedBy).toBeUndefined();
+    expect(st.occludedPct).toBeUndefined();
+    expect(st.clippedPct).toBe(100);
+    // A user reaches it by scrolling the nav.
+    expect(st.clipScrollable).toBe(true);
+  });
+
+  it('(b) text cut off by an overflow:hidden parent is partly clipped, still visible, blames nothing', () => {
+    const registry = new UIBridgeRegistry();
+    // The `truncate` parent's padding box ends at x=150 — 75% of the span.
+    const parent = placeIn(document.body, 'truncate-parent', 0, 0, 150, 20, {
+      style: { 'overflow-x': 'hidden', 'overflow-y': 'hidden' },
+    });
+    paddingBox(parent, { width: 150, height: 20 });
+    const span = placeIn(parent, 'not-confirmed', 0, 0, 200, 20, {
+      text: '· not confirmed on this machine',
+    });
+    // Main content paints past the parent's edge.
+    place('main-content', 150, 0, 400, 100);
+    registry.registerElement('not-confirmed', span, { type: 'generic' });
+
+    const st = stateOf(registry, 'not-confirmed');
+    expect(st.visible).toBe(true);
+    expect(st.visibilityReason).toBeUndefined();
+    // Three columns of samples; the 0.94 column (x=188) is past x=150.
+    expect(st.clippedPct).toBe(33);
+    expect(st.occludedBy).toBeUndefined();
+    // `hidden` is not scrollable: the user cannot reveal the rest.
+    expect(st.clipScrollable).toBe(false);
+  });
+
+  it('(c) a real overlay inside the clip box still reads occluded and names it', () => {
+    const registry = new UIBridgeRegistry();
+    const scroller = placeIn(document.body, 'scroller', 0, 0, 400, 400, {
+      style: { 'overflow-y': 'auto', 'overflow-x': 'auto' },
+    });
+    paddingBox(scroller, { width: 400, height: 400 });
+    const label = placeIn(scroller, 'label', 0, 0, 100, 20, { text: 'important' });
+    place('cover', 0, 0, 400, 400);
+    registry.registerElement('label', label, { type: 'generic' });
+
+    const st = stateOf(registry, 'label');
+    expect(st.visible).toBe(false);
+    expect(st.visibilityReason).toBe('occluded');
+    expect(st.occludedBy).toBe('cover');
+    expect(st.occludedPct).toBe(100);
+    expect(st.clippedPct).toBeUndefined();
+  });
+
+  it('(d) a position:fixed element under a scroller is not clipped by it', () => {
+    const registry = new UIBridgeRegistry();
+    const nav = sidebar();
+    const fixed = placeIn(nav, 'fixed-toast', 0, 640, 256, 40, {
+      text: 'Saved',
+      style: { position: 'fixed' },
+    });
+    // Something genuinely paints over it, so the clip box is consulted.
+    place('cover', 0, 630, 256, 90);
+    registry.registerElement('fixed-toast', fixed, { type: 'generic' });
+
+    const st = stateOf(registry, 'fixed-toast');
+    // Its containing block is the viewport: the scroller cannot clip it, so
+    // the cover really does cover it.
+    expect(st.visibilityReason).toBe('occluded');
+    expect(st.occludedBy).toBe('cover');
+    expect(st.clippedPct).toBeUndefined();
+  });
+
+  it('(e) the report lists clipped elements in clipped[], not occlusions[], and reads clear', () => {
+    const registry = new UIBridgeRegistry();
+    const nav = sidebar();
+    const item = placeIn(nav, 'button-gates-12', 0, 640, 256, 40, { text: 'Gates' });
+    place('runner-status-footer', 0, 630, 256, 90);
+    const parent = placeIn(document.body, 'truncate-parent', 300, 0, 150, 20, {
+      style: { 'overflow-x': 'hidden', 'overflow-y': 'hidden' },
+    });
+    paddingBox(parent, { width: 150, height: 20 });
+    const span = placeIn(parent, 'not-confirmed', 300, 0, 200, 20, {
+      text: '· not confirmed on this machine',
+    });
+    place('main-content', 450, 0, 400, 100);
+    registry.registerElement('button-gates-12', item, { type: 'button' });
+    registry.registerElement('not-confirmed', span, { type: 'generic' });
+
+    // The in-page handler's projection (server/handlers.ts).
+    const report = buildVisibilityReport({
+      elements: registry.getAllElements().map((el) => {
+        const s = el.getState() as ReturnType<typeof el.getState> & {
+          clippedPct?: number;
+          clipScrollable?: boolean;
+        };
+        return {
+          id: el.id,
+          label: el.label,
+          occludedBy: s.occludedBy,
+          occludedPct: s.occludedPct,
+          clippedPct: s.clippedPct,
+          clipScrollable: s.clipScrollable,
+          textContent: s.textContent,
+        };
+      }),
+    });
+
+    expect(report.occlusions).toEqual([]);
+    expect(report.verdict).toBe('clear');
+    expect(report.clipped).toEqual([
+      expect.objectContaining({ element: 'button-gates-12', ratio: 1, scrollReachable: true }),
+      expect.objectContaining({ element: 'not-confirmed', ratio: 0.33, scrollReachable: false }),
+    ]);
+  });
+
+  /**
+   * (f)/(g): an `absolute` child escapes every ancestor between it and its
+   * containing block — the nearest positioned ancestor. Whether the scroller
+   * clips it depends on whether the scroller IS that block.
+   */
+  function absoluteUnder(scrollerStyle: Record<string, string>): HTMLElement {
+    const grandparent = place('app-shell', 0, 0, 1280, 720);
+    grandparent.style.setProperty('position', 'relative');
+    const scroller = placeIn(grandparent, 'scroller', 0, 0, 200, 200, {
+      style: { 'overflow-x': 'auto', 'overflow-y': 'auto', ...scrollerStyle },
+    });
+    paddingBox(scroller, { width: 200, height: 200 });
+    // Laid out outside the scroller's box. Not hittable: where it is clipped
+    // the browser returns what paints beneath — the app shell, its ancestor.
+    return placeIn(scroller, 'popover', 300, 300, 100, 20, {
+      text: 'popover',
+      hittable: false,
+      style: { position: 'absolute' },
+    });
+  }
+
+  it('(f) an absolute child of a non-positioned scroller escapes it', () => {
+    const registry = new UIBridgeRegistry();
+    const child = absoluteUnder({});
+    place('cover', 300, 300, 100, 20);
+    registry.registerElement('popover', child, { type: 'generic' });
+
+    const st = stateOf(registry, 'popover');
+    // Its containing block is the unclipped `relative` grandparent, so the
+    // scroller does not clip it and the cover really is on top of it.
+    expect(st.visibilityReason).toBe('occluded');
+    expect(st.occludedBy).toBe('cover');
+    expect(st.clippedPct).toBeUndefined();
+  });
+
+  it('(g) the same child under a position:relative overflow:hidden scroller is clipped', () => {
+    const registry = new UIBridgeRegistry();
+    const child = absoluteUnder({
+      position: 'relative',
+      'overflow-x': 'hidden',
+      'overflow-y': 'hidden',
+    });
+    registry.registerElement('popover', child, { type: 'generic' });
+
+    const st = stateOf(registry, 'popover');
+    expect(st.visible).toBe(false);
+    expect(st.visibilityReason).toBe('clipped');
+    expect(st.clippedPct).toBe(100);
+    expect(st.clipScrollable).toBe(false);
+    expect(st.occludedBy).toBeUndefined();
+  });
+
+  it('(h) a fully clipped element whose clipped points return its own ancestor is not visible', () => {
+    // An ANCESTOR hit counted as "our own box is transparent here", so an
+    // element entirely outside its clipper — whose clipped points return the
+    // app shell around it — read `visible: true`.
+    const registry = new UIBridgeRegistry();
+    const shell = place('app-shell', 0, 0, 1280, 720);
+    const clipper = placeIn(shell, 'clipper', 0, 0, 300, 100, {
+      style: { 'overflow-x': 'hidden', 'overflow-y': 'hidden' },
+    });
+    paddingBox(clipper, { width: 300, height: 100 });
+    const lost = placeIn(clipper, 'lost', 0, 200, 300, 40, { text: 'lost', hittable: false });
+    registry.registerElement('lost', lost, { type: 'generic' });
+
+    const st = stateOf(registry, 'lost');
+    expect(st.visible).toBe(false);
+    expect(st.visibilityReason).toBe('clipped');
+    expect(st.clippedPct).toBe(100);
+    expect(st.occludedBy).toBeUndefined();
+  });
 });

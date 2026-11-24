@@ -2906,8 +2906,40 @@ export interface VisibilityOcclusionEntry {
   source: 'geometry' | 'hit-test';
 }
 
+/**
+ * One element an ancestor's `overflow` cuts off, as reported by
+ * `/control/visibility`.
+ *
+ * Kept OUT of `occlusions`: nothing paints over a clipped element, so there is
+ * no occluder to name, and it never affects `verdict` or `hidesText`. A
+ * scrolled-away sidebar item and the tail of a `truncate`d label are both
+ * clipped; `scrollReachable` is what separates them.
+ */
+export interface VisibilityClippedEntry {
+  /** Registry id of the clipped element. */
+  element: string;
+  label?: string;
+  /** The clipped element's text, when it has any. */
+  text?: string;
+  /** Fraction of the element's sampled points that are clipped away, 0..1. */
+  ratio: number;
+  /**
+   * True when every ancestor that clipped it can scroll (`auto`/`scroll` on
+   * the clipped axis) — the user reaches it by scrolling. False for an
+   * `overflow: hidden`/`clip` cut the user cannot reveal.
+   */
+  scrollReachable: boolean;
+}
+
 export interface VisibilityReport {
+  /** Elements another element paints over. Covering only — never clipping. */
   occlusions: VisibilityOcclusionEntry[];
+  /**
+   * Elements an ancestor's overflow cuts off, worst first, filtered by
+   * `minRatio` like `occlusions`. The count is its length. Informational: a
+   * page whose only findings are here still reads `clear`.
+   */
+  clipped: VisibilityClippedEntry[];
   elementCount: number;
   minRatio: number;
   /** Echo of the request's `includeExpected` (default `false`). */

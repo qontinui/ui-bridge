@@ -31,6 +31,7 @@
 
 import type { ElementState } from './types';
 import { projectComputedStyles } from './computed-styles';
+import { clipBoxOf, clipScrollableAt, insideClip, type ClipBox } from './clip-box';
 import {
   readAriaLabelAttr,
   readTitleAttr,
@@ -192,6 +193,8 @@ export function getElementState(element: HTMLElement): ElementState {
     visibilityReason: visibility.reason,
     occludedBy: visibility.occludedBy,
     occludedPct: visibility.occludedPct,
+    clippedPct: visibility.clippedPct,
+    clipScrollable: visibility.clipScrollable,
     // Content width vs. box width is what makes horizontal truncation
     // MEASURABLE. Captured for every element, not just scroll containers:
     // a `truncate`d label is `overflow: hidden` with no scrollbar, so it
@@ -414,8 +417,12 @@ const OCCLUSION_SAMPLE_POINTS: ReadonlyArray<readonly [number, number]> = [
  */
 const OCCLUSION_PERIMETER_MIN_PX = 48;
 
-/** Why an element is not visible. Mirrors `VisibilityReason` in control/. */
-type RegistryVisibilityReason = 'hidden' | 'off-screen' | 'occluded' | 'no-layout';
+/**
+ * Why an element is not visible. A superset of `VisibilityReason` in control/:
+ * the action pre-check never produces `clipped`, which only the sampled
+ * verdict below can tell apart from `occluded`.
+ */
+type RegistryVisibilityReason = 'hidden' | 'off-screen' | 'occluded' | 'clipped' | 'no-layout';
 
 /**
  * `document.elementFromPoint` guarded for environments that don't implement
@@ -436,8 +443,12 @@ interface VisibilityVerdict {
   reason?: RegistryVisibilityReason;
   /** Registry id (or a DOM-derived label) of the element painting on top. */
   occludedBy?: string;
-  /** Share of the sampled points that another element owns, 0-100. */
+  /** Share of the IN-CLIP sampled points that another element owns, 0-100. */
   occludedPct?: number;
+  /** Share of the sampled points an ancestor's overflow clips away, 0-100; set only when > 0. */
+  clippedPct?: number;
+  /** Every clipper that excluded a sample can scroll it back into view. Set with `clippedPct`. */
+  clipScrollable?: boolean;
 }
 
 /**
@@ -463,9 +474,9 @@ function describeOccluder(hit: Element): string {
 
 /**
  * Check if an element is truly visible — not just in the viewport, but
- * actually reachable (not clipped by ancestor overflow, not covered by
- * another element in a higher stacking context) — and, when it is not,
- * WHICH element is responsible.
+ * actually painted (not clipped by ancestor overflow, see `core/clip-box.ts`)
+ * and not covered by another element in a higher stacking context — and,
+ * when it is covered, WHICH element is responsible.
  *
  * Returning the occluder is the difference between "the session name is
  * not visible" and "the zone minimap is covering the session name". Only
@@ -483,10 +494,21 @@ function computeVisibilityVerdict(
   if (parseFloat(style.opacity) === 0) return { visible: false, reason: 'hidden' };
   if (!inViewport) return { visible: false, reason: 'off-screen' };
 
-  // Hit-test: catches elements hidden by ancestor overflow:hidden, scroll
-  // clipping, clip-path, or z-index occlusion.
+  // Hit-test: what the compositor actually painted at each sample point. Two
+  // different states reach it and are kept apart: an ancestor's overflow CUT
+  // OFF the element there (`clipped` — a scrolled-away nav item, the tail of a
+  // `truncate`d label), or another painted element COVERS it (`covered`).
+  // Only the second is occlusion; blaming whatever `elementFromPoint` returns
+  // under a clipped point manufactured "footer occludes nav item" findings.
   let sampled = 0;
   let covered = 0;
+  let clipped = 0;
+  const clippedPoints: Array<readonly [number, number]> = [];
+  // Computed lazily, on the first sample whose hit is not the element or a
+  // descendant: a hit on our own subtree proves the point is painted, so an
+  // element with no foreign hit — the common case on a hot path — never pays
+  // for the ancestor walk.
+  let clip: ClipBox | undefined;
   // Count occluders so the finding names the one doing most of the
   // covering, not whichever point happened to be probed last.
   const blame = new Map<string, number>();
@@ -506,8 +528,21 @@ function computeVisibilityVerdict(
     if (px < 0 || px >= window.innerWidth || py < 0 || py >= window.innerHeight) continue;
     sampled++;
     const hit = safeElementFromPoint(px, py);
+    // No hit is no measurement (jsdom, an unsupported environment): it is
+    // neither covering nor evidence that an ancestor clipped the point.
     if (hit === null) continue;
     if (hit === element || element.contains(hit)) continue;
+    // Outside the clip box the element is not painted at all, so whatever
+    // the hit-test returns there — an unrelated footer, or our own app-shell
+    // ancestor — is not covering it. Checked BEFORE the ancestor rule below:
+    // a fully clipped element whose clipped points return its own ancestor
+    // used to read `visible: true`.
+    clip ??= clipBoxOf(element);
+    if (clip.box && !insideClip(clip.box, px, py)) {
+      clipped++;
+      clippedPoints.push([px, py]);
+      continue;
+    }
     // An ANCESTOR at the sample point means our own box is transparent
     // there (padding, a gap between children) — not that something is
     // covering us.
@@ -517,9 +552,28 @@ function computeVisibilityVerdict(
     blame.set(who, (blame.get(who) ?? 0) + 1);
   }
 
-  if (sampled === 0 || covered === 0) return { visible: true };
+  if (sampled === 0) return { visible: true };
 
-  const occludedPct = Math.round((covered / sampled) * 100);
+  const clipFields: Pick<VisibilityVerdict, 'clippedPct' | 'clipScrollable'> =
+    clipped > 0 && clip
+      ? {
+          clippedPct: Math.round((clipped / sampled) * 100),
+          clipScrollable: clipScrollableAt(clip.clippers, clippedPoints),
+        }
+      : {};
+
+  // Every sampled point is cut off by an ancestor: nothing of it is painted,
+  // and nothing is to blame. `visible: false` keeps the meaning consumers that
+  // filter on `visible` already had (this element used to read `occluded`).
+  if (clipped === sampled) {
+    return { visible: false, reason: 'clipped', ...clipFields };
+  }
+
+  if (covered === 0) return { visible: true, ...clipFields };
+
+  // Occlusion is measured over the points the element could paint at all.
+  const inClip = sampled - clipped;
+  const occludedPct = Math.round((covered / inClip) * 100);
   let occludedBy: string | undefined;
   let worst = 0;
   for (const [who, n] of blame) {
@@ -535,10 +589,11 @@ function computeVisibilityVerdict(
   // partial occlusion into `visible: false` would break every consumer
   // that filters on `visible`, and losing it entirely is the defect.
   return {
-    visible: covered < sampled,
-    reason: covered >= sampled ? 'occluded' : undefined,
+    visible: covered < inClip,
+    reason: covered >= inClip ? 'occluded' : undefined,
     occludedBy,
     occludedPct,
+    ...clipFields,
   };
 }
 

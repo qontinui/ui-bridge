@@ -355,7 +355,7 @@ export interface NativePageRect {
  * Why an element is not plainly visible.
  *
  * DUPLICATE of `@qontinui/ui-bridge` `VisibilityReason`
- * (`src/core/types.ts` — `'hidden' | 'off-screen' | 'occluded' | 'no-layout'`),
+ * (`src/core/types.ts` — `'hidden' | 'off-screen' | 'occluded' | 'clipped' | 'no-layout'`),
  * for the same reason the action types above are duplicated: `@qontinui/ui-bridge`
  * is an OPTIONAL peer of this package, so this module must not import from it.
  * KEEP IN SYNC — one vocabulary across both SDKs is the point; do not coin
@@ -364,9 +364,12 @@ export interface NativePageRect {
  * `'occluded'` is declared but never produced here: React Native gives the
  * registry no hit-test equivalent of `document.elementFromPoint`, so this SDK
  * cannot honestly claim occlusion. It stays in the union so a native reason
- * string is always a valid web reason string.
+ * string is always a valid web reason string. `'clipped'` (the web SDK's
+ * ancestor-overflow clip, computed beside the same hit-test) is declared and
+ * never produced for the same reason; a native element outside its scroll
+ * container keeps reporting `'off-screen'`.
  */
-export type NativeVisibilityReason = 'hidden' | 'off-screen' | 'occluded' | 'no-layout';
+export type NativeVisibilityReason = 'hidden' | 'off-screen' | 'occluded' | 'clipped' | 'no-layout';
 
 /** The three-value verdict carried on every snapshot element. */
 export type NativeVisibility = 'visible' | 'likely-visible' | 'hidden';
