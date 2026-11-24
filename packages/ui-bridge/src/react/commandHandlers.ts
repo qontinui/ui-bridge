@@ -787,11 +787,10 @@ function inProcessComponentNotFoundMessage(id: string): string {
 function elementToFindResult(
   e: RegisteredElement,
   // The read the find filter already made for this row (`reportedState`),
-  // so a kept row's state is read once and reports what decided it.
-  state: ElementState = e.getState()
+  // else the caller's own `getState()`, so a kept row's state is read once
+  // and reports what decided it.
+  state: ElementState
 ) {
-  // `getState()` first: on a media element it re-captures the observation,
-  // so the top-level `mediaMetadata` below is as fresh as `state`'s.
   return {
     id: e.id,
     type: e.type,
@@ -2840,6 +2839,9 @@ export async function executeCommand(
       // each RETURNED row's live node. See `core/element-projection.ts`.
       const projection = filterCtx.projection;
       const findElements = filtered.map((e) => {
+        // `getState()` before the row is built: on a media element it
+        // re-captures the observation, so the top-level `mediaMetadata` is as
+        // fresh as `state`.
         const row = elementToFindResult(
           e,
           (reportedState(filterCtx, e) as ElementState | undefined) ?? e.getState()

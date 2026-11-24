@@ -398,8 +398,9 @@ function elementText(el: FindFilterableElement): string {
  * In order:
  *  1. `getState().visible`, when the row has a `getState` (a registry
  *     `RegisteredElement`). The registry arms report exactly that read as the
- *     row's `state` (`materializeElements` reads `getState?.() ?? state`, the
- *     React arm's `elementToFindResult` reads `getState()`), and it carries the
+ *     row's `state` (`materializeElements` reports the filter's own read via
+ *     `stateOf`, else `getState?.() ?? state`; the React arm passes the same
+ *     read to `elementToFindResult`, else `getState()`), and it carries the
  *     post-action overlay (`refreshElement`), so a live-node read would
  *     disagree with the reported row after a mutation action;
  *  2. the row's own boolean `state.visible` — fallback rows, executor rows
@@ -817,7 +818,8 @@ export function applyCanonicalFindFilter<T extends FindFilterableElement>(
   // The registry rows' `getState()` reads the visibility arm makes, handed to
   // the call site so a kept row's state is not read a second time.
   const stateReads = new WeakMap<object, unknown>();
-  if (r.includeHidden === false) ctx.stateReads = stateReads;
+  // Always written, so a reused context never hands back an earlier call's reads.
+  ctx.stateReads = r.includeHidden === false ? stateReads : undefined;
   if (facts.length > 0) {
     ctx.unevaluated = unevaluated;
     for (const el of elements) {
