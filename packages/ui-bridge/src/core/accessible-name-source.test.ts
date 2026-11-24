@@ -104,6 +104,16 @@ describe('accessible-name source — which rung named this element, and did anyt
     expect(resolveAccessibleName(input)).toEqual({ name: 'Frame search', source: 'placeholder' });
   });
 
+  it('falls back to aria-placeholder after placeholder (HTML-AAM 4.1.1)', () => {
+    document.body.innerHTML = `
+      <input id="ap" aria-placeholder="Search issues" />
+      <input id="both" placeholder="Native" aria-placeholder="Aria" />
+    `;
+    const of = (id: string) => resolveAccessibleName(document.getElementById(id)!);
+    expect(of('ap')).toEqual({ name: 'Search issues', source: 'placeholder' });
+    expect(of('both')).toEqual({ name: 'Native', source: 'placeholder' });
+  });
+
   it('does not read a placeholder on a non-text input', () => {
     document.body.innerHTML = `<input type="checkbox" placeholder="Agree" />`;
     expect(resolveAccessibleName(document.querySelector('input')!)).toEqual({ source: 'none' });

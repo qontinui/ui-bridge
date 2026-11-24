@@ -322,9 +322,9 @@ function boundarySafeName(node: Element, name: string): string | undefined {
  * that a screen-reader user can name it. Keeping the two distinguishable is the
  * entire point of reporting the rung.
  *
- * `'placeholder'` is HTML-AAM's last-resort rung for a text-like `<input>` or
- * a `<textarea>`: the element's own `placeholder` names it when every rung
- * before it (including `title`) yields nothing.
+ * `'placeholder'` is HTML-AAM 4.1.1's final steps for a text-like `<input>` or
+ * a `<textarea>`: the element's own `placeholder`, then its `aria-placeholder`,
+ * names it when every rung before it (including `title`) yields nothing.
  */
 export type AccessibleNameSource =
   | 'aria-label'
@@ -355,10 +355,10 @@ const PLACEHOLDER_INPUT_TYPES = new Set([
 ]);
 
 /**
- * HTML-AAM's `placeholder` rung: the element's own `placeholder`, normalized,
- * for a `<textarea>` or a text-like `<input>`; `undefined` otherwise. Only
- * reached when the W3C algorithm (which does not consult `placeholder` here)
- * produced no name.
+ * HTML-AAM 4.1.1's last two steps, for a `<textarea>` or a text-like
+ * `<input>`: the element's own `placeholder`, else its `aria-placeholder`,
+ * normalized; `undefined` otherwise. Only reached when the W3C algorithm
+ * (which does not consult either here) produced no name.
  */
 function placeholderName(node: Element): string | undefined {
   const tag = node.tagName.toLowerCase();
@@ -369,7 +369,11 @@ function placeholderName(node: Element): string | undefined {
     // qualifies too.
     (tag === 'input' && PLACEHOLDER_INPUT_TYPES.has((node as HTMLInputElement).type));
   if (!applies) return undefined;
-  return normalizeWhitespace(readPlaceholderAttr(node) ?? '') || undefined;
+  return (
+    normalizeWhitespace(readPlaceholderAttr(node) ?? '') ||
+    normalizeWhitespace(readAriaPlaceholderAttr(node) ?? '') ||
+    undefined
+  );
 }
 
 /** Attributes a developer stamps for addressing, in the order we prefer them. */
@@ -433,7 +437,8 @@ function deriveStructuralName(node: Element): string | undefined {
  * matching the one that produced the answer, so an authored `aria-label` is
  * reported as authored and a name scraped out of descendant text is reported
  * as scraped. When the algorithm yields nothing, a text-like input's own
- * `placeholder` names it (HTML-AAM's last resort, `'placeholder'`); failing
+ * `placeholder`, else `aria-placeholder`, names it (HTML-AAM 4.1.1's last
+ * steps, `'placeholder'`); failing
  * that {@link deriveStructuralName} gets one attempt, and failing that the
  * answer is the explicit `'none'`.
  */
@@ -573,6 +578,11 @@ export function readTitleAttr(el: Element): string | null {
 /** Raw `placeholder` attribute, or `null` when absent. */
 export function readPlaceholderAttr(el: Element): string | null {
   return el.getAttribute('placeholder');
+}
+
+/** Raw `aria-placeholder` attribute, or `null` when absent. */
+export function readAriaPlaceholderAttr(el: Element): string | null {
+  return el.getAttribute('aria-placeholder');
 }
 
 /** Raw `alt` attribute, or `null` when absent. */
