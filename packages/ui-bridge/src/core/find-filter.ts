@@ -343,7 +343,9 @@ export interface CanonicalFindContext {
    * keyed by the row. A call site building the returned row reads its `state`
    * from here ({@link reportedState}) instead of calling `getState()` again,
    * so each kept row's state is read ONCE and the value that decided its
-   * visibility is the value it reports. Left untouched otherwise.
+   * visibility is the value it reports. Reset to `undefined` at the start of
+   * every call (refused calls included), so a reused context never carries an
+   * earlier call's reads.
    */
   stateReads?: WeakMap<object, unknown>;
 }
@@ -727,6 +729,9 @@ export function applyCanonicalFindFilter<T extends FindFilterableElement>(
   criteria?: CanonicalFindCriteria | null,
   ctx: CanonicalFindContext = {}
 ): T[] {
+  // Reset before anything can refuse, so a reused context never hands
+  // `reportedState` an earlier call's reads.
+  ctx.stateReads = undefined;
   if (!criteria) return [...elements];
 
   const r = resolveCriteria(criteria, ctx);
@@ -818,8 +823,7 @@ export function applyCanonicalFindFilter<T extends FindFilterableElement>(
   // The registry rows' `getState()` reads the visibility arm makes, handed to
   // the call site so a kept row's state is not read a second time.
   const stateReads = new WeakMap<object, unknown>();
-  // Always written, so a reused context never hands back an earlier call's reads.
-  ctx.stateReads = r.includeHidden === false ? stateReads : undefined;
+  if (r.includeHidden === false) ctx.stateReads = stateReads;
   if (facts.length > 0) {
     ctx.unevaluated = unevaluated;
     for (const el of elements) {

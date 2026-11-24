@@ -20,7 +20,12 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { executeCommand, type BridgeAccess } from '../react/commandHandlers';
 import { getGlobalRegistry, resetGlobalRegistry } from './registry';
-import { applyCanonicalFindFilter, INTERACTIVE_ELEMENT_TYPES } from './find-filter';
+import {
+  applyCanonicalFindFilter,
+  INTERACTIVE_ELEMENT_TYPES,
+  reportedState,
+  type CanonicalFindContext,
+} from './find-filter';
 import { createHandlers, type RegistryLike } from '../server/handlers';
 import { createActionExecutor } from '../control/action-executor';
 import type { ElementType } from './types';
@@ -528,5 +533,22 @@ describe('include_hidden:false reads the canonical visibility verdict', () => {
       expect(byLabel('Covered')?.state?.visibilityReason).toBe('occluded');
       expect(byLabel('Below')?.state?.visibilityReason).toBe('off-screen');
     });
+  });
+});
+
+describe('CanonicalFindContext.stateReads', () => {
+  it("a reused context carries no earlier call's getState() reads", () => {
+    const state = { visible: true };
+    const row = { id: 'r', type: 'button' as ElementType, getState: () => state };
+    const ctx: CanonicalFindContext = {};
+    applyCanonicalFindFilter([row], { includeHidden: false }, ctx);
+    expect(reportedState(ctx, row)).toBe(state);
+    // Same context, a call that does not ask include_hidden:false.
+    applyCanonicalFindFilter([row], { type: 'button' }, ctx);
+    expect(reportedState(ctx, row)).toBeUndefined();
+    // And a call with no criteria at all.
+    applyCanonicalFindFilter([row], { includeHidden: false }, ctx);
+    applyCanonicalFindFilter([row], null, ctx);
+    expect(reportedState(ctx, row)).toBeUndefined();
   });
 });
