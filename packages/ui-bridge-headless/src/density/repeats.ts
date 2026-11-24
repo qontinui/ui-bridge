@@ -483,9 +483,11 @@ export function densityRepeatScopes(
       return false;
     };
 
+    // The first band's members: banded by overlap, so a centred member whose
+    // top lies below the band's top is in it too.
     const firstRow = rep.members.filter((id) => {
       const r = byId.get(id)?.rect ?? null;
-      return r !== null && r.y - rep.firstRow.topPx <= DENSITY_REPEAT_TOLERANCE_PX;
+      return r !== null && r.y < rep.firstRow.bottomPx - DENSITY_REPEAT_TOLERANCE_PX;
     });
     const firstRowSubtree = densitySubtree(capture, firstRow, children);
     let scope: DensityRepeatScope = { by: null, ids: new Set(), own };
@@ -574,6 +576,17 @@ function rowTagOf(rowKey: string | null): string | null {
   const last = rowKey.split('/').pop() ?? '';
   const tag = last.replace(/\[\d+\]$/, '');
   return tag === '' || tag.startsWith('@') ? null : tag;
+}
+
+/** Whether the item's declared `filters` or `controls` edge names a repeat other than `repId`. */
+export function densityDeclaresAnotherRepeat(
+  item: DensityItem,
+  repId: string,
+  innermost: ReadonlyMap<string, string>
+): boolean {
+  const names = (target: string | null) =>
+    target !== null && innermost.has(target) && innermost.get(target) !== repId;
+  return names(item.filters) || names(item.controls);
 }
 
 function finderRank(item: DensityItem): number {
@@ -981,8 +994,7 @@ export function densityRepeats(
   // A control whose declared edge names a repeat acts on that one, never on
   // another by position.
   const declaresAnother = (i: DensityItem, repId: string): boolean =>
-    (i.filters !== null && innermost.has(i.filters) && innermost.get(i.filters) !== repId) ||
-    (i.controls !== null && innermost.has(i.controls) && innermost.get(i.controls) !== repId);
+    densityDeclaresAnotherRepeat(i, repId, innermost);
   for (const rep of repeats) {
     const scope = scopes.get(rep.id)!;
     rep.scope = scope.by;

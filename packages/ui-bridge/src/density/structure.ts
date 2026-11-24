@@ -440,6 +440,10 @@ export function resolveDensityStructure(
     p: (ParsedChain & { ownId: boolean }) | null
   ): [string, string] | [null, null] => {
     if (!p || p.ownId || p.keys.some(ambiguous)) return [null, null];
+    // An item that is itself a registered list item or table row is a row:
+    // the path arm reads it with its siblings, inside whatever group it is in.
+    const ownSeg = segmentOf(p, p.keys.length - 1);
+    if (/\[\d+\]$/.test(ownSeg) && ROW_TAGS.has(unindexed(ownSeg))) return [null, null];
     for (let k = p.keys.length - 2; k >= 0; k--) {
       const seg = segmentOf(p, k);
       // Only a list item or a table row is a row nobody registered: an
