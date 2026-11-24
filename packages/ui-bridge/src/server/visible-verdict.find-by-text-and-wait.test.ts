@@ -639,6 +639,60 @@ describe('an <option> is rendered exactly when its <select> is, on both arms', (
     expect((await relayArm('opt-gone', 'clickable')).matched).toBe(false);
   });
 
+  /** Every arm refuses `id`: both `clickable` waits, the relay gate, the HTTP click. */
+  async function refusedEverywhere(id: string): Promise<void> {
+    expect(await serverClickable(id)).toBe(false);
+    expect((await relayArm(id, 'clickable')).matched).toBe(false);
+    const relay = (await executeCommand(
+      'executeElementAction',
+      { id, request: { action: 'click' } },
+      emptyBridge
+    )) as { success: boolean; error?: string };
+    expect(relay.success).toBe(false);
+    expect(relay.error).toContain('not visible');
+    const http = (await createActionExecutor(getGlobalRegistry()).executeAction(id, {
+      action: 'click',
+    })) as { success: boolean; failureDetails?: { errorCode?: string } };
+    expect(http.success).toBe(false);
+    expect(http.failureDetails?.errorCode).toBe('UB-ELEM-NOT-VISIBLE');
+  }
+
+  function visibleSelect(option: HTMLOptionElement): void {
+    Object.defineProperty(option.closest('select')!, 'checkVisibility', {
+      configurable: true,
+      value: () => true,
+    });
+  }
+
+  it('an <option hidden> placeholder is refused on every arm, though its select is rendered', async () => {
+    const option = optionIn(document.body, 'opt-hidden');
+    option.hidden = true;
+    visibleSelect(option);
+    await refusedEverywhere('opt-hidden');
+  });
+
+  it('a visibility:hidden option is refused on every arm', async () => {
+    const option = optionIn(document.body, 'opt-vh');
+    option.style.visibility = 'hidden';
+    visibleSelect(option);
+    await refusedEverywhere('opt-vh');
+  });
+
+  it('an option inside a display:none <optgroup> is refused on every arm', async () => {
+    const select = document.createElement('select');
+    const group = document.createElement('optgroup');
+    group.style.display = 'none';
+    const option = document.createElement('option');
+    option.textContent = 'Grouped';
+    group.appendChild(option);
+    select.appendChild(group);
+    document.body.appendChild(select);
+    Object.defineProperty(option, 'checkVisibility', { configurable: true, value: () => false });
+    Object.defineProperty(select, 'checkVisibility', { configurable: true, value: () => true });
+    getGlobalRegistry().registerElement('opt-group', option, { type: 'button', label: 'g' });
+    await refusedEverywhere('opt-group');
+  });
+
   it('a control inside a closed <details> is still refused', () => {
     const details = document.createElement('details');
     const inside = document.createElement('button');
