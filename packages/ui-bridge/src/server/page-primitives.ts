@@ -44,6 +44,7 @@ import {
   readScrubbedText,
 } from '../core/redaction';
 import { readDisabledSignals } from '../core/a11y';
+import { readElementVisibility } from '../core/element-state';
 import {
   findElementsByText,
   findElementBySelector,
@@ -327,7 +328,9 @@ export function findByTextPrimitive(
           height: Math.round(rect.height),
         },
         disabled: readDisabledSignals(el).disabled,
-        visible: el.offsetParent !== null || getComputedStyle(el).position === 'fixed',
+        // The canonical verdict (`core/element-state`), the one every other
+        // row reports: an occluded or off-screen match reads `false`.
+        visible: readElementVisibility(el).visible,
       };
     });
   return { ok: true, data: results };

@@ -626,6 +626,12 @@ collision suffix (`dom-button-save-2` becomes `dom-button-save`), because
 keeping it would reveal that a redacted sibling shares the text. The derived
 name rung (an icon's `svg > title` or class) no longer reads a descendant that
 touches a redaction boundary.
+The same canonical verdict now backs two more readers that kept their own
+check: `findByText`'s per-hit `visible` (it read `offsetParent !== null ||
+position: fixed`), and the `visible` and `clickable` conditions of
+`POST /ai/wait-for-element-condition` (they read `offsetParent !== null` and a
+non-zero size). An occluded or off-screen element now reads `visible: false`
+from `findByText` and never satisfies either wait condition.
 
 ## Diagnostics
 
