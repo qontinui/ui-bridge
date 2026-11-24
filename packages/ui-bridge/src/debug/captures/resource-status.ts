@@ -43,7 +43,10 @@
  * entry added late with an early `responseEnd` — an iframe's, recorded at the
  * iframe's load — that lands after an uninstall could fall under it and be
  * skipped by the next install. Events already emitted are not lost to a new
- * owner: they are replayed from a bounded per-document store. One capture runs
+ * owner: they are replayed from a bounded per-document store
+ * ({@link EMITTED_REPLAY_LIMIT}). A replay the store can no longer complete
+ * names its truncation: the owner first receives a `replay-truncated` event
+ * carrying how many earlier events it missed. One capture runs
  * per document, reference-counted by its installs: it stays armed until the
  * last one uninstalls. A framed document (not `window.top`) neither takes nor
  * writes a carry: the carry belongs to the tab's top-level navigation.
@@ -89,6 +92,7 @@ import type {
   AnyCapturedEvent,
   ResourceStatusCapturedEvent,
   ResourceStatusEntryEvent,
+  ResourceStatusReplayTruncatedEvent,
 } from '../browser-capture-types';
 import { observeResources, toResourceSample, type ResourceSample } from '../../perf';
 import { redactRequestUrl } from '../../network/redact-request-url';
@@ -362,6 +366,9 @@ function isCarried(event: ResourceStatusCapturedEvent): boolean {
       return true;
     case 'unknown-status-capped':
       return false;
+    case 'replay-truncated':
+      // One owner's view of its replay, not the document's.
+      return false;
   }
 }
 
@@ -434,8 +441,8 @@ function isTopLevelDocument(): boolean {
   }
 }
 
-/** Deliver one event to one owner; an owner that throws is logged once, never rethrown. */
-function deliver(doc: DocumentState, owner: Owner, index: number, event: AnyCapturedEvent): void {
+/** Hand one event to one owner; an owner that throws is logged once, never rethrown. */
+function emitTo(doc: DocumentState, owner: Owner, event: AnyCapturedEvent): void {
   try {
     owner.emit(event);
   } catch (err) {
@@ -447,12 +454,34 @@ function deliver(doc: DocumentState, owner: Owner, index: number, event: AnyCapt
       );
     }
   }
+}
+
+/** Deliver one stored event to one owner and record it as delivered. */
+function deliver(doc: DocumentState, owner: Owner, index: number, event: AnyCapturedEvent): void {
+  emitTo(doc, owner, event);
   doc.deliveredIndex.set(owner.key, index);
 }
 
-/** Replay to an owner the stored events its identity has not received. */
+/**
+ * Replay to an owner the stored events its identity has not received. When
+ * the store no longer holds the oldest of them, the owner is first told how
+ * many were dropped — to it alone: the marker is not stored, carried, or
+ * counted as delivered.
+ */
 function replayTo(doc: DocumentState, owner: Owner): void {
   const seen = doc.deliveredIndex.get(owner.key) ?? -1;
+  const firstStored = doc.emitted[0]?.index;
+  if (firstStored !== undefined && firstStored > seen + 1) {
+    const marker: ResourceStatusReplayTruncatedEvent = {
+      type: 'resource-status',
+      timestamp: Date.now(),
+      url: pageUrl(),
+      kind: 'replay-truncated',
+      replayTruncated: true,
+      droppedCount: firstStored - (seen + 1),
+    };
+    emitTo(doc, owner, marker);
+  }
   for (const { index, event } of doc.emitted) {
     if (index > seen) deliver(doc, owner, index, event);
   }
@@ -467,7 +496,9 @@ function replayTo(doc: DocumentState, owner: Owner): void {
  * (`ownerKey`, the capture instance) has not received; a re-install of the
  * same instance receives nothing twice. That replay includes failures another
  * capture reported live, tagged `reportedLiveAs` — a consumer that also sees
- * that capture's events dedupes them.
+ * that capture's events dedupes them. When earlier events this identity never
+ * received have already left the store, the replay begins with one
+ * `replay-truncated` event whose `droppedCount` says how many.
  */
 export function installResourceStatusCapture(
   ownerEmit: Emit,

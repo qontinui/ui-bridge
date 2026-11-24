@@ -172,11 +172,26 @@ export interface ResourceStatusUnknownCappedEvent extends ResourceStatusEventBas
   budget: number;
 }
 
+/**
+ * The replay to an owner that joined late (a remounted provider's new capture,
+ * or a second install while armed) is missing events: the document keeps only
+ * its last 100 to replay, and earlier ones this owner never received were
+ * dropped. Delivered to that owner only, before the replay; never carried
+ * across a navigation.
+ */
+export interface ResourceStatusReplayTruncatedEvent extends ResourceStatusEventBase {
+  kind: 'replay-truncated';
+  replayTruncated: true;
+  /** How many earlier events this owner never received and the replay could not deliver. */
+  droppedCount: number;
+}
+
 export type ResourceStatusCapturedEvent =
   | ResourceStatusEntryEvent
   | ResourceStatusObserverUnavailableEvent
   | ResourceStatusBufferFullEvent
-  | ResourceStatusUnknownCappedEvent;
+  | ResourceStatusUnknownCappedEvent
+  | ResourceStatusReplayTruncatedEvent;
 
 export interface WebVitalCapturedEvent extends BrowserCapturedEvent {
   type: 'web-vital';

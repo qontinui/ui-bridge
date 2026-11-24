@@ -288,6 +288,9 @@ function classifyOwnResourceStatus(event: AnyCapturedEvent & { type: 'resource-s
       return { severity: 'warning', reason: 'resource statuses unobservable' };
     case 'buffer-full':
       return { severity: 'warning', reason: 'resource timing buffer full' };
+    case 'replay-truncated':
+      // A window this consumer could not see, like a full buffer.
+      return { severity: 'warning', reason: 'resource-status replay truncated' };
     case 'unknown-status-capped':
       // Unknown statuses do not score; neither does running out of budget for them.
       return { severity: 'noise', reason: 'unknown resource statuses capped' };
