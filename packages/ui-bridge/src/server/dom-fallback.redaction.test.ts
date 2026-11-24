@@ -1,9 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   scanDOMForInteractiveElements,
+  scanDOMForInteractiveElementRefs,
   findElementsByText,
   findElementByLabel,
 } from './dom-fallback';
+import { UIBridgeRegistry } from '../core/registry';
+import { seedRegistryFromDom } from '../injected/seed-registry';
 
 /**
  * §4.6 Gap A — the DOM-fallback discovery path (`/control/elements` when the
@@ -85,5 +88,62 @@ describe('dom-fallback discovery redaction', () => {
     root.appendChild(empty);
     const el = scanDOMForInteractiveElements(root).find((e) => e.identifiers.htmlId === 'blank');
     expect(el?.state.textContent).toBe('');
+  });
+});
+
+/**
+ * §4.6: a fallback id never carries redacted text — plan
+ * `2026-11-24-ui-bridge-find-visibility-and-fallback-label-read-the-canonical-verdicts`,
+ * Phase 2 (coord finding 68ad69c6). `generateId` used to slug the UNSCRUBBED
+ * text of an element with no `data-testid` or `id`, so a button inside a
+ * boundary got `dom-button-123-45-6789` while its `label` read the sentinel.
+ */
+describe('dom-fallback ids inside a redaction boundary', () => {
+  afterEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  it('skips the text slug: the id is the type/index tail and carries no redacted text', () => {
+    document.body.innerHTML = `
+      <section data-bridge-redact="true"><button>123-45-6789</button></section>
+      <button>123-45-6789</button>
+    `;
+    const rows = scanDOMForInteractiveElements();
+    // origin/main: 'dom-button-123-45-6789'.
+    expect(rows[0].id).toBe('dom-button-0');
+    expect(rows[0].label).toBe(REDACTED);
+    // Outside the boundary the same text still slugs (the id is not redacted there).
+    expect(rows[1].id).toBe('dom-button-123-45-6789');
+    // Every path that reports these ids agrees: the ref scan and the seeder.
+    expect(scanDOMForInteractiveElementRefs()[0].id).toBe('dom-button-0');
+    const registry = new UIBridgeRegistry();
+    seedRegistryFromDom(registry, document.body);
+    expect(registry.getElement('dom-button-0')?.label).toBe(REDACTED);
+    expect(registry.getAllElements().filter((e) => e.id.includes('123'))).toHaveLength(1);
+  });
+
+  it('no row inside a boundary has an id containing its text, whatever rung named it', () => {
+    document.body.innerHTML = `
+      <div data-bridge-redact="true">
+        <button aria-label="Reveal 123">x</button>
+        <button title="Token 123"></button>
+        <input placeholder="SSN 123" />
+        <a href="/x">Account 123</a>
+      </div>
+    `;
+    const ids = scanDOMForInteractiveElements().map((r) => r.id);
+    expect(ids).toEqual(['dom-button-0', 'dom-button-1', 'dom-input-2', 'dom-link-3']);
+    for (const id of ids) expect(id).not.toContain('123');
+  });
+
+  it('keeps the data-testid and html id rungs inside a boundary', () => {
+    document.body.innerHTML = `
+      <section data-bridge-redact="true">
+        <button data-testid="reveal-ssn">123-45-6789</button>
+        <button id="copy-ssn">123-45-6789</button>
+      </section>
+    `;
+    const ids = scanDOMForInteractiveElements().map((r) => r.id);
+    expect(ids).toEqual(['dom-reveal-ssn', 'dom-copy-ssn']);
   });
 });
