@@ -19,6 +19,7 @@ import {
   densityDeclaresAnotherRepeat,
   densityInnermostRepeats,
   densityNavPrefix,
+  isDensityChrome,
   isDensityHeaderToggle,
   densityNearestRepeats,
   densityRepeatScopes,
@@ -277,6 +278,7 @@ export function densityAffordances(
     const aimed = densityRepeatTargets(capture, rep, children);
     const firstMember = capture.items.find((i) => i.id === rep.members[0]);
     const repNav = firstMember ? densityNavPrefix(firstMember) : null;
+    const repInChrome = firstMember ? isDensityChrome(firstMember) : false;
     for (const item of capture.items) {
       if (scope.own.has(item.id)) continue;
       // A filter is a laid-out, interactive select, combobox, checkbox or radio.
@@ -322,6 +324,9 @@ export function densityAffordances(
         // A link at the foot of the nav the list's own rows sit in is more of
         // that nav, not its pager.
         (repNav === null || densityNavPrefix(item) !== repNav) &&
+        // A site footer's or header's links are page chrome, not this list's
+        // pager, unless the list itself sits in that chrome.
+        (!isDensityChrome(item) || repInChrome) &&
         cy !== null &&
         cy <= rep.lastRow.bottomPx + H
       ) {

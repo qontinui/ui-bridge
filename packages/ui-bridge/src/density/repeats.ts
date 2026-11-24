@@ -20,7 +20,9 @@
  *   ragged grid included).
  *
  * Either way the members are arranged in ROWS: members whose tops agree within
- * the tolerance share a row (a grid of cards holds several per row), and a
+ * the tolerance, or that overlap vertically, share a row (a grid of cards
+ * holds several per row; items of different heights centred on one line are
+ * one row), and a
  * group is a repeat when it spans at least {@link DENSITY_REPEAT_MIN_ROWS}
  * rows. Siblings side by side in a single row (the cells of one table row, a
  * tab strip, a pager) are not a repeat: none of the row quantities describes
@@ -84,9 +86,10 @@ export const DENSITY_REPEAT_SCOPE_LEVELS = 3;
 export interface DensityRepeatFinder {
   id: string;
   /**
-   * `position`: the text, search, select or combobox control (a listbox, too:
-   * a `select` with a `size`) nearest above the repeat's first row in its
-   * scope. `relationship`: a declared `filters` or `controls` edge from
+   * `position`: a text, search, select or combobox control (a listbox, too:
+   * a `select` with a `size`) above the repeat's first row in its scope,
+   * ranked search box, then text field, then the rest, and within a rank
+   * the nearest. `relationship`: a declared `filters` or `controls` edge from
    * such a control to the repeat.
    */
   by: 'position' | 'relationship';
@@ -107,7 +110,7 @@ export interface DensityRepeat {
   tag: string;
   /** Member ids in document order (top, then capture order). */
   members: string[];
-  /** Rows: bands of members whose tops agree within the tolerance. */
+  /** Rows: bands of members whose tops agree within the tolerance or that overlap vertically. */
   rows: number;
   /**
    * Columns: the most left-edge clusters any one row holds (1 for a list of
@@ -368,6 +371,18 @@ export function isDensityHeaderToggle(item: DensityItem): boolean {
     (item.role === 'checkbox' || item.role === 'radio') &&
     item.path !== null &&
     item.path.includes('thead')
+  );
+}
+
+/**
+ * Whether the item sits in page chrome: a `header` or `footer` in its path,
+ * or the banner / contentinfo landmark.
+ */
+export function isDensityChrome(item: DensityItem): boolean {
+  return (
+    (item.path !== null && (item.path.includes('footer') || item.path.includes('header'))) ||
+    item.landmark === 'contentinfo' ||
+    item.landmark === 'banner'
   );
 }
 

@@ -104,6 +104,7 @@ describe('the ./density subpath', () => {
       'densityUnattributedChars',
       'evaluateDensityTextMatchers',
       'hashDensityCanonical',
+      'isDensityChrome',
       'isDensityFilterControl',
       'isDensityFinderControl',
       'isDensityHeaderToggle',

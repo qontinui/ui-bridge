@@ -128,6 +128,7 @@ export {
   densityRepeats,
   densitySubtree,
   densityTakesSpace,
+  isDensityChrome,
   isDensityFilterControl,
   isDensityFinderControl,
   isDensityHeaderToggle,
