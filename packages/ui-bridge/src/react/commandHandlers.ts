@@ -8,6 +8,7 @@
 
 import type {
   RegisteredElement,
+  ElementState,
   ElementAssertionSpec,
   ElementAssertionFailure,
   ElementAssertionResult,
@@ -22,6 +23,7 @@ import { serializeElementCustomActions } from '../core/element-actions';
 import {
   applyCanonicalFindFilter,
   isFindRefusalError,
+  reportedState,
   type CanonicalFindContext,
   type CanonicalFindCriteria,
 } from '../core/find-filter';
@@ -782,10 +784,14 @@ function inProcessComponentNotFoundMessage(id: string): string {
  *   2026-09-11. An inline copy here would have to be re-found and re-fixed on
  *   every future shape change; a call cannot drift.
  */
-function elementToFindResult(e: RegisteredElement) {
+function elementToFindResult(
+  e: RegisteredElement,
+  // The read the find filter already made for this row (`reportedState`),
+  // so a kept row's state is read once and reports what decided it.
+  state: ElementState = e.getState()
+) {
   // `getState()` first: on a media element it re-captures the observation,
   // so the top-level `mediaMetadata` below is as fresh as `state`'s.
-  const state = e.getState();
   return {
     id: e.id,
     type: e.type,
@@ -2833,11 +2839,13 @@ export async function executeCommand(
       // The request-scoped projection (`properties` / `attributes`), read off
       // each RETURNED row's live node. See `core/element-projection.ts`.
       const projection = filterCtx.projection;
-      const findElements = filtered.map((e) =>
-        projection
-          ? { ...elementToFindResult(e), projection: projectElement(e.element, projection) }
-          : elementToFindResult(e)
-      );
+      const findElements = filtered.map((e) => {
+        const row = elementToFindResult(
+          e,
+          (reportedState(filterCtx, e) as ElementState | undefined) ?? e.getState()
+        );
+        return projection ? { ...row, projection: projectElement(e.element, projection) } : row;
+      });
       return {
         elements: findElements,
         total: filtered.length,
