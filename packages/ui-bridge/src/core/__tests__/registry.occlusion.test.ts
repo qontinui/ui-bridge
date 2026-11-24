@@ -534,8 +534,9 @@ describe('ElementState clip reporting', () => {
   });
 
   it('(m) a fractional rect beside a snapped offsetWidth is not read as a transform', () => {
-    // Chrome snaps offsetWidth from the box edges: rect 100.7 wide, offsetWidth
-    // 100. Read as untransformed, the 5px border is excluded, so a sliver
+    // Chrome rounds offsetWidth from the box edges (measured: a 100.6875-wide
+    // rect reads 101), so the two can differ by up to a pixel. Here: rect 100.7,
+    // offsetWidth 100. Read as untransformed, the 5px border is excluded, so a sliver
     // between the padding edge (x=95) and the border edge is clipped.
     const registry = new UIBridgeRegistry();
     const card = placeIn(document.body, 'fractional', 0, 0, 100.7, 100, {
