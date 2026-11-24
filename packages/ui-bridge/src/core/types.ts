@@ -139,8 +139,13 @@ export interface ElementState {
   /** ARIA role attribute value (e.g. "tablist", "tab", "button") */
   role?: string;
   /**
-   * Computed accessible name (aria-label > aria-labelledby > associated label
-   * > title > text > a text-like input's placeholder > derived). §4.6 CONTENT-bearing — `Scrubbed<string>`: a raw DOM
+   * Computed accessible name, `core/a11y` `resolveAccessibleName`: the W3C
+   * accname order (aria-labelledby > aria-label > associated / wrapping
+   * label > subtree text > title), then a text-like input's placeholder, then
+   * a derived name (data-testid, id, icon token). `nameSource` names the rung;
+   * its attribution (`attributeNameSource`) tests aria-label before
+   * aria-labelledby and title before subtree text, which only matters when two
+   * rungs yield the same string. §4.6 CONTENT-bearing — `Scrubbed<string>`: a raw DOM
    * string cannot be assigned here, only a value routed through the
    * `core/redaction` minters (`scrubContent`).
    */

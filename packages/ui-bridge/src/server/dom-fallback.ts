@@ -65,7 +65,9 @@ const COMBINED_SELECTOR = INTERACTIVE_SELECTORS.join(', ');
  * This is NOT a name and must never be displayed or reported as one. It is
  * the label chain the DOM fallback used before its `label` moved to the
  * canonical accessible name (`core/a11y` `resolveAccessibleName`), kept
- * byte-for-byte because fallback ids (`dom-button-save`) are addressing keys
+ * id-for-id (its `<label for>` rung was dropped: it needs an html `id`, and an
+ * element with one never reaches the slug rung) because fallback ids
+ * (`dom-button-save`) are addressing keys
  * that agents, workflows and the runner hold across releases. The canonical
  * name differs from this chain (multi-id `aria-labelledby`, a wrapping
  * `<label>`, `alt`, `placeholder`, the `derived` rung), so building ids from
@@ -92,20 +94,6 @@ function fallbackIdText(el: HTMLElement): string | null {
     if (labelEl) {
       if (touchesRedactionBoundary(labelEl)) return null;
       return computeVisibleText(labelEl) ?? '';
-    }
-  }
-
-  // Associated <label for> for form inputs
-  if (
-    el instanceof HTMLInputElement ||
-    el instanceof HTMLSelectElement ||
-    el instanceof HTMLTextAreaElement
-  ) {
-    if (el.id) {
-      const label = document.querySelector<HTMLLabelElement>(`label[for="${CSS.escape(el.id)}"]`);
-      // Never reached from `generateId`: an element with an `id` takes the html
-      // `id` rung first, so this rung cannot put a label's text into an id.
-      if (label) return computeVisibleText(label) ?? '';
     }
   }
 
