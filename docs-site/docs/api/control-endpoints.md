@@ -638,7 +638,8 @@ measured over the in-clip sample points only.
 
 The same measurement is on each element's state: `visibilityReason: "clipped"`
 (with `visible: false`) when every sample is clipped, otherwise
-`clippedPct` (0-100) and `clipScrollable` beside `visible: true`.
+`clippedPct` (0-100) and `clipScrollable`, with `visible` following the
+occlusion verdict over the in-clip sample points.
 
 #### Verdicts
 

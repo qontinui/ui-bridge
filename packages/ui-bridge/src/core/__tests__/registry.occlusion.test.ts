@@ -60,8 +60,14 @@ function placeIn(
   parent.appendChild(el);
   el.getBoundingClientRect = () =>
     ({
-      x, y, width: w, height: h,
-      top: y, left: x, right: x + w, bottom: y + h,
+      x,
+      y,
+      width: w,
+      height: h,
+      top: y,
+      left: x,
+      right: x + w,
+      bottom: y + h,
       toJSON: () => ({}),
     }) as DOMRect;
   if (opts.hittable !== false) boxes.push({ el, rect: { x, y, w, h } });
@@ -235,7 +241,6 @@ describe('ElementState occlusion reporting', () => {
     // end case, where height is small and width is not.
     expect(probes).toBe(9);
   });
-
 });
 
 /**
@@ -475,15 +480,13 @@ describe('ElementState clip reporting', () => {
   });
 
   it('(j) an inline overflow:hidden ancestor clips nothing — overflow does not apply to it', () => {
-    // CSSOM reports clientWidth/clientHeight 0 for an inline box, which would
-    // otherwise become an empty clip box that marks every point clipped.
+    // Whatever client box the inline link reports (here a narrow one that the
+    // icon sits outside), its display alone decides: overflow does not apply.
     const registry = new UIBridgeRegistry();
     const link = placeIn(document.body, 'inline-link', 100, 100, 200, 20, {
       style: { display: 'inline', 'overflow-x': 'hidden', 'overflow-y': 'hidden' },
     });
-    paddingBox(link, { width: 0, height: 0 });
-    Object.defineProperty(link, 'offsetWidth', { value: 200, configurable: true });
-    Object.defineProperty(link, 'offsetHeight', { value: 20, configurable: true });
+    paddingBox(link, { width: 40, height: 20 });
     const icon = placeIn(link, 'icon', 150, 100, 20, 20, { hittable: false });
     registry.registerElement('icon', icon, { type: 'generic' });
 
@@ -494,18 +497,22 @@ describe('ElementState clip reporting', () => {
     expect(st.clippedPct).toBeUndefined();
   });
 
-  it('(k) a box with no client metrics on a laid-out rect is no clip, never an empty one', () => {
+  it('(k) a block box whose client area is 0×0 clips everything inside it', () => {
+    // A scroller whose client area is all scrollbar (or a bordered empty box):
+    // a genuine empty clip, not "no clip".
     const registry = new UIBridgeRegistry();
-    const odd = placeIn(document.body, 'no-client-box', 100, 100, 200, 20, {
-      style: { 'overflow-x': 'hidden', 'overflow-y': 'hidden' },
+    const tiny = placeIn(document.body, 'all-scrollbar', 100, 100, 30, 30, {
+      style: { 'overflow-x': 'auto', 'overflow-y': 'auto' },
     });
-    paddingBox(odd, { width: 0, height: 0 });
-    Object.defineProperty(odd, 'offsetWidth', { value: 200, configurable: true });
-    Object.defineProperty(odd, 'offsetHeight', { value: 20, configurable: true });
-    const icon = placeIn(odd, 'icon2', 150, 100, 20, 20, { hittable: false });
-    registry.registerElement('icon2', icon, { type: 'generic' });
+    paddingBox(tiny, { width: 0, height: 0 });
+    const inner = placeIn(tiny, 'inner', 100, 100, 30, 30, { hittable: false });
+    place('under', 0, 0, 400, 400);
+    registry.registerElement('inner', inner, { type: 'generic' });
 
-    expect(stateOf(registry, 'icon2').clippedPct).toBeUndefined();
+    const st = stateOf(registry, 'inner');
+    expect(st.visibilityReason).toBe('clipped');
+    expect(st.clippedPct).toBe(100);
+    expect(st.occludedBy).toBeUndefined();
   });
 
   it('(l) a clipper transformed on one axis only clips at its bounding rect', () => {

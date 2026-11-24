@@ -72,13 +72,9 @@ export interface ClipBox {
    */
   box: ClipRect | null;
   /**
-   * True iff every clipper that cuts off part of the element's own border box
-   * does so on an axis it can scroll — so the hidden part is reachable by
-   * scrolling. `false` when no clipper cuts anything. Callers that sampled
-   * points should use {@link clipScrollableAt} for the per-sample answer.
+   * The applicable clippers, nearest first. Whether a clipped part is
+   * reachable by scrolling is a per-sample question: {@link clipScrollableAt}.
    */
-  scrollable: boolean;
-  /** The applicable clippers, nearest first. */
   clippers: Clipper[];
 }
 
@@ -121,6 +117,11 @@ const NO_OVERFLOW_DISPLAY = new Set([
   'table-footer-group',
   'table-column',
   'table-column-group',
+  'ruby',
+  'ruby-base',
+  'ruby-text',
+  'ruby-base-container',
+  'ruby-text-container',
 ]);
 
 function overflowApplies(style: CSSStyleDeclaration): boolean {
@@ -132,10 +133,16 @@ function establishesContainingBlock(
   style: CSSStyleDeclaration,
   mode: 'absolute' | 'fixed'
 ): boolean {
+  const display = style.display || '';
+  // No box, no containing block.
+  if (display === 'contents' || display === 'none') return false;
   if (mode === 'absolute') {
     const pos = style.position || 'static';
     if (pos !== 'static') return true;
   }
+  // Transforms, filters and containment do not apply to a non-replaced
+  // inline box, so they cannot make it a containing block either.
+  if (display === 'inline') return false;
   const s = style as CSSStyleDeclaration & Record<string, string | undefined>;
   if (nonNone(style.transform) || nonNone(style.perspective) || nonNone(style.filter)) return true;
   // The individual transform properties (Tailwind v4 emits them) and
@@ -181,11 +188,12 @@ function axisClip(
 
 /**
  * The clipper's region: its padding box, or its bounding rect when transformed.
- * `null` when the element has a laid-out box but no client box to clip to
- * (client metrics 0×0 on a non-empty, untransformed rect, which CSSOM reports
- * for a box overflow does not apply to): that is no clip, never an empty one.
+ * A 0×0 client box on a laid-out rect (a bordered empty box, a scroller whose
+ * client area is all scrollbar) is a genuine empty clip: everything inside it
+ * is cut off. Boxes overflow does not apply to never reach here
+ * ({@link overflowApplies}).
  */
-function regionOf(el: HTMLElement, clipsX: boolean, clipsY: boolean): ClipRect | null {
+function regionOf(el: HTMLElement, clipsX: boolean, clipsY: boolean): ClipRect {
   const rect = el.getBoundingClientRect();
   const offsetWidth = typeof el.offsetWidth === 'number' ? el.offsetWidth : NaN;
   const offsetHeight = typeof el.offsetHeight === 'number' ? el.offsetHeight : NaN;
@@ -200,7 +208,6 @@ function regionOf(el: HTMLElement, clipsX: boolean, clipsY: boolean): ClipRect |
   } else {
     const cw = el.clientWidth || 0;
     const ch = el.clientHeight || 0;
-    if (cw === 0 && ch === 0 && rect.width > 0 && rect.height > 0) return null;
     const left = rect.left + (el.clientLeft || 0);
     const top = rect.top + (el.clientTop || 0);
     box = { left, top, right: left + cw, bottom: top + ch };
@@ -269,9 +276,7 @@ export function clippersOf(element: Element): Clipper[] {
     if (!overflowApplies(style)) continue;
     const axes = axisClip(style);
     if (!axes || !(p instanceof HTMLElement)) continue;
-    const box = regionOf(p, axes.clipsX, axes.clipsY);
-    if (!box) continue;
-    out.push({ element: p, box, ...axes });
+    out.push({ element: p, box: regionOf(p, axes.clipsX, axes.clipsY), ...axes });
   }
   return out;
 }
@@ -321,19 +326,5 @@ export function clipScrollableAt(
  */
 export function clipBoxOf(element: Element): ClipBox {
   const clippers = clippersOf(element);
-  const box = intersect(clippers);
-  if (!box) return { box: null, scrollable: false, clippers };
-  // `scrollable` against the element's own border box: a clipper cuts it on an
-  // axis when the box extends past the clipper's region on that axis.
-  const r = element.getBoundingClientRect();
-  let cut = false;
-  let scrollable = true;
-  for (const c of clippers) {
-    const cutX = r.left < c.box.left || r.right > c.box.right;
-    const cutY = r.top < c.box.top || r.bottom > c.box.bottom;
-    if (!cutX && !cutY) continue;
-    cut = true;
-    if ((cutX && !c.scrollsX) || (cutY && !c.scrollsY)) scrollable = false;
-  }
-  return { box, scrollable: cut && scrollable, clippers };
+  return { box: intersect(clippers), clippers };
 }
