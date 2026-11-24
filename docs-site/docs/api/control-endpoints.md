@@ -659,7 +659,13 @@ Behaviour change, also unreleased: an HTTP (`POST /control/element/{id}/action`)
 click-like action on a control inside a `display: none` subtree is now refused
 with `UB-ELEM-NOT-VISIBLE` (`visibilityReason: hidden`). The executor's click
 pre-check used to read only the control's own style, so it dispatched the
-click and reported success on a node no user could reach.
+click and reported success on a node no user could reach. Content inside a
+closed `<details>` is refused the same way. An `<option>` is exempt: a
+browser reports an option inside a closed dropdown `<select>` as not
+rendered, but clicking it to select it stays supported. The server
+`clickable` wait resolves the click's target as a read-only probe, so polling
+it never re-ranks Central Target Registry selectors, emits `ctr:*` events or
+prunes the discovery cache.
 
 ## Diagnostics
 

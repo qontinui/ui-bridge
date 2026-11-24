@@ -231,6 +231,10 @@ export function isRenderedForAction(el: HTMLElement): boolean {
   // flat-tree ancestor that does have a box instead.
   let probe: Element | null = el;
   if (own.display === 'contents') {
+    // The ancestor answers for the boxless node's own rendering only if a slot
+    // takes the node: an unslotted light child of an open shadow host is not
+    // rendered, though the host's `checkVisibility()` reads true.
+    if (el.parentElement?.shadowRoot && !el.assignedSlot) return false;
     probe = null;
     for (const node of composedAncestry(el).slice(1)) {
       if (view.getComputedStyle(node).display !== 'contents') {
@@ -242,9 +246,11 @@ export function isRenderedForAction(el: HTMLElement): boolean {
   if (probe && typeof probe.checkVisibility === 'function') {
     return probe.checkVisibility();
   }
-  // Fallback (jsdom, older engines, a `display: contents` node): the same
-  // question by hand, walking the flat tree (`composedAncestry`: a slotted
-  // node's parent is its slot, a shadow root is crossed to its host).
+  // Fallback, when `checkVisibility()` is unavailable (jsdom, older engines)
+  // or a `display: contents` node has no ancestor that is not itself
+  // `display: contents`: the same question by hand, walking the flat tree
+  // (`composedAncestry`: a slotted node's parent is its slot, a shadow root is
+  // crossed to its host).
   for (const node of composedAncestry(el)) {
     // An open shadow host renders only the children its slots take.
     const parent = node.parentElement;

@@ -564,12 +564,13 @@ export interface ActionExecutorLike {
    */
   executeComponentAction(componentId: string, request: ComponentActionRequest): Promise<unknown>;
   /**
-   * The node an element action on `elementId` would act on, resolved as
-   * `executeAction` resolves it, or `null`. Optional: a host executor without
+   * The node an element action on `elementId` would act on, resolved by the
+   * chain `executeAction` uses but as a read-only probe (no CTR self-healing,
+   * no cache writes, no events), or `null`. Optional: a host executor without
    * it gets the registry node (while connected) where this is consulted (the
-   * wait-for-element `clickable` condition).
+   * wait-for-element `clickable` condition, which polls).
    */
-  resolveActionTarget?(elementId: string): HTMLElement | null;
+  probeActionTarget?(elementId: string): HTMLElement | null;
   /**
    * Phase 6 — the predict route's executor arm.
    *
@@ -6891,15 +6892,16 @@ export function createHandlers(
             // interaction blockers.
             // The node the executor's click would act on: its own resolution
             // chain (a connected registry node, else by identifier, CTR or its
-            // discovery cache), so a detached registry node whose id now
-            // resolves to a replacement is judged on the replacement. A host
-            // executor without `resolveActionTarget` falls back to the
-            // registry node while it is connected. Not clickable only when
-            // nothing resolves.
+            // discovery cache) run as a read-only PROBE, since this wait polls
+            // and must not self-heal the CTR or prune the cache as an acting
+            // resolution does. A detached registry node whose id now resolves
+            // to a replacement is judged on the replacement. A host executor
+            // without `probeActionTarget` falls back to the registry node
+            // while it is connected. Not clickable only when nothing resolves.
             const id = typeof el.id === 'string' ? el.id : undefined;
-            const target = actionExecutor.resolveActionTarget
+            const target = actionExecutor.probeActionTarget
               ? id !== undefined
-                ? actionExecutor.resolveActionTarget(id)
+                ? actionExecutor.probeActionTarget(id)
                 : null
               : domEl?.isConnected
                 ? domEl
