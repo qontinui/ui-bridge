@@ -494,6 +494,27 @@ export function densityNearestRepeats(
   return new Map([...best].map(([k, v]) => [k, v.id]));
 }
 
+/**
+ * For each id a declared edge may aim at (a repeat's parent, rows and their
+ * subtrees), the innermost repeat it belongs to: an edge to an inner list is
+ * that list's, not every enclosing one's.
+ */
+export function densityInnermostRepeats(
+  capture: DensityCapture,
+  repeats: ReadonlyArray<Pick<DensityRepeat, 'id' | 'members' | 'parent'>>,
+  children: Map<string, string[]> = densityChildren(capture)
+): Map<string, string> {
+  const targets = repeats.map((r) => ({
+    id: r.id,
+    set: densityRepeatTargets(capture, r, children),
+  }));
+  // Larger first, so a smaller (inner) repeat overwrites.
+  targets.sort((a, b) => b.set.size - a.set.size);
+  const out = new Map<string, string>();
+  for (const t of targets) for (const id of t.set) out.set(id, t.id);
+  return out;
+}
+
 function finderRank(item: DensityItem): number {
   return item.role === 'searchbox' ? 0 : item.role === 'textbox' ? 1 : 2;
 }
@@ -690,7 +711,8 @@ export function densityRepeats(
   // Only a single column of leaves inside one row is that row's lines: a
   // grid, or a column of containers (cards, comments), is a list of its own.
   const linesOfOneRow = (g: Group): boolean => {
-    if (NESTED_ROW_TAGS.has(g.tag)) return false;
+    // A cousin group's rows are unregistered li / tr by construction.
+    if (g.byRowKey || NESTED_ROW_TAGS.has(g.tag)) return false;
     if (!g.members.every((m) => leafSet.has(m.id))) return false;
     if (maxOf(rowsFor(g).map((r) => r.length)) > 1) return false;
     const row = enclosingRow(g.members[0].id, g);
@@ -722,6 +744,17 @@ export function densityRepeats(
         for (const m of c) memberOf.set(m.id, g);
         if (!linesOfOneRow(g)) groups.push(g);
       }
+    }
+    // Leaves of different widths at one left edge (fit-content links).
+    const placed = new Set<string>();
+    for (const g of groups) for (const m of g.members) placed.add(m.id);
+    const rest = list.filter((m) => !placed.has(m.id) && leafSet.has(m.id));
+    for (const c of clusterBy(rest, (r) => r.x)) {
+      if (rowsOf(c).length < DENSITY_REPEAT_MIN_ROWS) continue;
+      if (c.every((m) => kindOf.get(m.id) === 'prose')) continue;
+      const g: Group = { by: 'geometry', parent: c[0].parent, tag: c[0].tag, members: c };
+      for (const m of c) memberOf.set(m.id, g);
+      if (!linesOfOneRow(g)) groups.push(g);
     }
   }
 
@@ -839,6 +872,7 @@ export function densityRepeats(
   // ---- finder: in the repeat's scope above its first row, or a declared `filters` edge ----
   const scopes = densityRepeatScopes(capture, repeats, blocks);
   const nearestBelow = densityNearestRepeats(capture, repeats, scopes, 'below');
+  const innermost = densityInnermostRepeats(capture, repeats, children);
   for (const rep of repeats) {
     const scope = scopes.get(rep.id)!;
     rep.scope = scope.by;
@@ -853,7 +887,8 @@ export function densityRepeats(
           takesSpace(i) &&
           isDensityFinderControl(i) &&
           i.filters !== null &&
-          aimed.has(i.filters)
+          aimed.has(i.filters) &&
+          innermost.get(i.filters) === rep.id
       )
       .sort((a, b) => finderRank(a) - finderRank(b));
     if (declared.length > 0) finder = { id: declared[0].id, by: 'relationship' };
@@ -896,8 +931,10 @@ export const DENSITY_REPEAT_LIST_CAP = 50;
 
 export type DensityRepeatsReport =
   | { structureResolved: false; reason: string }
+  | { structureResolved: true; repeatKeysResolved: false; reason: string }
   | {
       structureResolved: true;
+      repeatKeysResolved: true;
       byBasis: Record<DensityRepeatBy, number>;
       shown: number;
       total: number;
@@ -920,7 +957,8 @@ export function summarizeDensityRepeats(
   }
   if (!capture.repeatKeysResolved) {
     return {
-      structureResolved: false,
+      structureResolved: true,
+      repeatKeysResolved: false,
       reason:
         'this capture predates the sibling and cousin keys repeats are read from (repeatKeysResolved: false); capture it again',
     };
@@ -933,6 +971,7 @@ export function summarizeDensityRepeats(
     .map((r): DensityRepeatSummary => ({ ...r, members: r.members.length }));
   return {
     structureResolved: true,
+    repeatKeysResolved: true,
     byBasis,
     shown: list.length,
     total: all.length,

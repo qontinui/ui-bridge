@@ -659,13 +659,31 @@ describe('repeats', () => {
     if (!parsed.ok) return;
     expect(parsed.value.repeatKeysResolved).toBe(false);
     expect(summarizeDensityRepeats(parsed.value, null)).toEqual({
-      structureResolved: false,
+      structureResolved: true,
+      repeatKeysResolved: false,
       reason:
         'this capture predates the sibling and cousin keys repeats are read from (repeatKeysResolved: false); capture it again',
     });
     // A capture written now round-trips with its keys.
     const fresh = parseDensityCapture(JSON.parse(JSON.stringify(c)));
     expect(fresh.ok && fresh.value.repeatKeysResolved).toBe(true);
+  });
+
+  it('fit-content links with no xpath chain are a repeat by left edge', () => {
+    const els: DensityTestElementSpec[] = [
+      { id: 'side', tag: 'div', xpath: '//*[@id="side"]', rect: [0, 0, 300, 400], text: '' },
+      ...[73, 112, 90, 101].map(
+        (w, i): DensityTestElementSpec => ({
+          id: `side.l${i + 1}`,
+          tag: 'a',
+          xpath: `//*[@id="l${i + 1}"]`,
+          rect: [16, 20 + 30 * i, w, 24],
+          text: `Link ${i + 1}`,
+        })
+      ),
+    ];
+    const reps = densityRepeats(capture(els), null);
+    expect(reps.map((r) => [r.id, r.by, r.rows])).toEqual([['repeat:side.l1', 'geometry', 4]]);
   });
 
   it('a hidden leaf in a row draws no line band', () => {

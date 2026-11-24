@@ -114,6 +114,7 @@ export {
   DENSITY_REPEAT_MIN_ROWS,
   DENSITY_REPEAT_TOLERANCE_PX,
   DENSITY_REPEAT_SCOPE_LEVELS,
+  densityInnermostRepeats,
   densityNearestRepeats,
   densityRepeatScopes,
   densityRepeatTargets,

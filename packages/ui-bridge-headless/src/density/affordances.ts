@@ -19,6 +19,7 @@
  */
 
 import {
+  densityInnermostRepeats,
   densityNearestRepeats,
   densityRepeatScopes,
   densityTakesSpace,
@@ -269,6 +270,7 @@ export function densityAffordances(
   // By position a control acts on the nearest repeat only.
   const nearestBelow = densityNearestRepeats(capture, repeats, scopes, 'below');
   const nearestAbove = densityNearestRepeats(capture, repeats, scopes, 'above');
+  const innermost = densityInnermostRepeats(capture, repeats, children);
   const H = capture.viewport.height;
   for (const rep of repeats) {
     const scope = scopes.get(rep.id)!;
@@ -276,12 +278,30 @@ export function densityAffordances(
     for (const item of capture.items) {
       if (scope.own.has(item.id)) continue;
       // A filter is a laid-out, interactive select, combobox, checkbox or radio.
+      // A checkbox or radio in a table header selects rows, it filters nothing.
+      const headerToggle =
+        (item.role === 'checkbox' || item.role === 'radio') &&
+        item.path !== null &&
+        item.path.includes('thead');
       const filterControl =
-        isDensityFilterControl(item) && item.interactive && densityTakesSpace(item);
+        isDensityFilterControl(item) &&
+        item.interactive &&
+        densityTakesSpace(item) &&
+        !headerToggle;
       // filter (a search box with a `filters` edge is the repeat's finder, not a filter)
-      if (filterControl && item.filters !== null && aimed.has(item.filters)) {
+      if (
+        filterControl &&
+        item.filters !== null &&
+        aimed.has(item.filters) &&
+        innermost.get(item.filters) === rep.id
+      ) {
         add(item, 'declared-filters', null, { repeat: rep.id });
-      } else if (filterControl && item.controls !== null && aimed.has(item.controls)) {
+      } else if (
+        filterControl &&
+        item.controls !== null &&
+        aimed.has(item.controls) &&
+        innermost.get(item.controls) === rep.id
+      ) {
         add(item, 'declared-controls', null, { repeat: rep.id });
       } else if (
         scope.ids.has(item.id) &&
@@ -312,8 +332,10 @@ export const DENSITY_AFFORDANCE_LIST_CAP = 100;
 
 export type DensityAffordancesReport =
   | { structureResolved: false; reason: string }
+  | { structureResolved: true; repeatKeysResolved: false; reason: string }
   | {
       structureResolved: true;
+      repeatKeysResolved: true;
       /** No control was operated: interaction counts are read from structure and ARIA state. */
       interactionsBasis: 'static';
       byKind: Record<DensityAffordanceKind, number>;
@@ -331,12 +353,19 @@ export function summarizeDensityAffordances(
   affordances?: readonly DensityAffordance[],
   cap: number = DENSITY_AFFORDANCE_LIST_CAP
 ): DensityAffordancesReport {
-  if (!capture.structureResolved || !capture.repeatKeysResolved) {
+  if (!capture.structureResolved) {
     return {
       structureResolved: false,
-      reason: capture.structureResolved
-        ? 'filters and pagers act on repeats, whose sibling and cousin keys this capture predates (repeatKeysResolved: false); capture it again'
-        : 'filters, pagers and abbreviations are read from parent links, which this capture has not resolved',
+      reason:
+        'filters, pagers and abbreviations are read from parent links, which this capture has not resolved',
+    };
+  }
+  if (!capture.repeatKeysResolved) {
+    return {
+      structureResolved: true,
+      repeatKeysResolved: false,
+      reason:
+        'filters and pagers act on repeats, whose sibling and cousin keys this capture predates (repeatKeysResolved: false); capture it again',
     };
   }
   const all = affordances ?? densityAffordances(capture, targets);
@@ -352,6 +381,7 @@ export function summarizeDensityAffordances(
   const list = all.slice(0, Math.max(0, cap));
   return {
     structureResolved: true,
+    repeatKeysResolved: true,
     interactionsBasis: 'static',
     byKind,
     byRule,
