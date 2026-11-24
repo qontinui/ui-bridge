@@ -47,4 +47,25 @@ export const RELAY_READ_ACTIONS: ReadonlySet<string> = new Set([
   // `getRenderLogEntries()` and filters a copy. It clears nothing:
   // `clearRenderLog` is a separate action, absent here.
   'getRenderLog',
+  // `case 'getElementReactState':` reads one registration and returns
+  // `extractReactState(el.element)` (`../control/extract-react-state.ts`),
+  // which walks React's `__reactProps$` / `__reactFiber$` keys into fresh
+  // serialized copies; nothing on the element or fiber is written.
+  'getElementReactState',
+  // `case 'getDiagnostics':` returns `buildSdkDiagnostics(...)`
+  // (`../core/sdk-diagnostics.ts`): counts, `document.title`,
+  // `location.href`, `readyState`, and a `querySelectorAll` count.
+  'getDiagnostics',
+  // `case 'getElementHistory':` returns `elementHistoryCommand(...)`
+  // (`../react/history-commands.ts`), the event log's filtered copy of its
+  // buffer (`ElementEventLog.getHistory`). It clears nothing.
+  'getElementHistory',
+  // `case 'getRecentEffects':` returns `recentEffectsCommand(...)`, the effect
+  // store's newest-first slice copy (`getRecent`). It clears nothing.
+  'getRecentEffects',
+  // `case 'getRoutes':` returns `getRoutesCommand(g)`
+  // (`../react/navigation-commands.ts`): the adapter's `getRoutes()` or the
+  // window's one current-page route, plus `source` / `complete`. It navigates
+  // nothing (`navigateByAdapter`, which does, is absent here).
+  'getRoutes',
 ]);

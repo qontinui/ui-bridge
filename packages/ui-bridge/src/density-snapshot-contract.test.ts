@@ -53,6 +53,7 @@ describe('density adapter reads the fields the registry serializer writes', () =
         <div id="p" role="region">Order details</div>
         <a id="l" href="/orders/1" data-ui-bridge-id="link-orders">Orders</a>
         <div id="pane" style="overflow-x: auto; overflow-y: auto;">A long synthetic list</div>
+        <ul id="ol" data-testid="orders-list"><li>Row one</li></ul>
       </main>`;
     registry = new UIBridgeRegistry();
     // The provider wires a tracker the same way (react/UIBridgeProviderInit.ts).
@@ -95,6 +96,19 @@ describe('density adapter reads the fields the registry serializer writes', () =
     ] as const) {
       Object.defineProperty(pane, key, { get: () => value, configurable: true });
     }
+    // A list with its own id AND a test id: the row's chain anchors at the
+    // test id (generateXPath checks it first), so the parent is found only
+    // through `identifier.testId`.
+    registry.registerElement('app.orders.list', document.getElementById('ol')!, {
+      type: 'custom',
+      actions: [],
+      category: 'content',
+    });
+    registry.registerElement('app.orders.row', document.querySelector('#ol > li') as HTMLElement, {
+      type: 'custom',
+      actions: [],
+      category: 'content',
+    });
     registry.registerElement('app.pane', pane, {
       type: 'custom',
       actions: [],
@@ -160,6 +174,11 @@ describe('density adapter reads the fields the registry serializer writes', () =
       clientHeight: 700,
       clientWidth: 1024,
     });
+    const list = byId['app.orders.list'].identifier as Record<string, unknown>;
+    expect([list.xpath, list.htmlId, list.testId]).toEqual(['//*[@id="ol"]', 'ol', 'orders-list']);
+    expect((byId['app.orders.row'].identifier as Record<string, unknown>).xpath).toBe(
+      '/ul[@data-testid="orders-list"]/li'
+    );
     const relationships = (snapshot.relationships as Record<string, unknown>).relationships;
     expect(relationships).toContainEqual(
       expect.objectContaining({
@@ -185,7 +204,9 @@ describe('density adapter reads the fields the registry serializer writes', () =
       tag: 'button',
       interactive: true,
       authorId: true,
-      structureBy: 'xpath',
+      // Its own id: the xpath names no ancestor, and jsdom's 0x0 rects contain nothing.
+      structureBy: 'geometry',
+      parent: null,
       rect: { x: 0, y: 0, w: 0, h: 0 },
       chars: 14,
       shape: 'text',
@@ -217,6 +238,17 @@ describe('density adapter reads the fields the registry serializer writes', () =
     expect(link.href).toBe(sha256DensityHex((rawLink.state as { href: string }).href));
     expect(capture.bases.scrollBasis).toBe('inner-scroller');
     expect(capture.bases.scroller).toEqual({ by: 'scroll-info', id: 'app.pane' });
+
+    // The row's chain anchors at the list's test id: parent read from the xpath.
+    expect(capture.structureResolved).toBe(true);
+    expect(byId['app.orders.row']).toMatchObject({
+      parent: 'app.orders.list',
+      path: ['ul'],
+      structureBy: 'xpath',
+      chars: 7,
+      ownChars: 7,
+    });
+    expect(byId['app.orders.list'].ownChars).toBe(0);
 
     const secret = byId['app.secret'];
     expect([secret.chars, secret.textHash, secret.shape]).toEqual([null, null, null]);

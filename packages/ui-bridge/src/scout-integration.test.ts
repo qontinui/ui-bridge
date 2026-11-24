@@ -713,7 +713,7 @@ describe('Poco: UIQuery DSL', () => {
 // agent-desktop — Batch action CTR resolution pipeline
 // =============================================================================
 
-describe('agent-desktop: executeBatch resolves CTR logical names before execution', () => {
+describe('agent-desktop: a batch resolves CTR logical names before execution', () => {
   let registry: CentralTargetRegistry;
 
   beforeEach(() => {
@@ -721,7 +721,7 @@ describe('agent-desktop: executeBatch resolves CTR logical names before executio
     resetGlobalCtr();
   });
 
-  it('executeBatch resolves CTR logical names before execution', () => {
+  it('a batch resolves CTR logical names before execution', () => {
     // Register 3 targets that a batch action would reference
     const logicalNames = ['btn-save', 'btn-cancel', 'input-name'];
     const testIds = ['save-btn', 'cancel-btn', 'name-input'];

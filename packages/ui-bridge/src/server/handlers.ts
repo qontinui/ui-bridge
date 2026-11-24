@@ -18,7 +18,6 @@ import type {
   WaitForElementSuccessResponse,
   ControlBatchRequest,
   ControlBatchResponse,
-  ControlBatchStepResult,
   StateSummary,
   ElementExpectRequest,
   ElementExpectResponse,
@@ -48,13 +47,10 @@ import type {
   FillFormRequest,
   ActionChanges,
   ElementFieldChange,
-  BatchActionRequest,
-  BatchActionResponse,
   EffectRecordEntry,
   ComponentActionPredictRequest,
   ComponentActionPredictResponse,
 } from '../control';
-import { getGlobalEffectStore } from '../control/effect-store';
 import {
   applyCanonicalFindFilter,
   isFindRefusalError,
@@ -74,7 +70,6 @@ import { buildVisibilityReport } from './visibility-report';
 import {
   scanDOMForInteractiveElements,
   scanDOMForInteractiveElementsWithRefs,
-  countDOMInteractiveElements,
 } from './dom-fallback';
 import {
   matchesElementSelector,
@@ -84,6 +79,7 @@ import {
 import { answersToNamedType } from '../core/element-kind';
 import { buildComponentNotFoundError } from './component-not-found';
 import { describeInnerFailure } from './inner-failure';
+import { readControlBatchRequest, runControlBatch } from '../control/control-batch';
 import {
   readValuePrimitive,
   findByTextPrimitive,
@@ -95,8 +91,31 @@ import {
   type SendKeysToPageResult,
 } from './page-primitives';
 import type { NavigationAdapter } from '../navigation/navigation-adapter';
-import { WindowLocationAdapter } from '../navigation/navigation-adapter';
-import { extractReactState } from '../control/action-executor';
+import {
+  getRoutesCommand,
+  isNavigationFailure,
+  navigateByAdapterCommand,
+  navigationRefusal,
+  type NavigatedAnswer,
+  type NavigationSlots,
+  type RoutesAnswer,
+} from '../react/navigation-commands';
+import {
+  checkNavigationUrl,
+  isBareRouteName,
+  navigationPathForm,
+  parserNormalized,
+  softNavigationPath,
+} from '../core/navigation-url';
+import { recordingActionExecutor } from '../core/element-action-events';
+import { extractReactState, noReactInternals } from '../control/extract-react-state';
+import { buildSdkDiagnostics, type SdkDiagnostics } from '../core/sdk-diagnostics';
+import {
+  elementHistoryCommand,
+  isHistoryCommandFailure,
+  recentEffectsCommand,
+  type HistoryCommandFailure,
+} from '../react/history-commands';
 import {
   captureComponent,
   componentCaptureRefusalEnvelope,
@@ -119,12 +138,9 @@ import {
   scrubContent,
   scrubContentByVerdict,
   scrubMediaMetadata,
-  scrubRecord,
   verdictOf,
   verdictFromState,
-  readScrubbedValue,
   readScrubbedText,
-  REDACTED_VALUE,
 } from '../core/redaction';
 import type { ElementState } from '../core/types';
 import { isMediaObservation } from '../core/media-observation';
@@ -288,7 +304,6 @@ import { ChangeObserver } from '../core/change-observer';
 import type { BridgeEvent } from '../core';
 import { findElements } from '../core/find';
 import type { ElementQuery } from '../core/find';
-import { classString } from '../core/class-name';
 // The identity fold, stamped onto find/discover payloads so an off-process
 // driver can read `mountEvidence` instead of guessing what its own fold saw.
 import { computeSnapshotSignature } from '../core/snapshot-signature';
@@ -503,6 +518,11 @@ export interface RegistryLike {
 
   // Element event log
   getElementHistory?(elementId: string, options?: ElementHistoryOptions): ElementLogEntry[];
+  /** `false` when the registry keeps no element event log (`react/history-commands.ts`). */
+  hasElementHistory?(): boolean;
+
+  /** Emit a bridge event (the element-action events, `../core/element-action-events.ts`). */
+  dispatchEvent?<T>(type: import('../core').BridgeEventType, data: T): void;
 
   // Event subscription (for push-based change observation)
   on?<T = unknown>(
@@ -553,7 +573,6 @@ export interface ActionExecutorLike {
     request?: ComponentActionPredictRequest
   ): Promise<ComponentActionPredictResponse>;
   fillForm?(request: FillFormRequest): Promise<FillResult>;
-  executeBatch?(request: BatchActionRequest): Promise<BatchActionResponse>;
 }
 
 /**
@@ -1027,6 +1046,53 @@ function noPageRuntime(handler: string): APIResponse<unknown> {
   };
 }
 
+/**
+ * Lift a failure a shared command RETURNED (the page's own answer) onto the
+ * envelope, by the shared inner-failure rule the relay seam applies too: the
+ * canonical `UB-*` code on the envelope, the command's answer verbatim under
+ * `data` (raw `failureDetails.errorCode` included).
+ */
+function liftInnerFailure<T>(inner: unknown): APIResponse<T> {
+  const { message, code } = describeInnerFailure(
+    inner,
+    'The command did not report success and supplied no error message.'
+  );
+  return {
+    success: false,
+    error: message,
+    code: code as UiBridgeErrorCode,
+    data: inner as T,
+    timestamp: Date.now(),
+  };
+}
+
+/**
+ * The envelope for a history command's returned failure: the capability
+ * statement is already the typed `UB-CAPABILITY-UNAVAILABLE` envelope
+ * {@link noPageRuntime} shapes, and is answered as it is; a payload refusal is
+ * lifted like any inner failure.
+ */
+function historyFailureResponse<T>(failure: HistoryCommandFailure): APIResponse<T> {
+  if ('code' in failure) {
+    return { ...failure, timestamp: Date.now() } as unknown as APIResponse<T>;
+  }
+  return liftInnerFailure(failure);
+}
+
+/** The page dispatcher's not-found answer for an element read, as a returned failure. */
+function elementNotFound(id: string, message: string) {
+  return {
+    success: false as const,
+    error: message,
+    failureDetails: {
+      errorCode: 'ELEMENT_NOT_FOUND',
+      message,
+      elementId: id,
+      selectorsTried: [`registry:${id}`],
+    },
+  };
+}
+
 // `buildComponentNotFoundError` now lives in its own zero-dependency module
 // (`./component-not-found`) so browser-side consumers (the relay command
 // dispatcher, the injected runtime bundle) can import it without pulling the
@@ -1094,7 +1160,7 @@ function createFailureDetails(
  * Create server handlers for UI Bridge
  *
  * @param registry - The UI Bridge registry instance
- * @param actionExecutor - The action executor instance
+ * @param rawActionExecutor - The action executor instance (wrapped once so every element action records its `action:*` events)
  * @param config - Optional configuration
  * @returns Handler implementations for all endpoints
  *
@@ -1200,13 +1266,19 @@ const PAGE_ONLY_HANDLERS = [
   'evaluateQuality',
   'saveBaseline',
   'getRoutes',
+  'navigateByAdapter',
 ] as const satisfies readonly (keyof UIBridgeServerHandlers)[];
 
 export function createHandlers(
   registry: RegistryLike,
-  actionExecutor: ActionExecutorLike,
+  rawActionExecutor: ActionExecutorLike,
   config: CreateHandlersConfig = {}
 ): UIBridgeServerHandlers {
+  // Every element action this server runs — the route's, a batch step's, the
+  // change tracker's, the NL executor's — goes through this ONE executor, so
+  // each records its `action:*` events on the registry exactly once
+  // (`../core/element-action-events.ts`).
+  const actionExecutor = recordingActionExecutor(rawActionExecutor, registry);
   // Create AI module instances
   const searchEngine = new SearchEngine();
   const nlExecutor = new NLActionExecutor();
@@ -1224,8 +1296,9 @@ export function createHandlers(
   // owns snapshot.modalStack enrichment via setEnrichers).
   const modalDetector = config.modalDetector ?? null;
 
-  // Navigation adapter for app-agnostic page navigation
-  const navAdapter: NavigationAdapter = config.navigationAdapter ?? new WindowLocationAdapter();
+  // Navigation adapter for app-agnostic page navigation: the slot the page's
+  // own `getRoutes` / `navigateByAdapter` read (`../react/navigation-commands.ts`).
+  const navigationSlots: NavigationSlots = { navigationAdapter: config.navigationAdapter };
 
   // Undo tracker for action recording (recordAction) and /control/undo
   // /control/redo. Snapshot's undoRedo is enriched by the registry.
@@ -1970,23 +2043,17 @@ export function createHandlers(
 
     getElementReactState: async (id: string): Promise<APIResponse<unknown>> => {
       try {
+        // The one projection the page serves too (`../control/extract-react-state.ts`),
+        // and the page's not-found: a RETURNED `ELEMENT_NOT_FOUND` for no
+        // registration or a gone DOM node, lifted by the shared inner-failure rule.
         const element = registry.getElement(id) as { element?: HTMLElement } | undefined;
         if (!element) {
-          return error(`Element not found: ${id}`, 'NOT_FOUND');
+          return liftInnerFailure(elementNotFound(id, `Element ${id} not found`));
         }
-        if (!element.element) {
-          return error(`Element ${id} has no DOM node`, 'NO_DOM_NODE');
+        if (!element.element?.isConnected) {
+          return liftInnerFailure(elementNotFound(id, `DOM element for ${id} not found`));
         }
-        const reactState = extractReactState(element.element);
-        if (!reactState) {
-          return success({
-            props: {},
-            fiberState: [],
-            componentName: undefined,
-            note: 'No React internals found on this element',
-          });
-        }
-        return success(reactState);
+        return success(extractReactState(element.element) ?? noReactInternals());
       } catch (err) {
         return error((err as Error).message, 'REACT_STATE_ERROR');
       }
@@ -2299,71 +2366,6 @@ export function createHandlers(
         httpStatus: 422,
       };
       return failureBody;
-    },
-
-    executeBatchAction: async (
-      request: BatchActionRequest
-    ): Promise<APIResponse<BatchActionResponse>> => {
-      try {
-        if (!request?.steps || !Array.isArray(request.steps) || request.steps.length === 0) {
-          return error('Batch request must include a non-empty "steps" array', 'VALIDATION_ERROR');
-        }
-
-        if (actionExecutor.executeBatch) {
-          const result = await actionExecutor.executeBatch(request);
-          return success(result);
-        }
-
-        // Fallback: execute steps sequentially if executor doesn't support native batch
-        const startTime = performance.now();
-        const results: BatchActionResponse['results'] = [];
-        let succeededCount = 0;
-        let failedCount = 0;
-        let skippedCount = 0;
-        let stopped = false;
-        const stopOnFailure = request.stopOnFailure ?? true;
-        const delayBetweenMs = request.delayBetweenMs ?? 0;
-
-        for (let i = 0; i < request.steps.length; i++) {
-          if (stopped) {
-            skippedCount++;
-            continue;
-          }
-
-          const step = request.steps[i];
-          if (i > 0 && delayBetweenMs > 0) {
-            await new Promise((resolve) => setTimeout(resolve, delayBetweenMs));
-          }
-
-          refreshElements();
-          const response = await actionExecutor.executeAction(step.elementId, step.action);
-          results.push({
-            index: i,
-            label: step.label,
-            elementId: step.elementId,
-            response: response as ControlActionResponse,
-          });
-
-          if ((response as ControlActionResponse).success) {
-            succeededCount++;
-          } else {
-            failedCount++;
-            if (stopOnFailure) stopped = true;
-          }
-        }
-
-        return success({
-          success: failedCount === 0,
-          results,
-          succeededCount,
-          failedCount,
-          skippedCount,
-          durationMs: performance.now() - startTime,
-          timestamp: Date.now(),
-        });
-      } catch (err) {
-        return error((err as Error).message, 'BATCH_ACTION_ERROR');
-      }
     },
 
     // =========================================================================
@@ -2940,17 +2942,10 @@ export function createHandlers(
       limit?: number;
     }): Promise<APIResponse<EffectRecordEntry[]>> => {
       try {
-        // The GET adapter passes query values as strings; coerce `limit`.
-        const rawLimit: unknown = options?.limit;
-        let limit: number | undefined;
-        if (typeof rawLimit === 'number' && Number.isFinite(rawLimit)) {
-          limit = rawLimit;
-        } else if (typeof rawLimit === 'string' && rawLimit.trim() !== '') {
-          const parsed = Number(rawLimit);
-          if (Number.isFinite(parsed)) limit = parsed;
-        }
-        const recent = getGlobalEffectStore().getRecent(limit);
-        return success(recent);
+        // The page's command (`../react/history-commands.ts`), `limit` coercion included.
+        const answer = recentEffectsCommand(options ?? {});
+        if (isHistoryCommandFailure(answer)) return historyFailureResponse(answer);
+        return success(answer);
       } catch (err) {
         return error((err as Error).message, 'RECENT_EFFECTS_ERROR');
       }
@@ -3670,59 +3665,17 @@ export function createHandlers(
     // Diagnostics Endpoint
     // =========================================================================
 
-    getDiagnostics: async (): Promise<
-      APIResponse<{
-        sdk_initialized: boolean;
-        auto_register_active: boolean;
-        registered_elements: number;
-        dom_interactive_elements: number;
-        mutation_observer_active: boolean;
-        navigation_adapter: string;
-        page_title: string;
-        page_url: string;
-        page_ready: boolean;
-        providers_mounted: string[];
-        last_discover_at: string | null;
-        capabilities: string[];
-      }>
-    > => {
+    getDiagnostics: async (): Promise<APIResponse<SdkDiagnostics>> => {
       try {
-        const registeredCount = registry.getAllElements().length;
-        const domCount = countDOMInteractiveElements();
-        const globalBridge =
-          typeof window !== 'undefined'
-            ? (
-                window as unknown as {
-                  __UI_BRIDGE__?: {
-                    autoRegisterActive?: boolean;
-                    mutationObserverActive?: boolean;
-                    providers?: string[];
-                  };
-                }
-              ).__UI_BRIDGE__
-            : null;
-
-        return success({
-          sdk_initialized: !!globalBridge,
-          auto_register_active: !!globalBridge?.autoRegisterActive,
-          registered_elements: registeredCount,
-          dom_interactive_elements: domCount,
-          mutation_observer_active: !!globalBridge?.mutationObserverActive,
-          navigation_adapter: config.navigationAdapter ? 'custom' : 'window-location',
-          page_title: typeof document !== 'undefined' ? document.title : '',
-          page_url: typeof window !== 'undefined' ? window.location.href : '',
-          page_ready: typeof document !== 'undefined' ? document.readyState === 'complete' : false,
-          providers_mounted: globalBridge?.providers ?? [],
-          last_discover_at: null,
-          capabilities: [
-            'control',
-            'find',
-            'ai',
-            ...(config.consoleCapture ? ['debug'] : []),
-            ...(config.navigationTracker ? ['navigation'] : []),
-            ...(config.navigationAdapter ? ['navigation-adapter'] : []),
-          ],
-        });
+        // The one builder the page serves too (`../core/sdk-diagnostics.ts`).
+        return success(
+          buildSdkDiagnostics({
+            registeredElements: registry.getAllElements().length,
+            hasConsoleCapture: !!config.consoleCapture,
+            hasNavigationTracker: !!config.navigationTracker,
+            hasNavigationAdapter: !!config.navigationAdapter,
+          })
+        );
       } catch (err) {
         return error((err as Error).message, 'DIAGNOSTICS_ERROR');
       }
@@ -3732,22 +3685,25 @@ export function createHandlers(
     // Navigation Adapter Endpoints
     // =========================================================================
 
-    getRoutes: async (): Promise<APIResponse<Array<{ name: string; path: string }>>> => {
+    // The page's own two commands (`../react/navigation-commands.ts`): the
+    // same route answer and the same URL gate. Both are page-only
+    // (`PAGE_ONLY_HANDLERS`).
+    getRoutes: async (): Promise<APIResponse<RoutesAnswer>> => {
       try {
-        const routes = navAdapter.getRoutes();
-        return success(routes);
+        return success(getRoutesCommand(navigationSlots));
       } catch (err) {
         return error((err as Error).message, 'GET_ROUTES_ERROR');
       }
     },
 
-    navigateByAdapter: async (request: {
-      page: string;
-    }): Promise<APIResponse<{ navigated: boolean; route: { name: string; path: string } }>> => {
+    navigateByAdapter: async (request: { page: string }): Promise<APIResponse<NavigatedAnswer>> => {
       try {
-        await navAdapter.navigate(request.page);
-        const current = navAdapter.getCurrentRoute();
-        return success({ navigated: true, route: current });
+        const answer = await navigateByAdapterCommand(request, navigationSlots, {
+          base: window.location.href,
+          pageNavigate: (url) => handlers.pageNavigate({ url }),
+        });
+        if (isNavigationFailure(answer)) return liftInnerFailure(answer);
+        return success(answer);
       } catch (err) {
         return error((err as Error).message, 'NAVIGATE_ERROR');
       }
@@ -4030,7 +3986,8 @@ export function createHandlers(
       request: PageNavigateRequest
     ): Promise<APIResponse<PageNavigationResponse>> => {
       try {
-        if (!request.url) {
+        // A url that is only whitespace / control characters names nothing.
+        if (typeof request.url !== 'string' || navigationPathForm(request.url) === '') {
           return error('URL is required', 'INVALID_REQUEST');
         }
         // F1: optional `mode` ("hard" | "soft"). Default: "hard" for back-compat.
@@ -4040,35 +3997,45 @@ export function createHandlers(
         }
         const mode: 'hard' | 'soft' = rawMode ?? 'hard';
 
-        // Validate URL scheme to prevent javascript:/data: injection
-        try {
-          const parsed = new URL(request.url, window.location.origin);
-          if (!['http:', 'https:'].includes(parsed.protocol) && !request.url.startsWith('/')) {
-            return error(
-              'Invalid URL protocol — only http/https and relative paths allowed',
-              'INVALID_REQUEST'
-            );
-          }
-        } catch {
-          // Relative URLs like "/foo" won't parse without a base — they're safe
-          if (!request.url.startsWith('/')) {
-            return error('Invalid URL format', 'INVALID_REQUEST');
-          }
+        // A bare name in hard mode is a TAB ID (the runner's
+        // `activity-timeline`): served by the ui-bridge-navigate event and
+        // never assigned. It is decided BEFORE the URL gate, which checks only
+        // what will be assigned — on a tauri:// or file:// page the gate would
+        // resolve the name against the page and refuse its scheme.
+        if (mode === 'hard' && isBareRouteName(request.url)) {
+          window.dispatchEvent(
+            new CustomEvent('ui-bridge-navigate', {
+              detail: { page: request.url, url: request.url },
+            })
+          );
+          return success({
+            success: true,
+            url: request.url,
+            hard: true,
+            mode: 'hard',
+            timestamp: Date.now(),
+          });
+        }
+
+        // The one navigation URL gate (`../core/navigation-url.ts`), as the
+        // page's `pageNavigate` and every `navigateByAdapter` ask it: one rule,
+        // one code set (INVALID_URL_PROTOCOL / INVALID_URL_FORMAT →
+        // UB-VALIDATION-ERROR), refused before anything navigates.
+        const urlVerdict = checkNavigationUrl(request.url, window.location.href);
+        if (!urlVerdict.ok) {
+          return liftInnerFailure(navigationRefusal(urlVerdict.code, urlVerdict.message));
         }
 
         if (mode === 'soft') {
           // SPA-friendly navigation: pushState + synthetic popstate event so
           // React Router v6 picks up the change without a full reload. This
           // preserves injected test state (fetch patches, `window.__*` globals).
-          let pathname = request.url;
-          try {
-            const target = new URL(request.url, window.location.origin);
-            if (target.origin === window.location.origin) {
-              pathname = target.pathname + target.search + target.hash;
-            }
-          } catch {
-            // Relative URL — use as-is.
-          }
+          // The same-origin path, re-checked (`softNavigationPath`): a URL on
+          // another origin, or one whose path the parser collapses to
+          // `//host/…`, is refused rather than pushed.
+          const soft = softNavigationPath(request.url, window.location.href);
+          if (!soft.ok) return liftInnerFailure(navigationRefusal(soft.code, soft.message));
+          const pathname = soft.path;
           window.history.pushState(null, '', pathname);
           try {
             window.dispatchEvent(new PopStateEvent('popstate'));
@@ -4096,10 +4063,12 @@ export function createHandlers(
           })
         );
 
-        // Only perform location.href navigation for actual URLs (not tab IDs)
-        if (request.url.startsWith('/') || request.url.startsWith('http')) {
-          window.location.href = request.url;
-        }
+        // Every gated target that is not a tab ID is assigned, in the
+        // normalized form the gate checked: a path, an absolute http(s) URL,
+        // or a relative reference (`?q=1`, `#h`, `./x`, `../x`, resolved by
+        // the browser against this page). A bare name never reaches here: it
+        // is a tab ID, answered (event only) before the gate.
+        window.location.href = parserNormalized(request.url);
         return success({
           success: true,
           url: request.url,
@@ -6054,8 +6023,8 @@ export function createHandlers(
                 },
                 {
                   method: 'POST',
-                  path: '/control/actions/batch',
-                  description: 'Execute batch actions on multiple elements',
+                  path: '/control/batch-execute',
+                  description: 'Execute an ordered batch of action, wait and snapshot steps',
                 },
               ],
             },
@@ -6772,8 +6741,11 @@ export function createHandlers(
       options?: ElementHistoryOptions
     ): Promise<APIResponse<ElementLogEntry[]>> => {
       try {
-        const entries = registry.getElementHistory?.(elementId, options) ?? [];
-        return success(entries);
+        // The page's command (`../react/history-commands.ts`): a registry that
+        // keeps no history answers `UB-CAPABILITY-UNAVAILABLE`, never `[]`.
+        const answer = elementHistoryCommand({ elementId, options }, registry);
+        if (isHistoryCommandFailure(answer)) return historyFailureResponse(answer);
+        return success(answer);
       } catch (err) {
         return error((err as Error).message, 'ELEMENT_HISTORY_ERROR');
       }
@@ -6819,117 +6791,6 @@ export function createHandlers(
         'clipboardRead requires browser context — use relay-handlers',
         'NOT_IMPLEMENTED'
       );
-    },
-
-    // =========================================================================
-    // Enhanced Discovery & Navigation
-    // =========================================================================
-
-    query: async (request: { selector: string; limit?: number; includeState?: boolean }) => {
-      try {
-        const { selector, limit = 50, includeState = true } = request;
-        const found = document.querySelectorAll(selector);
-        const results: unknown[] = [];
-
-        for (let i = 0; i < Math.min(found.length, limit); i++) {
-          const el = found[i] as HTMLElement;
-          const info: Record<string, unknown> = {
-            tagName: el.tagName.toLowerCase(),
-            id: el.id || undefined,
-            className: classString(el) || undefined,
-            // §4.6: querySelector projection reaches the client — scrub cell text.
-            textContent: readScrubbedText(el, undefined, { maxLen: 200 }) ?? '',
-            visible: el.offsetParent !== null,
-          };
-          if (includeState) {
-            const rect = el.getBoundingClientRect();
-            info.rect = {
-              x: Math.round(rect.x),
-              y: Math.round(rect.y),
-              width: Math.round(rect.width),
-              height: Math.round(rect.height),
-            };
-            if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
-              // §4.6 VALUE axis: password/boundary inputs must not ship cleartext.
-              info.value = readScrubbedValue(el) ?? '';
-              // §4.6 CONTENT axis: hint text inside a boundary is content.
-              info.placeholder = scrubContent(el.placeholder, el) ?? '';
-              info.disabled = el.disabled;
-            }
-            if (el instanceof HTMLSelectElement) {
-              info.value = readScrubbedValue(el) ?? '';
-              // §4.6: a redacted <select>'s option list (and its cardinality)
-              // can itself be sensitive — collapse it to a single sentinel.
-              info.options = isContentRedacted(el)
-                ? [{ value: REDACTED_VALUE, text: REDACTED_VALUE, selected: false }]
-                : Array.from(el.options).map((o) => ({
-                    value: o.value,
-                    text: o.text,
-                    selected: o.selected,
-                  }));
-            }
-            if (el instanceof HTMLButtonElement) info.disabled = el.disabled;
-            // §4.6: `title` / `aria-label` / `placeholder` / `href` are content —
-            // inside a boundary their values collapse and the keys survive.
-            // `role` and `data-tutorial-id` are addressing and stay raw, so a
-            // redacted element stays findable by structural means.
-            const addressAttrs: Record<string, string> = {};
-            for (const a of ['data-tutorial-id', 'role']) {
-              const v = el.getAttribute(a);
-              if (v) addressAttrs[a] = v;
-            }
-            const contentAttrs: Record<string, string> = {};
-            for (const a of ['title', 'aria-label', 'href', 'placeholder']) {
-              const v = el.getAttribute(a);
-              if (v) contentAttrs[a] = v;
-            }
-            const attrs = { ...addressAttrs, ...scrubRecord(contentAttrs, verdictOf(el)) };
-            if (Object.keys(attrs).length > 0) info.attributes = attrs;
-          }
-          results.push(info);
-        }
-        return success({ elements: results, count: found.length });
-      } catch (err) {
-        return error((err as Error).message, 'QUERY_ERROR');
-      }
-    },
-
-    waitForElement: async (request: {
-      selector?: string;
-      elementId?: string;
-      timeout?: number;
-      pollInterval?: number;
-    }) => {
-      const { selector, elementId, timeout = 10000, pollInterval = 200 } = request;
-      const target = selector || (elementId ? `#${elementId}, [data-testid="${elementId}"]` : null);
-      if (!target) return error('Must provide selector or elementId', 'INVALID_REQUEST');
-
-      const start = Date.now();
-      return new Promise((resolve) => {
-        const check = () => {
-          const el = document.querySelector(target) as HTMLElement | null;
-          const waited = Date.now() - start;
-          if (el && el.offsetParent !== null) {
-            resolve(
-              success({
-                found: true,
-                element: {
-                  tagName: el.tagName.toLowerCase(),
-                  id: el.id,
-                  textContent: readScrubbedText(el, undefined, { maxLen: 200 }),
-                  visible: true,
-                },
-                waitedMs: waited,
-              })
-            );
-          } else if (waited >= timeout) {
-            resolve(success({ found: false, waitedMs: waited }));
-          } else {
-            setTimeout(check, pollInterval);
-          }
-        };
-        check();
-      });
     },
 
     // =========================================================================
@@ -7603,75 +7464,43 @@ export function createHandlers(
     controlBatch: async (
       request: ControlBatchRequest
     ): Promise<APIResponse<ControlBatchResponse>> => {
-      const { actions = [], stop_on_error = true } = request;
-      const results: ControlBatchStepResult[] = [];
-      let completed = 0;
-
-      for (let i = 0; i < actions.length; i++) {
-        const step = actions[i];
-        let stepResult: ControlBatchStepResult;
-
-        try {
-          if (step.type === 'wait') {
-            await new Promise<void>((r) => setTimeout(r, step.ms));
-            stepResult = { index: i, success: true, data: { waited_ms: step.ms } };
-          } else if (step.type === 'snapshot') {
-            // Capture a snapshot directly from the registry to avoid circular deps.
-            try {
-              const snap = registry.createSnapshot();
-              stepResult = { index: i, success: true, data: snap };
-            } catch (snapErr) {
-              stepResult = {
-                index: i,
-                success: false,
-                error: (snapErr as Error).message ?? 'Snapshot failed',
-              };
-            }
-          } else if (step.type === 'action') {
-            // Dispatch via the action executor directly — same as executeElementAction.
-            refreshElements();
-            const actionResult = await actionExecutor.executeAction(step.element_id, {
-              action: step.action,
-              params: step.params,
-            });
-            const resultAny = actionResult as { success?: boolean; error?: string };
-            if (resultAny?.success !== false) {
-              stepResult = { index: i, success: true, data: actionResult };
-            } else {
-              stepResult = {
-                index: i,
-                success: false,
-                error: resultAny.error ?? 'Action failed',
-              };
-            }
-          } else {
-            stepResult = {
-              index: i,
-              success: false,
-              error: `Unknown step type: ${(step as { type: string }).type}`,
-            };
-          }
-        } catch (err) {
-          stepResult = {
-            index: i,
-            success: false,
-            error: (err as Error).message ?? String(err),
-          };
-        }
-
-        results.push(stepResult);
-        completed++;
-
-        if (!stepResult.success && stop_on_error) {
-          break;
-        }
-      }
-
-      return success<ControlBatchResponse>({
-        results,
-        completed,
-        total: actions.length,
+      // The one batch contract (`../control/control-batch.ts`), run over this
+      // transport's own `executeElementAction` handler — settle, rediscovery,
+      // undo recording and failure enrichment included — and the registry's
+      // snapshot. A failed or skipped step makes the BATCH a failure, with the
+      // full batch answer kept under `data`; it used to be returned as
+      // `success({ results, completed, total })` whatever its steps did.
+      const batch = await runControlBatch(readControlBatchRequest(request), {
+        runAction: async ({ id, request: actionRequest }) => {
+          const answer = await handlers.executeElementAction(
+            id,
+            actionRequest as ControlActionRequest
+          );
+          // A step's answer is the action's own response: the envelope's
+          // `data` (the enriched failure carries `failureDetails` there), or
+          // the envelope itself when it carries none — and the envelope
+          // itself whenever it FAILED but its `data` does not say so (a
+          // catch-arm `error(…)` with partial data), so the step's verdict is
+          // never read off a `data` that cannot carry one.
+          const { data } = answer;
+          const dataSaysFailed =
+            data !== null &&
+            typeof data === 'object' &&
+            (data as { success?: unknown }).success === false;
+          if (answer.success === false && !dataSaysFailed) return answer;
+          return data !== undefined ? data : answer;
+        },
+        snapshot: () => registry.createSnapshot(),
+        now: () => performance.now(),
       });
+      if (batch.success) return success(batch);
+      return {
+        success: false,
+        error: batch.error,
+        code: batch.code as UiBridgeErrorCode,
+        data: batch,
+        timestamp: Date.now(),
+      } as APIResponse<ControlBatchResponse>;
     },
   };
 
@@ -7694,7 +7523,7 @@ export function createHandlers(
  */
 export function createAIHandlers(
   registry: RegistryLike,
-  actionExecutor: ActionExecutorLike
+  rawActionExecutor: ActionExecutorLike
 ): Pick<
   UIBridgeServerHandlers,
   | 'aiSearch'
@@ -7706,6 +7535,8 @@ export function createAIHandlers(
   | 'getSemanticDiff'
   | 'getPageSummary'
 > {
+  // As `createHandlers`: one recording executor (`../core/element-action-events.ts`).
+  const actionExecutor = recordingActionExecutor(rawActionExecutor, registry);
   const searchEngine = new SearchEngine();
   const nlExecutor = new NLActionExecutor();
   const assertionExecutor = new AssertionExecutor();

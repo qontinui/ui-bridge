@@ -230,7 +230,10 @@ before the browser, whether or not `recordHar` is set.
 
 A second bin measures, from a UI Bridge control snapshot, how much effort it
 takes an audience role to reach what it came for. In this release it has one
-verb, which reads the snapshot and reports the capture summary:
+verb, which reads the snapshot and reports the capture summary (the cell, the
+viewport, the bases and the coverage) and the structure summary (leaves, kinds
+by the rule that decided each, blocks, pins, and how many items had their
+parent read from the xpath or from geometry):
 
 ```bash
 ui-bridge-density measure --snapshot snapshot.json --role buyer \

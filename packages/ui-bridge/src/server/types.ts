@@ -11,8 +11,6 @@ import type {
   ControlActionResponse,
   ComponentActionRequest,
   ComponentActionResponse,
-  BatchActionRequest,
-  BatchActionResponse,
   FindRequest,
   FindResponse,
   ControlSnapshot,
@@ -26,7 +24,10 @@ import type {
   ComponentActionPredictResponse,
 } from '../control';
 import type { ElementState, FillResult } from '../core/types';
+import type { ControlBatchRequest, ControlBatchResponse } from '../control/control-batch';
 import type { ElementProjection } from '../core/element-projection';
+import type { SdkDiagnostics } from '../core/sdk-diagnostics';
+import type { NavigatedAnswer, RoutesAnswer } from '../react/navigation-commands';
 import type {
   ComponentCapture,
   ComponentCaptureRefusal,
@@ -618,10 +619,6 @@ export interface UIBridgeServerHandlers {
     request: ControlActionRequest,
     context?: HandlerContext
   ) => Promise<APIResponse<ControlActionResponse>>;
-  executeBatchAction: (
-    request: BatchActionRequest,
-    context?: HandlerContext
-  ) => Promise<APIResponse<BatchActionResponse>>;
   /**
    * Rank snapshot elements by natural-language query against the
    * structured disambiguation metadata (variant, position, color,
@@ -1482,26 +1479,6 @@ export interface UIBridgeServerHandlers {
   /** Tear down internal subscriptions and observers to prevent resource leaks. */
   destroy?: () => void;
 
-  // Enhanced discovery endpoints
-  query: (
-    request: {
-      selector: string;
-      limit?: number;
-      includeState?: boolean;
-    },
-    context?: HandlerContext
-  ) => Promise<APIResponse<{ elements: unknown[]; count: number }>>;
-
-  waitForElement: (
-    request: {
-      selector?: string;
-      elementId?: string;
-      timeout?: number;
-      pollInterval?: number;
-    },
-    context?: HandlerContext
-  ) => Promise<APIResponse<{ found: boolean; element?: unknown; waitedMs: number }>>;
-
   /**
    * Tier 3.1 — Wait for an element matching a structured selector to satisfy
    * a given condition (present / visible / clickable / text-matches).
@@ -1545,7 +1522,9 @@ export interface UIBridgeServerHandlers {
 
   /**
    * Tier 3.2 — Execute a heterogeneous sequence of actions, waits, and
-   * snapshots in one round-trip.
+   * snapshots in one round-trip (`../control/control-batch.ts`). A batch with
+   * a failed or skipped step answers `success: false`, its full
+   * {@link ControlBatchResponse} kept under `data`.
    */
   controlBatch: (
     request: ControlBatchRequest,
@@ -1661,31 +1640,14 @@ export interface UIBridgeServerHandlers {
   >;
 
   // Diagnostics endpoint
-  getDiagnostics: (context?: HandlerContext) => Promise<
-    APIResponse<{
-      sdk_initialized: boolean;
-      auto_register_active: boolean;
-      registered_elements: number;
-      dom_interactive_elements: number;
-      mutation_observer_active: boolean;
-      navigation_adapter: string;
-      page_title: string;
-      page_url: string;
-      page_ready: boolean;
-      providers_mounted: string[];
-      last_discover_at: string | null;
-      capabilities: string[];
-    }>
-  >;
+  getDiagnostics: (context?: HandlerContext) => Promise<APIResponse<SdkDiagnostics>>;
 
-  // Navigation adapter endpoints
-  getRoutes: (
-    context?: HandlerContext
-  ) => Promise<APIResponse<Array<{ name: string; path: string }>>>;
+  // Navigation adapter endpoints (`../react/navigation-commands.ts`)
+  getRoutes: (context?: HandlerContext) => Promise<APIResponse<RoutesAnswer>>;
   navigateByAdapter: (
     request: { page: string },
     context?: HandlerContext
-  ) => Promise<APIResponse<{ navigated: boolean; route: { name: string; path: string } }>>;
+  ) => Promise<APIResponse<NavigatedAnswer>>;
 }
 
 /**
@@ -1861,56 +1823,17 @@ export interface WaitForElementSuccessResponse {
   elapsedMs: number;
 }
 
-/**
- * A single step in a Tier 3.2 control batch request.
- */
-export type ControlBatchStep =
-  | {
-      type: 'action';
-      /** ID of the element to act on */
-      element_id: string;
-      /** Action name (click, type, focus, …) */
-      action: string;
-      /** Optional action parameters */
-      params?: Record<string, unknown>;
-    }
-  | {
-      type: 'wait';
-      /** Milliseconds to sleep */
-      ms: number;
-    }
-  | {
-      type: 'snapshot';
-    };
-
-/**
- * Request body for POST /control/batch (Tier 3.2)
- */
-export interface ControlBatchRequest {
-  actions: ControlBatchStep[];
-  /** When true (default), stop executing on the first error */
-  stop_on_error?: boolean;
-}
-
-/**
- * Per-step result in a Tier 3.2 batch response
- */
-export interface ControlBatchStepResult {
-  index: number;
-  success: boolean;
-  data?: unknown;
-  error?: string;
-}
-
-/**
- * Response body for POST /control/batch (Tier 3.2)
- */
-export interface ControlBatchResponse {
-  results: ControlBatchStepResult[];
-  completed: number;
-  total: number;
-}
-
+// The `controlBatch` contract (`POST /control/batch-execute`) has ONE
+// definition, shared by the in-page dispatcher and the in-process handler.
+export type {
+  ControlBatchActionStep,
+  ControlBatchRequest,
+  ControlBatchResponse,
+  ControlBatchSnapshotStep,
+  ControlBatchStep,
+  ControlBatchStepResult,
+  ControlBatchWaitStep,
+} from '../control/control-batch';
 /**
  * Route definition.
  *
@@ -2029,12 +1952,6 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     method: 'POST',
     path: '/control/sdk/spawn-headless',
     handler: 'spawnHeadless',
-    bodyRequired: true,
-  },
-  {
-    method: 'POST',
-    path: '/control/actions/batch',
-    handler: 'executeBatchAction',
     bodyRequired: true,
   },
   {
@@ -2820,9 +2737,8 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
  * the SDK relays to a browser — from the TypeScript AST of each `queueCommand`
  * call and of the wrappers that forward to one (`relayCommand`,
  * `relayWithFallback`) — and fails on any that `executeCommand` does not
- * serve, unless the action is on its ratcheted `KNOWN_UNSERVED_RELAY_ACTIONS`
- * list. So every new relayed action needs its browser case, listed here or
- * not; list an app-agnostic interaction here when it should stay pinned as
+ * serve, with no exception list. So every new relayed action needs its
+ * browser case, listed here or not; list an app-agnostic interaction here when it should stay pinned as
  * both relayed and served.
  */
 export const INTERACTION_RELAY_COMMAND_ACTIONS = [

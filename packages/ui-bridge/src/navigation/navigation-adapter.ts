@@ -10,6 +10,8 @@
  * Fallback: window.location.href assignment when no adapter is registered.
  */
 
+import { checkNavigationTarget, navigationPathForm } from '../core/navigation-url';
+
 export interface NavigationRoute {
   name: string;
   path: string;
@@ -22,6 +24,27 @@ export interface NavigationAdapter {
   navigate(target: string): Promise<void>;
   /** Get current page/route. */
   getCurrentRoute(): NavigationRoute;
+  /**
+   * `true` when {@link getRoutes} enumerates the app's route table, rather
+   * than standing in the current page for it. Absent means `false`: a
+   * one-element list from an adapter that cannot see a route table reads as
+   * "this app declared no route table", never "this app has one route"
+   * (`getRoutes`' `complete` field, `react/navigation-commands.ts`).
+   */
+  isRouteTableComplete?(): boolean;
+}
+
+/**
+ * The path a navigation target names, as {@link WindowLocationAdapter}
+ * navigates it: `navigationPathForm` (`../core/navigation-url.ts`) — the
+ * target normalized as the URL parser would, with a bare route name made
+ * root-relative (`settings` → `/settings`, `httpbin` → `/httpbin`,
+ * `" /settings"` → `/settings`) and anything else (a path, `//host`, an
+ * absolute URL of any scheme) unchanged. It is the same string the
+ * `navigateByAdapter` gate checks, so what navigates is what was approved.
+ */
+export function windowLocationPath(target: string): string {
+  return navigationPathForm(target);
 }
 
 /**
@@ -38,13 +61,15 @@ export class WindowLocationAdapter implements NavigationAdapter {
     ];
   }
 
+  /**
+   * Navigate the window to `target`'s path form — through the one navigation
+   * gate first (`checkNavigationTarget`), so a `javascript:` / `data:` target
+   * handed to this public adapter throws instead of running in the page.
+   */
   async navigate(target: string): Promise<void> {
-    if (target.startsWith('/') || target.startsWith('http')) {
-      window.location.href = target;
-    } else {
-      // Treat as relative path
-      window.location.href = '/' + target;
-    }
+    const verdict = checkNavigationTarget(target, window.location.href);
+    if (!verdict.ok) throw new Error(verdict.message);
+    window.location.href = windowLocationPath(target);
   }
 
   getCurrentRoute(): NavigationRoute {
@@ -100,6 +125,10 @@ export function createReactRouterAdapter(router: {
         return flattenRoutes(router.routes);
       }
       return [this.getCurrentRoute()];
+    },
+
+    isRouteTableComplete(): boolean {
+      return Array.isArray(router.routes);
     },
 
     async navigate(target: string): Promise<void> {

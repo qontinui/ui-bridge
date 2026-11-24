@@ -81,6 +81,12 @@ import {
   type ParsedVisionAssertRequest,
 } from '../vision/assertion-request';
 import { RESERVED_CALLER_KEY } from './reserved-caller';
+import {
+  checkNavigationTarget,
+  checkNavigationUrl,
+  navigationPathForm,
+  RELAY_NAVIGATION_BASE,
+} from '../core/navigation-url';
 
 // ============================================================================
 // Helpers
@@ -106,6 +112,16 @@ function relayRoutingKeys(request: unknown): Partial<Record<string, string>> {
     if (typeof value === 'string') keys[key] = value;
   }
   return keys;
+}
+
+/** Does `url` parse on its own, with no base to resolve it against? */
+function isAbsoluteUrl(url: string): boolean {
+  try {
+    new URL(url);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function success<T>(
@@ -150,7 +166,7 @@ function error(message: string, code?: string, suggestions?: string[]): APIRespo
  * This is deliberately NOT per-action. The seam is shared by every relayed
  * command, so a hole here is a hole for all of them; a `sendKeys`-shaped patch
  * would leave the same lie in place for the other eighteen element verbs, for
- * `executeBatchAction`, `executeComponentAction`, the workflow commands, and
+ * `controlBatch`, `executeComponentAction`, the workflow commands, and
  * everything else routed through this function.
  *
  * Returns `undefined` for anything that is not an object carrying a literal
@@ -1536,10 +1552,6 @@ export function createRelayHandlers(
       return relayCommand('executeElementAction', { id, request }, ctxOpts(context));
     },
 
-    async executeBatchAction(request, context) {
-      return relayCommand('executeBatchAction', { request }, ctxOpts(context));
-    },
-
     // ========================================================================
     // Control — Components
     // ========================================================================
@@ -2421,30 +2433,18 @@ export function createRelayHandlers(
       if (!url) {
         return error('URL is required', 'INVALID_REQUEST');
       }
-      const dangerousProtocols = ['javascript:', 'data:', 'blob:', 'vbscript:'];
-      try {
-        const parsed = new URL(url);
-        if (dangerousProtocols.includes(parsed.protocol)) {
-          return error(
-            `Dangerous URL protocol rejected: "${parsed.protocol}". Only http, https, and relative paths are allowed.`,
-            'INVALID_URL_PROTOCOL'
-          );
-        }
-        if (!['http:', 'https:'].includes(parsed.protocol)) {
-          return error(
-            `Invalid URL protocol "${parsed.protocol}". Only http, https, and relative paths are allowed.`,
-            'INVALID_URL_PROTOCOL'
-          );
-        }
-      } catch {
-        // URL failed to parse as absolute — only allow relative paths starting with "/"
-        if (!url.startsWith('/')) {
-          return error(
-            'Invalid URL format. Only http, https, and relative paths starting with "/" are allowed.',
-            'INVALID_URL_FORMAT'
-          );
-        }
+      // The relay-only FORMAT rule: a URL that is not absolute must be a
+      // root-relative path. (The page resolves a bare `settings` against
+      // itself; the relay has no page to resolve it against.)
+      if (!isAbsoluteUrl(url) && !url.startsWith('/')) {
+        return error(
+          'Invalid URL format. Only http, https, and relative paths starting with "/" are allowed.',
+          'INVALID_URL_FORMAT'
+        );
       }
+      // Then the one navigation URL gate (`../core/navigation-url.ts`).
+      const verdict = checkNavigationUrl(url, RELAY_NAVIGATION_BASE);
+      if (!verdict.ok) return error(verdict.message, verdict.code);
       return relayCommand('pageNavigate', payload, { targetTabId, context });
     },
 
@@ -3206,15 +3206,6 @@ export function createRelayHandlers(
       return success({ events, count: events.length });
     },
 
-    // Enhanced discovery — relay to browser context
-    async query(request, context) {
-      return relayCommand('query', request, ctxOpts(context));
-    },
-
-    async waitForElement(request, context) {
-      return relayCommand('waitForElement', request, ctxOpts(context));
-    },
-
     // Tier 3.1 — relay to browser context so the JS SDK can do registry polling
     async waitForElementByCondition(request, context) {
       return relayCommand('waitForElementByCondition', request, ctxOpts(context));
@@ -3275,7 +3266,10 @@ export function createRelayHandlers(
       };
     },
 
-    // Tier 3.2 — relay batch to browser context
+    // Tier 3.2 — relay batch to browser context. The page runs it through
+    // `../control/control-batch.ts`; a failed or skipped step answers
+    // `success: false`, which `relayCommand` lifts to a failure envelope that
+    // keeps the batch body (every step result) under `data`.
     async controlBatch(request, context) {
       return relayCommand('controlBatch', request, ctxOpts(context));
     },
@@ -3310,6 +3304,17 @@ export function createRelayHandlers(
       return relayCommand('getRoutes', {}, ctxOpts(context));
     },
     async navigateByAdapter(request, context) {
+      // The page gates `page` too; refusing here means a dangerous URL never
+      // reaches a tab (`../core/navigation-url.ts`).
+      const page = (request as { page?: unknown } | undefined)?.page;
+      if (typeof page !== 'string' || navigationPathForm(page) === '') {
+        return error('navigateByAdapter: "page" must be a non-empty string', 'INVALID_REQUEST');
+      }
+      // The page's own gate (`checkNavigationTarget`): a bare route name is
+      // checked as its path form, so the relay never refuses a name the page
+      // accepts.
+      const verdict = checkNavigationTarget(page, RELAY_NAVIGATION_BASE);
+      if (!verdict.ok) return error(verdict.message, verdict.code);
       return relayCommand('navigateByAdapter', request, ctxOpts(context));
     },
   };

@@ -19,6 +19,7 @@
     "packages/ui-bridge/src/ai/search-engine.ts",
     "packages/ui-bridge/src/ai/semantic-snapshot.ts",
     "packages/ui-bridge/src/control/action-executor.ts",
+    "packages/ui-bridge/src/control/extract-react-state.ts",
     "packages/ui-bridge/src/control/media-override.ts",
     "packages/ui-bridge/src/core/element-projection.ts",
     "packages/ui-bridge/src/core/element-state.ts",
@@ -70,6 +71,21 @@
     "MemberExpression[property.name='pointerEvents'][object.type='CallExpression'][object.callee.name='getComputedStyle'], MemberExpression[property.name='pointerEvents'][object.type='CallExpression'][object.callee.property.name='getComputedStyle']",
     "MemberExpression[property.name=/^__react(Props|Fiber)\\$/]",
     "TSAsExpression[typeAnnotation.typeName.name='Scrubbed']"
+  ],
+  "inlineDirectiveControls": [
+    "/* eslint no-restricted-syntax: [\"error\", { \"selector\": \"DebuggerStatement\" }] */",
+    "/* eslint no-restricted-syntax: off */",
+    "/* eslint no-restricted-syntax: warn */",
+    "/* eslint-disable */",
+    "/* eslint-disable no-console, no-restricted-syntax */",
+    "/* eslint-disable no-restricted-syntax */",
+    "/* eslint-disable no-restricted-syntax */\nvoid 0;\n/* eslint-enable no-restricted-syntax */",
+    "/* eslint-disable no-restricted-syntax -- with a justification */",
+    "/* eslint-disable-next-line no-restricted-syntax */",
+    "// eslint-disable-next-line",
+    "// eslint-disable-next-line no-restricted-syntax",
+    "void 0; /* eslint-disable-line no-console, no-restricted-syntax */",
+    "void 0; // eslint-disable-line no-restricted-syntax"
   ],
   "routes": [
     "DELETE /ai/bookmark/:name -> deleteBookmark",
@@ -195,7 +211,6 @@
     "POST /ai/wait-for-element-condition -> waitForElementByCondition",
     "POST /ai/wait-for-route-change -> waitForRouteChange",
     "POST /annotations/import -> importAnnotations",
-    "POST /control/actions/batch -> executeBatchAction",
     "POST /control/annotation/:id -> setAnnotation",
     "POST /control/annotations/import -> importAnnotations",
     "POST /control/batch-execute -> controlBatch",

@@ -26,10 +26,12 @@
  * | a redacted text | `chars: null`; coverage `text`, `not_attempted_by_policy` |
  * | a field the snapshot does not carry | the item's field is `null`; coverage named for the field, `input_missing` |
  *
- * `parent`, `path`, `landmark` and `ownChars` are not computed here yet
- * (`structureResolved: false`).
+ * The structure pass (`structure.ts`, `resolveDensityStructure`) runs here,
+ * because it reads the xpath and the stable ref, which the capture does not
+ * keep: it fills `parent`, `path`, `structureBy`, `landmark`, `ownChars` and
+ * `blockKey`, and the capture says `structureResolved: true`.
  *
- * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change (Phase 1).
+ * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change (Phases 1 and 3).
  */
 
 import { Observation, type ObservationTime, type UnknownCode } from '../observation/observation';
@@ -51,6 +53,7 @@ import {
   type DensityVisibility,
 } from './schema';
 import { densityShapeOf } from './shape';
+import { resolveDensityStructure, type DensityStructureHint } from './structure';
 
 /** Options of {@link captureDensityFromSnapshot}. */
 export interface DensityCaptureOptions {
@@ -62,7 +65,7 @@ export interface DensityCaptureOptions {
   fixture?: string | null;
   /** When given, its `text` matchers are evaluated, and the role's probe is checked. */
   targets?: DensityTargets | null;
-  /** When the producer ran. Defaults to now. */
+  /** When the producer ran. Defaults to now; an unparseable value is replaced by now. */
   evaluatedAt?: ObservationTime;
 }
 
@@ -80,6 +83,10 @@ function finite(v: unknown): number | null {
 
 function str(v: unknown): string | null {
   return typeof v === 'string' ? v : null;
+}
+
+function nonEmpty(v: unknown): string | null {
+  return typeof v === 'string' && v !== '' ? v : null;
 }
 
 function collapse(text: string): string {
@@ -182,6 +189,8 @@ interface BuiltItem {
   text: string | null;
   complete: boolean;
   scrollInfoArea: number | null;
+  /** What the row says about the item's place in the DOM, for the structure pass. */
+  hint: DensityStructureHint;
 }
 
 function buildItem(
@@ -334,6 +343,7 @@ function buildItem(
       visibility,
       chars,
       ownChars: null,
+      blockKey: null,
       textHash,
       shape,
       fontPx,
@@ -348,6 +358,12 @@ function buildItem(
     text,
     complete,
     scrollInfoArea,
+    hint: {
+      xpath: xpath !== null && xpath !== '' ? xpath : null,
+      htmlId: identifier ? nonEmpty(identifier.htmlId) : null,
+      testId: identifier ? nonEmpty(identifier.testId) : null,
+      semanticPath: isRecord(el.stableRef) ? nonEmpty(el.stableRef.semanticPath) : null,
+    },
   };
 }
 
@@ -561,12 +577,15 @@ export function captureDensityFromSnapshot(
       route: str(snapshot.route),
       capturedBy: { package: producer.package, version: producer.version },
       bases,
-      structureResolved: false,
+      structureResolved: true,
       coverage,
       probe,
       targetsHash,
       textMatches,
-      items: built.map((b) => b.item),
+      items: resolveDensityStructure(
+        built.map((b) => b.item),
+        built.map((b) => b.hint)
+      ),
     };
     return Observation.measured(capture, prov(coverage));
   } catch (err) {

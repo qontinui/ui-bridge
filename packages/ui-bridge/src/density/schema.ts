@@ -86,15 +86,30 @@ export interface DensityItem {
   id: string;
   /** The registered parent's id; `null` at a root, or while `structureResolved` is false. */
   parent: string | null;
-  /** Ancestor tag names when known. */
+  /**
+   * Ancestor tags, outermost first, as far as the xpath knows them: every
+   * ancestor for a chain from the document root, those below the anchor for a
+   * chain anchored at an unregistered id; `null` when the xpath gives none.
+   * `*` stands for an ancestor whose tag the xpath does not name.
+   */
   path: string[] | null;
-  /** How the structure is (or will be) read: the xpath chain, or geometry when the item has none. */
+  /**
+   * Where `parent` was read from: the xpath chain, or geometry (the smallest
+   * registered rect containing the item) when the xpath gives no registered
+   * ancestor to anchor on. Before structure is resolved it says only whether
+   * the item has an xpath.
+   */
   structureBy: 'xpath' | 'geometry';
   /** Lower-cased tag name; `''` when the snapshot carried none (counted under coverage `tag`). */
   tag: string;
   role: string | null;
   interactive: boolean;
-  /** Carries an author-declared id (`data-ui-bridge-id` or `data-ui-bridge-content`). */
+  /**
+   * Carries an author-declared id: a `hook` registration, `data-ui-bridge-content`
+   * or `data-ui-bridge-test-id`. On an `auto` row the `data-ui-bridge-id` stamp is
+   * not evidence, because the auto-registrar stamps every element it registers;
+   * a row with no `origin` (an older serializer) falls back to the stamp.
+   */
   authorId: boolean;
   landmark: DensityLandmark | null;
   /** Document-space rect; `null` when the snapshot carried none (coverage `rect`). */
@@ -102,8 +117,16 @@ export interface DensityItem {
   visibility: DensityVisibility | null;
   /** Code points of the whitespace-collapsed text; `null` inside a redaction boundary. */
   chars: number | null;
-  /** `chars` minus the registered children's; `null` until structure is resolved. */
+  /** `chars` minus the registered children's, not below 0; `null` when a term is, or until structure is resolved. */
   ownChars: number | null;
+  /**
+   * Opaque key of the nearest `section`, `article`, `aside`, `form`,
+   * `fieldset`, `table` or `dialog` ancestor-or-self in the xpath chain: items
+   * that share it share a block by path. Built from tags, sibling indices and
+   * the anchor's id or test id; it holds no page text. `null` when the chain
+   * has none, or until structure is resolved.
+   */
+  blockKey: string | null;
   /** SHA-256 hex of the collapsed text; `null` when the text is redacted or empty. */
   textHash: string | null;
   shape: DensityShape | null;
@@ -217,7 +240,7 @@ export interface DensityCapture {
   capturedBy: { package: string; version: string };
   bases: DensityCaptureBases;
   /**
-   * Whether `parent`, `path`, `landmark` and `ownChars` have been computed.
+   * Whether `parent`, `path`, `landmark`, `ownChars` and `blockKey` have been computed.
    * While false they are `null` because they were not computed, not because
    * the item is a root.
    */
@@ -547,7 +570,7 @@ const ITEM_KEYS = [
 ] as const;
 
 function readItem(r: Reader, value: unknown, path: string): DensityItem | null {
-  const o = r.object(value, path, ITEM_KEYS);
+  const o = r.object(value, path, ITEM_KEYS, ['blockKey']);
   if (!o) return null;
   return {
     id: r.string(o.id, `${path}.id`, { nonEmpty: true }),
@@ -563,6 +586,9 @@ function readItem(r: Reader, value: unknown, path: string): DensityItem | null {
     visibility: r.oneOfOrNull(o.visibility, `${path}.visibility`, DENSITY_VISIBILITIES),
     chars: r.numberOrNull(o.chars, `${path}.chars`, { integer: true, min: 0 }),
     ownChars: r.numberOrNull(o.ownChars, `${path}.ownChars`, { integer: true, min: 0 }),
+    // Optional on read: a capture written before the structure pass carried
+    // no `blockKey`, and its absence is the same statement as `null`.
+    blockKey: o.blockKey === undefined ? null : r.stringOrNull(o.blockKey, `${path}.blockKey`),
     textHash: readHashOrNull(r, o.textHash, `${path}.textHash`),
     shape: r.oneOfOrNull(o.shape, `${path}.shape`, DENSITY_SHAPES),
     fontPx: r.numberOrNull(o.fontPx, `${path}.fontPx`, { min: 0 }),

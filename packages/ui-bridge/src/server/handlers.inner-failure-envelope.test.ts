@@ -70,22 +70,71 @@ describe('direct executeElementAction · an executor failure is an OUTER failure
     expect((result as { code?: string }).code).toBe('UB-UNSUPPORTED-ACTION');
   });
 
-  it('a batch step with no action object is refused on its own, not the whole batch', async () => {
+  it('a batch step with no action is refused on its own, not the whole batch — and the batch is an outer failure', async () => {
     const host = document.createElement('button');
     container.appendChild(host);
-    registry.registerElement('save', host, { type: 'button', actions: ['click'] });
+    registry.registerElement('save', host, { type: 'button', actions: ['click', 'focus'] });
 
-    const result = await handlers.executeBatchAction!({
-      steps: [{ elementId: 'save' } as never, { elementId: 'save', action: { action: 'focus' } }],
-    } as never);
+    const result = await handlers.controlBatch!({
+      actions: [
+        { type: 'action', id: 'save' },
+        { type: 'action', id: 'save', request: { action: 'focus' } },
+      ],
+      stop_on_error: false,
+    });
 
     const data = result.data as {
-      results?: Array<{ response: { success: boolean; failureDetails?: { errorCode?: string } } }>;
+      completed: number;
+      failedCount: number;
+      succeededCount: number;
+      results: Array<{
+        success: boolean;
+        code?: string;
+        data?: { failureDetails?: { errorCode?: string } };
+      }>;
     };
     expect(String(result.error ?? '')).not.toMatch(/Cannot read properties/);
-    expect(data.results?.[0]?.response.success).toBe(false);
-    expect(data.results?.[0]?.response.failureDetails?.errorCode).toBe('UB-UNSUPPORTED-ACTION');
+    expect(result.success).toBe(false);
+    expect(result.code).toBe('UB-VALIDATION-ERROR');
+    expect(data.completed).toBe(2);
+    expect(data.failedCount).toBe(1);
+    expect(data.succeededCount).toBe(1);
+    expect(data.results[0].success).toBe(false);
+    expect(data.results[0].code).toBe('UB-VALIDATION-ERROR');
+    expect(data.results[0].data?.failureDetails?.errorCode).toBe('INVALID_REQUEST');
+    expect(data.results[1].success).toBe(true);
   });
+
+  it.each([
+    ['data with no verdict', { clicked: false }],
+    ['no data', undefined],
+    ['data saying success', { success: true }],
+  ])(
+    'a step whose envelope failed is a failed step, whatever its data says (%s)',
+    async (_name, data) => {
+      handlers.executeElementAction = async () => ({
+        success: false,
+        error: 'the action timed out',
+        code: 'UB-TIMEOUT',
+        ...(data !== undefined ? { data } : {}),
+        timestamp: 1,
+      });
+      const result = await handlers.controlBatch!({
+        actions: [{ type: 'action', id: 'save', request: { action: 'click' } }],
+      });
+      const batch = result.data as {
+        failedCount: number;
+        results: Array<{ success: boolean; error?: string; code?: string }>;
+      };
+      expect(result.success).toBe(false);
+      expect(batch.failedCount).toBe(1);
+      expect(batch.results[0]).toMatchObject({
+        success: false,
+        error: 'the action timed out',
+        code: 'UB-TIMEOUT',
+      });
+    }
+  );
 
   it("a custom-action handler's typed throw keeps its own code on the envelope", async () => {
     const host = document.createElement('div');

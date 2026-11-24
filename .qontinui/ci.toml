@@ -369,6 +369,15 @@ name = "browser-test-placement"
 command = ["npm", "run", "browser-tests:check-placement"]
 
 [[steps]]
+name = "vitest-verdict-self-test"
+# parity: ci.yml lint-and-test "Vitest verdict self-test"
+# ci.yml "Vitest verdict self-test" → `ci:vitest-verdict:test` =
+# `node scripts/vitest-verdict.test.cjs`. Pins the classifier the `test` step
+# below runs through, against table cases, and runs BEFORE it: a regression that
+# labels a real failure "not a verdict on this PR" turns nothing red.
+command = ["npm", "run", "ci:vitest-verdict:test"]
+
+[[steps]]
 name = "lint"
 # parity: ci.yml lint-and-test "Lint"
 # ci.yml "Lint" → `lint` = `eslint "packages/*/src/**/*.{ts,tsx}"
@@ -407,10 +416,15 @@ command = ["npm", "run", "typecheck"]
 [[steps]]
 name = "test"
 # parity: ci.yml lint-and-test "Test"
-# ci.yml "Test" → `test` = `npm run test --workspaces --if-present`.
+# ci.yml "Test" → `node scripts/vitest-verdict.cjs`, which runs `npm run test`
+# (= `npm run test --workspaces --if-present`), streams its output and exits with
+# its status. The "(not a verdict on this PR)" annotation is claimed only for a
+# GitHub pull_request run (it needs the event's base sha to read the PR's
+# changed files), and this lane sets no GITHUB_EVENT_*, so here it is never
+# printed: the step's verdict is npm's, exactly as before.
 # NOT `test:e2e`: that script targets the `e2e` workspace, which ci.yml does not
 # run on PRs either.
-command = ["npm", "run", "test"]
+command = ["node", "scripts/vitest-verdict.cjs"]
 timeout_secs = 7200
 
 # ---------------------------------------------------------------------------

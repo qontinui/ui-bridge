@@ -17,7 +17,7 @@
  *
  * The seam is SHARED by every relayed command, so these tests deliberately
  * cover more than the action that was measured: an element action, a component
- * action, a batch action, and a workflow command all ride the same function. A
+ * action, a control batch, and a workflow command all ride the same function. A
  * fix scoped to one verb would leave the same lie in place for the rest.
  */
 
@@ -148,21 +148,45 @@ describe('relayCommand · a browser-reported failure is an OUTER failure', () =>
     expect(result.error).toContain('not found on component');
   });
 
-  it('executeBatchAction shares the seam — same verdict', async () => {
+  it('controlBatch shares the seam — same verdict, the batch body kept under data', async () => {
     const relay = freshRelay();
-    registerRespondingTab(relay, 'tab-a', () => ({
+    const batch = {
       success: false,
-      error: 'step 2 failed: Element checkout-btn is disabled',
-      timestamp: Date.now(),
-    }));
+      error:
+        'controlBatch: 1 of 2 steps failed (first: step 1 (action): Element checkout-btn is disabled)',
+      code: 'UB-ELEM-NOT-ENABLED',
+      results: [
+        { index: 0, type: 'wait', success: true, durationMs: 1, data: { waited_ms: 1 } },
+        {
+          index: 1,
+          type: 'action',
+          success: false,
+          durationMs: 2,
+          error: 'Element checkout-btn is disabled',
+          code: 'UB-ELEM-NOT-ENABLED',
+        },
+      ],
+      completed: 2,
+      total: 2,
+      succeededCount: 1,
+      failedCount: 1,
+      skippedCount: 0,
+      durationMs: 3,
+    };
+    registerRespondingTab(relay, 'tab-a', () => batch);
     const handlers = createRelayHandlers(relay);
 
-    const result = await handlers.executeBatchAction!({
-      steps: [{ elementId: 'a', action: 'click' }],
-    } as never);
+    const result = await handlers.controlBatch!({
+      actions: [
+        { type: 'wait', ms: 1 },
+        { type: 'action', id: 'checkout-btn', request: { action: 'click' } },
+      ],
+    });
 
     expect(result.success).toBe(false);
-    expect(result.error).toContain('step 2 failed');
+    expect(result.error).toContain('1 of 2 steps failed');
+    expect(result.code).toBe('UB-ELEM-NOT-ENABLED');
+    expect(result.data).toEqual(batch);
   });
 
   it('runWorkflow shares the seam — the fix is not action-shaped', async () => {

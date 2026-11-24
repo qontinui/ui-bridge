@@ -65,7 +65,8 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { UIBridgeRegistry, REDACTED_VALUE } from '../core/registry';
-import { DefaultActionExecutor, extractReactState } from './action-executor';
+import { DefaultActionExecutor } from './action-executor';
+import { extractReactState } from './extract-react-state';
 import { SearchEngine } from '../ai/search-engine';
 import type { DiscoveredElement } from './types';
 import type { MediaFacts, MediaObservation } from '../core/types';

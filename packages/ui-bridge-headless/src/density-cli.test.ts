@@ -25,7 +25,7 @@ import { runDensityCli, sameFileOnDisk, type DensityCliIo } from './density-cli'
  * Every id and text here is synthetic (plan D5). Every expected value is a
  * literal spelled in this file.
  *
- * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change, Phase 2.
+ * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change, Phases 2 and 3.
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -98,7 +98,35 @@ const EXPECTED_VALUE = {
   coverage: { considered: 1, measured: 1, unmeasured: [] },
   probe: null,
   items: 1,
-  structureResolved: false,
+  structureResolved: true,
+  structure: {
+    structureResolved: true,
+    structureBy: { xpath: 1, geometry: 0 },
+    leaves: { count: 1, unknown: 0, geometryOwnChars: 0 },
+    unattributedChars: 0,
+    pins: { pinTopPx: 0, pinBottomPx: 0, usableHeightPx: 740, items: 0, unknown: 0 },
+    kinds: {
+      byBasis: {
+        declared: {},
+        landmark: {},
+        role: {},
+        'author-id': {},
+        shape: {},
+        other: { other: 1 },
+      },
+      unresolvedRules: [],
+    },
+    blocks: {
+      byBasis: { declared: 0, path: 0, heading: 0 },
+      headingLevelUnknown: 0,
+      shown: 0,
+      total: 0,
+      truncated: false,
+      list: [],
+      unresolved: [],
+      unblockedLeaves: 1,
+    },
+  },
   snapshotId: 'snap-synthetic-1',
   observedAt: '2025-11-23T12:13:20.000Z',
   targetsHash: null,
@@ -610,5 +638,136 @@ describe('ui-bridge-density usage', () => {
     const r = run(['--help']);
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('ui-bridge-density — reach per role');
+  }, 60_000);
+});
+
+/** A page with a pinned header, a section holding a heading and a row, and a note with its own id. */
+function structuredElement(
+  id: string,
+  tagName: string,
+  xpath: string,
+  rect: [number, number, number, number],
+  textContent: string,
+  position = 'static'
+) {
+  const [x, y, width, height] = rect;
+  return {
+    id,
+    type: 'generic',
+    tagName,
+    category: 'content',
+    identifier: { xpath },
+    state: {
+      visible: true,
+      rect: { x, y, width, height, top: y, left: x, right: x + width, bottom: y + height },
+      textContent,
+      scrollWidth: width,
+      clientWidth: width,
+      computedStyles: { fontSize: '14px', lineHeight: '20px', position, overflow: 'visible' },
+    },
+  };
+}
+
+const STRUCTURED = {
+  ...BARE,
+  elements: [
+    structuredElement(
+      'app.header',
+      'header',
+      '/html/body/header',
+      [0, 0, 360, 48],
+      'Shop',
+      'fixed'
+    ),
+    structuredElement(
+      'app.orders',
+      'section',
+      '/html/body/main/section',
+      [0, 60, 360, 200],
+      'Open orders Order 4711'
+    ),
+    structuredElement(
+      'app.orders.title',
+      'h2',
+      '/html/body/main/section/h2',
+      [0, 60, 360, 28],
+      'Open orders'
+    ),
+    structuredElement(
+      'app.orders.open-1',
+      'div',
+      '/html/body/main/section/div',
+      [0, 100, 360, 20],
+      'Order 4711'
+    ),
+    structuredElement('app.note', 'p', '//*[@id="note"]', [0, 300, 360, 20], 'Synthetic note'),
+  ],
+};
+
+describe('ui-bridge-density measure: the structure summary', () => {
+  it('reports leaves, kinds by kindBy, blocks and the structureBy counts', () => {
+    writeFileSync(join(dir, 'structured.json'), JSON.stringify(STRUCTURED));
+    writeFileSync(
+      join(dir, 'targets-classify.json'),
+      JSON.stringify({
+        schema: 'ui-bridge/density-targets@1',
+        surface: '/',
+        profile: 'audience_profile/synthetic@1',
+        classify: [{ match: { idPrefix: 'app.orders.open-' }, kind: 'value' }],
+        roles: [{ role: 'buyer', asks: [] }],
+      })
+    );
+    const r = run([
+      'measure',
+      '--snapshot',
+      join(dir, 'structured.json'),
+      '--role',
+      'buyer',
+      '--targets',
+      join(dir, 'targets-classify.json'),
+    ]);
+    expect(r.stderr).toBe('');
+    expect(r.status).toBe(0);
+    const report = JSON.parse(r.stdout) as Report;
+    const value = report.cells[0]!.observation.value as { structure: unknown };
+    expect(value.structure).toEqual({
+      structureResolved: true,
+      // The note's xpath is its own id, which names no ancestor.
+      structureBy: { xpath: 4, geometry: 1 },
+      leaves: { count: 4, unknown: 0, geometryOwnChars: 0 },
+      unattributedChars: 0,
+      pins: { pinTopPx: 48, pinBottomPx: 0, usableHeightPx: 692, items: 1, unknown: 0 },
+      kinds: {
+        byBasis: {
+          declared: { value: 1 },
+          landmark: { chrome: 1 },
+          role: { heading: 1, prose: 1 },
+          'author-id': {},
+          shape: {},
+          other: {},
+        },
+        unresolvedRules: [],
+      },
+      blocks: {
+        byBasis: { declared: 0, path: 1, heading: 0 },
+        headingLevelUnknown: 0,
+        shown: 1,
+        total: 1,
+        truncated: false,
+        list: [
+          {
+            id: 'path:/html/body/main/section',
+            by: 'path',
+            members: 2,
+            topPx: 60,
+            heightPx: 48,
+            pitchPx: null,
+            parent: null,
+          },
+        ],
+        unresolved: [],
+        unblockedLeaves: 2,
+      },
+    });
   }, 60_000);
 });

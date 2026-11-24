@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { extractReactState } from './action-executor';
+import { extractReactState, FIBER_STATE_WITHHELD_NOTE } from './extract-react-state';
 
 /**
  * Regression tests for the `extractReactState` IPC-timeout bug surfaced by
@@ -81,7 +81,10 @@ describe('extractReactState — termination guards', () => {
       if (depthSeen > 10) break;
     }
     expect(depthSeen).toBeLessThanOrEqual(7);
-    expect(cur === '[MaxDepth]' || (typeof cur === 'object' && (cur as Record<string, unknown>).nested === '[MaxDepth]')).toBe(true);
+    expect(
+      cur === '[MaxDepth]' ||
+        (typeof cur === 'object' && (cur as Record<string, unknown>).nested === '[MaxDepth]')
+    ).toBe(true);
   });
 
   it('short-circuits DOM Element references in fiber state', () => {
@@ -123,10 +126,147 @@ describe('extractReactState — termination guards', () => {
 
     const result = extractReactState(element);
     expect(result?.componentName).toBe('MyButton');
-    expect(result?.fiberState).toEqual([
-      { count: 3, label: 'click me' },
-      'second hook value',
-    ]);
+    expect(result?.fiberState).toEqual([{ count: 3, label: 'click me' }, 'second hook value']);
     expect(result?.props).toMatchObject({ 'data-testid': 'btn', onClick: '[Function]' });
+  });
+});
+
+/**
+ * Review round 1, finding 1: a NON-redacted wrapper (`<label>`, `<form>`) must
+ * not leak a redacted child's value through its own `props.children` (a React
+ * element carrying the child's `props.value`) or through the state of the
+ * component that renders both (`useState(pw)`).
+ */
+describe('extractReactState — a wrapper around a redacted element', () => {
+  const SECRET = 'hunter2-s3cret';
+  const REACT_ELEMENT = Symbol.for('react.element');
+
+  function reactElement(type: string, props: Record<string, unknown>) {
+    return { $$typeof: REACT_ELEMENT, type, key: null, ref: null, props, _owner: null };
+  }
+
+  /** A `LoginForm` component fiber holding `SECRET` in a useState hook. */
+  function loginFormFiber(): FakeFiber & { child?: unknown } {
+    return {
+      type: function LoginForm() {
+        return null;
+      },
+      memoizedState: { memoizedState: SECRET, next: null },
+    };
+  }
+
+  afterEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  it.each([
+    [
+      'a password input',
+      () => {
+        const input = document.createElement('input');
+        input.type = 'password';
+        input.value = SECRET;
+        return input;
+      },
+    ],
+    [
+      'a data-bridge-redact element',
+      () => {
+        const span = document.createElement('span');
+        span.setAttribute('data-bridge-redact', 'true');
+        span.textContent = SECRET;
+        return span;
+      },
+    ],
+  ])('a <label> wrapping %s answers no secret anywhere', (_name, makeChild) => {
+    const label = document.createElement('label');
+    const child = makeChild();
+    label.appendChild(child);
+    document.body.appendChild(label);
+    attachFiber(label, loginFormFiber(), {
+      htmlFor: 'pw',
+      children: [
+        'Password',
+        reactElement(child.tagName.toLowerCase(), { type: 'password', value: SECRET }),
+      ],
+    });
+
+    const result = extractReactState(label);
+    expect(JSON.stringify(result)).not.toContain(SECRET);
+    expect(result).toEqual({
+      props: { htmlFor: 'pw', children: ['Password', `<${child.tagName.toLowerCase()}>`] },
+      fiberState: [],
+      componentName: 'LoginForm',
+      note: FIBER_STATE_WITHHELD_NOTE,
+    });
+  });
+
+  it("withholds the component's state when its fiber subtree renders the redacted element outside the wrapper", () => {
+    // <form>{LoginForm}<label/> <input type=password/></form>: the label holds
+    // nothing redacted in the DOM, but its component renders the password input.
+    const form = document.createElement('form');
+    const label = document.createElement('label');
+    label.textContent = 'Password';
+    const input = document.createElement('input');
+    input.type = 'password';
+    form.append(label, input);
+    document.body.appendChild(form);
+
+    const component = loginFormFiber() as FakeFiber & { child?: unknown };
+    const labelFiber = { type: 'label', stateNode: label, return: component, memoizedState: null };
+    const inputFiber = { type: 'input', stateNode: input, return: component, memoizedState: null };
+    (labelFiber as { sibling?: unknown }).sibling = inputFiber;
+    component.child = labelFiber;
+    attachFiber(label, labelFiber as unknown as FakeFiber, { children: 'Password' });
+
+    const result = extractReactState(label);
+    expect(JSON.stringify(result)).not.toContain(SECRET);
+    expect(result).toEqual({
+      props: { children: 'Password' },
+      fiberState: [],
+      componentName: 'LoginForm',
+      note: FIBER_STATE_WITHHELD_NOTE,
+    });
+  });
+
+  it('keeps the state of a component that renders nothing redacted', () => {
+    const div = document.createElement('div');
+    document.body.appendChild(div);
+    attachFiber(div, loginFormFiber(), { children: reactElement('span', { title: 'ok' }) });
+    expect(extractReactState(div)).toEqual({
+      props: { children: '<span>' },
+      fiberState: [SECRET],
+      componentName: 'LoginForm',
+    });
+  });
+});
+
+describe('extractReactState — one walk to the component fiber', () => {
+  it("reads the host fiber's `return` once, for both the state and the withholding check", () => {
+    const div = document.createElement('div');
+    document.body.appendChild(div);
+    const component = {
+      type: function Panel() {
+        return null;
+      },
+      memoizedState: { memoizedState: 'open', next: null },
+    };
+    let returnReads = 0;
+    const host = {
+      type: 'div',
+      memoizedState: null,
+      get return() {
+        returnReads++;
+        return component;
+      },
+    };
+    attachFiber(div, host as unknown as FakeFiber);
+    expect(extractReactState(div)).toEqual({
+      props: {},
+      fiberState: ['open'],
+      componentName: 'Panel',
+    });
+    expect(returnReads).toBe(1);
+    div.remove();
   });
 });

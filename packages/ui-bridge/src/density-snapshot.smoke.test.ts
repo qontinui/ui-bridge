@@ -245,6 +245,12 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)(
         expect(xpathOf('app.orders')).toBe('//*[@id="orders"]');
         expect(xpathOf('app.orders.open-1')).toBe('/section[@id="orders"]/div[1]');
         expect(xpathOf('app.orders.open-2')).toBe('/section[@id="orders"]/div[2]');
+        // The structure pass reads that chain: the rows' parent is the section
+        // their chain is anchored at, and the section's own-id xpath names no
+        // ancestor.
+        expect(open1.parent).toBe('app.orders');
+        expect(open1.path).toEqual(['section']);
+        expect(item(capture, 'app.orders').structureBy).toBe('geometry');
       },
       60_000
     );

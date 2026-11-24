@@ -191,6 +191,28 @@ import {
 } from '../specs/design-request';
 import type { StyleGuideConfig } from '../specs/style-types';
 import { sdkDispatch } from '../core/sdk-dispatch';
+import { readControlBatchRequest, runControlBatch } from '../control/control-batch';
+import { extractReactState, noReactInternals } from '../control/extract-react-state';
+import { buildSdkDiagnostics } from '../core/sdk-diagnostics';
+import { elementHistoryCommand, recentEffectsCommand } from './history-commands';
+import {
+  checkNavigationUrl,
+  isBareRouteName,
+  navigationPathForm,
+  originChangingPathMessage,
+  parserNormalized,
+  sameOriginPathOf,
+  softNavigationPath,
+  softResolutionBase,
+} from '../core/navigation-url';
+import { withElementActionEvents } from '../core/element-action-events';
+import type { NavigationAdapter } from '../navigation/navigation-adapter';
+import {
+  getRoutesCommand,
+  navigateByAdapterCommand,
+  navigationRefusal,
+  resolveNavigationAdapter,
+} from './navigation-commands';
 import {
   ELEMENT_ACTION_PAYLOAD_SHAPE,
   ELEMENT_READ_PAYLOAD_SHAPE,
@@ -319,6 +341,12 @@ interface UIBridgeGlobal {
   specs?: { getGlobalSpecStore: () => SpecStore };
   /** Optional client-side navigation handler (e.g., Next.js router.push) */
   navigateHandler?: (url: string) => void;
+  /**
+   * The app's navigation adapter, set by `<UIBridgeProvider navigation={…}>`
+   * (or assigned by the app). `getRoutes` / `navigateByAdapter` read it
+   * through `./navigation-commands.ts`.
+   */
+  navigationAdapter?: NavigationAdapter;
   /** Render log access for getRenderLog relay command */
   renderLog?: { getEntries?: () => unknown[] };
   /**
@@ -1539,11 +1567,32 @@ async function relayExecuteWithDiff(payload: P, bridge: BridgeAccess): Promise<A
   });
 }
 
+/**
+ * Marks the inner `executeCommand` call {@link withElementActionEvents} makes,
+ * so the action it records is dispatched once. Not exported: no caller can
+ * skip the events.
+ */
+const ELEMENT_ACTION_EVENTS_EMITTED: unique symbol = Symbol('elementActionEventsEmitted');
+
 export async function executeCommand(
   action: string,
   payload: P,
-  bridge: BridgeAccess
+  bridge: BridgeAccess,
+  eventsEmitted?: typeof ELEMENT_ACTION_EVENTS_EMITTED
 ): Promise<unknown> {
+  // An element action runs between its `action:started` and
+  // `action:completed` / `action:failed` events on the global registry, so its
+  // `ElementEventLog` (and `getElementHistory`) records what was done to the
+  // element (`../core/element-action-events.ts`). A payload the grammar
+  // refuses names no action that ran, and records nothing.
+  if (action === 'executeElementAction' && eventsEmitted !== ELEMENT_ACTION_EVENTS_EMITTED) {
+    const parsed = readElementActionPayload(payload);
+    if (parsed.ok) {
+      return withElementActionEvents(getGlobalRegistry(), parsed.id, parsed.request.action, () =>
+        executeCommand(action, payload, bridge, ELEMENT_ACTION_EVENTS_EMITTED)
+      );
+    }
+  }
   const g = getBridge();
 
   // For AI actions, wait for the DOM to settle BEFORE reading the registry
@@ -1813,6 +1862,71 @@ export async function executeCommand(
       }
       return serializeRegisteredElement(el);
     }
+
+    case 'controlBatch':
+      // One batch contract for every transport (`../control/control-batch.ts`).
+      // Each step runs through THIS dispatcher's own `executeElementAction` /
+      // `getControlSnapshot`, so a batched step is settled, grammar-checked,
+      // redacted and hover-released exactly as the single command is. A failed
+      // batch is a RETURNED `success: false` carrying every step result.
+      return runControlBatch(readControlBatchRequest(payload), {
+        runAction: (step) => executeCommand('executeElementAction', { ...step }, bridge),
+        snapshot: () => executeCommand('getControlSnapshot', {}, bridge),
+        now: () => performance.now(),
+      });
+
+    case 'getElementReactState': {
+      // The element's React props and hook state, through the one §4.6-scrubbed
+      // projection the in-process route serves (`../control/extract-react-state.ts`).
+      // Payload grammar and not-found answer exactly as `getElement`'s: a
+      // RETURNED `ELEMENT_NOT_FOUND` for no registration or a gone DOM node.
+      const startTime = performance.now();
+      const parsed = readElementIdPayload('getElementReactState', payload);
+      if (!parsed.ok) {
+        return withPayloadGrammar(
+          createActionFailure(parsed.elementId, 'INVALID_REQUEST', parsed.message, startTime),
+          parsed,
+          ELEMENT_READ_PAYLOAD_SHAPE
+        );
+      }
+      const el = getElement(parsed.id);
+      if (!el) {
+        return createActionFailure(
+          parsed.id,
+          'ELEMENT_NOT_FOUND',
+          `Element ${parsed.id} not found`,
+          startTime
+        );
+      }
+      if (!el.element?.isConnected) {
+        return createActionFailure(
+          parsed.id,
+          'ELEMENT_NOT_FOUND',
+          `DOM element for ${parsed.id} not found`,
+          startTime
+        );
+      }
+      return extractReactState(el.element) ?? noReactInternals();
+    }
+
+    case 'getDiagnostics':
+      // The one diagnostics builder (`../core/sdk-diagnostics.ts`), over THIS
+      // page's registry and the capture / navigation pieces the page carries.
+      return buildSdkDiagnostics({
+        registeredElements: elements.length,
+        hasConsoleCapture: !!g.consoleCapture,
+        hasNavigationTracker: !!g.navigationTracker,
+        hasNavigationAdapter: !!resolveNavigationAdapter(g),
+      });
+
+    case 'getElementHistory':
+      // The registry's per-element event log (`./history-commands.ts`); a
+      // registry that keeps none answers `UB-CAPABILITY-UNAVAILABLE`, never `[]`.
+      return elementHistoryCommand(payload, registry);
+
+    case 'getRecentEffects':
+      // The page's effect store, newest first (`./history-commands.ts`).
+      return recentEffectsCommand(payload);
 
     case 'executeElementAction': {
       const startTime = performance.now();
@@ -4388,51 +4502,29 @@ export async function executeCommand(
           timestamp: Date.now(),
         };
       }
-      // Reject dangerous URL protocols that can execute JS or break the SSE relay.
-      // Only allow http:, https:, and relative paths starting with "/".
-      try {
-        const parsed = new URL(url, window.location.origin);
-        const dangerousProtocols = ['javascript:', 'data:', 'blob:', 'vbscript:'];
-        if (dangerousProtocols.includes(parsed.protocol)) {
-          return {
-            success: false,
-            error: `Dangerous URL protocol rejected: "${parsed.protocol}". Only http, https, and relative paths are allowed.`,
-            timestamp: Date.now(),
-          };
-        }
-        if (!['http:', 'https:'].includes(parsed.protocol) && !url.startsWith('/')) {
-          return {
-            success: false,
-            error: `Invalid URL protocol "${parsed.protocol}". Only http, https, and relative paths are allowed.`,
-            timestamp: Date.now(),
-          };
-        }
-      } catch {
-        // URL failed to parse — only allow if it looks like a relative path
-        if (!url.startsWith('/')) {
-          return {
-            success: false,
-            error:
-              'Invalid URL format. Only http, https, and relative paths starting with "/" are allowed.',
-            timestamp: Date.now(),
-          };
-        }
+      // The one navigation URL gate (`../core/navigation-url.ts`): a URL that
+      // could execute script in the tab (or break the SSE relay) is refused
+      // with its code under `failureDetails`, before anything navigates.
+      if (typeof url !== 'string' || navigationPathForm(url) === '') {
+        return navigationRefusal(
+          'INVALID_REQUEST',
+          'pageNavigate: "url" must be a non-empty string'
+        );
       }
+      const urlVerdict = checkNavigationUrl(url, window.location.href);
+      if (!urlVerdict.ok) return navigationRefusal(urlVerdict.code, urlVerdict.message);
 
       // Soft mode: pure client-side navigation via pushState + synthetic
       // popstate. React Router v6 subscribes to popstate by default, so this
       // drives the router without destroying window state (fetch patches,
       // spies, `window.__*` globals).
       if (rawMode === 'soft') {
-        let pathname = url;
-        try {
-          const target = new URL(url, window.location.origin);
-          if (target.origin === window.location.origin) {
-            pathname = target.pathname + target.search + target.hash;
-          }
-        } catch {
-          // Relative URL — use as-is.
-        }
+        // The same-origin path, re-checked (`softNavigationPath`): a URL on
+        // another origin, or one whose path the parser collapses to
+        // `//host/…`, is refused rather than handed to the router.
+        const soft = softNavigationPath(url, window.location.href);
+        if (!soft.ok) return navigationRefusal(soft.code, soft.message);
+        const pathname = soft.path;
         const softBridge = getBridge();
         if (softBridge.navigateHandler) {
           try {
@@ -4472,14 +4564,20 @@ export async function executeCommand(
       // SSE/WebSocket connection. Callers that need a full, SDK-reinitialising
       // reload (e.g. automation capture loops hitting pages that unmount the
       // UI Bridge provider tree) can pass `hard: true` to bypass the handler.
-      if (!hard) {
+      if (!hard && g.navigateHandler) {
+        // Resolved as soft navigation is (`softResolutionBase`): a bare name
+        // against the origin root, anything else against the full page URL.
+        const pageUrl = window.location.href;
+        const samePath = sameOriginPathOf(url, softResolutionBase(url, pageUrl) ?? pageUrl);
+        if (samePath === null) {
+          return navigationRefusal('INVALID_URL_FORMAT', originChangingPathMessage(url));
+        }
         try {
-          const target = new URL(url, window.location.origin);
-          if (target.origin === window.location.origin && g.navigateHandler) {
-            g.navigateHandler(target.pathname + target.search + target.hash);
+          if (samePath !== undefined) {
+            g.navigateHandler(samePath);
             return {
               success: true,
-              url: target.pathname,
+              url: new URL(samePath, window.location.href).pathname,
               clientSideNavigation: true,
               hard: false,
               mode: 'hard',
@@ -4490,9 +4588,27 @@ export async function executeCommand(
           // Invalid URL — fall through to hard navigation
         }
       }
-      window.location.href = url;
+      // Assigned as every other site resolves it: a bare route name as its
+      // root-relative path form (`settings` → `/settings`, not
+      // `/app/settings`), anything else cleaned as the gate read it — a
+      // relative reference keeps its page-relative meaning.
+      window.location.href = isBareRouteName(url) ? navigationPathForm(url) : parserNormalized(url);
       return { success: true, url, hard: true, mode: 'hard', timestamp: Date.now() };
     }
+
+    case 'getRoutes':
+      // The registered adapter's routes, or the window's one current-page
+      // route — and whether that list is the app's whole route table
+      // (`./navigation-commands.ts`, D4).
+      return getRoutesCommand(g);
+
+    case 'navigateByAdapter':
+      // Through the URL gate, then the adapter; with none, exactly
+      // `pageNavigate` on the path form of `page` (`./navigation-commands.ts`).
+      return navigateByAdapterCommand(payload, g, {
+        base: window.location.href,
+        pageNavigate: (url) => executeCommand('pageNavigate', { url }, bridge),
+      });
 
     case 'pageGoBack':
       window.history.back();
