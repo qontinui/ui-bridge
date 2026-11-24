@@ -162,13 +162,13 @@ const WITH_NETWORK_AND_RESOURCE_ERRORS: BrowserCaptureConfig = {
   resourceErrors: true,
 };
 
-/** An entry the browser records after install, finishing now. */
+/** An entry the browser records after install: it started just before now and finishes now. */
 function liveEntry(name: string, responseStatus: number, initiatorType = 'fetch'): Entry {
   const now = performance.now();
   return {
     ...resourceEntry(name, responseStatus, initiatorType),
-    startTime: now - 1,
-    responseEnd: now + 2,
+    startTime: now - 2,
+    responseEnd: now,
   };
 }
 
@@ -549,8 +549,8 @@ describe('resource-status capture', () => {
     const now = performance.now();
     const sameTick = (url: string) => ({
       ...resourceEntry(url, 503),
-      startTime: now + 1,
-      responseEnd: now + 2,
+      startTime: now - 2,
+      responseEnd: now,
     });
     FakePerformanceObserver.record('resource', [
       sameTick('https://app.example.com/api/v1/same?a=1'),
@@ -616,7 +616,7 @@ describe('resource-status capture', () => {
     expect(statusFor(capture, url)).toHaveLength(1);
     // The fetch's own entry consumes the network report.
     FakePerformanceObserver.record('resource', [
-      { ...liveEntry(url, 404), startTime: performance.now() + 5 },
+      { ...liveEntry(url, 404), startTime: performance.now() - 5 },
     ]);
     expect(statusFor(capture, url)).toHaveLength(1);
   });
