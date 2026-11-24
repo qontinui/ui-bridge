@@ -186,7 +186,8 @@ export function readElementVisibility(element: HTMLElement): ElementVisibility {
 /**
  * Is the node rendered at all — the check an ACTION is gated on, not the
  * visibility verdict a row reports. True when the node is connected, is not
- * `visibility: hidden` (computed, so an inherited value counts), has no
+ * `visibility: hidden` or `collapse` (computed, so an inherited value counts,
+ * e.g. a control inside a collapsed table row), has no
  * `display: none` on itself or any FLAT-tree ancestor (its slot, a shadow
  * host), and, when its parent hosts an open shadow root, is taken by a slot
  * (an unslotted light-DOM child gets no box).
@@ -203,7 +204,7 @@ export function readElementVisibility(element: HTMLElement): ElementVisibility {
  * `display: none` subtree and both `clickable` conditions agree on it.
  *
  * `visibility: collapse` is refused as `hidden` is (outside a table it behaves
- * as `hidden`), matching the HTTP pre-check's own-style read.
+ * as `hidden`).
  *
  * An `<option>` (by `localName`, realm- and case-stable) is refused when it is
  * itself `display: none` (e.g. `hidden`) or `visibility: hidden` / `collapse`,

@@ -2032,8 +2032,9 @@ export async function executeCommand(
         // gate asks "is the node rendered at all" (`isRenderedForAction`,
         // `core/element-state`). Both arms share that check: the HTTP
         // executor's click pre-check (`getClickVisibilityReason`) runs it too
-        // and adds own-style, explicit zero-size and -9999px off-screen reads
-        // on top. The canonical
+        // and adds explicit inline zero-size and -9999px off-screen reads on
+        // top. This gate runs before every relay action, not only clicks; the
+        // HTTP pre-check gates click-like actions only. The canonical
         // verdict would wrongly refuse here: an `off-screen` target is
         // scrolled into view by the action, an `occluded` one is the click
         // gate's (and the caller's) concern, and an `opacity: 0` control (its

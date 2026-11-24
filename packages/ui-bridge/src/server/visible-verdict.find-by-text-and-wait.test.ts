@@ -580,7 +580,7 @@ describe('server clickable probes the executor target without mutating it', () =
  * it is supported; an option inside a display:none subtree is refused because
  * its select is. Content inside a closed <details> stays refused.
  */
-describe('an <option> is judged by its own style, its optgroup, then its <select>, on both arms', () => {
+describe('render-check refusals agree on every arm: an <option> (own style, optgroup, then <select>) and visibility:collapse', () => {
   function optionIn(parent: HTMLElement, id: string): HTMLOptionElement {
     const select = document.createElement('select');
     const option = document.createElement('option');
@@ -676,6 +676,23 @@ describe('an <option> is judged by its own style, its optgroup, then its <select
     option.style.visibility = 'hidden';
     visibleSelect(option);
     await refusedEverywhere('opt-vh');
+  });
+
+  it('a visibility:collapse control, and one inside a collapsed table row, is refused on every arm', async () => {
+    const own = document.createElement('button');
+    own.textContent = 'Own';
+    own.style.visibility = 'collapse';
+    const table = document.createElement('table');
+    const row = table.insertRow();
+    row.style.visibility = 'collapse';
+    const inRow = document.createElement('button');
+    inRow.textContent = 'In row';
+    row.insertCell().appendChild(inRow);
+    document.body.append(own, table);
+    getGlobalRegistry().registerElement('collapse-own', own, { type: 'button', label: 'own' });
+    getGlobalRegistry().registerElement('collapse-row', inRow, { type: 'button', label: 'row' });
+    await refusedEverywhere('collapse-own');
+    await refusedEverywhere('collapse-row');
   });
 
   it('a visibility:collapse option is refused on every arm', async () => {
