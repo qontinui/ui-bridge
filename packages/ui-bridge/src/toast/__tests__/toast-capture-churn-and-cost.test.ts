@@ -306,6 +306,28 @@ describe('ToastCapture churn budget and re-read gate', () => {
       expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['timer', 'later']]);
     });
 
+    // A9c — A9b's quiet-start step with no reconcile between the removal and
+    // the remount, so no prune can drop the cold budget first: the remount
+    // itself must refuse to inherit a cold budget.
+    it('a remount after quiet starts fresh even when no reconcile ran in between', async () => {
+      install({ pollInterval: 60_000 });
+      const timer = addStatus('timer', 'r0');
+      await flushAndScan();
+      for (let i = 1; i <= 6; i++) {
+        setTextInPlace(timer, `r${i}`);
+        vi.advanceTimersByTime(100);
+        capture.getSnapshot();
+      }
+      expect(appearedFor('timer')).toHaveLength(4); // suppressed
+
+      timer.remove();
+      await vi.advanceTimersByTimeAsync(10_500);
+      addStatus('timer', 'later');
+      await flushAndScan();
+
+      expect(appearedFor('timer').at(-1)?.toast.message).toBe('later');
+    });
+
     // A10
     it('per-tick re-keying is bounded', async () => {
       install({ pollInterval: 500 });
