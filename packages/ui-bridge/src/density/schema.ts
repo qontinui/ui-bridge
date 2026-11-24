@@ -152,7 +152,6 @@ export interface DensityItem {
    * than by their tops. `null` exactly when `cousinKey` is. Optional on read.
    */
   cousinRowKey: string | null;
-
   /** SHA-256 hex of the collapsed text; `null` when the text is redacted or empty. */
   textHash: string | null;
   shape: DensityShape | null;
@@ -289,7 +288,6 @@ export interface DensityCapture {
    * true exactly when every item carries all three keys.
    */
   repeatKeysResolved: boolean;
-
   coverage: DensityCoverage;
   probe: DensityProbeResult | null;
   /** Hash of the targets whose `text` matchers this capture evaluated, or `null`. */
@@ -646,7 +644,6 @@ function readItem(r: Reader, value: unknown, path: string): DensityItem | null {
     cousinKey: o.cousinKey === undefined ? null : r.stringOrNull(o.cousinKey, `${path}.cousinKey`),
     cousinRowKey:
       o.cousinRowKey === undefined ? null : r.stringOrNull(o.cousinRowKey, `${path}.cousinRowKey`),
-
     textHash: readHashOrNull(r, o.textHash, `${path}.textHash`),
     shape: r.oneOfOrNull(o.shape, `${path}.shape`, DENSITY_SHAPES),
     fontPx: r.numberOrNull(o.fontPx, `${path}.fontPx`, { min: 0 }),
@@ -787,14 +784,11 @@ const CAPTURE_KEYS = [
   'items',
 ] as const;
 
-/** Parse a `ui-bridge/density-capture@1` document. */
-/** An explicit `repeatKeysResolved: true` must be true of every item. */
-function readRepeatKeysResolved(r: Reader, value: unknown, items: unknown): boolean {
-  const v = r.boolean(value, '$.repeatKeysResolved');
-  if (
-    v &&
+/** Whether every item of a raw capture carries `siblingKey`, `cousinKey` and `cousinRowKey`. */
+function itemsHaveRepeatKeys(items: unknown): boolean {
+  return (
     Array.isArray(items) &&
-    !items.every(
+    items.every(
       (i) =>
         i !== null &&
         typeof i === 'object' &&
@@ -802,7 +796,13 @@ function readRepeatKeysResolved(r: Reader, value: unknown, items: unknown): bool
         'cousinKey' in i &&
         'cousinRowKey' in i
     )
-  ) {
+  );
+}
+
+/** An explicit `repeatKeysResolved: true` must be true of every item. */
+function readRepeatKeysResolved(r: Reader, value: unknown, items: unknown): boolean {
+  const v = r.boolean(value, '$.repeatKeysResolved');
+  if (v && !itemsHaveRepeatKeys(items)) {
     r.fail(
       '$.repeatKeysResolved',
       'is true, but an item lacks siblingKey, cousinKey or cousinRowKey'
@@ -811,6 +811,7 @@ function readRepeatKeysResolved(r: Reader, value: unknown, items: unknown): bool
   return v;
 }
 
+/** Parse a `ui-bridge/density-capture@1` document. */
 export function parseDensityCapture(value: unknown): DensityParseResult<DensityCapture> {
   const r = new Reader();
   const o = r.object(value, '$', CAPTURE_KEYS, ['repeatKeysResolved']);
@@ -914,15 +915,7 @@ export function parseDensityCapture(value: unknown): DensityParseResult<DensityC
     structureResolved: r.boolean(o.structureResolved, '$.structureResolved'),
     repeatKeysResolved:
       o.repeatKeysResolved === undefined
-        ? Array.isArray(o.items) &&
-          o.items.every(
-            (i) =>
-              i !== null &&
-              typeof i === 'object' &&
-              'siblingKey' in i &&
-              'cousinKey' in i &&
-              'cousinRowKey' in i
-          )
+        ? itemsHaveRepeatKeys(o.items)
         : readRepeatKeysResolved(r, o.repeatKeysResolved, o.items),
     coverage: readCoverage(r, o.coverage, '$.coverage'),
     probe,

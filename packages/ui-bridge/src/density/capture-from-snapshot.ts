@@ -353,7 +353,6 @@ function buildItem(
       siblingKey: null,
       cousinKey: null,
       cousinRowKey: null,
-
       textHash,
       shape,
       fontPx,
