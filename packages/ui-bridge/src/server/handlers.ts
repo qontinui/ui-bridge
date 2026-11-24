@@ -54,6 +54,7 @@ import type {
 import {
   applyCanonicalFindFilter,
   isFindRefusalError,
+  reportedState,
   type CanonicalFindContext,
   type FindFilterableElement,
 } from '../core/find-filter';
@@ -355,7 +356,14 @@ interface HeadlessLauncherModule {
  * objects from registry.getAllElements() have a getState() method that must
  * be called to populate these fields — without this mapping, rects are null.
  */
-export function materializeElements(rawElements: unknown[]): ControlSnapshot['elements'] {
+export function materializeElements(
+  rawElements: unknown[],
+  /**
+   * A state already read for a row (the find filter's `getState()` read, see
+   * `reportedState`), so the row is not read twice. `undefined` = read it here.
+   */
+  stateOf?: (raw: unknown) => unknown
+): ControlSnapshot['elements'] {
   // One timestamp per materialization pass: synthesized `registeredAt`
   // values must be identical across the batch (and not churn per element)
   // so snapshot diffing doesn't see spurious per-element deltas.
@@ -426,7 +434,7 @@ export function materializeElements(rawElements: unknown[]): ControlSnapshot['el
     const freshBbox = measureFreshBbox(el.element);
     // `getState()` first: on a registry media element it re-captures the
     // observation, so the top-level `mediaMetadata` read below is as fresh.
-    const state = el.getState?.() ?? el.state;
+    const state = (stateOf?.(raw) as typeof el.state | undefined) ?? el.getState?.() ?? el.state;
     return {
       id: el.id,
       type: el.type,
@@ -1806,12 +1814,14 @@ export function createHandlers(
         }
       }
 
+      // The registry rows' state as the visibility filter read it (once).
+      const stateOf = (row: unknown) => reportedState(filterCtx, row as object);
       const materialized = projection
-        ? materializeElements(elements).map((row, i) => ({
+        ? materializeElements(elements, stateOf).map((row, i) => ({
             ...row,
             projection: projectElement(liveElementOf(nodes[i]), projection),
           }))
-        : materializeElements(elements);
+        : materializeElements(elements, stateOf);
       return success({
         elements: materialized,
         // Folded over exactly the array being returned — see

@@ -14,6 +14,10 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { applyCanonicalFindFilter } from './find-filter';
+import { getGlobalRegistry, resetGlobalRegistry } from './registry';
+import { createHandlers, type RegistryLike } from '../server/handlers';
+import { createActionExecutor } from '../control/action-executor';
+import { executeCommand, type BridgeAccess } from '../react/commandHandlers';
 
 const ROWS = 40;
 /** The canonical verdict's sample-point count for an element >= 48px on an axis. */
@@ -102,5 +106,77 @@ describe('include_hidden:false hit-test cost', () => {
     const rows = liveRows().map((row) => ({ ...row, state: { visible: true } }));
     expect(applyCanonicalFindFilter(rows, { include_hidden: false })).toHaveLength(ROWS);
     expect(hitTests).toBe(0);
+  });
+});
+
+/**
+ * A registry row's state is read ONCE per find — review round 4, A1. The
+ * visibility arm judges a registry row by `getState()`, and the arm then
+ * reports that row's `state`; without reuse every kept row paid the full
+ * state read (and its hit-test) twice. So a visible-only find must cost no
+ * more hit-tests than an unfiltered one, through each registry arm.
+ */
+describe('registry arms read each kept row once', () => {
+  const REGISTERED = 20;
+
+  beforeEach(() => {
+    resetGlobalRegistry();
+    const registry = getGlobalRegistry();
+    nodes
+      .slice(0, REGISTERED)
+      .forEach((el, i) =>
+        registry.registerElement(`reg-${i}`, el, { type: 'button', label: `Save ${i}` })
+      );
+  });
+
+  afterEach(() => {
+    resetGlobalRegistry();
+  });
+
+  function registryLike(): RegistryLike {
+    const reg = getGlobalRegistry();
+    return {
+      getAllElements: () => reg.getAllElements(),
+      getElement: (id) => reg.getElement(id),
+      getAllComponents: () => reg.getAllComponents(),
+      getComponent: (id) => reg.getComponent(id),
+      createSnapshot: () => reg.createSnapshot() as ReturnType<RegistryLike['createSnapshot']>,
+    };
+  }
+
+  async function countHitTests(run: () => Promise<unknown>): Promise<number> {
+    hitTests = 0;
+    await run();
+    return hitTests;
+  }
+
+  it('createHandlers find: include_hidden:false costs no more hit-tests than {}', async () => {
+    const handlers = createHandlers(registryLike(), createActionExecutor(getGlobalRegistry()));
+    const all = await countHitTests(() => handlers.find({ skipSettle: true } as never));
+    const visibleOnly = await countHitTests(async () => {
+      const reply = await handlers.find({ skipSettle: true, include_hidden: false } as never);
+      const rows = (reply.data as unknown as { elements: unknown[] }).elements;
+      expect(rows).toHaveLength(REGISTERED);
+    });
+    expect(all).toBeGreaterThan(0);
+    expect(visibleOnly).toBeLessThanOrEqual(all);
+  });
+
+  it('React find command: includeHidden:false costs no more hit-tests than {}', async () => {
+    const bridge: BridgeAccess = {
+      elements: [],
+      getElement: () => undefined,
+      components: [],
+      workflows: [],
+    };
+    const all = await countHitTests(() => executeCommand('find', {}, bridge));
+    const visibleOnly = await countHitTests(async () => {
+      const reply = (await executeCommand('find', { includeHidden: false }, bridge)) as {
+        elements: unknown[];
+      };
+      expect(reply.elements).toHaveLength(REGISTERED);
+    });
+    expect(all).toBeGreaterThan(0);
+    expect(visibleOnly).toBeLessThanOrEqual(all);
   });
 });

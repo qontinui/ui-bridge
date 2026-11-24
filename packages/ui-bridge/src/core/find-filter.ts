@@ -337,6 +337,25 @@ export interface CanonicalFindContext {
    * and attach the answer as the row's `projection`. Left untouched otherwise.
    */
   projection?: ElementProjectionRequest;
+  /**
+   * OUTPUT. Set by the filter when `include_hidden: false` judged a row by its
+   * `getState()` (a registry row): the state object each such row was read as,
+   * keyed by the row. A call site building the returned row reads its `state`
+   * from here ({@link reportedState}) instead of calling `getState()` again,
+   * so each kept row's state is read ONCE and the value that decided its
+   * visibility is the value it reports. Left untouched otherwise.
+   */
+  stateReads?: WeakMap<object, unknown>;
+}
+
+/**
+ * The `state` a call site should report for a row the filter returned: the
+ * `getState()` read the filter already made for it (see
+ * {@link CanonicalFindContext.stateReads}), else `undefined` — the call site
+ * then reads the row's state its usual way.
+ */
+export function reportedState(ctx: CanonicalFindContext, row: object): unknown {
+  return ctx.stateReads?.get(row);
 }
 
 /** Resolve the live DOM node for an element, when one is attached. */
@@ -393,11 +412,17 @@ function elementText(el: FindFilterableElement): string {
  * and a partially covered one kept, exactly as its reported `state.visible`
  * says.
  */
-function isConsideredVisible(el: FindFilterableElement): boolean {
+function isConsideredVisible(
+  el: FindFilterableElement,
+  stateReads: WeakMap<object, unknown>
+): boolean {
   if (typeof el.getState === 'function') {
     let reported: boolean | undefined;
     try {
-      reported = el.getState()?.visible;
+      const state = el.getState();
+      // Kept for the call site, so the returned row reports this very read.
+      if (state !== undefined) stateReads.set(el, state);
+      reported = state?.visible;
     } catch {
       reported = undefined;
     }
@@ -789,6 +814,10 @@ export function applyCanonicalFindFilter<T extends FindFilterableElement>(
   // transport cannot evaluate the predicate, so it must not guess.
   const factObservations = new Map<T, MediaObservation>();
   const unevaluated: FindUnevaluated[] = [];
+  // The registry rows' `getState()` reads the visibility arm makes, handed to
+  // the call site so a kept row's state is not read a second time.
+  const stateReads = new WeakMap<object, unknown>();
+  if (r.includeHidden === false) ctx.stateReads = stateReads;
   if (facts.length > 0) {
     ctx.unevaluated = unevaluated;
     for (const el of elements) {
@@ -909,7 +938,7 @@ export function applyCanonicalFindFilter<T extends FindFilterableElement>(
     // never pay for it. Before the media facts, so a hidden row is dropped,
     // not reported as `unevaluated`. The predicates are independent, so the
     // order changes cost, not the result.
-    if (r.includeHidden === false && !isConsideredVisible(el)) return false;
+    if (r.includeHidden === false && !isConsideredVisible(el, stateReads)) return false;
 
     // The media-fact predicates go LAST: a row is reported as unevaluated only
     // when every decidable predicate already let it through.
