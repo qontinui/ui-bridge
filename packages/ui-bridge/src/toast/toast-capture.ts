@@ -32,14 +32,27 @@
  * Churn is bounded per element, beside the max-age guard: at most
  * `maxAnnouncementsPerWindow` captures of one element within
  * `announcementWindowMs`. The capture that would exceed it is withheld and the
- * element is parked SUPPRESSED, its changes absorbed with no event. Its last
- * entry is not left in `active`: every path that reaches the budget with a
- * changed text has already dismissed it (the active reconcile dismisses before
- * asking; a parked or newly scanned element has no entry). It is released
- * once its observed text has been unchanged for `announcementWindowMs`; its
- * settled text, if not empty, is then captured once (the trailing
- * announcement) — even when it equals an earlier announcement, whose entry was
- * dismissed when suppression began and so is no longer in `active`.
+ * element is parked SUPPRESSED, its changes absorbed with no event. It is
+ * released once its observed text has been unchanged for
+ * `announcementWindowMs`; its settled text, if not empty, is then captured
+ * once (the trailing announcement) — even when it equals an earlier
+ * announcement, whose entry was dismissed when suppression began and so is no
+ * longer in `active`.
+ *
+ * "One element" survives re-keying: a NEW node on the same `id` /
+ * `data-testid` whose budget's last holder is disconnected continues that
+ * budget while it is warm (a capture inside the window, or still absorbing
+ * changes), so a React `key={count}` ticker that replaces its node on every
+ * tick is held to the same bound and suppression. A connected holder means a
+ * sibling, which gets its own budget; a cold budget starts fresh; an element
+ * with neither attribute is keyed by node only (`announcement-budget.ts`).
+ *
+ * No withheld text is left in `active`. The element itself has no entry when
+ * the budget withholds it (the active reconcile dismisses before asking; a
+ * parked or newly scanned element has none). A withheld re-keyed node's
+ * disconnected predecessor may still hold its entry, under the same id; it is
+ * dismissed by the next reconcile (it is no longer visible), and every public
+ * read runs a reconcile first, so no read serves it.
  */
 
 import type {
@@ -59,6 +72,7 @@ import {
   textExcludingBoundaries,
   truncateKeepingSentinel,
 } from '../core/redaction';
+import { AnnouncementBudgets } from './announcement-budget';
 
 // ============================================================================
 // Built-in selectors for common toast/notification libraries
@@ -156,16 +170,6 @@ const TRACKED_OBSERVER_OPTIONS: MutationObserverInit = {
   attributeFilter: ['role', 'aria-label', BRIDGE_REDACT_ATTR, 'hidden', 'style'],
   subtree: true,
 };
-
-/** Per-element announcement budget state (see the header comment). */
-interface AnnouncementBudget {
-  /** Capture timestamps inside the current window. */
-  captures: number[];
-  /** True while the element's changes are absorbed with no announcement. */
-  suppressed: boolean;
-  /** When a suppressed element's observed text last changed. */
-  lastChangedAt: number;
-}
 
 /** A tracked element's observer and its last outside-subtree verdicts. */
 interface TrackedElement {
@@ -375,6 +379,15 @@ function extractMessage(el: Element): string {
 // Visibility check
 // ============================================================================
 
+/**
+ * The element's stable identity across node replacement: its `id`, else its
+ * `data-testid`, else `''` (none). The reported toast id and the announcement
+ * budget's key both come from here, so they cannot drift apart.
+ */
+function stableKey(el: Element): string {
+  return el.id || el.getAttribute('data-testid') || '';
+}
+
 function isElementVisible(el: Element): boolean {
   if (!el.isConnected) return false;
   const htmlEl = el as HTMLElement;
@@ -442,8 +455,12 @@ export class ToastCapture {
   private tracked: Map<Element, TrackedElement> = new Map();
   /** Tracked elements whose observer callback ran, or whose verdicts flipped. */
   private dirty: Set<Element> = new Set();
-  /** Per-element announcement budget; a remounted node starts fresh. */
-  private budgets: WeakMap<Element, AnnouncementBudget> = new WeakMap();
+  /**
+   * Announcement budgets, by node first; a re-keyed node (same `id` /
+   * `data-testid`, its predecessor gone) continues a warm budget. See
+   * `announcement-budget.ts`.
+   */
+  private budgets: AnnouncementBudgets;
   /**
    * True while a scan or reconcile pass runs (`runPass`). Listeners are
    * called only after a pass ends, so a read made from a listener reconciles
@@ -473,6 +490,7 @@ export class ToastCapture {
       announcementWindowMs: budgetWindowMs(config?.announcementWindowMs),
     };
     this.allSelectors = [...BUILT_IN_SELECTORS, ...this.config.customSelectors];
+    this.budgets = new AnnouncementBudgets(this.config.announcementWindowMs);
   }
 
   // ==========================================================================
@@ -536,7 +554,7 @@ export class ToastCapture {
     // so a re-install starts every element with a fresh budget.
     for (const el of [...this.tracked.keys()]) this.untrack(el);
     this.parked.clear();
-    this.budgets = new WeakMap();
+    this.budgets.clear();
     // Intentionally do NOT clear captured data — let it be readable after uninstall
   }
 
@@ -739,6 +757,7 @@ export class ToastCapture {
       }
 
       this.pruneRecent();
+      this.budgets.prune(now);
     });
   }
 
@@ -787,20 +806,19 @@ export class ToastCapture {
 
   /**
    * The announcement budget's one owner, asked before every `captureToast`.
-   * Under `maxAnnouncementsPerWindow` captures of `el` within
-   * `announcementWindowMs` it records `now` and admits the capture. Otherwise
-   * — or while `el` is already suppressed — it withholds it: `el` is
-   * suppressed and parked with the withheld text. Callers pass an element
-   * with no entry in `active` (the active reconcile dismisses the old entry
-   * before asking; the scan skips active elements; a parked element has none),
-   * so no withheld word is left in `active`.
+   * `el`'s budget is its own, or — for a re-keyed node — the warm budget of
+   * the gone node it replaces (`AnnouncementBudgets.getOrCreate`). Under
+   * `maxAnnouncementsPerWindow` captures within `announcementWindowMs` it
+   * records `now` and admits the capture. Otherwise — or while the budget is
+   * already suppressed — it withholds it: `el` is suppressed and parked with
+   * the withheld text. Callers pass an element with no entry in `active` (the
+   * active reconcile dismisses the old entry before asking; the scan skips
+   * active elements; a parked element has none), so no withheld word of `el`
+   * is left in `active`; a gone predecessor's entry is the next reconcile's
+   * (see the header comment).
    */
   private admitCapture(el: Element, message: string, now: number): boolean {
-    let budget = this.budgets.get(el);
-    if (!budget) {
-      budget = { captures: [], suppressed: false, lastChangedAt: now };
-      this.budgets.set(el, budget);
-    }
+    const budget = this.budgets.getOrCreate(el, stableKey(el), now);
     if (!budget.suppressed) {
       const windowMs = this.config.announcementWindowMs;
       budget.captures = budget.captures.filter((t) => now - t < windowMs);
@@ -993,7 +1011,7 @@ export class ToastCapture {
    * otherwise both are visible and the new entry gets `${id}#<n>`.
    */
   private resolveId(el: Element, now: number): string {
-    const base = el.id || el.getAttribute('data-testid') || `toast-${++this.idCounter}`;
+    const base = stableKey(el) || `toast-${++this.idCounter}`;
     const holder = this.activeToasts.get(base);
     if (!holder || holder.element === el) return base;
 
