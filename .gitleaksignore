@@ -1,5 +1,0 @@
-# Placeholder fixture values in redaction tests (PR #402 history). Fixed at HEAD; these fingerprints cover the earlier commits.
-87c0199a37fb84cbaee8e5c5ef81dc9f3f8037b5:packages/ui-bridge/src/undo/__tests__/undo-detector.redaction.test.ts:generic-api-key:8
-87c0199a37fb84cbaee8e5c5ef81dc9f3f8037b5:packages/ui-bridge/src/shortcuts/__tests__/shortcut-tracker.redaction.test.ts:generic-api-key:8
-e8a11c34c18c1bd1d462bf8d62a867d7b06850c7:packages/ui-bridge/src/render-log/dom-capture.mutation.redaction.test.ts:generic-api-key:8
-0532e01095dd34d2ba3ece134cfbcfd206327d0d:packages/ui-bridge/src/server/dom-fallback.boundary-index.test.ts:generic-api-key:17

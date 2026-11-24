@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "base_sha": "3fd340b2a5b1d68e7d4eef840123f1f603eadbc5",
+  "ours_sha": "c88776f6ca8164b0f972f861bd930dd4575cae0b",
+  "theirs_sha": "84724732f287f07823c0f6e679c000d7b5df73f2",
+  "entries": [
+    {
+      "path": "package-lock.json",
+      "base_oid": "aa96bc22209dd7bded884f6f0263a02ae92b2427",
+      "ours_oid": "c11c55890ed2cacfc3c058f1317d5bd3cf8a6138",
+      "theirs_oid": "d06dd5999854ddb30d512fa6bb9a6543d9c28ceb",
+      "base_path": "package-lock.json.base",
+      "ours_path": "package-lock.json.ours",
+      "theirs_path": "package-lock.json.theirs",
+      "hunks": [
+        "<<<<<<< HEAD\n      \"version\": \"0.62.0\",\n=======\n      \"version\": \"0.61.1\",\n>>>>>>> 4a38425c (chore: release @qontinui/ui-bridge 0.61.1)\n"
+      ]
+    },
+    {
+      "path": "packages/ui-bridge/package.json",
+      "base_oid": "3e798fafa15afc2c3538141e557084d07964e7a1",
+      "ours_oid": "10df7b25495d216f1f7d161f08b7a6038afde649",
+      "theirs_oid": "e89fb3ffeb4aa4bba066e510e949ae32dae6a8ae",
+      "base_path": "packages/ui-bridge/package.json.base",
+      "ours_path": "packages/ui-bridge/package.json.ours",
+      "theirs_path": "packages/ui-bridge/package.json.theirs",
+      "hunks": [
+        "<<<<<<< HEAD\n  \"version\": \"0.62.0\",\n=======\n  \"version\": \"0.61.1\",\n>>>>>>> 4a38425c (chore: release @qontinui/ui-bridge 0.61.1)\n"
+      ]
+    }
+  ]
+}

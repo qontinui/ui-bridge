@@ -1,0 +1,251 @@
+{
+  "name": "@qontinui/ui-bridge",
+  "version": "0.61.1",
+  "description": "UI Bridge Framework - React hooks and providers for UI observation, control, and debugging",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "ui-bridge": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    },
+    "./injected": {
+      "types": "./dist/injected/index.d.ts",
+      "import": "./dist/injected/index.mjs",
+      "require": "./dist/injected/index.js"
+    },
+    "./injected/bundle.global.js": "./dist/injected/bundle.global.js",
+    "./package.json": "./package.json",
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "import": "./dist/core/index.mjs",
+      "require": "./dist/core/index.js"
+    },
+    "./diagnostics": {
+      "types": "./dist/diagnostics/index.d.ts",
+      "import": "./dist/diagnostics/index.mjs",
+      "require": "./dist/diagnostics/index.js"
+    },
+    "./observation": {
+      "types": "./dist/observation/index.d.ts",
+      "import": "./dist/observation/index.mjs",
+      "require": "./dist/observation/index.js"
+    },
+    "./density": {
+      "types": "./dist/density/index.d.ts",
+      "import": "./dist/density/index.mjs",
+      "require": "./dist/density/index.js"
+    },
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "import": "./dist/react/index.mjs",
+      "require": "./dist/react/index.js"
+    },
+    "./control": {
+      "types": "./dist/control/index.d.ts",
+      "import": "./dist/control/index.mjs",
+      "require": "./dist/control/index.js"
+    },
+    "./render-log": {
+      "types": "./dist/render-log/index.d.ts",
+      "import": "./dist/render-log/index.mjs",
+      "require": "./dist/render-log/index.js"
+    },
+    "./debug": {
+      "types": "./dist/debug/index.d.ts",
+      "import": "./dist/debug/index.mjs",
+      "require": "./dist/debug/index.js"
+    },
+    "./vision": {
+      "types": "./dist/vision/index.d.ts",
+      "import": "./dist/vision/index.mjs",
+      "require": "./dist/vision/index.js"
+    },
+    "./ai": {
+      "types": "./dist/ai/index.d.ts",
+      "import": "./dist/ai/index.mjs",
+      "require": "./dist/ai/index.js"
+    },
+    "./idle": {
+      "types": "./dist/idle/index.d.ts",
+      "import": "./dist/idle/index.mjs",
+      "require": "./dist/idle/index.js"
+    },
+    "./annotations": {
+      "types": "./dist/annotations/index.d.ts",
+      "import": "./dist/annotations/index.mjs",
+      "require": "./dist/annotations/index.js"
+    },
+    "./specs": {
+      "types": "./dist/specs/index.d.ts",
+      "import": "./dist/specs/index.mjs",
+      "require": "./dist/specs/index.js"
+    },
+    "./discovery": {
+      "types": "./dist/discovery/index.d.ts",
+      "import": "./dist/discovery/index.mjs",
+      "require": "./dist/discovery/index.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.mjs",
+      "require": "./dist/server/index.js"
+    },
+    "./server/express": {
+      "types": "./dist/server/express.d.ts",
+      "import": "./dist/server/express.mjs",
+      "require": "./dist/server/express.js"
+    },
+    "./server/nextjs": {
+      "types": "./dist/server/nextjs.d.ts",
+      "import": "./dist/server/nextjs.mjs",
+      "require": "./dist/server/nextjs.js"
+    },
+    "./server/standalone": {
+      "types": "./dist/server/standalone.d.ts",
+      "import": "./dist/server/standalone.mjs",
+      "require": "./dist/server/standalone.js"
+    },
+    "./server/handlers": {
+      "types": "./dist/server/handlers.d.ts",
+      "import": "./dist/server/handlers.mjs",
+      "require": "./dist/server/handlers.js"
+    },
+    "./native": {
+      "types": "./dist/native/index.d.ts",
+      "import": "./dist/native/index.mjs",
+      "require": "./dist/native/index.js"
+    },
+    "./native/core": {
+      "types": "./dist/native/core/index.d.ts",
+      "import": "./dist/native/core/index.mjs",
+      "require": "./dist/native/core/index.js"
+    },
+    "./native/react": {
+      "types": "./dist/native/react/index.d.ts",
+      "import": "./dist/native/react/index.mjs",
+      "require": "./dist/native/react/index.js"
+    },
+    "./native/control": {
+      "types": "./dist/native/control/index.d.ts",
+      "import": "./dist/native/control/index.mjs",
+      "require": "./dist/native/control/index.js"
+    },
+    "./native/debug": {
+      "types": "./dist/native/debug/index.d.ts",
+      "import": "./dist/native/debug/index.mjs",
+      "require": "./dist/native/debug/index.js"
+    },
+    "./contracts": {
+      "types": "./dist/contracts/index.d.ts",
+      "import": "./dist/contracts/index.mjs",
+      "require": "./dist/contracts/index.js"
+    },
+    "./ctr": {
+      "types": "./dist/ctr/index.d.ts",
+      "import": "./dist/ctr/index.mjs",
+      "require": "./dist/ctr/index.js"
+    },
+    "./ctr/migrate": {
+      "types": "./dist/ctr/migrate.d.ts",
+      "import": "./dist/ctr/migrate.mjs",
+      "require": "./dist/ctr/migrate.js"
+    },
+    "./artifacts": {
+      "types": "./dist/artifacts/index.d.ts",
+      "import": "./dist/artifacts/index.mjs",
+      "require": "./dist/artifacts/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsup && node -e \"process.exit(require('fs').statSync('dist/index.d.ts').size > 0 ? 0 : 1)\"",
+    "dev": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsup --watch",
+    "test": "vitest run",
+    "test:smoke": "vitest run smoke --reporter=default --reporter=json --outputFile.json=.smoke-report.json && node ../../test-support/assert-no-skipped-tests.mjs .smoke-report.json",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.native.json --noEmit",
+    "lint": "eslint src --ext .ts,.tsx",
+    "format": "prettier --write \"src/**/*.{ts,tsx}\"",
+    "prepublishOnly": "node ../../scripts/check-clean-tree.cjs && npm run build"
+  },
+  "peerDependencies": {
+    "@qontinui/ui-bridge-headless": ">=0.1.0 <1",
+    "express": "^4.18.0 || ^5.0.0",
+    "next": ">=13.0.0",
+    "react": "^18.0.0 || ^19.0.0",
+    "react-dom": "^18.0.0 || ^19.0.0",
+    "react-native": ">=0.70.0",
+    "ws": "^8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react-dom": {
+      "optional": true
+    },
+    "react-native": {
+      "optional": true
+    },
+    "express": {
+      "optional": true
+    },
+    "next": {
+      "optional": true
+    },
+    "ws": {
+      "optional": true
+    },
+    "@qontinui/ui-bridge-headless": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "dom-accessibility-api": "^0.5.16"
+  },
+  "optionalDependencies": {
+    "@tauri-apps/api": "^2.10.1",
+    "ioredis": "^5.4.1"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "^10.0.0",
+    "@testing-library/react": "^16.0.0",
+    "@types/express": "^5.0.0",
+    "@types/node": "^20.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/ws": "^8.5.0",
+    "jsdom": "^23.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.3.0",
+    "vitest": "^4.1.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/qontinui/ui-bridge.git",
+    "directory": "packages/ui-bridge"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "react",
+    "ui",
+    "automation",
+    "testing",
+    "ai",
+    "debugging",
+    "hooks",
+    "server",
+    "react-native"
+  ]
+}
