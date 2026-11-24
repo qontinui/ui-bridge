@@ -229,28 +229,42 @@ before the browser, whether or not `recordHar` is set.
 ## `ui-bridge-density`
 
 A second bin measures, from a UI Bridge control snapshot, how much effort it
-takes an audience role to reach what it came for. In this release it has one
-verb, which reads the snapshot and reports the capture summary (the cell, the
-viewport, the bases and the coverage) and the structure summary (leaves, kinds
-by the rule that decided each, blocks, pins, and how many items had their
-parent read from the xpath or from geometry):
+takes an audience role to reach what it came for, and holds that to a budget.
+In this release it has four verbs:
 
 ```bash
 ui-bridge-density measure --snapshot snapshot.json --role buyer \
   [--fixture <name>] [--targets targets.json] [--capture-out capture.json]
+ui-bridge-density assert --budget budget.json --snapshot snapshot.json --role buyer [--targets targets.json]
+ui-bridge-density assert --draft budget.json --snapshot snapshot.json --role buyer
+ui-bridge-density lint --targets targets.json --profile-text profile.md
+ui-bridge-density init --surface /orders --profile audience_profile/<name>@<version>
 ```
 
-- `--snapshot` takes a `GET /control/snapshot` answer, either in the relay's
-  `{ success, data, _meta }` envelope or bare. `-` reads standard input.
-- Standard output is one JSON document: each cell's `Observation` from producer
-  `sdk/density`, and `next[]`.
-- `--capture-out` writes the text-free `ui-bridge/density-capture@1` capture.
-- Exit codes: 0 for an answer (an `unknown` observation is an answer), 2 for a
-  usage error, 1 for an internal error. On SIGHUP, SIGINT or SIGTERM before it
-  has answered, it prints an `interrupted` document naming the step it had
-  reached and exits 129, 130 or 143. A signal after the answer is printed
-  exits 0 and prints nothing more (or, if it lands while the finished process
-  is already exiting, takes the default action after the answer was written).
+- `measure` reports each cell: the bases, the structure, the ledger, and with
+  `--targets` the reach of every ask, `answeredAt[k]` as intervals and the
+  unclaimed blocks. `--snapshot` takes a `GET /control/snapshot` answer, in
+  the relay's `{ success, data, _meta }` envelope or bare; `-` reads standard
+  input. `--capture-out` writes the text-free `ui-bridge/density-capture@1`.
+- `assert` evaluates a `ui-bridge/density-budget@1`: each rule names a
+  quantity of `DENSITY_QUANTITIES` and answers `pass`, `fail` or `unknown` per
+  matching cell, on intervals. A null limit is unknown, never a pass. A
+  compaction rule with neither `floors` nor `floorsWaived` is unknown and
+  flagged `unbounded`; a required matrix cell with no capture is unknown. It
+  prints the three counts. `--draft` writes a budget whose rules carry the
+  current values and null limits. The tool never supplies a limit.
+- `lint` checks that each ask's quote is in the audience profile's text, and
+  lists the profile sentences that no ask quotes.
+- `init` writes an empty, valid targets file and budget file (no role, no ask,
+  no limit) and never overwrites a file.
+- Standard output is one JSON document per run.
+- Exit codes: 0 for an answer (`measure`) or a clean result (`assert`, `lint`),
+  1 when a rule fails or a quote is missing (or on an internal error), 3 when
+  the only non-passes are unknowns, 2 for a usage error. On SIGHUP, SIGINT or
+  SIGTERM before any verdict, every verb prints an `interrupted` document
+  naming the verb and the step it reached, and exits 129, 130 or 143. A
+  signal after the verdict is printed adds a note on stderr that the verdict
+  stands, and the run exits with the verdict's own code.
 
 It runs a generated copy of the density core and does not load
 `@qontinui/ui-bridge`. A capture holds no page text, but its text hashes are
