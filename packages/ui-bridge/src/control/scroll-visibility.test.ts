@@ -5,7 +5,11 @@
  * stubbed.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
-import { isVisibleInScrollContext, scrollIntoViewVerified } from './scroll-visibility';
+import {
+  isVisibleInScrollContext,
+  scrollIntoViewVerified,
+  scrollOriginReversed,
+} from './scroll-visibility';
 
 function rect(el: HTMLElement, x: number, y: number, w: number, h: number): void {
   el.getBoundingClientRect = () =>
@@ -273,5 +277,69 @@ describe('scrollIntoViewVerified — the action path reads the same chain', () =
     const result = await scrollIntoViewVerified(child, { smooth: false });
     expect(result).toEqual({ alreadyVisible: true, scrolled: false, visible: true });
     expect(scrolled).toBe(false);
+  });
+});
+
+describe('scrollOriginReversed — the physical axes whose scroll origin is right / bottom', () => {
+  const cs = (o: Partial<Record<string, string>>) => o as unknown as CSSStyleDeclaration;
+  const cases: Array<[string, Partial<Record<string, string>>, boolean, boolean]> = [
+    ['horizontal-tb ltr', {}, false, false],
+    ['direction: rtl', { direction: 'rtl' }, true, false],
+    ['flex row-reverse', { display: 'flex', flexDirection: 'row-reverse' }, true, false],
+    [
+      'flex rtl + row-reverse cancel',
+      { display: 'flex', direction: 'rtl', flexDirection: 'row-reverse' },
+      false,
+      false,
+    ],
+    ['flex column-reverse', { display: 'flex', flexDirection: 'column-reverse' }, false, true],
+    ['flex wrap-reverse', { display: 'flex', flexWrap: 'wrap-reverse' }, false, true],
+    [
+      'block with a stray row-reverse',
+      { display: 'block', flexDirection: 'row-reverse' },
+      false,
+      false,
+    ],
+    [
+      'block with a stray column-reverse',
+      { display: 'block', flexDirection: 'column-reverse' },
+      false,
+      false,
+    ],
+    ['vertical-rl', { writingMode: 'vertical-rl' }, true, false],
+    ['vertical-lr + rtl', { writingMode: 'vertical-lr', direction: 'rtl' }, false, true],
+    ['vertical-rl + rtl', { writingMode: 'vertical-rl', direction: 'rtl' }, true, true],
+    [
+      'vertical-lr flex row-reverse',
+      { writingMode: 'vertical-lr', display: 'flex', flexDirection: 'row-reverse' },
+      false,
+      true,
+    ],
+    [
+      'vertical-lr flex column-reverse',
+      { writingMode: 'vertical-lr', display: 'flex', flexDirection: 'column-reverse' },
+      true,
+      false,
+    ],
+  ];
+  // Each expectation is the scroll origin Chromium reports for that container
+  // (measured in review round 6).
+  for (const [name, style, x, y] of cases) {
+    it(name, () => {
+      expect(scrollOriginReversed(cs(style))).toEqual({ reversedX: x, reversedY: y });
+    });
+  }
+});
+
+describe('will-change names are case-insensitive', () => {
+  it('will-change: Transform makes an ancestor the containing block of an absolute child', () => {
+    const child = scrollerWithChild({ position: 'absolute' });
+    const scroller = child.parentElement as HTMLElement;
+    const wrapper = document.createElement('div');
+    wrapper.style.willChange = 'Transform';
+    scroller.insertBefore(wrapper, child);
+    wrapper.appendChild(child);
+    // The wrapper sits inside the scroller, so the scroller clips the child.
+    expect(isVisibleInScrollContext(child)).toBe(false);
   });
 });
