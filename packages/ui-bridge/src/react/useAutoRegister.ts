@@ -18,6 +18,7 @@ import { useUIBridgeOptional } from './UIBridgeProvider';
 import { trackElementBbox } from './bbox-tracker';
 import { classString } from '../core/class-name';
 import { isBridgeInvisible } from '../core/registry';
+import { isInspectorPanelRecord } from '../core/inspector-panel';
 import {
   hasRedactionBoundaryBelow,
   isContentRedacted,
@@ -1409,8 +1410,17 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
   const handleMutations = useCallback(
     (mutations: MutationRecord[]): void => {
       mutations.forEach((mutation) => {
+        // The debug inspector panel's own DOM (its root's `pointer-events`
+        // toggle, its re-renders) is not page activity: it never triggers a
+        // re-scan or a registration. Its removed nodes are still unregistered
+        // below, so the registry never keeps a detached element.
+        const panelRecord = isInspectorPanelRecord(mutation);
         // Handle attribute changes that may reveal hidden elements
-        if (mutation.type === 'attributes' && mutation.target.nodeType === Node.ELEMENT_NODE) {
+        if (
+          !panelRecord &&
+          mutation.type === 'attributes' &&
+          mutation.target.nodeType === Node.ELEMENT_NODE
+        ) {
           const target = mutation.target as HTMLElement;
           // Rescan the target and its descendants for newly-visible interactive elements
           const allSelectors = [...INTERACTIVE_SELECTORS, ...includeSelectors].join(', ');
@@ -1465,6 +1475,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
 
         // Handle added nodes
         mutation.addedNodes.forEach((node) => {
+          if (panelRecord) return;
           if (node.nodeType === Node.ELEMENT_NODE) {
             const element = node as HTMLElement;
 

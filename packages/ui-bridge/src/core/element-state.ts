@@ -4,19 +4,13 @@
  * The registry (`core/registry.ts`, every registered element's `getState()`
  * and so every snapshot entry), the action executor
  * (`control/action-executor.ts`, action responses, find/discover rows and the
- * wait loop), the render-log capture (`render-log/dom-capture.ts`) and the
- * debug inspector (`debug/inspector.tsx`) all delegate here. Before this
+ * wait loop), the render-log capture (`render-log/dom-capture.ts`), the
+ * debug inspector (`debug/inspector.tsx`) and the un-registered DOM-fallback
+ * scan (`server/dom-fallback.ts`) all delegate here. Before this
  * module existed each of those carried its own copy, with four different
  * `visible` algorithms behind one field name (plan
  * `2026-11-08-ui-bridge-element-state-has-two-readers-and-no-aria-busy`, D1).
  * A second reader is the defect class; extend this one instead.
- *
- * ONE divergent builder remains: `server/dom-fallback.ts` (the un-registered
- * fallback scan) builds its own narrower state, with an `offsetParent`-based
- * `visible`. It is recorded as plan-library follow-up edge
- * a6fec76c-8233-40cd-8313-82c06c479ac5 (plan
- * `2026-11-08-ui-bridge-element-state-has-two-readers-and-no-aria-busy`), not
- * a sanctioned second algorithm.
  *
  * Moved out of `core/registry.ts`. §4.6: every DOM-derived TEXT field —
  * `accessibleName`, `textContent`, `value`, the option lists, `href`,
@@ -129,7 +123,7 @@ function captureFormControlState(
  * ancestor's `aria-busy` is not inherited — see the field's doc comment in
  * `core/types.ts` for why.
  */
-export function readAriaBusy(element: Element): boolean {
+function readAriaBusy(element: Element): boolean {
   return element.getAttribute('aria-busy') === 'true';
 }
 

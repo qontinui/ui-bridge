@@ -3,7 +3,7 @@
  *
  * Framework-free analog of the embedded `useAutoRegister` scan→observe→
  * register cycle. Walks the live DOM via the shipping `dom-fallback`
- * substrate (`scanDOMForInteractiveElementsWithRefs`) and registers each
+ * substrate (`scanDOMForInteractiveElementRefs`) and registers each
  * interactive node into a real {@link UIBridgeRegistry} with its live
  * `HTMLElement` ref — so the relay command dispatcher (`executeCommand`) can
  * `find`, snapshot, and act on a page that ships **zero** UI Bridge code.
@@ -26,9 +26,9 @@
 
 import type { UIBridgeRegistry } from '../core/registry';
 import {
-  scanDOMForInteractiveElementsWithRefs,
+  scanDOMForInteractiveElementRefs,
   computeDomFallbackLabel,
-  type DOMFallbackElementWithRef,
+  type DOMFallbackElementRef,
 } from '../server/dom-fallback';
 import {
   MEDIA_SELECTORS,
@@ -36,6 +36,7 @@ import {
   shouldRegisterMedia,
 } from '../react/media-discovery';
 import { IMAGE_SLOT_ATTR } from '../react/media-capture';
+import { withoutInspectorPanelRecords } from '../core/inspector-panel';
 import {
   CONTENT_SELECTORS,
   registerContentInRegistry,
@@ -71,7 +72,7 @@ export interface SeedOptions {
 }
 
 /** True when the element type carries no actionable verbs worth registering. */
-function isActionable(item: DOMFallbackElementWithRef): boolean {
+function isActionable(item: DOMFallbackElementRef): boolean {
   return item.element.isConnected;
 }
 
@@ -90,7 +91,7 @@ export function seedRegistryFromDom(
   options: SeedOptions = {}
 ): SeedResult {
   const tracked = options.tracked;
-  const scanned = scanDOMForInteractiveElementsWithRefs(root);
+  const scanned = scanDOMForInteractiveElementRefs(root);
 
   // Seed the used-id set from both the registry's current contents and any
   // ids this seeder assigned on prior passes, so collisions disambiguate
@@ -238,8 +239,10 @@ export function observeAndSeed(
     }
   };
 
-  const observer = new MutationObserver((mutations) => {
-    for (const m of mutations) {
+  const observer = new MutationObserver((records) => {
+    // A removed node is pruned whatever it was part of, the inspector panel
+    // included, so the registry never keeps a detached element.
+    for (const m of records) {
       m.removedNodes.forEach((node) => {
         if (node.nodeType !== Node.ELEMENT_NODE) return;
         const el = node as HTMLElement;
@@ -247,6 +250,9 @@ export function observeAndSeed(
         el.querySelectorAll<HTMLElement>('*').forEach(pruneRemoved);
       });
     }
+    // The debug inspector panel's own DOM (its root's toggle, its re-renders)
+    // is not a page change: it must not schedule a re-seed.
+    if (withoutInspectorPanelRecords(records).length === 0) return;
     if (timer) clearTimeout(timer);
     timer = setTimeout(reseed, debounceMs);
   });

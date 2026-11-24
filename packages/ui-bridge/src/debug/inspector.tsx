@@ -4,7 +4,7 @@
  * Visual debugging tools for inspecting UI elements.
  */
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useLayoutEffect, useMemo, useRef } from 'react';
 import type { RegisteredElement, ElementState, ElementIdentifier } from '../core/types';
 import { createElementIdentifier, getBestIdentifier } from '../core/element-identifier';
 import { getGlobalAnnotationStore } from '../annotations';
@@ -13,6 +13,7 @@ import { getGlobalAnnotationStore } from '../annotations';
 // the inspector shows the state the registry snapshot reports, not a private
 // reading whose `visible` had no viewport, visibility or occlusion arm.
 import { getElementState } from '../core/element-state';
+import { INSPECTOR_PANEL_ATTR } from '../core/inspector-panel';
 
 /**
  * Inspector state
@@ -65,6 +66,13 @@ const labelStyles: React.CSSProperties = {
   borderRadius: '4px 4px 0 0',
 };
 
+/**
+ * The info panel's root. `readInspectorState` sets `pointer-events: none` on
+ * this ROOT only, and its descendants inherit it, so the hit-test skips the
+ * whole panel. A panel descendant must therefore never set its own
+ * `pointer-events: auto` (or any value but inherit): it would stay hittable
+ * during the read and be reported as the target's occluder.
+ */
 const panelStyles: React.CSSProperties = {
   position: 'fixed',
   bottom: '20px',
@@ -105,6 +113,58 @@ const valueStyles: React.CSSProperties = {
   color: '#60a5fa',
 };
 
+/** The inspector's reading of an element, with its own panel taken out of the picture. */
+export interface InspectorStateReading {
+  /** The canonical state, computed as if the inspector panel were absent. */
+  state: ElementState;
+  /** True when a plain read differs because the inspector panel covers the element. */
+  coveredByPanel: boolean;
+}
+
+/**
+ * Read `element`'s state with every inspector panel root (the panel root is
+ * marked with `INSPECTOR_PANEL_ATTR`, a fixed box with pointer events on, so a
+ * candidate occluder of whatever it inspects) set to
+ * `pointer-events: none` for the duration of the call, so hit-testing skips
+ * the panel and the occlusion verdict is the page's, not the inspector's —
+ * while any OTHER occluder is still found and named. The canonical reader is
+ * unchanged: excluding the panel is the inspector's concern, not the core
+ * verdict's (plan `2026-11-23-ui-bridge-element-state-collapse-follow-ups`, D3).
+ */
+export function readInspectorState(element: HTMLElement): InspectorStateReading {
+  const plain = getElementState(element);
+  const panels = Array.from(
+    document.querySelectorAll<HTMLElement>(`[${INSPECTOR_PANEL_ATTR}]`)
+  ).filter(
+    // An element INSIDE a panel is read as it is: hiding its own panel from
+    // the hit-test would make the element itself unhittable.
+    (panel) => !panel.contains(element)
+  );
+  if (panels.length === 0) return { state: plain, coveredByPanel: false };
+
+  const saved = panels.map((panel) => ({
+    value: panel.style.getPropertyValue('pointer-events'),
+    priority: panel.style.getPropertyPriority('pointer-events'),
+  }));
+  let state: ElementState;
+  try {
+    for (const panel of panels) panel.style.setProperty('pointer-events', 'none', 'important');
+    state = getElementState(element);
+  } finally {
+    panels.forEach((panel, i) => {
+      const { value, priority } = saved[i];
+      if (value) panel.style.setProperty('pointer-events', value, priority);
+      else panel.style.removeProperty('pointer-events');
+    });
+  }
+  const coveredByPanel =
+    plain.visible !== state.visible ||
+    plain.visibilityReason !== state.visibilityReason ||
+    plain.occludedBy !== state.occludedBy ||
+    plain.occludedPct !== state.occludedPct;
+  return { state, coveredByPanel };
+}
+
 /**
  * Inspector overlay component
  */
@@ -143,13 +203,188 @@ export interface InfoPanelProps {
 
 export function InfoPanel({ element, onClose, registeredElement }: InfoPanelProps) {
   if (!element) return null;
+  return (
+    <InfoPanelContent element={element} onClose={onClose} registeredElement={registeredElement} />
+  );
+}
+
+/**
+ * Mutation records that can change what the panel reports for `element`: every
+ * record except those inside an inspector panel that does not hold `element`
+ * (the panel's own re-render, and the `pointer-events` toggle on its root).
+ */
+function pageRecords(records: MutationRecord[], element: HTMLElement): MutationRecord[] {
+  return records.filter((record) => {
+    const node = record.target;
+    const panel = (node instanceof Element ? node : node.parentElement)?.closest(
+      `[${INSPECTOR_PANEL_ATTR}]`
+    );
+    return !panel || panel.contains(element);
+  });
+}
+
+/** Attributes that can show, hide or cover the selected element from elsewhere in the page. */
+const PAGE_VISIBILITY_ATTRS = ['class', 'style', 'hidden', 'aria-hidden', 'open'];
+
+/**
+ * Everything {@link StateSections} displays, in the form it displays it (the
+ * rect rounded). Two readings with the same signature render identically, so
+ * a re-read that changes only something the panel does not show (an animated
+ * opacity, sub-pixel motion, the subtree text) stores nothing and schedules
+ * nothing — without that, an animated element would re-read, commit and
+ * re-schedule every frame.
+ */
+function displayedSignature(reading: InspectorStateReading): string {
+  const { state, coveredByPanel } = reading;
+  return JSON.stringify([
+    coveredByPanel,
+    state.visible,
+    state.visibilityReason ?? null,
+    state.occludedBy ?? null,
+    state.occludedPct ?? null,
+    state.enabled,
+    state.disabled,
+    state.ariaDisabled,
+    state.focused,
+    state.value ?? null,
+    state.checked ?? null,
+    Math.round(state.rect.x),
+    Math.round(state.rect.y),
+    Math.round(state.rect.width),
+    Math.round(state.rect.height),
+  ]);
+}
+
+/** Two readings that would render identically. */
+function sameReading(a: InspectorStateReading, b: InspectorStateReading): boolean {
+  return displayedSignature(a) === displayedSignature(b);
+}
+
+/**
+ * The state is read AT COMMIT, never in the render body: `readInspectorState`
+ * toggles the panel root's `pointer-events`, which is a DOM write, and only a
+ * committed panel can be excluded from the hit-test.
+ *
+ * - The first read runs in the panel root's callback ref (React's documented
+ *   "measure a DOM node" pattern: commit phase, before paint, and again
+ *   whenever the element changes because the callback is keyed on it).
+ * - EVERY commit of the panel then schedules a re-read (a layout effect with
+ *   no dependency list, whose state update happens in the frame callback,
+ *   never synchronously in the effect). That keeps the old render-body read's
+ *   freshness: each re-render of the panel or the inspector (every hover)
+ *   re-reads once per frame, including the commit that replaces the
+ *   "Reading state" placeholder, so the panel-exclusion verdict reflects the
+ *   panel's final size.
+ * - Between re-renders the state is re-read when the page moves (scroll in
+ *   the capture phase, resize), when the selected element changes (a
+ *   MutationObserver on its attributes, text and subtree, and its `input`,
+ *   `change`, `focusin` and `focusout` events), and when anything in the page
+ *   gains or loses a node anywhere under `document.body`, or when any element
+ *   there changes its `class`, `style`, `hidden`, `aria-hidden` or `open`
+ *   attribute (a MutationObserver on the `document.body` subtree), so an
+ *   ancestor hidden that way or an overlay inserted updates Visible and
+ *   Occluded by. Other page changes (another attribute on some other element,
+ *   a stylesheet rule, a CSS animation) are not watched: they show up at the
+ *   next trigger or re-render.
+ * - Every trigger is coalesced through one `requestAnimationFrame`, so a burst
+ *   costs one read per frame, and a reading is stored only when what the panel
+ *   DISPLAYS differs from the one shown. Re-reads therefore settle once the
+ *   displayed fields stop changing. An element that keeps moving (its rounded
+ *   rect changes every frame) keeps a live Bounds readout at one read per
+ *   frame for as long as it moves.
+ *   Records inside an inspector panel that does not hold the element (its own
+ *   re-render and its root's toggle) are not triggers. Everything is torn down
+ *   on element change and unmount; a pending frame is cancelled in a layout
+ *   cleanup, before the next element's first re-read is scheduled.
+ */
+function InfoPanelContent({
+  element,
+  onClose,
+  registeredElement,
+}: InfoPanelProps & { element: HTMLElement }) {
+  const [read, setRead] = useState<{ element: HTMLElement; reading: InspectorStateReading } | null>(
+    null
+  );
+  const store = useCallback(
+    (reading: InspectorStateReading) =>
+      setRead((prev) =>
+        prev && prev.element === element && sameReading(prev.reading, reading)
+          ? prev
+          : { element, reading }
+      ),
+    [element]
+  );
+  const panelRootRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      if (node) store(readInspectorState(element));
+    },
+    [element, store]
+  );
+
+  // One pending frame for every re-read trigger.
+  const frameRef = useRef<number | null>(null);
+  const scheduleRead = useCallback(() => {
+    if (frameRef.current !== null) return;
+    frameRef.current = requestAnimationFrame(() => {
+      frameRef.current = null;
+      store(readInspectorState(element));
+    });
+  }, [element, store]);
+  // A frame pending for the previous element is cancelled in a LAYOUT cleanup:
+  // it runs before this commit's layout effects, so the next element's first
+  // re-read is not blocked by the old frame (a passive cleanup would run after).
+  useLayoutEffect(
+    () => () => {
+      if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+      frameRef.current = null;
+    },
+    [element]
+  );
+
+  useEffect(() => {
+    window.addEventListener('scroll', scheduleRead, true);
+    window.addEventListener('resize', scheduleRead);
+    const events = ['input', 'change', 'focusin', 'focusout'] as const;
+    for (const type of events) element.addEventListener(type, scheduleRead);
+    const onMutations = (records: MutationRecord[]) => {
+      if (pageRecords(records, element).length > 0) scheduleRead();
+    };
+    const elementObserver = new MutationObserver(onMutations);
+    elementObserver.observe(element, {
+      attributes: true,
+      characterData: true,
+      childList: true,
+      subtree: true,
+    });
+    const pageObserver = new MutationObserver(onMutations);
+    pageObserver.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: PAGE_VISIBILITY_ATTRS,
+    });
+    return () => {
+      window.removeEventListener('scroll', scheduleRead, true);
+      window.removeEventListener('resize', scheduleRead);
+      for (const type of events) element.removeEventListener(type, scheduleRead);
+      elementObserver.disconnect();
+      pageObserver.disconnect();
+    };
+  }, [element, scheduleRead]);
+
+  // Every commit re-reads once per frame (see the component doc).
+  useLayoutEffect(() => {
+    scheduleRead();
+  });
+
+  // A reading taken for a previous element is never shown for this one.
+  const reading = read && read.element === element ? read.reading : null;
 
   const identifier = createElementIdentifier(element);
-  const state = getElementState(element);
   const bestId = getBestIdentifier(element);
 
   return (
-    <div style={panelStyles}>
+    <div ref={panelRootRef} style={panelStyles} {...{ [INSPECTOR_PANEL_ATTR]: '' }}>
       <div style={headerStyles}>
         <span style={{ fontWeight: 'bold', color: '#60a5fa' }}>UI Bridge Inspector</span>
         <button
@@ -196,12 +431,80 @@ export function InfoPanel({ element, onClose, registeredElement }: InfoPanelProp
         )}
       </div>
 
+      {reading ? (
+        <StateSections reading={reading} />
+      ) : (
+        <div style={sectionStyles}>
+          <span style={labelKeyStyles}>Reading state…</span>
+        </div>
+      )}
+
+      <div style={{ ...sectionStyles, borderBottom: 'none' }}>
+        <div style={{ marginBottom: '8px', fontWeight: 'bold', color: '#f3f4f6' }}>Selectors</div>
+        <div style={{ wordBreak: 'break-all', marginBottom: '4px' }}>
+          <span style={labelKeyStyles}>CSS:</span>
+          <span style={valueStyles}>{identifier.selector}</span>
+        </div>
+        <div style={{ wordBreak: 'break-all' }}>
+          <span style={labelKeyStyles}>XPath:</span>
+          <span style={valueStyles}>{identifier.xpath}</span>
+        </div>
+      </div>
+
+      {registeredElement && registeredElement.actions.length > 0 && (
+        <div style={sectionStyles}>
+          <div style={{ marginBottom: '8px', fontWeight: 'bold', color: '#f3f4f6' }}>Actions</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+            {registeredElement.actions.map((action) => (
+              <span
+                key={action}
+                style={{
+                  padding: '2px 8px',
+                  backgroundColor: '#374151',
+                  borderRadius: '4px',
+                  color: '#60a5fa',
+                }}
+              >
+                {action}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <AnnotationSection elementId={bestId} />
+    </div>
+  );
+}
+
+/** The State and Bounds sections, rendered from a committed {@link InspectorStateReading}. */
+function StateSections({ reading }: { reading: InspectorStateReading }) {
+  const { state, coveredByPanel } = reading;
+  return (
+    <>
       <div style={sectionStyles}>
         <div style={{ marginBottom: '8px', fontWeight: 'bold', color: '#f3f4f6' }}>State</div>
         <div>
           <span style={labelKeyStyles}>Visible:</span>
           <span style={{ color: state.visible ? '#10b981' : '#ef4444' }}>
             {state.visible ? 'Yes' : 'No'}
+          </span>
+          {coveredByPanel && (
+            <span style={{ color: '#fbbf24', marginLeft: '8px' }}>
+              (covered by inspector panel)
+            </span>
+          )}
+        </div>
+        <div>
+          <span style={labelKeyStyles}>Visibility reason:</span>
+          <span style={valueStyles}>{state.visibilityReason ?? '-'}</span>
+        </div>
+        <div>
+          <span style={labelKeyStyles}>Occluded by:</span>
+          <span style={valueStyles}>
+            {state.occludedBy
+              ? `${state.occludedBy}${state.occludedPct !== undefined ? ` (${state.occludedPct}%)` : ''}`
+              : '-'}
           </span>
         </div>
         <div>
@@ -247,42 +550,7 @@ export function InfoPanel({ element, onClose, registeredElement }: InfoPanelProp
           </span>
         </div>
       </div>
-
-      <div style={{ ...sectionStyles, borderBottom: 'none' }}>
-        <div style={{ marginBottom: '8px', fontWeight: 'bold', color: '#f3f4f6' }}>Selectors</div>
-        <div style={{ wordBreak: 'break-all', marginBottom: '4px' }}>
-          <span style={labelKeyStyles}>CSS:</span>
-          <span style={valueStyles}>{identifier.selector}</span>
-        </div>
-        <div style={{ wordBreak: 'break-all' }}>
-          <span style={labelKeyStyles}>XPath:</span>
-          <span style={valueStyles}>{identifier.xpath}</span>
-        </div>
-      </div>
-
-      {registeredElement && registeredElement.actions.length > 0 && (
-        <div style={sectionStyles}>
-          <div style={{ marginBottom: '8px', fontWeight: 'bold', color: '#f3f4f6' }}>Actions</div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-            {registeredElement.actions.map((action) => (
-              <span
-                key={action}
-                style={{
-                  padding: '2px 8px',
-                  backgroundColor: '#374151',
-                  borderRadius: '4px',
-                  color: '#60a5fa',
-                }}
-              >
-                {action}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <AnnotationSection elementId={bestId} />
-    </div>
+    </>
   );
 }
 

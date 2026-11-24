@@ -6,6 +6,8 @@
  * for `quietMs` milliseconds, or resolves with `stable: false` on timeout.
  */
 
+import { withoutInspectorPanelRecords } from '../core/inspector-panel';
+
 export interface ElementSettlingOptions {
   /** Milliseconds of quiet (no mutations, no bbox changes) before resolving. Default 500. */
   quietMs?: number;
@@ -85,8 +87,10 @@ export function waitForElementStable(
     }
 
     // ---- MutationObserver ----
-    const observer = new MutationObserver((mutations) => {
-      // Any meaningful mutation resets the quiet clock.
+    const observer = new MutationObserver((records) => {
+      // Any meaningful mutation resets the quiet clock. The debug inspector
+      // panel's own DOM (its root's toggle, its re-renders) is not one.
+      const mutations = withoutInspectorPanelRecords(records);
       let meaningful = false;
       for (const m of mutations) {
         if (m.type === 'childList' && (m.addedNodes.length > 0 || m.removedNodes.length > 0)) {
