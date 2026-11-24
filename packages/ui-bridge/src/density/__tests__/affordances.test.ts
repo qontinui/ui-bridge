@@ -421,6 +421,39 @@ describe('affordances', () => {
     expect(found.filter((a) => a.kind === 'filter').map((a) => a.id)).toEqual(['app.orders.state']);
   });
 
+  it('a pager of links in unregistered list items is found; a combobox is no disclosure', () => {
+    const els = PAGE.filter((e) => e.id !== 'app.orders.prev' && e.id !== 'app.orders.next')
+      .map(
+        (e): DensityTestElementSpec =>
+          e.id === 'app.orders.state' ? { ...e, ariaExpanded: false } : e
+      )
+      .concat(
+        [1, 2, 3, 4].map(
+          (k): DensityTestElementSpec => ({
+            id: `app.pg.${k}`,
+            tag: 'a',
+            category: 'interactive',
+            xpath: `${SECTION}/nav/ul/li[${k}]/a`,
+            rect: [40 * (k - 1), 390, 32, 28],
+            text: `${k}`,
+          })
+        )
+      );
+    const c = capture(els, RELATIONSHIPS);
+    expect(densityRepeats(c, null).map((r) => r.id)).toEqual(['repeat:app.orders.row-1']);
+    const found = densityAffordances(c, null);
+    expect(found.filter((a) => a.kind === 'pager').map((a) => a.id)).toEqual([
+      'app.pg.1',
+      'app.pg.2',
+      'app.pg.3',
+      'app.pg.4',
+    ]);
+    expect(found.filter((a) => a.kind === 'disclosure').map((a) => a.id)).toEqual([
+      'app.side.more',
+      'app.side.help',
+    ]);
+  });
+
   it('a sort button in the table header does not stop the scope at the table', () => {
     const S = '/html/body/main/section';
     const els: DensityTestElementSpec[] = [

@@ -518,6 +518,105 @@ describe('repeats', () => {
     expect([rep.rows, rep.rowsEstimated]).toEqual([3, 2]);
   });
 
+  it('links side by side in unregistered list items are one row, not a repeat', () => {
+    const nav: DensityTestElementSpec[] = [1, 2, 3, 4, 5].map((k) => ({
+      id: `app.top.${k}`,
+      tag: 'a',
+      xpath: `/html/body/header/nav/ul/li[${k}]/a`,
+      rect: [100 * k, 10, 80, 20],
+      text: `Top ${k}`,
+    }));
+    expect(densityRepeats(capture(nav), null)).toEqual([]);
+  });
+
+  it('a card grid in unregistered list items is one repeat, three per row', () => {
+    const grid: DensityTestElementSpec[] = [];
+    for (let n = 0; n < 9; n++) {
+      grid.push({
+        id: `app.g.${n + 1}`,
+        tag: 'a',
+        xpath: `/html/body/main/ul/li[${n + 1}]/a`,
+        rect: [20 + 320 * (n % 3), 100 + 90 * Math.floor(n / 3), 300, 80],
+        text: `Card ${n + 1}`,
+      });
+    }
+    const reps = densityRepeats(capture(grid), null);
+    expect(reps.map((r) => [r.rows, r.perRow, r.rowPitchPx, r.members.length])).toEqual([
+      [3, 3, 90, 9],
+    ]);
+  });
+
+  it('a link inside a card inside an unregistered list item makes no second repeat', () => {
+    const els: DensityTestElementSpec[] = [];
+    for (let k = 1; k <= 4; k++) {
+      const y = 100 + 60 * (k - 1);
+      els.push(
+        {
+          id: `app.card.${k}`,
+          tag: 'div',
+          xpath: `/html/body/ul/li[${k}]/div`,
+          rect: [0, y, 400, 56],
+          text: `Card ${k} Open`,
+        },
+        {
+          id: `app.card.${k}.open`,
+          tag: 'a',
+          xpath: `/html/body/ul/li[${k}]/div/a`,
+          rect: [300, y, 80, 20],
+          text: 'Open',
+        }
+      );
+    }
+    const reps = densityRepeats(capture(els), null);
+    expect(reps.map((r) => [r.id, r.rows])).toEqual([['repeat:app.card.1', 4]]);
+  });
+
+  it('a card grid in each of three stacked sections is a repeat of its own', () => {
+    const els: DensityTestElementSpec[] = [];
+    for (let s = 1; s <= 3; s++) {
+      const top = 100 + 400 * (s - 1);
+      els.push({
+        id: `app.cat.${s}`,
+        tag: 'section',
+        xpath: `/html/body/main/section[${s}]`,
+        rect: [0, top, 1000, 380],
+        text: '',
+      });
+      for (let n = 0; n < 9; n++) {
+        els.push({
+          id: `app.cat.${s}.card-${n + 1}`,
+          tag: 'div',
+          xpath: `/html/body/main/section[${s}]/div[${n + 1}]`,
+          rect: [20 + 320 * (n % 3), top + 10 + 120 * Math.floor(n / 3), 300, 110],
+          text: `Item ${n + 1}`,
+        });
+      }
+    }
+    const reps = densityRepeats(capture(els), null);
+    expect(reps.map((r) => [r.id, r.rows, r.perRow])).toEqual([
+      ['repeat:app.cat.1', 3, 1],
+      ['repeat:app.cat.1.card-1', 3, 3],
+      ['repeat:app.cat.2.card-1', 3, 3],
+      ['repeat:app.cat.3.card-1', 3, 3],
+    ]);
+  });
+
+  it('a run of paragraphs found by geometry is text, not rows', () => {
+    const els: DensityTestElementSpec[] = [
+      { id: 'app.body', tag: 'div', xpath: '//*[@id="body"]', rect: [0, 0, 800, 600], text: '' },
+      ...[1, 2, 3].map(
+        (k): DensityTestElementSpec => ({
+          id: `app.p${k}`,
+          tag: 'p',
+          xpath: `//*[@id="p${k}"]`,
+          rect: [20, 100 * k, 600, 80],
+          text: `Synthetic paragraph ${k}`,
+        })
+      ),
+    ];
+    expect(densityRepeats(capture(els), null)).toEqual([]);
+  });
+
   it('a hidden leaf in a row draws no line band', () => {
     const els = orderList(3).map((e): DensityTestElementSpec => {
       if (!e.id.endsWith('.sum')) return e;

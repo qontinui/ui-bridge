@@ -450,6 +450,11 @@ export function resolveDensityStructure(
       if (!/\[\d+\]$/.test(seg) || !ROW_TAGS.has(unindexed(seg))) continue;
       // A registered row is read by the path arm through its own siblings.
       if (lookup(p.keys[k]) !== null) return [null, null];
+      // Only the registered item nearest the row is its cousin: one registered
+      // between the row and this item (a card holding this link) already is.
+      for (let j = k + 1; j < p.keys.length - 1; j++) {
+        if (lookup(p.keys[j]) !== null) return [null, null];
+      }
       const below: string[] = [];
       for (let j = k + 1; j < p.keys.length; j++) below.push(unindexed(segmentOf(p, j)));
       return [[k > 0 ? p.keys[k - 1] : '', `${unindexed(seg)}[*]`, ...below].join('/'), p.keys[k]];

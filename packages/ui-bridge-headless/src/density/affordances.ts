@@ -21,6 +21,7 @@
 import {
   densityNearestRepeats,
   densityRepeatScopes,
+  densityTakesSpace,
   isDensityFilterControl,
   isDensityNavControl,
   densityRepeatTargets,
@@ -78,7 +79,11 @@ export const DENSITY_AFFORDANCE_RULES: Readonly<
   Record<DensityAffordanceRule, { kind: DensityAffordanceKind; definition: string }>
 > = {
   summary: { kind: 'disclosure', definition: 'a `summary` element (the toggle of a `details`)' },
-  'aria-expanded': { kind: 'disclosure', definition: 'an item that states `aria-expanded`' },
+  'aria-expanded': {
+    kind: 'disclosure',
+    definition:
+      'an item that states `aria-expanded`, other than a combobox (whose popup is its options)',
+  },
   'role-tab': { kind: 'tab', definition: 'role `tab`' },
   'role-menu': { kind: 'menu', definition: 'role `menu` or `menubar`' },
   'role-menuitem': {
@@ -231,7 +236,11 @@ export function densityAffordances(
   for (const item of capture.items) {
     // disclosure
     if (item.tag === 'summary') add(item, 'summary', openClosed(item.expanded));
-    else if (item.expanded !== null) add(item, 'aria-expanded', openClosed(item.expanded));
+    // A combobox states aria-expanded for its popup: it is a select-like
+    // control (a finder or a filter), not a disclosure of content.
+    else if (item.expanded !== null && item.role !== 'combobox') {
+      add(item, 'aria-expanded', openClosed(item.expanded));
+    }
     // tab
     if (item.role === 'tab') {
       add(item, 'role-tab', item.selected === null ? null : item.selected ? 'active' : 'inactive');
@@ -268,11 +277,7 @@ export function densityAffordances(
       if (scope.own.has(item.id)) continue;
       // A filter is a laid-out, interactive select, combobox, checkbox or radio.
       const filterControl =
-        isDensityFilterControl(item) &&
-        item.interactive &&
-        item.rect !== null &&
-        item.visibility !== 'hidden' &&
-        item.visibility !== 'no-layout';
+        isDensityFilterControl(item) && item.interactive && densityTakesSpace(item);
       // filter (a search box with a `filters` edge is the repeat's finder, not a filter)
       if (filterControl && item.filters !== null && aimed.has(item.filters)) {
         add(item, 'declared-filters', null, { repeat: rep.id });

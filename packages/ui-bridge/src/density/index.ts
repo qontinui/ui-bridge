@@ -119,6 +119,7 @@ export {
   densityRepeatTargets,
   densityRepeats,
   densitySubtree,
+  densityTakesSpace,
   isDensityFilterControl,
   isDensityFinderControl,
   isDensityNavControl,

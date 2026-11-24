@@ -93,6 +93,7 @@ describe('the ./density subpath', () => {
       'densitySameColumn',
       'densityShapeOf',
       'densitySubtree',
+      'densityTakesSpace',
       'densityTargetsHash',
       'densityTextHash',
       'densityTextSatisfies',
