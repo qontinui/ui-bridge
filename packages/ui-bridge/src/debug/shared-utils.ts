@@ -28,6 +28,8 @@ export function describeResourceStatus(event: ResourceStatusCapturedEvent): stri
     case 'unknown-status-capped':
       return `Over ${event.budget} resources with an unreported status`;
     case 'replay-truncated':
-      return `Replay truncated: ${event.droppedCount} earlier resource-status events were not replayed`;
+      return `Replay truncated: ${event.droppedCount} earlier resource-status ${
+        event.droppedCount === 1 ? 'event was' : 'events were'
+      } not replayed`;
   }
 }

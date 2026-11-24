@@ -133,10 +133,12 @@ function replayTruncated(capture: BrowserEventCapture): ResourceStatusCapturedEv
 }
 
 /** Record `count` live failures, each with its own URL (`/f/<i>`). */
-function recordFailures(count: number): void {
+function recordFailures(count: number, prefix = 'f'): void {
   FakePerformanceObserver.record(
     'resource',
-    Array.from({ length: count }, (_, i) => liveEntry(`https://app.example.com/f/${i}`, 503))
+    Array.from({ length: count }, (_, i) =>
+      liveEntry(`https://app.example.com/${prefix}/${i}`, 503)
+    )
   );
 }
 
@@ -165,7 +167,7 @@ function liveEntry(name: string, responseStatus: number, initiatorType = 'fetch'
   const now = performance.now();
   return {
     ...resourceEntry(name, responseStatus, initiatorType),
-    startTime: now + 1,
+    startTime: now - 1,
     responseEnd: now + 2,
   };
 }
@@ -708,6 +710,9 @@ describe('resource-status capture', () => {
     const a = install();
     install();
     await settle();
+    // `a` sees 3 events live before it leaves, so its count is relative to what it saw.
+    recordFailures(3, 'seen');
+    expect(statusOnly(a)).toHaveLength(3);
     a.uninstall();
     // The other install keeps the capture armed.
     recordFailures(105);
@@ -715,9 +720,11 @@ describe('resource-status capture', () => {
     await settle();
     const markers = replayTruncated(a);
     expect(markers).toHaveLength(1);
+    // 108 stored in all, the last 100 kept: 8 dropped, 3 of which `a` already saw.
     expect(markers[0]).toMatchObject({ replayTruncated: true, droppedCount: 5 });
-    expect(statusEvents(a)[0]).toMatchObject({ kind: 'replay-truncated' });
-    expect(statusOnly(a)).toHaveLength(100);
+    // The marker comes after what `a` saw live and before its replayed backlog.
+    expect(statusEvents(a)[3]).toMatchObject({ kind: 'replay-truncated' });
+    expect(statusOnly(a)).toHaveLength(3 + 100);
   });
 
   it('a replay of exactly the bound is complete; one past it drops one', async () => {
@@ -1643,6 +1650,9 @@ describe('resource-status classification', () => {
     });
     expect(extractMessage(marker)).toBe(
       'Replay truncated: 5 earlier resource-status events were not replayed'
+    );
+    expect(extractMessage({ ...marker, droppedCount: 1 })).toBe(
+      'Replay truncated: 1 earlier resource-status event was not replayed'
     );
     expect(computeFingerprint(marker)).toBe('resource-status:replay-truncated');
   });
