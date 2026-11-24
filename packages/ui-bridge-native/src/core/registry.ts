@@ -354,8 +354,8 @@ export interface NativePageRect {
 /**
  * Why an element is not plainly visible.
  *
- * DUPLICATE of `@qontinui/ui-bridge` `VisibilityReason`
- * (`src/core/types.ts` — `'hidden' | 'off-screen' | 'occluded' | 'clipped' | 'no-layout'`),
+ * DUPLICATE of `@qontinui/ui-bridge` `ElementState.visibilityReason`
+ * (`src/core/types.ts`; not the four-valued action-failure union there — `'hidden' | 'off-screen' | 'occluded' | 'clipped' | 'no-layout'`),
  * for the same reason the action types above are duplicated: `@qontinui/ui-bridge`
  * is an OPTIONAL peer of this package, so this module must not import from it.
  * KEEP IN SYNC — one vocabulary across both SDKs is the point; do not coin
