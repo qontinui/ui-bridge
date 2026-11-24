@@ -14,10 +14,11 @@
  * and a plain control MUST match (the negative control — a condition that
  * answered "not clickable" for everything would pass every blocked case).
  *
- * jsdom has no layout: `offsetParent` is always `null` and every rect is
- * zero, which the `clickable` condition's visibility prelude would read as
- * "not visible". The fixtures stub both so the test isolates the
- * interaction-blocker half of the predicate.
+ * jsdom has no layout: every rect is zero, which the `clickable` condition's
+ * visibility prelude (the canonical `readElementVisibility` verdict) would
+ * read as "not visible". The fixtures stub the rect (and `offsetParent`, which
+ * the prelude no longer reads) so the test isolates the interaction-blocker
+ * half of the predicate.
  */
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';

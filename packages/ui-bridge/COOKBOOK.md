@@ -207,7 +207,12 @@ curl -s -X POST "$BASE/ai/wait-for-element-condition" \
 Conditions:
 
 - `present` — element is registered (exists in the registry).
-- `visible` — attached, non-zero size, `offsetParent !== null`.
+- `visible` — the canonical visibility verdict every element row reports as
+  `state.visible` (`readElementVisibility`, `core/element-state`): laid out
+  (non-zero size), not `display: none` / `visibility: hidden` / `opacity: 0`,
+  inside the viewport, and not fully covered by another element or clipped
+  away by an ancestor. A partially covered element is visible; one scrolled
+  below the fold is not.
 - `clickable` — visible AND the click path would not refuse it: not
   `disabled`, not `aria-disabled="true"`, AND computed `pointer-events` is not
   `none` (including `none` inherited from an ancestor). This is the same

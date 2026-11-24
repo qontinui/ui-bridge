@@ -133,6 +133,7 @@ import {
   readInteractionBlockers,
   readTitleAttr,
 } from '../core/a11y';
+import { readElementVisibility } from '../core/element-state';
 import { measureFreshBbox } from '../core/registry';
 import {
   isContentRedacted,
@@ -6862,17 +6863,15 @@ export function createHandlers(
             return true;
 
           case 'visible': {
+            // The canonical verdict (`core/element-state`): laid out, not
+            // hidden, in the viewport and not fully occluded or clipped.
             if (!domEl) return false;
-            if (domEl.offsetParent === null) return false;
-            const rect = domEl.getBoundingClientRect();
-            return rect.width > 0 && rect.height > 0;
+            return readElementVisibility(domEl).visible;
           }
 
           case 'clickable': {
             if (!domEl) return false;
-            if (domEl.offsetParent === null) return false;
-            const rect = domEl.getBoundingClientRect();
-            if (rect.width <= 0 || rect.height <= 0) return false;
+            if (!readElementVisibility(domEl).visible) return false;
             // Same predicate as `ElementState.enabled` and the click-path
             // pre-check, so "clickable" means the next click is not refused.
             return !isInteractionBlocked(readInteractionBlockers(domEl));
