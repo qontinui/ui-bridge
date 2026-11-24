@@ -930,6 +930,30 @@ describe('repeats', () => {
     expect([rep.rowsEstimated, rep.linesPerRow]).toEqual([2, 1]);
   });
 
+  it('a grouped list of registered rows is one repeat per group, counted in rows', () => {
+    const els: DensityTestElementSpec[] = [];
+    let y = 0;
+    for (let g = 1; g <= 3; g++) {
+      y += 30;
+      for (let k = 1; k <= 5; k++) {
+        els.push({
+          id: `g${g}.r${k}`,
+          tag: 'li',
+          xpath: `/html/body/ul/li[${g}]/ul/li[${k}]`,
+          rect: [0, y, 600, 36],
+          text: `Row ${g}.${k}`,
+        });
+        y += 40;
+      }
+    }
+    const reps = densityRepeats(capture(els), null);
+    expect(reps.map((r) => [r.id, r.rows, r.rowPitchPx])).toEqual([
+      ['repeat:g1.r1', 5, 40],
+      ['repeat:g2.r1', 5, 40],
+      ['repeat:g3.r1', 5, 40],
+    ]);
+  });
+
   it('a hidden leaf in a row draws no line band', () => {
     const els = orderList(3).map((e): DensityTestElementSpec => {
       if (!e.id.endsWith('.sum')) return e;

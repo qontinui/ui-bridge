@@ -16,6 +16,7 @@
 
 import {
   densityCentreY,
+  densityDeclaresAnotherRepeat,
   densityInnermostRepeats,
   densityNavPrefix,
   isDensityHeaderToggle,
@@ -305,16 +306,7 @@ export function densityAffordances(
         filterControl &&
         nearestBelow.get(item.id) === rep.id &&
         // A declared edge names the repeat the control acts on.
-        !(
-          item.filters !== null &&
-          innermost.has(item.filters) &&
-          innermost.get(item.filters) !== rep.id
-        ) &&
-        !(
-          item.controls !== null &&
-          innermost.has(item.controls) &&
-          innermost.get(item.controls) !== rep.id
-        )
+        !densityDeclaresAnotherRepeat(item, rep.id, innermost)
       ) {
         add(item, 'control-above-repeat', null, { repeat: rep.id });
       }

@@ -119,6 +119,7 @@ export {
   DENSITY_REPEAT_TOLERANCE_PX,
   DENSITY_REPEAT_SCOPE_LEVELS,
   densityCentreY,
+  densityDeclaresAnotherRepeat,
   densityInnermostRepeats,
   densityNavPrefix,
   densityNearestRepeats,
