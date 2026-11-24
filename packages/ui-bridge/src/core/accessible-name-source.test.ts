@@ -93,6 +93,17 @@ describe('accessible-name source — which rung named this element, and did anyt
     expect(resolveAccessibleName(unknown)).toEqual({ name: 'Unknown type', source: 'placeholder' });
   });
 
+  it('names an input from another realm (an iframe) by its placeholder', () => {
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    const doc = frame.contentDocument!;
+    doc.body.innerHTML = `<input placeholder="Frame search" />`;
+    const input = doc.querySelector('input')!;
+    // Not this realm's HTMLInputElement: an `instanceof` test would miss it.
+    expect(input instanceof HTMLInputElement).toBe(false);
+    expect(resolveAccessibleName(input)).toEqual({ name: 'Frame search', source: 'placeholder' });
+  });
+
   it('does not read a placeholder on a non-text input', () => {
     document.body.innerHTML = `<input type="checkbox" placeholder="Agree" />`;
     expect(resolveAccessibleName(document.querySelector('input')!)).toEqual({ source: 'none' });

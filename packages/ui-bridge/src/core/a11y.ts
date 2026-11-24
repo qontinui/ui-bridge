@@ -364,8 +364,10 @@ function placeholderName(node: Element): string | undefined {
   const tag = node.tagName.toLowerCase();
   const applies =
     tag === 'textarea' ||
-    // The REFLECTED `type`: an empty or unknown attribute reads as `text`.
-    (node instanceof HTMLInputElement && PLACEHOLDER_INPUT_TYPES.has(node.type));
+    // The REFLECTED `type`: an empty or unknown attribute reads as `text`. By
+    // tag name, not `instanceof`, so an input from another realm (an iframe)
+    // qualifies too.
+    (tag === 'input' && PLACEHOLDER_INPUT_TYPES.has((node as HTMLInputElement).type));
   if (!applies) return undefined;
   return normalizeWhitespace(readPlaceholderAttr(node) ?? '') || undefined;
 }
