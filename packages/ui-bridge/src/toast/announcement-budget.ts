@@ -3,13 +3,21 @@
  *
  * Holds each captured element's announcement budget (see the header comment
  * of `toast-capture.ts`). A budget is found by NODE first. A NEW node with a
- * stable key (its `id` or `data-testid`) inherits that key's budget when the
- * budget's last holder is disconnected and the budget is still warm: that is
- * a re-keyed node (React `key={count}` replaces the node on every tick), and
- * inheriting keeps the per-window bound and any suppression across nodes. A
- * connected holder means a sibling on the same key, which gets its own
- * budget; a cold budget is not inherited, so a one-off remount after quiet
- * starts fresh. An element with no stable key is keyed by node only.
+ * stable key (its `id` or `data-testid`) inherits a budget on that key only
+ * when the node is a REPLACEMENT: the budget's holder is disconnected now, it
+ * was seen connected at the end of the immediately preceding scan (so it
+ * vanished in the same mutation batch the new node arrived in — React swaps
+ * a `key={count}` node in one commit), and the budget is still warm. That
+ * keeps the per-window bound and any suppression across a re-keyed ticker's
+ * nodes. Everything else gets a fresh budget:
+ *  - a node that vanished in an EARLIER batch than the new node arrived in
+ *    (a distinct toast that reuses the test id after the previous one left);
+ *  - a connected holder (a sibling on the same key);
+ *  - a cold budget (a one-off remount after quiet);
+ *  - an element with no stable key (keyed by node only).
+ * A key holds a small list of entries, one per chain of nodes, so a churner's
+ * replacement chain inherits from its own vanished predecessor even while a
+ * static sibling holds the same key.
  *
  * The admit/suppress/park decision stays in `ToastCapture.admitCapture`; this
  * module only decides WHICH budget object an element reads.
@@ -25,19 +33,25 @@ export interface AnnouncementBudget {
   lastChangedAt: number;
 }
 
-/** A key's budget and the node that last held it. */
+/** One chain of nodes on a key: its budget, current node, and last sighting. */
 interface KeyedBudget {
   budget: AnnouncementBudget;
   holder: Element;
+  /** The last scan generation at whose end `holder` was connected. */
+  seenGen: number;
 }
 
 export class AnnouncementBudgets {
   private byNode: WeakMap<Element, AnnouncementBudget> = new WeakMap();
   /**
-   * At most one entry per stable key, kept while it is warm or its holder is
-   * connected; `prune` drops the rest.
+   * Per stable key, one entry per chain of nodes. `prune` keeps an entry only
+   * while its budget is warm AND either its holder is connected or the holder
+   * was still connected at the end of the latest scan (so the next scan may
+   * yet see its replacement); every other entry can no longer be inherited.
    */
-  private idBudgets: Map<string, KeyedBudget> = new Map();
+  private byKey: Map<string, KeyedBudget[]> = new Map();
+  /** Scan generation: incremented by `beginScan`. */
+  private generation = 0;
 
   /** @param windowMs `announcementWindowMs` as used (already validated). */
   constructor(private readonly windowMs: number) {}
@@ -51,6 +65,20 @@ export class AnnouncementBudgets {
     return budget.suppressed && now - budget.lastChangedAt < this.windowMs;
   }
 
+  /** Start a scan: one generation per debounced mutation batch. */
+  beginScan(): void {
+    this.generation++;
+  }
+
+  /** End a scan: record every still-connected holder as seen in it. */
+  endScan(): void {
+    for (const entries of this.byKey.values()) {
+      for (const entry of entries) {
+        if (entry.holder.isConnected) entry.seenGen = this.generation;
+      }
+    }
+  }
+
   /** The budget linked to `el`, if any. */
   get(el: Element): AnnouncementBudget | undefined {
     return this.byNode.get(el);
@@ -58,46 +86,66 @@ export class AnnouncementBudgets {
 
   /**
    * The budget `el` reads: its own (node hit); else, for a non-empty `key`, the
-   * key's budget when its holder is disconnected and the budget is warm (`el`
-   * is linked to it and becomes the holder); else a fresh budget, registered
-   * under `key` unless a connected holder still owns the key.
+   * budget of an entry whose holder `el` replaces (disconnected, seen at the
+   * end of the preceding scan, warm) — `el` is linked to it and becomes its
+   * holder; else a fresh budget, registered as a new entry on `key`.
    */
   getOrCreate(el: Element, key: string, now: number): AnnouncementBudget {
     const own = this.byNode.get(el);
     if (own) {
-      if (key && !this.idBudgets.has(key)) this.idBudgets.set(key, { budget: own, holder: el });
+      if (key) this.register(key, own, el);
       return own;
     }
 
-    const keyed = key ? this.idBudgets.get(key) : undefined;
-    if (keyed && !keyed.holder.isConnected && this.isWarm(keyed.budget, now)) {
-      this.byNode.set(el, keyed.budget);
-      keyed.holder = el;
-      return keyed.budget;
+    const replaced = key
+      ? this.byKey
+          .get(key)
+          ?.find(
+            (e) =>
+              !e.holder.isConnected &&
+              e.seenGen === this.generation - 1 &&
+              this.isWarm(e.budget, now)
+          )
+      : undefined;
+    if (replaced) {
+      this.byNode.set(el, replaced.budget);
+      replaced.holder = el;
+      replaced.seenGen = this.generation;
+      return replaced.budget;
     }
 
     const budget: AnnouncementBudget = { captures: [], suppressed: false, lastChangedAt: now };
     this.byNode.set(el, budget);
-    if (key && !(keyed && keyed.holder.isConnected)) {
-      this.idBudgets.set(key, { budget, holder: el });
-    }
+    if (key) this.register(key, budget, el);
     return budget;
   }
 
+  /** Add an entry for `el` on `key` unless it already holds one there. */
+  private register(key: string, budget: AnnouncementBudget, el: Element): void {
+    const entries = this.byKey.get(key);
+    const entry = { budget, holder: el, seenGen: this.generation };
+    if (!entries) this.byKey.set(key, [entry]);
+    else if (!entries.some((e) => e.holder === el)) entries.push(entry);
+  }
+
   /**
-   * Drop every key entry that is cold: none of them can be inherited, and
-   * dropping one releases its holder reference. A connected holder keeps its
-   * budget by node, and re-registers the key on its next capture.
+   * Drop every entry that can no longer be inherited (see `byKey`). Memory
+   * only: `getOrCreate` refuses each dropped entry on its own conditions, and
+   * a connected holder dropped while cold re-registers on its next capture.
    */
   prune(now: number): void {
-    for (const [key, keyed] of this.idBudgets) {
-      if (!this.isWarm(keyed.budget, now)) this.idBudgets.delete(key);
+    for (const [key, entries] of this.byKey) {
+      const kept = entries.filter(
+        (e) => this.isWarm(e.budget, now) && (e.holder.isConnected || e.seenGen === this.generation)
+      );
+      if (kept.length === 0) this.byKey.delete(key);
+      else if (kept.length !== entries.length) this.byKey.set(key, kept);
     }
   }
 
   /** Forget every budget, so every element starts fresh (`uninstall`). */
   clear(): void {
     this.byNode = new WeakMap();
-    this.idBudgets.clear();
+    this.byKey.clear();
   }
 }

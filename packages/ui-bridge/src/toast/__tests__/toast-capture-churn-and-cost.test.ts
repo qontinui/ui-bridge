@@ -350,23 +350,35 @@ describe('ToastCapture churn budget and re-read gate', () => {
     });
 
     // A16 (review round 1, A1) — the reviewer's probe: a node that vanished in
-    // an EARLIER batch than the new node arrived in is not a re-key.
+    // an EARLIER batch than the new node arrived in is not a re-key. Run with
+    // the default poll, and with no reconcile between the batches (a 60 s
+    // poll, no reads until the end), where no prune can drop the vanished
+    // node's entry first and only the same-batch rule refuses inheritance.
     it('distinct sequential toasts on one data-testid are each announced and each reach recent', async () => {
-      install({ pollInterval: 500 });
-      for (let i = 1; i <= 6; i++) {
-        const el = addStatus('toast', `msg${i}`);
-        await flushAndScan();
-        await vi.advanceTimersByTimeAsync(950); // visible ~1 s
-        el.remove();
-        await flushAndScan();
-        await vi.advanceTimersByTimeAsync(450); // ~0.5 s gap
-      }
-      await vi.advanceTimersByTimeAsync(500);
+      for (const pollInterval of [500, 60_000]) {
+        install({ pollInterval });
+        for (let i = 1; i <= 6; i++) {
+          const el = addStatus('toast', `msg${i}`);
+          await flushAndScan();
+          await vi.advanceTimersByTimeAsync(950); // visible ~1 s
+          el.remove();
+          await flushAndScan();
+          await vi.advanceTimersByTimeAsync(450); // ~0.5 s gap
+        }
+        await vi.advanceTimersByTimeAsync(500);
 
-      const all = ['msg1', 'msg2', 'msg3', 'msg4', 'msg5', 'msg6'];
-      expect(appearedFor('toast').map((e) => e.toast.message)).toEqual(all);
-      const recent = capture.getRecent().map((t) => t.message);
-      for (const message of all) expect(recent).toContain(message);
+        const all = ['msg1', 'msg2', 'msg3', 'msg4', 'msg5', 'msg6'];
+        const label = `pollInterval ${pollInterval}`;
+        expect(
+          appearedFor('toast').map((e) => e.toast.message),
+          label
+        ).toEqual(all);
+        const recent = capture.getRecent().map((t) => t.message);
+        for (const message of all) expect(recent, label).toContain(message);
+        capture.uninstall();
+        document.body.innerHTML = '';
+        events = [];
+      }
     });
 
     // A17 (review round 1, A2) — a static sibling holds the key while a second

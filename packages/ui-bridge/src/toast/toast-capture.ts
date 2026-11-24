@@ -44,19 +44,23 @@
  * longer in `active`.
  *
  * "One element" survives re-keying: a NEW node on the same `id` /
- * `data-testid` whose budget's last holder is disconnected continues that
- * budget while it is warm (a capture inside the window, or still absorbing
- * changes), so a React `key={count}` ticker that replaces its node on every
- * tick is held to the same bound and suppression. A connected holder means a
- * sibling, which gets its own budget; a cold budget starts fresh; an element
- * with neither attribute is keyed by node only (`announcement-budget.ts`).
+ * `data-testid` that REPLACES a node gone in the same mutation batch (the
+ * old node was connected at the end of the previous scan) continues that
+ * node's budget while it is warm (a capture inside the window, or still
+ * absorbing changes), so a React `key={count}` ticker that replaces its node
+ * on every tick is held to the same bound and suppression — even beside a
+ * static sibling on the same id. A node that left in an EARLIER batch (a
+ * distinct toast reusing the id), a connected sibling, a cold budget, and an
+ * element with neither attribute all start fresh (`announcement-budget.ts`).
  *
  * No withheld text is left in `active`. The element itself has no entry when
  * the budget withholds it (the active reconcile dismisses before asking; a
  * parked or newly scanned element has none). A withheld re-keyed node's
  * disconnected predecessor may still hold its entry, under the same id; it is
- * dismissed by the next reconcile (it is no longer visible), and every public
- * read runs a reconcile first, so no read serves it.
+ * dismissed by the next reconcile (it is no longer visible), and while
+ * installed every public read runs a reconcile first, so no such read serves
+ * it. After `uninstall` reads do not reconcile (`reconcileForRead`), so an
+ * entry left by the last pass before it stays readable as it was.
  */
 
 import type {
@@ -462,8 +466,8 @@ export class ToastCapture {
   private dirty: Set<Element> = new Set();
   /**
    * Announcement budgets, by node first; a re-keyed node (same `id` /
-   * `data-testid`, its predecessor gone) continues a warm budget. See
-   * `announcement-budget.ts`.
+   * `data-testid`, replacing a node gone in the same scan batch) continues a
+   * warm budget. See `announcement-budget.ts`.
    */
   private budgets: AnnouncementBudgets;
   /**
@@ -640,7 +644,13 @@ export class ToastCapture {
 
     // The scan runs as a pass like `reconcile`, so no capture can run nested
     // inside another one (which could overwrite an entry under a shared id).
-    this.runPass(() => this.scanElements(elements, Date.now()));
+    // One scan is one budget generation (see `announcement-budget.ts`): a node
+    // that vanished in this same batch can be replaced by a new one.
+    this.runPass(() => {
+      this.budgets.beginScan();
+      this.scanElements(elements, Date.now());
+      this.budgets.endScan();
+    });
   }
 
   private scanElements(elements: NodeListOf<Element>, now: number): void {
@@ -818,7 +828,8 @@ export class ToastCapture {
   /**
    * The announcement budget's one owner, asked before every `captureToast`.
    * `el`'s budget is its own, or — for a re-keyed node — the warm budget of
-   * the gone node it replaces (`AnnouncementBudgets.getOrCreate`). Under
+   * the node it replaced in the same scan batch
+   * (`AnnouncementBudgets.getOrCreate`). Under
    * `maxAnnouncementsPerWindow` captures within `announcementWindowMs` it
    * records `now` and admits the capture. Otherwise — or while the budget is
    * already suppressed — it withholds it: `el` is suppressed and parked with
