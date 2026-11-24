@@ -46,12 +46,14 @@
  * "One element" survives re-keying: a NEW node on the same `id` /
  * `data-testid` that REPLACES a node gone in the same mutation batch (the
  * old node was connected at the end of the previous scan) continues that
- * node's budget while it is warm (a capture inside the window, or still
+ * node's budget while it is warm — decided at the new node's first sighting
+ * by the scan, before it has any text (a capture inside the window, or still
  * absorbing changes), so a React `key={count}` ticker that replaces its node
  * on every tick is held to the same bound and suppression — even beside a
  * static sibling on the same id. A node that left in an EARLIER batch (a
- * distinct toast reusing the id), a connected sibling, a cold budget, and an
- * element with neither attribute all start fresh (`announcement-budget.ts`).
+ * distinct toast reusing the id), a node already present when its sibling
+ * leaves, a connected sibling, a cold budget, and an element with neither
+ * attribute all start fresh (`announcement-budget.ts`).
  *
  * No withheld text is left in `active`. The element itself has no entry when
  * the budget withholds it (the active reconcile dismisses before asking; a
@@ -669,6 +671,12 @@ export class ToastCapture {
         continue;
       }
 
+      // The scan's sighting decides the node's budget now, before it has
+      // text: a re-keyed node that mounts empty or hidden inherits as the
+      // replacement it is, and a node already present keeps its own when a
+      // sibling on its id leaves.
+      this.budgets.sight(el, stableKey(el), now);
+
       if (!isElementVisible(el)) continue;
 
       // A visible element with no text yet is parked with '' (tracked by its
@@ -827,9 +835,9 @@ export class ToastCapture {
 
   /**
    * The announcement budget's one owner, asked before every `captureToast`.
-   * `el`'s budget is its own, or — for a re-keyed node — the warm budget of
-   * the node it replaced in the same scan batch
-   * (`AnnouncementBudgets.getOrCreate`). Under
+   * `el`'s budget is the one the scan decided at its first sighting — its
+   * own, or for a re-keyed node the warm budget of the node it replaced in
+   * the same scan batch (`AnnouncementBudgets.sight`). Under
    * `maxAnnouncementsPerWindow` captures within `announcementWindowMs` it
    * records `now` and admits the capture. Otherwise — or while the budget is
    * already suppressed — it withholds it: `el` is suppressed and parked with

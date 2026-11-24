@@ -88,10 +88,11 @@ export interface ToastCaptureConfig {
    * node on the same `id` / `data-testid` that replaces a node removed in the
    * same DOM mutation batch continues that node's budget while it is warm (a
    * framework that replaces the node on every tick, e.g. React `key={count}`,
-   * is held to the same bound). A node that appears after the previous one
-   * left in an earlier batch is a new toast with its own budget, as is a
-   * second connected node on that id; an element with neither attribute is
-   * budgeted per node. A value below 1 is clamped to 1 and a fraction is
+   * is held to the same bound), decided when the new node first appears,
+   * even before it has text. A node that appears after the previous one left
+   * in an earlier batch is a new toast with its own budget, as is a second
+   * node on that id that was already present (even empty); an element with
+   * neither attribute is budgeted per node. A value below 1 is clamped to 1 and a fraction is
    * rounded down. There is no unlimited setting, by design (the budget is
    * tuned, not switched off): `Infinity`, `NaN` or any other non-finite value
    * means the default.
