@@ -824,6 +824,18 @@ describe('repeats', () => {
     expect(parsed.ok).toBe(false);
   });
 
+  it('a padded one-line row is one line: the estimate never exceeds the row', () => {
+    const els: DensityTestElementSpec[] = [1, 2, 3, 4].map((k) => ({
+      id: `p.${k}`,
+      tag: 'li',
+      xpath: `/html/body/ul/li[${k}]`,
+      rect: [0, 30 * (k - 1), 200, 30],
+      text: 'x'.repeat(40),
+    }));
+    const [rep] = densityRepeats(capture(els), null);
+    expect([rep.linesPerRow, rep.rowTextPx, rep.rowFill]).toEqual([1, 20, 20 / 30]);
+  });
+
   it('a hidden leaf in a row draws no line band', () => {
     const els = orderList(3).map((e): DensityTestElementSpec => {
       if (!e.id.endsWith('.sum')) return e;

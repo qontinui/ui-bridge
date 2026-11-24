@@ -113,7 +113,11 @@ export interface DensityRepeat {
   members: string[];
   /** Rows: bands of members whose tops agree within the tolerance. */
   rows: number;
-  /** The most members any one row holds (1 for a list, the column count for a grid). */
+  /**
+   * Columns: the most left-edge clusters any one row holds (1 for a list of
+   * single items, the column count for a grid; an icon beside a label in
+   * unregistered list items counts 2).
+   */
   perRow: number;
   /** The first and the last row's extent, document px. */
   firstRow: DensityRepeatRowBand;
@@ -255,7 +259,8 @@ function rowLines(
     // The estimate never exceeds what the measured height can hold, and a
     // truncated leaf (nowrap, ellipsis) is one line.
     const wrapped = Math.max(1, Math.ceil((n * DENSITY_CHAR_WIDTH_EM * leaf.fontPx) / r.w));
-    const fits = Math.max(1, Math.round(r.h / leaf.lineHeightPx));
+    // Whole lines only (padding is not a line), with room for sub-pixel heights.
+    const fits = Math.max(1, Math.floor(r.h / leaf.lineHeightPx + 0.01));
     const lines = leaf.truncated === true ? 1 : Math.min(wrapped, fits);
     for (let k = 0; k < lines; k++)
       tops.push({ top: r.y + k * leaf.lineHeightPx, lh: leaf.lineHeightPx });
@@ -778,8 +783,9 @@ export function densityRepeats(
         // Text or a form, not rows.
         if (rejectsAsRows(c)) continue;
         const g: Group = { by: 'geometry', parent: c[0].parent, tag: c[0].tag, members: c };
+        if (linesOfOneRow(g)) continue;
         for (const m of c) memberOf.set(m.id, g);
-        if (!linesOfOneRow(g)) groups.push(g);
+        groups.push(g);
       }
     }
     // Leaves of different widths at one left edge (fit-content links).
@@ -790,8 +796,9 @@ export function densityRepeats(
       if (rowsOf(c).length < DENSITY_REPEAT_MIN_ROWS) continue;
       if (rejectsAsRows(c)) continue;
       const g: Group = { by: 'geometry', parent: c[0].parent, tag: c[0].tag, members: c };
+      if (linesOfOneRow(g)) continue;
       for (const m of c) memberOf.set(m.id, g);
-      if (!linesOfOneRow(g)) groups.push(g);
+      groups.push(g);
     }
   }
 
