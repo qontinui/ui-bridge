@@ -785,6 +785,23 @@ function inProcessComponentNotFoundMessage(id: string): string {
  *   2026-09-11. An inline copy here would have to be re-found and re-fixed on
  *   every future shape change; a call cannot drift.
  */
+/**
+ * The relay dispatch gate's render check: the node is connected, has no
+ * `display: none` on itself or any ancestor, and is not `visibility: hidden`
+ * itself. It used to read `offsetParent !== null` for the ancestor half, which
+ * a browser also reports for a control that is itself `position: fixed`, so
+ * every action on such a control was refused as not visible (plan-library
+ * follow-up edge e11dd943). The ancestor walk reads exactly what was meant.
+ */
+function isRenderedForDispatch(el: HTMLElement): boolean {
+  if (!el.isConnected) return false;
+  if (getComputedStyle(el).visibility === 'hidden') return false;
+  for (let node: Element | null = el; node; node = node.parentElement) {
+    if (getComputedStyle(node).display === 'none') return false;
+  }
+  return true;
+}
+
 function elementToFindResult(
   e: RegisteredElement,
   // The read the find filter already made for this row (`reportedState`),
@@ -2029,18 +2046,13 @@ export async function executeCommand(
             el
           );
         // NOT the canonical visibility verdict, deliberately: this is the
-        // dispatch gate's "is the node rendered at all" check (a `display:
-        // none` self or ancestor nulls `offsetParent`; `visibility: hidden` /
-        // `display: none` on the node itself), the relay twin of the HTTP
-        // executor's signal-driven `getClickVisibilityReason`. The canonical
-        // verdict would wrongly refuse here: an `off-screen` target is scrolled
-        // into view by the action, an `occluded` one is the click gate's (and
-        // the caller's) concern, and an `opacity: 0` control (its `hidden`
-        // reason, e.g. a styled file input) still takes input.
-        const isVis =
-          domEl.offsetParent !== null &&
-          getComputedStyle(domEl).visibility !== 'hidden' &&
-          getComputedStyle(domEl).display !== 'none';
+        // dispatch gate's "is the node rendered at all" check, the relay twin
+        // of the HTTP executor's signal-driven `getClickVisibilityReason`. The
+        // canonical verdict would wrongly refuse here: an `off-screen` target
+        // is scrolled into view by the action, an `occluded` one is the click
+        // gate's (and the caller's) concern, and an `opacity: 0` control (its
+        // `hidden` reason, e.g. a styled file input) still takes input.
+        const isVis = isRenderedForDispatch(domEl);
         // `unhover` releases the page's single forced hover whichever element
         // it names, and that element is often the one the release just hid
         // again: it is never refused for visibility or `disabled`.
