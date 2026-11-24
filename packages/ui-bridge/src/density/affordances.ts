@@ -315,6 +315,7 @@ export function densityAffordances(
       if (
         scope.ids.has(item.id) &&
         isDensityNavControl(item) &&
+        densityTakesSpace(item) &&
         nearestAbove.get(item.id) === rep.id &&
         // A link at the foot of the nav the list's own rows sit in is more of
         // that nav, not its pager.

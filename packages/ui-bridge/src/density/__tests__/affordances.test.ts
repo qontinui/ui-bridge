@@ -636,6 +636,17 @@ describe('affordances', () => {
     expect(densityRepeats(c, null)[0].finder).toEqual({ id: 'app.search', by: 'relationship' });
   });
 
+  it('a hidden nav link below the list is not its pager', () => {
+    const els = PAGE.map(
+      (e): DensityTestElementSpec =>
+        e.id === 'app.orders.prev' ? { ...e, visible: false, visibilityReason: 'hidden' } : e
+    );
+    const pagers = densityAffordances(capture(els, RELATIONSHIPS), null).filter(
+      (a) => a.kind === 'pager'
+    );
+    expect(pagers.map((a) => a.id)).toEqual(['app.orders.next']);
+  });
+
   it('a select-all checkbox in a table header is not a filter', () => {
     const S = '/html/body/main/section';
     const els: DensityTestElementSpec[] = [

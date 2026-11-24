@@ -538,7 +538,8 @@ export function densityNearestRepeats(
     if (!scope) continue;
     for (const id of scope.ids) {
       const item = byId.get(id);
-      const cy = item ? centreY(item) : null;
+      // A control that takes no space (hidden) is nobody's nearest control.
+      const cy = item && takesSpace(item) ? centreY(item) : null;
       if (cy === null) continue;
       const gap = direction === 'below' ? rep.firstRow.topPx - cy : cy - rep.lastRow.bottomPx;
       if (gap <= 0) continue;
@@ -671,6 +672,17 @@ function rowsFor(g: Pick<Group, 'members' | 'byRowKey'>): DensityItem[][] {
 
 const FORM_TAGS = new Set(['input', 'textarea', 'select', 'label']);
 
+const TEXT_FIELD_ROLES = new Set(['textbox', 'searchbox', 'combobox', 'listbox', 'spinbutton']);
+
+/** A field one types or picks a value in (not a checkbox or radio). */
+function isTextField(item: DensityItem): boolean {
+  return (
+    item.tag === 'textarea' ||
+    item.tag === 'select' ||
+    (item.role !== null && TEXT_FIELD_ROLES.has(item.role))
+  );
+}
+
 /** A form field or its label: stacked, they are a form, not a list. */
 function isFormPart(item: DensityItem): boolean {
   return (
@@ -706,10 +718,10 @@ function wrappedCousinRun(g: Pick<Group, 'members' | 'byRowKey'>): boolean {
     return [...byRow.values()].sort((a, b) => a - b);
   };
   const bands = rowsFor(g).map(lefts);
-  if (bands.every((b) => b.length <= 1) && bands.length > 0) {
-    const x0 = bands[0][0];
-    return bands.some((b) => Math.abs(b[0] - x0) > DENSITY_REPEAT_TOLERANCE_PX);
-  }
+  // One unregistered row per visual row is a list or a table: nothing wraps.
+  // (Where its leftmost registered item sits may vary: an optional badge, a
+  // centred menu.)
+  if (bands.every((b) => b.length <= 1)) return false;
   const ref = bands.reduce((a, b) => (b.length > a.length ? b : a), bands[0] ?? []);
   return bands.some((b) => b.some((x, i) => Math.abs(x - ref[i]) > DENSITY_REPEAT_TOLERANCE_PX));
 }
@@ -755,12 +767,18 @@ export function densityRepeats(
   const rejectsAsRows = (members: readonly DensityItem[]): boolean =>
     members.every((m) => kindOf.get(m.id) === 'prose') ||
     members.every((m) => kindOf.get(m.id) === 'heading') ||
-    // Fields, labels, or wrappers holding only those (a label and an input each).
+    // Fields, labels, or wrappers around a field whose every interactive leaf
+    // is a form part (a label, an input, help or error text beside it).
     members.every((m) => {
       const inner = [...densitySubtree(capture, [m.id], children)]
         .filter((id) => leafSet.has(id))
         .map((id) => byId.get(id)!);
-      return inner.length > 0 && inner.every(isFormPart);
+      if (inner.length === 0) return false;
+      if (inner.every(isFormPart)) return true;
+      return (
+        // A text-entry or choice field, not just a checkbox (a todo row is a row).
+        inner.some(isTextField) && inner.every((l) => !l.interactive || isFormPart(l))
+      );
     });
   const accept = (g: Group, members: DensityItem[]): boolean => {
     if (rowsFor({ members, byRowKey: g.byRowKey }).length < DENSITY_REPEAT_MIN_ROWS) return false;
