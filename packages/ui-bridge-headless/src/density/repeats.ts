@@ -111,6 +111,12 @@ export interface DensityRepeatFinder {
    * such a control to the repeat.
    */
   by: 'position' | 'relationship';
+  /**
+   * The finder is a select or combobox, so it also filters the repeat. Such
+   * a control is reported once, as the finder, and never again among the
+   * affordances as a filter of the same repeat.
+   */
+  alsoFilters: boolean;
 }
 
 export interface DensityRepeatRowBand {
@@ -802,8 +808,8 @@ function clusterBy(
  * rows line up: every row top of the shorter column is, within the
  * tolerance, a row top of the longer one (a ragged grid's short last
  * columns); or the column is one card whose top is one row pitch below the
- * grid's last row (a short last row centred under the grid, whose cards sit
- * at left edges of their own).
+ * grid's last row and within its left and right edges (a short last row
+ * centred under the grid, whose cards sit at left edges of their own).
  */
 function gridsOf(sameWidth: readonly DensityItem[]): DensityItem[][] {
   const near = (a: number, b: number) => Math.abs(a - b) <= DENSITY_REPEAT_TOLERANCE_PX;
@@ -814,8 +820,16 @@ function gridsOf(sameWidth: readonly DensityItem[]): DensityItem[][] {
       const [short, long] = g.tops.length <= tops.length ? [g.tops, tops] : [tops, g.tops];
       if (short.every((t) => long.some((u) => near(t, u)))) return true;
       const n = g.tops.length;
+      if (tops.length !== 1 || n < 2) return false;
+      // A card centred under the grid lies within the grid's left and right
+      // edges; one beside it is another list.
+      const card = column[0].rect!;
+      const left = minOf(g.members.map((m) => m.rect!.x));
+      const right = maxOf(g.members.map((m) => m.rect!.x + m.rect!.w));
       return (
-        tops.length === 1 && n >= 2 && near(tops[0] - g.tops[n - 1], g.tops[n - 1] - g.tops[n - 2])
+        near(tops[0] - g.tops[n - 1], g.tops[n - 1] - g.tops[n - 2]) &&
+        card.x >= left - DENSITY_REPEAT_TOLERANCE_PX &&
+        card.x + card.w <= right + DENSITY_REPEAT_TOLERANCE_PX
       );
     });
     if (home) {
@@ -998,9 +1012,14 @@ export function densityRepeats(
         .filter((id) => leafSet.has(id))
         .map((id) => byId.get(id)!);
       if (inner.length === 0) return false;
+      // Every leaf a form part: bare fields, or choice controls with their
+      // `label`s — a column of bare checkboxes is a form. Whether a checklist
+      // is rows is decided with measured line bands in Phase 12 (05978b3d).
       if (inner.every(isFormPart)) return true;
       return (
-        // A text-entry or choice field, not just a checkbox (a todo row is a row).
+        // A text-entry field or a select beside plain text (help, an error) is
+        // a form part too; a checkbox beside plain text (a todo row whose text
+        // is a span, not a `label`) is a row.
         inner.some(isTextField) && inner.every((l) => !l.interactive || isFormPart(l))
       );
     });
@@ -1090,11 +1109,12 @@ export function densityRepeats(
     for (const c of clusterBy(rest, (r) => r.x)) {
       if (wrappedRun(c, siblingRows)) continue;
       if (sameWidth(c) || c.every((m) => leafSet.has(m.id))) accept(g, c);
-      // One odd-width member (a highlighted row) does not discard the column:
-      // a column where one width holds all but at most
-      // {@link DENSITY_REPEAT_ODD_WIDTH_SHARE} of its members (so a column of
-      // five or more may hold one odd row) is a list, the odd rows included.
-      // Widths mixed beyond that are layout.
+      // An odd-width member (a highlighted row) does not discard a long
+      // column: a column where one width holds all but at most
+      // floor({@link DENSITY_REPEAT_ODD_WIDTH_SHARE} × its members) is a
+      // list, the odd rows included. That floor is 0 below five members, so a
+      // column of three or four with any odd width is layout; five to nine
+      // may hold one odd row. Widths mixed beyond that are layout.
       else {
         const dominant = clusterBy(c, (r) => r.w).reduce((a, b) => (b.length > a.length ? b : a));
         const odd = c.length - dominant.length;
@@ -1333,7 +1353,13 @@ export function densityRepeats(
             densityAimsAt(i.controls, rep.id, innermost))
       )
       .sort((a, b) => finderRank(a) - finderRank(b));
-    if (declared.length > 0) finder = { id: declared[0].id, by: 'relationship' };
+    if (declared.length > 0) {
+      finder = {
+        id: declared[0].id,
+        by: 'relationship',
+        alsoFilters: isDensityFilterControl(declared[0]),
+      };
+    }
     if (finder === null) {
       const above = capture.items
         .filter(
@@ -1357,7 +1383,9 @@ export function densityRepeats(
             centreY(b)! - centreY(a)! ||
             captureIndex.get(a.id)! - captureIndex.get(b.id)!
         );
-      if (above.length > 0) finder = { id: above[0].id, by: 'position' };
+      if (above.length > 0) {
+        finder = { id: above[0].id, by: 'position', alsoFilters: isDensityFilterControl(above[0]) };
+      }
     }
     rep.finder = finder;
   }

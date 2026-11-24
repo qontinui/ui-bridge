@@ -183,7 +183,8 @@ export interface DensityItem {
    * hidden descendants; neither is drawn. `true` when `chars` is 0 or the
    * row's visible text (`text`, the innerText-equivalent) is non-empty;
    * `false` when the item counts characters but its row carries no visible
-   * text; `null` when unknown (redacted text, or a serializer too old to say).
+   * text; `null` when unknown (redacted text, a serializer too old to say, or
+   * visible text shorter than the counted text, so only part of it is drawn).
    * The ledger still lays the item out; a reader of TEXT (an answer's
    * legibility, the font bounds) never counts an undrawn one. Optional on read,
    * where absence is `null`.

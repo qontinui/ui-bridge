@@ -407,4 +407,80 @@ describe('ui-bridge-density init', () => {
     expect(readFileSync(t, 'utf8')).toBe('kept');
     expect(existsSync(at('exists-budget.json'))).toBe(false);
   }, 60_000);
+
+  it('a budget file that cannot be written takes the targets file back', () => {
+    const t = at('half-targets.json');
+    const b = join(dir, 'no-such-dir', 'half-budget.json');
+    const r = run([
+      'init',
+      '--surface',
+      '/orders',
+      '--profile',
+      PROFILE_DOC,
+      '--targets-out',
+      t,
+      '--budget-out',
+      b,
+    ]);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain(`${t} was removed, so init wrote nothing`);
+    expect(existsSync(t)).toBe(false);
+    expect(r.stdout).toBe('');
+  }, 60_000);
+});
+
+describe('runDensityInit when the second write fails', () => {
+  function failingIo(removable: boolean) {
+    const out = { stdout: '', stderr: '', files: new Map<string, string>() };
+    const io: DensityCliIo = {
+      readFile: () => {
+        throw new Error('unused');
+      },
+      readStdin: async () => '',
+      writeFile: (p, text) => {
+        if (p === 'b.json') throw new Error('EACCES: permission denied');
+        out.files.set(p, text);
+      },
+      exists: (p) => out.files.has(p),
+      ...(removable
+        ? {
+            removeFile: (p: string) => {
+              out.files.delete(p);
+            },
+          }
+        : {}),
+      stdout: (text) => {
+        out.stdout += text;
+      },
+      stderr: (text) => {
+        out.stderr += text;
+      },
+    };
+    return { io, out };
+  }
+  const ARGS = ['init', '--surface', '/', '--profile', 'audience_profile/synthetic@1'];
+
+  it('removes the targets file it wrote, so a second init is not refused', async () => {
+    const { io, out } = failingIo(true);
+    const code = await runDensityCli(
+      [...ARGS, '--targets-out', 't.json', '--budget-out', 'b.json'],
+      io
+    );
+    expect(code).toBe(2);
+    expect([...out.files.keys()]).toEqual([]);
+    expect(out.stderr).toContain(
+      '--budget-out b.json: EACCES: permission denied; t.json was removed, so init wrote nothing'
+    );
+  });
+
+  it('says the targets file stays when the host cannot remove it', async () => {
+    const { io, out } = failingIo(false);
+    const code = await runDensityCli(
+      [...ARGS, '--targets-out', 't.json', '--budget-out', 'b.json'],
+      io
+    );
+    expect(code).toBe(2);
+    expect([...out.files.keys()]).toEqual(['t.json']);
+    expect(out.stderr).toContain('t.json was left in place: remove it before running init again');
+  });
 });

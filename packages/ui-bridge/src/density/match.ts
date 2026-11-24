@@ -105,7 +105,7 @@ export type DensityMatchResult =
       status: 'resolved';
       /** Matched item ids, in capture order. Never empty. */
       ids: string[];
-      /** Items whose text was unreadable when a `text` field was evaluated; they may also match. */
+      /** Items the other fields select whose text was unreadable when a `text` field was evaluated; they may also match. */
       textUnevaluated: number;
     }
   | { status: 'unresolved'; reason: DensityUnresolvedReason; textUnevaluated: number };
@@ -127,12 +127,15 @@ export function resolveDensityMatcher(
   matcher: DensityMatcher
 ): DensityMatchResult {
   let textUnevaluated = 0;
+  let ownUnevaluated = 0;
+  let innerUnevaluated = 0;
   let textIds: Set<string> | null = null;
   if (matcher.text !== undefined) {
     const record = capture.textMatches[densityMatcherKey(matcher)];
     if (!record) return { status: 'unresolved', reason: 'text-not-captured', textUnevaluated: 0 };
     textIds = new Set(record.ids);
-    textUnevaluated = record.unevaluated;
+    ownUnevaluated = record.unevaluated;
+    textUnevaluated = ownUnevaluated;
   }
 
   let withinIds: Set<string> | null = null;
@@ -141,8 +144,10 @@ export function resolveDensityMatcher(
       return { status: 'unresolved', reason: 'structure-not-resolved', textUnevaluated };
     }
     const inner = resolveDensityMatcher(capture, matcher.within);
-    // Both counts are over the same items, so the larger bounds what is unread.
-    textUnevaluated = Math.max(textUnevaluated, inner.textUnevaluated);
+    // A container whose text was unread may hold items this matcher selects,
+    // so its count carries out whole.
+    innerUnevaluated = inner.textUnevaluated;
+    textUnevaluated = Math.max(textUnevaluated, innerUnevaluated);
     if (inner.status === 'unresolved') {
       return { status: 'unresolved', reason: inner.reason, textUnevaluated };
     }
@@ -164,18 +169,27 @@ export function resolveDensityMatcher(
 
   const idSet = matcher.ids ? new Set(matcher.ids) : null;
   const glob = matcher.idGlob !== undefined ? globToRegExp(matcher.idGlob) : null;
+  // Every field but `text`: what the item is, and where.
+  const structural = (item: DensityCapture['items'][number]): boolean => {
+    if (idSet && !idSet.has(item.id)) return false;
+    if (matcher.idPrefix !== undefined && !item.id.startsWith(matcher.idPrefix)) return false;
+    if (glob && !glob.test(item.id)) return false;
+    if (matcher.role !== undefined && item.role !== matcher.role) return false;
+    if (matcher.tag !== undefined && item.tag !== matcher.tag.toLowerCase()) return false;
+    if (withinIds && !hasAncestorIn(item.id, withinIds)) return false;
+    return true;
+  };
   const ids = capture.items
-    .filter((item) => {
-      if (idSet && !idSet.has(item.id)) return false;
-      if (matcher.idPrefix !== undefined && !item.id.startsWith(matcher.idPrefix)) return false;
-      if (glob && !glob.test(item.id)) return false;
-      if (matcher.role !== undefined && item.role !== matcher.role) return false;
-      if (matcher.tag !== undefined && item.tag !== matcher.tag.toLowerCase()) return false;
-      if (textIds && !textIds.has(item.id)) return false;
-      if (withinIds && !hasAncestorIn(item.id, withinIds)) return false;
-      return true;
-    })
+    .filter((item) => structural(item) && (textIds === null || textIds.has(item.id)))
     .map((item) => item.id);
+  if (textIds !== null && ownUnevaluated > 0) {
+    // Only an unread item the other fields select could also match: a
+    // redacted item elsewhere on the page says nothing about this matcher.
+    // An item's text was unread exactly when its `chars` is null; the
+    // record's count stays the ceiling.
+    const unread = capture.items.filter((item) => item.chars === null && structural(item)).length;
+    textUnevaluated = Math.max(Math.min(ownUnevaluated, unread), innerUnevaluated);
+  }
 
   return ids.length > 0
     ? { status: 'resolved', ids, textUnevaluated }

@@ -96,6 +96,11 @@ function collapse(text: string): string {
 }
 
 /** Code points, not UTF-16 units: an emoji is one character to a reader. */
+/** Code points that are not whitespace. */
+function inkLength(text: string): number {
+  return codePointLength(text.replace(/\s+/g, ''));
+}
+
 function codePointLength(text: string): number {
   let n = 0;
   for (const _ of text) n++;
@@ -268,9 +273,14 @@ function buildItem(
   let charsDrawn: boolean | null = null;
   if (chars === 0) {
     charsDrawn = true;
-  } else if (chars !== null) {
+  } else if (chars !== null && text !== null) {
     const visible = typeof el.text === 'string' ? collapse(el.text) : '';
-    if (visible !== '') charsDrawn = true;
+    // Some of the counted text is drawn and some is not (a hidden
+    // descendant's): which part answers is unknown, so whether the text
+    // `chars` counts is drawn is too. Whitespace is left out of the
+    // comparison, because innerText breaks lines where textContent does not.
+    if (visible !== '' && inkLength(visible) < inkLength(text)) miss('charsDrawn');
+    else if (visible !== '') charsDrawn = true;
     else if (str(state.nameSource) !== null || str(el.nameSource) !== null) charsDrawn = false;
     else miss('charsDrawn');
   }

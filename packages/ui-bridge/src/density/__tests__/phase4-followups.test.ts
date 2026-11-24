@@ -310,7 +310,7 @@ describe('Phase 4 follow-ups: finders, filters and pagers', () => {
       'repeat:app.t.r1c1',
       null,
       'block',
-      { id: 'app.find', by: 'position' },
+      { id: 'app.find', by: 'position', alsoFilters: false },
     ]);
   });
 
@@ -390,14 +390,17 @@ describe('Phase 4 follow-ups: finders, filters and pagers', () => {
       ['repeat:app.rows.act-1', 'app.rows'],
       ['repeat:app.rows.link-1', 'app.rows'],
     ]);
+    // The select's edge makes it the finder of both, which also filters each
+    // (reported once per repeat, as the finder, never again as a filter).
+    expect(reps.map((r) => r.finder)).toEqual([
+      { id: 'app.pick', by: 'relationship', alsoFilters: true },
+      { id: 'app.pick', by: 'relationship', alsoFilters: true },
+    ]);
     expect(
       densityAffordances(c, null, { repeats: reps })
         .filter((a) => a.kind === 'filter')
         .map((a) => [a.id, a.rule, a.repeat])
-    ).toEqual([
-      ['app.pick', 'declared-filters', 'repeat:app.rows.act-1'],
-      ['app.pick', 'declared-filters', 'repeat:app.rows.link-1'],
-    ]);
+    ).toEqual([]);
   });
 
   it("a controls edge to a list nested in the first row of another is that inner list's filter", () => {
@@ -446,11 +449,17 @@ describe('Phase 4 follow-ups: finders, filters and pagers', () => {
       ['repeat:app.outer.1', null],
       ['repeat:app.inner.1', 'app.outer.1'],
     ]);
+    // The inner list's finder by that edge (which also filters it); the
+    // outer list's, never.
+    expect(reps.map((r) => r.finder)).toEqual([
+      null,
+      { id: 'app.pick', by: 'relationship', alsoFilters: true },
+    ]);
     expect(
       densityAffordances(c, null, { repeats: reps })
         .filter((a) => a.kind === 'filter')
         .map((a) => [a.id, a.rule, a.repeat])
-    ).toEqual([['app.pick', 'declared-controls', 'repeat:app.inner.1']]);
+    ).toEqual([]);
   });
 
   it('a root-chain key and an anchored tag path inside one nav name one nav; sibling navs two', () => {
@@ -534,8 +543,12 @@ describe('Phase 4 follow-ups: the affordances report', () => {
     };
     const parsed = parseDensityCapture(JSON.parse(JSON.stringify(old)));
     if (!parsed.ok) throw new Error(JSON.stringify(parsed));
-    // The measure door passes `[]` for a capture it read no repeats from.
-    const report = summarizeDensityAffordances(parsed.value, null, []);
+    // The measure door passes the item-local affordances it read with no repeats.
+    const report = summarizeDensityAffordances(
+      parsed.value,
+      null,
+      densityAffordances(parsed.value, null, { repeats: [] })
+    );
     expect(report).toMatchObject({
       structureResolved: true,
       repeatKeysResolved: false,

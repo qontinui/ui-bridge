@@ -256,7 +256,8 @@ describe('density budget: exit codes and the registry', () => {
 describe('density budget: --draft and init', () => {
   it('--draft writes only null limits, beside the current values', () => {
     const draft = draftDensityBudget([cellOf(measurePageTargets())]);
-    expect(draft.rules.length).toBeGreaterThan(0);
+    // One rule per drafted quantity's value in this one cell (its asks, blocks and repeats).
+    expect(draft.rules.length).toBe(22);
     expect(draft.rules.every((r) => r.limit === null)).toBe(true);
     expect(draft.matrix).toEqual([
       { role: 'buyer', viewport: { width: 1280, height: 800 }, fixture: null },

@@ -934,7 +934,8 @@ describe('ui-bridge-density measure: repeats and affordances', () => {
             reason: 'no row volume was declared (the budget names the rows each list is judged at)',
           },
           scope: 'block',
-          finder: { id: 'app.orders.state', by: 'position' },
+          // The state select is the finder, which also filters the list (reported once).
+          finder: { id: 'app.orders.state', by: 'position', alsoFilters: true },
           renderedOf: {
             unknown: 'input_missing',
             reason:
@@ -957,15 +958,15 @@ describe('ui-bridge-density measure: repeats and affordances', () => {
         tab: 1,
         menu: 0,
         search: 0,
-        filter: 1,
+        filter: 0,
         pager: 1,
         truncation: 0,
         abbreviation: 0,
       },
-      byRule: { 'role-tab': 1, 'control-above-repeat': 1, 'nav-after-repeat': 1 },
+      byRule: { 'role-tab': 1, 'nav-after-repeat': 1 },
       abbreviationsUndetermined: 0,
-      shown: 3,
-      total: 3,
+      shown: 2,
+      total: 2,
       truncated: false,
       list: [
         {
@@ -975,16 +976,6 @@ describe('ui-bridge-density measure: repeats and affordances', () => {
           state: 'inactive',
           controls: null,
           repeat: null,
-          recoverable: null,
-          hides,
-        },
-        {
-          kind: 'filter',
-          rule: 'control-above-repeat',
-          id: 'app.orders.state',
-          state: null,
-          controls: null,
-          repeat: 'repeat:app.orders.row-1',
           recoverable: null,
           hides,
         },
@@ -1021,7 +1012,6 @@ describe('measureDensityCell: repeats and affordances', () => {
     ]);
     expect(value.value?.affordances.list?.map((a) => [a.id, a.rule])).toEqual([
       ['app.tabs.closed', 'role-tab'],
-      ['app.orders.state', 'control-above-repeat'],
       ['app.orders.next', 'nav-after-repeat'],
     ]);
   });
@@ -1257,6 +1247,30 @@ describe('ui-bridge-density measure: reach per ask (Phase 5)', () => {
     const code = await runDensityCli(['measure', '--capture', 'c.json', '--capture', 'c.json'], io);
     expect(code).toBe(2);
     expect(out.stderr).toContain('--capture c.json is given more than once');
+  });
+
+  it('one capture file named twice by two spellings is a usage error', async () => {
+    const { io, out } = memoryIo({});
+    const code = await runDensityCli(
+      ['measure', '--capture', 'c.json', '--capture', './sub/../c.json'],
+      io
+    );
+    expect(code).toBe(2);
+    expect(out.stderr).toContain(
+      '--capture ./sub/../c.json names the same file as --capture c.json'
+    );
+    expect(out.stdout).toBe('');
+  });
+
+  it('two captures the host reports as one file (a link) are a usage error', async () => {
+    const { io, out } = memoryIo({});
+    const linked: DensityCliIo = { ...io, sameFile: (a, b) => a !== b };
+    const code = await runDensityCli(
+      ['measure', '--capture', 'a.json', '--capture', 'b.json'],
+      linked
+    );
+    expect(code).toBe(2);
+    expect(out.stderr).toContain('--capture b.json names the same file as --capture a.json');
   });
 
   it('a capture file that is not a capture is a usage error naming the problem', async () => {

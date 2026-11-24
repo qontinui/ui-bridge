@@ -80,10 +80,10 @@ export interface DensityQuantityWiden {
   of?: 'parent' | 'ask' | 'role';
   field: string;
   /**
-   * The value of `field` that widens: `true`, a string, `nonzero` (a count
-   * above 0), or `some-partial` (a list holding an entry with `partial: true`).
+   * The value of `field` that widens: `true`, `false`, a string, `nonzero` (a
+   * count above 0), or `some-partial` (a list holding an entry with `partial: true`).
    */
-  when: true | 'nonzero' | 'some-partial' | string;
+  when: boolean | 'nonzero' | 'some-partial' | string;
   direction: 'up' | 'down' | 'both';
 }
 
@@ -567,7 +567,7 @@ export const DENSITY_QUANTITIES: readonly DensityQuantity[] = Object.freeze([
     'px',
     'block',
     'blocks.list[].displacementPx',
-    'The scroll the block costs the role per visit: Σ below w·min(pitch, scroll) / Σ w; a lower bound while reach is unknown.',
+    'The scroll the block costs the role per visit: Σ below w·min(pitch, scroll) / Σ w; a lower bound while reach is unknown, and null when the asks of the role weigh nothing.',
     { widen: [{ field: 'displacementIsLowerBound', when: true, direction: 'up' }], draft: 'max' }
   ),
   q(
@@ -732,7 +732,14 @@ export const DENSITY_QUANTITIES: readonly DensityQuantity[] = Object.freeze([
     'affordances.byRule.*',
     'Affordances detected by the rule where.kind.'
   ),
-  q('cell.affordances', 'count', 'cell', 'affordances.total', 'Affordances.'),
+  q(
+    'cell.affordances',
+    'count',
+    'cell',
+    'affordances.total',
+    'Affordances; a lower bound on a capture written before the repeat keys existed, where filters and pagers are not read.',
+    { widen: [{ field: 'repeatKeysResolved', when: false, direction: 'up' }] }
+  ),
   q(
     'cell.abbreviationsUndetermined',
     'count',

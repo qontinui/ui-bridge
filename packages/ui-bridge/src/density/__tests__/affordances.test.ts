@@ -272,16 +272,8 @@ describe('affordances', () => {
         recoverable: true,
         hides: HIDES,
       },
-      {
-        kind: 'filter',
-        rule: 'control-above-repeat',
-        id: 'app.orders.state',
-        state: null,
-        controls: null,
-        repeat: 'repeat:app.orders.row-1',
-        recoverable: null,
-        hides: HIDES,
-      },
+      // The state select above the list is its finder, reported there once
+      // (`alsoFilters`), never again here as a filter.
       // One pager: its previous and next buttons are its members.
       {
         kind: 'pager',
@@ -303,7 +295,7 @@ describe('affordances', () => {
       'repeat:app.orders.row-1',
       5,
       'block',
-      { id: 'app.orders.state', by: 'position' },
+      { id: 'app.orders.state', by: 'position', alsoFilters: true },
     ]);
   });
 
@@ -323,6 +315,7 @@ describe('affordances', () => {
     expect(densityRepeats(c, null)[0].finder).toEqual({
       id: 'app.side.search',
       by: 'relationship',
+      alsoFilters: false,
     });
   });
 
@@ -387,7 +380,7 @@ describe('affordances', () => {
       'repeat:app.t.row-1',
       'ancestor',
       // Both sit at one height above the first row; the earlier in capture order wins.
-      { id: 'app.t.q', by: 'position' },
+      { id: 'app.t.q', by: 'position', alsoFilters: false },
     ]);
     const acting = densityAffordances(c, null, { repeats: [rep] }).filter((a) => a.repeat !== null);
     expect(acting.map((a) => [a.id, a.rule])).toEqual([
@@ -410,7 +403,14 @@ describe('affordances', () => {
     expect(found.filter((a) => a.kind === 'abbreviation').map((a) => a.id)).toEqual([
       'app.side.cell-2',
     ]);
-    expect(found.filter((a) => a.kind === 'filter').map((a) => a.id)).toEqual(['app.orders.state']);
+    // The state select is the list's finder, which also filters it; the hidden
+    // sort select is neither.
+    expect(found.filter((a) => a.kind === 'filter').map((a) => a.id)).toEqual([]);
+    expect(densityRepeats(c, null)[0].finder).toEqual({
+      id: 'app.orders.state',
+      by: 'position',
+      alsoFilters: true,
+    });
   });
 
   it('a pager of links in unregistered list items is found; a combobox is no disclosure', () => {
@@ -486,10 +486,18 @@ describe('affordances', () => {
       ['repeat:g.c2.l1', 3],
       ['repeat:g.c3.l1', 3],
     ]);
+    // The edge makes the select that inner list's finder (which also filters
+    // it), and no other list's: a declared edge names the one list it acts on.
+    expect(reps.map((r) => [r.id, r.finder])).toEqual([
+      ['repeat:g.c1', null],
+      ['repeat:g.c1.l1', null],
+      ['repeat:g.c2.l1', { id: 'g.sel', by: 'relationship', alsoFilters: true }],
+      ['repeat:g.c3.l1', null],
+    ]);
     const filters = densityAffordances(c, null, { repeats: reps }).filter(
-      (a) => a.rule === 'declared-filters'
+      (a) => a.kind === 'filter'
     );
-    expect(filters.map((a) => [a.id, a.repeat])).toEqual([['g.sel', 'repeat:g.c2.l1']]);
+    expect(filters.map((a) => [a.id, a.repeat])).toEqual([]);
   });
 
   it('a select with a declared edge to one list is not also a filter of the list below it', () => {
@@ -510,11 +518,11 @@ describe('affordances', () => {
     const filters = densityAffordances(c, null, { repeats: reps }).filter(
       (a) => a.kind === 'filter'
     );
-    expect(filters.map((a) => [a.id, a.rule, a.repeat])).toEqual([
-      ['app.orders.state', 'declared-filters', 'repeat:app.picks.row-1'],
-    ]);
+    // The select is the picks list's finder by its edge, which also filters
+    // that list, and nothing of the orders list below it.
+    expect(filters.map((a) => [a.id, a.rule, a.repeat])).toEqual([]);
     expect(reps.map((r) => [r.id, r.finder])).toEqual([
-      ['repeat:app.picks.row-1', { id: 'app.orders.state', by: 'relationship' }],
+      ['repeat:app.picks.row-1', { id: 'app.orders.state', by: 'relationship', alsoFilters: true }],
       ['repeat:app.orders.row-1', null],
     ]);
   });
@@ -571,7 +579,10 @@ describe('affordances', () => {
     ];
     const c = capture(els);
     const [rep] = densityRepeats(c, null);
-    expect([rep.scope, rep.finder]).toEqual(['ancestor', { id: 'q', by: 'position' }]);
+    expect([rep.scope, rep.finder]).toEqual([
+      'ancestor',
+      { id: 'q', by: 'position', alsoFilters: false },
+    ]);
     const acting = densityAffordances(c, null, { repeats: [rep] }).filter((a) => a.repeat !== null);
     expect(acting.map((a) => [a.id, a.rule])).toEqual([
       ['status', 'control-above-repeat'],
@@ -622,7 +633,11 @@ describe('affordances', () => {
       ...PAGE.filter((e) => e.xpath!.startsWith(SECTION) && e.id !== 'app.orders.state'),
     ];
     const c = capture(els, [{ source: 'app.search', target: 'app.orders.list', type: 'controls' }]);
-    expect(densityRepeats(c, null)[0].finder).toEqual({ id: 'app.search', by: 'relationship' });
+    expect(densityRepeats(c, null)[0].finder).toEqual({
+      id: 'app.search',
+      by: 'relationship',
+      alsoFilters: false,
+    });
   });
 
   it('a hidden nav link below the list is not its pager', () => {
@@ -777,7 +792,10 @@ describe('affordances', () => {
       ),
     ];
     const [rep] = densityRepeats(capture(els), null);
-    expect([rep.scope, rep.finder]).toEqual(['ancestor', { id: 'app.t.state', by: 'position' }]);
+    expect([rep.scope, rep.finder]).toEqual([
+      'ancestor',
+      { id: 'app.t.state', by: 'position', alsoFilters: true },
+    ]);
   });
 
   it('a pager more than a screen below the last row is not the pager of the list', () => {
@@ -798,10 +816,17 @@ describe('affordances', () => {
       { source: 'app.side.sort', target: 'app.orders.list', type: 'controls' },
     ]);
     const filters = densityAffordances(c, null).filter((a) => a.kind === 'filter');
+    // The sort select's edge makes it the list's finder (by relationship,
+    // outranking the state select's position), which also filters it; the
+    // state select above the first row is then a filter.
     expect(filters.map((a) => [a.id, a.rule])).toEqual([
       ['app.orders.state', 'control-above-repeat'],
-      ['app.side.sort', 'declared-controls'],
     ]);
+    expect(densityRepeats(c, null)[0].finder).toEqual({
+      id: 'app.side.sort',
+      by: 'relationship',
+      alsoFilters: true,
+    });
   });
 
   it('a disclosure with no aria-expanded and no summary is not one; a summary with no state is', () => {
@@ -865,7 +890,7 @@ describe('affordances', () => {
       ...PAGE.filter((e) => e.xpath!.startsWith(SECTION)),
     ];
     const [rep] = densityRepeats(capture(els), null);
-    expect(rep.finder).toEqual({ id: 'app.orders.state', by: 'position' });
+    expect(rep.finder).toEqual({ id: 'app.orders.state', by: 'position', alsoFilters: true });
   });
 
   it('a search box above the list outranks a nearer select as its finder', () => {
@@ -882,7 +907,7 @@ describe('affordances', () => {
       ...PAGE.filter((e) => e.xpath!.startsWith(SECTION)),
     ];
     const [rep] = densityRepeats(capture(els), null);
-    expect(rep.finder).toEqual({ id: 'app.page-search', by: 'position' });
+    expect(rep.finder).toEqual({ id: 'app.page-search', by: 'position', alsoFilters: false });
   });
 
   it("a control inside another repeat's rows is not this repeat's filter", () => {
@@ -915,9 +940,10 @@ describe('affordances', () => {
     const filters = densityAffordances(c, null, { repeats: reps }).filter(
       (a) => a.kind === 'filter'
     );
-    expect(filters.map((a) => [a.id, a.repeat])).toEqual([
-      ['app.orders.state', 'repeat:app.orders.row-1'],
-    ]);
+    // No checkbox of the picks rows filters the orders list; the state select
+    // is the orders list's finder, which also filters it.
+    expect(filters.map((a) => [a.id, a.repeat])).toEqual([]);
+    expect(reps.map((r) => r.finder?.id ?? null)).toEqual([null, 'app.orders.state']);
     // The pager below both lists is the nearer list's only.
     const pagers = densityAffordances(c, null, { repeats: reps }).filter((a) => a.kind === 'pager');
     expect(pagers.map((a) => [a.id, a.repeat])).toEqual([
@@ -935,7 +961,8 @@ describe('affordances', () => {
         tab: 2,
         menu: 0,
         search: 1,
-        filter: 1,
+        // The state select is the list's finder (alsoFilters), not a filter.
+        filter: 0,
         pager: 1,
         truncation: 2,
         abbreviation: 1,
@@ -947,11 +974,10 @@ describe('affordances', () => {
         'role-tab': 2,
         'scroll-width': 2,
         title: 1,
-        'control-above-repeat': 1,
         'nav-after-repeat': 1,
       },
       shown: 2,
-      total: 10,
+      total: 9,
       truncated: true,
     });
   });

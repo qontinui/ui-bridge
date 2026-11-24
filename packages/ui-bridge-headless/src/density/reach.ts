@@ -44,6 +44,7 @@ import type {
 } from './schema';
 import {
   densityChildren,
+  densityIntervalUnion,
   densityPinnedIds,
   densitySameColumn,
   type DensityLeaves,
@@ -428,13 +429,13 @@ export function densityAskAnswer(ctx: DensityReachContext, ask: DensityAsk): Den
 }
 
 /**
- * The order an ask's items are reached in: an item that can be read (available
- * or not known not to be) before one that cannot, then the fewest actions,
- * the least scroll, the highest on the page.
+ * The order an ask's items are reached in: an item known to be readable
+ * first, then one whose availability is unknown, then one known not to be;
+ * within each, the fewest actions, the least scroll, the highest on the page.
  */
 function orderKey(r: DensityItemReach, placed: ReadonlyMap<string, DensityRect>): number[] {
   return [
-    r.available === false ? 1 : 0,
+    r.available === true ? 0 : r.available === null ? 1 : 2,
     r.actions ?? Infinity,
     r.scrollPx ?? Infinity,
     placed.get(r.id)?.y ?? Infinity,
@@ -482,8 +483,10 @@ export function densityAskReach(
       }
     }
     // One open reveals everything inside it: the distinct closed containers.
+    // An item outside every closed container is reached by the declared
+    // `via`, which is walked once however many items need it.
     const union = new Set(reaches.flatMap((r) => r.closedAround));
-    const declaredOnly = union.size === 0 && ask.via.length > 0;
+    const viaWalked = reaches.some((r) => r.interactionsBy === 'declared');
     const anyUnknownBase = reaches.some((r) => r.interactionsBy === 'unknown');
     const truncations = reaches.filter((r) => {
       const item = ctx.byId.get(r.id)!;
@@ -491,9 +494,7 @@ export function densityAskReach(
     }).length;
     const interactions = anyUnknownBase
       ? null
-      : (union.size > 0 ? union.size : declaredOnly ? ask.via.length : 0) +
-        truncations +
-        (ask.findChars > 0 ? 1 : 0);
+      : union.size + (viaWalked ? ask.via.length : 0) + truncations + (ask.findChars > 0 ? 1 : 0);
     const gestures = gesturesFor(scrollPx, ctx.pins.usableHeightPx);
     const avail = reaches.map((r) => r.available);
     all = {
@@ -568,23 +569,6 @@ export function densityAnsweredWithin(
   // A matcher that resolved nothing may hold a nearer answer.
   const hi = reach.partial || answerItems.some((r) => may(r.actions) && r.available !== false);
   return { lo, hi };
-}
-
-/** Union length of `[s, e)` intervals. */
-export function densityIntervalUnion(intervals: Array<[number, number]>): number {
-  const sorted = intervals.filter(([s, e]) => e > s).sort((a, b) => a[0] - b[0]);
-  let total = 0;
-  let cs = -Infinity;
-  let ce = -Infinity;
-  for (const [s, e] of sorted) {
-    if (s > ce) {
-      if (ce > cs) total += ce - cs;
-      cs = s;
-      ce = e;
-    } else if (e > ce) ce = e;
-  }
-  if (ce > cs) total += ce - cs;
-  return total;
 }
 
 /**

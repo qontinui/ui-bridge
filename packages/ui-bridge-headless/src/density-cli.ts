@@ -54,7 +54,7 @@
  * Plan: 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change, Phases 2 to 6.
  */
 
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { isEntryModule } from './entry-guard.js';
 import {
   DensityCliArgError,
@@ -388,6 +388,7 @@ async function main(): Promise<void> {
       writeFile: (p, t) => writeFileSync(p, t),
       exists: (p) => existsSync(p),
       sameFile: sameFileOnDisk,
+      removeFile: (p) => unlinkSync(p),
       stdout: (t) => {
         // Once a signal has printed the interrupted verdict, that verdict is
         // the run's one document: a report finishing in the same turn is dropped.

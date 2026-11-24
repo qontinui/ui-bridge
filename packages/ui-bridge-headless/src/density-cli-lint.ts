@@ -157,7 +157,23 @@ export async function runDensityInit(
     throw new Error('init built a document its own parser refuses');
   }
   writeDensityFile(io, '--targets-out', args.targetsOut, `${JSON.stringify(targets, null, 2)}\n`);
-  writeDensityFile(io, '--budget-out', args.budgetOut, `${JSON.stringify(budget, null, 2)}\n`);
+  try {
+    writeDensityFile(io, '--budget-out', args.budgetOut, `${JSON.stringify(budget, null, 2)}\n`);
+  } catch (err) {
+    // Half an init is a trap: a second init refuses the file left behind.
+    // Take the targets file back, or say that it stays.
+    let left = `${args.targetsOut} was left in place: remove it before running init again`;
+    if (io.removeFile) {
+      try {
+        io.removeFile(args.targetsOut);
+        left = `${args.targetsOut} was removed, so init wrote nothing`;
+      } catch (rmErr) {
+        const why = rmErr instanceof Error ? rmErr.message : String(rmErr);
+        left = `${args.targetsOut} could not be removed (${why}): remove it before running init again`;
+      }
+    }
+    throw new DensityCliArgError(`${err instanceof Error ? err.message : String(err)}; ${left}`);
+  }
   onStep('print');
   io.stdout(
     `${JSON.stringify(

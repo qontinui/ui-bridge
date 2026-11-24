@@ -19,6 +19,7 @@ import {
 import type { Observation } from './observation/observation.js';
 import {
   DensityCliArgError,
+  densitySameFile,
   densityCliProducer,
   densityFlag,
   mkDensityArgError,
@@ -236,6 +237,16 @@ export async function measureDensitySource(
 }> {
   if (source.snapshot === null) {
     onStep('read-captures');
+    // Two spellings of one file (`c.json` and `./c.json`, a symlink, a hard
+    // link) would measure one cell twice and read invariance across a copy.
+    source.captures.forEach((path, i) => {
+      const earlier = source.captures.slice(0, i).find((p) => densitySameFile(io, p, path));
+      if (earlier !== undefined) {
+        throw new DensityCliArgError(
+          `--capture ${path} names the same file as --capture ${earlier}`
+        );
+      }
+    });
     const captures = source.captures.map((path) => readDensityCaptureFile(io, path));
     let targets: DensityTargets | null = null;
     if (source.targets !== null) {

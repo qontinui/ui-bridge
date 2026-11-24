@@ -64,7 +64,7 @@
 
 import type { UnknownCode } from '../observation/observation';
 import type { DensityCapture, DensityItem, DensityRect } from './schema';
-import { densityPinnedIds, densityPins } from './structure';
+import { densityPinnedIds, densityPins, densityRectExtent } from './structure';
 
 /** The reflow every prediction is made under. */
 export const DENSITY_REFLOW = 'column-shift@1' as const;
@@ -144,15 +144,6 @@ function bottomOf(r: DensityRect): number {
   return r.y + r.h;
 }
 
-function extentOf(rects: readonly DensityRect[]): DensityRect | null {
-  if (rects.length === 0) return null;
-  const x = Math.min(...rects.map((r) => r.x));
-  const y = Math.min(...rects.map((r) => r.y));
-  const right = Math.max(...rects.map((r) => r.x + r.w));
-  const bottom = Math.max(...rects.map(bottomOf));
-  return { x, y, w: right - x, h: bottom - y };
-}
-
 function contains(outer: DensityRect, inner: DensityRect): boolean {
   return (
     outer.x <= inner.x + EPS &&
@@ -198,7 +189,7 @@ function closure(state: State, ids: readonly string[], what: string): Set<string
     lookup(state, id, what);
     addSubtree(id);
   }
-  const ext = extentOf(rectsOf(state, out));
+  const ext = densityRectExtent(rectsOf(state, out));
   if (ext !== null) {
     for (const id of [...out]) {
       const seen = new Set<string>();
@@ -233,7 +224,7 @@ function subjectExtent(state: State, subject: Set<string>, what: string): Densit
       );
     }
   }
-  const ext = extentOf(rectsOf(state, subject));
+  const ext = densityRectExtent(rectsOf(state, subject));
   if (ext === null) throw new Decline('input_missing', `${what} has no item with a rect`);
   return ext;
 }

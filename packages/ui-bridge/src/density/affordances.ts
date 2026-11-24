@@ -100,17 +100,17 @@ export const DENSITY_AFFORDANCE_RULES: Readonly<
   'declared-filters': {
     kind: 'filter',
     definition:
-      'a select, combobox, checkbox or radio with a declared `filters` relationship to a repeat, its parent or a row',
+      "a select, combobox, checkbox or radio with a declared `filters` relationship to a repeat, its parent or a row; never the repeat's finder, which carries `alsoFilters`",
   },
   'declared-controls': {
     kind: 'filter',
     definition:
-      'a select, combobox, checkbox or radio with a declared `controls` or `toggles` relationship to a repeat, its parent or a row',
+      "a select, combobox, checkbox or radio with a declared `controls` or `toggles` relationship to a repeat, its parent or a row; never the repeat's finder, which carries `alsoFilters`",
   },
   'control-above-repeat': {
     kind: 'filter',
     definition:
-      "a select, combobox, checkbox or radio in the repeat's scope (its block, else a near ancestor; never another repeat's rows), centred above its first row, and nearer that repeat than any other",
+      "a select, combobox, checkbox or radio in the repeat's scope (its block, else a near ancestor; never another repeat's rows), centred above its first row, and nearer that repeat than any other; never the repeat's finder, which carries `alsoFilters`",
   },
   'nav-after-repeat': {
     kind: 'pager',
@@ -220,8 +220,8 @@ export function densityAffordances(
     }
     return null;
   };
-  /** The id of the nearest item (self or ancestor) with role `navigation`, or `unknown`. */
-  const navigationLandmarkOf = (item: DensityItem): string => {
+  /** The id of the nearest item (self or ancestor) with role `navigation`, or `null`. */
+  const navigationLandmarkOf = (item: DensityItem): string | null => {
     const seen = new Set<string>();
     let cur: DensityItem | undefined = item;
     while (cur && !seen.has(cur.id)) {
@@ -229,7 +229,7 @@ export function densityAffordances(
       seen.add(cur.id);
       cur = cur.parent === null ? undefined : byId.get(cur.parent);
     }
-    return 'unknown';
+    return null;
   };
   const out: DensityAffordance[] = [];
   const add = (
@@ -296,8 +296,8 @@ export function densityAffordances(
     const firstMember = capture.items.find((i) => i.id === rep.members[0]);
     const repNav = firstMember ? densityNavPrefix(firstMember) : null;
     const repInChrome = firstMember ? isDensityChrome(firstMember) : false;
-    /** This repeat's pagers: the qualifying controls of each nav, by nav. */
-    const pagers = new Map<string, DensityItem[]>();
+    /** This repeat's pager controls, each with the key of the nav it sits in. */
+    const pagerControls: Array<{ key: string; item: DensityItem }> = [];
     for (const item of capture.items) {
       if (scope.own.has(item.id)) continue;
       // A filter is a laid-out, interactive select, combobox, checkbox or radio.
@@ -307,7 +307,9 @@ export function densityAffordances(
         isDensityFilterControl(item) &&
         item.interactive &&
         densityTakesSpace(item) &&
-        !headerToggle;
+        !headerToggle &&
+        // The repeat's finder is reported once, as the finder (`alsoFilters`).
+        rep.finder?.id !== item.id;
       // filter (a search box with a `filters` edge is the repeat's finder, not a filter)
       if (filterControl && densityAimsAt(item.filters, rep.id, innermost)) {
         add(item, 'declared-filters', null, { repeat: rep.id });
@@ -340,15 +342,18 @@ export function densityAffordances(
         cy <= rep.lastRow.bottomPx + H
       ) {
         // One pager per nav: its page links and its previous / next buttons
-        // are one affordance. A navigation landmark with no `nav` tag is one nav.
-        const key = densityNavPrefix(item) ?? `landmark:${navigationLandmarkOf(item)}`;
-        const home = [...pagers.keys()].find((k) => densitySameNav(k, key)) ?? key;
-        const list = pagers.get(home);
-        if (list) list.push(item);
-        else pagers.set(home, [item]);
+        // are one affordance. A navigation landmark with no `nav` tag is one
+        // nav when it is registered; a control in a landmark nobody
+        // registered cannot be told from one in another such landmark, so it
+        // is its own pager rather than merged with them.
+        const landmark = navigationLandmarkOf(item);
+        const key =
+          densityNavPrefix(item) ??
+          (landmark !== null ? `landmark:${landmark}` : `unregistered-landmark:${item.id}`);
+        pagerControls.push({ key, item });
       }
     }
-    for (const controls of pagers.values()) {
+    for (const controls of densityPagerGroups(pagerControls)) {
       add(controls[0], 'nav-after-repeat', null, {
         repeat: rep.id,
         members: controls.map((c) => c.id),
@@ -356,6 +361,29 @@ export function densityAffordances(
     }
   }
   return out;
+}
+
+/**
+ * Pager controls grouped by the nav they sit in, independent of their order. A
+ * nav named by its chain key is a group of its own. A tag-path key (an item
+ * anchored below its nav) joins the one keyed nav it spells; when it spells
+ * several (two sibling navs with one tag path) it cannot say which, so the
+ * tag-path controls form a group of their own rather than joining whichever
+ * came first. Groups are in the capture order of their first control.
+ */
+export function densityPagerGroups(
+  controls: ReadonlyArray<{ key: string; item: DensityItem }>
+): DensityItem[][] {
+  const keyed = [...new Set(controls.map((c) => c.key).filter((k) => k.startsWith('key:')))];
+  const groups = new Map<string, DensityItem[]>();
+  for (const { key, item } of controls) {
+    const spells = key.startsWith('tags:') ? keyed.filter((k) => densitySameNav(k, key)) : [];
+    const home = spells.length === 1 ? spells[0] : key;
+    const list = groups.get(home);
+    if (list) list.push(item);
+    else groups.set(home, [item]);
+  }
+  return [...groups.values()];
 }
 
 /** The longest affordance list a summary prints; the rest is counted. */
@@ -368,7 +396,12 @@ const REPEAT_KINDS: ReadonlySet<DensityAffordanceKind> = new Set(['filter', 'pag
 interface DensityAffordanceListing {
   /** No control was operated: interaction counts are read from structure and ARIA state. */
   interactionsBasis: 'static';
-  byRule: Partial<Record<DensityAffordanceRule, number>>;
+  /**
+   * Affordances by the rule that detected them; a rule that found none is
+   * absent. `null` for a rule that did not run (the filter and pager rules,
+   * on a capture written before the repeat keys existed).
+   */
+  byRule: Partial<Record<DensityAffordanceRule, number | null>>;
   /**
    * Leaves named by their `title` whose text is redacted: each is an
    * abbreviation (text with its full form on hover) or an icon button named by
@@ -416,17 +449,23 @@ export function summarizeDensityAffordances(
     };
   }
   const keyed = capture.repeatKeysResolved;
-  // Without repeat keys no repeat is read, so only the item-local kinds are:
-  // a list the caller passed is not used then (a caller that read no repeats
-  // passes `[]`, which would report every measured kind as zero).
-  const all = keyed
-    ? (affordances ?? densityAffordances(capture, targets))
-    : densityAffordances(capture, targets, { repeats: [] });
+  // Without repeat keys no repeat is read, so only the item-local kinds are
+  // measured: a list the caller passed is used for those, and any filter or
+  // pager in it is dropped (it cannot have been read from this capture).
+  const all = (
+    affordances ?? densityAffordances(capture, targets, keyed ? {} : { repeats: [] })
+  ).filter((a) => keyed || !REPEAT_KINDS.has(a.kind));
   const byKind = Object.fromEntries(DENSITY_AFFORDANCE_KINDS.map((k) => [k, 0])) as Record<
     DensityAffordanceKind,
     number
   >;
-  const byRule: Partial<Record<DensityAffordanceRule, number>> = {};
+  const byRule: Partial<Record<DensityAffordanceRule, number | null>> = {};
+  // Unkeyed, the rules that act on repeats did not run: unknown, never 0.
+  if (!keyed) {
+    for (const rule of Object.keys(DENSITY_AFFORDANCE_RULES) as DensityAffordanceRule[]) {
+      if (REPEAT_KINDS.has(DENSITY_AFFORDANCE_RULES[rule].kind)) byRule[rule] = null;
+    }
+  }
   for (const a of all) {
     byKind[a.kind]++;
     byRule[a.rule] = (byRule[a.rule] ?? 0) + 1;

@@ -67,7 +67,6 @@ import {
   densityAskAnswer,
   densityAskReach,
   densityForeignPx,
-  densityIntervalUnion,
   densityReachContext,
   type DensityAskReach,
   type DensityFloors,
@@ -93,9 +92,11 @@ import {
 } from './schema';
 import {
   densityBlocks,
+  densityIntervalUnion,
   densityLeaves,
   densityPinnedIds,
   densityPins,
+  densityRectExtent,
   densitySameColumn,
   type DensityBlock,
   type DensityBlockBy,
@@ -147,8 +148,11 @@ export interface DensityBlockReport {
   firstScreenPx: number;
   /** Present with a role: the weight of the asks answered inside the block. */
   claimedWeight?: number;
-  /** Present with a role: the scroll the block costs the role per visit, px. */
-  displacementPx?: number;
+  /**
+   * Present with a role: the scroll the block costs the role per visit, px.
+   * `null` when the role's asks weigh nothing in total: a mean over no weight.
+   */
+  displacementPx?: number | null;
   /** Present with a role: true when asks whose reach is unknown could add to `displacementPx`. */
   displacementIsLowerBound?: boolean;
   invariance: DensityInvariance;
@@ -260,15 +264,6 @@ function memberRects(block: DensityBlock, placed: ReadonlyMap<string, DensityRec
   return block.members.map((m) => placed.get(m)).filter((r): r is DensityRect => r !== undefined);
 }
 
-function extentOf(rects: readonly DensityRect[]): DensityRect | null {
-  if (rects.length === 0) return null;
-  const x = Math.min(...rects.map((r) => r.x));
-  const y = Math.min(...rects.map((r) => r.y));
-  const right = Math.max(...rects.map((r) => r.x + r.w));
-  const bottom = Math.max(...rects.map((r) => r.y + r.h));
-  return { x, y, w: right - x, h: bottom - y };
-}
-
 /** The text signature of a block in one capture; `null` when a member's text is unreadable. */
 function blockSignature(capture: DensityCapture, block: DensityBlock): string | null {
   const byId = new Map(capture.items.map((i) => [i.id, i]));
@@ -355,6 +350,131 @@ function decisive(r: DensityAskReach): {
   };
 }
 
+/** One ask's reach, and every one of its answering items' reach. */
+type DensityAskResult = { reach: DensityAskReach; items: DensityItemReach[] };
+
+/**
+ * What a block costs the role: the weight of the asks it answers, and the
+ * scroll it puts between the role and the answers below it
+ * (`Σ_below w·min(pitchPx, scrollPx) / Σ w`).
+ */
+function blockClaimOf(
+  b: DensityBlock,
+  asks: readonly DensityAskResult[],
+  placed: ReadonlyMap<string, DensityRect>,
+  totalWeight: number,
+  reachUnknown: boolean
+): Pick<DensityBlockReport, 'claimedWeight' | 'displacementPx' | 'displacementIsLowerBound'> {
+  const members = new Set(b.members);
+  let claimed = 0;
+  for (const a of asks) {
+    if (a.reach.state !== 'rendered' && a.reach.state !== 'hidden') continue;
+    if (a.items.some((r) => members.has(r.id))) claimed += a.reach.weight;
+  }
+  const ext = densityRectExtent(memberRects(b, placed));
+  // A mean over the role's weight: with none, there is no mean (never 0).
+  let displaced: number | null = totalWeight > 0 ? 0 : null;
+  let stepUnknown = false;
+  const step = b.pitchPx ?? b.heightPx;
+  if (step === null) stepUnknown = true;
+  else if (ext !== null && totalWeight > 0) {
+    let sum = 0;
+    for (const a of asks) {
+      const d = decisive(a.reach);
+      if (d.item === null || d.scrollPx === null || members.has(d.item)) continue;
+      const r = placed.get(d.item);
+      if (r === undefined || r.y < ext.y + ext.h || !densitySameColumn(ext, r)) continue;
+      sum += a.reach.weight * Math.min(step, d.scrollPx);
+    }
+    displaced = sum / totalWeight;
+  }
+  return {
+    claimedWeight: claimed,
+    displacementPx: displaced,
+    displacementIsLowerBound: reachUnknown || stepUnknown,
+  };
+}
+
+/**
+ * The unclaimed-block observation: `firstScreenPx > 0 ∧ claimedWeight = 0 ∧
+ * displacementPx > 0`. While some weight is uncertain its answers could be
+ * inside the block, so the block is only possibly unclaimed.
+ */
+function unclaimedBlocksOf(
+  blockReports: readonly DensityBlockReport[],
+  uncertainWeight: number
+): { unclaimedAll: DensityUnclaimedBlock[]; possiblyAll: DensityPossiblyUnclaimedBlock[] } {
+  const unclaimedAll: DensityUnclaimedBlock[] = [];
+  const possiblyAll: DensityPossiblyUnclaimedBlock[] = [];
+  for (const b of blockReports) {
+    if (!(b.firstScreenPx > 0 && b.claimedWeight === 0 && (b.displacementPx ?? 0) > 0)) continue;
+    const entry = {
+      block: b.id,
+      firstScreenPx: b.firstScreenPx,
+      displacementPx: b.displacementPx ?? 0,
+    };
+    // An unknown claimedWeight never fires the detector.
+    if (uncertainWeight > 0) possiblyAll.push({ ...entry, unresolvedWeight: uncertainWeight });
+    else unclaimedAll.push(entry);
+  }
+  return { unclaimedAll, possiblyAll };
+}
+
+/** The role quantities: `answeredAt[k]` as intervals, the means and their unweighted twins. */
+function roleReportOf(
+  role: string,
+  asks: readonly DensityAskResult[],
+  w: {
+    totalWeight: number;
+    unresolvedWeight: number;
+    unplacedWeight: number;
+    floorsChecked: boolean;
+  }
+): DensityRoleReport {
+  const { totalWeight } = w;
+  const answeredAt = DENSITY_ANSWERED_AT_KS.map((k) => {
+    let lo = 0;
+    let hi = 0;
+    for (const a of asks) {
+      const within = densityAnsweredWithin(a.reach, k, a.items);
+      if (within.lo) lo += a.reach.weight;
+      if (within.hi) hi += a.reach.weight;
+    }
+    return {
+      k,
+      lo: totalWeight > 0 ? lo / totalWeight : null,
+      hi: totalWeight > 0 ? hi / totalWeight : null,
+    };
+  });
+  const reached = asks.filter((a) => a.reach.state !== 'unanswered');
+  const scrolls = reached.map((a) => ({
+    weight: a.reach.weight,
+    v: a.reach.state === 'unresolved' ? null : decisive(a.reach).scrollPx,
+  }));
+  const interactions = reached.map((a) => ({
+    weight: a.reach.weight,
+    v: a.reach.state === 'unresolved' ? null : decisive(a.reach).interactions,
+  }));
+  return {
+    role,
+    totalWeight,
+    asks: asks.map((a) => a.reach),
+    answeredAt,
+    meanScrollPx: meanOf(scrolls, true),
+    meanInteractions: meanOf(interactions, true),
+    unweighted: {
+      meanScrollPx: meanOf(scrolls, false),
+      meanInteractions: meanOf(interactions, false),
+    },
+    unresolvedWeight: w.unresolvedWeight,
+    unplacedWeight: w.unplacedWeight,
+    unanswered: asks.filter((a) => a.reach.state === 'unanswered').map((a) => a.reach.id),
+    foreignBasis:
+      w.unresolvedWeight + w.unplacedWeight > 0 ? 'chrome-only' : 'chrome-and-unclaimed',
+    floorsChecked: w.floorsChecked,
+  };
+}
+
 /** Measure one capture. A capture whose structure is not resolved answers `unknown{input_missing}`. */
 export function measureDensity(
   capture: DensityCapture,
@@ -403,7 +523,7 @@ export function measureDensity(
       ? (targets.roles.find((r) => r.role === capture.cell.role) ?? null)
       : null;
   const ctx = densityReachContext(capture, pins, leaves, placed, options.floors ?? null);
-  const asks: Array<{ reach: DensityAskReach; items: DensityItemReach[] }> = declared
+  const asks: DensityAskResult[] = declared
     ? declared.asks.map((a) =>
         densityAskReach(ctx, densityAskAnswer(ctx, a), DENSITY_ANSWER_ITEM_CAP)
       )
@@ -478,51 +598,14 @@ export function measureDensity(
       firstScreenPx,
       invariance: invarianceOf(b.id, captures, blocksOf),
     };
-    if (declared) {
-      const members = new Set(b.members);
-      let claimed = 0;
-      for (const a of asks) {
-        if (a.reach.state !== 'rendered' && a.reach.state !== 'hidden') continue;
-        if (a.items.some((r) => members.has(r.id))) claimed += a.reach.weight;
-      }
-      const ext = extentOf(memberRects(b, placed));
-      let displaced = 0;
-      let stepUnknown = false;
-      const step = b.pitchPx ?? b.heightPx;
-      if (step === null) stepUnknown = true;
-      else if (ext !== null && totalWeight > 0) {
-        for (const a of asks) {
-          const d = decisive(a.reach);
-          if (d.item === null || d.scrollPx === null || members.has(d.item)) continue;
-          const r = placed.get(d.item);
-          if (r === undefined || r.y < ext.y + ext.h || !densitySameColumn(ext, r)) continue;
-          displaced += a.reach.weight * Math.min(step, d.scrollPx);
-        }
-        displaced /= totalWeight;
-      }
-      report.claimedWeight = claimed;
-      report.displacementPx = displaced;
-      report.displacementIsLowerBound = reachUnknown || stepUnknown;
-    }
+    if (declared) Object.assign(report, blockClaimOf(b, asks, placed, totalWeight, reachUnknown));
     return report;
   });
 
   // ---- the unclaimed-block observation ----
-  const unclaimedAll: DensityUnclaimedBlock[] = [];
-  const possiblyAll: DensityPossiblyUnclaimedBlock[] = [];
-  if (declared) {
-    for (const b of blockReports) {
-      if (!(b.firstScreenPx > 0 && b.claimedWeight === 0 && (b.displacementPx ?? 0) > 0)) continue;
-      const entry = {
-        block: b.id,
-        firstScreenPx: b.firstScreenPx,
-        displacementPx: b.displacementPx ?? 0,
-      };
-      // An unknown claimedWeight never fires the detector.
-      if (uncertainWeight > 0) possiblyAll.push({ ...entry, unresolvedWeight: uncertainWeight });
-      else unclaimedAll.push(entry);
-    }
-  }
+  const { unclaimedAll, possiblyAll } = declared
+    ? unclaimedBlocksOf(blockReports, uncertainWeight)
+    : { unclaimedAll: [], possiblyAll: [] };
 
   // ---- foreignPx: chrome, and the blocks known to be unclaimed ----
   const foreign = new Set<string>();
@@ -541,46 +624,12 @@ export function measureDensity(
   let role: DensityRoleReport | undefined;
   let roleAbsent: string | undefined;
   if (declared) {
-    const answeredAt = DENSITY_ANSWERED_AT_KS.map((k) => {
-      let lo = 0;
-      let hi = 0;
-      for (const a of asks) {
-        const w = densityAnsweredWithin(a.reach, k, a.items);
-        if (w.lo) lo += a.reach.weight;
-        if (w.hi) hi += a.reach.weight;
-      }
-      return {
-        k,
-        lo: totalWeight > 0 ? lo / totalWeight : null,
-        hi: totalWeight > 0 ? hi / totalWeight : null,
-      };
-    });
-    const reached = asks.filter((a) => a.reach.state !== 'unanswered');
-    const scrolls = reached.map((a) => ({
-      weight: a.reach.weight,
-      v: a.reach.state === 'unresolved' ? null : decisive(a.reach).scrollPx,
-    }));
-    const interactions = reached.map((a) => ({
-      weight: a.reach.weight,
-      v: a.reach.state === 'unresolved' ? null : decisive(a.reach).interactions,
-    }));
-    role = {
-      role: declared.role,
+    role = roleReportOf(declared.role, asks, {
       totalWeight,
-      asks: asks.map((a) => a.reach),
-      answeredAt,
-      meanScrollPx: meanOf(scrolls, true),
-      meanInteractions: meanOf(interactions, true),
-      unweighted: {
-        meanScrollPx: meanOf(scrolls, false),
-        meanInteractions: meanOf(interactions, false),
-      },
       unresolvedWeight,
       unplacedWeight,
-      unanswered: asks.filter((a) => a.reach.state === 'unanswered').map((a) => a.reach.id),
-      foreignBasis: uncertainWeight > 0 ? 'chrome-only' : 'chrome-and-unclaimed',
       floorsChecked: options.floors !== undefined && options.floors !== null,
-    };
+    });
   } else if (targets) {
     roleAbsent =
       capture.cell.role === null
@@ -594,9 +643,8 @@ export function measureDensity(
   const repeats = keyed
     ? densityRepeats(capture, targets, { leaves, pins, blocks, classes, volume })
     : [];
-  const affordances = keyed
-    ? densityAffordances(capture, targets, { leaves, blocks, repeats })
-    : [];
+  // Unkeyed, no repeat is read, so only the item-local affordances are.
+  const affordances = densityAffordances(capture, targets, { leaves, blocks, repeats });
 
   const kindBy = Object.fromEntries(DENSITY_KIND_BASES.map((b) => [b, 0])) as Record<
     DensityKindBy,

@@ -110,6 +110,7 @@ import {
   densityLeaves,
   densityPinnedIds,
   densityPins,
+  densityRectExtent,
   densitySameColumn,
   type DensityBlock,
   type DensityLeaves,
@@ -291,22 +292,13 @@ interface Candidate {
   noEdit: { code: UnknownCode; reason: string } | null;
 }
 
-function extentOf(rects: readonly DensityRect[]): DensityRect | null {
-  if (rects.length === 0) return null;
-  const x = Math.min(...rects.map((r) => r.x));
-  const y = Math.min(...rects.map((r) => r.y));
-  const right = Math.max(...rects.map((r) => r.x + r.w));
-  const bottom = Math.max(...rects.map((r) => r.y + r.h));
-  return { x, y, w: right - x, h: bottom - y };
-}
-
 function extentOfIds(ctx: CellContext, ids: Iterable<string>): DensityRect | null {
   const rects: DensityRect[] = [];
   for (const id of ids) {
     const r = ctx.placed.get(id);
     if (r) rects.push(r);
   }
-  return extentOf(rects);
+  return densityRectExtent(rects);
 }
 
 /** The uncertain weight that keeps a claimed weight from being known. */

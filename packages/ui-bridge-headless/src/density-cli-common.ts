@@ -54,6 +54,8 @@ export interface DensityCliIo {
   exists?(path: string): boolean;
   /** Whether two paths name one file (a case variant, a symlink, a hard link). Defaults to resolved-path equality. */
   sameFile?(a: string, b: string): boolean;
+  /** Delete a file this run wrote; `init` takes back its first file when the second write fails. */
+  removeFile?(path: string): void;
   stdout(text: string): void;
   stderr(text: string): void;
 }
@@ -229,6 +231,11 @@ export function sameFileOnDisk(a: string, b: string): boolean {
     // The output does not exist yet, so it cannot be the input.
     return false;
   }
+}
+
+/** Whether two paths name one file, by the host's own test, else by resolved path. */
+export function densitySameFile(io: DensityCliIo, a: string, b: string): boolean {
+  return io.sameFile ? io.sameFile(a, b) : resolvePath(a) === resolvePath(b);
 }
 
 /** Refuse to write `out` over any of `inputs` (writing over an input destroys what was read). */

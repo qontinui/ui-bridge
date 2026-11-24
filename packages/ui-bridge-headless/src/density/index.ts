@@ -185,7 +185,6 @@ export {
   densityAskAnswer,
   densityAskReach,
   densityForeignPx,
-  densityIntervalUnion,
   densityItemReach,
   densityReachContext,
   type DensityAllReach,
@@ -200,6 +199,7 @@ export {
   type DensityReachContext,
   type DensityUnavailableReason,
 } from './reach';
+export { densityIntervalUnion } from './structure';
 export {
   DENSITY_BOUND_LIST_CAP,
   densityBounds,

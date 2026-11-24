@@ -508,18 +508,26 @@ export function resolveDensityStructure(
   };
   const cousinRows = parsed.map(cousinOf);
   // A table row whose every cousin sits in a `th` is a header row (a table
-  // with no `thead` keeps its header row in `tbody`), not a data row — when
-  // another row of the same table holds a cell that is not a `th`; a table
-  // whose only registered cells are `th` (row headers) keeps them all.
+  // with no `thead` keeps its header row in `tbody`), not a data row — when it
+  // comes before the table's first row holding a cell that is not a `th`. A
+  // row-header-only row after that (a data row whose `td` nobody registered)
+  // is a data row, and a table whose only registered cells are `th` (row
+  // headers) keeps them all.
+  const rowIndexOf = (r: string): number => {
+    const m = /\[(\d+)\]$/.exec(r);
+    return m ? Number(m[1]) : Infinity;
+  };
   const rowAllTh = new Map<string, boolean>();
-  const groupHasData = new Set<string>();
+  const firstDataRow = new Map<string, number>();
   for (const [c, r, viaTh] of cousinRows) {
     if (c === null) continue;
     rowAllTh.set(r, (rowAllTh.get(r) ?? true) && viaTh);
-    if (!viaTh) groupHasData.add(c);
+    if (!viaTh) firstDataRow.set(c, Math.min(firstDataRow.get(c) ?? Infinity, rowIndexOf(r)));
   }
+  const isHeaderRow = (c: string, r: string): boolean =>
+    rowAllTh.get(r) === true && rowIndexOf(r) < (firstDataRow.get(c) ?? -Infinity);
   const cousins = cousinRows.map(([c, r]): [string, string] | [null, null] =>
-    c !== null && !(rowAllTh.get(r) === true && groupHasData.has(c)) ? [c, r] : [null, null]
+    c !== null && !isHeaderRow(c, r) ? [c, r] : [null, null]
   );
 
   // ---- ownChars: direct children only ----
@@ -814,22 +822,41 @@ export interface DensityBlocks {
   unblocked: string[];
 }
 
-function unionLength(intervals: Array<[number, number]>): number {
-  const sorted = intervals.slice().sort((a, b) => a[0] - b[0]);
+// Geometry the density modules share, by loops: a spread argument list has a
+// length ceiling (a block of a few hundred thousand leaves would throw).
+
+/** Union length of `[s, e)` intervals; an empty or inverted interval adds nothing. */
+export function densityIntervalUnion(intervals: ReadonlyArray<readonly [number, number]>): number {
+  const sorted = intervals.filter(([s, e]) => e > s).sort((a, b) => a[0] - b[0]);
   let total = 0;
-  let curStart = -Infinity;
-  let curEnd = -Infinity;
+  let cs = -Infinity;
+  let ce = -Infinity;
   for (const [s, e] of sorted) {
-    if (s > curEnd) {
-      if (curEnd > curStart) total += curEnd - curStart;
-      curStart = s;
-      curEnd = e;
-    } else if (e > curEnd) {
-      curEnd = e;
-    }
+    if (s > ce) {
+      if (ce > cs) total += ce - cs;
+      cs = s;
+      ce = e;
+    } else if (e > ce) ce = e;
   }
-  if (curEnd > curStart) total += curEnd - curStart;
+  if (ce > cs) total += ce - cs;
   return total;
+}
+
+/** The smallest rect holding every one of `rects`; `null` with none. */
+export function densityRectExtent(rects: Iterable<DensityRect>): DensityRect | null {
+  let x = Infinity;
+  let y = Infinity;
+  let right = -Infinity;
+  let bottom = -Infinity;
+  let any = false;
+  for (const r of rects) {
+    any = true;
+    if (r.x < x) x = r.x;
+    if (r.y < y) y = r.y;
+    if (r.x + r.w > right) right = r.x + r.w;
+    if (r.y + r.h > bottom) bottom = r.y + r.h;
+  }
+  return any ? { x, y, w: right - x, h: bottom - y } : null;
 }
 
 interface Extent {
@@ -861,7 +888,7 @@ function extentOf(members: readonly DensityItem[]): Extent | null {
     spans.push([r.y, r.y + r.h]);
   }
   if (spans.length === 0) return null;
-  return { top, bottom, x, right, height: unionLength(spans) };
+  return { top, bottom, x, right, height: densityIntervalUnion(spans) };
 }
 
 /**
