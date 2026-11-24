@@ -36,6 +36,7 @@ import {
   resolveAccessibleName,
 } from './a11y';
 import { classList } from './class-name';
+import { composedAncestry } from '../control/forced-hover';
 import {
   verdictOf,
   elementRedaction,
@@ -201,9 +202,26 @@ export function readElementVisibility(element: HTMLElement): ElementVisibility {
  */
 export function isRenderedForAction(el: HTMLElement): boolean {
   if (!el.isConnected) return false;
-  if (window.getComputedStyle(el).visibility === 'hidden') return false;
-  for (let node: Element | null = el; node; node = node.parentElement) {
-    if (window.getComputedStyle(node).display === 'none') return false;
+  const view = el.ownerDocument.defaultView ?? window;
+  // One read of the node's own style for both of its own signals.
+  const own = view.getComputedStyle(el);
+  if (own.visibility === 'hidden' || own.display === 'none') return false;
+  // A browser's own answer, where it has one: `checkVisibility()` with its
+  // defaults is false for a node with no box — `display: none` on it or any
+  // FLAT-tree ancestor (a shadow host, a slot), or a light-DOM child no slot
+  // takes — and, with `checkOpacity` / `checkVisibilityCSS` left off, ignores
+  // `opacity: 0` exactly as this check means to.
+  if (typeof el.checkVisibility === 'function') return el.checkVisibility();
+  // Fallback (jsdom, older engines): the same question by hand, walking the
+  // flat tree (`composedAncestry`: a slotted node's parent is its slot, a
+  // shadow root is crossed to its host).
+  for (const node of composedAncestry(el)) {
+    // An open shadow host renders only the children its slots take.
+    const parent = node.parentElement;
+    if (parent?.shadowRoot && !(node as Element & { assignedSlot?: unknown }).assignedSlot) {
+      return false;
+    }
+    if (node !== el && view.getComputedStyle(node).display === 'none') return false;
   }
   return true;
 }

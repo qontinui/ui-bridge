@@ -630,20 +630,23 @@ The same canonical verdict now backs three more readers that kept their own
 check: `findByText`'s per-hit `visible` (it read `offsetParent !== null ||
 position: fixed`); the `visible` condition of
 `POST /ai/wait-for-element-condition` (it read `offsetParent !== null` and a
-non-zero size; the server arm reads the polled row's own `state.visible` and
-hit-tests only a row without one); and the live-node fallback of
-`POST /ai/wait-for-element`'s `requirement: "visible"` (used when the row
-carries no visibility value; it read `offsetParent !== null` and a non-zero
-size). An occluded or off-screen element now reads `visible: false` from
+non-zero size); and `POST /ai/wait-for-element`'s `requirement: "visible"`.
+Both waits read the verdict live whenever the element has a node, and fall
+back to the row's `state.visible` only without one, because a registered
+row's state carries the registry's post-action override, which nothing
+expires. An occluded or off-screen element now reads `visible: false` from
 `findByText` and satisfies neither `visible` wait. The `clickable` condition is
-deliberately NOT the visibility verdict: it means the next click would not be
-refused, so it reads the action dispatch gate's render check (connected, no
-`display: none` on the node or an ancestor, not `visibility: hidden`) plus the
-interaction blockers. A below-the-fold, `opacity: 0` or covered control is
-`clickable`; it used to fail the old `offsetParent` check only when it was
-itself `position: fixed`, which no longer refuses it. The relay's
-`executeElementAction` dispatch gate uses the same render check, so it, too,
-no longer refuses a `position: fixed` control.
+deliberately NOT the visibility verdict: it means the next click on that arm
+would not be refused, so it mirrors each arm's own click path. The server
+(HTTP executor) arm passes the executor's click visibility pre-check
+(`getClickVisibilityReason`); the React relay arm passes the relay dispatch
+gate's render check (connected, no `display: none` on the node or a flat-tree
+ancestor, slotted when its parent hosts a shadow root, not
+`visibility: hidden`). Both add the interaction blockers. A below-the-fold,
+`opacity: 0`, `position: fixed` or covered control is `clickable` on both
+arms. The relay's `executeElementAction` dispatch gate uses the same render
+check, so it no longer refuses a `position: fixed` control, which its old
+`offsetParent` test did.
 
 ## Diagnostics
 
