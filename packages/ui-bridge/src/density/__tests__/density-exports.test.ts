@@ -65,6 +65,7 @@ describe('the ./density subpath', () => {
       'DENSITY_CAPTURE_SCHEMA',
       'DENSITY_CHAR_WIDTH_EM',
       'DENSITY_KIND_BASES',
+      'DENSITY_MAX_COORDINATE_PX',
       'DENSITY_PRODUCER_ID',
       'DENSITY_REPEAT_LIST_CAP',
       'DENSITY_REPEAT_MIN_ROWS',

@@ -54,6 +54,9 @@ import {
   type DensityPins,
 } from './structure';
 
+/** The largest coordinate or size, in px, a repeat member may have (no page lays out beyond it). */
+export const DENSITY_MAX_COORDINATE_PX = 1e7;
+
 /** The fewest rows a group must span to be a repeat. */
 export const DENSITY_REPEAT_MIN_ROWS = 3;
 
@@ -179,6 +182,16 @@ export interface DensityRepeatInputs {
 /** Whether a member takes space: a rect with area, and a visibility that lays it out. */
 export function densityTakesSpace(item: DensityItem): boolean {
   return takesSpace(item);
+}
+
+function withinLayout(item: DensityItem): boolean {
+  const r = item.rect;
+  return (
+    r !== null &&
+    [r.x, r.y, r.w, r.h].every(
+      (v) => Number.isFinite(v) && Math.abs(v) <= DENSITY_MAX_COORDINATE_PX
+    )
+  );
 }
 
 function takesSpace(item: DensityItem): boolean {
@@ -774,7 +787,9 @@ export function densityRepeats(
   const byId = new Map(capture.items.map((i) => [i.id, i]));
   const captureIndex = new Map(capture.items.map((it, i) => [it.id, i]));
 
-  const eligible = capture.items.filter(takesSpace);
+  // A member must take space at a coordinate a page can lay out: a forged
+  // capture's 1e308 rect would overflow every extent to Infinity.
+  const eligible = capture.items.filter((i) => takesSpace(i) && withinLayout(i));
   const groups: Group[] = [];
 
   const children = densityChildren(capture);

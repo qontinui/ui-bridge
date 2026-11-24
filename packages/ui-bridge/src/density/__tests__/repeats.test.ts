@@ -1186,6 +1186,17 @@ describe('repeats', () => {
     expect([rep.rows, rep.valuesPerRow]).toEqual([4, 2]);
   });
 
+  it('members at coordinates no page lays out form no repeat (no Infinity in output)', () => {
+    const els: DensityTestElementSpec[] = [0, 1e308, 1.7e308].map((y, i) => ({
+      id: `far${i + 1}`,
+      tag: 'li',
+      xpath: `/html/body/ul/li[${i + 1}]`,
+      rect: [0, y, 300, 30],
+      text: `Row ${i + 1}`,
+    }));
+    expect(densityRepeats(capture(els), null)).toEqual([]);
+  });
+
   it('a hidden leaf in a row draws no line band', () => {
     const els = orderList(3).map((e): DensityTestElementSpec => {
       if (!e.id.endsWith('.sum')) return e;
