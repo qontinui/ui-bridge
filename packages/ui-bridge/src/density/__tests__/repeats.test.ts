@@ -741,14 +741,14 @@ describe('repeats', () => {
   });
 
   it('a volume below the rendered rows is the measured extent of that many rows', () => {
-    // The first row is taller than the pitch: projecting backwards would give 36.
+    // The last row is shorter than the others: projecting backwards would give 20.
     const els = orderList(5).map((e): DensityTestElementSpec => {
-      if (e.id !== 'app.orders.row-1') return e;
+      if (e.id !== 'app.orders.row-5') return e;
       const [x, y, w] = e.rect!;
-      return { ...e, rect: [x, y, w, 60] };
+      return { ...e, rect: [x, y, w, 20] };
     });
     const c = capture(els);
-    expect(densityRepeats(c, null, { volume: 1 })[0].extentAtVolume).toEqual({ volume: 1, px: 60 });
+    expect(densityRepeats(c, null, { volume: 1 })[0].extentAtVolume).toEqual({ volume: 1, px: 36 });
     expect(densityRepeats(c, null, { volume: 2.5 })[0].extentAtVolume).toEqual({
       unknown: 'input_missing',
       reason: 'the declared row volume is not a positive integer',
@@ -795,6 +795,33 @@ describe('repeats', () => {
       );
     }
     expect(densityRepeats(capture(els), null)).toEqual([]);
+  });
+
+  it('a header nav of items of different heights centred on one line is one row, not a repeat', () => {
+    const rects: Array<[number, number, number, number]> = [
+      [20, 10, 120, 40],
+      [200, 20, 60, 20],
+      [280, 20, 70, 20],
+      [600, 14, 90, 32],
+    ];
+    const els: DensityTestElementSpec[] = rects.map((rect, i) => ({
+      id: `nav.${i + 1}`,
+      tag: 'a',
+      xpath: `/html/body/header/nav/ul/li[${i + 1}]/a`,
+      rect,
+      text: `N${i + 1}`,
+    }));
+    expect(densityRepeats(capture(els), null)).toEqual([]);
+  });
+
+  it('a capture that claims its repeat keys while its items lack them does not parse', () => {
+    const c = capture(orderList(3));
+    const bad = {
+      ...c,
+      items: c.items.map(({ siblingKey: _s, cousinKey: _c, cousinRowKey: _r, ...rest }) => rest),
+    };
+    const parsed = parseDensityCapture(JSON.parse(JSON.stringify(bad)));
+    expect(parsed.ok).toBe(false);
   });
 
   it('a hidden leaf in a row draws no line band', () => {

@@ -303,7 +303,10 @@ export function densityAffordances(
         scope.ids.has(item.id) &&
         item.interactive &&
         filterControl &&
-        nearestBelow.get(item.id) === rep.id
+        nearestBelow.get(item.id) === rep.id &&
+        // A declared edge names the repeat the control acts on.
+        !(item.filters !== null && innermost.has(item.filters)) &&
+        !(item.controls !== null && innermost.has(item.controls))
       ) {
         add(item, 'control-above-repeat', null, { repeat: rep.id });
       }
