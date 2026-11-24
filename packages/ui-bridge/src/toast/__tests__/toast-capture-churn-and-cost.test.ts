@@ -306,7 +306,9 @@ describe('ToastCapture churn budget and re-read gate', () => {
       expect(appearedFor('timer')[4].toast.message).toBe('fresh');
 
       // Back into suppression inside one window, then removed with no
-      // replacement while still suppressed: the budget it leaves goes cold.
+      // replacement while still suppressed. The removal's own scan runs
+      // before `later` mounts, so the same-batch rule (not the budget going
+      // cold) is what makes `later` start fresh; A9d pins the warmth term.
       await tick(fresh, 1, 6);
       expect(appearedFor('timer')).toHaveLength(8);
       fresh.remove();
@@ -320,8 +322,10 @@ describe('ToastCapture churn budget and re-read gate', () => {
     });
 
     // A9c — A9b's quiet-start step with no reconcile between the removal and
-    // the remount, so no prune can drop the cold budget first: the remount
-    // itself must refuse to inherit a cold budget.
+    // the remount, so no prune can drop the budget first. The removal's own
+    // debounced scan still runs before the remount, so this pins the
+    // same-batch rule (a guard beside A16), not the warmth term; A9d is the
+    // test that decides on `isWarm` alone.
     it('a remount after quiet starts fresh even when no reconcile ran in between', async () => {
       install({ pollInterval: 60_000 });
       const timer = addStatus('timer', 'r0');

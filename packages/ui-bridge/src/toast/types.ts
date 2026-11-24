@@ -86,7 +86,8 @@ export interface ToastCaptureConfig {
    * been unchanged for `announcementWindowMs`; its settled text, if not empty,
    * is then announced once. A re-keyed element is the same element: a new
    * node on the same `id` / `data-testid` that replaces a node removed in the
-   * same DOM mutation batch continues that node's budget while it is warm (a
+   * same scan batch (every mutation before the debounced scan runs, which can
+   * span several tasks) continues that node's budget while it is warm (a
    * framework that replaces the node on every tick, e.g. React `key={count}`,
    * is held to the same bound), decided when the new node first appears,
    * even before it has text. A node that appears after the previous one left
