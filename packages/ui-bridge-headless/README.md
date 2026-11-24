@@ -229,23 +229,40 @@ before the browser, whether or not `recordHar` is set.
 ## `ui-bridge-density`
 
 A second bin measures, from a UI Bridge control snapshot, how much effort it
-takes an audience role to reach what it came for, and holds that to a budget.
-In this release it has four verbs:
+takes an audience role to reach what it came for, holds that to a budget, and
+plans the change. It has seven verbs:
 
 ```bash
-ui-bridge-density measure --snapshot snapshot.json --role buyer \
-  [--fixture <name>] [--targets targets.json] [--capture-out capture.json]
-ui-bridge-density assert --budget budget.json --snapshot snapshot.json --role buyer [--targets targets.json]
-ui-bridge-density assert --draft budget.json --snapshot snapshot.json --role buyer
-ui-bridge-density lint --targets targets.json --profile-text profile.md
-ui-bridge-density init --surface /orders --profile audience_profile/<name>@<version>
+ui-bridge-density init    --surface /orders --profile audience_profile/<name>@<version>                           [--targets-out density-targets.json] [--budget-out density-budget.json]
+ui-bridge-density lint    --targets targets.json --profile-text profile.md [--profile <doc>]
+ui-bridge-density fit     --targets targets.json --shell capture.json [--shell <capture>]... [--budget budget.json]
+ui-bridge-density measure --snapshot snapshot.json --role buyer                           [--fixture <name>] [--targets targets.json] [--capture-out capture.json]
+ui-bridge-density measure --capture capture.json [--capture <file>]... [--targets targets.json]
+ui-bridge-density plan    --capture capture.json [--capture <file>]... [--targets targets.json] [--budget budget.json]                           [--ordered-by <quantity>:<ascending|descending>] [--ordered-by-cell <n>]
+ui-bridge-density assert  --budget budget.json --snapshot snapshot.json --role buyer [--targets targets.json]
+ui-bridge-density assert  --draft budget.json --snapshot snapshot.json --role buyer
+ui-bridge-density diff    --before before.json --after after.json [--targets targets.json] [--budget budget.json]                           [--plan plan.json --applied <proposal id>]...
 ```
 
+- `init` writes an empty, valid targets file and budget file (no role, no ask,
+  no limit) and never overwrites a file.
+- `lint` checks that each ask's quote is in the audience profile's text, and
+  lists the profile sentences that no ask quotes.
+- `fit` stacks the asks in rank order at their declared form and the budget's
+  floors under the chrome of a shell capture, and reports the rank at which
+  the fold is crossed (labelled predicted). Without floors it answers
+  `unknown{no_expectation}`.
 - `measure` reports each cell: the bases, the structure, the ledger, and with
   `--targets` the reach of every ask, `answeredAt[k]` as intervals and the
   unclaimed blocks. `--snapshot` takes a `GET /control/snapshot` answer, in
   the relay's `{ success, data, _meta }` envelope or bare; `-` reads standard
-  input. `--capture-out` writes the text-free `ui-bridge/density-capture@1`.
+  input. `--capture-out` writes the text-free `ui-bridge/density-capture@1`;
+  `--capture` measures saved captures instead (one cell each).
+- `plan` lists proposals (`demote`, `order`, `pitch`, `one-line`, `chrome`,
+  `disclose`, `find`, `dedupe`), each with its evidence, its edits, per-cell
+  predicted deltas with bounds, its costs and its conflicts. A prediction is
+  `measure` of the capture with the edits applied (`column-shift@1`).
+  Proposals are unranked unless `--ordered-by` names a quantity.
 - `assert` evaluates a `ui-bridge/density-budget@1`: each rule names a
   quantity of `DENSITY_QUANTITIES` and answers `pass`, `fail` or `unknown` per
   matching cell, on intervals. A null limit is unknown, never a pass. A
@@ -253,18 +270,23 @@ ui-bridge-density init --surface /orders --profile audience_profile/<name>@<vers
   flagged `unbounded`; a required matrix cell with no capture is unknown. It
   prints the three counts. `--draft` writes a budget whose rules carry the
   current values and null limits. The tool never supplies a limit.
-- `lint` checks that each ask's quote is in the audience profile's text, and
-  lists the profile sentences that no ask quotes.
-- `init` writes an empty, valid targets file and budget file (no role, no ask,
-  no limit) and never overwrites a file.
+- `diff` reports per-quantity deltas between two captures of one cell and,
+  with `--plan` (a saved `plan` output) and `--applied`, each applied
+  proposal's `predictionError`.
 - Standard output is one JSON document per run.
-- Exit codes: 0 for an answer (`measure`) or a clean result (`assert`, `lint`),
-  1 when a rule fails or a quote is missing (or on an internal error), 3 when
-  the only non-passes are unknowns, 2 for a usage error. On SIGHUP, SIGINT or
-  SIGTERM before any verdict, every verb prints an `interrupted` document
-  naming the verb and the step it reached, and exits 129, 130 or 143. A
-  signal after the verdict is printed adds a note on stderr that the verdict
-  stands, and the run exits with the verdict's own code.
+- Exit codes: 0 for an answer (`measure`, `plan`, `fit`, `diff`, `init`) or a
+  clean result (`assert`, `lint`), 1 when a rule fails or a quote is missing
+  (or on an internal error), 3 when the only non-passes are unknowns, 2 for a
+  usage error. On SIGHUP, SIGINT or SIGTERM before any verdict, every verb
+  prints an `interrupted` document naming the verb and the step it reached,
+  and exits 129, 130 or 143. A signal after the verdict is printed adds a note
+  on stderr that the verdict stands, and the run exits with the verdict's own
+  code.
+
+The schemas, the quantity table, what a snapshot cannot measure and a worked
+example are in the docs site's
+[Information Density](https://qontinui.github.io/ui-bridge/docs/api/density)
+page.
 
 It runs a generated copy of the density core and does not load
 `@qontinui/ui-bridge`. A capture holds no page text, but its text hashes are
