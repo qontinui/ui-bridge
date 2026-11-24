@@ -6,8 +6,11 @@
  *    the budget the element is suppressed: its entry leaves `active`, its
  *    changes are absorbed silently, and once it has been quiet for the window
  *    its settled text is announced once (the trailing announcement). A
- *    re-keyed node (a new node on the same `id` / `data-testid` replacing one
- *    that is gone) continues that id's budget while it is warm.
+ *    re-keyed node (a new node on the same `id` / `data-testid`, first seen
+ *    by the scan in the same mutation batch in which the node it replaces
+ *    left) continues that node's budget while it is warm; any other node —
+ *    a sibling, a node already present, one arriving in a later batch — has
+ *    its own.
  * B: a tracked (active or parked) element is re-read through `extractMessage`
  *    (a deep clone) only when its own subtree mutated, or when one of the two
  *    inputs outside the subtree — visibility and the ancestor redaction
@@ -17,7 +20,8 @@
  *
  * Plans: 2026-11-23-ui-bridge-toast-capture-churn-and-reread-cost (Phase 1);
  * 2026-11-24-ui-bridge-toast-capture-rekey-churn-and-empty-element-parking
- * (Phase 1: A9a, A9b, A10-A15, C1-C5).
+ * (Phase 1: A9a, A9b, A10-A15, C1-C5; A9c; review round 1: A9d, A16, A17,
+ * C4 and C5 strengthened; review round 2: A18-A23).
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -53,6 +57,15 @@ function setTextInPlace(el: Element, text: string): void {
 function rekey(prev: Element, text: string): HTMLElement {
   prev.remove();
   return addStatus('timer', text);
+}
+
+/** Append an EMPTY `role="status"` element (no child node) carrying `data-testid`. */
+function addEmptyStatus(testid: string): HTMLElement {
+  const el = document.createElement('div');
+  el.setAttribute('role', 'status');
+  el.setAttribute('data-testid', testid);
+  document.body.appendChild(el);
+  return el;
 }
 
 /** Append a `role="status"` element with neither `id` nor `data-testid`. */
@@ -396,6 +409,121 @@ describe('ToastCapture churn budget and re-read gate', () => {
       expect(
         events.filter((e) => e.action === 'appeared' && e.toast.message === 'static')
       ).toHaveLength(1);
+    });
+
+    // A18 (review round 2, A1) — a node already connected (parked empty)
+    // when a suppressed sibling on its id leaves is not that sibling's
+    // replacement: its budget was decided at its first sighting.
+    it('an empty node already present beside a suppressed sibling keeps its own budget when the sibling leaves', async () => {
+      install({ pollInterval: 500 });
+      const slot = addEmptyStatus('timer');
+      const timer = addStatus('timer', '0:00');
+      await flushAndScan();
+      await tick(timer, 1, 6); // `timer` suppressed
+      expect(appearedFor('timer')).toHaveLength(4);
+
+      timer.remove();
+      slot.appendChild(document.createTextNode('Saved'));
+      await flushAndScan();
+
+      expect(appearedFor('timer').at(-1)?.toast.message).toBe('Saved');
+    });
+
+    // A19 (review round 2, A4) — a re-keyed node that mounts EMPTY and gets its
+    // text in the next batch is still the replacement: it inherits at its
+    // empty first sighting.
+    it('a re-keyed node mounting empty and filled in the next batch is bounded', async () => {
+      install({ pollInterval: 500 });
+      let node = addStatus('timer', '0:00');
+      await flushAndScan();
+      for (let i = 1; i <= 20; i++) {
+        node.remove();
+        node = addEmptyStatus('timer');
+        await flushAndScan();
+        node.appendChild(document.createTextNode(`0:${String(i).padStart(2, '0')}`));
+        await flushAndScan();
+        await vi.advanceTimersByTimeAsync(400);
+      }
+
+      expect(appearedFor('timer')).toHaveLength(4);
+    });
+
+    // A20 (review round 2, A2) — an unrelated childList scan between ticks:
+    // the holder is still recorded as seen in it, so the next re-key inherits.
+    it('a re-keyed ticker with an unrelated scan between ticks is bounded', async () => {
+      install({ pollInterval: 500 });
+      let node = addStatus('timer', '0:00');
+      await flushAndScan();
+      for (let i = 1; i <= 20; i++) {
+        node = rekey(node, `0:${String(i).padStart(2, '0')}`);
+        await flushAndScan();
+        document.body.appendChild(document.createElement('span'));
+        await flushAndScan();
+        await vi.advanceTimersByTimeAsync(400);
+      }
+
+      expect(appearedFor('timer')).toHaveLength(4);
+    });
+
+    // A21 (review round 2, A2) — a public read between the framework commit
+    // and the debounced scan reconciles (and prunes) while the replaced node
+    // is gone but not yet seen gone by a scan: its entry must survive it.
+    it('a read between a re-key commit and its scan does not unbound the ticker', async () => {
+      install({ pollInterval: 500 });
+      let node = addStatus('timer', '0:00');
+      await flushAndScan();
+      for (let i = 1; i <= 20; i++) {
+        node = rekey(node, `0:${String(i).padStart(2, '0')}`);
+        capture.getSnapshot();
+        await flushAndScan();
+        await vi.advanceTimersByTimeAsync(450);
+      }
+
+      expect(appearedFor('timer')).toHaveLength(4);
+    });
+
+    // A22 (review round 2, A3) — a connected holder whose entry was pruned
+    // while it was quiet re-registers when it captures again, so a re-key
+    // after it resumes continues its budget.
+    it('a ticker that resumes after a quiet window and is then re-keyed stays bounded', async () => {
+      install({ pollInterval: 500 });
+      const timer = addStatus('timer', 'a0');
+      await flushAndScan();
+      await vi.advanceTimersByTimeAsync(11_000); // cold: its entry is pruned
+      const before = appearedFor('timer').length;
+
+      for (const text of ['a1', 'a2', 'a3']) {
+        setTextInPlace(timer, text);
+        await vi.advanceTimersByTimeAsync(500);
+      }
+      let node: HTMLElement = timer;
+      for (let i = 1; i <= 10; i++) {
+        node = rekey(node, `0:${String(i).padStart(2, '0')}`);
+        await flushAndScan();
+        await vi.advanceTimersByTimeAsync(450);
+      }
+
+      expect(appearedFor('timer').length - before).toBe(4);
+    });
+
+    // A23 (review round 2, C1) — the reviewer's prune probe: a suppressed
+    // node leaves in its own batch, a poll runs, then an empty sibling present
+    // all along is filled in place. The sibling's budget is its own.
+    it('an empty sibling filled in place after a suppressed node left is announced', async () => {
+      install({ pollInterval: 500 });
+      const slot = addEmptyStatus('timer');
+      slot.appendChild(document.createTextNode(''));
+      const timer = addStatus('timer', '0:00');
+      await flushAndScan();
+      await tick(timer, 1, 6); // `timer` suppressed
+
+      timer.remove();
+      await flushAndScan();
+      await vi.advanceTimersByTimeAsync(500);
+      setTextInPlace(slot, 'Saved');
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['timer', 'Saved']]);
     });
 
     // A10
