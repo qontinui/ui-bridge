@@ -15,6 +15,7 @@
  */
 
 import {
+  densityAimsAt,
   densityCentreY,
   densityDeclaresAnotherRepeat,
   densityInnermostRepeats,
@@ -26,7 +27,6 @@ import {
   densityTakesSpace,
   isDensityFilterControl,
   isDensityNavControl,
-  densityRepeatTargets,
   densityRepeats,
   type DensityRepeat,
   type DensityUnknownQuantity,
@@ -114,7 +114,7 @@ export const DENSITY_AFFORDANCE_RULES: Readonly<
   'nav-after-repeat': {
     kind: 'pager',
     definition:
-      "an interactive item in a `nav` (tag or navigation landmark), in the repeat's scope, centred below its last row, nearer it than any other repeat and within one viewport height of it: one entry per control, not per pager",
+      "the interactive items of one `nav` (tag or navigation landmark) in the repeat's scope, centred below its last row, nearer it than any other repeat and within one viewport height of it: one entry per pager (per nav), its controls in `members`",
   },
   'scroll-width': {
     kind: 'truncation',
@@ -152,6 +152,11 @@ export interface DensityAffordance {
   /** Truncation and abbreviation: whether the full form is reachable; `null` when there is no evidence. */
   recoverable: boolean | null;
   hides: DensityHides;
+  /**
+   * A pager only: the ids of its controls (page links, previous and next), in
+   * capture order; `id` is the first of them. Absent on the other kinds.
+   */
+  members?: string[];
 }
 
 export interface DensityAffordanceInputs {
@@ -187,7 +192,7 @@ function openClosed(expanded: boolean | null): DensityAffordanceState {
  * label with a `title` is a truncation and an abbreviation); within one kind it
  * is listed once, under the first rule in {@link DENSITY_AFFORDANCE_RULES}
  * order that matched — except filters and pagers, which are listed once per
- * repeat they act on.
+ * repeat they act on (a pager once per nav, with its controls as `members`).
  */
 export function densityAffordances(
   capture: DensityCapture,
@@ -219,7 +224,7 @@ export function densityAffordances(
     item: DensityItem,
     rule: DensityAffordanceRule,
     state: DensityAffordanceState,
-    extra: Partial<Pick<DensityAffordance, 'repeat' | 'recoverable'>> = {}
+    extra: Partial<Pick<DensityAffordance, 'repeat' | 'recoverable' | 'members'>> = {}
   ) => {
     out.push({
       kind: DENSITY_AFFORDANCE_RULES[rule].kind,
@@ -230,6 +235,7 @@ export function densityAffordances(
       repeat: extra.repeat ?? null,
       recoverable: extra.recoverable ?? null,
       hides: HIDES_FROM_SNAPSHOT,
+      ...(extra.members ? { members: extra.members } : {}),
     });
   };
 
@@ -275,10 +281,11 @@ export function densityAffordances(
   const H = capture.viewport.height;
   for (const rep of repeats) {
     const scope = scopes.get(rep.id)!;
-    const aimed = densityRepeatTargets(capture, rep, children);
     const firstMember = capture.items.find((i) => i.id === rep.members[0]);
     const repNav = firstMember ? densityNavPrefix(firstMember) : null;
     const repInChrome = firstMember ? isDensityChrome(firstMember) : false;
+    /** This repeat's pagers: the qualifying controls of each nav, by nav. */
+    const pagers = new Map<string, DensityItem[]>();
     for (const item of capture.items) {
       if (scope.own.has(item.id)) continue;
       // A filter is a laid-out, interactive select, combobox, checkbox or radio.
@@ -290,19 +297,9 @@ export function densityAffordances(
         densityTakesSpace(item) &&
         !headerToggle;
       // filter (a search box with a `filters` edge is the repeat's finder, not a filter)
-      if (
-        filterControl &&
-        item.filters !== null &&
-        aimed.has(item.filters) &&
-        innermost.get(item.filters) === rep.id
-      ) {
+      if (filterControl && densityAimsAt(item.filters, rep.id, innermost)) {
         add(item, 'declared-filters', null, { repeat: rep.id });
-      } else if (
-        filterControl &&
-        item.controls !== null &&
-        aimed.has(item.controls) &&
-        innermost.get(item.controls) === rep.id
-      ) {
+      } else if (filterControl && densityAimsAt(item.controls, rep.id, innermost)) {
         add(item, 'declared-controls', null, { repeat: rep.id });
       } else if (
         scope.ids.has(item.id) &&
@@ -330,8 +327,19 @@ export function densityAffordances(
         cy !== null &&
         cy <= rep.lastRow.bottomPx + H
       ) {
-        add(item, 'nav-after-repeat', null, { repeat: rep.id });
+        // One pager per nav: its page links and its previous / next buttons
+        // are one affordance. A navigation landmark with no `nav` tag is one nav.
+        const key = densityNavPrefix(item) ?? 'landmark:navigation';
+        const list = pagers.get(key);
+        if (list) list.push(item);
+        else pagers.set(key, [item]);
       }
+    }
+    for (const controls of pagers.values()) {
+      add(controls[0], 'nav-after-repeat', null, {
+        repeat: rep.id,
+        members: controls.map((c) => c.id),
+      });
     }
   }
   return out;
@@ -340,21 +348,45 @@ export function densityAffordances(
 /** The longest affordance list a summary prints; the rest is counted. */
 export const DENSITY_AFFORDANCE_LIST_CAP = 100;
 
+/** The affordance kinds that act on a repeat, read from the capture's repeat keys. */
+const REPEAT_KINDS: ReadonlySet<DensityAffordanceKind> = new Set(['filter', 'pager']);
+
+/** The counts and the capped list every resolved report carries. */
+interface DensityAffordanceListing {
+  /** No control was operated: interaction counts are read from structure and ARIA state. */
+  interactionsBasis: 'static';
+  byRule: Partial<Record<DensityAffordanceRule, number>>;
+  /**
+   * Leaves named by their `title` whose text is redacted: each is an
+   * abbreviation (text with its full form on hover) or an icon button named by
+   * its title, and the capture cannot say which. Counted, never listed as
+   * either.
+   */
+  abbreviationsUndetermined: number;
+  shown: number;
+  total: number;
+  truncated: boolean;
+  list: DensityAffordance[];
+}
+
 export type DensityAffordancesReport =
   | { structureResolved: false; reason: string }
-  | { structureResolved: true; repeatKeysResolved: false; reason: string }
-  | {
+  | (DensityAffordanceListing & {
+      structureResolved: true;
+      /**
+       * A capture written before the repeat keys existed: the item-local kinds
+       * are measured, and filters and pagers, which act on repeats, are unknown
+       * (`null`), never zero.
+       */
+      repeatKeysResolved: false;
+      reason: string;
+      byKind: Record<DensityAffordanceKind, number | null>;
+    })
+  | (DensityAffordanceListing & {
       structureResolved: true;
       repeatKeysResolved: true;
-      /** No control was operated: interaction counts are read from structure and ARIA state. */
-      interactionsBasis: 'static';
       byKind: Record<DensityAffordanceKind, number>;
-      byRule: Partial<Record<DensityAffordanceRule, number>>;
-      shown: number;
-      total: number;
-      truncated: boolean;
-      list: DensityAffordance[];
-    };
+    });
 
 /** What `measure` reports about a capture's affordances. Holds no page text. */
 export function summarizeDensityAffordances(
@@ -370,15 +402,9 @@ export function summarizeDensityAffordances(
         'filters, pagers and abbreviations are read from parent links, which this capture has not resolved',
     };
   }
-  if (!capture.repeatKeysResolved) {
-    return {
-      structureResolved: true,
-      repeatKeysResolved: false,
-      reason:
-        'filters and pagers act on repeats, whose sibling and cousin keys this capture predates (repeatKeysResolved: false); capture it again',
-    };
-  }
-  const all = affordances ?? densityAffordances(capture, targets);
+  const keyed = capture.repeatKeysResolved;
+  // Without repeat keys no repeat is read, so only the item-local kinds are.
+  const all = affordances ?? densityAffordances(capture, targets, keyed ? {} : { repeats: [] });
   const byKind = Object.fromEntries(DENSITY_AFFORDANCE_KINDS.map((k) => [k, 0])) as Record<
     DensityAffordanceKind,
     number
@@ -389,15 +415,28 @@ export function summarizeDensityAffordances(
     byRule[a.rule] = (byRule[a.rule] ?? 0) + 1;
   }
   const list = all.slice(0, Math.max(0, cap));
-  return {
-    structureResolved: true,
-    repeatKeysResolved: true,
+  const listing: DensityAffordanceListing = {
     interactionsBasis: 'static',
-    byKind,
     byRule,
+    abbreviationsUndetermined: capture.items.filter(
+      (i) => i.tag !== 'abbr' && i.recoverable === true && i.chars === null
+    ).length,
     shown: list.length,
     total: all.length,
     truncated: list.length < all.length,
     list,
   };
+  if (!keyed) {
+    return {
+      structureResolved: true,
+      repeatKeysResolved: false,
+      reason:
+        'filters and pagers act on repeats, whose sibling and cousin keys this capture predates (repeatKeysResolved: false); capture it again to measure them',
+      ...listing,
+      byKind: Object.fromEntries(
+        DENSITY_AFFORDANCE_KINDS.map((k) => [k, REPEAT_KINDS.has(k) ? null : byKind[k]])
+      ) as Record<DensityAffordanceKind, number | null>,
+    };
+  }
+  return { structureResolved: true, repeatKeysResolved: true, ...listing, byKind };
 }

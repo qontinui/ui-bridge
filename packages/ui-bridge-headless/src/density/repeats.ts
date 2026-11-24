@@ -12,9 +12,13 @@
  *   registered or not) of one tag: those of one width (within
  *   {@link DENSITY_REPEAT_TOLERANCE_PX}) grouped into columns and aligned
  *   columns merged into a grid, as below; leaves of different widths (a
- *   fit-content list) grouped by left edge; stacked containers of different
- *   widths are layout, not rows; a run of paragraphs (every member a `prose`
- *   leaf) is text, not rows. Items inside repeated rows nobody registered
+ *   fit-content list) grouped by left edge; in a column of containers each
+ *   width is judged on its own rows (one wider row does not discard the
+ *   rest), so stacked containers of all different widths are layout, not
+ *   rows; a run of paragraphs (every member a `prose` leaf) or of sectioning
+ *   containers other than `article` is text or layout, not rows. A `dl`'s
+ *   `dt` and `dd` siblings are one group whose rows are each term with the
+ *   definitions after it. Items inside repeated rows nobody registered
  *   (`ul > li[k] > a` with only the links registered) share a `cousinKey`
  *   instead, and form a repeat by it;
  * - **by: geometry** — items with no such chain (`structureBy: geometry`), of
@@ -118,6 +122,7 @@ export interface DensityRepeat {
   by: DensityRepeatBy;
   /** The members' common parent; `null` at the root. */
   parent: string | null;
+  /** The members' tag; a cousin repeat's row tag (`li`, `tr`); `dt` for a definition list's pairs. */
   tag: string;
   /** Member ids in document order (top, then capture order). */
   members: string[];
@@ -400,12 +405,16 @@ export function isDensityNavControl(item: DensityItem): boolean {
   );
 }
 
-/** A checkbox or radio in a table header: it selects rows, it acts on no list. */
+/**
+ * A checkbox or radio in a table header — a `thead`, or a `th` cell (a table
+ * with no `thead` keeps its header row in `tbody`): it selects rows, it acts
+ * on no list.
+ */
 export function isDensityHeaderToggle(item: DensityItem): boolean {
   return (
     (item.role === 'checkbox' || item.role === 'radio') &&
     item.path !== null &&
-    item.path.includes('thead')
+    (item.path.includes('thead') || item.path.includes('th'))
   );
 }
 
@@ -421,11 +430,26 @@ export function isDensityChrome(item: DensityItem): boolean {
   );
 }
 
-/** The path up to and including the innermost `nav` tag, or `null` outside one. */
+/**
+ * The innermost `nav` the item sits in, or `null` outside one: the chain key
+ * of that `nav` element, read from the item's `siblingKey` (its parent
+ * element's key, sibling indices included), so two sibling navs with one tag
+ * path (`nav[1]`, `nav[2]`) are two navs; else, when the key does not name it
+ * (a nav anchored at its own id, an item with no sibling key), the tag path up
+ * to that `nav`.
+ */
 export function densityNavPrefix(item: DensityItem): string | null {
   if (item.path === null) return null;
   const at = item.path.lastIndexOf('nav');
-  return at < 0 ? null : item.path.slice(0, at + 1).join('/');
+  if (at < 0) return null;
+  const key = item.siblingKey ?? item.cousinRowKey;
+  if (key !== null) {
+    const segments = key.split('/');
+    for (let k = segments.length - 1; k >= 0; k--) {
+      if (/^nav(\[\d+\])?$/.test(segments[k])) return `key:${segments.slice(0, k + 1).join('/')}`;
+    }
+  }
+  return `tags:${item.path.slice(0, at + 1).join('/')}`;
 }
 
 /** A control a repeat's scope is looked for by: a laid-out finder, filter or nav control. */
@@ -456,6 +480,11 @@ export interface DensityRepeatScope {
 
 const SCOPE_CEILING_TAGS = new Set(['main', 'body', 'html']);
 
+/** The block key of a block found by path (`path:<blockKey>`). */
+function pathKeyOf(blockId: string): string {
+  return blockId.slice('path:'.length);
+}
+
 /**
  * The scope of every repeat, by repeat id. A repeat's controls are looked
  * for, in order:
@@ -467,7 +496,10 @@ const SCOPE_CEILING_TAGS = new Set(['main', 'body', 'html']);
  *    {@link DENSITY_REPEAT_SCOPE_LEVELS} ancestors (by parent links, from the
  *    repeat's parent up, never `main`, `body` or `html`) that holds such a
  *    control outside the repeat (`by: ancestor`);
- * 3. nowhere (`by: null`, an empty scope).
+ * 3. in the innermost block by path whose key encloses that of a block
+ *    holding its first row (`by: block`): a table nobody registered sits in a
+ *    section nobody registered, which holds the search box;
+ * 4. nowhere (`by: null`, an empty scope).
  *
  * Every scope excludes the repeat's own subtree and the rows of every OTHER
  * repeat (a per-row control acts on its own row), except a row this repeat
@@ -547,10 +579,10 @@ export function densityRepeatScopes(
     });
     const firstRowSubtree = densitySubtree(capture, firstRow, children);
     let scope: DensityRepeatScope = { by: null, ids: new Set(), own };
-    const holding = blocks.blocks
+    const direct = blocks.blocks
       .filter((b) => b.members.some((m) => firstRowSubtree.has(m)))
       .sort((a, b) => a.members.length - b.members.length);
-    for (const b of holding) {
+    for (const b of direct) {
       const ids = usable(b.members);
       if (hasControl(ids)) {
         scope = { by: 'block', ids, own };
@@ -566,6 +598,29 @@ export function densityRepeatScopes(
         const ids = usable(sub);
         if (hasControl(ids)) {
           scope = { by: 'ancestor', ids, own };
+          break;
+        }
+      }
+    }
+    if (scope.by === null) {
+      // Blocks by path do not nest (a leaf belongs to its nearest block tag),
+      // so a table nobody registered, in a section nobody registered, holds
+      // only its cells and has no parent to climb: the section around it,
+      // which holds the search box, is found by its key enclosing the
+      // table's, innermost first.
+      const directKeys = direct.filter((b) => b.by === 'path').map((b) => pathKeyOf(b.id));
+      const enclosing = blocks.blocks
+        .filter(
+          (b) =>
+            b.by === 'path' &&
+            !direct.includes(b) &&
+            directKeys.some((k) => k.startsWith(`${pathKeyOf(b.id)}/`))
+        )
+        .sort((a, b) => b.id.length - a.id.length);
+      for (const b of enclosing) {
+        const ids = usable(b.members);
+        if (hasControl(ids)) {
+          scope = { by: 'block', ids, own };
           break;
         }
       }
@@ -608,22 +663,37 @@ export function densityNearestRepeats(
 
 /**
  * For each id a declared edge may aim at (a repeat's parent, rows and their
- * subtrees), the innermost repeat it belongs to: an edge to an inner list is
- * that list's, not every enclosing one's.
+ * subtrees), the innermost repeats it belongs to: an edge to an inner list is
+ * that list's, not every enclosing one's; an edge to a parent two repeats
+ * share (a `dl` of `dt` and `dd` columns, two lists under one wrapper) is
+ * both repeats'. A repeat is enclosing when another repeat holding the id
+ * starts inside its rows.
  */
 export function densityInnermostRepeats(
   capture: DensityCapture,
   repeats: ReadonlyArray<Pick<DensityRepeat, 'id' | 'members' | 'parent'>>,
   children: Map<string, string[]> = densityChildren(capture)
-): Map<string, string> {
+): Map<string, Set<string>> {
   const targets = repeats.map((r) => ({
     id: r.id,
+    first: r.members[0],
     set: densityRepeatTargets(capture, r, children),
   }));
-  // Larger first, so a smaller (inner) repeat overwrites.
-  targets.sort((a, b) => b.set.size - a.set.size);
-  const out = new Map<string, string>();
-  for (const t of targets) for (const id of t.set) out.set(id, t.id);
+  const holding = new Map<string, typeof targets>();
+  for (const t of targets) {
+    for (const id of t.set) {
+      const list = holding.get(id);
+      if (list) list.push(t);
+      else holding.set(id, [t]);
+    }
+  }
+  const out = new Map<string, Set<string>>();
+  for (const [id, list] of holding) {
+    const inner = list.filter(
+      (t) => !list.some((o) => o !== t && o.first !== undefined && t.set.has(o.first))
+    );
+    out.set(id, new Set(inner.map((t) => t.id)));
+  }
   return out;
 }
 
@@ -639,11 +709,22 @@ function rowTagOf(rowKey: string | null): string | null {
 export function densityDeclaresAnotherRepeat(
   item: DensityItem,
   repId: string,
-  innermost: ReadonlyMap<string, string>
+  innermost: ReadonlyMap<string, ReadonlySet<string>>
 ): boolean {
-  const names = (target: string | null) =>
-    target !== null && innermost.has(target) && innermost.get(target) !== repId;
+  const names = (target: string | null) => {
+    const reps = target === null ? undefined : innermost.get(target);
+    return reps !== undefined && !reps.has(repId);
+  };
   return names(item.filters) || names(item.controls);
+}
+
+/** Whether `target` is an id of the repeat `repId` aims at, and that repeat is innermost there. */
+export function densityAimsAt(
+  target: string | null,
+  repId: string,
+  innermost: ReadonlyMap<string, ReadonlySet<string>>
+): boolean {
+  return target !== null && innermost.get(target)?.has(repId) === true;
 }
 
 function finderRank(item: DensityItem): number {
@@ -678,20 +759,30 @@ function clusterBy(
 
 /**
  * Columns (equal left edges) of one width, merged into one grid when their
- * rows line up: the shorter column's row tops are, within the tolerance, the
- * first tops of the longer one (a ragged grid's short last columns).
+ * rows line up: every row top of the shorter column is, within the
+ * tolerance, a row top of the longer one (a ragged grid's short last
+ * columns); or the column is one card whose top is one row pitch below the
+ * grid's last row (a short last row centred under the grid, whose cards sit
+ * at left edges of their own).
  */
 function gridsOf(sameWidth: readonly DensityItem[]): DensityItem[][] {
+  const near = (a: number, b: number) => Math.abs(a - b) <= DENSITY_REPEAT_TOLERANCE_PX;
   const grids: Array<{ tops: number[]; members: DensityItem[] }> = [];
   for (const column of clusterBy(sameWidth, (r) => r.x)) {
     const tops = rowsOf(column).map((row) => row[0].rect!.y);
     const home = grids.find((g) => {
       const [short, long] = g.tops.length <= tops.length ? [g.tops, tops] : [tops, g.tops];
-      return short.every((t, i) => Math.abs(t - long[i]) <= DENSITY_REPEAT_TOLERANCE_PX);
+      if (short.every((t) => long.some((u) => near(t, u)))) return true;
+      const n = g.tops.length;
+      return (
+        tops.length === 1 && n >= 2 && near(tops[0] - g.tops[n - 1], g.tops[n - 1] - g.tops[n - 2])
+      );
     });
     if (home) {
       home.members.push(...column);
-      if (tops.length > home.tops.length) home.tops = tops;
+      // The grid's row tops: every top of either, in order.
+      for (const t of tops) if (!home.tops.some((u) => near(t, u))) home.tops.push(t);
+      home.tops.sort((a, b) => a - b);
     } else {
       grids.push({ tops, members: column.slice() });
     }
@@ -706,6 +797,12 @@ interface Group {
   members: DensityItem[];
   /** Cousins are gathered by the unregistered row they sit in before banding by top. */
   byRowKey?: boolean;
+  /**
+   * A definition list's terms and definitions: each `dd` is gathered with the
+   * `dt` before it (by id) before banding by top, so a term and its
+   * definition are one row however they are laid out.
+   */
+  pairOf?: ReadonlyMap<string, string>;
 }
 
 /**
@@ -714,11 +811,11 @@ interface Group {
  * other members: list items side by side (a horizontal nav, a card grid) are
  * one visual row. Other groups are bands of tops.
  */
-function rowsFor(g: Pick<Group, 'members' | 'byRowKey'>): DensityItem[][] {
-  if (!g.byRowKey) return rowsOf(g.members);
+function rowsFor(g: Pick<Group, 'members' | 'byRowKey' | 'pairOf'>): DensityItem[][] {
+  if (!g.byRowKey && !g.pairOf) return rowsOf(g.members);
   const byRow = new Map<string, DensityItem[]>();
   for (const m of g.members) {
-    const key = m.cousinRowKey ?? m.id;
+    const key = g.pairOf ? (g.pairOf.get(m.id) ?? m.id) : (m.cousinRowKey ?? m.id);
     const row = byRow.get(key);
     if (row) row.push(m);
     else byRow.set(key, [m]);
@@ -779,7 +876,40 @@ function wrappedCousinRun(g: Pick<Group, 'members' | 'byRowKey'>): boolean {
   // centred menu.)
   if (bands.every((b) => b.length <= 1)) return false;
   const ref = bands.reduce((a, b) => (b.length > a.length ? b : a), bands[0] ?? []);
-  return bands.some((b) => b.some((x, i) => Math.abs(x - ref[i]) > DENSITY_REPEAT_TOLERANCE_PX));
+  const near = (a: number, b: number) => Math.abs(a - b) <= DENSITY_REPEAT_TOLERANCE_PX;
+  return bands.some((b, bi) => {
+    if (b.every((x, i) => near(x, ref[i]))) return false;
+    // A short last row centred under the grid: its cards keep the grid's
+    // spacing, shifted as a whole.
+    const centred =
+      bi === bands.length - 1 &&
+      b.length < ref.length &&
+      b.every((x, i) => near(x - b[0], ref[i] - ref[0]));
+    return !centred;
+  });
+}
+
+/**
+ * Sectioning and landmark containers other than `article`: stacked, they are
+ * the page's layout (a page of sections, a form of fieldsets), not rows. An
+ * `article` is a self-contained item, and a run of them is a feed.
+ */
+const LAYOUT_TAGS = new Set([
+  'section',
+  'aside',
+  'nav',
+  'main',
+  'header',
+  'footer',
+  'form',
+  'fieldset',
+  'table',
+  'dialog',
+]);
+
+/** A checkbox, radio or switch: a list of them is rows (a checklist), not a form's fields. */
+function isChoiceToggle(item: DensityItem): boolean {
+  return item.role === 'checkbox' || item.role === 'radio' || item.role === 'switch';
 }
 
 /** Tags whose stacked siblings inside one row of another repeat are still rows (a nested list). */
@@ -825,6 +955,7 @@ export function densityRepeats(
   const rejectsAsRows = (members: readonly DensityItem[]): boolean =>
     members.every((m) => kindOf.get(m.id) === 'prose') ||
     members.every((m) => kindOf.get(m.id) === 'heading') ||
+    members.every((m) => LAYOUT_TAGS.has(m.tag)) ||
     // Fields, labels, or wrappers around a field whose every interactive leaf
     // is a form part (a label, an input, help or error text beside it).
     members.every((m) => {
@@ -832,6 +963,8 @@ export function densityRepeats(
         .filter((id) => leafSet.has(id))
         .map((id) => byId.get(id)!);
       if (inner.length === 0) return false;
+      // A row of nothing but checkboxes or radios is a checklist's row.
+      if (inner.every(isChoiceToggle)) return false;
       if (inner.every(isFormPart)) return true;
       return (
         // A text-entry or choice field, not just a checkbox (a todo row is a row).
@@ -839,7 +972,10 @@ export function densityRepeats(
       );
     });
   const accept = (g: Group, members: DensityItem[]): boolean => {
-    if (rowsFor({ members, byRowKey: g.byRowKey }).length < DENSITY_REPEAT_MIN_ROWS) return false;
+    if (
+      rowsFor({ members, byRowKey: g.byRowKey, pairOf: g.pairOf }).length < DENSITY_REPEAT_MIN_ROWS
+    )
+      return false;
     if (rejectsAsRows(members)) return false;
     pathGroups.push({ ...g, members });
     members.forEach((m) => claimed.add(m.id));
@@ -868,17 +1004,46 @@ export function densityRepeats(
   }
 
   // ---- by path: DOM siblings (one parent element) of one tag ----
+  // A definition list's `dt` and `dd` siblings are one group (tag `dt`):
+  // its rows are the terms, each with the definitions after it.
+  const groupTag = (tag: string) => (tag === 'dd' ? 'dt' : tag);
   const byPath = new Map<string, Group>();
   for (const item of eligible) {
     if (item.siblingKey === null) continue;
-    const key = `${item.siblingKey}\u0000${item.tag}`;
+    const key = `${item.siblingKey}\u0000${groupTag(item.tag)}`;
     const g = byPath.get(key);
     if (g) g.members.push(item);
-    else byPath.set(key, { by: 'path', parent: item.parent, tag: item.tag, members: [item] });
+    else
+      byPath.set(key, {
+        by: 'path',
+        parent: item.parent,
+        tag: groupTag(item.tag),
+        members: [item],
+      });
   }
   const sameWidth = (members: readonly DensityItem[]): boolean =>
     members.every((m) => Math.abs(m.rect!.w - members[0].rect!.w) <= DENSITY_REPEAT_TOLERANCE_PX);
   for (const g of byPath.values()) {
+    // 0. A definition list: each `dd` joins the `dt` before it in reading
+    //    order (top, then left, then capture order), and the pairs are rows.
+    if (g.tag === 'dt' && g.members.some((m) => m.tag === 'dd')) {
+      const pairOf = new Map<string, string>();
+      let term: string | null = null;
+      const reading = g.members
+        .slice()
+        .sort(
+          (a, b) =>
+            a.rect!.y - b.rect!.y ||
+            a.rect!.x - b.rect!.x ||
+            captureIndex.get(a.id)! - captureIndex.get(b.id)!
+        );
+      for (const m of reading) {
+        if (m.tag === 'dt') term = m.id;
+        pairOf.set(m.id, m.tag === 'dt' ? m.id : (term ?? m.id));
+      }
+      accept({ ...g, pairOf }, g.members);
+      continue;
+    }
     // 1. A grid: columns of one width whose rows line up, more than one column.
     const unclaimed = g.members.filter((m) => !claimed.has(m.id));
     for (const oneWidth of clusterBy(unclaimed, (r) => r.w)) {
@@ -893,6 +1058,9 @@ export function densityRepeats(
     for (const c of clusterBy(rest, (r) => r.x)) {
       if (wrappedRun(c, siblingRows)) continue;
       if (sameWidth(c) || c.every((m) => leafSet.has(m.id))) accept(g, c);
+      // One odd-width member (a highlighted row) does not discard the
+      // column: each width of it is judged on its own rows.
+      else for (const w of clusterBy(c, (r) => r.w)) accept(g, w);
     }
   }
 
@@ -1111,7 +1279,6 @@ export function densityRepeats(
   for (const rep of repeats) {
     const scope = scopes.get(rep.id)!;
     rep.scope = scope.by;
-    const aimed = densityRepeatTargets(capture, rep, children);
     let finder: DensityRepeatFinder | null = null;
     // A declared edge: a search box first, then a text field, then the rest.
     const declared = capture.items
@@ -1123,8 +1290,8 @@ export function densityRepeats(
           isDensityFinderControl(i) &&
           // A `filters` edge, or `controls` / `toggles` (aria-controls from a
           // search box to its results), naming this repeat.
-          ((i.filters !== null && aimed.has(i.filters) && innermost.get(i.filters) === rep.id) ||
-            (i.controls !== null && aimed.has(i.controls) && innermost.get(i.controls) === rep.id))
+          (densityAimsAt(i.filters, rep.id, innermost) ||
+            densityAimsAt(i.controls, rep.id, innermost))
       )
       .sort((a, b) => finderRank(a) - finderRank(b));
     if (declared.length > 0) finder = { id: declared[0].id, by: 'relationship' };

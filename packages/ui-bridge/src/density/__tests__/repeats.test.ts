@@ -597,8 +597,8 @@ describe('repeats', () => {
       }
     }
     const reps = densityRepeats(capture(els), null);
+    // The three stacked sections themselves are the page's layout, not rows.
     expect(reps.map((r) => [r.id, r.rows, r.perRow])).toEqual([
-      ['repeat:app.cat.1', 3, 1],
       ['repeat:app.cat.1.card-1', 3, 3],
       ['repeat:app.cat.2.card-1', 3, 3],
       ['repeat:app.cat.3.card-1', 3, 3],
