@@ -151,7 +151,19 @@ function nameSourceElements(node: Element): { labelledBy: Element[]; labels: Ele
 
 /** Elements that cannot hold a child, so a boundary placeholder is a `<span>`. */
 const VOID_ELEMENTS = new Set([
-  'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'track', 'wbr',
+  'area',
+  'base',
+  'br',
+  'col',
+  'embed',
+  'hr',
+  'img',
+  'input',
+  'link',
+  'meta',
+  'source',
+  'track',
+  'wbr',
 ]);
 
 type StyleReader = (el: Element, pseudo?: string | null) => CSSStyleDeclaration;
@@ -263,7 +275,8 @@ function boundaryFreeName(
   }
   const target = cloneOf.get(node);
   if (!target) return undefined;
-  const liveStyle: StyleReader = (el, pseudo) => view.getComputedStyle(origin.get(el) ?? el, pseudo);
+  const liveStyle: StyleReader = (el, pseudo) =>
+    view.getComputedStyle(origin.get(el) ?? el, pseudo);
   const name = computeAccessibleName(target, {
     getComputedStyle: liveStyle,
     computedStyleSupportsPseudoElements: false,
@@ -308,12 +321,17 @@ function boundarySafeName(node: Element, name: string): string | undefined {
  * a bridge id, an icon token). Useful for addressing the element; NOT evidence
  * that a screen-reader user can name it. Keeping the two distinguishable is the
  * entire point of reporting the rung.
+ *
+ * `'placeholder'` is HTML-AAM's last-resort rung for a text-like `<input>` or
+ * a `<textarea>`: the element's own `placeholder` names it when every rung
+ * before it (including `title`) yields nothing.
  */
 export type AccessibleNameSource =
   | 'aria-label'
   | 'aria-labelledby'
   | 'label'
   | 'title'
+  | 'placeholder'
   | 'text'
   | 'derived'
   | 'none';
@@ -323,6 +341,33 @@ export interface ResolvedAccessibleName {
   /** The name. Absent only when `source` is `'none'`. */
   name?: string;
   source: AccessibleNameSource;
+}
+
+/** `<input>` types whose `placeholder` HTML-AAM maps to an accessible name. */
+const PLACEHOLDER_INPUT_TYPES = new Set([
+  'text',
+  'search',
+  'url',
+  'tel',
+  'email',
+  'password',
+  'number',
+]);
+
+/**
+ * HTML-AAM's `placeholder` rung: the element's own `placeholder`, normalized,
+ * for a `<textarea>` or a text-like `<input>`; `undefined` otherwise. Only
+ * reached when the W3C algorithm (which does not consult `placeholder` here)
+ * produced no name.
+ */
+function placeholderName(node: Element): string | undefined {
+  const tag = node.tagName.toLowerCase();
+  const applies =
+    tag === 'textarea' ||
+    (tag === 'input' &&
+      PLACEHOLDER_INPUT_TYPES.has((node.getAttribute('type') ?? 'text').toLowerCase()));
+  if (!applies) return undefined;
+  return normalizeWhitespace(readPlaceholderAttr(node) ?? '') || undefined;
 }
 
 /** Attributes a developer stamps for addressing, in the order we prefer them. */
@@ -378,8 +423,10 @@ function deriveStructuralName(node: Element): string | undefined {
  * The rung is then attributed by testing the standard inputs in W3C order and
  * matching the one that produced the answer, so an authored `aria-label` is
  * reported as authored and a name scraped out of descendant text is reported
- * as scraped. When the algorithm yields nothing, {@link deriveStructuralName}
- * gets one attempt, and failing that the answer is the explicit `'none'`.
+ * as scraped. When the algorithm yields nothing, a text-like input's own
+ * `placeholder` names it (HTML-AAM's last resort, `'placeholder'`); failing
+ * that {@link deriveStructuralName} gets one attempt, and failing that the
+ * answer is the explicit `'none'`.
  */
 export function resolveAccessibleName(node: Element): ResolvedAccessibleName {
   const name = computeAccessibleNameSafe(node);
@@ -395,6 +442,9 @@ export function resolveAccessibleName(node: Element): ResolvedAccessibleName {
       return { name, source: 'text' };
     }
   }
+
+  const placeholder = placeholderName(node);
+  if (placeholder) return { name: placeholder, source: 'placeholder' };
 
   let derived: string | undefined;
   try {

@@ -66,6 +66,28 @@ describe('accessible-name source — which rung named this element, and did anyt
     });
   });
 
+  it('names a text-like input or textarea by its own placeholder, as `placeholder`, last', () => {
+    document.body.innerHTML = `
+      <input id="i" placeholder="Search docs" />
+      <input id="e" type="email" placeholder="you@example.test" />
+      <textarea id="t" placeholder="Write a reply"></textarea>
+      <input id="titled" title="Query" placeholder="Search docs" />
+      <label for="labelled">Find</label><input id="labelled" placeholder="Search docs" />
+    `;
+    const of = (id: string) => resolveAccessibleName(document.getElementById(id)!);
+    expect(of('i')).toEqual({ name: 'Search docs', source: 'placeholder' });
+    expect(of('e')).toEqual({ name: 'you@example.test', source: 'placeholder' });
+    expect(of('t')).toEqual({ name: 'Write a reply', source: 'placeholder' });
+    // Every earlier rung, title included, still wins.
+    expect(of('titled')).toEqual({ name: 'Query', source: 'title' });
+    expect(of('labelled')).toEqual({ name: 'Find', source: 'label' });
+  });
+
+  it('does not read a placeholder on a non-text input', () => {
+    document.body.innerHTML = `<input type="checkbox" placeholder="Agree" />`;
+    expect(resolveAccessibleName(document.querySelector('input')!)).toEqual({ source: 'none' });
+  });
+
   it('reports a name SCRAPED from subtree text as `text`, distinguishable from an authored one', () => {
     document.body.innerHTML = `<button id="b">Refresh</button>`;
     const resolved = resolveAccessibleName(document.getElementById('b')!);
