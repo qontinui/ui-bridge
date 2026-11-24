@@ -352,8 +352,9 @@ export function insideClip(box: ClipRect, x: number, y: number): boolean {
  * The per-sample `scrollable`: true iff every clipper that excluded at least
  * one of `points` is `auto`/`scroll` on the axis it excluded it on. `false`
  * when no point was excluded. A bound, not a proof: content cut on the
- * negative side of a scroller's scroll origin (above or left of it) reads
- * scrollable although no scroll can reveal it.
+ * side before a scroller's scroll origin (above or left of it, or right of /
+ * below it on a reversed axis) reads scrollable although no scroll can
+ * reveal it.
  */
 export function clipScrollableAt(
   clippers: Clipper[],

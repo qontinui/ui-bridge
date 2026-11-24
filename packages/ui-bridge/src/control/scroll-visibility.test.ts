@@ -343,3 +343,25 @@ describe('will-change names are case-insensitive', () => {
     expect(isVisibleInScrollContext(child)).toBe(false);
   });
 });
+
+describe('containing-block establishers added or removed in review', () => {
+  function absoluteUnderWrapper(style: Record<string, string>): HTMLElement {
+    const child = scrollerWithChild({ position: 'absolute' });
+    const scroller = child.parentElement as HTMLElement;
+    const wrapper = document.createElement('div');
+    for (const [k, v] of Object.entries(style)) wrapper.style.setProperty(k, v);
+    scroller.insertBefore(wrapper, child);
+    wrapper.appendChild(child);
+    return child;
+  }
+
+  it('container-type is not a containing block: the absolute child escapes the scroller', () => {
+    expect(isVisibleInScrollContext(absoluteUnderWrapper({ 'container-type': 'size' }))).toBe(true);
+  });
+
+  for (const name of ['transform-style', 'offset-path', 'contain']) {
+    it(`will-change: ${name} is a containing block: the scroller clips the child`, () => {
+      expect(isVisibleInScrollContext(absoluteUnderWrapper({ 'will-change': name }))).toBe(false);
+    });
+  }
+});
