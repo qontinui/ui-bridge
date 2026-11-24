@@ -202,11 +202,14 @@ export function readElementVisibility(element: HTMLElement): ElementVisibility {
  * condition reads) — one check on both arms, so both refuse a click inside a
  * `display: none` subtree and both `clickable` conditions agree on it.
  *
- * An `<option>` (by tag name, realm-safe) is judged by its `<select>`: a
- * browser reports an option inside a closed dropdown as having no box, yet
- * clicking it to select it is supported, so it is rendered exactly when its
- * select is — and an option inside a `display: none` subtree is not, because
- * its select is not.
+ * An `<option>` (by `localName`, realm- and case-stable) is refused when it is
+ * itself `display: none` (e.g. `hidden`) or `visibility: hidden`, or sits in a
+ * `display: none` `<optgroup>`; otherwise it is judged by its `<select>`.
+ * Measured in headless Chromium: `checkVisibility()` is false for an option
+ * inside a closed dropdown (its select reads true) and for one inside a
+ * `display: none` subtree. Clicking a closed-dropdown option to select it is
+ * supported, so such an option is rendered exactly when its select is, and
+ * one inside a `display: none` subtree is not, because its select is not.
  *
  * Where the engine has `Element.checkVisibility()`, its default answer is used
  * (it sees through closed shadow roots). A node whose own display is
@@ -222,8 +225,19 @@ export function readElementVisibility(element: HTMLElement): ElementVisibility {
  * a control that is itself `position: fixed` (plan-library edge e11dd943).
  */
 export function isRenderedForAction(el: HTMLElement): boolean {
-  if (el.tagName === 'OPTION') {
-    return isNodeRenderedForAction((el.closest('select') as HTMLElement | null) ?? el);
+  if (el.localName === 'option') {
+    // The option's OWN hiddenness first (an `<option hidden>` placeholder, a
+    // `visibility: hidden` option), then a `display: none` <optgroup> around
+    // it: none of these is visible in an open dropdown either. Only then is
+    // it judged by its <select>.
+    const view = el.ownerDocument.defaultView ?? window;
+    const own = view.getComputedStyle(el);
+    if (own.display === 'none' || own.visibility === 'hidden') return false;
+    const group = el.parentElement;
+    if (group?.localName === 'optgroup' && view.getComputedStyle(group).display === 'none') {
+      return false;
+    }
+    return isNodeRenderedForAction(el.closest('select') ?? el);
   }
   return isNodeRenderedForAction(el);
 }

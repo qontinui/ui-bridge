@@ -661,10 +661,13 @@ click-like action on a control inside a `display: none` subtree is now refused
 with `UB-ELEM-NOT-VISIBLE` (`visibilityReason: hidden`). The executor's click
 pre-check used to read only the control's own style, so it dispatched the
 click and reported success on a node no user could reach. Content inside a
-closed `<details>` is refused the same way. An `<option>` is judged by its
-`<select>` on both arms: a browser reports an option inside a closed dropdown
-as not rendered, but clicking it to select it stays supported, while an option
-inside a `display: none` subtree is refused because its select is. The server
+closed `<details>` is refused the same way. An `<option>` is refused on both
+arms when it is itself hidden (`hidden`, `display: none` or
+`visibility: hidden`) or sits in a `display: none` `<optgroup>`; otherwise it
+is judged by its `<select>`. Measured in headless Chromium, an option inside a
+closed dropdown reports no box (its select does), yet clicking it to select it
+stays supported, while an option inside a `display: none` subtree is refused
+because its select is. The server
 `clickable` wait resolves the click's target as a read-only probe, so polling
 it never re-ranks Central Target Registry selectors, emits `ctr:*` events or
 prunes the discovery cache.
