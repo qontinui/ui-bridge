@@ -5,13 +5,19 @@
  *    held to a per-element announcement budget (4 per 10 s by default). Over
  *    the budget the element is suppressed: its entry leaves `active`, its
  *    changes are absorbed silently, and once it has been quiet for the window
- *    its settled text is announced once (the trailing announcement).
+ *    its settled text is announced once (the trailing announcement). A
+ *    re-keyed node (a new node on the same `id` / `data-testid` replacing one
+ *    that is gone) continues that id's budget while it is warm.
  * B: a tracked (active or parked) element is re-read through `extractMessage`
  *    (a deep clone) only when its own subtree mutated, or when one of the two
  *    inputs outside the subtree — visibility and the ancestor redaction
  *    boundary — flipped. `cloneNode` on the element counts the re-reads.
+ * C: a visible element with no text is parked with `''`, so it is cloned only
+ *    when its own subtree mutates, and an in-place fill reaches the poll.
  *
- * Plan: 2026-11-23-ui-bridge-toast-capture-churn-and-reread-cost (Phase 1).
+ * Plans: 2026-11-23-ui-bridge-toast-capture-churn-and-reread-cost (Phase 1);
+ * 2026-11-24-ui-bridge-toast-capture-rekey-churn-and-empty-element-parking
+ * (Phase 1: A9a, A9b, A10-A15, C1-C5).
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -41,6 +47,37 @@ function addStatus(testid: string, text: string, parent: Element = document.body
 /** Change the element's text in place (a characterData mutation, as React does). */
 function setTextInPlace(el: Element, text: string): void {
   (el.firstChild as Text).data = text;
+}
+
+/** Replace `prev` with a new `timer` node holding `text` (a React `key={count}` re-key). */
+function rekey(prev: Element, text: string): HTMLElement {
+  prev.remove();
+  return addStatus('timer', text);
+}
+
+/** Append a `role="status"` element with neither `id` nor `data-testid`. */
+function addAnonymousStatus(text: string): HTMLElement {
+  const el = document.createElement('div');
+  el.setAttribute('role', 'status');
+  el.appendChild(document.createTextNode(text));
+  document.body.appendChild(el);
+  return el;
+}
+
+/**
+ * A `timer` ticker re-keyed once per tick: `0:00` captured by the scan, then
+ * `0:01` … `0:<ticks>` each on a NEW node, one scan and one poll per tick.
+ * Returns the last node.
+ */
+async function rekeyTicker(ticks: number): Promise<HTMLElement> {
+  let node = addStatus('timer', '0:00');
+  await flushAndScan();
+  for (let i = 1; i <= ticks; i++) {
+    node = rekey(node, `0:${String(i).padStart(2, '0')}`);
+    await flushAndScan();
+    await vi.advanceTimersByTimeAsync(450);
+  }
+  return node;
 }
 
 describe('ToastCapture churn budget and re-read gate', () => {
@@ -225,19 +262,139 @@ describe('ToastCapture churn budget and re-read gate', () => {
       expect(clone).toHaveBeenCalledTimes(1);
     });
 
-    // A9
-    it('a remounted node with the same data-testid starts with a fresh budget', async () => {
+    // A9a
+    it('a one-off remount under the budget is announced at once', async () => {
+      install({ pollInterval: 500 });
+      const timer = addStatus('timer', 'one');
+      await flushAndScan();
+
+      rekey(timer, 'two');
+      await flushAndScan();
+
+      expect(appearedFor('timer').map((e) => e.toast.message)).toEqual(['one', 'two']);
+      expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['timer', 'two']]);
+    });
+
+    // A9b
+    it('a remount of a churning element inherits its suppression; a remount after quiet starts fresh', async () => {
       install({ pollInterval: 500 });
       const timer = addStatus('timer', '0:00');
       await flushAndScan();
-      await tick(timer, 1, 6);
+      await tick(timer, 1, 6); // suppressed
+      expect(appearedFor('timer')).toHaveLength(4);
 
-      timer.remove();
-      addStatus('timer', 'fresh');
+      const fresh = rekey(timer, 'fresh');
+      await flushAndScan();
+      expect(appearedFor('timer').some((e) => e.toast.message === 'fresh')).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(appearedFor('timer')).toHaveLength(5);
+      expect(appearedFor('timer')[4].toast.message).toBe('fresh');
+
+      // Back into suppression inside one window, then removed with no
+      // replacement while still suppressed: the budget it leaves goes cold.
+      await tick(fresh, 1, 6);
+      expect(appearedFor('timer')).toHaveLength(8);
+      fresh.remove();
+      await vi.advanceTimersByTimeAsync(10_500);
+
+      addStatus('timer', 'later');
       await flushAndScan();
 
-      expect(appearedFor('timer').some((e) => e.toast.message === 'fresh')).toBe(true);
-      expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['timer', 'fresh']]);
+      expect(appearedFor('timer').at(-1)?.toast.message).toBe('later');
+      expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['timer', 'later']]);
+    });
+
+    // A10
+    it('per-tick re-keying is bounded', async () => {
+      install({ pollInterval: 500 });
+      await rekeyTicker(20);
+
+      expect(appearedFor('timer')).toHaveLength(4);
+    });
+
+    // A11
+    it('after re-keying stops and stays quiet for the window, its settled text is announced once', async () => {
+      install({ pollInterval: 500 });
+      await rekeyTicker(20);
+      expect(appearedFor('timer')).toHaveLength(4);
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(500);
+
+      const appeared = appearedFor('timer');
+      expect(appeared).toHaveLength(5);
+      expect(appeared[4].toast.message).toBe('0:20');
+      expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['timer', '0:20']]);
+    });
+
+    // A12
+    it('a re-keyed ticker beside a real toast leaves the real toast in recent', async () => {
+      install({ pollInterval: 500 });
+      const saved = document.createElement('div');
+      saved.setAttribute('data-sonner-toast', '');
+      saved.textContent = 'Saved';
+      document.body.appendChild(saved);
+      await flushAndScan();
+      saved.remove();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(capture.getRecent().some((t) => t.message === 'Saved')).toBe(true);
+
+      await rekeyTicker(20);
+
+      expect(capture.getRecent().some((t) => t.message === 'Saved')).toBe(true);
+    });
+
+    // A13
+    it('a second connected element on the same id keeps its own budget', async () => {
+      install({ pollInterval: 500 });
+      const timer = addStatus('timer', '0:00');
+      await flushAndScan();
+      await tick(timer, 1, 6); // suppressed, parked, no active entry
+      expect(capture.getActive()).toEqual([]);
+
+      addStatus('timer', 'sib');
+      await flushAndScan();
+
+      expect(appearedFor('timer').at(-1)?.toast.message).toBe('sib');
+      expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['timer', 'sib']]);
+    });
+
+    // A14
+    it('re-keyed nodes with neither id nor data-testid are each announced as a new toast', async () => {
+      install({ pollInterval: 500 });
+      let node = addAnonymousStatus('n0');
+      await flushAndScan();
+      for (let i = 1; i <= 5; i++) {
+        node.remove();
+        node = addAnonymousStatus(`n${i}`);
+        await flushAndScan();
+        await vi.advanceTimersByTimeAsync(450);
+      }
+
+      const appeared = events.filter((e) => e.action === 'appeared');
+      expect(appeared.map((e) => e.toast.message)).toEqual(['n0', 'n1', 'n2', 'n3', 'n4', 'n5']);
+      expect(appeared.every((e) => /^toast-\d+$/.test(e.toast.id))).toBe(true);
+      expect(new Set(appeared.map((e) => e.toast.id)).size).toBe(6);
+    });
+
+    // A15
+    it('a re-install starts a re-keyed id with a fresh budget', async () => {
+      install({ pollInterval: 500 });
+      const last = await rekeyTicker(5); // suppressed from the 5th capture on
+      expect(appearedFor('timer')).toHaveLength(4);
+      await vi.advanceTimersByTimeAsync(500);
+
+      capture.uninstall();
+      capture.install((data) => events.push(data));
+      await flushAndScan();
+
+      rekey(last, 'after');
+      await flushAndScan();
+
+      expect(appearedFor('timer').at(-1)?.toast.message).toBe('after');
+      expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['timer', 'after']]);
     });
   });
 
@@ -403,6 +560,106 @@ describe('ToastCapture churn budget and re-read gate', () => {
       parent.removeAttribute('data-bridge-redact');
 
       expect(capture.getActive().map((t) => t.message)).toEqual(['Code 123456']);
+    });
+  });
+
+  // ==========================================================================
+  // C — a visible element with no text (follow-up 4c24166d)
+  // ==========================================================================
+
+  describe('C: visible empty element', () => {
+    /** Append `<div role="status" data-testid="slot">` holding `children`. */
+    function addSlot(...children: Node[]): HTMLElement {
+      const el = document.createElement('div');
+      el.setAttribute('role', 'status');
+      el.setAttribute('data-testid', 'slot');
+      for (const child of children) el.appendChild(child);
+      document.body.appendChild(el);
+      return el;
+    }
+
+    /** Ten unrelated `childList` mutations under body, each followed by its scan. */
+    async function tenUnrelatedMutations(): Promise<void> {
+      for (let i = 0; i < 10; i++) {
+        document.body.appendChild(document.createElement('span'));
+        await flushAndScan();
+      }
+    }
+
+    // C1
+    it('a visible empty toast element is not cloned by unrelated body mutations', async () => {
+      install({ pollInterval: 500 });
+      const el = addSlot();
+      await flushAndScan();
+
+      const clone = vi.spyOn(el, 'cloneNode');
+      await tenUnrelatedMutations();
+
+      expect(clone).toHaveBeenCalledTimes(0);
+      expect(capture.getActive()).toEqual([]);
+    });
+
+    // C2
+    it('a visible empty element filled by a childList change is announced with one clone', async () => {
+      install({ pollInterval: 500 });
+      const el = addSlot();
+      await flushAndScan();
+      const clone = vi.spyOn(el, 'cloneNode');
+      await tenUnrelatedMutations();
+
+      clone.mockClear();
+      el.appendChild(document.createTextNode('Ready'));
+      await flushAndScan();
+
+      expect(
+        events.filter((e) => e.action === 'appeared').map((e) => [e.toast.id, e.toast.message])
+      ).toEqual([['slot', 'Ready']]);
+      expect(clone).toHaveBeenCalledTimes(1);
+    });
+
+    // C3
+    it('a visible empty element filled in place (characterData only) is announced by the poll', async () => {
+      install({ pollInterval: 500 });
+      const el = addSlot(document.createTextNode(''));
+      await flushAndScan();
+
+      setTextInPlace(el, 'Ready');
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['slot', 'Ready']]);
+    });
+
+    // C4
+    it('a visible empty element that is removed is untracked', async () => {
+      install({ pollInterval: 500 });
+      const el = addSlot();
+      await flushAndScan();
+      const clone = vi.spyOn(el, 'cloneNode');
+
+      const disconnect = vi.spyOn(MutationObserver.prototype, 'disconnect');
+      el.remove();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(disconnect.mock.calls.length).toBeGreaterThanOrEqual(1);
+
+      await tenUnrelatedMutations();
+      expect(clone).toHaveBeenCalledTimes(0);
+    });
+
+    // C5
+    it('a hidden empty element is not announced; shown and filled in one tick, it is', async () => {
+      install({ pollInterval: 500 });
+      const el = addSlot();
+      el.style.display = 'none';
+      await flushAndScan();
+      expect(events.filter((e) => e.action === 'appeared')).toEqual([]);
+
+      el.style.display = '';
+      el.appendChild(document.createTextNode('Ready'));
+      await flushAndScan();
+
+      expect(
+        events.filter((e) => e.action === 'appeared').map((e) => [e.toast.id, e.toast.message])
+      ).toEqual([['slot', 'Ready']]);
     });
   });
 
