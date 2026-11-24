@@ -47,7 +47,13 @@
 
 import type { UnknownCode } from '../observation/observation';
 import { classifyDensityItems, type DensityClassification } from './classify';
-import type { DensityCapture, DensityItem, DensityTargets } from './schema';
+import {
+  DENSITY_MAX_COORDINATE_PX,
+  DENSITY_MIN_TEXT_PX,
+  type DensityCapture,
+  type DensityItem,
+  type DensityTargets,
+} from './schema';
 import {
   densityBlocks,
   densityChildren,
@@ -58,9 +64,6 @@ import {
   type DensityLeaves,
   type DensityPins,
 } from './structure';
-
-/** The largest coordinate or size, in px, a repeat member may have (no page lays out beyond it). */
-export const DENSITY_MAX_COORDINATE_PX = 1e7;
 
 /** The fewest rows a group must span to be a repeat. */
 export const DENSITY_REPEAT_MIN_ROWS = 3;
@@ -281,8 +284,14 @@ function rowLines(
     if (n === 0) continue;
     if (leaf.fontPx === null || leaf.lineHeightPx === null || leaf.lineHeightPx <= 0 || r.w <= 0)
       return null;
-    // A font or line height no page draws (a forged capture) is unreadable.
-    if (leaf.fontPx > DENSITY_MAX_COORDINATE_PX || leaf.lineHeightPx > DENSITY_MAX_COORDINATE_PX)
+    // A font or line height no page draws (a forged capture: beyond the
+    // coordinate ceiling, or below one pixel) is unreadable.
+    if (
+      leaf.fontPx > DENSITY_MAX_COORDINATE_PX ||
+      leaf.lineHeightPx > DENSITY_MAX_COORDINATE_PX ||
+      leaf.fontPx < DENSITY_MIN_TEXT_PX ||
+      leaf.lineHeightPx < DENSITY_MIN_TEXT_PX
+    )
       return null;
     // The estimate never exceeds what the measured height can hold, and a
     // truncated leaf (nowrap, ellipsis) is one line.
@@ -293,8 +302,8 @@ function rowLines(
     const fits = Math.max(1, 1 + Math.floor((r.h - leaf.fontPx) / leaf.lineHeightPx + 0.01));
     const lines = leaf.truncated === true ? 1 : Math.min(wrapped, fits);
     // A leaf's lines are contiguous: one interval, however many lines. An
-    // estimate that is not a finite number (a forged sub-pixel width or line
-    // height) is unreadable, never Infinity.
+    // estimate that is not a finite number (a forged sub-pixel width) is
+    // unreadable, never Infinity.
     const bottom = r.y + lines * leaf.lineHeightPx;
     if (!Number.isFinite(lines) || !Number.isFinite(bottom)) return null;
     spans.push({ top: r.y, bottom, lh: leaf.lineHeightPx });

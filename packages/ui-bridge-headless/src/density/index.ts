@@ -17,7 +17,10 @@
 export {
   DENSITY_CAPTURE_SCHEMA,
   DENSITY_PRODUCER_ID,
+  DENSITY_MAX_COORDINATE_PX,
+  DENSITY_MIN_TEXT_PX,
   DENSITY_TARGETS_SCHEMA,
+  boundDensityItem,
   parseDensityCapture,
   parseDensityTargets,
   type DensityAsk,
@@ -114,7 +117,6 @@ export {
 } from './classify';
 export {
   DENSITY_CHAR_WIDTH_EM,
-  DENSITY_MAX_COORDINATE_PX,
   DENSITY_REPEAT_LIST_CAP,
   DENSITY_REPEAT_MIN_ROWS,
   DENSITY_REPEAT_TOLERANCE_PX,

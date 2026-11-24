@@ -27,6 +27,55 @@ export const DENSITY_TARGETS_SCHEMA = 'ui-bridge/density-targets@1' as const;
 /** The producer id on every door that runs the density core (D-E). */
 export const DENSITY_PRODUCER_ID = 'sdk/density' as const;
 
+/** The largest coordinate or size, in px, a capture may carry (no page lays out beyond it). */
+export const DENSITY_MAX_COORDINATE_PX = 1e7;
+
+/** The smallest font size or line height, in px, a page draws text at. */
+export const DENSITY_MIN_TEXT_PX = 1;
+
+/**
+ * The input boundary for every numeric field of a capture item: each must be
+ * finite and inside its declared range, or it becomes `null` and its
+ * dimension is reported unmeasured (`input_missing`). Everything downstream
+ * then reads it as unknown, never as a number it cannot hold.
+ *
+ * | field | range |
+ * |---|---|
+ * | `rect.x`, `rect.y` | ±{@link DENSITY_MAX_COORDINATE_PX} (the whole rect is nulled) |
+ * | `rect.w`, `rect.h` | 0 … {@link DENSITY_MAX_COORDINATE_PX} (the whole rect is nulled) |
+ * | `fontPx`, `lineHeightPx` | {@link DENSITY_MIN_TEXT_PX} … {@link DENSITY_MAX_COORDINATE_PX} |
+ *
+ * `chars` and `ownChars` are integers ≥ 0 by the parser; the adapter counts them.
+ */
+export function boundDensityItem(item: DensityItem): { item: DensityItem; gaps: string[] } {
+  const gaps: string[] = [];
+  const within = (v: number, min: number) =>
+    Number.isFinite(v) && v >= min && v <= DENSITY_MAX_COORDINATE_PX;
+  let { rect, fontPx, lineHeightPx } = item;
+  if (
+    rect !== null &&
+    !(
+      within(rect.x, -DENSITY_MAX_COORDINATE_PX) &&
+      within(rect.y, -DENSITY_MAX_COORDINATE_PX) &&
+      within(rect.w, 0) &&
+      within(rect.h, 0)
+    )
+  ) {
+    rect = null;
+    gaps.push('rect');
+  }
+  if (fontPx !== null && !within(fontPx, DENSITY_MIN_TEXT_PX)) {
+    fontPx = null;
+    gaps.push('fontSize');
+  }
+  if (lineHeightPx !== null && !within(lineHeightPx, DENSITY_MIN_TEXT_PX)) {
+    lineHeightPx = null;
+    gaps.push('lineHeight');
+  }
+  if (gaps.length === 0) return { item, gaps };
+  return { item: { ...item, rect, fontPx, lineHeightPx }, gaps };
+}
+
 /**
  * Who is running the core. Required by every entry point (plan D-E): the core
  * is copied into more than one package, so it cannot know its own version, and
@@ -811,6 +860,18 @@ function readRepeatKeysResolved(r: Reader, value: unknown, items: unknown): bool
   return v;
 }
 
+/** Coverage with the boundary's nulled dimensions added (`input_missing`). */
+function withBoundGaps(coverage: DensityCoverage, gaps: Map<string, number>): DensityCoverage {
+  if (gaps.size === 0) return coverage;
+  const unmeasured = coverage.unmeasured.map((u) => ({ ...u }));
+  for (const [dimension, count] of gaps) {
+    const cur = unmeasured.find((u) => u.dimension === dimension && u.code === 'input_missing');
+    if (cur) cur.count += count;
+    else unmeasured.push({ dimension, count, code: 'input_missing' });
+  }
+  return { ...coverage, unmeasured };
+}
+
 /** Parse a `ui-bridge/density-capture@1` document. */
 export function parseDensityCapture(value: unknown): DensityParseResult<DensityCapture> {
   const r = new Reader();
@@ -897,9 +958,17 @@ export function parseDensityCapture(value: unknown): DensityParseResult<DensityC
     }
   }
 
+  // The numeric boundary (boundDensityItem): an out-of-range value read from
+  // a file is nulled and counted, exactly as the adapter does.
+  const boundGaps = new Map<string, number>();
   const items = r
     .array(o.items, '$.items', (v, p) => readItem(r, v, p))
-    .filter((i): i is DensityItem => i !== null);
+    .filter((i): i is DensityItem => i !== null)
+    .map((i) => {
+      const bounded = boundDensityItem(i);
+      for (const g of bounded.gaps) boundGaps.set(g, (boundGaps.get(g) ?? 0) + 1);
+      return bounded.item;
+    });
   r.unique(items, '$.items', (i) => i.id, 'item id');
   items.forEach((item, idx) => {
     if ((item.cousinKey === null) !== (item.cousinRowKey === null)) {
@@ -922,7 +991,7 @@ export function parseDensityCapture(value: unknown): DensityParseResult<DensityC
       o.repeatKeysResolved === undefined
         ? itemsHaveRepeatKeys(o.items)
         : readRepeatKeysResolved(r, o.repeatKeysResolved, o.items),
-    coverage: readCoverage(r, o.coverage, '$.coverage'),
+    coverage: withBoundGaps(readCoverage(r, o.coverage, '$.coverage'), boundGaps),
     probe,
     targetsHash: readHashOrNull(r, o.targetsHash, '$.targetsHash'),
     textMatches,

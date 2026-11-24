@@ -1233,6 +1233,19 @@ describe('repeats', () => {
     expect([rep.rowsEstimated, rep.linesPerRow]).toEqual([2, 1]);
   });
 
+  it('a sub-pixel line height on every text leaf leaves the rows unknown, not zero', () => {
+    const els = orderList(3).map((e) =>
+      e.tag === 'span' ? { ...e, styles: { lineHeight: '0.000001px' } } : e
+    );
+    const [rep] = densityRepeats(capture(els), null);
+    expect([rep.rowsEstimated, rep.linesPerRow, rep.rowTextPx, rep.rowFill]).toEqual([
+      0,
+      null,
+      null,
+      null,
+    ]);
+  });
+
   it('a hidden leaf in a row draws no line band', () => {
     const els = orderList(3).map((e): DensityTestElementSpec => {
       if (!e.id.endsWith('.sum')) return e;

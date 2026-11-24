@@ -51,6 +51,8 @@ import {
   type DensityTargets,
   type DensityUnmeasured,
   type DensityVisibility,
+  boundDensityItem,
+  DENSITY_MAX_COORDINATE_PX,
 } from './schema';
 import { densityShapeOf } from './shape';
 import { resolveDensityStructure, type DensityStructureHint } from './structure';
@@ -131,15 +133,15 @@ function readViewport(v: unknown): DensityCaptureViewport | null {
   const scrollY = finite(v.scrollY);
   const documentWidth = finite(v.documentWidth);
   const documentHeight = finite(v.documentHeight);
+  const inRange = (v: number | null, min: number): v is number =>
+    v !== null && v >= min && v <= DENSITY_MAX_COORDINATE_PX;
   if (
-    width === null ||
-    height === null ||
-    width <= 0 ||
-    height <= 0 ||
-    scrollX === null ||
-    scrollY === null ||
-    documentWidth === null ||
-    documentHeight === null
+    !inRange(width, 1) ||
+    !inRange(height, 1) ||
+    !inRange(scrollX, -DENSITY_MAX_COORDINATE_PX) ||
+    !inRange(scrollY, -DENSITY_MAX_COORDINATE_PX) ||
+    !inRange(documentWidth, 0) ||
+    !inRange(documentHeight, 0)
   ) {
     return null;
   }
@@ -522,7 +524,10 @@ export function captureDensityFromSnapshot(
         continue;
       }
       seen.add(id);
-      built.push(buildItem(el, id, viewport, edges, gaps));
+      const b = buildItem(el, id, viewport, edges, gaps);
+      const bounded = boundDensityItem(b.item);
+      for (const g of bounded.gaps) gaps.add(g, 'input_missing');
+      built.push(bounded.gaps.length === 0 ? b : { ...b, item: bounded.item, complete: false });
     }
 
     // ---- the role probe ----
