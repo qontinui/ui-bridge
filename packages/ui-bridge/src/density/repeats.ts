@@ -288,10 +288,14 @@ function rowLines(
     // lines is one line height plus one font height tall).
     const fits = Math.max(1, 1 + Math.floor((r.h - leaf.fontPx) / leaf.lineHeightPx + 0.01));
     const lines = leaf.truncated === true ? 1 : Math.min(wrapped, fits);
-    // A leaf's lines are contiguous: one interval, however many lines.
-    spans.push({ top: r.y, bottom: r.y + lines * leaf.lineHeightPx, lh: leaf.lineHeightPx });
+    // A leaf's lines are contiguous: one interval, however many lines. An
+    // estimate that is not a finite number (a forged sub-pixel width or line
+    // height) is unreadable, never Infinity.
+    const bottom = r.y + lines * leaf.lineHeightPx;
+    if (!Number.isFinite(lines) || !Number.isFinite(bottom)) return null;
+    spans.push({ top: r.y, bottom, lh: leaf.lineHeightPx });
   }
-  // The text's height is the UNION of the line intervals [top, top + lh), so
+  // The text's height is the UNION of the leaves' line intervals [top, bottom), so
   // lines of leaves side by side (a centred date beside a two-line title)
   // never add up to more than the row draws; the line count is that height in
   // lines of the row's tallest line height.
@@ -312,6 +316,7 @@ function rowLines(
   }
   if (curBottom > curTop) textPx += curBottom - curTop;
   const lines = textPx > 0 && maxLh > 0 ? Math.max(1, Math.round(textPx / maxLh)) : 0;
+  if (!Number.isFinite(textPx) || !Number.isFinite(lines)) return null;
   return { lines, textPx };
 }
 

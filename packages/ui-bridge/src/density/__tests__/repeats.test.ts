@@ -1197,18 +1197,40 @@ describe('repeats', () => {
     expect(densityRepeats(capture(els), null)).toEqual([]);
   });
 
-  it('a leaf at a coordinate or line height no page draws makes its row unknown, never Infinity', () => {
+  it('a leaf at a coordinate no page lays out makes its row unknown', () => {
     const els = orderList(3).map((e): DensityTestElementSpec => {
       if (e.id !== 'app.orders.row-2.sum') return e;
       return {
         ...e,
         rect: [300, 1.7e308, 100, 20],
-        styles: { lineHeight: `1${'0'.repeat(308)}px` },
       };
     });
     const [rep] = densityRepeats(capture(els), null);
     expect([rep.rows, rep.rowsEstimated, rep.linesPerRow, rep.rowTextPx]).toEqual([3, 2, 1, 20]);
     expect(Number.isFinite(rep.rowFill!)).toBe(true);
+  });
+
+  it('a sub-pixel forged width and line height make the row unknown, never Infinity', () => {
+    const els = orderList(3).map((e): DensityTestElementSpec => {
+      if (e.id !== 'app.orders.row-2.sum' && e.id !== 'app.orders.row-3.sum') return e;
+      const [x, y] = e.rect!;
+      return {
+        ...e,
+        text: 'x'.repeat(1000),
+        rect: [x, y, 5e-324, 20],
+        styles: { lineHeight: `0.${'0'.repeat(319)}1px` },
+      };
+    });
+    const [rep] = densityRepeats(capture(els), null);
+    expect([rep.rowsEstimated, rep.linesPerRow, rep.rowTextPx]).toEqual([1, 1, 20]);
+  });
+
+  it('a normal leaf with only a forged huge line height is not estimated', () => {
+    const els = orderList(3).map((e) =>
+      e.id === 'app.orders.row-2.sum' ? { ...e, styles: { lineHeight: `1${'0'.repeat(20)}px` } } : e
+    );
+    const [rep] = densityRepeats(capture(els), null);
+    expect([rep.rowsEstimated, rep.linesPerRow]).toEqual([2, 1]);
   });
 
   it('a hidden leaf in a row draws no line band', () => {
