@@ -196,18 +196,37 @@ function median(values: readonly number[]): number | null {
 
 /** Members split into rows: bands whose tops agree within the tolerance. */
 function rowsOf(members: readonly DensityItem[]): DensityItem[][] {
-  const sorted = members.slice().sort((a, b) => a.rect!.y - b.rect!.y);
-  const rows: DensityItem[][] = [];
+  return bandByOverlap(members.map((m) => [m]));
+}
+
+/**
+ * Groups (each with rects) banded into visual rows by vertical overlap: a
+ * group whose top lies above the current band's bottom (less the tolerance)
+ * joins it, so items of different heights centred on one line (a logo, two
+ * links and a button) are one row; rows that only touch are two.
+ */
+function bandByOverlap(groups: DensityItem[][]): DensityItem[][] {
+  const top = (g: DensityItem[]) => minOf(g.map((m) => m.rect!.y));
+  const bottom = (g: DensityItem[]) => maxOf(g.map((m) => m.rect!.y + m.rect!.h));
+  const sorted = groups.slice().sort((a, b) => top(a) - top(b));
+  const bands: DensityItem[][] = [];
   let bandTop = -Infinity;
-  for (const m of sorted) {
-    if (rows.length > 0 && m.rect!.y - bandTop <= DENSITY_REPEAT_TOLERANCE_PX) {
-      rows[rows.length - 1].push(m);
+  let bandBottom = -Infinity;
+  for (const g of sorted) {
+    const t = top(g);
+    const sameRow =
+      bands.length > 0 &&
+      (t - bandTop <= DENSITY_REPEAT_TOLERANCE_PX || t < bandBottom - DENSITY_REPEAT_TOLERANCE_PX);
+    if (sameRow) {
+      bands[bands.length - 1].push(...g);
+      bandBottom = Math.max(bandBottom, bottom(g));
     } else {
-      rows.push([m]);
-      bandTop = m.rect!.y;
+      bands.push(g.slice());
+      bandTop = t;
+      bandBottom = bottom(g);
     }
   }
-  return rows;
+  return bands;
 }
 
 /**
@@ -598,19 +617,7 @@ function rowsFor(g: Pick<Group, 'members' | 'byRowKey'>): DensityItem[][] {
     if (row) row.push(m);
     else byRow.set(key, [m]);
   }
-  const top = (row: DensityItem[]) => minOf(row.map((m) => m.rect!.y));
-  const sorted = [...byRow.values()].sort((a, b) => top(a) - top(b));
-  const bands: DensityItem[][] = [];
-  let bandTop = -Infinity;
-  for (const row of sorted) {
-    if (bands.length > 0 && top(row) - bandTop <= DENSITY_REPEAT_TOLERANCE_PX) {
-      bands[bands.length - 1].push(...row);
-    } else {
-      bands.push(row.slice());
-      bandTop = top(row);
-    }
-  }
-  return bands;
+  return bandByOverlap([...byRow.values()]);
 }
 
 const FORM_TAGS = new Set(['input', 'textarea', 'select', 'label']);
@@ -913,6 +920,11 @@ export function densityRepeats(
   const scopes = densityRepeatScopes(capture, repeats, blocks);
   const nearestBelow = densityNearestRepeats(capture, repeats, scopes, 'below');
   const innermost = densityInnermostRepeats(capture, repeats, children);
+  // A control whose declared edge names a repeat acts on that one, never on
+  // another by position.
+  const declaresAnother = (i: DensityItem): boolean =>
+    (i.filters !== null && innermost.has(i.filters)) ||
+    (i.controls !== null && innermost.has(i.controls));
   for (const rep of repeats) {
     const scope = scopes.get(rep.id)!;
     rep.scope = scope.by;
@@ -939,7 +951,8 @@ export function densityRepeats(
             scope.ids.has(i.id) &&
             i.interactive &&
             isDensityFinderControl(i) &&
-            nearestBelow.get(i.id) === rep.id
+            nearestBelow.get(i.id) === rep.id &&
+            !declaresAnother(i)
         )
         .filter((i) => {
           const y = centreY(i);

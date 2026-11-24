@@ -503,6 +503,33 @@ describe('affordances', () => {
     expect(filters.map((a) => [a.id, a.repeat])).toEqual([['g.sel', 'repeat:g.c2.l1']]);
   });
 
+  it('a select with a declared edge to one list is not also a filter of the list below it', () => {
+    // The picks list sits above the orders list; the state select (above the
+    // orders list) declares that it filters the picks list.
+    const pick: DensityTestElementSpec[] = [1, 2, 3].map((k) => ({
+      id: `app.picks.row-${k}`,
+      tag: 'div',
+      xpath: `${SECTION}/div[${k + 1}]`,
+      rect: [0, 20 + 24 * (k - 1), 300, 20],
+      text: `Pick ${k}`,
+    }));
+    const c = capture(
+      [...PAGE, ...pick],
+      [...RELATIONSHIPS, { source: 'app.orders.state', target: 'app.picks.row-1', type: 'filters' }]
+    );
+    const reps = densityRepeats(c, null);
+    const filters = densityAffordances(c, null, { repeats: reps }).filter(
+      (a) => a.kind === 'filter'
+    );
+    expect(filters.map((a) => [a.id, a.rule, a.repeat])).toEqual([
+      ['app.orders.state', 'declared-filters', 'repeat:app.picks.row-1'],
+    ]);
+    expect(reps.map((r) => [r.id, r.finder])).toEqual([
+      ['repeat:app.picks.row-1', { id: 'app.orders.state', by: 'relationship' }],
+      ['repeat:app.orders.row-1', null],
+    ]);
+  });
+
   it('a select-all checkbox in a table header is not a filter', () => {
     const S = '/html/body/main/section';
     const els: DensityTestElementSpec[] = [

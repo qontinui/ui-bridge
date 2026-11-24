@@ -788,6 +788,29 @@ const CAPTURE_KEYS = [
 ] as const;
 
 /** Parse a `ui-bridge/density-capture@1` document. */
+/** An explicit `repeatKeysResolved: true` must be true of every item. */
+function readRepeatKeysResolved(r: Reader, value: unknown, items: unknown): boolean {
+  const v = r.boolean(value, '$.repeatKeysResolved');
+  if (
+    v &&
+    Array.isArray(items) &&
+    !items.every(
+      (i) =>
+        i !== null &&
+        typeof i === 'object' &&
+        'siblingKey' in i &&
+        'cousinKey' in i &&
+        'cousinRowKey' in i
+    )
+  ) {
+    r.fail(
+      '$.repeatKeysResolved',
+      'is true, but an item lacks siblingKey, cousinKey or cousinRowKey'
+    );
+  }
+  return v;
+}
+
 export function parseDensityCapture(value: unknown): DensityParseResult<DensityCapture> {
   const r = new Reader();
   const o = r.object(value, '$', CAPTURE_KEYS, ['repeatKeysResolved']);
@@ -900,7 +923,7 @@ export function parseDensityCapture(value: unknown): DensityParseResult<DensityC
               'cousinKey' in i &&
               'cousinRowKey' in i
           )
-        : r.boolean(o.repeatKeysResolved, '$.repeatKeysResolved'),
+        : readRepeatKeysResolved(r, o.repeatKeysResolved, o.items),
     coverage: readCoverage(r, o.coverage, '$.coverage'),
     probe,
     targetsHash: readHashOrNull(r, o.targetsHash, '$.targetsHash'),
