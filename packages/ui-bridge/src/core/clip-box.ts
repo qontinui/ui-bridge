@@ -100,6 +100,33 @@ function containPaints(contain: string | undefined): boolean {
   return /\b(paint|strict|content)\b/.test(contain);
 }
 
+/** `content-visibility: auto | hidden` applies paint (and layout) containment. */
+function contentVisibilityContains(v: string | undefined): boolean {
+  return v === 'auto' || v === 'hidden';
+}
+
+/**
+ * Overflow does not apply to every box. A non-replaced inline box, a
+ * `display: contents` element (no box at all) and the table-internal boxes
+ * other than cells ignore it, although `getComputedStyle` still reports the
+ * declared value.
+ */
+const NO_OVERFLOW_DISPLAY = new Set([
+  'inline',
+  'contents',
+  'none',
+  'table-row',
+  'table-row-group',
+  'table-header-group',
+  'table-footer-group',
+  'table-column',
+  'table-column-group',
+]);
+
+function overflowApplies(style: CSSStyleDeclaration): boolean {
+  return !NO_OVERFLOW_DISPLAY.has(style.display || '');
+}
+
 /** Does `style` establish a containing block for a descendant of this `mode`? */
 function establishesContainingBlock(
   style: CSSStyleDeclaration,
@@ -111,8 +138,13 @@ function establishesContainingBlock(
   }
   const s = style as CSSStyleDeclaration & Record<string, string | undefined>;
   if (nonNone(style.transform) || nonNone(style.perspective) || nonNone(style.filter)) return true;
+  // The individual transform properties (Tailwind v4 emits them) and
+  // `offset-path` establish one exactly as `transform` does.
+  if (nonNone(s.translate) || nonNone(s.rotate) || nonNone(s.scale)) return true;
+  if (nonNone(s.offsetPath)) return true;
   if (nonNone(s.backdropFilter) || nonNone(s.webkitBackdropFilter)) return true;
   if (containEstablishes(s.contain)) return true;
+  if (contentVisibilityContains(s.contentVisibility)) return true;
   if (s.willChange && ABSOLUTE_CB_WILL_CHANGE.test(s.willChange)) return true;
   const containerType = s.containerType;
   if (containerType && containerType !== 'normal') return true;
@@ -139,27 +171,39 @@ function axisClip(
   const opensWith = (v: string) => v === 'visible' || v === 'clip';
   if (ox === 'visible' && !opensWith(oy)) ox = 'auto';
   if (oy === 'visible' && !opensWith(ox)) oy = 'auto';
-  const paint = containPaints((style as CSSStyleDeclaration & { contain?: string }).contain);
+  const cs = style as CSSStyleDeclaration & { contain?: string; contentVisibility?: string };
+  const paint = containPaints(cs.contain) || contentVisibilityContains(cs.contentVisibility);
   const clipsX = ox !== 'visible' || paint;
   const clipsY = oy !== 'visible' || paint;
   if (!clipsX && !clipsY) return null;
   return { clipsX, clipsY, scrollsX: clipsX && scrolls(ox), scrollsY: clipsY && scrolls(oy) };
 }
 
-/** The clipper's region: its padding box, or its bounding rect when transformed. */
-function regionOf(el: HTMLElement, clipsX: boolean, clipsY: boolean): ClipRect {
+/**
+ * The clipper's region: its padding box, or its bounding rect when transformed.
+ * `null` when the element has a laid-out box but no client box to clip to
+ * (client metrics 0×0 on a non-empty, untransformed rect, which CSSOM reports
+ * for a box overflow does not apply to): that is no clip, never an empty one.
+ */
+function regionOf(el: HTMLElement, clipsX: boolean, clipsY: boolean): ClipRect | null {
   const rect = el.getBoundingClientRect();
   const offsetWidth = typeof el.offsetWidth === 'number' ? el.offsetWidth : NaN;
+  const offsetHeight = typeof el.offsetHeight === 'number' ? el.offsetHeight : NaN;
   // Client metrics are untransformed: a transformed ancestor (or one with no
   // offset metrics at all, an SVG element) paints where its bounding rect is.
-  const transformed = !(Math.abs(rect.width - offsetWidth) <= 0.5);
+  // Either axis can betray a transform (`scaleY` leaves the width alone).
+  const transformed =
+    !(Math.abs(rect.width - offsetWidth) <= 0.5) || !(Math.abs(rect.height - offsetHeight) <= 0.5);
   let box: ClipRect;
   if (transformed) {
     box = { top: rect.top, left: rect.left, bottom: rect.bottom, right: rect.right };
   } else {
+    const cw = el.clientWidth || 0;
+    const ch = el.clientHeight || 0;
+    if (cw === 0 && ch === 0 && rect.width > 0 && rect.height > 0) return null;
     const left = rect.left + (el.clientLeft || 0);
     const top = rect.top + (el.clientTop || 0);
-    box = { left, top, right: left + (el.clientWidth || 0), bottom: top + (el.clientHeight || 0) };
+    box = { left, top, right: left + cw, bottom: top + ch };
   }
   if (!clipsX) {
     box.left = -Infinity;
@@ -222,9 +266,12 @@ export function clippersOf(element: Element): Clipper[] {
       skipBody ??= bodyPropagates();
       if (skipBody) continue;
     }
+    if (!overflowApplies(style)) continue;
     const axes = axisClip(style);
     if (!axes || !(p instanceof HTMLElement)) continue;
-    out.push({ element: p, box: regionOf(p, axes.clipsX, axes.clipsY), ...axes });
+    const box = regionOf(p, axes.clipsX, axes.clipsY);
+    if (!box) continue;
+    out.push({ element: p, box, ...axes });
   }
   return out;
 }

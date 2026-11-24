@@ -452,4 +452,77 @@ describe('ElementState clip reporting', () => {
     expect(st.clippedPct).toBe(100);
     expect(st.occludedBy).toBeUndefined();
   });
+
+  it('(i) a partly clipped, partly covered element computes occludedPct over the in-clip points', () => {
+    // 3 of 9 samples are past the clipper's edge; the other 6 are covered.
+    // occludedPct is covered / inClip (6/6), not covered / sampled (6/9).
+    const registry = new UIBridgeRegistry();
+    const parent = placeIn(document.body, 'truncate-parent', 0, 0, 150, 20, {
+      style: { 'overflow-x': 'hidden', 'overflow-y': 'hidden' },
+    });
+    paddingBox(parent, { width: 150, height: 20 });
+    const span = placeIn(parent, 'half', 0, 0, 200, 20, { text: 'half clipped, half covered' });
+    place('main-content', 150, 0, 400, 100);
+    place('cover', 0, 0, 150, 20);
+    registry.registerElement('half', span, { type: 'generic' });
+
+    const st = stateOf(registry, 'half');
+    expect(st.visible).toBe(false);
+    expect(st.visibilityReason).toBe('occluded');
+    expect(st.occludedBy).toBe('cover');
+    expect(st.occludedPct).toBe(100);
+    expect(st.clippedPct).toBe(33);
+  });
+
+  it('(j) an inline overflow:hidden ancestor clips nothing — overflow does not apply to it', () => {
+    // CSSOM reports clientWidth/clientHeight 0 for an inline box, which would
+    // otherwise become an empty clip box that marks every point clipped.
+    const registry = new UIBridgeRegistry();
+    const link = placeIn(document.body, 'inline-link', 100, 100, 200, 20, {
+      style: { display: 'inline', 'overflow-x': 'hidden', 'overflow-y': 'hidden' },
+    });
+    paddingBox(link, { width: 0, height: 0 });
+    Object.defineProperty(link, 'offsetWidth', { value: 200, configurable: true });
+    Object.defineProperty(link, 'offsetHeight', { value: 20, configurable: true });
+    const icon = placeIn(link, 'icon', 150, 100, 20, 20, { hittable: false });
+    registry.registerElement('icon', icon, { type: 'generic' });
+
+    const st = stateOf(registry, 'icon');
+    // Its centre returns the parent link: an ancestor hit, so visible.
+    expect(st.visible).toBe(true);
+    expect(st.visibilityReason).toBeUndefined();
+    expect(st.clippedPct).toBeUndefined();
+  });
+
+  it('(k) a box with no client metrics on a laid-out rect is no clip, never an empty one', () => {
+    const registry = new UIBridgeRegistry();
+    const odd = placeIn(document.body, 'no-client-box', 100, 100, 200, 20, {
+      style: { 'overflow-x': 'hidden', 'overflow-y': 'hidden' },
+    });
+    paddingBox(odd, { width: 0, height: 0 });
+    Object.defineProperty(odd, 'offsetWidth', { value: 200, configurable: true });
+    Object.defineProperty(odd, 'offsetHeight', { value: 20, configurable: true });
+    const icon = placeIn(odd, 'icon2', 150, 100, 20, 20, { hittable: false });
+    registry.registerElement('icon2', icon, { type: 'generic' });
+
+    expect(stateOf(registry, 'icon2').clippedPct).toBeUndefined();
+  });
+
+  it('(l) a clipper transformed on one axis only clips at its bounding rect', () => {
+    // scaleY(0.5): width unchanged, height halved. The untransformed padding
+    // box (height 200) would leave the item inside; the painted box (100) does not.
+    const registry = new UIBridgeRegistry();
+    const scroller = placeIn(document.body, 'squashed', 0, 0, 300, 100, {
+      style: { 'overflow-x': 'hidden', 'overflow-y': 'hidden' },
+    });
+    paddingBox(scroller, { width: 300, height: 200 });
+    Object.defineProperty(scroller, 'offsetHeight', { value: 200, configurable: true });
+    const item = placeIn(scroller, 'below-fold', 0, 140, 300, 40, { hittable: false });
+    place('under', 0, 100, 300, 200);
+    registry.registerElement('below-fold', item, { type: 'generic' });
+
+    const st = stateOf(registry, 'below-fold');
+    expect(st.visibilityReason).toBe('clipped');
+    expect(st.clippedPct).toBe(100);
+  });
 });

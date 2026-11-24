@@ -69,6 +69,37 @@ describe('isVisibleInScrollContext — the containing-block chain', () => {
   });
 });
 
+describe('isVisibleInScrollContext — overflow that clips nothing', () => {
+  it('a child at the edge of a non-overflowing overflow:hidden card is visible', () => {
+    const card = document.createElement('div');
+    card.style.overflowX = 'hidden';
+    card.style.overflowY = 'hidden';
+    document.body.appendChild(card);
+    rect(card, 0, 0, 300, 200);
+    const child = document.createElement('div');
+    card.appendChild(child);
+    // Flush with the card's bottom-right corner, inside its padding box.
+    rect(child, 200, 160, 100, 40);
+    expect(isVisibleInScrollContext(child)).toBe(true);
+  });
+
+  it('an inline overflow:hidden parent does not make its child invisible', () => {
+    const link = document.createElement('a');
+    link.style.display = 'inline';
+    link.style.overflowX = 'hidden';
+    link.style.overflowY = 'hidden';
+    document.body.appendChild(link);
+    rect(link, 100, 100, 200, 20);
+    // CSSOM's client box of an inline element is 0×0.
+    Object.defineProperty(link, 'clientWidth', { value: 0, configurable: true });
+    Object.defineProperty(link, 'clientHeight', { value: 0, configurable: true });
+    const icon = document.createElement('b');
+    link.appendChild(icon);
+    rect(icon, 150, 100, 20, 20);
+    expect(isVisibleInScrollContext(icon)).toBe(true);
+  });
+});
+
 describe('scrollIntoViewVerified — the action path reads the same chain', () => {
   it('does not scroll a position:fixed child its scroller does not clip', async () => {
     const child = scrollerWithChild({ position: 'fixed' });
