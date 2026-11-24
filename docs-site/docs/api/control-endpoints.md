@@ -626,12 +626,24 @@ collision suffix (`dom-button-save-2` becomes `dom-button-save`), because
 keeping it would reveal that a redacted sibling shares the text. The derived
 name rung (an icon's `svg > title` or class) no longer reads a descendant that
 touches a redaction boundary.
-The same canonical verdict now backs two more readers that kept their own
+The same canonical verdict now backs three more readers that kept their own
 check: `findByText`'s per-hit `visible` (it read `offsetParent !== null ||
-position: fixed`), and the `visible` and `clickable` conditions of
-`POST /ai/wait-for-element-condition` (they read `offsetParent !== null` and a
-non-zero size). An occluded or off-screen element now reads `visible: false`
-from `findByText` and never satisfies either wait condition.
+position: fixed`); the `visible` condition of
+`POST /ai/wait-for-element-condition` (it read `offsetParent !== null` and a
+non-zero size; the server arm reads the polled row's own `state.visible` and
+hit-tests only a row without one); and the live-node fallback of
+`POST /ai/wait-for-element`'s `requirement: "visible"` (used when the row
+carries no visibility value; it read `offsetParent !== null` and a non-zero
+size). An occluded or off-screen element now reads `visible: false` from
+`findByText` and satisfies neither `visible` wait. The `clickable` condition is
+deliberately NOT the visibility verdict: it means the next click would not be
+refused, so it reads the action dispatch gate's render check (connected, no
+`display: none` on the node or an ancestor, not `visibility: hidden`) plus the
+interaction blockers. A below-the-fold, `opacity: 0` or covered control is
+`clickable`; it used to fail the old `offsetParent` check only when it was
+itself `position: fixed`, which no longer refuses it. The relay's
+`executeElementAction` dispatch gate uses the same render check, so it, too,
+no longer refuses a `position: fixed` control.
 
 ## Diagnostics
 

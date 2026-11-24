@@ -213,9 +213,14 @@ Conditions:
   inside the viewport, and not fully covered by another element or clipped
   away by an ancestor. A partially covered element is visible; one scrolled
   below the fold is not.
-- `clickable` — visible AND the click path would not refuse it: not
-  `disabled`, not `aria-disabled="true"`, AND computed `pointer-events` is not
-  `none` (including `none` inherited from an ancestor). This is the same
+- `clickable` — the next click would not be refused. That is NOT `visible`:
+  it is the render check the action dispatch gate uses (`isRenderedForAction`,
+  `core/element-state`: the node is connected, has no `display: none` on itself
+  or any ancestor, and is not `visibility: hidden`), so a control scrolled
+  below the fold, one at `opacity: 0` or one partly or fully covered is
+  `clickable`. On top of that the interaction blockers: not `disabled`, not
+  `aria-disabled="true"`, AND computed `pointer-events` is not `none`
+  (including `none` inherited from an ancestor). This is the same
   predicate as `ElementState.enabled` and `UIQuery.enabled()`, and the one a
   click-like action (`click`, `doubleClick`, `toggle`, …) is refused on, over
   both the HTTP executor and the React IPC relay. A hover-revealed

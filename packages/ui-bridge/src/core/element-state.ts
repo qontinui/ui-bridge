@@ -183,6 +183,32 @@ export function readElementVisibility(element: HTMLElement): ElementVisibility {
 }
 
 /**
+ * Is the node rendered at all — the check an ACTION is gated on, not the
+ * visibility verdict a row reports. True when the node is connected, has no
+ * `display: none` on itself or any ancestor, and is not `visibility: hidden`
+ * (computed, so an inherited value counts).
+ *
+ * Deliberately NOT {@link readElementVisibility}: an off-screen target is
+ * scrolled into view by the action, an occluded one is the caller's concern,
+ * and an `opacity: 0` control (a styled file input) still takes input, so the
+ * canonical verdict would refuse actions that dispatch. Used by the relay's
+ * `executeElementAction` dispatch gate and by the wait-for-element
+ * `clickable` condition on both arms, so "clickable" means "the next action
+ * would not be refused as not rendered".
+ *
+ * It replaced an `offsetParent !== null` test, which a browser also fails for
+ * a control that is itself `position: fixed` (plan-library edge e11dd943).
+ */
+export function isRenderedForAction(el: HTMLElement): boolean {
+  if (!el.isConnected) return false;
+  if (window.getComputedStyle(el).visibility === 'hidden') return false;
+  for (let node: Element | null = el; node; node = node.parentElement) {
+    if (window.getComputedStyle(node).display === 'none') return false;
+  }
+  return true;
+}
+
+/**
  * Get the current state of an element
  */
 export function getElementState(element: HTMLElement): ElementState {

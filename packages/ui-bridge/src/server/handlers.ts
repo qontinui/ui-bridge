@@ -133,7 +133,7 @@ import {
   readInteractionBlockers,
   readTitleAttr,
 } from '../core/a11y';
-import { readElementVisibility } from '../core/element-state';
+import { isRenderedForAction, readElementVisibility } from '../core/element-state';
 import { measureFreshBbox } from '../core/registry';
 import {
   isContentRedacted,
@@ -6864,14 +6864,22 @@ export function createHandlers(
 
           case 'visible': {
             // The canonical verdict (`core/element-state`): laid out, not
-            // hidden, in the viewport and not fully occluded or clipped.
+            // hidden, in the viewport and not fully occluded or clipped. The
+            // poll already materialized this row through `getState()`, so its
+            // `state.visible` IS that verdict; re-run the hit-test only for a
+            // row that carries none.
+            const state = el.state as { visible?: unknown } | undefined;
+            if (typeof state?.visible === 'boolean') return state.visible;
             if (!domEl) return false;
             return readElementVisibility(domEl).visible;
           }
 
           case 'clickable': {
+            // "The next click would not be refused": the dispatch gate's
+            // render check, NOT the visibility verdict (a below-the-fold or
+            // opacity:0 control is clicked), plus the interaction blockers.
             if (!domEl) return false;
-            if (!readElementVisibility(domEl).visible) return false;
+            if (!isRenderedForAction(domEl)) return false;
             // Same predicate as `ElementState.enabled` and the click-path
             // pre-check, so "clickable" means the next click is not refused.
             return !isInteractionBlocked(readInteractionBlockers(domEl));
