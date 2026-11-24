@@ -554,14 +554,24 @@ own `placeholder`, else a name derived from developer affordances (a
 `data-testid`, an `id`, an icon token). It is capped at 200 code points, and is
 the redaction sentinel inside a redaction boundary. It is the value a
 registered element reports as `state.accessibleName`; a fallback row's `state`
-does not carry that field. The top-level `accessibleName` differs by arm. On a
-registered snapshot row it is the same `resolveAccessibleName` name (scrubbed),
-so it equals `state.accessibleName`. On a find or discover row the action
-executor builds it with its own name chain, so it can differ. On a DOM-fallback
-row, when present, it is the W3C algorithm alone, without the `placeholder` and
-derived rungs, so it can be absent where `label` comes from one of those. A
-fallback row's `id`
-is built from a separate, frozen input so it does not move when the name does:
+does not carry that field. The top-level `accessibleName` depends on which
+serializer produced the row:
+
+- the registry serializer (`serializeRegisteredElement`: the registry snapshot,
+  the React `getControlSnapshot` command and the in-page executor's snapshot)
+  emits the scrubbed `resolveAccessibleName` name, so it equals
+  `state.accessibleName`;
+- the server's `materializeElements` (`POST /control/find` and `discover` over
+  the registry, and the server snapshot's registry fallback) emits the W3C
+  algorithm alone (`computeAccessibleNameSafe`), without the `placeholder` and
+  derived rungs;
+- the React `find` command emits the element's scrubbed `aria-label`, else its
+  registered `label`;
+- the in-page action executor's `find` builds it with its own name chain;
+- a DOM-fallback row carries NO top-level `accessibleName`: its element
+  reference is dropped before `materializeElements` runs.
+
+A fallback row's `id` is built from a separate, frozen input so it does not move when the name does:
 `dom-<testid>`, `dom-<html id>`, a slug of the element's text
 (`dom-button-save`), or `dom-<type>-<index>`. The text slug is skipped, and the
 id falls to `dom-<type>-<index>`, when the element is inside a redaction
@@ -580,13 +590,16 @@ and visible-link lists skip it) and the visible-only filter that
 (`GET /ai/snapshot`) reads the registry only, never these rows.
 
 `include_hidden: false` on `POST /control/find` filters on this same verdict,
-on every find arm: it drops exactly the rows whose `state.visible` (the
-canonical verdict the row carries) is `false`, so an occluded, off-screen
-(scrolled out of the viewport) or fully ancestor-clipped row is left out, and a
-partially covered one is kept. A row that carries `state.visible` is judged by
-it; a registered element with a live node is judged by the same canonical
-verdict computed on that node; a row with no visibility signal at all is kept.
-A registered row's top-level `visible` is a separate bounding-box hint and is
+read from where each arm reports the row's `state`, so it drops the rows whose
+returned `state.visible` is `false`: an occluded, off-screen (scrolled out of
+the viewport) or fully ancestor-clipped row is left out, and a partially
+covered one is kept. A registered element (the server's registry pass and the
+React `find` command) is judged by its `getState().visible`, the value the row
+reports, including a post-action override the registry holds. A DOM-fallback
+or executor row is judged by the `state.visible` it already carries. A relay
+row from a cached snapshot is judged by its cached `state.visible`, else its
+top-level `visible`. A row with no visibility signal at all is kept. A
+registered row's top-level `visible` is a separate bounding-box hint and is
 not what this filter reads. To get below-the-fold rows, pass
 `include_hidden: true`, which is the default.
 
