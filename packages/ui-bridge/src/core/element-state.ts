@@ -199,8 +199,14 @@ export function readElementVisibility(element: HTMLElement): ElementVisibility {
  * Used by the relay's `executeElementAction` dispatch gate and its
  * wait-for-element `clickable` condition, and by the HTTP executor's click
  * pre-check (`getClickVisibilityReason`, which the server `clickable`
- * condition reads), so both arms refuse a click inside a `display: none`
- * subtree and both `clickable` conditions agree on it.
+ * condition reads) — one check on both arms, so both refuse a click inside a
+ * `display: none` subtree and both `clickable` conditions agree on it.
+ *
+ * An `<option>` (by tag name, realm-safe) is judged by its `<select>`: a
+ * browser reports an option inside a closed dropdown as having no box, yet
+ * clicking it to select it is supported, so it is rendered exactly when its
+ * select is — and an option inside a `display: none` subtree is not, because
+ * its select is not.
  *
  * Where the engine has `Element.checkVisibility()`, its default answer is used
  * (it sees through closed shadow roots). A node whose own display is
@@ -216,6 +222,13 @@ export function readElementVisibility(element: HTMLElement): ElementVisibility {
  * a control that is itself `position: fixed` (plan-library edge e11dd943).
  */
 export function isRenderedForAction(el: HTMLElement): boolean {
+  if (el.tagName === 'OPTION') {
+    return isNodeRenderedForAction((el.closest('select') as HTMLElement | null) ?? el);
+  }
+  return isNodeRenderedForAction(el);
+}
+
+function isNodeRenderedForAction(el: HTMLElement): boolean {
   if (!el.isConnected) return false;
   const view = el.ownerDocument.defaultView ?? window;
   // One read of the node's own style for both of its own signals.
@@ -231,16 +244,18 @@ export function isRenderedForAction(el: HTMLElement): boolean {
   // flat-tree ancestor that does have a box instead.
   let probe: Element | null = el;
   if (own.display === 'contents') {
-    // The ancestor answers for the boxless node's own rendering only if a slot
-    // takes the node: an unslotted light child of an open shadow host is not
-    // rendered, though the host's `checkVisibility()` reads true.
-    if (el.parentElement?.shadowRoot && !el.assignedSlot) return false;
+    // The ancestor answers for a boxless node's rendering only if a slot takes
+    // every `display: contents` node passed on the way up: an unslotted light
+    // child of an open shadow host is not rendered, though the host's
+    // `checkVisibility()` reads true. The same rule the fallback walk applies.
     probe = null;
-    for (const node of composedAncestry(el).slice(1)) {
-      if (view.getComputedStyle(node).display !== 'contents') {
+    for (const node of composedAncestry(el)) {
+      const display = node === el ? own.display : view.getComputedStyle(node).display;
+      if (display !== 'contents') {
         probe = node;
         break;
       }
+      if (node.parentElement?.shadowRoot && !node.assignedSlot) return false;
     }
   }
   if (probe && typeof probe.checkVisibility === 'function') {
