@@ -233,15 +233,19 @@ takes an audience role to reach what it came for, holds that to a budget, and
 plans the change. It has seven verbs:
 
 ```bash
-ui-bridge-density init    --surface /orders --profile audience_profile/<name>@<version>                           [--targets-out density-targets.json] [--budget-out density-budget.json]
+ui-bridge-density init    --surface /orders --profile audience_profile/<name>@<version> \
+                          [--targets-out density-targets.json] [--budget-out density-budget.json]
 ui-bridge-density lint    --targets targets.json --profile-text profile.md [--profile <doc>]
 ui-bridge-density fit     --targets targets.json --shell capture.json [--shell <capture>]... [--budget budget.json]
-ui-bridge-density measure --snapshot snapshot.json --role buyer                           [--fixture <name>] [--targets targets.json] [--capture-out capture.json]
+ui-bridge-density measure --snapshot snapshot.json --role buyer \
+                          [--fixture <name>] [--targets targets.json] [--capture-out capture.json]
 ui-bridge-density measure --capture capture.json [--capture <file>]... [--targets targets.json]
-ui-bridge-density plan    --capture capture.json [--capture <file>]... [--targets targets.json] [--budget budget.json]                           [--ordered-by <quantity>:<ascending|descending>] [--ordered-by-cell <n>]
+ui-bridge-density plan    --capture capture.json [--capture <file>]... [--targets targets.json] [--budget budget.json] \
+                          [--ordered-by <quantity>:<ascending|descending>] [--ordered-by-cell <n>]
 ui-bridge-density assert  --budget budget.json --snapshot snapshot.json --role buyer [--targets targets.json]
 ui-bridge-density assert  --draft budget.json --snapshot snapshot.json --role buyer
-ui-bridge-density diff    --before before.json --after after.json [--targets targets.json] [--budget budget.json]                           [--plan plan.json --applied <proposal id>]...
+ui-bridge-density diff    --before before.json --after after.json [--targets targets.json] [--budget budget.json] \
+                          [--plan plan.json --applied <proposal id> [--applied <proposal id>]...]
 ```
 
 - `init` writes an empty, valid targets file and budget file (no role, no ask,

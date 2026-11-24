@@ -25,7 +25,7 @@ One pure model answers three uses:
 
 ## Running it
 
-The command ships as a second bin of `@qontinui/ui-bridge-headless` (0.9.0 and later):
+The command ships as a second bin of `@qontinui/ui-bridge-headless`, from version 0.9.0, the first release that carries it (an older version has no such bin):
 
 ```bash
 npx -p @qontinui/ui-bridge-headless ui-bridge-density --help
@@ -60,16 +60,16 @@ Every entry point takes the `producer` as a required argument, so a report names
 
 A capture is the text-free reading of one cell, built from a snapshot by an adapter that reads each text once (its length, a hash, its shape, the role probe, the targets' text matchers) and drops it. `measure --capture-out <file>` writes one; every other verb can read it back.
 
-| Field                        | Holds                                                                                                                                                                                                                                                                                                               |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `scope`                      | `registered` (built from the registry's snapshot) or `document` (an in-page walk, a later release)                                                                                                                                                                                                                  |
-| `cell`                       | `role`, `viewport` (`width`, `height`) and `fixture`                                                                                                                                                                                                                                                                |
-| `viewport`                   | width, height, scroll offsets, document extent and the scroll `container`                                                                                                                                                                                                                                           |
-| `bases`                      | how each reading was made: `foldBasis`, `pinBasis`, `scrollBasis`, `scroller`, `contentCap`                                                                                                                                                                                                                         |
-| `coverage`                   | items `considered`, `measured`, and each `unmeasured` dimension with its count and unknown code                                                                                                                                                                                                                     |
-| `probe`                      | whether the role probe matched the snapshot                                                                                                                                                                                                                                                                         |
-| `targetsHash`, `textMatches` | the targets file the text matchers were evaluated against, and which item ids each matched                                                                                                                                                                                                                          |
-| `items[]`                    | one per registered element: `id`, `parent`, `path`, `structureBy`, `tag`, `role`, `interactive`, `authorId`, `landmark`, `rect` (document space), `visibility`, `chars`, `ownChars`, `textHash`, `shape`, `fontPx`, `lineHeightPx`, `position`, `truncated`, `recoverable`, `expanded`, `controls`, `href` (a hash) |
+| Field                        | Holds                                                                                                                                                                                                                                                                                                                                                                                             |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `scope`                      | `registered` (built from the registry's snapshot) or `document` (an in-page walk, a later release)                                                                                                                                                                                                                                                                                                |
+| `cell`                       | `role`, `viewport` (`width`, `height`) and `fixture`                                                                                                                                                                                                                                                                                                                                              |
+| `viewport`                   | width, height, scroll offsets, document extent and the scroll `container`                                                                                                                                                                                                                                                                                                                         |
+| `bases`                      | how each reading was made: `foldBasis`, `pinBasis`, `scrollBasis`, `scroller`, `contentCap`                                                                                                                                                                                                                                                                                                       |
+| `coverage`                   | items `considered`, `measured`, and each `unmeasured` dimension with its count and unknown code                                                                                                                                                                                                                                                                                                   |
+| `probe`                      | whether the role probe matched the snapshot                                                                                                                                                                                                                                                                                                                                                       |
+| `targetsHash`, `textMatches` | the targets file the text matchers were evaluated against, and which item ids each matched                                                                                                                                                                                                                                                                                                        |
+| `items[]`                    | one per registered element: `id`, `parent`, `path`, `structureBy`, `tag`, `role`, `interactive`, `authorId`, `landmark`, `rect` (document space), `visibility`, `chars`, `ownChars`, `textHash`, `shape`, `fontPx`, `lineHeightPx`, `position`, `truncated`, `recoverable`, `expanded`, `controls`, `href` (a hash), among others (the structure keys the core derives, `selected`, `filters`, …) |
 
 `chars` is `null` inside a redaction boundary, counted under `coverage.unmeasured`. A field the snapshot does not carry is `null` with a coverage entry, never a default.
 
@@ -118,7 +118,7 @@ ui-bridge-density plan    --capture capture.json [--capture <file>]... [--target
 ui-bridge-density assert  --budget budget.json <the cell flags of measure>
 ui-bridge-density assert  --draft budget.json <the cell flags of measure>
 ui-bridge-density diff    --before before.json --after after.json [--targets targets.json] [--budget budget.json] \
-                          [--plan plan.json --applied <proposal id>]...
+                          [--plan plan.json --applied <proposal id> [--applied <proposal id>]...]
 ```
 
 - **`init`** writes a valid, empty targets file and budget file for a surface: no role, no ask, no limit. It never overwrites a file and supplies no content and no threshold.
@@ -137,13 +137,13 @@ Standard output is one JSON document per run. Each cell carries one `Observation
 
 ## Exit codes
 
-| Code                | Meaning                                                                                              |
-| ------------------- | ---------------------------------------------------------------------------------------------------- |
-| `0`                 | an answer (`measure`, `plan`, `fit`, `diff`, `init`; unknowns included), or clean (`assert`, `lint`) |
-| `1`                 | a failing rule (`assert`) or a missing quote (`lint`), or an internal error                          |
-| `2`                 | a usage error                                                                                        |
-| `3`                 | the only non-passes are unknowns (`assert`, `lint`)                                                  |
-| `129`, `130`, `143` | interrupted by SIGHUP, SIGINT or SIGTERM                                                             |
+| Code                | Meaning                                                                                                                                                   |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`                 | an answer (`measure`, `plan`, `fit`, `diff`, `init`; unknowns included), or clean (`assert`, `lint`)                                                      |
+| `1`                 | a failing rule (`assert`) or a missing quote (`lint`), or an internal error                                                                               |
+| `2`                 | a usage error                                                                                                                                             |
+| `3`                 | the only non-passes are unknowns (`assert`, `lint`); for `assert --draft`, a cell went unmeasured or no rule could be drafted, so the draft is incomplete |
+| `129`, `130`, `143` | interrupted by SIGHUP, SIGINT or SIGTERM                                                                                                                  |
 
 An interruption before any verdict prints one `interrupted` document naming the verb and the step it reached (for example `read-snapshot`). A signal after the verdict is printed adds a note on standard error that the verdict stands, and the run exits with the verdict's own code.
 
@@ -298,11 +298,11 @@ A synthetic order page at 1280 × 800, document height 1000. A fixed header is 6
 
 | Block     | Members                                            | Document `y` |
 | --------- | -------------------------------------------------- | ------------ |
-| `company` | a heading, an address paragraph, a story paragraph | 80 to 448    |
+| `company` | a heading, an address paragraph, a story paragraph | 80 to 464    |
 | `orders`  | a heading and six order rows at a 56 px pitch      | 480 to 820   |
 | `help`    | one paragraph                                      | 900 to 948   |
 
-The buyer's audience profile says _"A buyer checks every morning which open orders need action. Now and then a buyer needs help with an order. A buyer wants to know when a back-ordered item arrives."_ The targets file turns that into three asks:
+The buyer's audience profile says _"A buyer checks every morning which open orders need action. Now and then a buyer needs help with an order. A buyer wants to know when a back-ordered item arrives. A buyer sometimes compares prices across suppliers."_ The targets file turns that into three asks:
 
 ```json
 {
@@ -419,7 +419,7 @@ The report lists one **unclaimed block**: `company`, with `firstScreenPx: 368`, 
       "min": 0.5
     },
     {
-      "id": "company-block-displacement",
+      "id": "block-displacement",
       "quantity": "block.displacementPx",
       "where": { "role": "buyer" },
       "max": null
@@ -428,6 +428,6 @@ The report lists one **unclaimed block**: `company`, with `firstScreenPx: 368`, 
 }
 ```
 
-`assert --budget budget.json --capture capture.json --targets targets.json` exits `1` with `pass: 2, fail: 1, unknown: 1`: `everything-on-the-first-screen` fails (`[0, 0]` against a minimum of 0.5), and `company-block-displacement` is `unknown{no_expectation}` because its limit is `null`, with `set-limit` in `next[]`.
+`assert --budget budget.json --capture capture.json --targets targets.json` exits `1` with `pass: 2, fail: 1, unknown: 1`: `everything-on-the-first-screen` fails (`[0, 0]` against a minimum of 0.5), and `block-displacement` is `unknown{no_expectation}` because its limit is `null`, with `set-limit` in `next[]`.
 
-**Diff.** After the demote is built, a second snapshot is measured and compared: `diff --before capture.json --after capture-after.json --targets targets.json --plan plan.json --applied demote:company`. The measured deltas match the prediction on the buyer's quantities — `answeredAt[0]` 0 → 0.75, `meanScrollPx` 37.3 → 0, `unclaimedBlocks` 1 → 0 — and `predictionError` names what the prediction missed: `column-shift@1` placed the company block 16 px below `help` and the built page leaves 32 px, so `block.topPx[block=company]` was predicted at 564 and measured at 580.
+**Diff.** After the demote is built, a second snapshot is measured and compared: `diff --before capture.json --after capture-after.json --targets targets.json --plan plan.json --applied demote:company`. The measured deltas match the prediction on the buyer's quantities — `answeredAt[0]` 0 → 0.75, `meanScrollPx` 37.3 → 0, `unclaimedBlocks` 1 → 0 — and `predictionError` names what the prediction missed. Every miss comes from one gap: `column-shift@1` placed the company block 16 px below `help` and the built page leaves 32 px, so `block.topPx[block=company]` was predicted at 564 and measured at 580, and the quantities that follow from it (the block's `firstScreenPx`, the pitch of `help`, the ledger's prose and uncovered cells, `bounds.gapEm.min`) miss with it. The comparisons that could not be made (the reach of the unanswered `B3`, among them) are listed as `unknown`, not as exact.

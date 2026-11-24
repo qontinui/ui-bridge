@@ -33,6 +33,7 @@ interface Row {
   unit: string;
   scope: string;
   definition: string;
+  notes: string;
 }
 
 /** The rows of the Quantities table: `| \`id\` | unit | scope | definition | notes |`. */
@@ -48,8 +49,16 @@ function quantityRows(): Row[] {
         unit: cells[2],
         scope: cells[3],
         definition: cells[4],
+        notes: cells[5],
       };
     });
+}
+
+/** The Notes cell the page gives a quantity: whether it compacts, and the bound `--draft` writes. */
+function notesOf(q: (typeof DENSITY_QUANTITIES)[number]): string {
+  return [q.compaction ? 'compaction' : null, q.draft ? `drafted as ${q.draft}` : null]
+    .filter((n) => n !== null)
+    .join(', ');
 }
 
 describe('the density docs page', () => {
@@ -67,13 +76,16 @@ describe('the density docs page', () => {
     expect(ids.length).toBe(DENSITY_QUANTITIES.length);
   });
 
-  it("gives each quantity the registry's unit, scope and definition", () => {
+  it("gives each quantity the registry's unit, scope, definition and notes", () => {
     const byId = new Map(quantityRows().map((r) => [r.id, r]));
     const drifted = DENSITY_QUANTITIES.filter((q) => {
       const row = byId.get(q.id);
       return (
         row !== undefined &&
-        (row.unit !== q.unit || row.scope !== q.scope || row.definition !== q.definition)
+        (row.unit !== q.unit ||
+          row.scope !== q.scope ||
+          row.definition !== q.definition ||
+          row.notes !== notesOf(q))
       );
     }).map((q) => q.id);
     expect(drifted).toEqual([]);
