@@ -348,16 +348,15 @@ export function densityAffordances(
         // One pager per nav: its page links and its previous / next buttons
         // are one affordance. A navigation landmark with no `nav` tag is one
         // nav when it is registered. In a landmark nobody registered, the
-        // controls under one registered parent are taken for one pager (a
-        // paginator's buttons), and only a control with no registered parent
-        // is a pager of its own; controls of two such landmarks are never
-        // merged across parents.
+        // controls that share a parent element (their sibling key, or the
+        // unregistered row a link list's links sit in) are one pager; two such
+        // landmarks have different parent elements, so they stay apart.
         const landmark = navigationLandmarkOf(item);
         const key =
           densityNavPrefix(item) ??
           (landmark !== null
             ? `landmark:${landmark}`
-            : `unregistered-landmark:${item.parent ?? `self:${item.id}`}`);
+            : `unregistered-landmark:${item.cousinKey ?? item.siblingKey ?? item.parent ?? `self:${item.id}`}`);
         pagerControls.push({ key, item });
       }
     }

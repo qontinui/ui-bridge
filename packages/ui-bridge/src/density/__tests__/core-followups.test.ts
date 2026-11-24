@@ -371,7 +371,7 @@ describe('density follow-ups: repeats', () => {
 });
 
 describe('density follow-ups: pagers', () => {
-  /** Three rows in a section, and two buttons below them in navigation landmarks nobody registered. */
+  /** Three rows in a section, and buttons below them in three navigation landmarks nobody registered. */
   function unregisteredNavs(): DensityTestElementSpec[] {
     const S = `${MAIN}/section`;
     const els: DensityTestElementSpec[] = [
@@ -416,12 +416,22 @@ describe('density follow-ups: pagers', () => {
     return els;
   }
 
-  it('controls in navigation landmarks nobody registered are one pager per registered parent', () => {
-    const pagers = densityAffordances(capture(unregisteredNavs()), null).filter(
-      (a) => a.kind === 'pager'
-    );
+  it('controls in navigation landmarks nobody registered are one pager per parent element', () => {
+    const els = unregisteredNavs();
+    // A second button in the first landmark: the same parent element.
+    els.push({
+      id: 'app.s.page-1b',
+      tag: 'button',
+      category: 'interactive',
+      xpath: `${MAIN}/section/div[1]/button[2]`,
+      semanticPath: `section > div[role="navigation"] > button`,
+      rect: [100, 240, 80, 28],
+      text: 'Page 1b',
+    });
+    const pagers = densityAffordances(capture(els), null).filter((a) => a.kind === 'pager');
     expect(pagers.map((a) => [a.id, a.rule, a.members])).toEqual([
-      ['app.s.page-1', 'nav-after-repeat', ['app.s.page-1', 'app.s.page-2']],
+      ['app.s.page-1', 'nav-after-repeat', ['app.s.page-1', 'app.s.page-1b']],
+      ['app.s.page-2', 'nav-after-repeat', ['app.s.page-2']],
       ['app.s.page-3', 'nav-after-repeat', ['app.s.page-3']],
     ]);
   });
