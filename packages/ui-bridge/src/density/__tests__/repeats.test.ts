@@ -1010,6 +1010,110 @@ describe('repeats', () => {
     expect(densityRepeats(capture(els), null)).toEqual([]);
   });
 
+  it('field wrappers with help text are a form; todo rows with a checkbox are a list', () => {
+    const form: DensityTestElementSpec[] = [];
+    const todo: DensityTestElementSpec[] = [];
+    for (let k = 1; k <= 4; k++) {
+      const y = 70 * (k - 1);
+      form.push(
+        {
+          id: `f${k}`,
+          tag: 'div',
+          xpath: `/html/body/form/div[${k}]`,
+          rect: [0, y, 400, 66],
+          text: '',
+        },
+        {
+          id: `f${k}.l`,
+          tag: 'label',
+          xpath: `/html/body/form/div[${k}]/label`,
+          rect: [0, y, 100, 20],
+          text: `F${k}`,
+        },
+        {
+          id: `f${k}.i`,
+          tag: 'input',
+          role: 'textbox',
+          category: 'interactive',
+          xpath: `/html/body/form/div[${k}]/input`,
+          rect: [0, y + 22, 400, 24],
+          text: '',
+        },
+        {
+          id: `f${k}.p`,
+          tag: 'p',
+          xpath: `/html/body/form/div[${k}]/p`,
+          rect: [0, y + 48, 300, 16],
+          text: 'Help',
+        }
+      );
+      const t = 500 + 40 * (k - 1);
+      todo.push(
+        {
+          id: `t${k}`,
+          tag: 'li',
+          xpath: `/html/body/ul/li[${k}]`,
+          rect: [0, t, 400, 36],
+          text: `Task ${k}`,
+        },
+        {
+          id: `t${k}.c`,
+          tag: 'input',
+          role: 'checkbox',
+          category: 'interactive',
+          xpath: `/html/body/ul/li[${k}]/input`,
+          rect: [0, t + 8, 20, 20],
+          text: '',
+        },
+        {
+          id: `t${k}.s`,
+          tag: 'span',
+          xpath: `/html/body/ul/li[${k}]/span`,
+          rect: [30, t + 8, 200, 20],
+          text: `Task ${k}`,
+        }
+      );
+    }
+    expect(densityRepeats(capture([...form, ...todo]), null).map((r) => [r.id, r.rows])).toEqual([
+      ['repeat:t1', 4],
+    ]);
+  });
+
+  it('a table whose leading badge appears in some rows only is still one repeat', () => {
+    const els: DensityTestElementSpec[] = [];
+    for (let k = 1; k <= 5; k++) {
+      const y = 100 + 40 * (k - 1);
+      if (k % 2 === 1) {
+        els.push({
+          id: `b${k}`,
+          tag: 'span',
+          xpath: `/html/body/table/tbody/tr[${k}]/td[1]/span`,
+          rect: [8, y + 10, 40, 20],
+          text: 'New',
+        });
+      }
+      els.push(
+        {
+          id: `l${k}`,
+          tag: 'a',
+          xpath: `/html/body/table/tbody/tr[${k}]/td[2]/a`,
+          rect: [100, y + 10, 200, 20],
+          text: `Item ${k}`,
+        },
+        {
+          id: `e${k}`,
+          tag: 'button',
+          category: 'interactive',
+          xpath: `/html/body/table/tbody/tr[${k}]/td[3]/button`,
+          rect: [600, y + 6, 60, 28],
+          text: 'Edit',
+        }
+      );
+    }
+    const reps = densityRepeats(capture(els), null);
+    expect(reps.map((r) => [r.tag, r.rows])).toEqual([['tr', 5]]);
+  });
+
   it('a hidden leaf in a row draws no line band', () => {
     const els = orderList(3).map((e): DensityTestElementSpec => {
       if (!e.id.endsWith('.sum')) return e;
