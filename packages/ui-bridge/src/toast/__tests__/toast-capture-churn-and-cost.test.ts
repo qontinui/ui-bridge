@@ -328,6 +328,64 @@ describe('ToastCapture churn budget and re-read gate', () => {
       expect(appearedFor('timer').at(-1)?.toast.message).toBe('later');
     });
 
+    // A9d — the re-key happens in ONE batch, so only warmth can refuse the
+    // inheritance: a suppressed budget gone cold with no reconcile to release
+    // it is not inherited.
+    it('a same-batch re-key of a cold suppressed budget starts fresh', async () => {
+      install({ pollInterval: 60_000 });
+      const timer = addStatus('timer', 'r0');
+      await flushAndScan();
+      for (let i = 1; i <= 6; i++) {
+        setTextInPlace(timer, `r${i}`);
+        vi.advanceTimersByTime(100);
+        capture.getSnapshot();
+      }
+      expect(appearedFor('timer')).toHaveLength(4); // suppressed
+
+      await vi.advanceTimersByTimeAsync(10_500); // cold; no reconcile ran
+      rekey(timer, 'later');
+      await flushAndScan();
+
+      expect(appearedFor('timer').at(-1)?.toast.message).toBe('later');
+    });
+
+    // A16 (review round 1, A1) — the reviewer's probe: a node that vanished in
+    // an EARLIER batch than the new node arrived in is not a re-key.
+    it('distinct sequential toasts on one data-testid are each announced and each reach recent', async () => {
+      install({ pollInterval: 500 });
+      for (let i = 1; i <= 6; i++) {
+        const el = addStatus('toast', `msg${i}`);
+        await flushAndScan();
+        await vi.advanceTimersByTimeAsync(950); // visible ~1 s
+        el.remove();
+        await flushAndScan();
+        await vi.advanceTimersByTimeAsync(450); // ~0.5 s gap
+      }
+      await vi.advanceTimersByTimeAsync(500);
+
+      const all = ['msg1', 'msg2', 'msg3', 'msg4', 'msg5', 'msg6'];
+      expect(appearedFor('toast').map((e) => e.toast.message)).toEqual(all);
+      const recent = capture.getRecent().map((t) => t.message);
+      for (const message of all) expect(recent).toContain(message);
+    });
+
+    // A17 (review round 1, A2) — a static sibling holds the key while a second
+    // element on it is re-keyed per tick: the churner's chain is still bounded.
+    it('a re-keyed churner beside a static sibling on the same id is bounded', async () => {
+      install({ pollInterval: 500 });
+      addStatus('timer', 'static');
+      await flushAndScan();
+      await rekeyTicker(12);
+
+      const churn = events.filter(
+        (e) => e.action === 'appeared' && e.toast.message.startsWith('0:')
+      );
+      expect(churn).toHaveLength(4);
+      expect(
+        events.filter((e) => e.action === 'appeared' && e.toast.message === 'static')
+      ).toHaveLength(1);
+    });
+
     // A10
     it('per-tick re-keying is bounded', async () => {
       install({ pollInterval: 500 });
@@ -654,14 +712,19 @@ describe('ToastCapture churn budget and re-read gate', () => {
     // C4
     it('a visible empty element that is removed is untracked', async () => {
       install({ pollInterval: 500 });
+      const observe = vi.spyOn(MutationObserver.prototype, 'observe');
       const el = addSlot();
       await flushAndScan();
       const clone = vi.spyOn(el, 'cloneNode');
+      // The observer `track` attached to THIS element.
+      const calls = observe.mock.calls.flatMap((c, i) => (c[0] === el ? [i] : []));
+      expect(calls).toHaveLength(1);
+      const own = observe.mock.contexts[calls[0]];
 
       const disconnect = vi.spyOn(MutationObserver.prototype, 'disconnect');
       el.remove();
       await vi.advanceTimersByTimeAsync(500);
-      expect(disconnect.mock.calls.length).toBeGreaterThanOrEqual(1);
+      expect(disconnect.mock.contexts).toContain(own);
 
       await tenUnrelatedMutations();
       expect(clone).toHaveBeenCalledTimes(0);
@@ -670,10 +733,14 @@ describe('ToastCapture churn budget and re-read gate', () => {
     // C5
     it('a hidden empty element is not announced; shown and filled in one tick, it is', async () => {
       install({ pollInterval: 500 });
+      const observe = vi.spyOn(MutationObserver.prototype, 'observe');
       const el = addSlot();
       el.style.display = 'none';
       await flushAndScan();
+      await tenUnrelatedMutations();
       expect(events.filter((e) => e.action === 'appeared')).toEqual([]);
+      // Hidden, it is not tracked: no observer was attached to it.
+      expect(observe.mock.calls.filter((c) => c[0] === el)).toHaveLength(0);
 
       el.style.display = '';
       el.appendChild(document.createTextNode('Ready'));
