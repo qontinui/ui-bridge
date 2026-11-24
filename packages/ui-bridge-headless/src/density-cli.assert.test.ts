@@ -6,6 +6,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { missingOutputMessage } from '../../../test-support/build-if-stale.mjs';
 import { parseDensityBudget, parseDensityTargets } from './density/index';
+import { runDensityCli, type DensityCliIo } from './density-cli';
 
 /**
  * `ui-bridge-density assert`, `lint` and `init`, run as the built bin
@@ -123,6 +124,54 @@ beforeAll(() => {
 
 afterAll(() => {
   if (dir) rmSync(dir, { recursive: true, force: true });
+});
+
+describe('ui-bridge-density assert: in process', () => {
+  /** The run's I/O over an in-memory file table. */
+  function memoryIo(files: Record<string, string>) {
+    const out = { stdout: '', stderr: '' };
+    const io: DensityCliIo = {
+      readFile: (p) => {
+        const text = files[p];
+        if (text === undefined) throw new Error(`ENOENT: ${p}`);
+        return text;
+      },
+      readStdin: () => Promise.resolve(''),
+      writeFile: (p, t) => {
+        files[p] = t;
+      },
+      stdout: (t) => {
+        out.stdout += t;
+      },
+      stderr: (t) => {
+        out.stderr += t;
+      },
+    };
+    return { io, out };
+  }
+
+  it('runDensityCli: assert exits 3 when the only non-passes are unknowns', async () => {
+    const { io, out } = memoryIo({
+      'snap.json': JSON.stringify(SNAPSHOT),
+      'budget.json': JSON.stringify(
+        budget([
+          { id: 'items', quantity: 'cell.items', min: 1 },
+          { id: 'unset', quantity: 'cell.items', max: null },
+        ])
+      ),
+    });
+    const code = await runDensityCli(
+      ['assert', '--budget', 'budget.json', '--snapshot', 'snap.json', '--role', 'buyer'],
+      io
+    );
+    expect(out.stderr).toBe('');
+    expect(code).toBe(3);
+    expect((JSON.parse(out.stdout) as { counts: unknown }).counts).toEqual({
+      pass: 1,
+      fail: 0,
+      unknown: 1,
+    });
+  });
 });
 
 describe('ui-bridge-density assert: exit codes from the built bin', () => {
