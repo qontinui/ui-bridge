@@ -570,11 +570,12 @@ type VisibilityReason = 'hidden' | 'off-screen' | 'occluded' | 'no-layout';
  */
 export function getClickVisibilityReason(element: HTMLElement): VisibilityReason | null {
   // Not rendered at all: disconnected, `display: none` on a flat-tree
-  // ancestor (or itself), unslotted, or `visibility: hidden` — the SAME check
-  // the relay dispatch gate and the relay `clickable` condition apply
-  // (`core/element-state` `isRenderedForAction`, which also judges an
-  // <option> by its <select>), so both arms refuse a click inside a
-  // `display: none` subtree and both accept an option in a closed dropdown.
+  // ancestor (or itself), unslotted, or `visibility: hidden` / `collapse` —
+  // the SAME check the relay dispatch gate and the relay `clickable`
+  // condition apply (`core/element-state` `isRenderedForAction`, which judges
+  // an <option> by its own style and its <optgroup>, then by its <select>),
+  // so both arms refuse a click inside a `display: none` subtree and both
+  // accept an option in a closed dropdown.
   if (!isRenderedForAction(element)) return 'hidden';
   let style: CSSStyleDeclaration;
   try {

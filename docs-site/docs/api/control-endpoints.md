@@ -642,8 +642,9 @@ fallback and is not visible. An occluded or off-screen element now reads
 next click on that arm would not be refused, so it mirrors each arm's own click
 path. Both arms share one render check: the node is connected, has no
 `display: none` on itself or a flat-tree ancestor, is taken by a slot when its
-parent hosts an open shadow root, and is not `visibility: hidden`; an
-`<option>` is judged by its `<select>`. The server
+parent hosts an open shadow root, and is not `visibility: hidden` or
+`collapse`; an `<option>` is judged by its own style and its `<optgroup>`, then
+by its `<select>`. The server
 (HTTP executor) arm judges the node the executor's click would act on, resolved
 by the executor's own chain (a connected registry node, else by identifier, the
 target registry or its discovery cache), and runs the executor's click pre-check
@@ -663,7 +664,7 @@ pre-check used to read only the control's own style, so it dispatched the
 click and reported success on a node no user could reach. Content inside a
 closed `<details>` is refused the same way. An `<option>` is refused on both
 arms when it is itself hidden (`hidden`, `display: none` or
-`visibility: hidden`) or sits in a `display: none` `<optgroup>`; otherwise it
+`visibility: hidden` / `collapse`) or sits in a `display: none` `<optgroup>`; otherwise it
 is judged by its `<select>`. Measured in headless Chromium, an option inside a
 closed dropdown reports no box (its select does), yet clicking it to select it
 stays supported, while an option inside a `display: none` subtree is refused

@@ -50,6 +50,13 @@ describe('isRenderedForAction', () => {
     expect(isRenderedForAction(document.createElement('button'))).toBe(false);
   });
 
+  it('visibility:collapse on the node is not rendered, as the HTTP pre-check refuses it', () => {
+    const collapsed = document.createElement('button');
+    collapsed.style.visibility = 'collapse';
+    document.body.append(collapsed);
+    expect(isRenderedForAction(collapsed)).toBe(false);
+  });
+
   it('a node inside a shadow root whose host is display:none is not rendered', () => {
     const { host: h, shadow } = host();
     const btn = document.createElement('button');

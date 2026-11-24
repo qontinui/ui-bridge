@@ -218,9 +218,11 @@ Conditions:
   one render check (`isRenderedForAction`, `core/element-state`): the node is
   connected, has no `display: none` on itself or any flat-tree ancestor
   (shadow hosts and slots included), is taken by a slot when its parent hosts
-  an open shadow root, and is not `visibility: hidden`; an `<option>` is
-  judged by its `<select>`. So a control inside a `display: none` subtree is
-  `clickable` on neither arm, and an option in a closed dropdown is.
+  an open shadow root, and is not `visibility: hidden` or `collapse`; an
+  `<option>` is refused when it is itself hidden or sits in a `display: none`
+  `<optgroup>`, and is otherwise judged by its `<select>`. So a control inside
+  a `display: none` subtree is `clickable` on neither arm, and an option in a
+  closed dropdown is.
   - the standalone server (HTTP executor) arm: the node is the one the
     executor's click would act on, resolved by the executor's own chain (a
     connected registry node, else by identifier, the target registry or its
