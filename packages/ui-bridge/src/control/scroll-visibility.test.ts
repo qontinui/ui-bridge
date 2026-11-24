@@ -178,6 +178,60 @@ describe('isVisibleInScrollContext — only a scrollable cut needs a scroll', ()
   });
 });
 
+describe('isVisibleInScrollContext — the scroll range, in every direction', () => {
+  function hiddenBox(opts: { rtl?: boolean; scrollTop?: number; scrollLeft?: number }) {
+    const box = document.createElement('div');
+    box.style.overflowX = 'hidden';
+    box.style.overflowY = 'hidden';
+    if (opts.rtl) box.style.direction = 'rtl';
+    document.body.appendChild(box);
+    rect(box, 108, 100, 200, 200);
+    for (const [k, v] of [
+      ['scrollHeight', 400],
+      ['scrollWidth', 400],
+      ['scrollTop', opts.scrollTop ?? 0],
+      ['scrollLeft', opts.scrollLeft ?? 0],
+    ] as const) {
+      Object.defineProperty(box, k, { value: v, configurable: true });
+    }
+    const child = document.createElement('div');
+    box.appendChild(child);
+    return { box, child };
+  }
+
+  it('a child cut at the top of a container scrolled down can be scrolled back into view', () => {
+    const { child } = hiddenBox({ scrollTop: 120 });
+    rect(child, 108, 80, 200, 40);
+    expect(isVisibleInScrollContext(child)).toBe(false);
+  });
+
+  it('the same child at scrollTop 0 has nothing above to scroll to', () => {
+    const { child } = hiddenBox({ scrollTop: 0 });
+    rect(child, 108, 80, 200, 40);
+    expect(isVisibleInScrollContext(child)).toBe(true);
+  });
+
+  it('RTL: a child cut at the left (start) side at scrollLeft 0 can still be scrolled into view', () => {
+    // RTL scrollLeft runs [-extent, 0]; at 0 there is range to the left.
+    const { child } = hiddenBox({ rtl: true, scrollLeft: 0 });
+    rect(child, 58, 150, 100, 20);
+    expect(isVisibleInScrollContext(child)).toBe(false);
+  });
+
+  it('RTL: a child bleeding past the right edge at scrollLeft 0 is as visible as it gets', () => {
+    const { child } = hiddenBox({ rtl: true, scrollLeft: 0 });
+    rect(child, 250, 150, 100, 20);
+    expect(isVisibleInScrollContext(child)).toBe(true);
+  });
+
+  it('will-change: scroll-position is not will-change: position', () => {
+    const child = scrollerWithChild({ position: 'absolute' });
+    (child.parentElement as HTMLElement).style.willChange = 'scroll-position';
+    // Still not a containing block: the absolute child escapes the scroller.
+    expect(isVisibleInScrollContext(child)).toBe(true);
+  });
+});
+
 describe('isVisibleInScrollContext — overflow that clips nothing', () => {
   it('a child at the edge of a non-overflowing overflow:hidden card is visible', () => {
     const card = document.createElement('div');

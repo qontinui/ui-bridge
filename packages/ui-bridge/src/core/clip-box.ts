@@ -86,7 +86,16 @@ export interface ClipBox {
   clippers: Clipper[];
 }
 
-const ABSOLUTE_CB_WILL_CHANGE = /\b(transform|perspective|filter)\b/;
+/**
+ * The properties a `will-change` list names, compared whole: a word match
+ * would read `scroll-position` as `position` and `transform-style` as
+ * `transform`.
+ */
+function willChangeNames(willChange: string | undefined, ...props: string[]): boolean {
+  if (!willChange) return false;
+  const names = willChange.split(',').map((t) => t.trim());
+  return props.some((p) => names.includes(p));
+}
 
 function nonNone(v: string | undefined | null): boolean {
   return !!v && v !== 'none';
@@ -149,13 +158,13 @@ function establishesContainingBlock(
     const pos = style.position || 'static';
     if (pos !== 'static') return true;
     // A will-change naming a property that would establish one establishes it.
-    if (s.willChange && /\bposition\b/.test(s.willChange)) return true;
+    if (willChangeNames(s.willChange, 'position')) return true;
   }
   // Filters apply to every element (Filter Effects 1), inline boxes included.
   if (nonNone(style.filter) || nonNone(s.backdropFilter) || nonNone(s.webkitBackdropFilter)) {
     return true;
   }
-  if (s.willChange && /\b(filter|backdrop-filter)\b/.test(s.willChange)) return true;
+  if (willChangeNames(s.willChange, 'filter', 'backdrop-filter')) return true;
   // Transforms and containment do not apply to a non-replaced inline box, so
   // they cannot make it a containing block.
   if (display === 'inline') return false;
@@ -167,7 +176,9 @@ function establishesContainingBlock(
   if (nonNone(s.offsetPath)) return true;
   if (containEstablishes(s.contain)) return true;
   if (contentVisibilityContains(s.contentVisibility)) return true;
-  if (s.willChange && ABSOLUTE_CB_WILL_CHANGE.test(s.willChange)) return true;
+  if (willChangeNames(s.willChange, 'transform', 'perspective', 'translate', 'rotate', 'scale')) {
+    return true;
+  }
   const containerType = s.containerType;
   if (containerType && containerType !== 'normal') return true;
   return false;

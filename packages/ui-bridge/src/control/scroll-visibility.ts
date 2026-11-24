@@ -55,29 +55,47 @@ export function isVisibleInScrollContext(el: Element): boolean {
   // NO_SCROLL_EFFECT.
   const overlaps = (lo: number, hi: number, boxLo: number, boxHi: number): boolean =>
     hi > boxLo + TOLERANCE && lo < boxHi - TOLERANCE;
+  //
+  // The scroll range is [0, extent], except where the scroll origin sits at the
+  // right or bottom (RTL, row-reverse, column-reverse), where it is
+  // [-extent, 0]. scrollHeight / clientHeight are rounded while scrollTop can
+  // be fractional, so the range edges take a whole pixel of slack.
+  const RANGE_SLACK = 1;
   const axis = (
     container: boolean,
     pos: number,
-    max: number,
+    extent: number,
+    reversed: boolean,
     lo: number,
     hi: number,
     boxLo: number,
     boxHi: number
   ): boolean => {
     if (axisOk(lo, hi, boxLo, boxHi)) return true;
-    const reachBefore = container && lo < boxLo - TOLERANCE && pos > TOLERANCE;
-    const reachAfter = container && hi > boxHi + TOLERANCE && pos < max - TOLERANCE;
+    const min = reversed ? -extent : 0;
+    const max = reversed ? 0 : extent;
+    const canScroll = container && extent > RANGE_SLACK;
+    const reachBefore = canScroll && lo < boxLo - TOLERANCE && pos > min + RANGE_SLACK;
+    const reachAfter = canScroll && hi > boxHi + TOLERANCE && pos < max - RANGE_SLACK;
     return !reachBefore && !reachAfter && overlaps(lo, hi, boxLo, boxHi);
   };
   return clipBoxOf(el).clippers.every((c) => {
     const s = c.element;
-    const maxY = (s.scrollHeight || 0) - (s.clientHeight || 0);
-    const maxX = (s.scrollWidth || 0) - (s.clientWidth || 0);
+    let reversedX = false;
+    let reversedY = false;
+    try {
+      const cs = getComputedStyle(s);
+      reversedX = (cs.direction === 'rtl') !== (cs.flexDirection === 'row-reverse');
+      reversedY = cs.flexDirection === 'column-reverse';
+    } catch {
+      // No computed style: read the range as [0, extent].
+    }
     return (
       axis(
         c.scrollContainerY,
         s.scrollTop || 0,
-        maxY,
+        (s.scrollHeight || 0) - (s.clientHeight || 0),
+        reversedY,
         rect.top,
         rect.bottom,
         c.box.top,
@@ -86,7 +104,8 @@ export function isVisibleInScrollContext(el: Element): boolean {
       axis(
         c.scrollContainerX,
         s.scrollLeft || 0,
-        maxX,
+        (s.scrollWidth || 0) - (s.clientWidth || 0),
+        reversedX,
         rect.left,
         rect.right,
         c.box.left,
