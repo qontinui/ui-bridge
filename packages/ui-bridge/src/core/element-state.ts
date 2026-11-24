@@ -202,14 +202,19 @@ export function readElementVisibility(element: HTMLElement): ElementVisibility {
  * condition reads) — one check on both arms, so both refuse a click inside a
  * `display: none` subtree and both `clickable` conditions agree on it.
  *
+ * `visibility: collapse` is refused as `hidden` is (outside a table it behaves
+ * as `hidden`), matching the HTTP pre-check's own-style read.
+ *
  * An `<option>` (by `localName`, realm- and case-stable) is refused when it is
- * itself `display: none` (e.g. `hidden`) or `visibility: hidden`, or sits in a
- * `display: none` `<optgroup>`; otherwise it is judged by its `<select>`.
+ * itself `display: none` (e.g. `hidden`) or `visibility: hidden` / `collapse`,
+ * or sits in a `display: none` `<optgroup>`; otherwise it is judged by its
+ * `<select>`.
  * Measured in headless Chromium: `checkVisibility()` is false for an option
  * inside a closed dropdown (its select reads true) and for one inside a
  * `display: none` subtree. Clicking a closed-dropdown option to select it is
- * supported, so such an option is rendered exactly when its select is, and
- * one inside a `display: none` subtree is not, because its select is not.
+ * supported, so once the option's own style and optgroup pass, it is
+ * rendered exactly when its select is, and one inside a `display: none`
+ * subtree is not, because its select is not.
  *
  * Where the engine has `Element.checkVisibility()`, its default answer is used
  * (it sees through closed shadow roots). A node whose own display is
@@ -226,13 +231,14 @@ export function readElementVisibility(element: HTMLElement): ElementVisibility {
  */
 export function isRenderedForAction(el: HTMLElement): boolean {
   if (el.localName === 'option') {
-    // The option's OWN hiddenness first (an `<option hidden>` placeholder, a
-    // `visibility: hidden` option), then a `display: none` <optgroup> around
-    // it: none of these is visible in an open dropdown either. Only then is
-    // it judged by its <select>.
+    // The option's OWN computed style first (an `<option hidden>` placeholder
+    // computes `display: none`; a `visibility: hidden` / `collapse` option),
+    // then a `display: none` <optgroup> around it: each says the option itself
+    // is hidden, whatever its select reports. Only then is it judged by its
+    // <select>.
     const view = el.ownerDocument.defaultView ?? window;
     const own = view.getComputedStyle(el);
-    if (own.display === 'none' || own.visibility === 'hidden') return false;
+    if (own.display === 'none' || isHiddenVisibility(own.visibility)) return false;
     const group = el.parentElement;
     if (group?.localName === 'optgroup' && view.getComputedStyle(group).display === 'none') {
       return false;
@@ -242,12 +248,17 @@ export function isRenderedForAction(el: HTMLElement): boolean {
   return isNodeRenderedForAction(el);
 }
 
+/** `hidden`, or `collapse` (which outside a table behaves as `hidden`). */
+function isHiddenVisibility(visibility: string): boolean {
+  return visibility === 'hidden' || visibility === 'collapse';
+}
+
 function isNodeRenderedForAction(el: HTMLElement): boolean {
   if (!el.isConnected) return false;
   const view = el.ownerDocument.defaultView ?? window;
   // One read of the node's own style for both of its own signals.
   const own = view.getComputedStyle(el);
-  if (own.visibility === 'hidden' || own.display === 'none') return false;
+  if (isHiddenVisibility(own.visibility) || own.display === 'none') return false;
   // A browser's own answer, where it has one: `checkVisibility()` with its
   // defaults is false for a node with no box — `display: none` on it or any
   // FLAT-tree ancestor (a shadow host, a slot), or a light-DOM child no slot

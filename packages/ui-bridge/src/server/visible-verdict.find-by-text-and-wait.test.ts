@@ -574,13 +574,13 @@ describe('server clickable probes the executor target without mutating it', () =
 });
 
 /**
- * An <option> is judged by its <select>, on both arms (review round 14).
- * A browser's checkVisibility() is false for an option inside a closed
- * dropdown, yet clicking it to select it is supported; an option inside a
- * display:none subtree is refused because its select is. Content inside a
- * closed <details> stays refused.
+ * An <option> is judged by its own style, then its <optgroup>, then its
+ * <select>, on both arms (review rounds 14-15). A browser's checkVisibility()
+ * is false for an option inside a closed dropdown, yet clicking it to select
+ * it is supported; an option inside a display:none subtree is refused because
+ * its select is. Content inside a closed <details> stays refused.
  */
-describe('an <option> is rendered exactly when its <select> is, on both arms', () => {
+describe('an <option> is judged by its own style, its optgroup, then its <select>, on both arms', () => {
   function optionIn(parent: HTMLElement, id: string): HTMLOptionElement {
     const select = document.createElement('select');
     const option = document.createElement('option');
@@ -676,6 +676,13 @@ describe('an <option> is rendered exactly when its <select> is, on both arms', (
     option.style.visibility = 'hidden';
     visibleSelect(option);
     await refusedEverywhere('opt-vh');
+  });
+
+  it('a visibility:collapse option is refused on every arm', async () => {
+    const option = optionIn(document.body, 'opt-vc');
+    option.style.visibility = 'collapse';
+    visibleSelect(option);
+    await refusedEverywhere('opt-vc');
   });
 
   it('an option inside a display:none <optgroup> is refused on every arm', async () => {
