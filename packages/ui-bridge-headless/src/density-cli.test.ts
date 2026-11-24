@@ -992,3 +992,60 @@ describe('measureDensityCell: repeats and affordances', () => {
     ]);
   });
 });
+
+describe('measureDensityCell: Phase 4 follow-ups', () => {
+  it('measure reads a definition list as one repeat of pairs and reports one pager per nav', () => {
+    const DL = '/html/body/main/section';
+    const snapshot = {
+      ...BARE,
+      elements: [
+        ...[1, 2, 3].flatMap((k) => [
+          listElement(
+            `app.facts.term-${k}`,
+            'dt',
+            `${DL}/dl/dt[${k}]`,
+            [0, 60 + 48 * (k - 1), 200, 20],
+            `Term ${k}`
+          ),
+          listElement(
+            `app.facts.def-${k}`,
+            'dd',
+            `${DL}/dl/dd[${k}]`,
+            [40, 82 + 48 * (k - 1), 300, 20],
+            `Definition ${k}`
+          ),
+        ]),
+        ...[1, 2].map((k) =>
+          listElement(
+            `app.facts.pg-${k}`,
+            'button',
+            `${DL}/nav/button[${k}]`,
+            [100 * (k - 1), 220, 80, 28],
+            k === 1 ? 'Previous' : 'Next',
+            {
+              category: 'interactive',
+            }
+          )
+        ),
+      ],
+    };
+    const { report } = measureDensityCell(
+      { snapshot, role: 'buyer', fixture: null, targets: null },
+      { id: 'sdk/density', version: '0.0.0-test', package: '@qontinui/ui-bridge-headless' }
+    );
+    const value = report.cells[0]!.observation as {
+      value?: {
+        repeats: { list?: Array<{ id: string; tag: string; rows: number; members: number }> };
+        affordances: { list?: Array<{ id: string; rule: string; members?: string[] }> };
+      };
+    };
+    expect(value.value?.repeats.list?.map((r) => [r.id, r.tag, r.rows, r.members])).toEqual([
+      ['repeat:app.facts.term-1', 'dt', 3, 6],
+    ]);
+    expect(
+      value.value?.affordances.list
+        ?.filter((a) => a.rule === 'nav-after-repeat')
+        .map((a) => [a.id, a.members])
+    ).toEqual([['app.facts.pg-1', ['app.facts.pg-1', 'app.facts.pg-2']]]);
+  });
+});
