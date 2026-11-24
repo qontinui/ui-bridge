@@ -184,6 +184,8 @@ export function parseDensityArgs(argv: string[]): DensityCliArgs {
         const v = consumeValue('--capture', rest[++i], mkError);
         if (v === null || v.trim() === '') throw mkError('--capture expects a value');
         if (v === '-') throw mkError('--capture takes a file path, not -');
+        // The same file twice would compare a capture with itself (invariance).
+        if (captures.includes(v)) throw mkError(`--capture ${v} is given more than once`);
         captures.push(v);
         break;
       }

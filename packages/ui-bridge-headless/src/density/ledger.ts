@@ -87,9 +87,11 @@ export interface DensityLedger {
   /**
    * Leaves the grid does not paint: no rect, hidden or not laid out, or a
    * visibility the capture does not know (counted apart: it may cover cells
-   * that read `uncovered`).
+   * that read `uncovered`). `leafUnknown`: items whose leaf status
+   * is unknown (`ownChars` unreadable, e.g. redacted text), which are not
+   * painted and may cover cells that read `uncovered`.
    */
-  unpainted: { noRect: number; hidden: number; visibilityUnknown: number };
+  unpainted: { noRect: number; hidden: number; visibilityUnknown: number; leafUnknown: number };
 }
 
 /** Cells whose centre lies in `[0, length)`. */
@@ -177,11 +179,12 @@ function region(
 export function densityLedger(
   capture: DensityCapture,
   kinds: ReadonlyMap<string, DensityLedgerKind>,
-  placed: ReadonlyMap<string, DensityRect>
+  placed: ReadonlyMap<string, DensityRect>,
+  leafUnknown: readonly string[] = []
 ): DensityLedger {
   const W = capture.viewport.width;
   const H = capture.viewport.height;
-  const unpainted = { noRect: 0, hidden: 0, visibilityUnknown: 0 };
+  const unpainted = { noRect: 0, hidden: 0, visibilityUnknown: 0, leafUnknown: leafUnknown.length };
   const leaves: Array<{ rect: DensityRect; kind: DensityLedgerKind; order: number }> = [];
   let contentTopPx: number | null = null;
   capture.items.forEach((item, order) => {

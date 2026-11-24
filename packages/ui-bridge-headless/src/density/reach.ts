@@ -44,6 +44,7 @@ import type {
 } from './schema';
 import {
   densityChildren,
+  densityPinnedIds,
   densitySameColumn,
   type DensityLeaves,
   type DensityPins,
@@ -128,7 +129,11 @@ export interface DensityAllReach {
 export type DensityAskState = 'rendered' | 'hidden' | 'unanswered' | 'unresolved';
 
 /** Why an ask is unresolved, or partly so. */
-export type DensityAskUnresolvedReason = DensityUnresolvedReason | 'visibility-unknown';
+export type DensityAskUnresolvedReason =
+  | DensityUnresolvedReason
+  | 'visibility-unknown'
+  /** A resolved `text` matcher could not read some items (redacted), which may also answer. */
+  | 'text-unevaluated';
 
 /** The longest list of answer items one ask reports; the rest is counted. */
 export const DENSITY_ANSWER_ITEM_CAP = 20;
@@ -157,7 +162,10 @@ export interface DensityAskReach {
     truncated: boolean;
     list: DensityItemReach[];
   };
-  /** The item reached first (fewest actions); `null` with no answer item. */
+  /**
+   * The item reached first: the fewest actions among the items that can be
+   * read, else among all of them; `null` with no answer item.
+   */
   first: DensityItemReach | null;
   all: DensityAllReach | null;
   /** Of `first` for `need: any`, of `all` for `need: all`; `null` when unknown or there is no answer. */
@@ -177,6 +185,8 @@ export interface DensityReachContext {
   controllers: Map<string, DensityItem[]>;
   /** Items whose scroll is unknown: inside a nested scroller. */
   scrollUnknown: Set<string>;
+  /** Pinned items and everything inside one: on screen at every scroll position. */
+  pinned: Set<string>;
 }
 
 export function densityReachContext(
@@ -206,7 +216,19 @@ export function densityReachContext(
       if (r !== null && r.y + r.h > capture.viewport.documentHeight + 1) scrollUnknown.add(item.id);
     }
   }
-  return { capture, pins, leaves, placed, floors, byId, children, controllers, scrollUnknown };
+  const pinned = densityPinnedIds(capture, pins);
+  return {
+    capture,
+    pins,
+    leaves,
+    placed,
+    floors,
+    byId,
+    children,
+    controllers,
+    scrollUnknown,
+    pinned,
+  };
 }
 
 const MENU_ROLES = new Set(['menu', 'menubar']);
@@ -259,6 +281,8 @@ function scrollOf(
   const lineBasis = item.lineHeightPx !== null ? 'line-height' : 'element-bottom';
   const rect = ctx.placed.get(item.id);
   if (rect === undefined || ctx.scrollUnknown.has(item.id)) return { scrollPx: null, lineBasis };
+  // A pinned item (a fixed footer, a sticky bar) is on screen at every scroll position.
+  if (ctx.pinned.has(item.id)) return { scrollPx: 0, lineBasis };
   // A hidden item with no area has no place yet: where it will appear is unknown.
   if (isNotShown(item.visibility) && rect.w * rect.h === 0) return { scrollPx: null, lineBasis };
   const bottom = rect.y + rect.h;
@@ -375,7 +399,10 @@ export function densityAskAnswer(ctx: DensityReachContext, ask: DensityAsk): Den
   }
   const matchers = Array.isArray(ask.answer) ? ask.answer : [ask.answer];
   const { ids, results } = resolveDensityMatchers(ctx.capture, matchers);
-  const unresolvedBy = results.flatMap((r) => (r.status === 'unresolved' ? [r.reason] : []));
+  const unresolvedBy: DensityAskUnresolvedReason[] = results.flatMap(
+    (r): DensityAskUnresolvedReason[] =>
+      r.status === 'unresolved' ? [r.reason] : r.textUnevaluated > 0 ? ['text-unevaluated'] : []
+  );
   if (ids.length === 0) {
     return { ask, state: 'unresolved', unresolvedBy, partial: false, items: [] };
   }
@@ -400,8 +427,18 @@ export function densityAskAnswer(ctx: DensityReachContext, ask: DensityAsk): Den
   };
 }
 
+/**
+ * The order an ask's items are reached in: an item that can be read (available
+ * or not known not to be) before one that cannot, then the fewest actions,
+ * the least scroll, the highest on the page.
+ */
 function orderKey(r: DensityItemReach, placed: ReadonlyMap<string, DensityRect>): number[] {
-  return [r.actions ?? Infinity, r.scrollPx ?? Infinity, placed.get(r.id)?.y ?? Infinity];
+  return [
+    r.available === false ? 1 : 0,
+    r.actions ?? Infinity,
+    r.scrollPx ?? Infinity,
+    placed.get(r.id)?.y ?? Infinity,
+  ];
 }
 
 function compareKeys(a: number[], b: number[]): number {

@@ -163,6 +163,7 @@ export interface DensityUnclaimedBlock {
 
 /** A block that may be unclaimed: the role has unresolved asks, which could be answered inside it. */
 export interface DensityPossiblyUnclaimedBlock extends DensityUnclaimedBlock {
+  /** The weight whose answers could be inside the block: unresolved asks, and asks answered by an item no block can hold. */
   unresolvedWeight: number;
 }
 
@@ -178,13 +179,16 @@ export interface DensityRoleReport {
   role: string;
   totalWeight: number;
   asks: DensityAskReach[];
-  answeredAt: Array<{ k: number; lo: number; hi: number }>;
+  /** `lo` / `hi` are `null` when the role's asks weigh nothing in total: a share of nothing. */
+  answeredAt: Array<{ k: number; lo: number | null; hi: number | null }>;
   meanScrollPx: DensityMean;
   meanInteractions: DensityMean;
   unweighted: { meanScrollPx: DensityMean; meanInteractions: DensityMean };
   unresolvedWeight: number;
+  /** Weight of resolved asks answered by an item no block can hold (its block claim is unknown). */
+  unplacedWeight: number;
   unanswered: string[];
-  /** `chrome-and-unclaimed`, or `chrome-only` while unresolved asks keep every block from reading as unclaimed. */
+  /** `chrome-and-unclaimed`, or `chrome-only` while unresolved or unplaced asks keep every block from reading as unclaimed. */
   foreignBasis: 'chrome-and-unclaimed' | 'chrome-only';
   /** Whether availability was held to the caller's floors. */
   floorsChecked: boolean;
@@ -412,12 +416,26 @@ export function measureDensity(
   // ---- ledger kinds ----
   const kinds = new Map<string, DensityLedgerKind>();
   for (const c of classes.items) kinds.set(c.id, answerIds.has(c.id) ? 'answer' : c.kind);
-  const ledger = densityLedger(capture, kinds, placed);
+  const ledger = densityLedger(capture, kinds, placed, leaves.unknown);
 
   // ---- blocks ----
   const totalWeight = declared ? declared.asks.reduce((s, a) => s + a.weight, 0) : 0;
   const unresolved = asks.filter((a) => a.reach.state === 'unresolved' || a.reach.partial);
   const unresolvedWeight = unresolved.reduce((s, a) => s + a.reach.weight, 0);
+  // Asks answered by an item no block can hold (a leaf of unknown status, or a
+  // matched container with no leaf below it): which block they claim is
+  // unknown, so like unresolved asks they keep every block from reading as
+  // unclaimed.
+  const leafIds = new Set(leaves.ids);
+  const unplacedWeight = asks
+    .filter(
+      (a) =>
+        (a.reach.state === 'rendered' || a.reach.state === 'hidden') &&
+        !a.reach.partial &&
+        a.items.some((r) => !leafIds.has(r.id))
+    )
+    .reduce((s, a) => s + a.reach.weight, 0);
+  const uncertainWeight = unresolvedWeight + unplacedWeight;
   const reachUnknown = asks.some(
     (a) =>
       a.reach.state !== 'unanswered' &&
@@ -467,8 +485,10 @@ export function measureDensity(
       }
       const ext = extentOf(memberRects(b, placed));
       let displaced = 0;
-      if (ext !== null && totalWeight > 0) {
-        const step = b.pitchPx ?? b.heightPx ?? 0;
+      let stepUnknown = false;
+      const step = b.pitchPx ?? b.heightPx;
+      if (step === null) stepUnknown = true;
+      else if (ext !== null && totalWeight > 0) {
         for (const a of asks) {
           const d = decisive(a.reach);
           if (d.item === null || d.scrollPx === null || members.has(d.item)) continue;
@@ -480,7 +500,7 @@ export function measureDensity(
       }
       report.claimedWeight = claimed;
       report.displacementPx = displaced;
-      report.displacementIsLowerBound = reachUnknown;
+      report.displacementIsLowerBound = reachUnknown || stepUnknown;
     }
     return report;
   });
@@ -497,7 +517,7 @@ export function measureDensity(
         displacementPx: b.displacementPx ?? 0,
       };
       // An unknown claimedWeight never fires the detector.
-      if (unresolvedWeight > 0) possiblyAll.push({ ...entry, unresolvedWeight });
+      if (uncertainWeight > 0) possiblyAll.push({ ...entry, unresolvedWeight: uncertainWeight });
       else unclaimedAll.push(entry);
     }
   }
@@ -529,8 +549,8 @@ export function measureDensity(
       }
       return {
         k,
-        lo: totalWeight > 0 ? lo / totalWeight : 0,
-        hi: totalWeight > 0 ? hi / totalWeight : 0,
+        lo: totalWeight > 0 ? lo / totalWeight : null,
+        hi: totalWeight > 0 ? hi / totalWeight : null,
       };
     });
     const reached = asks.filter((a) => a.reach.state !== 'unanswered');
@@ -554,8 +574,9 @@ export function measureDensity(
         meanInteractions: meanOf(interactions, false),
       },
       unresolvedWeight,
+      unplacedWeight,
       unanswered: asks.filter((a) => a.reach.state === 'unanswered').map((a) => a.reach.id),
-      foreignBasis: unresolvedWeight > 0 ? 'chrome-only' : 'chrome-and-unclaimed',
+      foreignBasis: uncertainWeight > 0 ? 'chrome-only' : 'chrome-and-unclaimed',
       floorsChecked: options.floors !== undefined && options.floors !== null,
     };
   } else if (targets) {
@@ -617,7 +638,7 @@ export function measureDensity(
       : {}),
     repeats: summarizeDensityRepeats(capture, targets, repeats),
     affordances: summarizeDensityAffordances(capture, targets, affordances),
-    bounds: densityBounds(capture, kinds, placed),
+    bounds: densityBounds(capture, kinds, placed, cap, leaves.unknown),
     next,
   };
   return Observation.measured(report, prov);

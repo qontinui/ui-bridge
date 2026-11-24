@@ -352,6 +352,8 @@ describe('density bounds and text that is not drawn', () => {
       drawnUnknown: 0,
       fontUnknown: 0,
       lineHeightUnknown: 0,
+      visibilityUnknown: 0,
+      leafUnknown: 0,
     });
     expect(r.bounds.fontPx).toMatchObject({ min: 14, p10: 14, of: 1 });
   });
@@ -420,5 +422,125 @@ describe('density bounds and text that is not drawn', () => {
     const parsed = parseDensityCapture(raw);
     if (!parsed.ok) throw new Error(JSON.stringify(parsed.problems));
     expect(parsed.value.items.every((i) => i.charsDrawn === null)).toBe(true);
+  });
+});
+
+describe('density measure: review round 1', () => {
+  const REDACTED_NOTE: DensityTestElementSpec = {
+    id: 'app.help.note',
+    tag: 'span',
+    xpath: '/html/body/main/section[2]/span',
+    rect: [16, 1600, 600, 20],
+    text: 'Synthetic secret',
+    redacted: true,
+  };
+
+  it('an answer in a pinned footer needs no scroll', () => {
+    const targets = measurePageTargets([
+      { id: 'F1', rank: 4, weight: 1, kind: 'reference', answer: { ids: ['app.footer'] } },
+    ]);
+    const f1 = ask(page({ footerPx: 60 }, targets), 'F1');
+    expect([f1.first!.scrollPx, f1.first!.actions, f1.answerItems.firstScreen]).toEqual([0, 0, 1]);
+  });
+
+  it('a role whose asks weigh nothing has answeredAt null, never 0', () => {
+    const targets = targetsOf([]);
+    const r = report(
+      capture([{ id: 'app.a', tag: 'p', xpath: '/html/body/p', text: 'A' }], targets),
+      targets
+    );
+    expect(r.role!.totalWeight).toBe(0);
+    expect(r.role!.answeredAt[0]).toEqual({ k: 0, lo: null, hi: null });
+  });
+
+  it('items of unknown leaf status are counted by the ledger and the bounds, not dropped', () => {
+    const r = report(
+      capture([
+        { id: 'app.box', tag: 'p', xpath: '/html/body/p', rect: [0, 0, 200, 40], text: 'Box' },
+        { ...REDACTED_NOTE, xpath: '/html/body/p/span', rect: [0, 0, 100, 20] },
+      ]),
+      null
+    );
+    expect(r.ledger.unpainted.leafUnknown).toBe(2);
+    expect(r.bounds.textLeaves.leafUnknown).toBe(2);
+  });
+
+  it('an ask answered by an item no block can hold keeps blocks out of the unclaimed list', () => {
+    const targets = measurePageTargets([
+      { id: 'U1', rank: 4, weight: 2, kind: 'lookup', answer: { ids: ['app.help.note'] } },
+    ]);
+    const r = page({ blocks: ['promo', 'orders'], extra: [REDACTED_NOTE] }, targets);
+    expect(r.role!.unplacedWeight).toBe(2);
+    expect(r.unclaimed!.list).toEqual([]);
+    expect(r.possiblyUnclaimed!.list.map((b) => [b.block, b.unresolvedWeight])).toEqual([
+      ['path:/html/body/main/article', 2],
+    ]);
+  });
+
+  it('a text matcher that could not read every item leaves its ask partial', () => {
+    const targets = measurePageTargets([
+      { id: 'T1', rank: 4, weight: 1, kind: 'reference', answer: { text: 'Synthetic help' } },
+    ]);
+    const r = page({ extra: [REDACTED_NOTE] }, targets);
+    const t1 = ask(r, 'T1');
+    expect([t1.state, t1.partial, t1.unresolvedBy]).toEqual([
+      'rendered',
+      true,
+      ['text-unevaluated'],
+    ]);
+    expect(r.role!.unresolvedWeight).toBe(1);
+  });
+
+  it('need any: the first item is the first one that can be read', () => {
+    const targets = targetsOf([
+      { id: 'S1', rank: 1, weight: 1, kind: 'state', answer: { ids: ['app.a', 'app.b'] } },
+    ]);
+    const r = report(
+      capture(
+        [
+          {
+            id: 'app.a',
+            tag: 'span',
+            xpath: '/html/body/span[1]',
+            rect: [0, 100, 80, 20],
+            text: '1',
+            visible: false,
+            visibilityReason: 'occluded',
+          },
+          {
+            id: 'app.b',
+            tag: 'span',
+            xpath: '/html/body/span[2]',
+            rect: [0, 900, 80, 20],
+            text: '2',
+          },
+        ],
+        targets
+      ),
+      targets
+    );
+    const s1 = r.role!.asks[0];
+    expect([s1.first!.id, s1.first!.scrollPx, s1.available]).toEqual(['app.b', 120, true]);
+    expect(r.role!.answeredAt.slice(0, 2)).toEqual([
+      { k: 0, lo: 0, hi: 0 },
+      { k: 1, lo: 1, hi: 1 },
+    ]);
+  });
+
+  it('the 10th percentile is nearest-rank, not the minimum', () => {
+    const r = report(
+      capture(
+        Array.from({ length: 11 }, (_, i) => ({
+          id: `app.v${i}`,
+          tag: 'span',
+          xpath: `/html/body/span[${i + 1}]`,
+          rect: [0, 40 * i, 80, 20] as [number, number, number, number],
+          text: '1',
+          styles: { fontSize: `${10 + i}px`, lineHeight: `${20 + i}px` },
+        }))
+      ),
+      null
+    );
+    expect(r.bounds.fontPx).toMatchObject({ min: 10, p10: 11, of: 11 });
   });
 });

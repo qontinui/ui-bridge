@@ -62,6 +62,10 @@ export interface DensityBounds {
     drawnUnknown: number;
     fontUnknown: number;
     lineHeightUnknown: number;
+    /** Leaves left out because their visibility is unknown. */
+    visibilityUnknown: number;
+    /** Items whose leaf status is unknown (redacted text): never read by any bound. */
+    leafUnknown: number;
   };
   fontPx: DensityBoundValue | DensityUnknownQuantity;
   lineHeightRatio: DensityBoundValue | DensityUnknownQuantity;
@@ -129,9 +133,11 @@ export function densityBounds(
   capture: DensityCapture,
   kinds: ReadonlyMap<string, DensityLedgerKind>,
   placed: ReadonlyMap<string, DensityRect>,
-  cap: number = DENSITY_BOUND_LIST_CAP
+  cap: number = DENSITY_BOUND_LIST_CAP,
+  leafUnknown: readonly string[] = []
 ): DensityBounds {
   const leaves = capture.items.filter((i) => kinds.has(i.id));
+  const visibilityUnknown = leaves.filter((i) => i.visibility === null).length;
   const painted = leaves.filter((i) => isPainted(i) && placed.has(i.id));
 
   // ---- text ----
@@ -145,6 +151,8 @@ export function densityBounds(
     drawnUnknown: 0,
     fontUnknown: 0,
     lineHeightUnknown: 0,
+    visibilityUnknown,
+    leafUnknown: leafUnknown.length,
   };
   const fonts: Array<{ id: string; v: number }> = [];
   const ratios: Array<{ id: string; v: number }> = [];

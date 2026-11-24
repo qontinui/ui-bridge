@@ -148,7 +148,7 @@ const EXPECTED_VALUE = {
       },
     },
     contentTopPx: 100,
-    unpainted: { noRect: 0, hidden: 0, visibilityUnknown: 0 },
+    unpainted: { noRect: 0, hidden: 0, visibilityUnknown: 0, leafUnknown: 0 },
   },
   blocks: { shown: 0, total: 0, truncated: false, list: [] },
   bounds: {
@@ -158,6 +158,8 @@ const EXPECTED_VALUE = {
       drawnUnknown: 0,
       fontUnknown: 0,
       lineHeightUnknown: 0,
+      visibilityUnknown: 0,
+      leafUnknown: 0,
     },
     fontPx: {
       unknown: 'input_missing',
@@ -1294,6 +1296,13 @@ describe('ui-bridge-density measure: reach per ask (Phase 5)', () => {
       expect(out.stdout).toBe('');
       expect(out.stderr).toContain(`${extra[0]} is not taken with --capture`);
     }
+  });
+
+  it('the same --capture twice is a usage error', async () => {
+    const { io, out } = memoryIo({});
+    const code = await runDensityCli(['measure', '--capture', 'c.json', '--capture', 'c.json'], io);
+    expect(code).toBe(2);
+    expect(out.stderr).toContain('--capture c.json is given more than once');
   });
 
   it('a capture file that is not a capture is a usage error naming the problem', async () => {
