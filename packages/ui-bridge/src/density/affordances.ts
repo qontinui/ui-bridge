@@ -305,8 +305,16 @@ export function densityAffordances(
         filterControl &&
         nearestBelow.get(item.id) === rep.id &&
         // A declared edge names the repeat the control acts on.
-        !(item.filters !== null && innermost.has(item.filters)) &&
-        !(item.controls !== null && innermost.has(item.controls))
+        !(
+          item.filters !== null &&
+          innermost.has(item.filters) &&
+          innermost.get(item.filters) !== rep.id
+        ) &&
+        !(
+          item.controls !== null &&
+          innermost.has(item.controls) &&
+          innermost.get(item.controls) !== rep.id
+        )
       ) {
         add(item, 'control-above-repeat', null, { repeat: rep.id });
       }

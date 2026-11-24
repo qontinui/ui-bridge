@@ -90,7 +90,7 @@ export interface DensityRepeatFinder {
   /**
    * `position`: the text, search, select or combobox control (a listbox, too:
    * a `select` with a `size`) nearest above the repeat's first row in its
-   * scope. `relationship`: a declared `filters` edge from
+   * scope. `relationship`: a declared `filters` or `controls` edge from
    * such a control to the repeat.
    */
   by: 'position' | 'relationship';
@@ -360,7 +360,6 @@ export function isDensityNavControl(item: DensityItem): boolean {
   );
 }
 
-/** A control a repeat's scope is looked for by: a finder, a filter or a nav control. */
 /** A checkbox or radio in a table header: it selects rows, it acts on no list. */
 export function isDensityHeaderToggle(item: DensityItem): boolean {
   return (
@@ -377,6 +376,7 @@ export function densityNavPrefix(item: DensityItem): string | null {
   return at < 0 ? null : item.path.slice(0, at + 1).join('/');
 }
 
+/** A control a repeat's scope is looked for by: a laid-out finder, filter or nav control. */
 function isScopeControl(item: DensityItem): boolean {
   return (
     item.interactive &&
@@ -980,9 +980,9 @@ export function densityRepeats(
   const innermost = densityInnermostRepeats(capture, repeats, children);
   // A control whose declared edge names a repeat acts on that one, never on
   // another by position.
-  const declaresAnother = (i: DensityItem): boolean =>
-    (i.filters !== null && innermost.has(i.filters)) ||
-    (i.controls !== null && innermost.has(i.controls));
+  const declaresAnother = (i: DensityItem, repId: string): boolean =>
+    (i.filters !== null && innermost.has(i.filters) && innermost.get(i.filters) !== repId) ||
+    (i.controls !== null && innermost.has(i.controls) && innermost.get(i.controls) !== repId);
   for (const rep of repeats) {
     const scope = scopes.get(rep.id)!;
     rep.scope = scope.by;
@@ -996,9 +996,10 @@ export function densityRepeats(
           i.interactive &&
           takesSpace(i) &&
           isDensityFinderControl(i) &&
-          i.filters !== null &&
-          aimed.has(i.filters) &&
-          innermost.get(i.filters) === rep.id
+          // A `filters` edge, or `controls` / `toggles` (aria-controls from a
+          // search box to its results), naming this repeat.
+          ((i.filters !== null && aimed.has(i.filters) && innermost.get(i.filters) === rep.id) ||
+            (i.controls !== null && aimed.has(i.controls) && innermost.get(i.controls) === rep.id))
       )
       .sort((a, b) => finderRank(a) - finderRank(b));
     if (declared.length > 0) finder = { id: declared[0].id, by: 'relationship' };
@@ -1011,7 +1012,7 @@ export function densityRepeats(
             takesSpace(i) &&
             isDensityFinderControl(i) &&
             nearestBelow.get(i.id) === rep.id &&
-            !declaresAnother(i)
+            !declaresAnother(i, rep.id)
         )
         .filter((i) => {
           const y = centreY(i);
