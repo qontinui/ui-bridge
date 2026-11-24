@@ -40,7 +40,7 @@
  *   `state.visible` when it carries one, else `readElementVisibility` on its
  *   live node, else the top-level `visible`. So an occluded, off-screen
  *   (below the fold) or fully ancestor-clipped row is dropped — exactly the
- *   rows whose returned `visible` is `false` — and a partially covered one is
+ *   rows whose `state.visible` is `false` — and a partially covered one is
  *   kept. (Before plan
  *   `2026-11-24-ui-bridge-find-visibility-and-fallback-label-read-the-canonical-verdicts`
  *   a live node was judged by `offsetParent !== null || position === 'fixed'`,
@@ -377,7 +377,7 @@ function elementText(el: FindFilterableElement): string {
  *  3. the top-level `visible`;
  *  4. no signal at all — kept (unknown ≠ hidden).
  * An occluded, off-screen or fully ancestor-clipped row is therefore dropped,
- * and a partially covered one kept, exactly as its `visible` says.
+ * and a partially covered one kept, exactly as its `state.visible` says.
  */
 function isConsideredVisible(el: FindFilterableElement): boolean {
   const own = el.state?.visible;
