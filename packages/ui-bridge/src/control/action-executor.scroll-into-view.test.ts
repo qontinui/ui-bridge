@@ -49,6 +49,17 @@ describe('DefaultActionExecutor - scrollIntoView honesty', () => {
     expect(fx.child.scrollIntoView).not.toHaveBeenCalled();
   });
 
+  it('a half-cut element in a scrollable overflow:hidden container is scrolled, not alreadyVisible', async () => {
+    fx = innerScrollFixture({ childOffset: 180, native: 'scrolls', overflow: 'hidden' });
+    registry.registerElement('row', fx.child, { type: 'generic', label: 'Row' });
+    const result = await executor.executeAction('row', { action: 'scrollIntoView' });
+    expect(result.success, String(result.error)).toBe(true);
+    const r = result.result as { alreadyVisible: boolean; scrolled: boolean };
+    expect(r.alreadyVisible).toBe(false);
+    expect(r.scrolled).toBe(true);
+    expect(fx.container.scrollTop).toBeGreaterThan(0);
+  });
+
   it('a native scrollIntoView that moves nothing fails with NO_SCROLL_EFFECT', async () => {
     fx = innerScrollFixture({ childOffset: 600, native: 'noop', overflow: 'hidden' });
     registry.registerElement('row', fx.child, { type: 'generic', label: 'Row' });

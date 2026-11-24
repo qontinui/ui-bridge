@@ -62,6 +62,14 @@ export interface Clipper {
   scrollsX: boolean;
   /** The vertical clip is `auto`/`scroll`. */
   scrollsY: boolean;
+  /**
+   * The horizontal clip belongs to a scroll container (`hidden`, `auto` or
+   * `scroll`), which script and `scrollIntoView` can scroll even when the user
+   * cannot. `false` for `clip` and for paint containment alone.
+   */
+  scrollContainerX: boolean;
+  /** As {@link scrollContainerX}, vertically. */
+  scrollContainerY: boolean;
 }
 
 export interface ClipBox {
@@ -136,11 +144,13 @@ function establishesContainingBlock(
   const display = style.display || '';
   // No box, no containing block.
   if (display === 'contents' || display === 'none') return false;
+  const s = style as CSSStyleDeclaration & Record<string, string | undefined>;
   if (mode === 'absolute') {
     const pos = style.position || 'static';
     if (pos !== 'static') return true;
+    // A will-change naming a property that would establish one establishes it.
+    if (s.willChange && /\bposition\b/.test(s.willChange)) return true;
   }
-  const s = style as CSSStyleDeclaration & Record<string, string | undefined>;
   // Filters apply to every element (Filter Effects 1), inline boxes included.
   if (nonNone(style.filter) || nonNone(s.backdropFilter) || nonNone(s.webkitBackdropFilter)) {
     return true;
@@ -150,6 +160,7 @@ function establishesContainingBlock(
   // they cannot make it a containing block.
   if (display === 'inline') return false;
   if (nonNone(style.transform) || nonNone(style.perspective)) return true;
+  if (s.transformStyle === 'preserve-3d') return true;
   // The individual transform properties (Tailwind v4 emits them) and
   // `offset-path` establish one exactly as `transform` does.
   if (nonNone(s.translate) || nonNone(s.rotate) || nonNone(s.scale)) return true;
@@ -174,9 +185,7 @@ const scrolls = (v: string) => v === 'auto' || v === 'scroll';
  * `visible` on one axis computes to `auto` when the other is neither
  * `visible` nor `clip`.
  */
-function axisClip(
-  style: CSSStyleDeclaration
-): { clipsX: boolean; clipsY: boolean; scrollsX: boolean; scrollsY: boolean } | null {
+function axisClip(style: CSSStyleDeclaration): Omit<Clipper, 'element' | 'box'> | null {
   let ox = overflowOf(style.overflowX);
   let oy = overflowOf(style.overflowY);
   const opensWith = (v: string) => v === 'visible' || v === 'clip';
@@ -187,7 +196,15 @@ function axisClip(
   const clipsX = ox !== 'visible' || paint;
   const clipsY = oy !== 'visible' || paint;
   if (!clipsX && !clipsY) return null;
-  return { clipsX, clipsY, scrollsX: clipsX && scrolls(ox), scrollsY: clipsY && scrolls(oy) };
+  const container = (v: string) => v === 'hidden' || scrolls(v);
+  return {
+    clipsX,
+    clipsY,
+    scrollsX: clipsX && scrolls(ox),
+    scrollsY: clipsY && scrolls(oy),
+    scrollContainerX: clipsX && container(ox),
+    scrollContainerY: clipsY && container(oy),
+  };
 }
 
 /**
