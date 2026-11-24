@@ -2,10 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   scanDOMForInteractiveElements,
   scanDOMForInteractiveElementRefs,
+  scanDOMForInteractiveElementsWithRefs,
   findElementsByText,
   findElementByLabel,
 } from './dom-fallback';
 import { UIBridgeRegistry } from '../core/registry';
+import { getElementState } from '../core/element-state';
 import { seedRegistryFromDom } from '../injected/seed-registry';
 
 /**
@@ -113,6 +115,10 @@ describe('dom-fallback ids inside a redaction boundary', () => {
     expect(rows[0].id).toBe('dom-button-0');
     expect(rows[0].label).toBe(REDACTED);
     // Outside the boundary the same text still slugs (the id is not redacted there).
+    // Note the collision suffix: before Phase 2 the redacted button took
+    // 'dom-button-123-45-6789' and this one '-2'. A NON-redacted sibling whose
+    // text matches a redacted one therefore loses its '-2' and reads the bare
+    // slug. Keeping '-2' would reveal that a redacted sibling shares the text.
     expect(rows[1].id).toBe('dom-button-123-45-6789');
     // Every path that reports these ids agrees: the ref scan and the seeder.
     expect(scanDOMForInteractiveElementRefs()[0].id).toBe('dom-button-0');
@@ -152,6 +158,18 @@ describe('dom-fallback ids inside a redaction boundary', () => {
     expect(scanDOMForInteractiveElementRefs()[0].id).toBe('dom-button-0');
   });
 
+  it('a non-redacted sibling with the same text as a redacted one loses its -2 suffix', () => {
+    document.body.innerHTML = `
+      <section data-bridge-redact="true"><button>Save</button></section>
+      <button>Save</button>
+    `;
+    // Before Phase 2: 'dom-button-save', 'dom-button-save-2'.
+    expect(scanDOMForInteractiveElements().map((r) => r.id)).toEqual([
+      'dom-button-0',
+      'dom-button-save',
+    ]);
+  });
+
   it('keeps the data-testid and html id rungs inside a boundary', () => {
     document.body.innerHTML = `
       <section data-bridge-redact="true">
@@ -161,5 +179,44 @@ describe('dom-fallback ids inside a redaction boundary', () => {
     `;
     const ids = scanDOMForInteractiveElements().map((r) => r.id);
     expect(ids).toEqual(['dom-reveal-ssn', 'dom-copy-ssn']);
+  });
+});
+
+/**
+ * §4.6: the derived name rung never reads a descendant that touches a
+ * boundary — review round 2, A1. `deriveStructuralName` read
+ * `svg > title` text with no boundary check, so a redacted icon title
+ * named the button on every reader of the one name algorithm.
+ */
+describe('dom-fallback derived names under a redaction boundary', () => {
+  afterEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  it('a redacted svg <title> reaches no label, accessibleName or registered label', () => {
+    document.body.innerHTML = `<button><span data-bridge-redact="true" aria-hidden="true"><svg><title>123-45-6789</title></svg></span></button>`;
+    const [row] = scanDOMForInteractiveElementsWithRefs();
+    expect(row.label).not.toContain('123');
+    expect(row.id).not.toContain('123');
+    expect(scanDOMForInteractiveElementRefs()[0].label).not.toContain('123');
+    expect(getElementState(row.element).accessibleName ?? '').not.toContain('123');
+    const registry = new UIBridgeRegistry();
+    seedRegistryFromDom(registry, document.body);
+    for (const el of registry.getAllElements()) {
+      expect(el.label ?? '').not.toContain('123');
+      expect(el.getState().accessibleName ?? '').not.toContain('123');
+    }
+  });
+
+  it('a redacted icon class is not read as a derived name', () => {
+    document.body.innerHTML = `<button><span data-bridge-redact="true"><svg class="lucide-secret"></svg></span></button>`;
+    const [row] = scanDOMForInteractiveElementsWithRefs();
+    expect(row.label).not.toContain('secret');
+    expect(getElementState(row.element).accessibleName ?? '').not.toContain('secret');
+  });
+
+  it('a clear svg <title> still names an icon button', () => {
+    document.body.innerHTML = `<button><svg><title>Delete</title></svg></button>`;
+    expect(scanDOMForInteractiveElementsWithRefs()[0].label).toBe('Delete');
   });
 });

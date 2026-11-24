@@ -83,6 +83,16 @@ describe('accessible-name source — which rung named this element, and did anyt
     expect(of('labelled')).toEqual({ name: 'Find', source: 'label' });
   });
 
+  it('reads the REFLECTED type: an empty or unknown type attribute is text', () => {
+    document.body.innerHTML = `
+      <input type="" placeholder="Empty type" />
+      <input type="foo" placeholder="Unknown type" />
+    `;
+    const [empty, unknown] = Array.from(document.querySelectorAll('input'));
+    expect(resolveAccessibleName(empty)).toEqual({ name: 'Empty type', source: 'placeholder' });
+    expect(resolveAccessibleName(unknown)).toEqual({ name: 'Unknown type', source: 'placeholder' });
+  });
+
   it('does not read a placeholder on a non-text input', () => {
     document.body.innerHTML = `<input type="checkbox" placeholder="Agree" />`;
     expect(resolveAccessibleName(document.querySelector('input')!)).toEqual({ source: 'none' });
