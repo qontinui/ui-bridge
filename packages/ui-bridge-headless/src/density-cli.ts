@@ -261,12 +261,10 @@ export function measureDensityCell(
     capture = obs.value;
     cell = capture.cell;
     // Computed once: the affordances' filters and pagers act on these repeats.
-        // Not computed for a capture the summaries will report as unresolved.
+    // Not computed for a capture the summaries will report as unresolved.
     const keyed = capture.structureResolved && capture.repeatKeysResolved;
     const repeats = keyed ? densityRepeats(capture, input.targets) : [];
-    const affordances = keyed
-      ? densityAffordances(capture, input.targets, { repeats })
-      : [];
+    const affordances = keyed ? densityAffordances(capture, input.targets, { repeats }) : [];
     observation = Observation.measured<DensityCaptureSummary>(
       {
         scope: capture.scope,

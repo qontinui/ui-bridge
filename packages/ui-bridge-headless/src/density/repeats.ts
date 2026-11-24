@@ -126,9 +126,12 @@ export interface DensityRepeat {
   rowPitchPx: number;
   /** How the line quantities were obtained. */
   linesBasis: 'estimated';
-  /** Median count of distinct leaf line bands per row; `null` when no row could be estimated. */
+  /**
+   * Median over estimated rows of the row's text height (`rowTextPx`) in lines
+   * of its tallest line height; `null` when no row could be estimated.
+   */
   linesPerRow: number | null;
-  /** Median height of a row's text line bands, px; `null` when no row could be estimated. */
+  /** Median over estimated rows of the union of the row's line intervals, px; `null` when none could be. */
   rowTextPx: number | null;
   /** Median over estimated rows of a row's text height over its own pitch; `null` with `rowTextPx`. */
   rowFill: number | null;
@@ -255,7 +258,8 @@ function rowLines(
     const n = leaf.ownChars;
     if (n === null) return null;
     if (n === 0) continue;
-    if (leaf.fontPx === null || leaf.lineHeightPx === null || r.w <= 0) return null;
+    if (leaf.fontPx === null || leaf.lineHeightPx === null || leaf.lineHeightPx <= 0 || r.w <= 0)
+      return null;
     // The estimate never exceeds what the measured height can hold, and a
     // truncated leaf (nowrap, ellipsis) is one line.
     const wrapped = Math.max(1, Math.ceil((n * DENSITY_CHAR_WIDTH_EM * leaf.fontPx) / r.w));
@@ -357,10 +361,27 @@ export function isDensityNavControl(item: DensityItem): boolean {
 }
 
 /** A control a repeat's scope is looked for by: a finder, a filter or a nav control. */
+/** A checkbox or radio in a table header: it selects rows, it acts on no list. */
+export function isDensityHeaderToggle(item: DensityItem): boolean {
+  return (
+    (item.role === 'checkbox' || item.role === 'radio') &&
+    item.path !== null &&
+    item.path.includes('thead')
+  );
+}
+
+/** The path up to and including the innermost `nav` tag, or `null` outside one. */
+export function densityNavPrefix(item: DensityItem): string | null {
+  if (item.path === null) return null;
+  const at = item.path.lastIndexOf('nav');
+  return at < 0 ? null : item.path.slice(0, at + 1).join('/');
+}
+
 function isScopeControl(item: DensityItem): boolean {
   return (
     item.interactive &&
     takesSpace(item) &&
+    !isDensityHeaderToggle(item) &&
     (isDensityFinderControl(item) || isDensityFilterControl(item) || isDensityNavControl(item))
   );
 }
@@ -645,6 +666,17 @@ function isFormPart(item: DensityItem): boolean {
   );
 }
 
+/**
+ * Whether a left-edge column is only the line starts of a wrapped run (chips,
+ * tags): some row holding a column member also holds a sibling outside it.
+ */
+function wrappedRun(column: readonly DensityItem[], rows: readonly DensityItem[][]): boolean {
+  const inColumn = new Set(column.map((m) => m.id));
+  return rows.some(
+    (row) => row.some((m) => inColumn.has(m.id)) && row.some((m) => !inColumn.has(m.id))
+  );
+}
+
 /** Tags whose stacked siblings inside one row of another repeat are still rows (a nested list). */
 const NESTED_ROW_TAGS = new Set(['li', 'tr']);
 
@@ -735,7 +767,9 @@ export function densityRepeats(
     // 2. One column, by left edge: of one width, or all leaves (a fit-content
     //    list); stacked containers of different widths are layout, not rows.
     const rest = g.members.filter((m) => !claimed.has(m.id));
+    const siblingRows = rowsOf(g.members);
     for (const c of clusterBy(rest, (r) => r.x)) {
+      if (wrappedRun(c, siblingRows)) continue;
       if (sameWidth(c) || c.every((m) => leafSet.has(m.id))) accept(g, c);
     }
   }
@@ -798,7 +832,9 @@ export function densityRepeats(
     const placed = new Set<string>();
     for (const g of groups) for (const m of g.members) placed.add(m.id);
     const rest = list.filter((m) => !placed.has(m.id) && leafSet.has(m.id));
+    const typeRows = rowsOf(list);
     for (const c of clusterBy(rest, (r) => r.x)) {
+      if (wrappedRun(c, typeRows)) continue;
       if (rowsOf(c).length < DENSITY_REPEAT_MIN_ROWS) continue;
       if (rejectsAsRows(c)) continue;
       const g: Group = { by: 'geometry', parent: c[0].parent, tag: c[0].tag, members: c };
