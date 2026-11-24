@@ -326,15 +326,19 @@ export interface CanonicalFindContext {
    * OUTPUT. Set by the filter when the request carried a media-fact filter
    * (`mediaType`, `brokenOnly`, `missingAltOnly`, `srcPattern`,
    * `oversizeThreshold`): the rows it could not evaluate, which it left out.
-   * `[]` = every row was evaluated. Left untouched otherwise. Call sites copy
-   * it onto the response as `unevaluated`.
+   * `[]` = every row was evaluated. Cleared at the start of every call and set
+   * only when the call completes, so it is `undefined` after a call without a
+   * media-fact filter or a refused call. Call sites copy it onto the response
+   * as `unevaluated`.
    */
   unevaluated?: FindUnevaluated[];
   /**
    * OUTPUT. Set by the filter when the request asked for a projection
    * (`properties` / `attributes`): the validated names to read. Call sites read
    * each RETURNED row through `projectElement(<the row's node>, projection)`
-   * and attach the answer as the row's `projection`. Left untouched otherwise.
+   * and attach the answer as the row's `projection`. Cleared at the start of
+   * every call and set only when the call completes, so it is `undefined`
+   * after a call without a projection or a refused call.
    */
   projection?: ElementProjectionRequest;
   /**
@@ -343,9 +347,9 @@ export interface CanonicalFindContext {
    * keyed by the row. A call site building the returned row reads its `state`
    * from here ({@link reportedState}) instead of calling `getState()` again,
    * so each kept row's state is read ONCE and the value that decided its
-   * visibility is the value it reports. Reset to `undefined` at the start of
-   * every call (refused calls included), so a reused context never carries an
-   * earlier call's reads.
+   * visibility is the value it reports. Cleared at the start of every call and
+   * set only when the call completes, so a reused context never carries an
+   * earlier call's reads, and a refused call leaves it `undefined`.
    */
   stateReads?: WeakMap<object, unknown>;
 }
@@ -729,9 +733,12 @@ export function applyCanonicalFindFilter<T extends FindFilterableElement>(
   criteria?: CanonicalFindCriteria | null,
   ctx: CanonicalFindContext = {}
 ): T[] {
-  // Reset before anything can refuse, so a reused context never hands
-  // `reportedState` an earlier call's reads.
+  // Every OUTPUT field is cleared before anything can refuse and set only once
+  // the call has completed, so a reused context (refused calls included)
+  // never carries an earlier call's values.
   ctx.stateReads = undefined;
+  ctx.unevaluated = undefined;
+  ctx.projection = undefined;
   if (!criteria) return [...elements];
 
   const r = resolveCriteria(criteria, ctx);
@@ -812,7 +819,6 @@ export function applyCanonicalFindFilter<T extends FindFilterableElement>(
         'capability_unavailable_in_build'
       );
     }
-    ctx.projection = r.projection;
   }
 
   // Media-fact predicates read a row's observation envelope. A media row
@@ -823,9 +829,7 @@ export function applyCanonicalFindFilter<T extends FindFilterableElement>(
   // The registry rows' `getState()` reads the visibility arm makes, handed to
   // the call site so a kept row's state is not read a second time.
   const stateReads = new WeakMap<object, unknown>();
-  if (r.includeHidden === false) ctx.stateReads = stateReads;
   if (facts.length > 0) {
-    ctx.unevaluated = unevaluated;
     for (const el of elements) {
       if (!isMediaRow(el)) continue;
       const obs = el.refreshMediaMetadata ? el.refreshMediaMetadata() : el.mediaMetadata;
@@ -973,5 +977,10 @@ export function applyCanonicalFindFilter<T extends FindFilterableElement>(
     if (stopEarly && filtered.length >= (r.limit as number)) break;
     if (keeps(el)) filtered.push(el);
   }
+
+  // The call completed: publish its outputs (see the reset at the top).
+  if (r.projection) ctx.projection = r.projection;
+  if (facts.length > 0) ctx.unevaluated = unevaluated;
+  if (r.includeHidden === false) ctx.stateReads = stateReads;
   return r.limit !== undefined ? filtered.slice(0, r.limit) : filtered;
 }
