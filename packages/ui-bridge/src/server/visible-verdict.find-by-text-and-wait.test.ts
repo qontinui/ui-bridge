@@ -574,21 +574,72 @@ describe('server clickable probes the executor target without mutating it', () =
 });
 
 /**
- * The click pre-check's render refusal exempts an <option> (round 13, A3): a
- * browser's checkVisibility() is false for one inside a closed dropdown
- * <select>, but clicking it to select it is supported. Content inside a
+ * An <option> is judged by its <select>, on both arms (review round 14).
+ * A browser's checkVisibility() is false for an option inside a closed
+ * dropdown, yet clicking it to select it is supported; an option inside a
+ * display:none subtree is refused because its select is. Content inside a
  * closed <details> stays refused.
  */
-describe('getClickVisibilityReason render refusal', () => {
-  it('exempts an <option> whose checkVisibility() is false; refuses a control in a closed <details>', () => {
+describe('an <option> is rendered exactly when its <select> is, on both arms', () => {
+  function optionIn(parent: HTMLElement, id: string): HTMLOptionElement {
     const select = document.createElement('select');
     const option = document.createElement('option');
     option.textContent = 'Two';
     select.appendChild(option);
-    document.body.appendChild(select);
+    parent.appendChild(select);
+    // As a browser reports a closed dropdown: the option has no box, the
+    // select does (when it is itself rendered).
     Object.defineProperty(option, 'checkVisibility', { configurable: true, value: () => false });
-    expect(getClickVisibilityReason(option)).toBeNull();
+    getGlobalRegistry().registerElement(id, option, { type: 'button', label: id });
+    return option;
+  }
 
+  async function serverClickable(id: string): Promise<boolean> {
+    const handlers = createHandlers(registryLike(), createActionExecutor(getGlobalRegistry()), {
+      consoleCapture: null as never,
+    });
+    const resp = await handlers.waitForElementByCondition({
+      selector: { id },
+      condition: 'clickable',
+      timeout_ms: 150,
+    });
+    return (resp.data as { matched: boolean }).matched;
+  }
+
+  it('an option in a closed dropdown: the HTTP click succeeds and both arms say clickable', async () => {
+    const option = optionIn(document.body, 'opt-open');
+    Object.defineProperty(option.closest('select')!, 'checkVisibility', {
+      configurable: true,
+      value: () => true,
+    });
+    const clicked: string[] = [];
+    option.addEventListener('click', () => clicked.push('opt-open'));
+    const result = (await createActionExecutor(getGlobalRegistry()).executeAction('opt-open', {
+      action: 'click',
+    })) as { success: boolean; error?: string };
+    expect(result.error).toBeUndefined();
+    expect(result.success).toBe(true);
+    expect(clicked).toEqual(['opt-open']);
+    expect(await serverClickable('opt-open')).toBe(true);
+    expect((await relayArm('opt-open', 'clickable')).matched).toBe(true);
+  });
+
+  it('an option inside a display:none subtree: the HTTP click is refused and neither arm says clickable', async () => {
+    const shell = document.createElement('div');
+    shell.style.display = 'none';
+    document.body.appendChild(shell);
+    optionIn(shell, 'opt-gone');
+    const result = (await createActionExecutor(getGlobalRegistry()).executeAction('opt-gone', {
+      action: 'click',
+    })) as { success: boolean; failureDetails?: { errorCode?: string; visibilityReason?: string } };
+    expect(result.success).toBe(false);
+    expect(result.failureDetails?.errorCode).toBe('UB-ELEM-NOT-VISIBLE');
+    expect(result.failureDetails?.visibilityReason).toBe('hidden');
+    expect(await serverClickable('opt-gone')).toBe(false);
+    expect((await relayArm('opt-gone', 'clickable')).matched).toBe(false);
+  });
+
+  it('a control inside a closed <details> is still refused', () => {
     const details = document.createElement('details');
     const inside = document.createElement('button');
     details.appendChild(inside);

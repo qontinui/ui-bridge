@@ -642,7 +642,8 @@ fallback and is not visible. An occluded or off-screen element now reads
 next click on that arm would not be refused, so it mirrors each arm's own click
 path. Both arms share one render check: the node is connected, has no
 `display: none` on itself or a flat-tree ancestor, is taken by a slot when its
-parent hosts an open shadow root, and is not `visibility: hidden`. The server
+parent hosts an open shadow root, and is not `visibility: hidden`; an
+`<option>` is judged by its `<select>`. The server
 (HTTP executor) arm judges the node the executor's click would act on, resolved
 by the executor's own chain (a connected registry node, else by identifier, the
 target registry or its discovery cache), and runs the executor's click pre-check
@@ -660,9 +661,10 @@ click-like action on a control inside a `display: none` subtree is now refused
 with `UB-ELEM-NOT-VISIBLE` (`visibilityReason: hidden`). The executor's click
 pre-check used to read only the control's own style, so it dispatched the
 click and reported success on a node no user could reach. Content inside a
-closed `<details>` is refused the same way. An `<option>` is exempt: a
-browser reports an option inside a closed dropdown `<select>` as not
-rendered, but clicking it to select it stays supported. The server
+closed `<details>` is refused the same way. An `<option>` is judged by its
+`<select>` on both arms: a browser reports an option inside a closed dropdown
+as not rendered, but clicking it to select it stays supported, while an option
+inside a `display: none` subtree is refused because its select is. The server
 `clickable` wait resolves the click's target as a read-only probe, so polling
 it never re-ranks Central Target Registry selectors, emits `ctr:*` events or
 prunes the discovery cache.
