@@ -755,6 +755,48 @@ describe('repeats', () => {
     });
   });
 
+  it('form fields with their own ids, found by geometry, are not a repeat', () => {
+    const els: DensityTestElementSpec[] = [
+      { id: 'form', tag: 'form', xpath: '//*[@id="form"]', rect: [0, 0, 400, 200], text: '' },
+      ...['name', 'email', 'password'].map(
+        (n, i): DensityTestElementSpec => ({
+          id: n,
+          tag: 'input',
+          role: 'textbox',
+          category: 'interactive',
+          xpath: `//*[@id="${n}"]`,
+          rect: [10, 10 + 50 * i, 300, 32],
+          text: '',
+        })
+      ),
+    ];
+    expect(densityRepeats(capture(els), null)).toEqual([]);
+  });
+
+  it('the headings of an article, between its paragraphs, are not a repeat', () => {
+    const els: DensityTestElementSpec[] = [];
+    for (let k = 1; k <= 3; k++) {
+      const y = 200 * (k - 1);
+      els.push(
+        {
+          id: `h${k}`,
+          tag: 'h2',
+          xpath: `/html/body/article/h2[${k}]`,
+          rect: [0, y, 600, 30],
+          text: `Section ${k}`,
+        },
+        {
+          id: `p${k}`,
+          tag: 'p',
+          xpath: `/html/body/article/p[${k}]`,
+          rect: [0, y + 40, 600, 140],
+          text: `Synthetic paragraph ${k}`,
+        }
+      );
+    }
+    expect(densityRepeats(capture(els), null)).toEqual([]);
+  });
+
   it('a hidden leaf in a row draws no line band', () => {
     const els = orderList(3).map((e): DensityTestElementSpec => {
       if (!e.id.endsWith('.sum')) return e;
