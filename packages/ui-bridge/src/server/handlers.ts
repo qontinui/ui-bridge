@@ -6882,7 +6882,10 @@ export function createHandlers(
             // (`getClickVisibilityReason`), NOT the visibility verdict (a
             // below-the-fold or opacity:0 control is clicked), plus the
             // interaction blockers.
-            if (!domEl) return false;
+            // The executor takes a registry node only while it is connected
+            // (a detached one is refused UB-STALE-ELEMENT), so a detached
+            // node is not clickable either.
+            if (!domEl || !domEl.isConnected) return false;
             if (getClickVisibilityReason(domEl) !== null) return false;
             // Same predicate as `ElementState.enabled` and the click-path
             // pre-check, so "clickable" means the next click is not refused.

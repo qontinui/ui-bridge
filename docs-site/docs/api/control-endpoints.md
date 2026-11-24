@@ -631,10 +631,13 @@ check: `findByText`'s per-hit `visible` (it read `offsetParent !== null ||
 position: fixed`); the `visible` condition of
 `POST /ai/wait-for-element-condition` (it read `offsetParent !== null` and a
 non-zero size); and `POST /ai/wait-for-element`'s `requirement: "visible"`.
-Both waits read the verdict live whenever the element has a node, and fall
-back to the row's `state.visible` only without one, because a registered
-row's state carries the registry's post-action override, which nothing
-expires. An occluded or off-screen element now reads `visible: false` from
+Both waits read the verdict live, on both arms, whenever the element has a
+node, because a registered row's state carries the registry's post-action
+override, which nothing expires. Without a node they differ by arm: the
+server arm of either wait falls back to the row's `state.visible`; the relay
+arm of `wait-for-element` falls back to the registry's tracked `visible` (a
+bounding-box hint); the relay arm of `wait-for-element-condition` has no
+fallback and is not visible. An occluded or off-screen element now reads `visible: false` from
 `findByText` and satisfies neither `visible` wait. The `clickable` condition is
 deliberately NOT the visibility verdict: it means the next click on that arm
 would not be refused, so it mirrors each arm's own click path. The server

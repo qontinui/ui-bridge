@@ -85,6 +85,7 @@
  */
 
 import { readRunningAnimations } from '../core/running-animations';
+import { composedAncestry, shadowRootOf } from '../core/composed-tree';
 import { standardActionEffect } from '../core/action-effect';
 
 // ============================================================================
@@ -554,29 +555,6 @@ function walkRules(
     const children = childRules(rule);
     if (children) walkRules(children, state, out, visit);
   }
-}
-
-function shadowRootOf(node: Node): ShadowRoot | null {
-  const root = node.getRootNode?.();
-  if (root && root !== node && (root as ShadowRoot).host instanceof Element) {
-    return root as ShadowRoot;
-  }
-  return null;
-}
-
-/**
- * The target and every ancestor on its flat-tree path, innermost first: a
- * slotted element's parent is its slot, and a shadow root is crossed to its
- * host — the path a real `:hover` propagates along.
- */
-export function composedAncestry(target: Element): Element[] {
-  const chain: Element[] = [];
-  let current: Element | null = target;
-  while (current) {
-    chain.push(current);
-    current = current.assignedSlot ?? current.parentElement ?? shadowRootOf(current)?.host ?? null;
-  }
-  return chain;
 }
 
 /**

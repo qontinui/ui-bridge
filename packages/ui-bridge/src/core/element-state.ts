@@ -36,7 +36,7 @@ import {
   resolveAccessibleName,
 } from './a11y';
 import { classList } from './class-name';
-import { composedAncestry } from '../control/forced-hover';
+import { composedAncestry } from './composed-tree';
 import {
   verdictOf,
   elementRedaction,
@@ -185,17 +185,31 @@ export function readElementVisibility(element: HTMLElement): ElementVisibility {
 
 /**
  * Is the node rendered at all — the check an ACTION is gated on, not the
- * visibility verdict a row reports. True when the node is connected, has no
- * `display: none` on itself or any ancestor, and is not `visibility: hidden`
- * (computed, so an inherited value counts).
+ * visibility verdict a row reports. True when the node is connected, is not
+ * `visibility: hidden` (computed, so an inherited value counts), has no
+ * `display: none` on itself or any FLAT-tree ancestor (its slot, a shadow
+ * host), and, when its parent hosts an open shadow root, is taken by a slot
+ * (an unslotted light-DOM child gets no box).
  *
  * Deliberately NOT {@link readElementVisibility}: an off-screen target is
  * scrolled into view by the action, an occluded one is the caller's concern,
  * and an `opacity: 0` control (a styled file input) still takes input, so the
- * canonical verdict would refuse actions that dispatch. Used by the relay's
- * `executeElementAction` dispatch gate and by the wait-for-element
- * `clickable` condition on both arms, so "clickable" means "the next action
- * would not be refused as not rendered".
+ * canonical verdict would refuse actions that dispatch.
+ *
+ * Used by the RELAY arm only: its `executeElementAction` dispatch gate and its
+ * wait-for-element `clickable` condition, so the relay's "clickable" means
+ * "the relay's next action would not be refused as not rendered". The server
+ * arm's `clickable` mirrors the HTTP executor's own pre-check instead
+ * (`getClickVisibilityReason`).
+ *
+ * Where the engine has `Element.checkVisibility()`, its default answer is used
+ * (it sees through closed shadow roots), except for a node whose own display
+ * is `contents`: such a node has no box of its own, so `checkVisibility()`
+ * reads it as hidden although its children render, and the walk answers.
+ * The fallback walk cannot see into a CLOSED shadow root: `assignedSlot` and
+ * the host's `shadowRoot` both read `null` for it, so a light-DOM child of a
+ * closed host is treated as rendered whether or not a slot takes it, and the
+ * walk goes straight to the host past any slot.
  *
  * It replaced an `offsetParent !== null` test, which a browser also fails for
  * a control that is itself `position: fixed` (plan-library edge e11dd943).
@@ -211,10 +225,12 @@ export function isRenderedForAction(el: HTMLElement): boolean {
   // FLAT-tree ancestor (a shadow host, a slot), or a light-DOM child no slot
   // takes — and, with `checkOpacity` / `checkVisibilityCSS` left off, ignores
   // `opacity: 0` exactly as this check means to.
-  if (typeof el.checkVisibility === 'function') return el.checkVisibility();
-  // Fallback (jsdom, older engines): the same question by hand, walking the
-  // flat tree (`composedAncestry`: a slotted node's parent is its slot, a
-  // shadow root is crossed to its host).
+  if (typeof el.checkVisibility === 'function' && own.display !== 'contents') {
+    return el.checkVisibility();
+  }
+  // Fallback (jsdom, older engines, a `display: contents` node): the same
+  // question by hand, walking the flat tree (`composedAncestry`: a slotted
+  // node's parent is its slot, a shadow root is crossed to its host).
   for (const node of composedAncestry(el)) {
     // An open shadow host renders only the children its slots take.
     const parent = node.parentElement;

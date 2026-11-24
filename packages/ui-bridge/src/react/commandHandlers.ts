@@ -3696,11 +3696,11 @@ export async function executeCommand(
         if (requirement === 'registered') return true;
 
         if (requirement === 'visible') {
-          if (typeof el.visible === 'boolean') return el.visible;
-          if (!domEl) return false;
-          // No tracked `visible` yet: the canonical verdict on the live node
-          // (`core/element-state`), the one every row reports.
-          return readElementVisibility(domEl).visible;
+          // The canonical verdict on the live node (`core/element-state`)
+          // whenever there is one; the registry's tracked `visible` (a
+          // bounding-box hint) only without a node.
+          if (domEl) return readElementVisibility(domEl).visible;
+          return el.visible === true;
         }
 
         if (requirement === 'has-layout') {

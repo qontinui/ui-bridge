@@ -158,6 +158,33 @@ const relayArm: Arm = async (id, condition) =>
     emptyBridge
   )) as { matched: boolean };
 
+type RegisteredArm = (id: string) => Promise<{ element?: { id: string }; reason?: string }>;
+
+const serverRegisteredArm: RegisteredArm = async (id) => {
+  const handlers = createHandlers(
+    registryLike(),
+    {
+      executeAction: async () => ({ success: true }),
+      executeComponentAction: async () => ({ success: true }),
+    } as never,
+    { consoleCapture: null as never }
+  );
+  const resp = await handlers.waitForElementRegistered({
+    predicate: { id },
+    requirement: 'visible',
+    timeoutMs: 150,
+  });
+  expect(resp.success).toBe(true);
+  return resp.data as { element?: { id: string }; reason?: string };
+};
+
+const relayRegisteredArm: RegisteredArm = async (id) =>
+  (await executeCommand(
+    'waitForElementRegistered',
+    { predicate: { id }, requirement: 'visible', timeoutMs: 150 },
+    emptyBridge
+  )) as { element?: { id: string }; reason?: string };
+
 describe.each([
   ['server/handlers.ts', serverArm],
   ['react/commandHandlers.ts', relayArm],
@@ -218,8 +245,8 @@ describe('a stale registry overlay never overrides the live verdict', () => {
   );
 
   it.each([
-    ['server', serverRegisteredArmLate],
-    ['relay', relayRegisteredArmLate],
+    ['server', serverRegisteredArm],
+    ['relay', relayRegisteredArm],
   ] as const)(
     'wait-for-element requirement visible (%s arm): off-screen times out',
     async (_n, arm) => {
@@ -231,6 +258,19 @@ describe('a stale registry overlay never overrides the live verdict', () => {
 /**
  * Each arm's `clickable` mirrors that arm's own click path (review A2).
  */
+describe('relay wait-for-element visible ignores the registry bbox hint when a node exists', () => {
+  it('a registration whose tracked visible is true, on an off-screen node, is not visible', async () => {
+    const registry = getGlobalRegistry();
+    registry.registerElement('below', document.getElementById('below')!, {
+      type: 'button',
+      label: 'below',
+    });
+    // The tracker's bounding-box hint, as the registry carries it.
+    (registry.getElement('below') as unknown as { visible?: boolean }).visible = true;
+    expect((await relayRegisteredArm('below')).element).toBeUndefined();
+  });
+});
+
 describe('clickable per arm', () => {
   function fixedFab(): HTMLButtonElement {
     const fab = button('fab', 'Pay fab');
@@ -262,6 +302,31 @@ describe('clickable per arm', () => {
     expect((await serverArm('fab', 'clickable')).matched).toBe(true);
   });
 
+  it('server: a registered node that is then detached is not clickable (the executor refuses it UB-STALE-ELEMENT)', async () => {
+    const gone = button('gone-later', 'Pay later');
+    place(gone, 0, 300, 80, 24);
+    getGlobalRegistry().registerElement('gone-later', gone, { type: 'button', label: 'gone' });
+    expect((await serverArm('gone-later', 'clickable')).matched).toBe(true);
+    gone.remove();
+    expect((await serverArm('gone-later', 'clickable')).matched).toBe(false);
+  });
+
+  it('a control under a display:none ancestor: server clickable, relay not — each arm mirrors its own click path', async () => {
+    // The HTTP executor's click pre-check (`getClickVisibilityReason`) reads
+    // the control's OWN style only, so the server's next click dispatches and
+    // the server arm says clickable. The relay's dispatch gate
+    // (`isRenderedForAction`) walks the ancestors and refuses, so the relay
+    // arm says not clickable. Pinned so the divergence stays deliberate.
+    const shell = document.createElement('div');
+    shell.style.display = 'none';
+    document.body.appendChild(shell);
+    const inner = button('inner-x', 'Pay inner');
+    shell.appendChild(inner);
+    getGlobalRegistry().registerElement('inner-x', inner, { type: 'button', label: 'inner' });
+    expect((await serverArm('inner-x', 'clickable')).matched).toBe(true);
+    expect((await relayArm('inner-x', 'clickable')).matched).toBe(false);
+  });
+
   it('relay: a fixed and a below-the-fold control are clickable; one under a display:none ancestor is not', async () => {
     fixedFab();
     const shell = document.createElement('div');
@@ -283,33 +348,6 @@ describe('clickable per arm', () => {
  * and a React row with no tracked `visible`) and read `offsetParent` plus a
  * non-zero rect. It now reads the canonical verdict.
  */
-type RegisteredArm = (id: string) => Promise<{ element?: { id: string }; reason?: string }>;
-
-const serverRegisteredArm: RegisteredArm = async (id) => {
-  const handlers = createHandlers(
-    registryLike(),
-    {
-      executeAction: async () => ({ success: true }),
-      executeComponentAction: async () => ({ success: true }),
-    } as never,
-    { consoleCapture: null as never }
-  );
-  const resp = await handlers.waitForElementRegistered({
-    predicate: { id },
-    requirement: 'visible',
-    timeoutMs: 150,
-  });
-  expect(resp.success).toBe(true);
-  return resp.data as { element?: { id: string }; reason?: string };
-};
-
-const relayRegisteredArm: RegisteredArm = async (id) =>
-  (await executeCommand(
-    'waitForElementRegistered',
-    { predicate: { id }, requirement: 'visible', timeoutMs: 150 },
-    emptyBridge
-  )) as { element?: { id: string }; reason?: string };
-
 describe.each([
   ['server/handlers.ts', serverRegisteredArm],
   ['react/commandHandlers.ts', relayRegisteredArm],
@@ -427,10 +465,3 @@ describe('relay dispatch gate stays a rendered-at-all check', () => {
     expect(result.error).toContain('not visible');
   });
 });
-
-function serverRegisteredArmLate(id: string) {
-  return serverRegisteredArm(id);
-}
-function relayRegisteredArmLate(id: string) {
-  return relayRegisteredArm(id);
-}
