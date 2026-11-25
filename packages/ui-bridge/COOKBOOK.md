@@ -247,18 +247,23 @@ Conditions:
   forces the real CSS `:hover` state (the target and its ancestors), reports
   what it revealed under `forcedHover`, and holds it until `unhover`, the next
   `hover`, a completed write-class action such as the `click`, or `holdMs`.
-  A non-click action (`type`, `focus`, `setValue`, a custom action, …) on a
-  node that fails the render check is refused on both arms too, as
-  `ELEMENT_NOT_VISIBLE` / `UB-ELEM-NOT-VISIBLE`; only `unhover` and a page-level
-  `scroll` are exempt.
-  In-process callers of the SDK's action executor get the same refusals:
-  `useUIElement().trigger`, workflow element-action steps and the
-  natural-language executor all go through it. So an action on an unrendered
-  node, such as a `type` or `setValue` on an `<input type="hidden">`, no longer
-  writes the value: `trigger` and the natural-language executor throw, and a
-  workflow element-action step fails.
 - `text-matches` — element exists AND its label/aria-label/title/textContent
   contains `text_match` (pass as a sibling field).
+
+The same gate refuses more than clicks. On both arms, a non-click action
+(`type`, `focus`, `setValue`, a custom action, …) on a node that fails the
+render check is refused as `ELEMENT_NOT_VISIBLE` / `UB-ELEM-NOT-VISIBLE`, and
+one on a natively disabled control is refused as `ELEMENT_NOT_ENABLED` /
+`UB-ELEM-DISABLED`. Native disabled includes `disabled` inherited from a
+`<fieldset disabled>`, except for a control in that fieldset's first
+`<legend>`. Only `unhover` and a page-level `scroll` are exempt. In-process
+callers of the SDK's action executor get both refusals too:
+`useUIElement().trigger`, workflow element-action steps and the
+natural-language executor all go through it, so `trigger` and the
+natural-language executor throw and a workflow element-action step fails
+instead of acting. An `<input type="hidden">` still advertises `type`,
+`clear` and `setValue`, and all three are refused on it because it is not
+rendered; narrowing what such an element advertises is a tracked follow-up.
 
 Success (HTTP 200):
 
