@@ -748,6 +748,9 @@ describe('relay and HTTP render gates deliberately differ on non-click actions',
     )) as { success: boolean; error?: string };
     expect(relay.success).toBe(false);
     expect(relay.error).toContain('not visible');
+    // The refused relay call did not move focus, so the assertion below is
+    // the HTTP arm's doing.
+    expect(document.activeElement).not.toBe(input);
     const http = (await createActionExecutor(getGlobalRegistry()).executeAction('collapse-focus', {
       action: 'focus',
     })) as { success: boolean; failureDetails?: { errorCode?: string } };
