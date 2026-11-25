@@ -60,13 +60,19 @@ export function deepestActiveElement(root: Document | ShadowRoot): Element | nul
 /**
  * Whether a `focus()` on `el` landed: the deepest active element is `el` or a
  * flat-tree descendant of it — the `:focus-within` meaning, so a registered
- * wrapper that forwards focus to an inner input (in its light tree or across
- * its own open shadow root) counts as taken.
+ * wrapper that forwards focus to an inner input (in its light tree, across
+ * its own open shadow root, or into a light-DOM node one of its `<slot>`s
+ * takes) counts as taken.
  *
  * The read starts from `el`'s OWN root (`getRootNode()`), not the document:
  * from the document, a node inside a CLOSED shadow root is unreachable (the
  * descent stops at the closed host), so a focus that did land there would read
- * as not taken. A disconnected `el` has neither, and reads as not taken.
+ * as not taken. It then climbs root by root (a shadow root to its host's root,
+ * up to the document): a light-DOM node assigned to a slot inside `el` lives in
+ * an OUTER tree, so `el`'s own shadow root reports no `activeElement` for it,
+ * and only an outer root sees it. Each candidate is accepted when its
+ * flat-tree ancestry (`composedAncestry`: a slotted node's parent is its slot)
+ * reaches `el`. A disconnected `el` has no tree root, and reads as not taken.
  *
  * Shared by both action arms (the HTTP executor's `performFocus` and the
  * relay's `focus` case). A browser does not move focus to a node that is not
@@ -75,14 +81,16 @@ export function deepestActiveElement(root: Document | ShadowRoot): Element | nul
  * such a `focus()` as a success.
  */
 export function focusLanded(el: Element): boolean {
-  // By node type, not `instanceof`, so a node in another realm (an iframe)
-  // is read too: a document, or a shadow root (a fragment with a host).
-  const root = el.getRootNode();
-  const isTreeRoot =
-    root.nodeType === 9 /* DOCUMENT_NODE */ ||
-    (root.nodeType === 11 /* DOCUMENT_FRAGMENT_NODE */ && 'host' in root);
-  if (!isTreeRoot) return false;
-  const active = deepestActiveElement(root as Document | ShadowRoot);
-  if (!active) return false;
-  return active === el || composedAncestry(active).includes(el);
+  let root: Node = el.getRootNode();
+  for (;;) {
+    // By node type, not `instanceof`, so a node in another realm (an iframe)
+    // is read too: a document, or a shadow root (a fragment with a host).
+    const isDocument = root.nodeType === 9; /* DOCUMENT_NODE */
+    const host = root.nodeType === 11 /* DOCUMENT_FRAGMENT_NODE */ ? (root as ShadowRoot).host : null;
+    if (!isDocument && !host) return false;
+    const active = deepestActiveElement(root as Document | ShadowRoot);
+    if (active && (active === el || composedAncestry(active).includes(el))) return true;
+    if (isDocument || !host) return false;
+    root = host.getRootNode();
+  }
 }

@@ -606,12 +606,12 @@ export function readInnerText(el: Element): string | undefined {
 
 /**
  * The two INDEPENDENT disabled signals, unfolded. `disabled` is native
- * disabled as the browser applies it: the element's own `disabled` property,
- * or `:disabled` inherited from a `<fieldset disabled>` (not for a control in
- * that fieldset's first `<legend>`).
+ * disabled as the browser applies it: the element's own property or
+ * inherited `:disabled` (a disabled fieldset outside its first legend, a
+ * disabled optgroup).
  *
  * `ElementState.enabled` folds these into one boolean, which loses the
- * distinction a driver needs: only `disabled` (the native IDL property) makes
+ * distinction a driver needs: only `disabled` (native disabled) makes
  * the browser refuse events, while `ariaDisabled` is a pure announcement that
  * still dispatches real clicks. Every `ElementState` producer reads this one
  * helper so the four serializers cannot drift apart again.
@@ -636,10 +636,18 @@ export function readDisabledSignals(el: Element): {
  * own `.disabled` property does not carry: a control inside a
  * `<fieldset disabled>` is disabled (and receives no input) though its own
  * property reads `false`, while one inside that fieldset's first `<legend>` is
- * not. A selector engine that cannot evaluate the pseudo-class (a degraded DOM
- * shim) throws; that is no evidence of `disabled`, so it reads `false`.
+ * not; an `<option>` whose parent `<optgroup>` is disabled is disabled too.
+ *
+ * The optgroup rule is read directly as well as through the selector, because
+ * not every selector engine applies it (jsdom's does not). A selector engine
+ * that cannot evaluate the pseudo-class (a degraded DOM shim) throws; that is
+ * no evidence of `disabled`, so it reads `false`.
  */
 function matchesDisabledPseudo(el: Element): boolean {
+  if (el.localName === 'option') {
+    const group = el.parentElement;
+    if (group?.localName === 'optgroup' && group.hasAttribute('disabled')) return true;
+  }
   try {
     return typeof el.matches === 'function' && el.matches(':disabled');
   } catch {

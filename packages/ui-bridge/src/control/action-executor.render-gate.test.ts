@@ -20,6 +20,7 @@ import { getGlobalRegistry, resetGlobalRegistry } from '../core/registry';
 import { DefaultActionExecutor } from './action-executor';
 import { executeCommand, type BridgeAccess } from '../react/commandHandlers';
 import { focusLanded } from '../core/composed-tree';
+import { getElementState } from '../core/element-state';
 
 const emptyBridge: BridgeAccess = {
   elements: [],
@@ -182,6 +183,46 @@ describe('the HTTP executor refuses a non-click action on an unrendered element'
     }
   );
 
+  it('HTTP: a click on a button inside a <fieldset disabled> is refused (the click refusal)', async () => {
+    const fieldset = document.createElement('fieldset');
+    fieldset.disabled = true;
+    const button = document.createElement('button');
+    button.type = 'button';
+    fieldset.appendChild(button);
+    document.body.appendChild(fieldset);
+    const clicks = vi.fn();
+    button.addEventListener('click', clicks);
+    getGlobalRegistry().registerElement('fs-button', button, { type: 'button', label: 'b' });
+    expect(button.disabled).toBe(false);
+    const res = await http('fs-button', 'click');
+    expect(res.success).toBe(false);
+    expect(res.failureDetails?.errorCode).toBe('UB-ELEM-DISABLED');
+    expect(res.failureDetails?.disabledReason).toBe('native');
+    expect(res.error).toContain('natively disabled');
+    expect(clicks).not.toHaveBeenCalled();
+  });
+
+  it('ElementState reads an input in a <fieldset disabled> as disabled, and one in its first <legend> as enabled', () => {
+    const { inside, inLegend } = disabledFieldset();
+    expect(getElementState(inside)).toMatchObject({ disabled: true, enabled: false });
+    expect(getElementState(inLegend)).toMatchObject({ disabled: false, enabled: true });
+  });
+
+  it('ElementState reads an <option> under an <optgroup disabled> as disabled', () => {
+    const select = document.createElement('select');
+    const group = document.createElement('optgroup');
+    group.disabled = true;
+    const option = document.createElement('option');
+    option.textContent = 'x';
+    group.appendChild(option);
+    const free = document.createElement('option');
+    free.textContent = 'y';
+    select.append(group, free);
+    document.body.appendChild(select);
+    expect(getElementState(option)).toMatchObject({ disabled: true, enabled: false });
+    expect(getElementState(free)).toMatchObject({ disabled: false, enabled: true });
+  });
+
   it('aria-disabled does not block a non-click action (native disabled only, as on the relay)', async () => {
     const input = document.createElement('input');
     input.setAttribute('aria-disabled', 'true');
@@ -276,6 +317,35 @@ describe('focus reads back whether it landed, on both arms', () => {
     // executor's synthetic one is the untrusted event, exactly once.
     expect(focusEvents.filter((e) => !e.isTrusted)).toHaveLength(1);
   });
+
+  /**
+   * A wrapper inside an open shadow tree whose `<slot>` takes a light-DOM
+   * input, and whose own `focus()` forwards to that input.
+   */
+  function slottedWrapper(id: string): { wrap: HTMLElement; light: HTMLInputElement } {
+    const host = document.createElement('div');
+    const light = document.createElement('input');
+    host.appendChild(light);
+    document.body.appendChild(host);
+    const wrap = document.createElement('div');
+    wrap.appendChild(document.createElement('slot'));
+    host.attachShadow({ mode: 'open' }).appendChild(wrap);
+    wrap.focus = () => light.focus();
+    getGlobalRegistry().registerElement(id, wrap, { type: 'custom', label: id });
+    return { wrap, light };
+  }
+
+  it.each(['http', 'relay'] as const)(
+    '%s: focus forwarded to a light-DOM input a slot inside the target takes counts as taken',
+    async (arm) => {
+      const { light } = slottedWrapper('slotted');
+      const res = arm === 'http' ? await http('slotted', 'focus') : await relay('slotted', 'focus');
+      expect(res.failureDetails?.context?.reason).toBeUndefined();
+      expect(res.success).toBe(true);
+      expect(document.activeElement).toBe(light);
+      expect(light.assignedSlot).not.toBeNull();
+    }
+  );
 
   /** An input inside a CLOSED shadow root, registered directly. */
   function inputInClosedShadow(id: string): { host: HTMLElement; inner: HTMLInputElement } {

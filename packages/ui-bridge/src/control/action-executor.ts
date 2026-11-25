@@ -508,7 +508,7 @@ export function getClickRefusal(
   const signals = ignorePointerEvents ? { ...blockers, pointerEventsNone: false } : blockers;
   const reasons: string[] = [];
   if (signals.ariaDisabled) reasons.push('aria-disabled=true');
-  if (signals.disabled) reasons.push('disabled property');
+  if (signals.disabled) reasons.push('natively disabled');
   if (signals.pointerEventsNone) reasons.push('pointer-events:none');
   return {
     signals: {
@@ -667,7 +667,7 @@ function assertActionable(element: HTMLElement, action: string): void {
   const blockers = readInteractionBlockers(element);
   if (blockers.disabled) {
     throw new ElementDisabledError(
-      `element is disabled (disabled property); ${action} was not dispatched`,
+      `element is disabled (natively disabled); ${action} was not dispatched`,
       {
         disabled: true,
         ariaDisabled: blockers.ariaDisabled,

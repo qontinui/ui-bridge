@@ -122,9 +122,12 @@ export interface ElementState {
    */
   enabled: boolean;
   /**
-   * The native DOM `disabled` IDL property ONLY (`<button disabled>`,
-   * `<input disabled>`, …). `false` for elements that have no such property.
-   * This is the signal that actually stops the browser dispatching events.
+   * Native disabled as the browser applies it: the element's own `disabled`
+   * property (`<button disabled>`, `<input disabled>`, …) or inherited
+   * `:disabled` (a control in a `<fieldset disabled>` outside its first
+   * `<legend>`, an `<option>` in an `<optgroup disabled>`). `false` for
+   * elements that can be neither. This is the signal that actually stops the
+   * browser dispatching events.
    */
   disabled: boolean;
   /**
@@ -1817,8 +1820,10 @@ export interface ActionFailureDetails {
   timeoutMs?: number;
   /**
    * Why the element was disabled (set on disabled-signal failure paths).
-   * `native` = the element's `disabled` DOM property/attribute is set;
-   * `aria` = `aria-disabled="true"` without a native disabled property;
+   * `native` = the element is natively disabled: its own `disabled`
+   *   property, or inherited `:disabled` (a `<fieldset disabled>` outside its
+   *   first `<legend>`, an `<optgroup disabled>`);
+   * `aria` = `aria-disabled="true"` without native disabled;
    * `pointer-none` = effective `pointer-events: none` blocks interaction.
    * Precedence when several apply: native > aria > pointer-none.
    */
