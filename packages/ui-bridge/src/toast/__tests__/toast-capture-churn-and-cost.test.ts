@@ -1007,8 +1007,13 @@ describe('ToastCapture churn budget and re-read gate', () => {
       expect(appeared()).toEqual([]);
 
       parent.style.visibility = '';
+      // An ancestor reveal leaves no record in the element's own observer, so
+      // only the poll's visibility re-check can see it — asserted before any
+      // public read, which would reconcile and announce on its own.
+      expect(appeared()).toEqual([]);
       await vi.advanceTimersByTimeAsync(500);
 
+      expect(appearedFor('bar')).toHaveLength(1);
       expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['bar', 'Connected']]);
     });
 
@@ -1161,7 +1166,12 @@ describe('ToastCapture churn budget and re-read gate', () => {
       await flushAndScan();
 
       capture.uninstall();
+      const observe = vi.spyOn(MutationObserver.prototype, 'observe');
       capture.install((d) => events.push(d));
+      await flushAndScan();
+      // The re-install's own scan parked and tracked it again: one fresh
+      // observer on the hidden element, before it is shown.
+      expect(observe.mock.calls.filter((c) => c[0] === el)).toHaveLength(1);
       el.style.display = '';
       await vi.advanceTimersByTimeAsync(500);
 

@@ -692,7 +692,7 @@ export class ToastCapture {
       // by the sighting above, so a re-keyed node mounted hidden keeps the
       // budget it inherited.
       if (!isElementVisible(el)) {
-        this.park(el, '');
+        this.park(el, '', false);
         continue;
       }
 
@@ -971,17 +971,26 @@ export class ToastCapture {
     }
   }
 
-  private park(el: Element, message: string): void {
+  /**
+   * Park `el` with `message` and track it. `visible` is a verdict the caller
+   * has just computed; passing it spares `track` a second `isElementVisible`
+   * (a `getComputedStyle`) on a first sighting.
+   */
+  private park(el: Element, message: string, visible?: boolean): void {
     this.parked.set(el, message);
-    this.track(el);
+    this.track(el, visible);
   }
 
   // ==========================================================================
   // Private: Re-read gate (one MutationObserver per tracked element)
   // ==========================================================================
 
-  /** Start tracking `el` (attach its own observer) if it is not tracked yet. */
-  private track(el: Element): void {
+  /**
+   * Start tracking `el` (attach its own observer) if it is not tracked yet.
+   * `visible` seeds the visibility verdict when the caller has just computed
+   * it; otherwise it is computed here.
+   */
+  private track(el: Element, visible?: boolean): void {
     if (this.tracked.has(el)) return;
     const observer = new MutationObserver(() => {
       this.dirty.add(el);
@@ -989,7 +998,7 @@ export class ToastCapture {
     observer.observe(el, TRACKED_OBSERVER_OPTIONS);
     this.tracked.set(el, {
       observer,
-      visible: isElementVisible(el),
+      visible: visible ?? isElementVisible(el),
       redacted: isContentRedacted(el as HTMLElement),
     });
   }
