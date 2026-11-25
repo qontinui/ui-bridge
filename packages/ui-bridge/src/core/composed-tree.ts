@@ -1,8 +1,11 @@
 /**
- * Flat-tree (composed-tree) navigation shared by the forced-hover machinery
- * (`control/forced-hover.ts`) and the action render check
- * (`core/element-state.ts` `isRenderedForAction`). Lives in `core/` so no core
- * module has to import from `control/`.
+ * Flat-tree (composed-tree) navigation and focus reads, shared by the
+ * forced-hover machinery (`control/forced-hover.ts`), the action render check
+ * (`core/element-state.ts` `isRenderedForAction`), both `focus` action arms
+ * ({@link focusAndReadBack}: the HTTP executor's `performFocus` and the
+ * relay's `focus` case) and the design inspector's focus reads
+ * (`ai/design-inspector.ts`, {@link deepestActiveElement}). Lives in `core/`
+ * so no core module has to import from `control/`.
  */
 
 /**
@@ -61,7 +64,11 @@ export function deepestActiveElement(root: Document | ShadowRoot): Element | nul
  * The focused element as each tree on `el`'s path to the document sees it:
  * the deepest active element of `el`'s OWN root (`getRootNode()`), then of its
  * host's root, and so on up to the document — `null` where a root has none.
- * Empty for a disconnected `el`.
+ * For a disconnected `el` no entry is ever focused: empty when `el` is in a
+ * disconnected light tree, and one `null` per shadow root crossed when it is
+ * in the shadow tree of a disconnected host (`[null]` for an `el` directly in
+ * such a host's shadow root), since the climb stops at the first root that is
+ * neither a document nor a shadow root.
  *
  * Reading from `el`'s own root first matters for a CLOSED shadow root: from
  * the document the descent stops at the closed host, so a focus that landed
@@ -86,39 +93,52 @@ function activeAlongRoots(el: Element): (Element | null)[] {
   }
 }
 
-/** Where focus stood, as `focusLanded` compares it, before a `focus()`. */
-export type FocusSnapshot = readonly (Element | null)[];
-
-/** Read focus before calling `el.focus()`, for {@link focusLanded}. */
-export function snapshotFocus(el: Element): FocusSnapshot {
-  return activeAlongRoots(el);
-}
-
 /**
- * Whether a `focus()` on `el` landed. Taken when, in some tree on `el`'s path
- * to the document (see `activeAlongRoots`), the focused element is `el`
- * itself, or is a flat-tree descendant of `el` (`composedAncestry`: a slotted
- * node's parent is its slot) that focus MOVED to — the `:focus-within`
- * meaning, so a wrapper that forwards focus to an inner input (in its light
- * tree, across its own open shadow root, or into a light-DOM node one of its
- * `<slot>`s takes) counts as taken.
- *
- * `before` is the {@link snapshotFocus} taken just before the `focus()` call.
- * Without it a descendant that ALREADY held focus would count: a `focus()` on
- * a non-focusable container whose child was focused does nothing, yet would
- * read as taken. A disconnected `el` reads as not taken.
- *
- * Shared by both action arms (the HTTP executor's `performFocus` and the
- * relay's `focus` case). A browser does not move focus to a node that is not
+ * Call `el.focus()` and report whether focus was taken. The ONE observation
+ * both action arms make (the HTTP executor's `performFocus` and the relay's
+ * `focus` case): a browser does not move focus to a node that is not
  * focusable, or that sits in a `display: none` subtree or is
- * `visibility: hidden` / `collapse`; without this read-back both arms reported
- * such a `focus()` as a success.
+ * `visibility: hidden` / `collapse`, and without this read-back both arms
+ * reported such a `focus()` as a success.
+ *
+ * Taken when either holds:
+ *
+ * - A `focusin` reached `el` during the call — focus arrived at `el` or at a
+ *   node inside it, even if `el`'s own focus handling then moved it on. A
+ *   focus trap or roving container hands focus straight back to the
+ *   descendant that already held it, and the read below cannot see that
+ *   (nothing MOVED), yet `el` did take focus.
+ * - Afterwards, in some tree on `el`'s path to the document (see
+ *   `activeAlongRoots`), the focused element is `el` itself, or a flat-tree
+ *   descendant of `el` (`composedAncestry`: a slotted node's parent is its
+ *   slot) that focus MOVED to — the `:focus-within` meaning, so a wrapper
+ *   that forwards focus to an inner input (in its light tree, across its own
+ *   open shadow root, or into a light-DOM node one of its `<slot>`s takes)
+ *   counts as taken. Where focus stood is read just before the call: without
+ *   it a descendant that ALREADY held focus would count, so a `focus()` that
+ *   did nothing on a container whose child was focused would read as taken.
+ *   This read is what catches an `el` that already held focus (no event
+ *   fires) and a forwarded focus whose `focusin` a descendant's handler
+ *   stopped before it reached `el`.
+ *
+ * A disconnected `el` reads as not taken.
  */
-export function focusLanded(el: Element, before?: FocusSnapshot): boolean {
+export function focusAndReadBack(el: HTMLElement): boolean {
+  const before = activeAlongRoots(el);
+  let reached = false;
+  const onFocusIn = (): void => {
+    reached = true;
+  };
+  el.addEventListener('focusin', onFocusIn);
+  try {
+    el.focus();
+  } finally {
+    el.removeEventListener('focusin', onFocusIn);
+  }
+  if (reached) return true;
   return activeAlongRoots(el).some((active, i) => {
     if (!active) return false;
     if (active === el) return true;
-    const moved = before === undefined || before[i] !== active;
-    return moved && composedAncestry(active).includes(el);
+    return before[i] !== active && composedAncestry(active).includes(el);
   });
 }

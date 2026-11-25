@@ -21,7 +21,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getGlobalRegistry, resetGlobalRegistry } from '../core/registry';
 import { DefaultActionExecutor } from './action-executor';
 import { executeCommand, type BridgeAccess } from '../react/commandHandlers';
-import { focusLanded } from '../core/composed-tree';
+import { focusAndReadBack } from '../core/composed-tree';
 import { getElementState } from '../core/element-state';
 
 const emptyBridge: BridgeAccess = {
@@ -540,6 +540,31 @@ describe('focus reads back whether it landed, on both arms', () => {
     expect(registry.getElement('declared')?.actions).toEqual(['click']);
   });
 
+  it.each(['http', 'relay'] as const)(
+    '%s: a focusable container whose focus handler hands focus back to the descendant that held it counts as taken',
+    async (arm) => {
+      // A focus trap / roving container: focus arrives at the container, and
+      // its own handler moves it straight back to the child that held it.
+      const container = document.createElement('div');
+      container.tabIndex = -1;
+      const child = document.createElement('input');
+      container.appendChild(child);
+      document.body.appendChild(container);
+      child.focus();
+      let handedBack = 0;
+      container.addEventListener('focus', () => {
+        handedBack += 1;
+        child.focus();
+      });
+      getGlobalRegistry().registerElement('trap', container, { type: 'custom', label: 't' });
+      const res = arm === 'http' ? await http('trap', 'focus') : await relay('trap', 'focus');
+      expect(handedBack).toBeGreaterThan(0);
+      expect(res.failureDetails?.context?.reason).toBeUndefined();
+      expect(res.success).toBe(true);
+      expect(document.activeElement).toBe(child);
+    }
+  );
+
   /** An input inside a CLOSED shadow root, registered directly. */
   function inputInClosedShadow(id: string): { host: HTMLElement; inner: HTMLInputElement } {
     const host = document.createElement('div');
@@ -565,19 +590,19 @@ describe('focus reads back whether it landed, on both arms', () => {
   );
 });
 
-describe('focusLanded', () => {
-  it('descends into an open shadow root and counts a focused inner node for its host', () => {
+describe('focusAndReadBack', () => {
+  it('counts a focus forwarded into an open shadow root, and not one that went nowhere', () => {
     const host = document.createElement('div');
     document.body.appendChild(host);
-    const root = host.attachShadow({ mode: 'open' });
     const inner = document.createElement('input');
-    root.appendChild(inner);
-    inner.focus();
-    expect(focusLanded(host)).toBe(true);
-    expect(focusLanded(inner)).toBe(true);
+    host.attachShadow({ mode: 'open' }).appendChild(inner);
+    host.focus = () => inner.focus();
+    expect(focusAndReadBack(host)).toBe(true);
+    expect(focusAndReadBack(inner)).toBe(true);
     const other = document.createElement('input');
+    other.focus = () => {};
     document.body.appendChild(other);
-    expect(focusLanded(other)).toBe(false);
+    expect(focusAndReadBack(other)).toBe(false);
   });
 
   it('reads a node inside a CLOSED shadow root from its own root', () => {
@@ -586,11 +611,10 @@ describe('focusLanded', () => {
     const root = host.attachShadow({ mode: 'closed' });
     const inner = document.createElement('input');
     const sibling = document.createElement('input');
+    sibling.focus = () => {};
     root.append(inner, sibling);
-    inner.focus();
-    expect(focusLanded(inner)).toBe(true);
-    expect(focusLanded(host)).toBe(true);
-    expect(focusLanded(sibling)).toBe(false);
+    expect(focusAndReadBack(inner)).toBe(true);
+    expect(focusAndReadBack(sibling)).toBe(false);
   });
 
   it('reads a node in another realm (an iframe) across its open shadow root', () => {
@@ -603,12 +627,31 @@ describe('focusLanded', () => {
     wrapper.attachShadow({ mode: 'open' }).appendChild(inner);
     // The wrapper forwards focus into its own open shadow root.
     wrapper.focus = () => inner.focus();
-    wrapper.focus();
-    expect(focusLanded(wrapper)).toBe(true);
-    expect(focusLanded(inner)).toBe(true);
+    expect(focusAndReadBack(wrapper)).toBe(true);
+  });
+
+  it('an element that already holds focus reads as taken, though no focusin fires', () => {
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    input.focus();
+    const focusins: Event[] = [];
+    input.addEventListener('focusin', (e) => focusins.push(e));
+    expect(focusAndReadBack(input)).toBe(true);
+    expect(focusins).toHaveLength(0);
+  });
+
+  it('a forwarded focus whose focusin never reaches the target is still read back as taken', () => {
+    const wrapper = document.createElement('div');
+    wrapper.tabIndex = -1;
+    const inner = document.createElement('input');
+    inner.addEventListener('focusin', (e) => e.stopPropagation());
+    wrapper.appendChild(inner);
+    document.body.appendChild(wrapper);
+    wrapper.focus = () => inner.focus();
+    expect(focusAndReadBack(wrapper)).toBe(true);
   });
 
   it('a disconnected node never reads as focused', () => {
-    expect(focusLanded(document.createElement('input'))).toBe(false);
+    expect(focusAndReadBack(document.createElement('input'))).toBe(false);
   });
 });

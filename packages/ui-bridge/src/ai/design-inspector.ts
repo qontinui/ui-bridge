@@ -38,6 +38,7 @@ import {
   type ReportedTokens,
 } from './design-tokens';
 import { styleRules, type StyleBlock, type WalkedRule } from './stylesheet-walk';
+import { deepestActiveElement } from '../core/composed-tree';
 import { contrastOfColors } from '../specs/color-utils';
 import {
   graphFor,
@@ -1034,8 +1035,7 @@ async function applyInteractionState(
 function applyFocus(el: HTMLElement): () => Promise<void> {
   const doc = el.ownerDocument;
   const tree = focusedShadowTreeOf(el);
-  const readFocus = (): Element | null =>
-    tree ? deepestBelow(tree.activeElement ?? null) : deepestActiveElement(doc);
+  const readFocus = (): Element | null => deepestActiveElement(tree ?? doc);
   const previous = readFocus();
   const ancestors = recordAncestorFocus(doc);
   // `:focus-visible` does not depend on scroll position, and nothing scrolls
@@ -1107,7 +1107,7 @@ function recordAncestorFocus(doc: Document): AncestorFocus[] {
 function ancestorFocusOf(doc: Document, frame: Element): Element | null {
   if (isActiveInTreeChain(frame)) return frame;
   const tree = focusedShadowTreeOf(frame);
-  return tree ? deepestBelow(tree.activeElement ?? null) : deepestActiveElement(doc);
+  return deepestActiveElement(tree ?? doc);
 }
 
 /**
@@ -1155,30 +1155,13 @@ function isFocusable(el: Element): boolean {
  * readable. `null` when no shadow root on the path holds the focus (it is in
  * the document's light tree, or in a tree off `el`'s path).
  */
-function focusedShadowTreeOf(el: Element): FocusRoot | null {
+function focusedShadowTreeOf(el: Element): ShadowRoot | null {
   let tree = el.getRootNode() as FocusRoot;
   while (tree.nodeType === DOCUMENT_FRAGMENT_NODE && tree.host) {
-    if (tree.activeElement) return tree;
+    if (tree.activeElement) return tree as ShadowRoot;
     tree = tree.host.getRootNode() as FocusRoot;
   }
   return null;
-}
-
-/** `active`, followed down through each OPEN shadow root's `activeElement`. */
-function deepestBelow(active: Element | null): Element | null {
-  let current = active;
-  while (current?.shadowRoot?.activeElement) current = current.shadowRoot.activeElement;
-  return current;
-}
-
-/**
- * The element that really has focus in `doc`: its `activeElement`, followed
- * down through each OPEN shadow root's `activeElement` (the document's own
- * `activeElement` is retargeted to the outermost shadow host). A closed shadow
- * root cannot be entered from outside, so the walk stops at its host.
- */
-function deepestActiveElement(doc: Document): Element | null {
-  return deepestBelow(doc.activeElement);
 }
 
 /** The `activeElement`/`host` view of a tree root (document or shadow root), realm-independent. */
