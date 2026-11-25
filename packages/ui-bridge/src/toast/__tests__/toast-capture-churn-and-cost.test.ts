@@ -16,12 +16,21 @@
  *    inputs outside the subtree — visibility and the ancestor redaction
  *    boundary — flipped. `cloneNode` on the element counts the re-reads.
  * C: a visible element with no text is parked with `''`, so it is cloned only
- *    when its own subtree mutates, and an in-place fill reaches the poll.
+ *    when its own subtree mutates, and an in-place fill reaches the poll. A
+ *    hidden one is parked with `''` too (C5; section H).
+ * H: a toast element the scan first sees hidden (own `opacity` / `display` /
+ *    `visibility`, or an ancestor's `visibility`) is parked with `''` and
+ *    tracked by its own observer, so a reveal by style alone — which no
+ *    `childList` record announces — is captured by the next poll or read. It
+ *    is not cloned while hidden; a re-keyed replacement mounted hidden keeps
+ *    the re-key budget it inherited at its first sighting.
  *
  * Plans: 2026-11-23-ui-bridge-toast-capture-churn-and-reread-cost (Phase 1);
  * 2026-11-24-ui-bridge-toast-capture-rekey-churn-and-empty-element-parking
  * (Phase 1: A9a, A9b, A10-A15, C1-C5; A9c; review round 1: A9d, A16, A17,
- * C4 and C5 strengthened; review round 2: A18-A23).
+ * C4 and C5 strengthened; review round 2: A18-A23);
+ * 2026-11-25-ui-bridge-toast-capture-tracks-hidden-matches-until-shown
+ * (Phase 1: H1-H11, H3b; C5 amended).
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -875,7 +884,8 @@ describe('ToastCapture churn budget and re-read gate', () => {
       expect(clone).toHaveBeenCalledTimes(0);
     });
 
-    // C5
+    // C5 (amended by plan 2026-11-25-…-tracks-hidden-matches-until-shown: a
+    // hidden element is parked and tracked, not left unobserved)
     it('a hidden empty element is not announced; shown and filled in one tick, it is', async () => {
       install({ pollInterval: 500 });
       const observe = vi.spyOn(MutationObserver.prototype, 'observe');
@@ -884,8 +894,15 @@ describe('ToastCapture churn budget and re-read gate', () => {
       await flushAndScan();
       await tenUnrelatedMutations();
       expect(events.filter((e) => e.action === 'appeared')).toEqual([]);
-      // Hidden, it is not tracked: no observer was attached to it.
-      expect(observe.mock.calls.filter((c) => c[0] === el)).toHaveLength(0);
+      // Hidden, it is parked with '' and tracked by exactly one observer of its
+      // own (so a style-only reveal reaches the poll — section H), and the
+      // unrelated mutations never clone it.
+      expect(observe.mock.calls.filter((c) => c[0] === el)).toHaveLength(1);
+      const clone = vi.spyOn(el, 'cloneNode');
+      await tenUnrelatedMutations();
+      expect(clone).toHaveBeenCalledTimes(0);
+      expect(events.filter((e) => e.action === 'appeared')).toEqual([]);
+      clone.mockRestore();
 
       el.style.display = '';
       el.appendChild(document.createTextNode('Ready'));
@@ -894,6 +911,243 @@ describe('ToastCapture churn budget and re-read gate', () => {
       expect(
         events.filter((e) => e.action === 'appeared').map((e) => [e.toast.id, e.toast.message])
       ).toEqual([['slot', 'Ready']]);
+    });
+  });
+
+  // ==========================================================================
+  // H — a toast element first seen hidden (follow-up 5caa1bf5)
+  // ==========================================================================
+
+  describe('H: hidden toast element', () => {
+    /**
+     * Append a `role="status"` element carrying `data-testid` and one text
+     * node, with `style` applied BEFORE it is attached (mounted hidden).
+     */
+    function addHiddenStatus(
+      testid: string,
+      text: string,
+      style: Partial<Pick<CSSStyleDeclaration, 'opacity' | 'display' | 'visibility'>>,
+      parent: Element = document.body
+    ): HTMLElement {
+      const el = document.createElement('div');
+      el.setAttribute('role', 'status');
+      el.setAttribute('data-testid', testid);
+      el.appendChild(document.createTextNode(text));
+      Object.assign(el.style, style);
+      parent.appendChild(el);
+      return el;
+    }
+
+    /** `rekey`, but the new `timer` node mounts at `opacity: 0`. */
+    function rekeyHidden(prev: Element, text: string): HTMLElement {
+      prev.remove();
+      return addHiddenStatus('timer', text, { opacity: '0' });
+    }
+
+    /**
+     * A `timer` ticker whose replacements mount hidden: `0:00` visible and
+     * captured by the scan, then `0:01` … `0:<ticks>` each on a NEW node
+     * mounted at opacity 0 and faded in by style, one scan and one poll per
+     * tick. Returns the last node.
+     */
+    async function hiddenRekeyTicker(ticks: number): Promise<HTMLElement> {
+      let node = addStatus('timer', '0:00');
+      await flushAndScan();
+      for (let i = 1; i <= ticks; i++) {
+        node = rekeyHidden(node, `0:${String(i).padStart(2, '0')}`);
+        await flushAndScan();
+        node.style.opacity = '1';
+        await vi.advanceTimersByTimeAsync(450);
+      }
+      return node;
+    }
+
+    function appeared(): ToastEventData[] {
+      return events.filter((e) => e.action === 'appeared');
+    }
+
+    // H1
+    it('a toast mounted at opacity 0 and faded in by style alone is announced by the poll', async () => {
+      install({ pollInterval: 500 });
+      const el = addHiddenStatus('saved', 'Saved', { opacity: '0' });
+      await flushAndScan();
+      expect(appeared()).toEqual([]);
+
+      el.style.opacity = '1';
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['saved', 'Saved']]);
+      expect(appearedFor('saved')).toHaveLength(1);
+    });
+
+    // H2
+    it('a public read sees a style-only reveal with no poll', async () => {
+      install({ pollInterval: 500 });
+      const el = addHiddenStatus('saved', 'Saved', { display: 'none' });
+      await flushAndScan();
+      expect(appeared()).toEqual([]);
+
+      el.style.display = '';
+
+      expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['saved', 'Saved']]);
+    });
+
+    // H3
+    it('a toast under an ancestor hidden by visibility is announced when the ancestor is shown by style', async () => {
+      install({ pollInterval: 500 });
+      const parent = document.createElement('div');
+      parent.style.visibility = 'hidden';
+      document.body.appendChild(parent);
+      addStatus('bar', 'Connected', parent);
+      await flushAndScan();
+      expect(appeared()).toEqual([]);
+
+      parent.style.visibility = '';
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['bar', 'Connected']]);
+    });
+
+    // H3b
+    it('a toast mounted with visibility hidden and shown by style alone is announced by the poll', async () => {
+      install({ pollInterval: 500 });
+      const el = addHiddenStatus('bar', 'Connected', { visibility: 'hidden' });
+      await flushAndScan();
+      expect(appeared()).toEqual([]);
+
+      el.style.visibility = '';
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['bar', 'Connected']]);
+    });
+
+    // H4
+    it('a re-keyed ticker whose replacements mount hidden is held to 4 announcements', async () => {
+      install({ pollInterval: 500 });
+      await hiddenRekeyTicker(20);
+
+      expect(appearedFor('timer')).toHaveLength(4);
+    });
+
+    // H5
+    it('a hidden-mounted re-keyed ticker that stops announces its settled text once', async () => {
+      install({ pollInterval: 500 });
+      await hiddenRekeyTicker(20);
+      expect(appearedFor('timer')).toHaveLength(4);
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(appearedFor('timer')).toHaveLength(5);
+      expect(appearedFor('timer').at(-1)?.toast.message).toBe('0:20');
+      expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['timer', '0:20']]);
+    });
+
+    // H6
+    it('a hidden toast with text costs one observer and no clone across scans, polls and reads', async () => {
+      install({ pollInterval: 500 });
+      const observe = vi.spyOn(MutationObserver.prototype, 'observe');
+      const el = addHiddenStatus('saved', 'Saved', { display: 'none' });
+      await flushAndScan();
+      const clone = vi.spyOn(el, 'cloneNode');
+
+      for (let i = 0; i < 10; i++) {
+        document.body.appendChild(document.createElement('span'));
+        await flushAndScan();
+      }
+      await vi.advanceTimersByTimeAsync(5_000);
+      for (let i = 0; i < 10; i++) capture.getActive();
+
+      expect(observe.mock.calls.filter((c) => c[0] === el)).toHaveLength(1);
+      expect(clone).toHaveBeenCalledTimes(0);
+      expect(appeared()).toEqual([]);
+    });
+
+    // H7
+    it('a hidden toast whose text ticks is not cloned; shown, it is cloned once', async () => {
+      install({ pollInterval: 500 });
+      const el = addHiddenStatus('timer', '0:00', { display: 'none' });
+      await flushAndScan();
+      const clone = vi.spyOn(el, 'cloneNode');
+
+      await tick(el, 1, 6);
+      expect(clone).toHaveBeenCalledTimes(0);
+      expect(appeared()).toEqual([]);
+
+      el.style.display = '';
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(appearedFor('timer').map((e) => e.toast.message)).toEqual(['0:06']);
+      expect(clone).toHaveBeenCalledTimes(1);
+    });
+
+    // H8
+    it('a hidden toast that is removed while hidden is untracked', async () => {
+      install({ pollInterval: 500 });
+      const observe = vi.spyOn(MutationObserver.prototype, 'observe');
+      const el = addHiddenStatus('saved', 'Saved', { display: 'none' });
+      await flushAndScan();
+      // The observer `track` attached to THIS element.
+      const calls = observe.mock.calls.flatMap((c, i) => (c[0] === el ? [i] : []));
+      expect(calls).toHaveLength(1);
+      const own = observe.mock.contexts[calls[0]];
+
+      const disconnect = vi.spyOn(MutationObserver.prototype, 'disconnect');
+      el.remove();
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(disconnect.mock.contexts).toContain(own);
+    });
+
+    // H9
+    it('a hidden toast shown, re-hidden and shown again is announced twice', async () => {
+      install({ pollInterval: 500 });
+      const el = addHiddenStatus('saved', 'Saved', { display: 'none' });
+      await flushAndScan();
+
+      el.style.display = '';
+      await vi.advanceTimersByTimeAsync(500);
+      expect(appearedFor('saved')).toHaveLength(1);
+
+      el.style.display = 'none';
+      await vi.advanceTimersByTimeAsync(500);
+      expect(events.filter((e) => e.action === 'dismissed' && e.toast.id === 'saved')).toHaveLength(
+        1
+      );
+
+      el.style.display = '';
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(appearedFor('saved').map((e) => e.toast.message)).toEqual(['Saved', 'Saved']);
+    });
+
+    // H10
+    it('a hidden toast inside a redaction boundary, shown by style, reports only the sentinel', async () => {
+      install({ pollInterval: 500 });
+      const parent = document.createElement('div');
+      parent.setAttribute('data-bridge-redact', 'true');
+      document.body.appendChild(parent);
+      const el = addHiddenStatus('otp', 'Code 123456', { display: 'none' }, parent);
+      await flushAndScan();
+
+      el.style.display = '';
+
+      expect(capture.getActive().map((t) => t.message)).toEqual([REDACTED_VALUE]);
+      expect(events.some((e) => e.toast.message.includes('123456'))).toBe(false);
+    });
+
+    // H11
+    it('a hidden toast is parked again by a re-install of the same instance', async () => {
+      install({ pollInterval: 500 });
+      const el = addHiddenStatus('saved', 'Saved', { display: 'none' });
+      await flushAndScan();
+
+      capture.uninstall();
+      capture.install((d) => events.push(d));
+      el.style.display = '';
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(appearedFor('saved').map((e) => e.toast.message)).toEqual(['Saved']);
     });
   });
 
