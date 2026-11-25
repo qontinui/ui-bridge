@@ -412,8 +412,12 @@ function stableKey(el: Element): string {
 /**
  * A per-pass cache for `isElementVisible`'s ancestor walk: each node maps to
  * its effective opacity — its own opacity times every flat-tree ancestor's —
- * or `0` when it or a node above it hides its subtree (`display: none`, or an
- * unslotted light child of an open shadow host). Sound only while no style can
+ * or `0` when it or a node above it hides its subtree: a computed
+ * `display: none`, an own computed opacity below 0.1 (on a box that is not
+ * `display: contents`), or an unslotted light child of an open shadow host.
+ * Only those computed verdicts are recorded — the same ones `subtreeFactor`
+ * derives — so a nested match's verdict never depends on visit order. Sound
+ * only while no style can
  * change, which is why `runPass` creates one per pass and drops it after.
  */
 type VisibilityMemo = Map<Element, number>;
@@ -491,17 +495,21 @@ function isElementVisible(el: Element, memo?: VisibilityMemo | null): boolean {
   // (no box, so its opacity paints nothing), which only the computed style
   // can tell; so an inline one is decided there when computed style exists.
   let inlineFaded = false;
-  // A `display: none` or an own opacity below 0.1 hides every descendant too
-  // (an effective opacity only shrinks down the tree), so `el` is recorded as
-  // `0` for a nested match whose ancestor it is, sparing that match a second
-  // read of `el`'s style. `visibility: hidden` is NOT recorded: a descendant
-  // can set `visibility: visible` and show through.
+  // A computed `display: none` or own computed opacity below 0.1 hides every
+  // descendant too (an effective opacity only shrinks down the tree), so `el`
+  // is recorded as `0` for a nested match whose ancestor it is, sparing that
+  // match a second read of `el`'s style. Only those two COMPUTED exits record:
+  // an inline-only verdict (which `!important` can override) and a throwing
+  // `getComputedStyle` are not what `subtreeFactor` would derive for `el`, so
+  // recording them would make a nested match's verdict depend on visit order.
+  // `visibility: hidden` is not recorded either: a descendant can set
+  // `visibility: visible` and show through.
   const hidesSubtree = (): false => {
     memo?.set(el, 0);
     return false;
   };
   if (htmlEl.style) {
-    if (htmlEl.style.display === 'none') return hidesSubtree();
+    if (htmlEl.style.display === 'none') return false;
     if (htmlEl.style.visibility === 'hidden') return false;
     const opacity = parseFloat(htmlEl.style.opacity);
     inlineFaded = !isNaN(opacity) && opacity < 0.1;
@@ -514,14 +522,14 @@ function isElementVisible(el: Element, memo?: VisibilityMemo | null): boolean {
     if (computed.display === 'none') return hidesSubtree();
     if (computed.visibility === 'hidden') return false;
     if (computed.display !== 'contents') {
-      if (inlineFaded) return hidesSubtree();
       const computedOpacity = parseFloat(computed.opacity);
       if (!isNaN(computedOpacity) && computedOpacity < 0.1) return hidesSubtree();
+      if (inlineFaded) return false;
       ownFactor = opacityFactor(computed.opacity);
     }
   } catch {
     // getComputedStyle may throw in some environments
-    if (inlineFaded) return hidesSubtree();
+    if (inlineFaded) return false;
   }
   if (el.parentElement?.shadowRoot && !el.assignedSlot) {
     memo?.set(el, 0);
@@ -866,7 +874,11 @@ export class ToastCapture {
    * Elements with neither get a fresh `toast-<n>` per announcement.
    *
    * Every caller asks `admitCapture` first, so the announcement budget has one
-   * owner. The element's own observer is attached here if it has none, seeded
+   * owner. Every current caller's `visible` is `true` (it is reached only with
+   * a non-empty message read from an element found visible in this pass); the
+   * parameter keeps that verdict explicit at each call site.
+   *
+   * The element's own observer is attached here if it has none, seeded
    * with `visible`, the verdict the caller computed for `el` in this pass (the
    * scan's `isElementVisible`, a reconcile's `trackedVisible`), so a second
    * `getComputedStyle` does not repeat it.
@@ -984,7 +996,8 @@ export class ToastCapture {
    * records `now` and admits the capture. Otherwise — or while the budget is
    * already suppressed — it withholds it: `el` is suppressed and parked with
    * the withheld text, its tracking seeded with `visible` (the caller's
-   * verdict for `el` in this pass). Callers pass an element with no entry in `active` (the
+   * verdict for `el` in this pass; `true` for every current caller, which
+   * holds a non-empty message read from a visible element). Callers pass an element with no entry in `active` (the
    * active reconcile dismisses the old entry before asking; the scan skips
    * active elements; a parked element has none), so no withheld word of `el`
    * is left in `active`; a gone predecessor's entry is the next reconcile's
