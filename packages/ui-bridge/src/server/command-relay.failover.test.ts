@@ -182,6 +182,11 @@ async function readElement(relay: CommandRelay, context: { callerUserId: string 
   return answer;
 }
 
+/** The diagnostics options that scope a read to `ownerCheck`'s owner, if any. */
+function scoped(ownerCheck: { userId: string } | undefined) {
+  return ownerCheck ? { ownerCheck } : undefined;
+}
+
 /** Send a `click`, settling every timer it arms. Its outcome comes back unawaited, in a box. */
 async function sendClick(relay: CommandRelay, ownerCheck: { userId: string } | undefined) {
   const outcome = relay.queueCommand('click', { id: ID }, ownerCheck ? { ownerCheck } : undefined);
@@ -190,7 +195,7 @@ async function sendClick(relay: CommandRelay, ownerCheck: { userId: string } | u
   return { outcome };
 }
 
-describe.each(ARMS)('the failover, $arm', ({ arm, context, ownerCheck }) => {
+describe.each(ARMS)('the failover, $arm', ({ context, ownerCheck }) => {
   it('1 · one tab reports a not-found: delivered once, and the answer is UB-ELEM-NOT-FOUND', async () => {
     const relay = freshRelay();
     const { deliveries } = openTabs(relay, [['tab-a', 'fail']]);
@@ -338,15 +343,12 @@ describe.each(ARMS)('the failover, $arm', ({ arm, context, ownerCheck }) => {
         '(for example 429), lost, or posted to another instance.',
     });
 
-    if (arm === 'unscoped') {
-      // A was demoted, and its pre-demotion heartbeat does not undo that: the
-      // NEXT click goes to B. (The owner-scoped arm ranks by liveness and keeps
-      // no demotion; a frozen tab drops in its ranking once its heartbeats
-      // stop.)
-      const next = await sendClick(relay, ownerCheck);
-      expect(deliveries).toEqual(['tab-a click', 'tab-b click']);
-      await expect(next.outcome).resolves.toEqual({ success: true, answeredBy: 'tab-b' });
-    }
+    // A was demoted, and its pre-demotion heartbeat does not undo that: the
+    // reported primary and the NEXT click both go to B, on either arm.
+    expect(relay.getTransportDiagnostics(scoped(ownerCheck)).primaryTabId).toBe('tab-b');
+    const next = await sendClick(relay, ownerCheck);
+    expect(deliveries).toEqual(['tab-a click', 'tab-b click']);
+    await expect(next.outcome).resolves.toEqual({ success: true, answeredBy: 'tab-b' });
   });
 });
 
@@ -483,6 +485,73 @@ describe('the owner-scoped failover never crosses owners', () => {
       await expect(outcome).rejects.toMatchObject(rejection);
     }
   );
+});
+
+describe('the owner-scoped demotion', () => {
+  const owner = { userId: 'u1' };
+
+  it('9 · a sole owned tab that timed out is still delivered the next command', async () => {
+    const relay = freshRelay();
+    const { deliveries, tab } = openTabs(relay, [['tab-a', 'silent']]);
+
+    const first = await sendClick(relay, owner);
+    await expect(first.outcome).rejects.toMatchObject({
+      name: 'NoLiveAnswer',
+      reason: 'unanswered',
+    });
+    expect(relay.getTransportDiagnostics({ ownerCheck: owner }).demotedTabs).toEqual(['tab-a']);
+
+    // Demoted but never dropped: ranked last of one, so still the target.
+    tab['tab-a']!.behavior = 'answer';
+    const second = await sendClick(relay, owner);
+    expect(deliveries).toEqual(['tab-a click', 'tab-a click']);
+    await expect(second.outcome).resolves.toEqual({ success: true, answeredBy: 'tab-a' });
+  });
+
+  it('10 · is undone only by a heartbeat stamped after the demotion', async () => {
+    const relay = freshRelay();
+    const { deliveries, tab } = openTabs(relay, [
+      ['tab-b', 'answer'],
+      ['tab-a', 'silent'],
+    ]);
+    await sendClick(relay, owner);
+    expect(relay.getTransportDiagnostics({ ownerCheck: owner })).toMatchObject({
+      primaryTabId: 'tab-b',
+      demotedTabs: ['tab-a'],
+    });
+
+    // A beats after its demotion: re-promoted, and the freshest tab again.
+    tab['tab-a']!.behavior = 'answer';
+    at(20_003);
+    relay.receiveHeartbeat('tab-a');
+    const after = relay.getTransportDiagnostics({ ownerCheck: owner });
+    expect(after.demotedTabs).toEqual([]);
+    expect(after.primaryTabId).toBe('tab-a');
+    const next = await sendClick(relay, owner);
+    expect(deliveries).toEqual(['tab-a click', 'tab-a click']);
+    await expect(next.outcome).resolves.toEqual({ success: true, answeredBy: 'tab-a' });
+  });
+
+  it('11 · a command evicted under load demotes nothing and fails over nowhere', async () => {
+    const relay = freshRelay({ maxPendingCommands: 1 });
+    const { deliveries } = openTabs(relay, [
+      ['tab-b', 'answer'],
+      ['tab-a', 'silent'],
+    ]);
+
+    const first = relay.queueCommand('getElement', { id: ID }, { ownerCheck: owner });
+    first.catch(() => undefined);
+    const second = relay.queueCommand('getElement', { id: ID }, { ownerCheck: owner });
+    second.catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(0);
+
+    await expect(first).rejects.toMatchObject({ evicted: true });
+    expect(deliveries).toEqual(['tab-a getElement', 'tab-a getElement']);
+    expect(relay.getTransportDiagnostics({ ownerCheck: owner })).toMatchObject({
+      demotedTabs: [],
+      primaryTabId: 'tab-a',
+    });
+  });
 });
 
 describe('a command evicted under load', () => {

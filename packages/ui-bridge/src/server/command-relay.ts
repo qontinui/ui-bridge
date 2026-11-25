@@ -1103,9 +1103,7 @@ export class CommandRelay {
     const now = Date.now();
     for (const tabId of Array.from(this.demotedTabs)) {
       const lastBeat = this.tabHeartbeats.get(tabId);
-      const demotedAt = this.tabDemotedAt.get(tabId);
-      const beatSinceDemotion = demotedAt === undefined || (lastBeat ?? 0) > demotedAt;
-      if (lastBeat && now - lastBeat < this.tabActiveWindowMs && beatSinceDemotion) {
+      if (lastBeat && now - lastBeat < this.tabActiveWindowMs && !this.stillDemoted(tabId)) {
         if (this.tabListeners.has(tabId) || this.wsClients.has(tabId)) {
           this.forgetDemotion(tabId);
           console.log(`[ui-bridge] Re-promoted tab with fresh heartbeat: ${tabId}`);
@@ -1181,7 +1179,26 @@ export class CommandRelay {
    */
   private rankOwnedTabs(userId: string): string[] {
     const owned = this.listOwnedTabs(userId);
-    return owned.sort(compareByLiveness(this.freshness(owned)));
+    const byLiveness = compareByLiveness(this.freshness(owned));
+    // A still-demoted tab gave no live answer and has not heartbeated since:
+    // it ranks after every other tab, but is never dropped, so a sole owned
+    // tab stays reachable. Ranking does not mutate (re-promotion is
+    // `getPrimaryTabId`'s).
+    return owned.sort(
+      (a, b) => Number(this.stillDemoted(a)) - Number(this.stillDemoted(b)) || byLiveness(a, b)
+    );
+  }
+
+  /**
+   * True while `tabId` is demoted and has not heartbeated since it was
+   * demoted. A heartbeat sent before the demotion proves nothing the demotion
+   * did not already know, so it does not undo it (D4). Pure: it never
+   * un-demotes.
+   */
+  private stillDemoted(tabId: string): boolean {
+    if (!this.demotedTabs.has(tabId)) return false;
+    const demotedAt = this.tabDemotedAt.get(tabId);
+    return demotedAt !== undefined && (this.tabHeartbeats.get(tabId) ?? 0) <= demotedAt;
   }
 
   private setPrimaryTab(tabId: string): void {
@@ -1549,6 +1566,12 @@ export class CommandRelay {
       }).catch((firstError: Error) => {
         // A command settled by `destroy()` fails over to nothing.
         this.throwIfDestroyedSince(epoch);
+        // An owned tab that gave no live answer is demoted, so the NEXT owner-
+        // scoped command ranks it last until it heartbeats again (D4). An
+        // eviction is queue overload, not that tab's silence.
+        if (isNoLiveAnswer(firstError) && !isEvictedNoLiveAnswer(firstError)) {
+          this.demotePrimaryTab(ownedPrimary);
+        }
         // A tab that answered (a failure included) is the answer, and a write
         // that timed out may have run: neither is re-sent (D3).
         if (!mayFailOver(action, firstError)) throw firstError;
