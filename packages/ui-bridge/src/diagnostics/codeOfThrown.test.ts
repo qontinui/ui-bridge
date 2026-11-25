@@ -58,7 +58,15 @@ describe('codeOfThrown', () => {
     }
   );
 
-  it('a TypeError that is not a fetch failure is not a network error', () => {
-    expect(codeOfThrown(new TypeError('x is not a function'))).toBe('UB-UNKNOWN-ERROR');
+  it.each([
+    'x is not a function',
+    "Cannot read properties of undefined (reading 'prefetch')",
+    'networking is off',
+  ])('a TypeError that is not a fetch failure (%s) is not a network error', (message) => {
+    expect(codeOfThrown(new TypeError(message))).toBe('UB-UNKNOWN-ERROR');
+  });
+
+  it('a non-string code (a DOMException numeric code) is UB-UNKNOWN-ERROR', () => {
+    expect(codeOfThrown(new DOMException('gone', 'NotFoundError'))).toBe('UB-UNKNOWN-ERROR');
   });
 });

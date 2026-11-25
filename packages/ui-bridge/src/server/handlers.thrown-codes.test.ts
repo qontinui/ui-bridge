@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import { createHandlers, type RegistryLike } from './handlers';
 import { UIBridgeRegistry } from '../core/registry';
+import { DefaultActionExecutor } from '../control/action-executor';
 
 async function codeWhenExecutorThrows(thrown: unknown): Promise<string | undefined> {
   const registry = new UIBridgeRegistry();
@@ -42,5 +43,18 @@ describe('executeElementAction thrown-error arm', () => {
 
   it('a thrown fetch failure stays UB-NET-ERROR', async () => {
     expect(await codeWhenExecutorThrows(new TypeError('Failed to fetch'))).toBe('UB-NET-ERROR');
+  });
+});
+
+describe('executeElementAction with the real executor', () => {
+  it('an unregistered element answers UB-ELEM-NOT-FOUND (a returned failure, not a thrown message)', async () => {
+    const registry = new UIBridgeRegistry();
+    const handlers = createHandlers(
+      registry as unknown as RegistryLike,
+      new DefaultActionExecutor(registry) as never
+    );
+    const result = await handlers.executeElementAction('does-not-exist', { action: 'click' });
+    expect(result.success).toBe(false);
+    expect(result.code).toBe('UB-ELEM-NOT-FOUND');
   });
 });
