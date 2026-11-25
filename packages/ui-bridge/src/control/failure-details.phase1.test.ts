@@ -223,10 +223,13 @@ describe('Phase 1 — WorkflowStepResult.failureDetails', () => {
     });
     try {
       const run = await bareEngine.run('wf-bare-fail');
+      expect(run.status).toBe('failed');
       const [step] = run.steps;
       expect(step.success).toBe(false);
       expect(step.error).toBe('nope');
+      expect(run.error).toBe(step.error);
       expectValidFailureDetails(step.failureDetails);
+      expect(step.failureDetails?.errorCode).toBe('UB-ACTION-FAILED');
     } finally {
       input.remove();
     }
