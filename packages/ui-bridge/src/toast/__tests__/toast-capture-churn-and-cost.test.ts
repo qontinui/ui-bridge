@@ -42,7 +42,7 @@
  * (Phase 1: H1-H11, H3b; C5 amended);
  * 2026-11-25-ui-bridge-toast-capture-sees-ancestor-display-and-opacity
  * (Phase 1: V1-V9, V1b; review round 1: V10, V11; review round 2: V12;
- * review round 3: V12b, V13).
+ * review round 3: V12b, V13; review round 4: V14, V15a (x2), V15b).
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -1564,6 +1564,81 @@ describe('ToastCapture churn budget and re-read gate', () => {
       expect(appeared()).toEqual([]);
       expect(readsOfOuter).toBe(1);
       expect(readsOfInner).toBe(1);
+    });
+
+    // V14
+    it('an outer match decided by its inline opacity alone records nothing for an inner match', async () => {
+      install({ pollInterval: 500 });
+      await flushAndScan();
+      const outer = addStatus('outer', 'Outer');
+      outer.style.opacity = '0';
+      const inner = addStatus('inner', 'Inner', outer);
+      // getComputedStyle throws for the outer match only: its own verdict
+      // falls back to the inline opacity (hidden), while the inner match's
+      // walk treats a throwing node as not hiding (subtreeFactor). The inner
+      // verdict must be that walk's, not an inline-only 0 left in the memo by
+      // the outer match visited first.
+      const real = window.getComputedStyle.bind(window);
+      vi.spyOn(globalThis, 'getComputedStyle').mockImplementation((node, pseudo) => {
+        if (node === outer) throw new Error('getComputedStyle unavailable');
+        return real(node, pseudo);
+      });
+      expect(inner.parentElement).toBe(outer);
+      await flushAndScan();
+
+      expect(appearedFor('outer')).toEqual([]);
+      expect(appearedFor('inner').map((e) => e.toast.message)).toEqual(['Inner']);
+    });
+
+    // V15a
+    it('a match inside a visibility hidden match that sets visibility visible is announced', async () => {
+      install({ pollInterval: 500 });
+      const outer = addStatus('outer', 'Outer');
+      outer.style.visibility = 'hidden';
+      const inner = addStatus('inner', 'Inner', outer);
+      inner.style.visibility = 'visible';
+      await flushAndScan();
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(appearedFor('outer')).toEqual([]);
+      expect(appearedFor('inner').map((e) => e.toast.message)).toEqual(['Inner']);
+    });
+
+    // V15a (stylesheet)
+    it('a match inside a match hidden by a stylesheet visibility rule that sets visibility visible is announced', async () => {
+      // Hidden by the cascade rather than inline style, so the outer match's
+      // verdict comes from its COMPUTED visibility exit.
+      const sheet = document.createElement('style');
+      sheet.textContent = '.vh { visibility: hidden; }';
+      document.head.appendChild(sheet);
+      try {
+        install({ pollInterval: 500 });
+        const outer = addStatus('outer', 'Outer');
+        outer.className = 'vh';
+        const inner = addStatus('inner', 'Inner', outer);
+        inner.style.visibility = 'visible';
+        expect(getComputedStyle(outer).visibility).toBe('hidden');
+        await flushAndScan();
+        await vi.advanceTimersByTimeAsync(500);
+
+        expect(appearedFor('outer')).toEqual([]);
+        expect(appearedFor('inner').map((e) => e.toast.message)).toEqual(['Inner']);
+      } finally {
+        sheet.remove();
+      }
+    });
+
+    // V15b
+    it('a match inside a display contents match at opacity 0 is announced', async () => {
+      install({ pollInterval: 500 });
+      const outer = addStatus('outer', 'Outer');
+      outer.style.display = 'contents';
+      outer.style.opacity = '0';
+      addStatus('inner', 'Inner', outer);
+      await flushAndScan();
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(appearedFor('inner').map((e) => e.toast.message)).toEqual(['Inner']);
     });
   });
 
