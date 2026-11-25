@@ -29,7 +29,8 @@
  * is cloned only once it is shown. Visibility is decided along the flat-tree
  * ancestry: an ancestor with `display: none`, or an effective opacity (the
  * product of the element's and every ancestor's) below 0.1, hides the element;
- * each node's style is read at most once per pass.
+ * each ancestor's style is read at most once per pass, and a match's own once
+ * per visibility check (the scan's verdict seeds the tracking it starts).
  *
  * Re-reading is gated on mutation: every tracked (active or parked) element
  * has its own MutationObserver (an active entry that survives uninstall has
@@ -447,7 +448,8 @@ function subtreeFactor(node: Element): number {
  * The effective opacity `chain[1]` hands down to `chain[0]`: the product of
  * every ancestor's factor (`chain` is `composedAncestry(el)`, innermost
  * first). It stops at the nearest ancestor already in `memo` and records
- * every ancestor it computes, so each node's style is read once per pass.
+ * every ancestor it computes, so each ancestor's style is read once per
+ * pass.
  */
 function ancestorOpacity(chain: Element[], memo?: VisibilityMemo | null): number {
   let top = 1;
@@ -475,7 +477,7 @@ function ancestorOpacity(chain: Element[], memo?: VisibilityMemo | null): number
  * below 0.1. `visibility` is not walked: it inherits, so the own computed
  * value already carries an ancestor's. The ancestor walk runs only for an
  * element that is itself visible; `memo` (one per pass) bounds it to one
- * style read per distinct node.
+ * style read per distinct ancestor.
  *
  * Still read as visible, because style alone does not say: an unslotted light
  * child of a host whose shadow root is CLOSED (`shadowRoot` is `null`, so the
@@ -585,7 +587,7 @@ export class ToastCapture {
   private pendingEvents: ToastEventData[] | null = null;
   /**
    * `isElementVisible`'s ancestor cache for the running pass (`runPass`),
-   * `null` between passes. No page code runs during a pass — events are
+   * `null` between passes. No listener runs during a pass — events are
    * delivered after it — so no style can change under it.
    */
   private visibilityMemo: VisibilityMemo | null = null;
@@ -811,7 +813,7 @@ export class ToastCapture {
       // visibility flipped).
       const message = extractMessage(el);
       if (!message) {
-        this.park(el, '');
+        this.park(el, '', true);
         continue;
       }
 
@@ -854,11 +856,14 @@ export class ToastCapture {
    * Elements with neither get a fresh `toast-<n>` per announcement.
    *
    * Every caller asks `admitCapture` first, so the announcement budget has one
-   * owner. The element's own observer is attached here if it has none.
+   * owner. The element's own observer is attached here if it has none, seeded
+   * visible: every caller has just found `el` visible in the same pass (the
+   * scan's `isElementVisible`, a reconcile's `trackedVisible`), so a second
+   * `getComputedStyle` would only repeat that verdict.
    */
   private captureToast(el: Element, message: string, now: number): void {
     this.parked.delete(el);
-    this.track(el);
+    this.track(el, true);
 
     const id = this.resolveId(el, now);
     const level = inferLevel(el);
@@ -985,7 +990,9 @@ export class ToastCapture {
       budget.suppressed = true;
     }
     budget.lastChangedAt = now;
-    this.park(el, message);
+    // Seeded visible, like `captureToast`: every caller holds a visible verdict
+    // for `el` from this pass.
+    this.park(el, message, true);
     return false;
   }
 
