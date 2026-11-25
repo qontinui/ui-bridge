@@ -250,21 +250,6 @@ Conditions:
 - `text-matches` — element exists AND its label/aria-label/title/textContent
   contains `text_match` (pass as a sibling field).
 
-The same gate refuses more than clicks. On both arms, a non-click action
-(`type`, `focus`, `setValue`, a custom action, …) on a node that fails the
-render check is refused as `ELEMENT_NOT_VISIBLE` / `UB-ELEM-NOT-VISIBLE`, and
-one on a natively disabled control is refused as `ELEMENT_NOT_ENABLED` /
-`UB-ELEM-DISABLED`. Native disabled includes `disabled` inherited from a
-`<fieldset disabled>`, except for a control in that fieldset's first
-`<legend>`. Only `unhover` and a page-level `scroll` are exempt. In-process
-callers of the SDK's action executor get both refusals too:
-`useUIElement().trigger`, workflow element-action steps and the
-natural-language executor all go through it, so `trigger` and the
-natural-language executor throw and a workflow element-action step fails
-instead of acting. An `<input type="hidden">` still advertises `type`,
-`clear` and `setValue`, and all three are refused on it because it is not
-rendered; narrowing what such an element advertises is a tracked follow-up.
-
 Success (HTTP 200):
 
 ```json
@@ -293,6 +278,24 @@ curl -s -X POST "$BASE/ai/wait-for-element-condition" \
   -H 'Content-Type: application/json' \
   -d '{"selector":{"title":"Confirm"},"condition":"clickable","timeout_ms":2000}'
 ```
+
+**Element actions are refused before dispatch, not only clicks.** The gate
+that `clickable` mirrors runs before every element action
+(`POST /control/element/{id}/action` and the React relay alike). A non-click
+action (`type`, `focus`, `setValue`, a custom action, …) on a node that fails
+the render check is refused as `UB-ELEM-NOT-VISIBLE` over HTTP and
+`ELEMENT_NOT_VISIBLE` over the relay, and one on a natively disabled control
+as `UB-ELEM-DISABLED` over HTTP and `ELEMENT_NOT_ENABLED` over the relay.
+Native disabled includes `disabled` inherited from a `<fieldset disabled>`
+(except for a control in that fieldset's first `<legend>`) and from an
+`<optgroup disabled>`. Only `unhover` and a page-level `scroll` are exempt.
+In-process callers of the SDK's action executor get both refusals too:
+`useUIElement().trigger`, workflow element-action steps and the
+natural-language executor all go through it, so `trigger` and the
+natural-language executor throw and a workflow element-action step fails
+instead of acting. An `<input type="hidden">` still advertises `type`,
+`clear` and `setValue`, and all three are refused on it because it is not
+rendered; narrowing what such an element advertises is a tracked follow-up.
 
 ---
 
