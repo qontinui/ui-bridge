@@ -626,7 +626,7 @@ interface ForwardedConsoleMessage {
  * A location that is absent, empty or throws is omitted, never guessed.
  */
 function formatConsoleLine(msg: ForwardedConsoleMessage): string {
-  let url = '';
+  let url: string;
   try {
     url = msg.location?.()?.url ?? '';
   } catch {
