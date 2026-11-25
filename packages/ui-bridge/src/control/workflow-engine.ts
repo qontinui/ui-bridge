@@ -135,14 +135,20 @@ function failedActionResponse(
   }
   const response = result as ControlActionResponse | ComponentActionResponse;
   if (response.success) return null;
-  if (response.failureDetails) return response;
-  const error = response.error ?? `${step.type} step failed with no error message`;
+  const error =
+    response.error ||
+    response.failureDetails?.message ||
+    `${step.type} step failed with no error message`;
   return {
     ...response,
     error,
-    failureDetails: buildActionFailureDetails('UB-ACTION-FAILED', error, {
-      context: { stepId: step.id, stepType: step.type },
-    }),
+    // Classified like the throw arm, so the same message gets the same code
+    // whether the executor threw it or returned it.
+    failureDetails:
+      response.failureDetails ??
+      buildActionFailureDetails(classifyStepError(error), error, {
+        context: { stepId: step.id, stepType: step.type },
+      }),
   };
 }
 
