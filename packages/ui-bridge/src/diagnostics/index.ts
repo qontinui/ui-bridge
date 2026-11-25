@@ -226,6 +226,8 @@ export const INTERNAL_CODE_TO_CANONICAL: Readonly<Record<string, UiBridgeErrorCo
   CDP_DISABLED: 'UB-ACTION-REJECTED',
   UNAUTHORIZED: 'UB-ACTION-REJECTED',
   INTERNAL_ERROR: 'UB-UNKNOWN-ERROR',
+  // A transport-level failure carried as a typed code (see `codeOfThrown`).
+  NETWORK_ERROR: 'UB-NET-ERROR',
 };
 
 export function mapInternalErrorCode(
@@ -264,6 +266,27 @@ export function mapInternalErrorCode(
     return 'UB-NET-ERROR';
 
   return 'UB-UNKNOWN-ERROR';
+}
+
+/**
+ * The canonical code of a thrown value, read from its TYPE and never from its
+ * message.
+ *
+ * A thrown error names its cause with a duck-typed `code` (the
+ * `{ readonly code }` convention the SDK's error classes already use), which
+ * is mapped through {@link mapInternalErrorCode} with NO message argument, so
+ * rewording a message cannot change the code. A value with no code is
+ * `UB-UNKNOWN-ERROR`. The one typed arm that is not a `code`: a fetch failure
+ * is a `TypeError` the platform throws (`Failed to fetch`, `fetch failed`,
+ * `NetworkError …`) with no code to carry, and it is `UB-NET-ERROR`.
+ *
+ * Shared by both transports' thrown-error arms (the relay client's
+ * `runCommand` and the direct server's control-action handler).
+ */
+export function codeOfThrown(e: unknown): UiBridgeErrorCode {
+  if (e instanceof TypeError && /fetch|network/i.test(e.message)) return 'UB-NET-ERROR';
+  const code = (e as { code?: unknown } | null | undefined)?.code;
+  return typeof code === 'string' && code !== '' ? mapInternalErrorCode(code) : 'UB-UNKNOWN-ERROR';
 }
 
 /**

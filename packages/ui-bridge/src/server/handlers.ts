@@ -150,7 +150,7 @@ import { isMediaObservation } from '../core/media-observation';
 import type { RenderLogEntry } from '../render-log';
 import type { ActionFailureDetails, FillResult } from '../core';
 import type { UiBridgeErrorCode } from '../diagnostics';
-import { getRecoverySuggestions, mapInternalErrorCode } from '../diagnostics';
+import { codeOfThrown, getRecoverySuggestions, mapInternalErrorCode } from '../diagnostics';
 import type {
   SearchCriteria,
   SearchResponse,
@@ -2285,15 +2285,7 @@ export function createHandlers(
         return success(result) as APIResponse<ControlActionResponse>;
       } catch (err) {
         const errorMessage = (err as Error).message;
-        let errorCode: UiBridgeErrorCode = 'UB-UNKNOWN-ERROR';
-
-        if (errorMessage.includes('not found')) {
-          errorCode = 'UB-ELEM-NOT-FOUND';
-        } else if (errorMessage.includes('timeout')) {
-          errorCode = 'UB-ACTION-TIMEOUT';
-        } else if (errorMessage.includes('network') || errorMessage.includes('fetch')) {
-          errorCode = 'UB-NET-ERROR';
-        }
+        const errorCode = codeOfThrown(err);
 
         const failureDetails = createFailureDetails(errorCode, errorMessage, {
           elementId: id,
