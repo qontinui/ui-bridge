@@ -20,7 +20,12 @@
  *
  * A visible element that matches a selector but has no text yet is parked
  * with `''` by the scan, like an emptied one: it is re-read only when it
- * mutates, and its first text is captured as an announcement.
+ * mutates, and its first text is captured as an announcement. A match the
+ * scan first sees HIDDEN is parked with `''` too, like an active element that
+ * is hidden: its visibility is re-checked on each poll, each read and each
+ * scan its selector still matches, so a reveal by style alone (a fade-in, an
+ * ancestor shown) — which no `childList` record announces — is captured, and
+ * it is cloned only once it is shown.
  *
  * Re-reading is gated on mutation: every tracked (active or parked) element
  * has its own MutationObserver (an active entry that survives uninstall has
@@ -446,7 +451,8 @@ export class ToastCapture {
    * dismissed with: `''` for emptied text or a hidden element (so becoming
    * visible with any text is a new announcement), the unchanged text for one
    * past max-age, the absorbed (withheld) text for a suppressed one. A
-   * visible element the scan finds with no text is parked with `''` too.
+   * visible element the scan finds with no text, or one first seen hidden by
+   * the scan, is parked with `''` too.
    * `reconcile` checks them on every poll and every read — a style check, and
    * an extractMessage clone only when the element mutated (see `takeDirty`) —
    * captures one again when its text changes (subject to the announcement
@@ -677,7 +683,17 @@ export class ToastCapture {
       // sibling on its id leaves.
       this.budgets.sight(el, stableKey(el), now);
 
-      if (!isElementVisible(el)) continue;
+      // A hidden match is parked with '' (tracked by its own observer) and not
+      // read: a reveal by style alone — own opacity / display / visibility, or
+      // an ancestor's visibility — produces no childList record, so no scan
+      // would ever revisit it; the parked step re-checks its visibility on
+      // every poll and read and captures it once shown. Its budget was decided
+      // by the sighting above, so a re-keyed node mounted hidden keeps the
+      // budget it inherited.
+      if (!isElementVisible(el)) {
+        this.park(el, '');
+        continue;
+      }
 
       // A visible element with no text yet is parked with '' (tracked by its
       // own observer), so later scans re-read it only when it mutates, and an
@@ -686,8 +702,10 @@ export class ToastCapture {
       // per scan to the parked step's visibility and redaction check: each
       // poll and each public read visits every connected element parked empty
       // (e.g. a permanently empty role="alert" form placeholder), and each scan
-      // the ones its selector still matches; one that has since been hidden
-      // pays only the visibility half.
+      // the ones its selector still matches; one that is hidden — first seen
+      // hidden by the scan, or hidden since — pays only the visibility half,
+      // and is cloned only once it is shown (and only if it mutated or its
+      // visibility flipped).
       const message = extractMessage(el);
       if (!message) {
         this.park(el, '');
