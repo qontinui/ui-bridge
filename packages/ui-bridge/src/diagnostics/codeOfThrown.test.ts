@@ -19,6 +19,11 @@ describe('codeOfThrown', () => {
     ['UNSUPPORTED_ACTION', 'UB-UNSUPPORTED-ACTION'],
     ['TIMEOUT', 'UB-ACTION-TIMEOUT'],
     ['NETWORK_ERROR', 'UB-NET-ERROR'],
+    ['ECONNREFUSED', 'UB-NET-ERROR'],
+    ['ECONNRESET', 'UB-NET-ERROR'],
+    ['ENOTFOUND', 'UB-NET-ERROR'],
+    ['EAI_AGAIN', 'UB-NET-ERROR'],
+    ['ETIMEDOUT', 'UB-ACTION-TIMEOUT'],
     ['UB-ACTION-REJECTED', 'UB-ACTION-REJECTED'],
   ])('code %s answers %s', (code, expected) => {
     expect(codeOfThrown(coded('x', code))).toBe(expected);

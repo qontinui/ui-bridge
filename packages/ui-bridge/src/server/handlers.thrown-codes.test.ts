@@ -29,6 +29,8 @@ describe('executeElementAction thrown-error arm', () => {
     ['VALIDATION_ERROR', 'UB-VALIDATION-ERROR'],
     ['UNSUPPORTED_ACTION', 'UB-UNSUPPORTED-ACTION'],
     ['NETWORK_ERROR', 'UB-NET-ERROR'],
+    ['ECONNREFUSED', 'UB-NET-ERROR'],
+    ['ETIMEDOUT', 'UB-ACTION-TIMEOUT'],
   ])('code %s answers %s whatever the wording', async (code, expected) => {
     expect(
       await codeWhenExecutorThrows(Object.assign(new Error('reworded entirely'), { code }))
@@ -39,6 +41,23 @@ describe('executeElementAction thrown-error arm', () => {
     expect(await codeWhenExecutorThrows(new Error('element not found: timeout'))).toBe(
       'UB-UNKNOWN-ERROR'
     );
+  });
+
+  it.each([
+    ['null', null, 'null'],
+    ['a string', 'boom', 'boom'],
+  ])('a thrown %s is answered, not a TypeError from the catch', async (_label, thrown, message) => {
+    const registry = new UIBridgeRegistry();
+    const executor = {
+      executeAction: async () => {
+        throw thrown;
+      },
+    };
+    const handlers = createHandlers(registry as unknown as RegistryLike, executor as never);
+    const result = await handlers.executeElementAction('el', { action: 'click' });
+    expect(result.success).toBe(false);
+    expect(result.error).toBe(message);
+    expect(result.code).toBe('UB-UNKNOWN-ERROR');
   });
 
   it('a thrown fetch failure stays UB-NET-ERROR', async () => {

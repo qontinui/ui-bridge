@@ -2284,7 +2284,7 @@ export function createHandlers(
 
         return success(result) as APIResponse<ControlActionResponse>;
       } catch (err) {
-        const errorMessage = (err as Error).message;
+        const errorMessage = err instanceof Error ? err.message : String(err);
         const errorCode = codeOfThrown(err);
 
         const failureDetails = createFailureDetails(errorCode, errorMessage, {
