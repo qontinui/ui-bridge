@@ -242,10 +242,10 @@ export function mapInternalErrorCode(
 ): UiBridgeErrorCode {
   if (internalCode) {
     // Already canonical — pass through.
-    if (Object.hasOwn(DIAGNOSTICS, internalCode)) {
+    if (Object.prototype.hasOwnProperty.call(DIAGNOSTICS, internalCode)) {
       return internalCode as UiBridgeErrorCode;
     }
-    if (Object.hasOwn(INTERNAL_CODE_TO_CANONICAL, internalCode)) {
+    if (Object.prototype.hasOwnProperty.call(INTERNAL_CODE_TO_CANONICAL, internalCode)) {
       return INTERNAL_CODE_TO_CANONICAL[internalCode];
     }
     // Generic `*_ERROR` convention → categorise by family below, else unknown.
