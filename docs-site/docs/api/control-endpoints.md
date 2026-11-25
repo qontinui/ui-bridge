@@ -693,12 +693,16 @@ pre-dispatch gate refuse any action on an unrendered node with
 Exactly two actions are exempt on both: `unhover`, which releases the page's
 single forced hover and whose element is often the one that release hides, and
 a page-level `scroll` (an id of `document`, `body` or `window`), which scrolls
-the page rather than an element. So a `type`, `focus` or `setValue` on a node
+the page rather than an element. That exemption applies only when no
+registered or identified element holds that id: an element registered as
+`body`, say, is the target of its own `scroll` and is gated like any other. So a `type`, `focus` or `setValue` on a node
 inside a `display: none` subtree, or one whose computed visibility is
 `hidden` or `collapse` (including one inside a collapsed table row), is
 refused over HTTP and over the relay alike. Both arms also refuse a non-click
 action on a natively `disabled` control (`UB-ELEM-DISABLED` over HTTP,
-`disabledReason: native`), and that covers every non-click verb except
+`disabledReason: native`), native disabled including `:disabled` inherited
+from a `<fieldset disabled>` (but not for a control in its first `<legend>`),
+and that covers every non-click verb except
 `unhover`, the non-mutating ones included: a `scroll`, `scrollIntoView`,
 `hover` or `blur` on a natively `disabled` control is refused too, on both
 arms. Click-like actions keep the fuller click refusal (`disabled`,
