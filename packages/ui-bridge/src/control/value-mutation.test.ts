@@ -46,9 +46,8 @@ describe('applyValueMutation', () => {
 
     applyValueMutation(input, { value: 'hello', mode: 'replace' });
 
-    // Lifecycle order: focus before input, input before change. (The helper
-    // both calls native `.focus()` AND dispatches a synthetic FocusEvent, so
-    // jsdom records two focus events — assert order, not exact count.)
+    // Lifecycle order: focus before input, input before change. (Native
+    // `.focus()` only — exactly one focus event, pinned below.)
     expect(events).toContain('focus');
     expect(events).toContain('input');
     expect(events).toContain('change');
@@ -112,7 +111,7 @@ describe('applyValueMutation', () => {
     expect(events.filter((e) => e === 'input').length).toBeGreaterThanOrEqual(2);
   });
 
-  it('blur: true ends the sequence with a blur and dispatches a blur FocusEvent', () => {
+  it('blur: true ends the sequence with exactly one (real) blur', () => {
     const input = document.createElement('input');
     input.type = 'text';
     const { events } = recorderFor(input);
@@ -125,8 +124,26 @@ describe('applyValueMutation', () => {
     applyValueMutation(input, { value: 'done', mode: 'replace', blur: true });
 
     expect(events[events.length - 1]).toBe('blur');
+    expect(events.filter((t) => t === 'blur')).toHaveLength(1);
     expect(blurFocusEvent).toBe(true);
   });
+
+  it.each(['replace', 'append', 'clear', 'clear-then-append'] as const)(
+    "mode '%s': page focus/blur handlers run once and nothing bubbles to ancestors",
+    (mode) => {
+      const input = document.createElement('input');
+      const { events } = recorderFor(input, 'x');
+      const seen: string[] = [];
+      container.addEventListener('focus', () => seen.push('focus'));
+      container.addEventListener('blur', () => seen.push('blur'));
+
+      applyValueMutation(input, { value: 'v', mode, blur: true });
+
+      expect(events.filter((t) => t === 'focus')).toHaveLength(1);
+      expect(events.filter((t) => t === 'blur')).toHaveLength(1);
+      expect(seen).toEqual([]);
+    }
+  );
 
   it('React-controlled fidelity: resets _valueTracker to the OLD value and invokes __reactProps$.onChange', () => {
     const input = document.createElement('input');

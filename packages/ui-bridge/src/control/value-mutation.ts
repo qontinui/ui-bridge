@@ -10,10 +10,12 @@
  * copy of the matrix, so a focus-gated input (one that reveals UI on `focus`,
  * e.g. the runner CommandBar dropdown) did NOT react when a driver set its value
  * via `setValue`/`clear`/NL-`type` — those paths never focused and never
- * dispatched a synthetic `FocusEvent`.
+ * focused at all.
  *
  * This helper performs the COMPLETE, correct lifecycle (the union of the good
- * parts of the prior implementations): native focus + synthetic `FocusEvent`,
+ * parts of the prior implementations): native focus (its real `focus` event is
+ * the only one fired — no synthetic bubbling `FocusEvent` follows it, so page
+ * focus/blur handlers run once, matching the `focus`/`blur` verbs),
  * native prototype `value` setter so React controlled inputs update, React
  * `_valueTracker` reset so `old !== new` is detected, native `input` event,
  * a direct `__reactProps$<key>.onChange` invocation (the reliable path in
@@ -35,7 +37,7 @@ export interface ValueMutationOptions {
   value: string;
   /** How to derive the next value from the current one. */
   mode: ValueMutationMode;
-  /** Blur (and dispatch a synthetic `blur` FocusEvent) when done. Default: FALSE — leave the element focused. */
+  /** Blur when done. Default: FALSE — leave the element focused. */
   blur?: boolean;
 }
 
@@ -70,12 +72,11 @@ export function applyValueMutation(
   el: HTMLInputElement | HTMLTextAreaElement,
   opts: ValueMutationOptions
 ): void {
-  // Step 1: focus natively AND dispatch a synthetic FocusEvent. Native focus
-  // alone is unreliable in embedded WebViews (which is also why the direct
-  // onChange fallback below exists), and focus-gated inputs only reveal their
-  // UI when the bubbled `focus` event fires.
+  // Step 1: focus natively. The real focus() already fires `focus`/`focusin`;
+  // a second synthetic bubbling FocusEvent would run the page's handlers twice
+  // and leak a `focus` to ancestor listeners (ui-bridge#526 made the focus and
+  // blur verbs the same way). Focus-gated inputs react to the real event.
   el.focus();
-  el.dispatchEvent(new FocusEvent('focus', { bubbles: true }));
 
   // Native prototype value setter: React overrides the `value` property, so
   // assigning `el.value` directly doesn't notify React. The native setter does.
@@ -161,6 +162,5 @@ export function applyValueMutation(
   // Step 8: optional blur.
   if (opts.blur) {
     el.blur();
-    el.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
   }
 }
