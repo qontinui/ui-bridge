@@ -19,18 +19,28 @@
  *    when its own subtree mutates, and an in-place fill reaches the poll. A
  *    hidden one is parked with `''` too (C5; section H).
  * H: a toast element the scan first sees hidden (own `opacity` / `display` /
- *    `visibility`, or an ancestor's `visibility`) is parked with `''` and
+ *    `visibility`, or an ancestor's — section V) is parked with `''` and
  *    tracked by its own observer, so a reveal by style alone — which no
  *    `childList` record announces — is captured by the next poll or read. It
  *    is not cloned while hidden; a re-keyed replacement mounted hidden keeps
  *    the re-key budget it inherited at its first sighting.
+ * V: visibility is decided along the element's flat-tree ancestry
+ *    (`composedAncestry`), not by its own style alone: an ancestor with
+ *    `display: none` (inline, or the `hidden` attribute's UA rule), an
+ *    effective opacity — the product of the element's and every ancestor's —
+ *    below 0.1, or an unslotted light child of an open shadow host hides it.
+ *    A reveal or hide of an ancestor is seen by the next poll. Each node's
+ *    style is read at most once per pass (a per-pass memo), and never
+ *    across passes.
  *
  * Plans: 2026-11-23-ui-bridge-toast-capture-churn-and-reread-cost (Phase 1);
  * 2026-11-24-ui-bridge-toast-capture-rekey-churn-and-empty-element-parking
  * (Phase 1: A9a, A9b, A10-A15, C1-C5; A9c; review round 1: A9d, A16, A17,
  * C4 and C5 strengthened; review round 2: A18-A23);
  * 2026-11-25-ui-bridge-toast-capture-tracks-hidden-matches-until-shown
- * (Phase 1: H1-H11, H3b; C5 amended).
+ * (Phase 1: H1-H11, H3b; C5 amended);
+ * 2026-11-25-ui-bridge-toast-capture-sees-ancestor-display-and-opacity
+ * (Phase 1: V1-V9, V1b).
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -125,6 +135,10 @@ describe('ToastCapture churn budget and re-read gate', () => {
 
   function appearedFor(id: string): ToastEventData[] {
     return events.filter((e) => e.action === 'appeared' && e.toast.id === id);
+  }
+
+  function appeared(): ToastEventData[] {
+    return events.filter((e) => e.action === 'appeared');
   }
 
   /**
@@ -962,10 +976,6 @@ describe('ToastCapture churn budget and re-read gate', () => {
       return node;
     }
 
-    function appeared(): ToastEventData[] {
-      return events.filter((e) => e.action === 'appeared');
-    }
-
     // H1
     it('a toast mounted at opacity 0 and faded in by style alone is announced by the poll', async () => {
       install({ pollInterval: 500 });
@@ -1176,6 +1186,278 @@ describe('ToastCapture churn budget and re-read gate', () => {
       await vi.advanceTimersByTimeAsync(500);
 
       expect(appearedFor('saved').map((e) => e.toast.message)).toEqual(['Saved']);
+    });
+  });
+
+  // ==========================================================================
+  // V — ancestor display and opacity (follow-up 2a5c6b2f)
+  // ==========================================================================
+
+  describe('V: ancestor display and opacity (follow-up 2a5c6b2f)', () => {
+    /** Append a `div` to `parent` with `style` applied BEFORE it is attached. */
+    function addBox(
+      style: Partial<Pick<CSSStyleDeclaration, 'opacity' | 'display'>> = {},
+      parent: Element = document.body
+    ): HTMLElement {
+      const box = document.createElement('div');
+      Object.assign(box.style, style);
+      parent.appendChild(box);
+      return box;
+    }
+
+    /**
+     * An open shadow host on `document.body` whose shadow tree is
+     * `<div class="wrapper"><slot></slot></div>`. Returns the host and the
+     * wrapper, which sits on the flat-tree path of every slotted light child
+     * but on none of their `parentElement` chains.
+     */
+    function addSlottingHost(): { host: HTMLElement; wrapper: HTMLElement } {
+      const host = addBox();
+      const root = host.attachShadow({ mode: 'open' });
+      const wrapper = document.createElement('div');
+      wrapper.className = 'wrapper';
+      wrapper.appendChild(document.createElement('slot'));
+      root.appendChild(wrapper);
+      return { host, wrapper };
+    }
+
+    // V1
+    it('a toast under an ancestor with display none is not announced', async () => {
+      install({ pollInterval: 500 });
+      const parent = addBox({ display: 'none' });
+      addStatus('bar', 'Connected', parent);
+      await flushAndScan();
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(appeared()).toEqual([]);
+      expect(capture.getActive()).toEqual([]);
+    });
+
+    // V1b
+    it('a toast under an ancestor with the hidden attribute is not announced', async () => {
+      install({ pollInterval: 500 });
+      const parent = addBox();
+      parent.setAttribute('hidden', '');
+      addStatus('bar', 'Connected', parent);
+      await flushAndScan();
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(appeared()).toEqual([]);
+      expect(capture.getActive()).toEqual([]);
+    });
+
+    // V2
+    it('a toast under an ancestor with opacity 0 is not announced', async () => {
+      install({ pollInterval: 500 });
+      const parent = addBox({ opacity: '0' });
+      addStatus('bar', 'Connected', parent);
+      await flushAndScan();
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(appeared()).toEqual([]);
+      expect(capture.getActive()).toEqual([]);
+    });
+
+    // V3
+    it('an effective opacity below 0.1 hides a toast whose every ancestor is above it', async () => {
+      install({ pollInterval: 500 });
+      // 0.5 x 0.15 = 0.075: hidden, though each factor alone is >= 0.1.
+      const low = addBox({ opacity: '0.15' }, addBox({ opacity: '0.5' }));
+      addStatus('low', 'Faint', low);
+      // The far side: 0.5 x 0.5 = 0.25, announced.
+      const high = addBox({ opacity: '0.5' }, addBox({ opacity: '0.5' }));
+      addStatus('high', 'Seen', high);
+      await flushAndScan();
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(appearedFor('low')).toEqual([]);
+      expect(appearedFor('high').map((e) => e.toast.message)).toEqual(['Seen']);
+      expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['high', 'Seen']]);
+    });
+
+    // V4
+    it('a toast under an ancestor with display none is announced by the poll once the ancestor is shown', async () => {
+      install({ pollInterval: 500 });
+      const parent = addBox({ display: 'none' });
+      addStatus('bar', 'Connected', parent);
+      await flushAndScan();
+      expect(appeared()).toEqual([]);
+
+      parent.style.display = '';
+      // No poll yet and no public read: nothing may have announced it.
+      expect(appeared()).toEqual([]);
+      await vi.advanceTimersByTimeAsync(500);
+
+      // Announced by the poll, asserted before any public read.
+      expect(appearedFor('bar')).toHaveLength(1);
+      expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['bar', 'Connected']]);
+    });
+
+    // V4 (opacity)
+    it('a toast under an ancestor with opacity 0 is announced by the poll once the ancestor is shown', async () => {
+      install({ pollInterval: 500 });
+      const parent = addBox({ opacity: '0' });
+      addStatus('bar', 'Connected', parent);
+      await flushAndScan();
+      expect(appeared()).toEqual([]);
+
+      parent.style.opacity = '1';
+      expect(appeared()).toEqual([]);
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(appearedFor('bar')).toHaveLength(1);
+      expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['bar', 'Connected']]);
+    });
+
+    // V5
+    it('an active toast whose ancestor is hidden is dismissed, and announced again when it is shown', async () => {
+      install({ pollInterval: 500 });
+      const parent = addBox();
+      addStatus('bar', 'Connected', parent);
+      await flushAndScan();
+      expect(appearedFor('bar')).toHaveLength(1);
+
+      parent.style.display = 'none';
+      await vi.advanceTimersByTimeAsync(500);
+      expect(events.filter((e) => e.action === 'dismissed' && e.toast.id === 'bar')).toHaveLength(
+        1
+      );
+      expect(capture.getActive()).toEqual([]);
+
+      parent.style.display = '';
+      await vi.advanceTimersByTimeAsync(500);
+      expect(appearedFor('bar').map((e) => e.toast.message)).toEqual(['Connected', 'Connected']);
+
+      // Repetition, by opacity this time.
+      parent.style.opacity = '0';
+      await vi.advanceTimersByTimeAsync(500);
+      expect(capture.getActive()).toEqual([]);
+      parent.style.opacity = '';
+      await vi.advanceTimersByTimeAsync(500);
+      expect(appearedFor('bar')).toHaveLength(3);
+      expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['bar', 'Connected']]);
+    });
+
+    // V6
+    it('a slotted toast whose shadow-tree ancestor is display none is not announced until it is shown', async () => {
+      install({ pollInterval: 500 });
+      const { wrapper, host } = addSlottingHost();
+      wrapper.style.display = 'none';
+      const el = addStatus('slotted', 'Ready', host);
+      // The wrapper is on the flat-tree path only: crossing into the shadow
+      // tree is the only way to see it.
+      expect(el.assignedSlot).not.toBeNull();
+      await flushAndScan();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(appeared()).toEqual([]);
+
+      wrapper.style.display = '';
+      // jsdom 23.2.0 drops its computed-style cache only on a change to a
+      // node in the DOCUMENT tree (`invalidateStyleCache` checks `_attached`),
+      // so a style change inside a shadow tree would read stale there; a
+      // browser restyles. An attribute on <html> invalidates it without a
+      // childList record (the document observer's only input) and outside the
+      // toast's own subtree, so the poll is still the only thing that can see
+      // the reveal.
+      document.documentElement.setAttribute('data-restyle', '1');
+      await vi.advanceTimersByTimeAsync(500);
+      document.documentElement.removeAttribute('data-restyle');
+
+      expect(appearedFor('slotted')).toHaveLength(1);
+      expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['slotted', 'Ready']]);
+    });
+
+    // V6 (host)
+    it('a slotted toast whose shadow host is display none is announced once the host is shown', async () => {
+      install({ pollInterval: 500 });
+      const { host } = addSlottingHost();
+      host.style.display = 'none';
+      addStatus('slotted', 'Ready', host);
+      await flushAndScan();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(appeared()).toEqual([]);
+
+      host.style.display = '';
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(appearedFor('slotted')).toHaveLength(1);
+    });
+
+    // V6 (unslotted)
+    it('an unslotted light child of an open shadow host is not announced', async () => {
+      install({ pollInterval: 500 });
+      // A shadow tree with no slot renders none of the host's light children.
+      const host = addBox();
+      host.attachShadow({ mode: 'open' }).appendChild(document.createElement('div'));
+      const el = addStatus('unslotted', 'Lost', host);
+      expect(el.assignedSlot).toBeNull();
+      await flushAndScan();
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(appeared()).toEqual([]);
+      expect(capture.getActive()).toEqual([]);
+    });
+
+    // V7
+    it('each ancestor style is read once per pass, however many toasts share it', async () => {
+      install({ pollInterval: 500 });
+      const container = addBox({}, addBox({}, addBox()));
+      const statuses = [0, 1, 2, 3, 4].map((i) => addStatus(`s${i}`, `Toast ${i}`, container));
+      await flushAndScan();
+      expect(capture.getActive()).toHaveLength(5);
+
+      const style = vi.spyOn(globalThis, 'getComputedStyle');
+      await vi.advanceTimersByTimeAsync(500);
+      const reads = new Map<Element, number>();
+      for (const [node] of style.mock.calls) reads.set(node, (reads.get(node) ?? 0) + 1);
+      const total = style.mock.calls.length;
+      style.mockRestore();
+
+      // Five toasts, three containers, <body> and <html>: each read once.
+      // Without the memo it is 5 + 5 x 5 = 30.
+      const ancestors = [
+        container,
+        container.parentElement!,
+        container.parentElement!.parentElement!,
+        document.body,
+        document.documentElement,
+      ];
+      for (const node of [...statuses, ...ancestors]) expect(reads.get(node)).toBe(1);
+      expect(total).toBe(10);
+    });
+
+    // V8
+    it('a style change between two polls is seen by the second: the memo does not outlive a pass', async () => {
+      install({ pollInterval: 500 });
+      const parent = addBox();
+      addStatus('bar', 'Connected', parent);
+      await flushAndScan();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(capture.getActive().map((t) => t.id)).toEqual(['bar']);
+
+      parent.style.opacity = '0.05';
+      await vi.advanceTimersByTimeAsync(500);
+      expect(capture.getActive()).toEqual([]);
+
+      parent.style.opacity = '';
+      await vi.advanceTimersByTimeAsync(500);
+      expect(appearedFor('bar')).toHaveLength(2);
+    });
+
+    // V9
+    it('an ancestor with no declared opacity counts as opaque, and an opacity 0 beside it still hides', async () => {
+      install({ pollInterval: 500 });
+      // jsdom serializes an undeclared computed opacity as "" (parseFloat: NaN).
+      const grandparent = addBox();
+      expect(getComputedStyle(grandparent).opacity).toBe('');
+      addStatus('plain', 'Shown', addBox({}, grandparent));
+      addStatus('faded', 'Hidden', addBox({ opacity: '0' }, grandparent));
+      await flushAndScan();
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(appearedFor('plain').map((e) => e.toast.message)).toEqual(['Shown']);
+      expect(appearedFor('faded')).toEqual([]);
+      expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['plain', 'Shown']]);
     });
   });
 
