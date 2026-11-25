@@ -32,6 +32,8 @@ import {
   textExcludingBoundaries,
   textOutsideBoundaries,
   touchesRedactionBoundary,
+  truncateKeepingSentinel,
+  type RedactionVerdict,
 } from './redaction';
 
 /**
@@ -704,4 +706,39 @@ export function isInteractionBlocked(
     blockers.ariaDisabled ||
     (!options?.ignorePointerEvents && blockers.pointerEventsNone)
   );
+}
+
+/** A row label's cap: 200 code points, then `…`. */
+export const LABEL_MAX_CODE_POINTS = 200;
+
+/**
+ * Cap a name for display as a row `label`. The cut never splits a
+ * `REDACTED_VALUE` sentinel the name carries (a boundary inside the named
+ * subtree): a sentinel the cut would split is dropped whole.
+ */
+export function capLabel(name: string): string {
+  const cut = truncateKeepingSentinel(name, LABEL_MAX_CODE_POINTS);
+  return cut === name ? name : cut + '…';
+}
+
+/**
+ * The ONE row `label` rule, shared by every find/discover arm (the DOM
+ * fallback scan, the injected registry seeder and the action executor's
+ * `find()`): the element's CANONICAL accessible name — the value
+ * {@link resolveAccessibleName} answers, and so the value
+ * `state.accessibleName` carries — capped at {@link LABEL_MAX_CODE_POINTS}
+ * code points, with the §4.6 CONTENT scrub applied: a content-redacted
+ * element's label is `REDACTED_VALUE` whether or not it has a name (a hidden
+ * name reads as hidden, never as absent). A non-redacted element with no
+ * name yields `''`.
+ *
+ * Takes the NAME, not the element, so a caller that already resolved it
+ * (every `getElementState` read does) never runs the accname algorithm a
+ * second time for the same element.
+ */
+export function canonicalLabelFromName(
+  name: string | null | undefined,
+  verdict: RedactionVerdict
+): string {
+  return verdict.content ? REDACTED_VALUE : capLabel(name ?? '');
 }

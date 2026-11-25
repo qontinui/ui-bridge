@@ -45,8 +45,8 @@ import { fillSingleField } from './fill-form';
 import { readLiveValue } from './value-mutation';
 import { autocompleteSelect, comboboxSelect } from './combobox-select';
 import {
+  canonicalLabelFromName,
   readAriaLabelAttr,
-  readAriaLabelledbyAttr,
   readTitleAttr,
   isInteractionBlocked,
   readInteractionBlockers,
@@ -2583,18 +2583,35 @@ export class DefaultActionExecutor implements ActionExecutor {
       this.evictDiscoveryCache();
     }
 
+    // ONE element-state read per row: `accessibleName` and an unregistered
+    // node's `label` are both taken from it, so the row's three names
+    // (`label`, `accessibleName`, `state.accessibleName`) cannot disagree
+    // and the accname algorithm runs once per row.
+    const state = getElementState(el);
+
     return {
       element: el,
       id,
       type,
-      // §4.6: `label` scrubs on the CONTENT axis regardless of dev-set vs
-      // scraped origin (resolved design decision — one field can't
-      // discriminate, and a dev who wraps a subtree intends it hidden). A
-      // bare password field keeps its label; a boundary redacts it.
-      label: scrubContent(registered?.label ?? this.getElementLabel(el), el),
+      // `label`: a registered node keeps the label its registry owns (and
+      // refreshes); an unregistered node's is the canonical accessible name
+      // through `canonicalLabelFromName` — the same rule as the DOM-fallback
+      // row's, so both arms answer `find({ label | text })` alike.
+      // §4.6: a content-redacted node reads `REDACTED_VALUE` (a hidden name,
+      // never an absence); the sentinel matches no secret, so the filter
+      // oracle stays closed. `scrubContent` still applies on the CONTENT axis
+      // regardless of dev-set vs scraped origin (one field can't
+      // discriminate, and a dev who wraps a subtree intends it hidden); it is
+      // idempotent on the sentinel. A bare password field keeps its label.
+      label: scrubContent(
+        registered?.label ??
+          (canonicalLabelFromName(state.accessibleName, verdictOf(el)) || undefined),
+        el
+      ),
       tagName: el.tagName.toLowerCase(),
       role: el.getAttribute('role') || undefined,
-      accessibleName: scrubContent(this.getAccessibleName(el), el),
+      // Already scrubbed by the element's verdict inside `getElementState`.
+      accessibleName: state.accessibleName,
       actions: registered?.actions || inferActions(type, el),
       // The element's APP-DEFINED actions, kept in their own field rather
       // than merged into `actions` — the canonical split. Without this a
@@ -2611,7 +2628,7 @@ export class DefaultActionExecutor implements ActionExecutor {
       // did. Calling the helper is what keeps this producer correct across
       // the NEXT such change.
       customActions: serializeElementCustomActions(registered?.customActions),
-      state: getElementState(el),
+      state,
       registered: !!registered,
       // WHICH MOUNT this element belongs to — the only field that makes a
       // same-shape remount visible to anything folding this payload. Copied
@@ -3654,16 +3671,45 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   /**
+   * The text input of an unregistered element's semantic id slug — an
+   * ADDRESSING KEY input, not a name. Plan
+   * `2026-11-24-ui-bridge-executor-find-label-reads-the-canonical-accessible-name`, D4.
+   *
+   * FROZEN. Agents, workflows and the runner hold executor ids across
+   * releases, so this chain (`aria-label`, then `title`, then the scrubbed
+   * text cut at 40) is kept byte-for-byte as it was at ui-bridge 69e61bbc,
+   * pinned by `action-executor.id-stability.test.ts`. It is never displayed:
+   * the row's `label` / `accessibleName` are the canonical accessible name
+   * (`canonicalLabelFromName`). Do NOT "unify" it with that name — every id
+   * where the two chains differ (`<label for>`, a wrapping `<label>`, an
+   * `<img alt>`, the `derived` rung, text past 40 characters, whitespace)
+   * would move.
+   *
+   * §4.6: the slug is derived from aria-label/title/textContent, so inside a
+   * content-redaction boundary it would smuggle the secret out as an id.
+   * Suppress it there — the element stays addressable by its structural
+   * `tag`(-index) id.
+   */
+  private executorIdText(element: HTMLElement): string {
+    return isContentRedacted(element)
+      ? ''
+      : readAriaLabelAttr(element) ||
+          readTitleAttr(element) ||
+          readScrubbedText(element, undefined, { maxLen: 40 }) ||
+          '';
+  }
+
+  /**
    * Generate a deterministic, semantic ID for an unregistered element.
    *
    * Priority:
    *  1. data-ui-bridge-test-id attribute (the Item-10 pinning alias)
    *  2. data-testid attribute
    *  3. HTML id attribute (skip React auto-generated IDs like `:r1a:`)
-   *  4. Semantic ID: {tagName}-{slugified label}[-{index}]
+   *  4. Semantic ID: {tagName}-{slugified executorIdText}[-{index}]
    *
    * The semantic fallback produces stable IDs across discover() calls as
-   * long as the element's label and DOM position don't change, making
+   * long as the element's id text and DOM position don't change, making
    * them usable with executeAction(). It is only *mostly* stable: the
    * collision counter is first-free-integer in DOM-walk order, so two
    * same-slug siblings swap suffixes when the DOM reorders. Authors who need
@@ -3690,19 +3736,9 @@ export class DefaultActionExecutor implements ActionExecutor {
     const htmlId = element.id;
     if (htmlId && !/^:r[0-9a-z]+:$/i.test(htmlId)) return htmlId;
 
-    // Build a semantic ID from the tag name + accessible label.
-    // §4.6: the slug is derived from aria-label/title/textContent, so inside a
-    // content-redaction boundary it would smuggle the secret out as an id.
-    // Suppress the label-derived slug there — the element stays addressable by
-    // its structural `tag`(-index) id.
+    // Build a semantic ID from the tag name + the frozen id text.
     const tag = element.tagName.toLowerCase();
-    const label = isContentRedacted(element)
-      ? ''
-      : readAriaLabelAttr(element) ||
-        readTitleAttr(element) ||
-        readScrubbedText(element, undefined, { maxLen: 40 }) ||
-        '';
-    const slug = label
+    const slug = this.executorIdText(element)
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-|-$/g, '')
@@ -3717,64 +3753,6 @@ export class DefaultActionExecutor implements ActionExecutor {
     let i = 1;
     while (this.discoveryCache.has(`${base}-${i}`)) i++;
     return `${base}-${i}`;
-  }
-
-  private getElementLabel(element: HTMLElement): string | undefined {
-    // §4.6 oracle closure: this helper is read RAW by the discover text/label/
-    // exact_text filters, so a content-redacted element must yield no
-    // matchable content. Returning undefined closes the filter oracle AND keeps
-    // the emitted label empty (the push wraps it in `scrubContent` too).
-    if (isContentRedacted(element)) return undefined;
-    const ariaLabel = readAriaLabelAttr(element);
-    if (ariaLabel) return ariaLabel;
-
-    // Resolve aria-labelledby
-    const labelledBy = readAriaLabelledbyAttr(element);
-    if (labelledBy) {
-      const resolved = labelledBy
-        .split(' ')
-        .map((id) => readScrubbedText(document.getElementById(id), undefined, {}))
-        .filter(Boolean)
-        .join(' ');
-      if (resolved) return resolved;
-    }
-
-    return (
-      readTitleAttr(element) || readScrubbedText(element, undefined, { maxLen: 50 }) || undefined
-    );
-  }
-
-  private getAccessibleName(element: HTMLElement): string | undefined {
-    // §4.6 oracle closure — same rationale as `getElementLabel`: read RAW by
-    // the discover `text` filter, so a content-redacted element yields nothing
-    // matchable.
-    if (isContentRedacted(element)) return undefined;
-    const ariaLabel = readAriaLabelAttr(element);
-    if (ariaLabel) return ariaLabel;
-
-    const labelledBy = readAriaLabelledbyAttr(element);
-    if (labelledBy) {
-      const labels = labelledBy
-        .split(' ')
-        .map((id) => readScrubbedText(document.getElementById(id), undefined, {}))
-        .filter(Boolean);
-      if (labels.length > 0) return labels.join(' ');
-    }
-
-    if (
-      element instanceof HTMLInputElement ||
-      element instanceof HTMLSelectElement ||
-      element instanceof HTMLTextAreaElement
-    ) {
-      if (element.id) {
-        const label = document.querySelector<HTMLLabelElement>(`label[for="${element.id}"]`);
-        if (label) return readScrubbedText(label);
-      }
-    }
-
-    return (
-      readTitleAttr(element) || readScrubbedText(element, undefined, { maxLen: 50 }) || undefined
-    );
   }
 }
 
