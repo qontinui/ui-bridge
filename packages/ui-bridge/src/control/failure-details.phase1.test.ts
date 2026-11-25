@@ -13,7 +13,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { UIBridgeRegistry } from '../core/registry';
 import { DefaultActionExecutor } from './action-executor';
 import { DefaultWorkflowEngine } from './workflow-engine';
-import { UI_BRIDGE_ERROR_CODES } from '../diagnostics';
+import { UI_BRIDGE_ERROR_CODES, buildActionFailureDetails } from '../diagnostics';
 import type { Workflow } from '../core/types';
 
 const VALID_CODES = new Set<string>(UI_BRIDGE_ERROR_CODES);
@@ -230,6 +230,50 @@ describe('Phase 1 — WorkflowStepResult.failureDetails', () => {
       expect(run.error).toBe(step.error);
       expectValidFailureDetails(step.failureDetails);
       expect(step.failureDetails?.errorCode).toBe('UB-ACTION-FAILED');
+    } finally {
+      input.remove();
+    }
+  });
+
+  it.each([
+    {
+      name: 'a not-found message is classified like the throw arm',
+      response: { success: false, error: 'Element x not found' },
+      error: 'Element x not found',
+      code: 'UB-ELEM-NOT-FOUND',
+    },
+    {
+      name: 'an empty error falls back to the executor details message and keeps its code',
+      response: {
+        success: false,
+        error: '',
+        failureDetails: buildActionFailureDetails('UB-ELEM-DISABLED', 'locked'),
+      },
+      error: 'locked',
+      code: 'UB-ELEM-DISABLED',
+    },
+  ])('a returned failure: $name', async ({ response, error, code }) => {
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    registry.registerElement('returned-fail', input, { type: 'input', label: 'r' });
+    const returning = {
+      ...executor,
+      executeAction: async () => response,
+    } as unknown as DefaultActionExecutor;
+    const returningEngine = new DefaultWorkflowEngine(registry, returning);
+    registry.registerWorkflow({
+      id: 'wf-returned-fail',
+      name: 'Returned failure',
+      steps: [{ id: 'r1', type: 'element-action', target: 'returned-fail', action: 'click' }],
+    });
+    try {
+      const run = await returningEngine.run('wf-returned-fail');
+      const [step] = run.steps;
+      expect(step.success).toBe(false);
+      expect(step.error).toBe(error);
+      expect(run.error).toBe(error);
+      expect(step.failureDetails?.errorCode).toBe(code);
+      expect(step.failureDetails?.context).toMatchObject({ stepId: 'r1', stepType: 'element-action' });
     } finally {
       input.remove();
     }

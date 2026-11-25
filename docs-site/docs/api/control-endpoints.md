@@ -751,9 +751,10 @@ did not land, the action fails with `UB-ACTION-FAILED` and
 synthetic `focus` or `blur` event for these two verbs: the real `focus()` /
 `blur()` call fires the page's handlers at most once (`blur` on an element that
 does not hold focus fires none, and still reports success). The value verbs
-(`type`, `clear`, `setValue` on a text-like input) still follow their native
-`focus()` with a synthetic bubbling `focus` event (`control/value-mutation.ts`);
-they do not blur.
+(`type`, `clear`, and `setValue` on anything but a `<select>`) still follow
+their native `focus()` with a synthetic bubbling `focus` event
+(`control/value-mutation.ts`), and do not blur; form `fill` also blurs each
+field when it is done.
 
 The read-back judges where focus ended up, not whether the page meant to move
 it. A page whose own focus handling forwards focus to a DESCENDANT of the
