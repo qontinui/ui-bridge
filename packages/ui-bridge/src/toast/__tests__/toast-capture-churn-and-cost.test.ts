@@ -41,7 +41,8 @@
  * 2026-11-25-ui-bridge-toast-capture-tracks-hidden-matches-until-shown
  * (Phase 1: H1-H11, H3b; C5 amended);
  * 2026-11-25-ui-bridge-toast-capture-sees-ancestor-display-and-opacity
- * (Phase 1: V1-V9, V1b; review round 1: V10, V11; review round 2: V12).
+ * (Phase 1: V1-V9, V1b; review round 1: V10, V11; review round 2: V12;
+ * review round 3: V12b, V13).
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -1522,6 +1523,47 @@ describe('ToastCapture churn budget and re-read gate', () => {
       // the empty park's), so neither repeats the getComputedStyle.
       expect(readsOfCaptured).toBe(1);
       expect(readsOfEmpty).toBe(1);
+    });
+
+    // V12b
+    it('a scan reads the own style of a re-keyed node it parks suppressed once', async () => {
+      install({ pollInterval: 500 });
+      // Six re-keyed ticks: 0:00-0:03 announced, then the budget suppresses.
+      // Each tick is one scan and one poll; this ends at 50 ms past a poll.
+      const last = await rekeyTicker(6);
+      expect(appearedFor('timer')).toHaveLength(4);
+
+      const style = vi.spyOn(globalThis, 'getComputedStyle');
+      const next = rekey(last, '0:07');
+      await flushAndScan(); // the debounced scan only, no poll
+      const readsOfNext = style.mock.calls.filter((c) => c[0] === next).length;
+      style.mockRestore();
+
+      // Withheld: admitCapture parked it suppressed, its tracking seeded with
+      // the scan's verdict rather than a second getComputedStyle.
+      expect(appearedFor('timer')).toHaveLength(4);
+      expect(readsOfNext).toBe(1);
+    });
+
+    // V13
+    it('a match hidden by its own opacity is read once in a scan that also sees a match inside it', async () => {
+      install({ pollInterval: 500 });
+      await flushAndScan(); // t = 50 ms; the first poll is at 500 ms
+
+      const style = vi.spyOn(globalThis, 'getComputedStyle');
+      const outer = addStatus('outer', 'Outer');
+      outer.style.opacity = '0';
+      const inner = addStatus('inner', 'Inner', outer);
+      await flushAndScan(); // the debounced scan only: t = 100 ms
+      const readsOfOuter = style.mock.calls.filter((c) => c[0] === outer).length;
+      const readsOfInner = style.mock.calls.filter((c) => c[0] === inner).length;
+      style.mockRestore();
+
+      // The outer's own hidden verdict is recorded as 0 for the inner's walk,
+      // which stops there instead of reading the outer's style again.
+      expect(appeared()).toEqual([]);
+      expect(readsOfOuter).toBe(1);
+      expect(readsOfInner).toBe(1);
     });
   });
 
