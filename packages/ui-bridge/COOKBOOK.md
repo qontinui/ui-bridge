@@ -284,18 +284,27 @@ that `clickable` mirrors runs before every element action
 (`POST /control/element/{id}/action` and the React relay alike). A non-click
 action (`type`, `focus`, `setValue`, a custom action, …) on a node that fails
 the render check is refused as `UB-ELEM-NOT-VISIBLE` over HTTP and
-`ELEMENT_NOT_VISIBLE` over the relay, and one on a natively disabled control
-as `UB-ELEM-DISABLED` over HTTP and `ELEMENT_NOT_ENABLED` over the relay.
+`ELEMENT_NOT_VISIBLE` over the relay. Only `unhover` and a page-level
+`scroll` are exempt from that render check. A natively disabled control
+refuses the verbs that would change or activate it — `type`, `sendKeys`,
+`clear`, `select`, `setValue`, `autocomplete`, `submit`, `reset`, `drag`,
+`focus`, the click-like actions and every custom action — as
+`UB-ELEM-DISABLED` over HTTP and `ELEMENT_NOT_ENABLED` over the relay. It
+still takes `hover`, `unhover`, `scroll`, `scrollIntoView` and `blur`, on both
+arms, so hovering a disabled button to read its "why disabled" tooltip works.
 Native disabled includes `disabled` inherited from a `<fieldset disabled>`
 (except for a control in that fieldset's first `<legend>`) and from an
-`<optgroup disabled>`. Only `unhover` and a page-level `scroll` are exempt.
+`<optgroup disabled>`.
 In-process callers of the SDK's action executor get both refusals too:
 `useUIElement().trigger`, workflow element-action steps and the
 natural-language executor all go through it, so none of them acts on such a
 node. `trigger` and the natural-language executor throw. A workflow
-element-action step does not throw and is NOT marked failed: the step reports
-`success: true`, and the refusal (`success: false` with its
-`failureDetails`) is in the step's `result`, so check `result.success`. An `<input type="hidden">` still advertises `type`,
+element-action or component-action step whose action resolves
+`success: false` (a refusal, `focus_not_taken`, an element or component not
+found) is a FAILED step: it reports `success: false` with the action's
+`error` and `failureDetails` (the full response stays in `result`), the run's
+`error` is that step's, and the run stops there instead of continuing to the
+next step. An `<input type="hidden">` still advertises `type`,
 `clear` and `setValue`, and all three are refused on it because it is not
 rendered; narrowing what such an element advertises is a tracked follow-up.
 

@@ -712,15 +712,18 @@ such an id is gated on both arms. So a `type`,
 `focus` or `setValue` on a node
 inside a `display: none` subtree, or one whose computed visibility is
 `hidden` or `collapse` (including one inside a collapsed table row), is
-refused over HTTP and over the relay alike. Both arms also refuse a non-click
-action on a natively `disabled` control (`UB-ELEM-DISABLED` with
-`disabledReason: native` over HTTP, `ELEMENT_NOT_ENABLED` over the relay).
+refused over HTTP and over the relay alike. Both arms also refuse a mutating
+non-click action on a natively `disabled` control (`UB-ELEM-DISABLED` with
+`disabledReason: native` over HTTP, `ELEMENT_NOT_ENABLED` over the relay):
+`type`, `sendKeys`, `clear`, `select`, `setValue`, `autocomplete`, `submit`,
+`reset`, `drag`, `focus` and every custom action, whatever its name.
 Native disabled includes `:disabled` inherited from a `<fieldset disabled>`
 (but not for a control in its first `<legend>`) or from an
-`<optgroup disabled>`, and that refusal covers every non-click verb except
-`unhover`, the non-mutating ones included: a `scroll`, `scrollIntoView`,
-`hover` or `blur` on a natively `disabled` control is refused too, on both
-arms. Click-like actions keep the fuller click refusal (`disabled`,
+`<optgroup disabled>`. The non-mutating verbs pass on both arms: a `hover`,
+`unhover`, `scroll`, `scrollIntoView` or `blur` on a natively `disabled`
+control is dispatched, since browsers apply `:hover` and deliver `mouseover`
+to a disabled control (hovering one to read its "why disabled" tooltip is the
+everyday case). Click-like actions keep the fuller click refusal (`disabled`,
 `aria-disabled`, `pointer-events: none`). The HTTP executor adds
 its click-only reads on top: an explicit zero inline size (`no-layout`) and an
 inline `-9999px` offset (`off-screen`).

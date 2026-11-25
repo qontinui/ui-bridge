@@ -3,9 +3,11 @@
  * `2026-11-25-ui-bridge-http-executor-refuses-non-click-actions-on-unrendered-elements`.
  *
  * - D1: `performAction` refuses EVERY element action on a node that is not
- *   rendered (`UB-ELEM-NOT-VISIBLE`), and every non-click action on a natively
+ *   rendered (`UB-ELEM-NOT-VISIBLE`), and every mutating non-click action on a natively
  *   `disabled` one (`UB-ELEM-DISABLED`, `disabledReason: 'native'`), before
- *   custom-action precedence — the relay's gate. The two exemptions are
+ *   custom-action precedence — the relay's gate. Native `disabled` refuses
+ *   mutating verbs and custom actions only: `hover`, `unhover`, `scroll`,
+ *   `scrollIntoView` and `blur` pass on both arms. The two exemptions are
  *   `unhover` and a `scroll` on a page sentinel.
  * - D2: a `focus` whose `element.focus()` left focus elsewhere fails with
  *   `context.reason: 'focus_not_taken'` on both arms, and the HTTP arm fires
@@ -281,6 +283,82 @@ describe('the HTTP executor refuses a non-click action on an unrendered element'
       delete (html as Partial<HTMLElement>).scrollBy;
     }
   });
+});
+
+describe('native disabled refuses mutating verbs only, on both arms', () => {
+  /** A natively disabled `<button>`, appended and registered. */
+  function disabledButton(
+    id: string,
+    customActions?: Record<string, { id: string; handler: () => unknown }>
+  ): HTMLButtonElement {
+    const button = document.createElement('button');
+    button.textContent = 'Save';
+    button.title = 'Fill in the name first';
+    button.disabled = true;
+    document.body.appendChild(button);
+    getGlobalRegistry().registerElement(id, button, { type: 'button', label: id, customActions });
+    return button;
+  }
+
+  it.each(['http', 'relay'] as const)(
+    '%s: hover on a natively disabled button succeeds and delivers mouseover',
+    async (arm) => {
+      const button = disabledButton('disabled-hover');
+      const overs: Event[] = [];
+      button.addEventListener('mouseover', (e) => overs.push(e));
+      const res =
+        arm === 'http'
+          ? await http('disabled-hover', 'hover', { holdMs: 0 })
+          : await relay('disabled-hover', 'hover', { holdMs: 0 });
+      expect(res.failureDetails?.errorCode).toBeUndefined();
+      expect(res.success).toBe(true);
+      expect(overs.length).toBeGreaterThan(0);
+    }
+  );
+
+  it.each(['http', 'relay'] as const)(
+    '%s: blur on a natively disabled button succeeds',
+    async (arm) => {
+      disabledButton('disabled-blur');
+      const res =
+        arm === 'http' ? await http('disabled-blur', 'blur') : await relay('disabled-blur', 'blur');
+      expect(res.failureDetails?.errorCode).toBeUndefined();
+      expect(res.success).toBe(true);
+    }
+  );
+
+  it.each(['http', 'relay'] as const)(
+    '%s: type on a natively disabled button is refused as disabled',
+    async (arm) => {
+      disabledButton('disabled-type-button');
+      const res =
+        arm === 'http'
+          ? await http('disabled-type-button', 'type', { text: 'x' })
+          : await relay('disabled-type-button', 'type', { text: 'x' });
+      expect(res.success).toBe(false);
+      expect(res.failureDetails?.errorCode).toBe(
+        arm === 'http' ? 'UB-ELEM-DISABLED' : 'ELEMENT_NOT_ENABLED'
+      );
+      if (arm === 'http') expect(res.failureDetails?.disabledReason).toBe('native');
+    }
+  );
+
+  it.each(['http', 'relay'] as const)(
+    '%s: a custom action named like a tolerated verb is still refused on a disabled control',
+    async (arm) => {
+      const handler = vi.fn(() => 'ran');
+      disabledButton('disabled-custom', { scroll: { id: 'scroll', handler } });
+      const res =
+        arm === 'http'
+          ? await http('disabled-custom', 'scroll')
+          : await relay('disabled-custom', 'scroll');
+      expect(res.success).toBe(false);
+      expect(res.failureDetails?.errorCode).toBe(
+        arm === 'http' ? 'UB-ELEM-DISABLED' : 'ELEMENT_NOT_ENABLED'
+      );
+      expect(handler).not.toHaveBeenCalled();
+    }
+  );
 });
 
 describe('focus reads back whether it landed, on both arms', () => {

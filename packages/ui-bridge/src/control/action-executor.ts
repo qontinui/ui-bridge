@@ -356,6 +356,35 @@ const CLICK_LIKE_ACTIONS = new Set<string>([
  */
 const POINTER_EVENTS_TOLERANT_ACTIONS = new Set<string>(['hoverClick']);
 
+/**
+ * The built-in verbs a natively `disabled` control still takes: none of them
+ * changes the control's value or state or activates it. Browsers apply
+ * `:hover` and deliver `mouseover` to a disabled control (so hovering one to
+ * read its "why disabled" tooltip works), and scrolling or blurring touches
+ * nothing the `disabled` attribute guards.
+ */
+const NATIVE_DISABLED_TOLERANT_ACTIONS = new Set<string>([
+  'hover',
+  'unhover',
+  'scroll',
+  'scrollIntoView',
+  'blur',
+]);
+
+/**
+ * Whether a natively `disabled` control refuses `action` — the ONE verdict
+ * both dispatchers apply (`assertActionable` here, the relay's gate in
+ * `react/commandHandlers.ts` `executeElementAction`). Every mutating verb is
+ * refused: the text and value verbs, `select`, `submit`, `reset`, `drag`,
+ * `focus`, the click-like actions, and every custom action (`custom`: the
+ * element's own registration handles `action`, whatever its name), since a
+ * handler's effect is unknown. Only {@link NATIVE_DISABLED_TOLERANT_ACTIONS}
+ * pass.
+ */
+export function refusedWhenNativelyDisabled(action: string, custom: boolean): boolean {
+  return custom || !NATIVE_DISABLED_TOLERANT_ACTIONS.has(action);
+}
+
 /** What `hover`, `hoverClick` and `unhover` return from dispatch, before it is lifted to `forcedHover`. */
 interface ForcedHoverResult {
   forcedHover: ForcedHoverActionReport;
@@ -634,14 +663,16 @@ class ElementNotVisibleError extends Error {
  * 2. A click-like action: `getClickRefusal` (native `disabled`,
  *    `aria-disabled`, effective `pointer-events: none` — waived for
  *    `hoverClick`).
- * 3. Every other action: native `disabled` only. A hover-revealed
- *    `pointer-events: none` target must still be focusable, typeable, etc.,
- *    and `aria-disabled` is an announcement, not a block.
+ * 3. Every other action: native `disabled` only, and only for a verb
+ *    {@link refusedWhenNativelyDisabled} names (a mutating one, or a custom
+ *    action — `custom`). A hover-revealed `pointer-events: none` target must
+ *    still be focusable, typeable, etc., and `aria-disabled` is an
+ *    announcement, not a block.
  *
  * Both refusals are classed not-dispatched by `executeAction`, so a held
  * forced hover survives them.
  */
-function assertActionable(element: HTMLElement, action: string): void {
+function assertActionable(element: HTMLElement, action: string, custom: boolean): void {
   const clickLike = CLICK_LIKE_ACTIONS.has(action);
   const visibilityReason: VisibilityReason | null = clickLike
     ? getClickVisibilityReason(element)
@@ -664,6 +695,7 @@ function assertActionable(element: HTMLElement, action: string): void {
     }
     return;
   }
+  if (!refusedWhenNativelyDisabled(action, custom)) return;
   const blockers = readInteractionBlockers(element);
   if (blockers.disabled) {
     throw new ElementDisabledError(
@@ -3023,8 +3055,10 @@ export class DefaultActionExecutor implements ActionExecutor {
     // Without this gate a `focus`, `type`, `setValue` or custom action on a
     // node inside a `display: none` subtree, or a `type` into a natively
     // disabled input, reported `success: true` while doing nothing.
+    const owner = registered ?? this.registry.findByDOMElement(element);
+    const customAction = owner?.customActions?.[action];
     if (action !== 'unhover' && !(action === 'scroll' && target.pageSentinel)) {
-      assertActionable(element, action);
+      assertActionable(element, action, customAction !== undefined);
     }
 
     // Custom-action precedence — a registered handler wins over a same-named
@@ -3044,9 +3078,9 @@ export class DefaultActionExecutor implements ActionExecutor {
     // global name check: an element that does not register `sendKeys` still
     // gets the built-in. Prefer the id-resolved registration threaded down from
     // `executeAction`; fall back to a DOM lookup for elements resolved by
-    // identifier / CTR / discovery cache rather than by registry id.
-    const owner = registered ?? this.registry.findByDOMElement(element);
-    const customAction = owner?.customActions?.[action];
+    // identifier / CTR / discovery cache rather than by registry id. (`owner`
+    // and `customAction` are read above, before the gate, which refuses a
+    // custom action on a natively disabled control whatever its name.)
     if (customAction) {
       // A handler throw propagates to `executeAction`'s outer catch, which
       // preserves the handler's typed `code` via `readHandlerErrorEnvelope`.

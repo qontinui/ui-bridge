@@ -14,6 +14,7 @@ import type {
   WorkflowEngine,
   ActionExecutor,
   ControlActionResponse,
+  ComponentActionResponse,
 } from './types';
 import type { UiBridgeErrorCode } from '../diagnostics';
 import { buildActionFailureDetails } from '../diagnostics';
@@ -109,6 +110,21 @@ function extractStepEffectVerification(result: unknown): EffectVerification | un
     return v ?? undefined;
   }
   return undefined;
+}
+
+/**
+ * The response of an `element-action` or `component-action` step whose action
+ * resolved `{ success: false }`, else `null`. Both executor calls report a
+ * refusal or a failed dispatch as a value, not a throw, so without this the
+ * step read as a success with the failure buried in its `result`.
+ */
+function failedActionResponse(
+  step: WorkflowStep,
+  result: unknown
+): ControlActionResponse | ComponentActionResponse | null {
+  if (step.type !== 'element-action' && step.type !== 'component-action') return null;
+  const response = result as ControlActionResponse | ComponentActionResponse;
+  return response.success ? null : response;
 }
 
 /**
@@ -420,6 +436,25 @@ export class DefaultWorkflowEngine implements WorkflowEngine {
       // response, if the executor produced one (read-only — the engine never
       // computes it; it only surfaces what `executeAction` already returned).
       const effectVerification = extractStepEffectVerification(result);
+
+      // An element or component action that resolved `{ success: false }` (a
+      // refusal, `focus_not_taken`, an element or component not found) is a
+      // failed step, as the native server's handler records it: its `error`
+      // becomes the run's `state.error`, and the run stops here.
+      const refused = failedActionResponse(step, result);
+      if (refused) {
+        return {
+          stepId: step.id,
+          stepType: step.type,
+          success: false,
+          result,
+          error: refused.error,
+          failureDetails: refused.failureDetails,
+          ...(effectVerification ? { effectVerification } : {}),
+          durationMs: performance.now() - startTime,
+          timestamp: Date.now(),
+        };
+      }
 
       return {
         stepId: step.id,
