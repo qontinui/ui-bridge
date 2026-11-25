@@ -34,6 +34,7 @@ import {
   type ElementProjectionRequest,
 } from '../core/element-projection';
 import { pageSentinelState, resolvePageSentinel } from '../core/page-sentinel';
+import { focusLanded } from '../core/composed-tree';
 import { truncateCodePoints } from '../core/text';
 import { withoutInspectorPanelRecords } from '../core/inspector-panel';
 import {
@@ -2030,12 +2031,12 @@ export async function executeCommand(
           );
         // NOT the canonical visibility verdict, deliberately: the dispatch
         // gate asks "is the node rendered at all" (`isRenderedForAction`,
-        // `core/element-state`). Both arms share that check: the HTTP
-        // executor's click pre-check (`getClickVisibilityReason`) runs it too
-        // and adds explicit inline zero-size and -9999px off-screen reads on
-        // top. This gate runs before every relay action on a registered
-        // element except `unhover` (below), not only clicks; the HTTP
-        // pre-check gates click-like actions only. The canonical
+        // `core/element-state`). Both arms share that check and its scope:
+        // it runs before every action on a registered element except
+        // `unhover` (below) and a page-sentinel `scroll` (above), here and in
+        // the HTTP executor's pre-dispatch gate (`performAction`), which adds
+        // explicit inline zero-size and -9999px off-screen reads on top for
+        // click-like actions only. The canonical
         // verdict would wrongly refuse here: an `off-screen` target is
         // scrolled into view by the action, an `occluded` one is the click
         // gate's (and the caller's) concern, and an `opacity: 0` control (its
@@ -2185,6 +2186,24 @@ export async function executeCommand(
           }
           case 'focus':
             dom.focus();
+            // Read back, as the executor's `performFocus` does: a `focus()` the
+            // browser ignored (a non-focusable or unrendered node) is a
+            // dispatched failure, not a success.
+            if (!focusLanded(dom)) {
+              const failure = createActionFailure(
+                id,
+                'UB-ACTION-FAILED',
+                'focus did not land on the element (focus_not_taken)',
+                startTime
+              );
+              return settleDispatched({
+                ...failure,
+                failureDetails: {
+                  ...failure.failureDetails,
+                  context: { action: 'focus', reason: 'focus_not_taken' },
+                },
+              });
+            }
             break;
           case 'blur':
             dom.blur();

@@ -27,6 +27,7 @@ import { serializeElementCustomActions } from '../core/element-actions';
 // It reads the LIVE element, not the registry's action overlay: a wait must
 // observe fields change, and the overlay freezes the ones an action wrote.
 import { getElementState, isRenderedForAction } from '../core/element-state';
+import { focusLanded } from '../core/composed-tree';
 import type {
   WaitOptions,
   ElementState,
@@ -621,6 +622,63 @@ class ElementNotVisibleError extends Error {
 }
 
 /**
+ * The pre-dispatch refusals `performAction` applies to every gated action —
+ * the same verdicts, in the same order, as the relay's gate
+ * (`react/commandHandlers.ts` `executeElementAction`):
+ *
+ * 1. Not rendered (`isRenderedForAction`) → `UB-ELEM-NOT-VISIBLE`. A
+ *    click-like action reads `getClickVisibilityReason`, which runs that same
+ *    render check and adds its click-only inline zero-size (`no-layout`) and
+ *    -9999px (`off-screen`) reads; every other action runs the render check
+ *    alone. One render check either way.
+ * 2. A click-like action: `getClickRefusal` (native `disabled`,
+ *    `aria-disabled`, effective `pointer-events: none` — waived for
+ *    `hoverClick`).
+ * 3. Every other action: native `disabled` only. A hover-revealed
+ *    `pointer-events: none` target must still be focusable, typeable, etc.,
+ *    and `aria-disabled` is an announcement, not a block.
+ *
+ * Both refusals are classed not-dispatched by `executeAction`, so a held
+ * forced hover survives them.
+ */
+function assertActionable(element: HTMLElement, action: string): void {
+  const clickLike = CLICK_LIKE_ACTIONS.has(action);
+  const visibilityReason: VisibilityReason | null = clickLike
+    ? getClickVisibilityReason(element)
+    : isRenderedForAction(element)
+      ? null
+      : 'hidden';
+  if (visibilityReason) {
+    throw new ElementNotVisibleError(
+      `element is not visible (${visibilityReason}); ${action} was not dispatched`,
+      visibilityReason
+    );
+  }
+  if (clickLike) {
+    const refusal = getClickRefusal(element, action);
+    if (refusal) {
+      throw new ElementDisabledError(
+        `element is disabled (${refusal.reasons.join(', ')}); ${action} was not dispatched`,
+        refusal.signals
+      );
+    }
+    return;
+  }
+  const blockers = readInteractionBlockers(element);
+  if (blockers.disabled) {
+    throw new ElementDisabledError(
+      `element is disabled (disabled property); ${action} was not dispatched`,
+      {
+        disabled: true,
+        ariaDisabled: blockers.ariaDisabled,
+        nativeDisabled: true,
+        pointerEvents: blockers.pointerEvents,
+      }
+    );
+  }
+}
+
+/**
  * The action was refused by its own argument/target validation BEFORE it
  * touched the page: a verb the element has no arm for (the
  * {@link ElementKindRefusalError} subclass), malformed `sendKeys`, a missing
@@ -667,6 +725,22 @@ export class NoScrollEffectError extends ActionValidationError {
     super(message);
     this.name = 'NoScrollEffectError';
     this.scrollInfo = scrollInfo;
+  }
+}
+
+/**
+ * A `focus` whose `element.focus()` ran but left focus outside the element
+ * (`core/composed-tree` `focusLanded`). `executeAction` reports it as
+ * `UB-ACTION-FAILED` with `failureDetails.context.reason: 'focus_not_taken'`,
+ * the relay's `focus` failure carries the same reason. It is deliberately NOT
+ * an `ActionValidationError`: `focus()` was dispatched, so it is not a refusal.
+ */
+export class FocusNotTakenError extends Error {
+  readonly reason = 'focus_not_taken';
+
+  constructor() {
+    super('focus did not land on the element (focus_not_taken)');
+    this.name = 'FocusNotTakenError';
   }
 }
 
@@ -1451,10 +1525,18 @@ export class DefaultActionExecutor implements ActionExecutor {
       // The registration (connected or not) still feeds the action itself and
       // the effect signature below.
       const registered = this.registry.getElement(elementId);
+      // Set when the id resolved as a page sentinel ("document" / "body" /
+      // "window" → `<html>`): a `scroll` on it is exempt from the dispatch
+      // gate in `performAction`. That arm runs only when nothing else
+      // resolved the id, so it is always the arm that produced `element`.
+      let pageSentinel = false;
       const element = this.resolveActionTarget(elementId, {
         wantAlternates,
         action: request.action,
-        onHit: (strategy) => hits.push(scoreResolution(strategy, elementId)),
+        onHit: (strategy) => {
+          if (strategy === 'page-sentinel') pageSentinel = true;
+          hits.push(scoreResolution(strategy, elementId));
+        },
       });
 
       // First hit wins, exactly as before — `hits[0]` is the arm that actually
@@ -1596,7 +1678,9 @@ export class DefaultActionExecutor implements ActionExecutor {
       let reachedDispatch = false;
       const dispatch = (): Promise<unknown> => {
         reachedDispatch = true;
-        return this.performAction(element, request.action, actionParams, registered);
+        return this.performAction(element, request.action, actionParams, registered, {
+          pageSentinel,
+        });
       };
       // Verify when the executor-wide flag is on OR the caller opted in for this
       // single request via `verifyEffect: true`. The per-request override lets a
@@ -1834,6 +1918,14 @@ export class DefaultActionExecutor implements ActionExecutor {
           durationMs: performance.now() - startTime,
         });
         failureDetails = { ...base, errorCode: NO_SCROLL_EFFECT } as unknown as typeof base;
+      } else if (error instanceof FocusNotTakenError) {
+        // A dispatched failure, keyed on `context.reason` — the catalog code is
+        // unchanged, so the runner's closed mapping needs nothing new.
+        failureDetails = buildActionFailureDetails('UB-ACTION-FAILED', message, {
+          elementId,
+          context: { action: 'focus', reason: error.reason },
+          durationMs: performance.now() - startTime,
+        });
       } else if (error instanceof ElementKindRefusalError) {
         // The marker survives the flattening to `UB-ACTION-FAILED`: a caller
         // keys on `context.refusal`, never on the message.
@@ -2913,37 +3005,26 @@ export class DefaultActionExecutor implements ActionExecutor {
     element: HTMLElement,
     action: string,
     params?: Record<string, unknown>,
-    registered?: RegisteredElement | null
+    registered?: RegisteredElement | null,
+    target: { pageSentinel?: boolean } = {}
   ): Promise<unknown> {
-    // Disabled-state pre-check for click-like actions.
+    // The pre-dispatch gate — the FIRST thing every element action meets,
+    // ahead of custom-action precedence, the hover verbs and the built-in
+    // switch, exactly where the relay's gate sits (`react/commandHandlers.ts`
+    // `executeElementAction`). Every action on an element is gated EXCEPT:
     //
-    // Without this, a click on an `aria-disabled="true"` button or a
-    // `pointer-events: none` Radix button reports `success: true` because the
-    // dispatch sequence "succeeded" — but the React handler is a no-op, so
-    // the user-visible state never changes. Surface this as an explicit
-    // failure so callers can distinguish a transport success from an
-    // effective no-op (the failure mode Phase 3.4's `expectChange` was
-    // designed to surface from the observability side).
-    if (CLICK_LIKE_ACTIONS.has(action)) {
-      // Visibility pre-check first: an element that is not visible cannot be
-      // meaningfully clicked, and "make it visible" (scroll/close overlay) is
-      // a higher-yield recovery than the disabled-state guidance. Surfacing
-      // UB-ELEM-NOT-VISIBLE here means the runner gets the scroll/reveal
-      // recovery command instead of a transport-success no-op.
-      const visibilityReason = getClickVisibilityReason(element);
-      if (visibilityReason) {
-        throw new ElementNotVisibleError(
-          `element is not visible (${visibilityReason}); click was not dispatched`,
-          visibilityReason
-        );
-      }
-      const refusal = getClickRefusal(element, action);
-      if (refusal) {
-        throw new ElementDisabledError(
-          `element is disabled (${refusal.reasons.join(', ')}); click was not dispatched`,
-          refusal.signals
-        );
-      }
+    // - `unhover`: it releases the page's single forced hover whichever
+    //   element it names, and that element is often the one the release just
+    //   hid again.
+    // - a `scroll` on a page sentinel (`document` / `body` / `window`, resolved
+    //   to `<html>` by `resolveActionTarget`): it scrolls the page, not an
+    //   element — the relay's `pageScrollTarget` skip.
+    //
+    // Without this gate a `focus`, `type`, `setValue` or custom action on a
+    // node inside a `display: none` subtree, or a `type` into a natively
+    // disabled input, reported `success: true` while doing nothing.
+    if (action !== 'unhover' && !(action === 'scroll' && target.pageSentinel)) {
+      assertActionable(element, action);
     }
 
     // Custom-action precedence — a registered handler wins over a same-named
@@ -3468,6 +3549,11 @@ export class DefaultActionExecutor implements ActionExecutor {
 
   private performFocus(element: HTMLElement): void {
     element.focus();
+    // Read back: a browser silently ignores `focus()` on a node that cannot
+    // take it (not focusable, or not rendered). Reporting success then is a
+    // false green, and a synthetic `focus` event would tell the page's own
+    // handlers focus arrived when it did not — so neither happens.
+    if (!focusLanded(element)) throw new FocusNotTakenError();
     element.dispatchEvent(new FocusEvent('focus', { bubbles: true }));
   }
 

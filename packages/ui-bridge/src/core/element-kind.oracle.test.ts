@@ -32,8 +32,8 @@
  * unowned control, `<details>`/`<summary>`, the attributes the dispatchers
  * branch on (`aria-expanded`), the role-on-a-native-tag spellings component
  * libraries render, and media registered through the media scanner. Hidden
- * inputs are not enumerated: they have no rendering, so every click-like verb
- * refuses them for visibility, which is state, not kind.
+ * inputs are not enumerated: they have no rendering, so both dispatchers
+ * refuse every verb on them for visibility, which is state, not kind.
  *
  * It replaces `registry.action-advertisement.test.ts`, which pinned the
  * registry's table alone.
@@ -458,21 +458,42 @@ function viaDomFallback(fixture: Fixture, target: HTMLElement): Advertisement {
 interface Outcome {
   success: boolean;
   refusal?: unknown;
+  /** `failureDetails.context.reason` — `focus_not_taken` for an unlanded focus. */
+  reason?: unknown;
   error?: string;
 }
 
 interface DispatchResponse {
   success?: boolean;
   error?: string;
-  failureDetails?: { context?: { refusal?: unknown } };
+  failureDetails?: { context?: { refusal?: unknown; reason?: unknown } };
 }
 
 function outcomeOf(res: DispatchResponse): Outcome {
   return {
     success: res.success === true,
     refusal: res.failureDetails?.context?.refusal,
+    reason: res.failureDetails?.context?.reason,
     error: res.error,
   };
+}
+
+/**
+ * Whether a browser moves focus to `el` on `el.focus()` at all: natively
+ * focusable (its `tabIndex` defaults to 0), given a `tabindex`, or an editing
+ * host (`contenteditable`, whose `tabIndex` jsdom reports as -1). `focus` is
+ * advertised on every element, and both dispatchers read back whether it
+ * landed (`core/composed-tree` `focusLanded`): on a node that cannot take
+ * focus the verb fails LOUDLY with `focus_not_taken` instead of reporting a
+ * no-op as success. Focusability is that node's state (a `tabindex`, a
+ * `disabled`, its rendering), not its kind, so the oracle holds the loud
+ * failure there rather than a success.
+ */
+function takesFocus(el: HTMLElement): boolean {
+  const editable = el.getAttribute('contenteditable');
+  return (
+    el.hasAttribute('tabindex') || el.tabIndex >= 0 || (editable !== null && editable !== 'false')
+  );
 }
 
 const emptyBridge: BridgeAccess = {
@@ -529,7 +550,14 @@ async function violations(fixture: Fixture, via: Dispatcher): Promise<string[]> 
     const advertised = registered.actions.includes(verb);
     const outcome = await dispatch(via, verb);
     await releaseForcedPseudoState('explicit');
-    if (advertised && !outcome.success) {
+    if (verb === 'focus' && advertised && !takesFocus(target)) {
+      if (outcome.success || outcome.reason !== 'focus_not_taken') {
+        found.push(
+          `focus on a node that cannot take focus must fail with focus_not_taken, but ${via} ` +
+            (outcome.success ? 'reported success' : `failed it otherwise: ${outcome.error}`)
+        );
+      }
+    } else if (advertised && !outcome.success) {
       found.push(`advertises ${verb}, but ${via} failed it: ${outcome.error}`);
     } else if (!advertised && (outcome.success || outcome.refusal !== 'element-kind')) {
       found.push(
@@ -852,13 +880,16 @@ describe('toggle on click-toggled state: the framework handler runs on both disp
 });
 
 /**
- * A hidden `<input>` is not an oracle fixture: it has no rendering, so the
- * relay refuses every verb on it for visibility (state, not kind), at base and
- * now. The executor, which the base appended to and cleared one through, does
- * the value verbs: they are restored and advertised.
+ * A hidden `<input>` is not an oracle fixture: it has no rendering, so BOTH
+ * dispatchers refuse every verb on it for visibility (state, not kind) — the
+ * pre-dispatch gate the relay and the executor share (plan
+ * `2026-11-25-ui-bridge-http-executor-refuses-non-click-actions-on-unrendered-elements`).
+ * Until then the executor alone appended to and cleared one, reporting what
+ * the relay refused.
  */
-describe('a hidden input takes type, clear and setValue on the executor', () => {
+describe('a hidden input is refused for visibility on both dispatchers', () => {
   async function onHidden(
+    via: Dispatcher,
     value: string,
     verb: StandardAction,
     params: Record<string, unknown>
@@ -867,7 +898,7 @@ describe('a hidden input takes type, clear and setValue on the executor', () => 
     host.innerHTML = `<input type="hidden" value="${value}" ${T}>`;
     const target = host.querySelector(`[${T}]`) as HTMLInputElement;
     getGlobalRegistry().registerElement('oracle-target', target);
-    return { outcome: await dispatch('executor', verb, params), target };
+    return { outcome: await dispatch(via, verb, params), target };
   }
 
   it('advertises type, clear and setValue, and not autocomplete', () => {
@@ -878,27 +909,16 @@ describe('a hidden input takes type, clear and setValue on the executor', () => 
     expect(actions).not.toContain('autocomplete');
   });
 
-  it('type appends to the value', async () => {
-    const { outcome, target } = await onHidden('tok', 'type', { text: '-en' });
-    expect(outcome).toMatchObject({ success: true });
-    expect(target.value).toBe('tok-en');
-  });
-
-  it('type with clear replaces the value', async () => {
-    const { outcome, target } = await onHidden('old', 'type', { text: 'new', clear: true });
-    expect(outcome).toMatchObject({ success: true });
-    expect(target.value).toBe('new');
-  });
-
-  it('clear empties it', async () => {
-    const { outcome, target } = await onHidden('tok', 'clear', {});
-    expect(outcome).toMatchObject({ success: true });
-    expect(target.value).toBe('');
-  });
-
-  it('setValue writes it whole', async () => {
-    const { outcome, target } = await onHidden('tok', 'setValue', { value: 'abc' });
-    expect(outcome).toMatchObject({ success: true });
-    expect(target.value).toBe('abc');
+  describe.each(['executor', 'relay'] as const)('through the %s', (via) => {
+    it.each([
+      ['type', { text: '-en' }],
+      ['clear', {}],
+      ['setValue', { value: 'abc' }],
+    ] as const)('%s is refused and leaves the value alone', async (verb, params) => {
+      const { outcome, target } = await onHidden(via, 'tok', verb, { ...params });
+      expect(outcome.success).toBe(false);
+      expect(outcome.error).toMatch(/not visible/);
+      expect(target.value).toBe('tok');
+    });
   });
 });

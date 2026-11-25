@@ -728,12 +728,13 @@ describe('render-check refusals agree on every arm: an <option> (own style, optg
 });
 
 /**
- * Where the relay and HTTP gates deliberately DIFFER: the relay dispatch gate
- * runs the render check before every action on a registered element (except
- * unhover); the HTTP pre-check gates click-like actions only.
+ * The relay and HTTP gates AGREE on non-click actions: both run the render
+ * check before every action on a registered element except `unhover` and a
+ * page-sentinel `scroll` (plan
+ * `2026-11-25-ui-bridge-http-executor-refuses-non-click-actions-on-unrendered-elements`).
  */
-describe('relay and HTTP render gates deliberately differ on non-click actions', () => {
-  it('a non-click action on a collapsed control: the relay gate refuses it, the HTTP arm (click-like gate only) dispatches it', async () => {
+describe('relay and HTTP render gates both refuse a non-click action on an unrendered control', () => {
+  it('a focus on an input in a visibility:collapse row is refused on both arms, and focus does not move', async () => {
     const table = document.createElement('table');
     const row = table.insertRow();
     row.style.visibility = 'collapse';
@@ -748,15 +749,14 @@ describe('relay and HTTP render gates deliberately differ on non-click actions',
     )) as { success: boolean; error?: string };
     expect(relay.success).toBe(false);
     expect(relay.error).toContain('not visible');
-    // The refused relay call did not move focus, so the assertion below is
-    // the HTTP arm's doing.
-    expect(document.activeElement).not.toBe(input);
     const http = (await createActionExecutor(getGlobalRegistry()).executeAction('collapse-focus', {
       action: 'focus',
-    })) as { success: boolean; failureDetails?: { errorCode?: string } };
-    expect(http.failureDetails?.errorCode).not.toBe('UB-ELEM-NOT-VISIBLE');
-    expect(http.success).toBe(true);
-    // The focus actually moved (jsdom does not check rendering for focus).
-    expect(document.activeElement).toBe(input);
+    })) as { success: boolean; error?: string; failureDetails?: { errorCode?: string } };
+    expect(http.success).toBe(false);
+    expect(http.failureDetails?.errorCode).toBe('UB-ELEM-NOT-VISIBLE');
+    expect(http.error).toBe('element is not visible (hidden); focus was not dispatched');
+    // jsdom does not check rendering for focus, so focus staying put is the
+    // gates' doing on both arms.
+    expect(document.activeElement).not.toBe(input);
   });
 });
