@@ -476,28 +476,41 @@ function ancestorOpacity(chain: Element[], memo?: VisibilityMemo | null): number
  * value already carries an ancestor's. The ancestor walk runs only for an
  * element that is itself visible; `memo` (one per pass) bounds it to one
  * style read per distinct node.
+ *
+ * Still read as visible, because style alone does not say: an unslotted light
+ * child of a host whose shadow root is CLOSED (`shadowRoot` is `null`, so the
+ * slot rule cannot see it), the body of a closed `<details>`, and a slot's
+ * fallback content while the slot has assigned nodes.
  */
 function isElementVisible(el: Element, memo?: VisibilityMemo | null): boolean {
   if (!el.isConnected) return false;
   const htmlEl = el as HTMLElement;
+  // An own opacity below 0.1 hides `el` unless it is `display: contents`
+  // (no box, so its opacity paints nothing), which only the computed style
+  // can tell; so an inline one is decided there when computed style exists.
+  let inlineFaded = false;
   if (htmlEl.style) {
     if (htmlEl.style.display === 'none') return false;
     if (htmlEl.style.visibility === 'hidden') return false;
     const opacity = parseFloat(htmlEl.style.opacity);
-    if (!isNaN(opacity) && opacity < 0.1) return false;
+    inlineFaded = !isNaN(opacity) && opacity < 0.1;
   }
   // Check computed style if available
-  if (typeof getComputedStyle !== 'function') return true;
+  if (typeof getComputedStyle !== 'function') return !inlineFaded;
   let ownFactor = 1;
   try {
     const computed = getComputedStyle(el);
     if (computed.display === 'none') return false;
     if (computed.visibility === 'hidden') return false;
-    const computedOpacity = parseFloat(computed.opacity);
-    if (!isNaN(computedOpacity) && computedOpacity < 0.1) return false;
-    if (computed.display !== 'contents') ownFactor = opacityFactor(computed.opacity);
+    if (computed.display !== 'contents') {
+      if (inlineFaded) return false;
+      const computedOpacity = parseFloat(computed.opacity);
+      if (!isNaN(computedOpacity) && computedOpacity < 0.1) return false;
+      ownFactor = opacityFactor(computed.opacity);
+    }
   } catch {
     // getComputedStyle may throw in some environments
+    if (inlineFaded) return false;
   }
   if (el.parentElement?.shadowRoot && !el.assignedSlot) {
     memo?.set(el, 0);
