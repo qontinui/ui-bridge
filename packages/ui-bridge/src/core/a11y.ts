@@ -716,7 +716,7 @@ export const LABEL_MAX_CODE_POINTS = 200;
  * `REDACTED_VALUE` sentinel the name carries (a boundary inside the named
  * subtree): a sentinel the cut would split is dropped whole.
  */
-export function capLabel(name: string): string {
+function capLabel(name: string): string {
   const cut = truncateKeepingSentinel(name, LABEL_MAX_CODE_POINTS);
   return cut === name ? name : cut + '…';
 }

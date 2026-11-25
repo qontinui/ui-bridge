@@ -98,6 +98,7 @@ import {
   normalizeKeyDescriptors,
 } from '../core/key-events';
 import {
+  verdictFromState,
   verdictOf,
   scrubContent,
   scrubReactProps,
@@ -2584,9 +2585,12 @@ export class DefaultActionExecutor implements ActionExecutor {
     }
 
     // ONE element-state read per row: `accessibleName` and an unregistered
-    // node's `label` are both taken from it, so the row's three names
-    // (`label`, `accessibleName`, `state.accessibleName`) cannot disagree
-    // and the accname algorithm runs once per row.
+    // node's `label` are both taken from it, so the accname algorithm runs
+    // once per row and the row's three names (`label`, `accessibleName`,
+    // `state.accessibleName`) agree, except where the label rule differs by
+    // design: a registered node keeps its registry label, a name over
+    // `LABEL_MAX_CODE_POINTS` is capped in `label` only, and a nameless
+    // content-redacted node's `label` is the sentinel while its name is absent.
     const state = getElementState(el);
 
     return {
@@ -2605,7 +2609,7 @@ export class DefaultActionExecutor implements ActionExecutor {
       // idempotent on the sentinel. A bare password field keeps its label.
       label: scrubContent(
         registered?.label ??
-          (canonicalLabelFromName(state.accessibleName, verdictOf(el)) || undefined),
+          (canonicalLabelFromName(state.accessibleName, verdictFromState(state)) || undefined),
         el
       ),
       tagName: el.tagName.toLowerCase(),

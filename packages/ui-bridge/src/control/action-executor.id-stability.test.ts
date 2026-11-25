@@ -196,3 +196,30 @@ describe('executor find label is the canonical accessible name', () => {
     expect(control.elements.map((row) => row.id)).toEqual(['button']);
   });
 });
+
+describe('executor find label: the registered and capped cases', () => {
+  it('a registered interactive row keeps its registry label while accessibleName is the canonical name', async () => {
+    document.body.innerHTML = '<button><img alt="Upload avatar"></button>';
+    const registry = new UIBridgeRegistry();
+    const button = document.body.querySelector('button')!;
+    registry.registerElement('upload', button, { type: 'button', label: 'Registry upload' });
+    const ex = new DefaultActionExecutor(registry);
+    const row = (await ex.find({ includeHidden: true })).elements.find((r) => r.id === 'upload')!;
+    expect(row.label).toBe('Registry upload');
+    expect(row.state.accessibleName).toBe('Upload avatar');
+    // was (69e61bbc): undefined -- the old chain missed `<img alt>`.
+    expect(row.accessibleName).toBe('Upload avatar');
+  });
+
+  it('caps an unregistered label at LABEL_MAX_CODE_POINTS while accessibleName keeps the whole name', async () => {
+    const name = 'Long '.repeat(60).trim(); // 299 code points, over the cap
+    document.body.innerHTML = `<button>${name}</button>`;
+    const row = (
+      await new DefaultActionExecutor(new UIBridgeRegistry()).find({ includeHidden: true })
+    ).elements[0]!;
+    expect([...name].length).toBeGreaterThan(LABEL_MAX_CODE_POINTS);
+    expect(row.accessibleName).toBe(name);
+    expect(row.state.accessibleName).toBe(name);
+    expect(row.label).toBe(`${[...name].slice(0, LABEL_MAX_CODE_POINTS).join('')}…`);
+  });
+});
