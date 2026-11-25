@@ -22,6 +22,7 @@ import { getGlobalRegistry, resetGlobalRegistry } from '../core/registry';
 import { DefaultActionExecutor } from './action-executor';
 import { executeCommand, type BridgeAccess } from '../react/commandHandlers';
 import { focusAndReadBack } from '../core/composed-tree';
+import { focusable } from '../core/element-kind';
 import { getElementState } from '../core/element-state';
 
 const emptyBridge: BridgeAccess = {
@@ -653,5 +654,48 @@ describe('focusAndReadBack', () => {
 
   it('a disconnected node never reads as focused', () => {
     expect(focusAndReadBack(document.createElement('input'))).toBe(false);
+  });
+
+  it('a focus that a document-level trap pulls back OUT of the target is not taken', () => {
+    // An open modal keeps focus inside itself: a document-level focusin
+    // listener moves focus back into the dialog as soon as it lands outside.
+    const dialogInput = document.createElement('input');
+    const background = document.createElement('button');
+    document.body.append(dialogInput, background);
+    dialogInput.focus();
+    const trap = (e: FocusEvent): void => {
+      if (e.target !== dialogInput) dialogInput.focus();
+    };
+    document.addEventListener('focusin', trap);
+    try {
+      expect(focusAndReadBack(background)).toBe(false);
+      expect(document.activeElement).toBe(dialogInput);
+    } finally {
+      document.removeEventListener('focusin', trap);
+    }
+  });
+});
+
+describe('focusable', () => {
+  it('a link or area without an href cannot take focus; with one, it can', () => {
+    const bare = document.createElement('a');
+    const linked = document.createElement('a');
+    linked.href = '#x';
+    const area = document.createElement('area');
+    const tabbed = document.createElement('a');
+    tabbed.setAttribute('tabindex', '-1');
+    expect(focusable(bare)).toBe(false);
+    expect(focusable(area)).toBe(false);
+    expect(focusable(linked)).toBe(true);
+    expect(focusable(tabbed)).toBe(true);
+  });
+
+  it('an undefined hyphenated tag is not focusable; a defined custom element with no readable root is UNKNOWN, so advertised', () => {
+    const undefinedTag = document.createElement('x-not-registered-anywhere');
+    expect(focusable(undefinedTag)).toBe(false);
+    if (!customElements.get('x-focusable-probe')) {
+      customElements.define('x-focusable-probe', class extends HTMLElement {});
+    }
+    expect(focusable(document.createElement('x-focusable-probe'))).toBe(true);
   });
 });

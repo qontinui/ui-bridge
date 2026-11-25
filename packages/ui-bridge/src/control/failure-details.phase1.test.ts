@@ -179,6 +179,32 @@ describe('Phase 1 — WorkflowStepResult.failureDetails', () => {
     expect(step.failureDetails?.errorCode).toBe('UB-ELEM-NOT-FOUND');
   });
 
+  it('an injected executor that resolves no response fails the step with a message', async () => {
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    registry.registerElement('field', input, { type: 'input', label: 'field' });
+    const silent = {
+      ...executor,
+      executeAction: async () => undefined,
+    } as unknown as DefaultActionExecutor;
+    const silentEngine = new DefaultWorkflowEngine(registry, silent);
+    const wf: Workflow = {
+      id: 'wf-silent-executor',
+      name: 'Silent executor',
+      steps: [{ id: 'click-field', type: 'element-action', target: 'field', action: 'click' }],
+    };
+    registry.registerWorkflow(wf);
+    try {
+      const run = await silentEngine.run('wf-silent-executor');
+      expect(run.status).toBe('failed');
+      const [step] = run.steps;
+      expect(step.success).toBe(false);
+      expect(step.error).toContain('not an action response');
+    } finally {
+      input.remove();
+    }
+  });
+
   it('a missing-target wait step classifies via failureDetails', async () => {
     const wf: Workflow = {
       id: 'wf-wait',

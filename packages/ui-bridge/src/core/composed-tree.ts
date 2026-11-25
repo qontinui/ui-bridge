@@ -104,10 +104,12 @@ function activeAlongRoots(el: Element): (Element | null)[] {
  * Taken when either holds:
  *
  * - A `focusin` reached `el` during the call — focus arrived at `el` or at a
- *   node inside it, even if `el`'s own focus handling then moved it on. A
+ *   node inside it — AND focus is still at `el` or inside it afterwards. A
  *   focus trap or roving container hands focus straight back to the
  *   descendant that already held it, and the read below cannot see that
- *   (nothing MOVED), yet `el` did take focus.
+ *   (nothing MOVED), yet `el` did take focus. A focus that something outside
+ *   `el` (a document-level modal trap) pulls back OUT of `el` is not taken,
+ *   even though `focusin` fired on the way.
  * - Afterwards, in some tree on `el`'s path to the document (see
  *   `activeAlongRoots`), the focused element is `el` itself, or a flat-tree
  *   descendant of `el` (`composedAncestry`: a slotted node's parent is its
@@ -135,8 +137,14 @@ export function focusAndReadBack(el: HTMLElement): boolean {
   } finally {
     el.removeEventListener('focusin', onFocusIn);
   }
-  if (reached) return true;
-  return activeAlongRoots(el).some((active, i) => {
+  const after = activeAlongRoots(el);
+  if (
+    reached &&
+    after.some((active) => active === el || (!!active && composedAncestry(active).includes(el)))
+  ) {
+    return true;
+  }
+  return after.some((active, i) => {
     if (!active) return false;
     if (active === el) return true;
     return before[i] !== active && composedAncestry(active).includes(el);

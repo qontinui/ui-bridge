@@ -621,11 +621,12 @@ export function resolveOwnerForm(element: Element): HTMLFormElement | null {
  * Whether a browser moves focus to `element` on `element.focus()`, as far as
  * its structure says: it carries a `tabindex` (any value, `-1` included:
  * script focus takes it), is natively focusable (`tabIndex >= 0`: a link with
- * an `href`, a form control, …), is an editing host (`contenteditable`), or is
+ * an `href` — an `<a>`/`<area>` without one is not — a form control, …), is an editing host (`contenteditable`), or is
  * a shadow host whose open shadow root delegates focus.
  *
- * A custom element (a hyphenated tag) whose shadow root cannot be read — a
- * CLOSED root, which may delegate focus — reads as focusable: that is UNKNOWN,
+ * A DEFINED custom element (a hyphenated tag registered with
+ * `customElements`) whose shadow root cannot be read — it may be a CLOSED
+ * root, which may delegate focus — reads as focusable: that is UNKNOWN,
  * not "cannot take focus", and the dispatchers' read-back (`focusAndReadBack`
  * in `core/composed-tree`) still reports a focus that did not land. Whether
  * the node is rendered, `inert` or `disabled` is state, checked by the
@@ -637,11 +638,27 @@ export function resolveOwnerForm(element: Element): HTMLFormElement | null {
  */
 export function focusable(element: Element): boolean {
   if (element.hasAttribute('tabindex') || isContentEditable(element)) return true;
+  // `<a>` / `<area>` report `tabIndex` 0 even with no `href`, and cannot take
+  // focus then (a `tabindex` attribute was handled above).
+  if ((element.localName === 'a' || element.localName === 'area') && !element.hasAttribute('href')) {
+    return false;
+  }
   const tabIndex = (element as Partial<HTMLElement>).tabIndex;
   if (typeof tabIndex === 'number' && tabIndex >= 0) return true;
   const root = element.shadowRoot;
   if (root) return root.delegatesFocus === true;
-  return element.localName.includes('-');
+  return definedCustomElement(element);
+}
+
+/**
+ * A custom element whose definition is registered. Only such a node can carry
+ * a closed shadow root (an undefined hyphenated tag is a plain unknown
+ * element), so only it is UNKNOWN rather than not focusable.
+ */
+function definedCustomElement(element: Element): boolean {
+  if (!element.localName.includes('-')) return false;
+  const registry = element.ownerDocument?.defaultView?.customElements;
+  return registry?.get(element.localName) !== undefined;
 }
 
 /**

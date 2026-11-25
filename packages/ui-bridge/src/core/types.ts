@@ -916,7 +916,13 @@ export interface RegisteredElement {
   type: ElementType;
   /** Human-readable label */
   label?: string;
-  /** Available standard actions for this element */
+  /**
+   * Available standard actions for this element. On a registry row whose
+   * actions were not declared, this is an accessor that re-infers the list
+   * from the live node on EVERY read and returns a new array each time, so
+   * never compare it by reference or mutate it in place; assigning it declares
+   * a list.
+   */
   actions: StandardAction[];
   /** Custom actions specific to this element */
   customActions?: Record<string, CustomAction>;
