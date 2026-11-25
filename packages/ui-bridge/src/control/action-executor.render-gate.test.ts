@@ -136,6 +136,52 @@ describe('the HTTP executor refuses a non-click action on an unrendered element'
     expect(input.value).toBe('old');
   });
 
+  /** An input inside a `<fieldset disabled>`, plus one inside its first `<legend>`. */
+  function disabledFieldset(): { inside: HTMLInputElement; inLegend: HTMLInputElement } {
+    const fieldset = document.createElement('fieldset');
+    fieldset.disabled = true;
+    const legend = document.createElement('legend');
+    const inLegend = document.createElement('input');
+    legend.appendChild(inLegend);
+    const inside = document.createElement('input');
+    fieldset.append(legend, inside);
+    document.body.appendChild(fieldset);
+    getGlobalRegistry().registerElement('fs-inside', inside, { type: 'input', label: 'i' });
+    getGlobalRegistry().registerElement('fs-legend', inLegend, { type: 'input', label: 'l' });
+    return { inside, inLegend };
+  }
+
+  it.each(['http', 'relay'] as const)(
+    '%s: type into an input inside a <fieldset disabled> is refused, though its own .disabled is false',
+    async (arm) => {
+      const { inside } = disabledFieldset();
+      expect(inside.disabled).toBe(false);
+      const res =
+        arm === 'http'
+          ? await http('fs-inside', 'type', { text: 'x' })
+          : await relay('fs-inside', 'type', { text: 'x' });
+      expect(res.success).toBe(false);
+      expect(res.failureDetails?.errorCode).toBe(
+        arm === 'http' ? 'UB-ELEM-DISABLED' : 'ELEMENT_NOT_ENABLED'
+      );
+      if (arm === 'http') expect(res.failureDetails?.disabledReason).toBe('native');
+      expect(inside.value).toBe('');
+    }
+  );
+
+  it.each(['http', 'relay'] as const)(
+    "%s: an input in the disabled fieldset's first <legend> is not disabled (HTML spec)",
+    async (arm) => {
+      const { inLegend } = disabledFieldset();
+      const res =
+        arm === 'http'
+          ? await http('fs-legend', 'type', { text: 'x' })
+          : await relay('fs-legend', 'type', { text: 'x' });
+      expect(res.success).toBe(true);
+      expect(inLegend.value).toBe('x');
+    }
+  );
+
   it('aria-disabled does not block a non-click action (native disabled only, as on the relay)', async () => {
     const input = document.createElement('input');
     input.setAttribute('aria-disabled', 'true');
@@ -282,6 +328,21 @@ describe('focusLanded', () => {
     expect(focusLanded(inner)).toBe(true);
     expect(focusLanded(host)).toBe(true);
     expect(focusLanded(sibling)).toBe(false);
+  });
+
+  it('reads a node in another realm (an iframe) across its open shadow root', () => {
+    const iframe = document.createElement('iframe');
+    document.body.appendChild(iframe);
+    const doc = iframe.contentDocument as Document;
+    const wrapper = doc.createElement('div');
+    doc.body.appendChild(wrapper);
+    const inner = doc.createElement('input');
+    wrapper.attachShadow({ mode: 'open' }).appendChild(inner);
+    // The wrapper forwards focus into its own open shadow root.
+    wrapper.focus = () => inner.focus();
+    wrapper.focus();
+    expect(focusLanded(wrapper)).toBe(true);
+    expect(focusLanded(inner)).toBe(true);
   });
 
   it('a disconnected node never reads as focused', () => {

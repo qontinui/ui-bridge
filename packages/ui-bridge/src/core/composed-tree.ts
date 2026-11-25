@@ -5,10 +5,22 @@
  * module has to import from `control/`.
  */
 
-/** The shadow root `node` lives in, or `null` when it is in a document tree. */
+/**
+ * The shadow root `node` lives in, or `null` when it is in a document tree.
+ *
+ * Judged by node type, never `instanceof`: a node inside an iframe belongs to
+ * another realm, whose `Element` is not this one's, and an `instanceof` test
+ * there would read every shadow root as "no shadow root" and stop the
+ * flat-tree walk at it.
+ */
 export function shadowRootOf(node: Node): ShadowRoot | null {
   const root = node.getRootNode?.();
-  if (root && root !== node && (root as ShadowRoot).host instanceof Element) {
+  if (
+    root &&
+    root !== node &&
+    root.nodeType === 11 /* DOCUMENT_FRAGMENT_NODE */ &&
+    (root as ShadowRoot).host?.nodeType === 1 /* ELEMENT_NODE */
+  ) {
     return root as ShadowRoot;
   }
   return null;
