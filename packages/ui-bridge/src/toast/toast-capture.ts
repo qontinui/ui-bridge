@@ -23,9 +23,10 @@
  * mutates, and its first text is captured as an announcement. A match the
  * scan first sees HIDDEN is parked with `''` too, like an active element that
  * is hidden: its visibility is re-checked on each poll, each read and each
- * scan its selector still matches, so a reveal by style alone (a fade-in, an
- * ancestor shown) — which no `childList` record announces — is captured, and
- * it is cloned only once it is shown.
+ * scan its selector still matches, so a reveal by style alone (a fade-in, a
+ * display or visibility toggle, an ancestor shown by `visibility` — the one
+ * property that inherits) — which no `childList` record announces — is
+ * captured, and it is cloned only once it is shown.
  *
  * Re-reading is gated on mutation: every tracked (active or parked) element
  * has its own MutationObserver (an active entry that survives uninstall has
