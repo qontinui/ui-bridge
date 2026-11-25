@@ -40,7 +40,7 @@
  * 2026-11-25-ui-bridge-toast-capture-tracks-hidden-matches-until-shown
  * (Phase 1: H1-H11, H3b; C5 amended);
  * 2026-11-25-ui-bridge-toast-capture-sees-ancestor-display-and-opacity
- * (Phase 1: V1-V9, V1b).
+ * (Phase 1: V1-V9, V1b; review round 1: V10, V11).
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -1284,9 +1284,12 @@ describe('ToastCapture churn budget and re-read gate', () => {
       expect(appeared()).toEqual([]);
 
       parent.style.display = '';
-      // No poll yet and no public read: nothing may have announced it.
+      // The install's first poll is at 500 ms and flushAndScan stopped at
+      // 50 ms: advance to 1 ms short of it. Timers ran, no poll and no public
+      // read did, so nothing may have announced it yet.
+      await vi.advanceTimersByTimeAsync(449);
       expect(appeared()).toEqual([]);
-      await vi.advanceTimersByTimeAsync(500);
+      await vi.advanceTimersByTimeAsync(51);
 
       // Announced by the poll, asserted before any public read.
       expect(appearedFor('bar')).toHaveLength(1);
@@ -1302,8 +1305,10 @@ describe('ToastCapture churn budget and re-read gate', () => {
       expect(appeared()).toEqual([]);
 
       parent.style.opacity = '1';
+      // 1 ms short of the first poll (500 ms; flushAndScan stopped at 50 ms).
+      await vi.advanceTimersByTimeAsync(449);
       expect(appeared()).toEqual([]);
-      await vi.advanceTimersByTimeAsync(500);
+      await vi.advanceTimersByTimeAsync(51);
 
       expect(appearedFor('bar')).toHaveLength(1);
       expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['bar', 'Connected']]);
@@ -1360,8 +1365,11 @@ describe('ToastCapture churn budget and re-read gate', () => {
       // toast's own subtree, so the poll is still the only thing that can see
       // the reveal.
       document.documentElement.setAttribute('data-restyle', '1');
-      await vi.advanceTimersByTimeAsync(500);
-      document.documentElement.removeAttribute('data-restyle');
+      try {
+        await vi.advanceTimersByTimeAsync(500);
+      } finally {
+        document.documentElement.removeAttribute('data-restyle');
+      }
 
       expect(appearedFor('slotted')).toHaveLength(1);
       expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['slotted', 'Ready']]);
@@ -1458,6 +1466,35 @@ describe('ToastCapture churn budget and re-read gate', () => {
       expect(appearedFor('plain').map((e) => e.toast.message)).toEqual(['Shown']);
       expect(appearedFor('faded')).toEqual([]);
       expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['plain', 'Shown']]);
+    });
+
+    // V10
+    it('a status nested in a status multiplies its own opacity by the outer one', async () => {
+      install({ pollInterval: 500 });
+      // Both match: the outer one's memo entry (its own 0.3 times its
+      // ancestors') is what the inner one inherits, so 0.3 x 0.3 = 0.09.
+      const outer = addStatus('outer', 'Outer');
+      outer.style.opacity = '0.3';
+      const inner = addStatus('inner', 'Inner', outer);
+      inner.style.opacity = '0.3';
+      await flushAndScan();
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(appearedFor('inner')).toEqual([]);
+      expect(appearedFor('outer')).toHaveLength(1);
+      expect(capture.getActive().map((t) => t.id)).toEqual(['outer']);
+    });
+
+    // V11
+    it('a display contents toast at opacity 0 is announced: a node with no box adds no factor', async () => {
+      install({ pollInterval: 500 });
+      const el = addStatus('contents', 'Boxless');
+      el.style.display = 'contents';
+      el.style.opacity = '0';
+      await flushAndScan();
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(appearedFor('contents').map((e) => e.toast.message)).toEqual(['Boxless']);
     });
   });
 
