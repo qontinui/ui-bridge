@@ -144,11 +144,14 @@ function failedActionResponse(
     error,
     // Classified like the throw arm, so the same message gets the same code
     // whether the executor threw it or returned it.
-    failureDetails:
-      response.failureDetails ??
-      buildActionFailureDetails(classifyStepError(error), error, {
-        context: { stepId: step.id, stepType: step.type },
-      }),
+    failureDetails: response.failureDetails
+      ? {
+          ...response.failureDetails,
+          context: { ...response.failureDetails.context, stepId: step.id, stepType: step.type },
+        }
+      : buildActionFailureDetails(classifyStepError(error), error, {
+          context: { stepId: step.id, stepType: step.type },
+        }),
   };
 }
 
