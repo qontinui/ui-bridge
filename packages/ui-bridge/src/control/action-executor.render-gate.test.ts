@@ -553,6 +553,26 @@ describe('focus reads back whether it landed, on both arms', () => {
   );
 
   it.each(['http', 'relay'] as const)(
+    '%s: blur fires the page blur handler once, with no bubbling synthetic event',
+    async (arm) => {
+      const wrapper = document.createElement('div');
+      const input = document.createElement('input');
+      wrapper.appendChild(input);
+      document.body.appendChild(wrapper);
+      input.focus();
+      let ownBlur = 0;
+      let bubbledToWrapper = 0;
+      input.addEventListener('blur', () => (ownBlur += 1));
+      wrapper.addEventListener('blur', () => (bubbledToWrapper += 1));
+      getGlobalRegistry().registerElement('blur-once', input, { type: 'input', label: 'b' });
+      const res = arm === 'http' ? await http('blur-once', 'blur') : await relay('blur-once', 'blur');
+      expect(res.success).toBe(true);
+      expect(ownBlur).toBe(1);
+      expect(bubbledToWrapper).toBe(0);
+    }
+  );
+
+  it.each(['http', 'relay'] as const)(
     '%s: a tabindex added after registration makes focus advertised on the served row, and it succeeds',
     async (arm) => {
       const item = document.createElement('div');
@@ -744,9 +764,12 @@ describe('focusable', () => {
     expect(focusable(document.createElement('div'))).toBe(false);
   });
 
-  it('an SVG link with only xlink:href is focusable', () => {
+  it('an SVG link with only xlink:href is focusable; an HTML one is not', () => {
     const svgLink = document.createElementNS('http://www.w3.org/2000/svg', 'a');
     svgLink.setAttributeNS('http://www.w3.org/1999/xlink', 'xlink:href', '#x');
     expect(focusable(svgLink)).toBe(true);
+    const htmlLink = document.createElement('a');
+    htmlLink.setAttributeNS('http://www.w3.org/1999/xlink', 'xlink:href', '#x');
+    expect(focusable(htmlLink)).toBe(false);
   });
 });

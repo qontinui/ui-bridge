@@ -732,7 +732,13 @@ inline `-9999px` offset (`off-screen`).
 take focus (no `tabindex`, not natively focusable, not an editing host, not a
 shadow host that delegates focus), on both arms, with `UB-ACTION-FAILED` and
 the element-kind refusal (`failureDetails.context.refusal: "element-kind"`);
-such a node does not advertise `focus`. On a focusable node, `focus` reports
+such a node does not advertise `focus`. Two shapes are judged by tag rather
+than by what the page does: a custom element (any hyphenated tag) whose shadow
+root cannot be read is advertised `focus`, since it may carry a closed root
+that delegates focus, and a light-DOM one then fails after dispatch with
+`focus_not_taken`; a built-in host such as a `div` whose CLOSED root delegates
+focus is refused, since it cannot be told apart from a plain `div` (give it a
+`tabindex` to make `focus` advertised). On a focusable node, `focus` reports
 whether focus landed. After `element.focus()`,
 focus counts as taken when the focused element (descending into open shadow
 roots) is the target or inside it in the flat tree, so a focusable wrapper that
@@ -744,8 +750,11 @@ straight back to the descendant that already held it succeeds, while a focus
 that a document-level modal trap pulls back OUT of the target does not. When it
 did not land, the action fails with `UB-ACTION-FAILED` and
 `failureDetails.context.reason: "focus_not_taken"`. Neither arm dispatches a
-synthetic `focus` or `blur` event: the real `focus()` / `blur()` call fires the
-page's handlers exactly once.
+synthetic `focus` or `blur` event for these two verbs: the real `focus()` /
+`blur()` call fires the page's handlers at most once (`blur` on an element that
+does not hold focus fires none, and still reports success). The value verbs
+(`type`, `clear`, `setValue`) still pair their native focus and blur with a
+synthetic event (`control/value-mutation.ts`).
 
 The read-back judges where focus ended up, not whether the page meant to move
 it. A page whose own focus handling forwards focus to a DESCENDANT of the

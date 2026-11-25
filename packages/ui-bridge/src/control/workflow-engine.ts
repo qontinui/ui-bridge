@@ -134,7 +134,16 @@ function failedActionResponse(
     } as ControlActionResponse;
   }
   const response = result as ControlActionResponse | ComponentActionResponse;
-  return response.success ? null : response;
+  if (response.success) return null;
+  if (response.failureDetails) return response;
+  const error = response.error ?? `${step.type} step failed with no error message`;
+  return {
+    ...response,
+    error,
+    failureDetails: buildActionFailureDetails('UB-ACTION-FAILED', error, {
+      context: { stepId: step.id, stepType: step.type },
+    }),
+  };
 }
 
 /**

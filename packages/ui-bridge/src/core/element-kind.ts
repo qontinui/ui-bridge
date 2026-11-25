@@ -617,12 +617,15 @@ export function resolveOwnerForm(element: Element): HTMLFormElement | null {
   return element.closest('form');
 }
 
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const XLINK_NS = 'http://www.w3.org/1999/xlink';
+
 /**
  * Whether a browser moves focus to `element` on `element.focus()`, as far as
  * its structure says: it carries a `tabindex` (any value, `-1` included:
  * script focus takes it), is natively focusable (`tabIndex >= 0`: a link with
- * an `href` or `xlink:href` — an `<a>`/`<area>` without one is not — a form
- * control, …), is an editing host (`contenteditable`), or is
+ * an `href`, or an SVG `<a>` with `xlink:href` — an `<a>`/`<area>` without
+ * one is not — a form control, …), is an editing host (`contenteditable`), or is
  * a shadow host whose open shadow root delegates focus.
  *
  * A custom element (any hyphenated tag, defined or not: `attachShadow` and
@@ -649,7 +652,7 @@ export function focusable(element: Element): boolean {
   if (
     (element.localName === 'a' || element.localName === 'area') &&
     !element.hasAttribute('href') &&
-    !element.hasAttributeNS(XLINK_NS, 'href')
+    !(element.namespaceURI === SVG_NS && element.hasAttributeNS(XLINK_NS, 'href'))
   ) {
     return false;
   }
@@ -657,10 +660,13 @@ export function focusable(element: Element): boolean {
   if (typeof tabIndex === 'number' && tabIndex >= 0) return true;
   const root = element.shadowRoot;
   if (root) return root.delegatesFocus === true;
+  // A built-in shadow host (`div`, `section`, …) whose CLOSED root delegates
+  // focus reads as not focusable here: it cannot be told apart from a plain
+  // `div`, and advertising `focus` on every such tag would undo the advertised
+  // set. Give such a host a `tabindex` (or declare its `actions`) to make
+  // `focus` advertised on it.
   return element.localName.includes('-');
 }
-
-const XLINK_NS = 'http://www.w3.org/1999/xlink';
 
 /**
  * What THIS node performs because of the HTML element it is and the state it

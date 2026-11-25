@@ -207,6 +207,31 @@ describe('Phase 1 — WorkflowStepResult.failureDetails', () => {
     }
   });
 
+  it('an injected executor that fails with no failureDetails still yields classified details', async () => {
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    registry.registerElement('bare-fail', input, { type: 'input', label: 'bare' });
+    const bare = {
+      ...executor,
+      executeAction: async () => ({ success: false, error: 'nope' }),
+    } as unknown as DefaultActionExecutor;
+    const bareEngine = new DefaultWorkflowEngine(registry, bare);
+    registry.registerWorkflow({
+      id: 'wf-bare-fail',
+      name: 'Bare failure',
+      steps: [{ id: 'c', type: 'element-action', target: 'bare-fail', action: 'click' }],
+    });
+    try {
+      const run = await bareEngine.run('wf-bare-fail');
+      const [step] = run.steps;
+      expect(step.success).toBe(false);
+      expect(step.error).toBe('nope');
+      expectValidFailureDetails(step.failureDetails);
+    } finally {
+      input.remove();
+    }
+  });
+
   it('a missing-target wait step classifies via failureDetails', async () => {
     const wf: Workflow = {
       id: 'wf-wait',
