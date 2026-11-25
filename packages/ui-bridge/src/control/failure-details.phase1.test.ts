@@ -123,6 +123,62 @@ describe('Phase 1 — WorkflowStepResult.failureDetails', () => {
     expectValidFailureDetails(failed?.failureDetails);
   });
 
+  it('an element-action step whose action is refused fails the step and stops the run', async () => {
+    const input = document.createElement('input');
+    input.disabled = true;
+    document.body.appendChild(input);
+    registry.registerElement('locked', input, { type: 'input', label: 'locked' });
+    const wf: Workflow = {
+      id: 'wf-refused-element',
+      name: 'Refused element action',
+      steps: [
+        {
+          id: 'type-locked',
+          type: 'element-action',
+          target: 'locked',
+          action: 'type',
+          params: { text: 'x' },
+        },
+        { id: 'after', type: 'element-action', target: 'locked', action: 'blur' },
+      ],
+    };
+    registry.registerWorkflow(wf);
+    try {
+      const run = await engine.run('wf-refused-element');
+      expect(run.status).toBe('failed');
+      expect(run.steps).toHaveLength(1);
+      const [step] = run.steps;
+      expect(step.success).toBe(false);
+      expect(step.error).toContain('type was not dispatched');
+      expect(run.error).toBe(step.error);
+      expectValidFailureDetails(step.failureDetails);
+      expect(step.failureDetails?.errorCode).toBe('UB-ELEM-DISABLED');
+      expect((step.result as { success: boolean }).success).toBe(false);
+      expect(input.value).toBe('');
+    } finally {
+      input.remove();
+    }
+  });
+
+  it('a component-action step whose component is not found fails the step', async () => {
+    const wf: Workflow = {
+      id: 'wf-refused-component',
+      name: 'Refused component action',
+      steps: [
+        { id: 'missing', type: 'component-action', target: 'no-such-component', action: 'go' },
+      ],
+    };
+    registry.registerWorkflow(wf);
+    const run = await engine.run('wf-refused-component');
+    expect(run.status).toBe('failed');
+    const [step] = run.steps;
+    expect(step.success).toBe(false);
+    expect(typeof step.error).toBe('string');
+    expect(run.error).toBe(step.error);
+    expectValidFailureDetails(step.failureDetails);
+    expect(step.failureDetails?.errorCode).toBe('UB-ELEM-NOT-FOUND');
+  });
+
   it('a missing-target wait step classifies via failureDetails', async () => {
     const wf: Workflow = {
       id: 'wf-wait',

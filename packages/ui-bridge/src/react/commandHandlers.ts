@@ -72,6 +72,7 @@ import {
   readHandlerErrorEnvelope,
   DefaultActionExecutor,
   getClickRefusal,
+  refusedWhenNativelyDisabled,
   requestFormSubmit,
   dispatchRightClick,
   dispatchMiddleClick,
@@ -2062,9 +2063,19 @@ export async function executeCommand(
         const clickRefusal = getClickRefusal(domEl, request.action);
         if (clickRefusal)
           return createClickRefusalFailure(id, request.action, clickRefusal, startTime);
-        // Every other action: native `disabled` only. A hover-revealed
-        // `pointer-events:none` target must still be focusable, typeable, etc.
-        if (readDisabledSignals(domEl).disabled && !isUnhover)
+        // Every other action: native `disabled` only, and only for a verb
+        // `refusedWhenNativelyDisabled` names — a mutating one or a custom
+        // action; `hover`, `unhover`, `scroll`, `scrollIntoView` and `blur`
+        // pass, as in the executor. A hover-revealed `pointer-events:none`
+        // target must still be focusable, typeable, etc.
+        if (
+          !isUnhover &&
+          refusedWhenNativelyDisabled(
+            request.action,
+            el.customActions?.[request.action] !== undefined
+          ) &&
+          readDisabledSignals(domEl).disabled
+        )
           return createActionFailure(
             id,
             'ELEMENT_NOT_ENABLED',
