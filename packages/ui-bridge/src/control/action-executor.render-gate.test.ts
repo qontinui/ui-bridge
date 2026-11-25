@@ -226,8 +226,34 @@ describe('focus reads back whether it landed, on both arms', () => {
     const res = await http('lands', 'focus');
     expect(res.success).toBe(true);
     expect(document.activeElement).toBe(input);
-    expect(focusEvents.length).toBeGreaterThan(0);
+    // jsdom's native focus() fires a trusted focus event of its own; the
+    // executor's synthetic one is the untrusted event, exactly once.
+    expect(focusEvents.filter((e) => !e.isTrusted)).toHaveLength(1);
   });
+
+  /** An input inside a CLOSED shadow root, registered directly. */
+  function inputInClosedShadow(id: string): { host: HTMLElement; inner: HTMLInputElement } {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const root = host.attachShadow({ mode: 'closed' });
+    const inner = document.createElement('input');
+    root.appendChild(inner);
+    getGlobalRegistry().registerElement(id, inner, { type: 'input', label: id });
+    return { host, inner };
+  }
+
+  it.each(['http', 'relay'] as const)(
+    '%s: a focus that lands inside a closed shadow root counts as taken',
+    async (arm) => {
+      const { host } = inputInClosedShadow('closed-inner');
+      const res =
+        arm === 'http' ? await http('closed-inner', 'focus') : await relay('closed-inner', 'focus');
+      expect(res.failureDetails?.context?.reason).toBeUndefined();
+      expect(res.success).toBe(true);
+      // The document sees only the closed host as focused.
+      expect(document.activeElement).toBe(host);
+    }
+  );
 });
 
 describe('focusLanded', () => {
@@ -243,5 +269,22 @@ describe('focusLanded', () => {
     const other = document.createElement('input');
     document.body.appendChild(other);
     expect(focusLanded(other)).toBe(false);
+  });
+
+  it('reads a node inside a CLOSED shadow root from its own root', () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const root = host.attachShadow({ mode: 'closed' });
+    const inner = document.createElement('input');
+    const sibling = document.createElement('input');
+    root.append(inner, sibling);
+    inner.focus();
+    expect(focusLanded(inner)).toBe(true);
+    expect(focusLanded(host)).toBe(true);
+    expect(focusLanded(sibling)).toBe(false);
+  });
+
+  it('a disconnected node never reads as focused', () => {
+    expect(focusLanded(document.createElement('input'))).toBe(false);
   });
 });
