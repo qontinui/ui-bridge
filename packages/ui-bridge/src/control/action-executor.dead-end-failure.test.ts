@@ -43,9 +43,9 @@ describe('executeAction · dead ends are returned failures, not throws', () => {
     const executor = setup('<input id="a" type="text" role="combobox" />', 'a', 'input');
     const result = await executor.executeAction('a', {
       action: 'autocomplete',
-      params: { searchText: 'zzz' },
+      params: { searchText: 'zzz', suggestionTimeout: 50 },
     } as never);
     expect(result.success).toBe(false);
-    expect(typeof result.error).toBe('string');
-  }, 30_000);
+    expect(result.error).toBe('Autocomplete: no matching suggestion for "zzz" within 50ms');
+  });
 });
