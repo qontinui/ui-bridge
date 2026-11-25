@@ -200,6 +200,8 @@ describe('Phase 1 — WorkflowStepResult.failureDetails', () => {
       const [step] = run.steps;
       expect(step.success).toBe(false);
       expect(step.error).toContain('not an action response');
+      expectValidFailureDetails(step.failureDetails);
+      expect(step.failureDetails?.errorCode).toBe('UB-ACTION-FAILED');
     } finally {
       input.remove();
     }

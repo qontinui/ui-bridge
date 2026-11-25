@@ -3586,16 +3586,16 @@ export class DefaultActionExecutor implements ActionExecutor {
     const arm = focusArm(element);
     if (!arm.ok) throw new ElementKindRefusalError(arm);
     // Read back: a browser silently ignores `focus()` on a node that cannot
-    // take it (not rendered, inert). Reporting success then is a false green,
-    // and a synthetic `focus` event would tell the page's own handlers focus
-    // arrived when it did not — so neither happens.
+    // take it (not rendered, inert). Reporting success then is a false green.
+    // No synthetic `focus` event follows: a real `focus()` already fires
+    // focus/focusin, and a second, bubbling one would run the page's handlers
+    // twice on this arm and once on the relay's.
     if (!focusAndReadBack(element)) throw new FocusNotTakenError();
-    element.dispatchEvent(new FocusEvent('focus', { bubbles: true }));
   }
 
   private performBlur(element: HTMLElement): void {
+    // A real `blur()` fires blur/focusout itself, exactly as the relay's does.
     element.blur();
-    element.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
   }
 
   private async performScroll(
