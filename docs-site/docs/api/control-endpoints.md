@@ -688,21 +688,34 @@ prunes the discovery cache.
 
 Both arms run this render check before every element action, not only clicks:
 the React relay's `executeElementAction` dispatch gate and the HTTP executor's
-pre-dispatch gate refuse any action on an unrendered node with
-`UB-ELEM-NOT-VISIBLE` (`visibilityReason: hidden`), custom actions included.
+pre-dispatch gate refuse any action on an unrendered node, custom actions
+included. Over HTTP the refusal is `UB-ELEM-NOT-VISIBLE` with
+`visibilityReason: hidden`; over the relay it is `ELEMENT_NOT_VISIBLE`, with
+no `visibilityReason`.
 Exactly two actions are exempt on both: `unhover`, which releases the page's
 single forced hover and whose element is often the one that release hides, and
 a page-level `scroll` (an id of `document`, `body` or `window`), which scrolls
-the page rather than an element. That exemption applies only when no
-registered or identified element holds that id: an element registered as
-`body`, say, is the target of its own `scroll` and is gated like any other. So a `type`, `focus` or `setValue` on a node
+the page rather than an element. The two arms decide "page-level"
+differently. Over HTTP, the id is a page sentinel only when nothing else
+resolves it first: not the registry, not an element identifier
+(`data-testid`, an HTML `id`, the id read as a CSS selector, …), not the
+Central Target Registry and not the discovery cache. The relay checks only
+the element registry. So the arms differ for an id that is not registered
+but does identify an element. `body` is the everyday case: read as a CSS
+selector it names the `<body>` element, so over HTTP a `scroll` on `body`
+acts on that element and is gated like any other, while the relay scrolls the
+page ungated. `document` and `window` name no element and reach the sentinel
+on both arms unless something else claims them. An element registered under
+such an id is gated on both arms. So a `type`,
+`focus` or `setValue` on a node
 inside a `display: none` subtree, or one whose computed visibility is
 `hidden` or `collapse` (including one inside a collapsed table row), is
 refused over HTTP and over the relay alike. Both arms also refuse a non-click
-action on a natively `disabled` control (`UB-ELEM-DISABLED` over HTTP,
-`disabledReason: native`), native disabled including `:disabled` inherited
-from a `<fieldset disabled>` (but not for a control in its first `<legend>`),
-and that covers every non-click verb except
+action on a natively `disabled` control (`UB-ELEM-DISABLED` with
+`disabledReason: native` over HTTP, `ELEMENT_NOT_ENABLED` over the relay).
+Native disabled includes `:disabled` inherited from a `<fieldset disabled>`
+(but not for a control in its first `<legend>`) or from an
+`<optgroup disabled>`, and that refusal covers every non-click verb except
 `unhover`, the non-mutating ones included: a `scroll`, `scrollIntoView`,
 `hover` or `blur` on a natively `disabled` control is refused too, on both
 arms. Click-like actions keep the fuller click refusal (`disabled`,
@@ -712,8 +725,9 @@ inline `-9999px` offset (`off-screen`).
 
 `focus` reports whether focus landed, on both arms. After `element.focus()`,
 focus counts as taken when the focused element (descending into open shadow
-roots) is the target or inside it, so a wrapper that forwards focus to an
-inner input succeeds. When it did not land, as on a node that is not
+roots) is the target or inside it in the flat tree, so a wrapper that forwards
+focus to an inner input succeeds, as does one whose `<slot>` takes the
+light-DOM input that received focus. When it did not land, as on a node that is not
 focusable, the action fails with `UB-ACTION-FAILED` and
 `failureDetails.context.reason: "focus_not_taken"`, and the HTTP arm fires no
 synthetic `focus` event.
