@@ -24,9 +24,12 @@
  * scan first sees HIDDEN is parked with `''` too, like an active element that
  * is hidden: its visibility is re-checked on each poll, each read and each
  * scan its selector still matches, so a reveal by style alone (a fade-in, a
- * display or visibility toggle, an ancestor shown by `visibility` — the one
- * property that inherits) — which no `childList` record announces — is
- * captured, and it is cloned only once it is shown.
+ * display or visibility toggle, an ancestor shown by `display`, opacity or
+ * `visibility`) — which no `childList` record announces — is captured, and it
+ * is cloned only once it is shown. Visibility is decided along the flat-tree
+ * ancestry: an ancestor with `display: none`, or an effective opacity (the
+ * product of the element's and every ancestor's) below 0.1, hides the element;
+ * each node's style is read at most once per pass.
  *
  * Re-reading is gated on mutation: every tracked (active or parked) element
  * has its own MutationObserver (an active entry that survives uninstall has
@@ -88,6 +91,7 @@ import {
   textExcludingBoundaries,
   truncateKeepingSentinel,
 } from '../core/redaction';
+import { composedAncestry } from '../core/composed-tree';
 import { AnnouncementBudgets } from './announcement-budget';
 
 // ============================================================================
@@ -404,7 +408,76 @@ function stableKey(el: Element): string {
   return el.id || el.getAttribute('data-testid') || '';
 }
 
-function isElementVisible(el: Element): boolean {
+/**
+ * A per-pass cache for `isElementVisible`'s ancestor walk: each node maps to
+ * its effective opacity — its own opacity times every flat-tree ancestor's —
+ * or `0` when it or a node above it hides its subtree (`display: none`, or an
+ * unslotted light child of an open shadow host). Sound only while no style can
+ * change, which is why `runPass` creates one per pass and drops it after.
+ */
+type VisibilityMemo = Map<Element, number>;
+
+/** An opacity value as a factor in [0, 1]; unparseable (jsdom's `""`) is 1. */
+function opacityFactor(value: string): number {
+  const opacity = parseFloat(value);
+  if (isNaN(opacity)) return 1;
+  return Math.min(1, Math.max(0, opacity));
+}
+
+/**
+ * `node`'s own contribution to its subtree's effective opacity: `0` when it
+ * hides the subtree, else its opacity factor. A `display: contents` node has
+ * no box, so it adds no factor. A `getComputedStyle` that throws treats the
+ * node as not hiding.
+ */
+function subtreeFactor(node: Element): number {
+  // An open shadow host renders only the light children its slots take.
+  if (node.parentElement?.shadowRoot && !node.assignedSlot) return 0;
+  try {
+    const computed = getComputedStyle(node);
+    if (computed.display === 'none') return 0;
+    if (computed.display === 'contents') return 1;
+    return opacityFactor(computed.opacity);
+  } catch {
+    return 1;
+  }
+}
+
+/**
+ * The effective opacity `chain[1]` hands down to `chain[0]`: the product of
+ * every ancestor's factor (`chain` is `composedAncestry(el)`, innermost
+ * first). It stops at the nearest ancestor already in `memo` and records
+ * every ancestor it computes, so each node's style is read once per pass.
+ */
+function ancestorOpacity(chain: Element[], memo?: VisibilityMemo | null): number {
+  let top = 1;
+  let inherited = 1;
+  for (; top < chain.length; top++) {
+    const known = memo?.get(chain[top]);
+    if (known !== undefined) {
+      inherited = known;
+      break;
+    }
+  }
+  for (let i = top - 1; i >= 1; i--) {
+    if (inherited !== 0) inherited *= subtreeFactor(chain[i]);
+    memo?.set(chain[i], inherited);
+  }
+  return inherited;
+}
+
+/**
+ * Whether `el` is on screen as far as style can tell: its own inline and
+ * computed `display` / `visibility` / `opacity`, then its flat-tree ancestry
+ * (`composedAncestry`: a slotted node's parent is its slot, a shadow root is
+ * crossed to its host). An ancestor with `display: none` hides it, and so
+ * does an effective opacity — the product of its own and every ancestor's —
+ * below 0.1. `visibility` is not walked: it inherits, so the own computed
+ * value already carries an ancestor's. The ancestor walk runs only for an
+ * element that is itself visible; `memo` (one per pass) bounds it to one
+ * style read per distinct node.
+ */
+function isElementVisible(el: Element, memo?: VisibilityMemo | null): boolean {
   if (!el.isConnected) return false;
   const htmlEl = el as HTMLElement;
   if (htmlEl.style) {
@@ -414,18 +487,28 @@ function isElementVisible(el: Element): boolean {
     if (!isNaN(opacity) && opacity < 0.1) return false;
   }
   // Check computed style if available
-  if (typeof getComputedStyle === 'function') {
-    try {
-      const computed = getComputedStyle(el);
-      if (computed.display === 'none') return false;
-      if (computed.visibility === 'hidden') return false;
-      const computedOpacity = parseFloat(computed.opacity);
-      if (!isNaN(computedOpacity) && computedOpacity < 0.1) return false;
-    } catch {
-      // getComputedStyle may throw in some environments
-    }
+  if (typeof getComputedStyle !== 'function') return true;
+  let ownFactor = 1;
+  try {
+    const computed = getComputedStyle(el);
+    if (computed.display === 'none') return false;
+    if (computed.visibility === 'hidden') return false;
+    const computedOpacity = parseFloat(computed.opacity);
+    if (!isNaN(computedOpacity) && computedOpacity < 0.1) return false;
+    if (computed.display !== 'contents') ownFactor = opacityFactor(computed.opacity);
+  } catch {
+    // getComputedStyle may throw in some environments
   }
-  return true;
+  if (el.parentElement?.shadowRoot && !el.assignedSlot) {
+    memo?.set(el, 0);
+    return false;
+  }
+  const effective = ownFactor * ancestorOpacity(composedAncestry(el), memo);
+  // Recorded for a nested match whose ancestor `el` is. A visible verdict
+  // means `el` passed its own `visibility` check too, which this value does
+  // not carry — and need not, since `visibility` inherits through style.
+  memo?.set(el, effective);
+  return effective >= 0.1;
 }
 
 // ============================================================================
@@ -487,6 +570,12 @@ export class ToastCapture {
   private reconciling = false;
   /** Events raised during the running pass, delivered when it ends. */
   private pendingEvents: ToastEventData[] | null = null;
+  /**
+   * `isElementVisible`'s ancestor cache for the running pass (`runPass`),
+   * `null` between passes. No page code runs during a pass — events are
+   * delivered after it — so no style can change under it.
+   */
+  private visibilityMemo: VisibilityMemo | null = null;
   private activeToasts: Map<string, { toast: CapturedToast; element: Element }> = new Map();
   private recentToasts: CapturedToast[] = [];
   private totalCaptured = 0;
@@ -686,12 +775,12 @@ export class ToastCapture {
 
       // A hidden match is parked with '' (tracked by its own observer) and not
       // read: a reveal by style alone — own opacity / display / visibility, or
-      // an ancestor's visibility — produces no childList record, so no scan
-      // would ever revisit it; the parked step re-checks its visibility on
-      // every poll and read and captures it once shown. Its budget was decided
-      // by the sighting above, so a re-keyed node mounted hidden keeps the
-      // budget it inherited.
-      if (!isElementVisible(el)) {
+      // an ancestor's display, opacity or visibility — produces no childList
+      // record, so no scan would ever revisit it; the parked step re-checks
+      // its visibility on every poll and read and captures it once shown. Its
+      // budget was decided by the sighting above, so a re-keyed node mounted
+      // hidden keeps the budget it inherited.
+      if (!isElementVisible(el, this.visibilityMemo)) {
         this.park(el, '', false);
         continue;
       }
@@ -901,9 +990,13 @@ export class ToastCapture {
     this.reconciling = true;
     const queued: ToastEventData[] = [];
     this.pendingEvents = queued;
+    // Created after the reentrancy guard, so a nested call cannot replace or
+    // drop the running pass's memo.
+    this.visibilityMemo = new Map();
     try {
       pass();
     } finally {
+      this.visibilityMemo = null;
       this.pendingEvents = null;
       this.reconciling = false;
     }
@@ -998,7 +1091,7 @@ export class ToastCapture {
     observer.observe(el, TRACKED_OBSERVER_OPTIONS);
     this.tracked.set(el, {
       observer,
-      visible: visible ?? isElementVisible(el),
+      visible: visible ?? isElementVisible(el, this.visibilityMemo),
       redacted: isContentRedacted(el as HTMLElement),
     });
   }
@@ -1035,11 +1128,12 @@ export class ToastCapture {
 
   /**
    * `isElementVisible`, ungated, recording a flip of a tracked element's
-   * verdict as dirty: an ancestor's style change produces no record in the
-   * element's own observer, yet it changes what a re-read would see.
+   * verdict as dirty: an ancestor's style change (its `display`, opacity or
+   * `visibility`) produces no record in the element's own observer, yet it
+   * changes what a re-read would see.
    */
   private trackedVisible(el: Element): boolean {
-    const visible = isElementVisible(el);
+    const visible = isElementVisible(el, this.visibilityMemo);
     const entry = this.tracked.get(el);
     if (entry && entry.visible !== visible) {
       entry.visible = visible;
