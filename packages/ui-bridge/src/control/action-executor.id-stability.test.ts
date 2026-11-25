@@ -222,4 +222,20 @@ describe('executor find label: the registered and capped cases', () => {
     expect(row.state.accessibleName).toBe(name);
     expect(row.label).toBe(`${[...name].slice(0, LABEL_MAX_CODE_POINTS).join('')}…`);
   });
+
+  it('a non-redacted control named through a redaction boundary carries the sentinel, never the secret', async () => {
+    document.body.innerHTML =
+      '<span id="pr-name">Pay <span data-bridge-redact="true">SECRET-4111</span> now</span>' +
+      '<button aria-labelledby="pr-name">x</button>';
+    const row = (
+      await new DefaultActionExecutor(new UIBridgeRegistry()).find({ includeHidden: true })
+    ).elements[0]!;
+    expect(row.state.redaction?.content).not.toBe(true);
+    for (const field of [row.id, row.label, row.accessibleName, row.state.accessibleName]) {
+      expect(field ?? '').not.toContain('SECRET-4111');
+    }
+    expect(row.label).toContain(REDACTED_VALUE);
+    expect(row.label).toBe(row.state.accessibleName);
+    expect(row.accessibleName).toBe(row.state.accessibleName);
+  });
 });
