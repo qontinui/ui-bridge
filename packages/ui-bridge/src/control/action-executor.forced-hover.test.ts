@@ -197,6 +197,36 @@ describe('DefaultActionExecutor — forced hover', () => {
     });
   });
 
+  it('unhover on a node that is not rendered still releases (exempt from the render gate)', async () => {
+    await executor.executeAction('header', { action: 'hover' });
+    f.header.style.display = 'none';
+    const res = await executor.executeAction('header', { action: 'unhover' });
+    expect(res.failureDetails?.errorCode).not.toBe('UB-ELEM-NOT-VISIBLE');
+    expect(res.success).toBe(true);
+    expect(res.forcedHover?.released).toMatchObject({ released: true, reason: 'explicit' });
+    expect(getForcedPseudoState()).toBeNull();
+  });
+
+  it('hover → a non-click action refused on an unrendered node → still held', async () => {
+    const hidden = document.createElement('div');
+    hidden.style.display = 'none';
+    const hiddenInput = document.createElement('input');
+    hidden.appendChild(hiddenInput);
+    root.appendChild(hidden);
+    registry.registerElement('hidden-field', hiddenInput, { type: 'input' });
+    await executor.executeAction('header', { action: 'hover' });
+    const typed = await executor.executeAction('hidden-field', {
+      action: 'type',
+      params: { text: 'x' },
+    });
+    expect(typed.success).toBe(false);
+    expect(typed.failureDetails?.errorCode).toBe('UB-ELEM-NOT-VISIBLE');
+    expect(typed.forcedHover).toBeUndefined();
+    expect(hiddenInput.value).toBe('');
+    expect(getForcedPseudoState()).not.toBeNull();
+    expect(pointerEvents(f.tool)).toBe('auto');
+  });
+
   it('unhover names any element: the hold is the page’s single pointer', async () => {
     await executor.executeAction('header', { action: 'hover' });
     const res = await executor.executeAction('field', { action: 'unhover' });
