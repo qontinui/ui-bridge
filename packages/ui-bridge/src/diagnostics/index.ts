@@ -228,6 +228,12 @@ export const INTERNAL_CODE_TO_CANONICAL: Readonly<Record<string, UiBridgeErrorCo
   INTERNAL_ERROR: 'UB-UNKNOWN-ERROR',
   // A transport-level failure carried as a typed code (see `codeOfThrown`).
   NETWORK_ERROR: 'UB-NET-ERROR',
+  // Node socket errors, which carry their cause as a string `code`.
+  ECONNREFUSED: 'UB-NET-ERROR',
+  ECONNRESET: 'UB-NET-ERROR',
+  ENOTFOUND: 'UB-NET-ERROR',
+  EAI_AGAIN: 'UB-NET-ERROR',
+  ETIMEDOUT: 'UB-ACTION-TIMEOUT',
 };
 
 export function mapInternalErrorCode(
@@ -268,6 +274,9 @@ export function mapInternalErrorCode(
   return 'UB-UNKNOWN-ERROR';
 }
 
+/** The messages browsers and Node give a `fetch` that failed to reach the network. */
+const FETCH_FAILURE_MESSAGE = /^(?:Failed to fetch|fetch failed|NetworkError\b.*)$/;
+
 /**
  * The canonical code of a thrown value, read from its TYPE and never from its
  * message.
@@ -285,9 +294,6 @@ export function mapInternalErrorCode(
  * Shared by both transports' thrown-error arms (the relay client's
  * `runCommand` and the direct server's control-action handler).
  */
-/** The messages browsers and Node give a `fetch` that failed to reach the network. */
-const FETCH_FAILURE_MESSAGE = /^(?:Failed to fetch|fetch failed|NetworkError\b.*)$/;
-
 export function codeOfThrown(e: unknown): UiBridgeErrorCode {
   if (e instanceof TypeError && FETCH_FAILURE_MESSAGE.test(e.message)) return 'UB-NET-ERROR';
   const code = (e as { code?: unknown } | null | undefined)?.code;
