@@ -166,11 +166,13 @@ describe('executor find label is the canonical accessible name', () => {
     expect(row.accessibleName).toBeUndefined();
   });
 
-  it('carries the same label as the DOM-fallback row for the same node (matched by element)', async () => {
+  it('carries the same label as the DOM-fallback row at the same document position (rows paired by order, guarded by count, id sequence and tag)', async () => {
     const executorRows = (await executor.find({ includeHidden: true })).elements;
-    // find() drops the live node from its returned rows; the fixture's scan
-    // order is document order on both arms, so pair the executor rows with
-    // the scanned nodes by re-reading them in the same order.
+    // find() drops the live node from its returned rows, so no node key (and
+    // no stable data- key) can pair an executor row with its element. The
+    // fixture's scan order is document order on both arms, so pair them BY
+    // ORDER: the count, the PINNED id sequence and the per-index tag check
+    // below are what make that pairing falsifiable.
     const nodes = Array.from(document.body.querySelectorAll<HTMLElement>('button, input'));
     expect(nodes).toHaveLength(executorRows.length);
     expect(executorRows.map((row) => row.id)).toEqual(PINNED.map(([id]) => id));

@@ -23,9 +23,9 @@ import {
   isContentRedacted,
   trustDeveloperContent,
   REDACTED_VALUE,
-  readScrubbedText,
+  verdictOf,
 } from '../core/redaction';
-import { readAriaLabelAttr } from '../core/a11y';
+import { canonicalLabelFromName, resolveAccessibleName } from '../core/a11y';
 import type {
   RecordingSessionConfig,
   RecordingSessionResult,
@@ -454,32 +454,12 @@ export class RecordingSessionManager {
     // content a boundary hides. Gate here so neither the stored `label` NOR the
     // derived `suggestedParamName` smuggles the secret out.
     if (isContentRedacted(el)) return REDACTED_VALUE;
-    // aria-label
-    const ariaLabel = readAriaLabelAttr(el);
-    if (ariaLabel) return ariaLabel;
-
-    // Associated label element
-    if (el.id) {
-      const label = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
-      const labelText = readScrubbedText(label);
-      if (labelText) return labelText;
-    }
-    const wrappingLabel = el.closest('label');
-    const wrappingText = readScrubbedText(wrappingLabel);
-    if (wrappingText) return wrappingText;
-
-    // Placeholder
-    if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
-      if (el.placeholder) return el.placeholder;
-    }
-
-    // data-testid as fallback
-    const testId = el.getAttribute('data-testid');
-    if (testId) return testId;
-
-    // Name attribute
-    const name = el.getAttribute('name');
-    if (name) return name;
+    // One definition of "what is this control called": the canonical accessible
+    // name every find arm reads (aria-labelledby, aria-label, <label>, title,
+    // alt, placeholder, then the derived data-testid / name / id rung). The
+    // verdict is passed so the cap never splits a redaction sentinel.
+    const canonical = canonicalLabelFromName(resolveAccessibleName(el).name, verdictOf(el));
+    if (canonical) return canonical;
 
     return 'field';
   }
