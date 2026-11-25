@@ -34,13 +34,13 @@ export function composedAncestry(target: Element): Element[] {
 }
 
 /**
- * The element that really holds focus: `document.activeElement`, descended
- * through each open shadow root's own `activeElement` (a focused node inside a
- * shadow tree reads as its host at the document level). A closed shadow root
- * stops the descent at its host.
+ * The element that really holds focus within `root` (a document or a shadow
+ * root): its `activeElement`, descended through each OPEN shadow root's own
+ * `activeElement` (a focused node inside a shadow tree reads as its host one
+ * level up). A closed shadow root below `root` stops the descent at its host.
  */
-export function deepestActiveElement(doc: Document): Element | null {
-  let active: Element | null = doc.activeElement;
+export function deepestActiveElement(root: Document | ShadowRoot): Element | null {
+  let active: Element | null = root.activeElement;
   while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
   return active;
 }
@@ -48,7 +48,13 @@ export function deepestActiveElement(doc: Document): Element | null {
 /**
  * Whether a `focus()` on `el` landed: the deepest active element is `el` or a
  * flat-tree descendant of it — the `:focus-within` meaning, so a registered
- * wrapper that forwards focus to an inner input counts as taken.
+ * wrapper that forwards focus to an inner input (in its light tree or across
+ * its own open shadow root) counts as taken.
+ *
+ * The read starts from `el`'s OWN root (`getRootNode()`), not the document:
+ * from the document, a node inside a CLOSED shadow root is unreachable (the
+ * descent stops at the closed host), so a focus that did land there would read
+ * as not taken. A disconnected `el` has neither, and reads as not taken.
  *
  * Shared by both action arms (the HTTP executor's `performFocus` and the
  * relay's `focus` case). A browser does not move focus to a node that is not
@@ -57,7 +63,14 @@ export function deepestActiveElement(doc: Document): Element | null {
  * such a `focus()` as a success.
  */
 export function focusLanded(el: Element): boolean {
-  const active = deepestActiveElement(el.ownerDocument);
+  // By node type, not `instanceof`, so a node in another realm (an iframe)
+  // is read too: a document, or a shadow root (a fragment with a host).
+  const root = el.getRootNode();
+  const isTreeRoot =
+    root.nodeType === 9 /* DOCUMENT_NODE */ ||
+    (root.nodeType === 11 /* DOCUMENT_FRAGMENT_NODE */ && 'host' in root);
+  if (!isTreeRoot) return false;
+  const active = deepestActiveElement(root as Document | ShadowRoot);
   if (!active) return false;
   return active === el || composedAncestry(active).includes(el);
 }
