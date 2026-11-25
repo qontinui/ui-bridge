@@ -27,7 +27,7 @@ import { serializeElementCustomActions } from '../core/element-actions';
 // It reads the LIVE element, not the registry's action overlay: a wait must
 // observe fields change, and the overlay freezes the ones an action wrote.
 import { getElementState, isRenderedForAction } from '../core/element-state';
-import { focusLanded, snapshotFocus } from '../core/composed-tree';
+import { focusAndReadBack } from '../core/composed-tree';
 import type {
   WaitOptions,
   ElementState,
@@ -763,7 +763,7 @@ export class NoScrollEffectError extends ActionValidationError {
 
 /**
  * A `focus` whose `element.focus()` ran but left focus outside the element
- * (`core/composed-tree` `focusLanded`). `executeAction` reports it as
+ * (`core/composed-tree` `focusAndReadBack`). `executeAction` reports it as
  * `UB-ACTION-FAILED` with `failureDetails.context.reason: 'focus_not_taken'`,
  * the relay's `focus` failure carries the same reason. It is deliberately NOT
  * an `ActionValidationError`: `focus()` was dispatched, so it is not a refusal.
@@ -3585,13 +3585,11 @@ export class DefaultActionExecutor implements ActionExecutor {
   private performFocus(element: HTMLElement): void {
     const arm = focusArm(element);
     if (!arm.ok) throw new ElementKindRefusalError(arm);
-    const before = snapshotFocus(element);
-    element.focus();
     // Read back: a browser silently ignores `focus()` on a node that cannot
-    // take it (not focusable, or not rendered). Reporting success then is a
-    // false green, and a synthetic `focus` event would tell the page's own
-    // handlers focus arrived when it did not — so neither happens.
-    if (!focusLanded(element, before)) throw new FocusNotTakenError();
+    // take it (not rendered, inert). Reporting success then is a false green,
+    // and a synthetic `focus` event would tell the page's own handlers focus
+    // arrived when it did not — so neither happens.
+    if (!focusAndReadBack(element)) throw new FocusNotTakenError();
     element.dispatchEvent(new FocusEvent('focus', { bubbles: true }));
   }
 

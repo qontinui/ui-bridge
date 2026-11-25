@@ -34,7 +34,7 @@ import {
   type ElementProjectionRequest,
 } from '../core/element-projection';
 import { pageSentinelState, resolvePageSentinel } from '../core/page-sentinel';
-import { focusLanded, snapshotFocus } from '../core/composed-tree';
+import { focusAndReadBack } from '../core/composed-tree';
 import { truncateCodePoints } from '../core/text';
 import { withoutInspectorPanelRecords } from '../core/inspector-panel';
 import {
@@ -2199,12 +2199,10 @@ export async function executeCommand(
           case 'focus': {
             const arm = focusArm(dom);
             if (!arm.ok) return refuse(createKindRefusalFailure(id, 'focus', arm, startTime));
-            const focusBefore = snapshotFocus(dom);
-            dom.focus();
             // Read back, as the executor's `performFocus` does: a `focus()` the
-            // browser ignored (a non-focusable or unrendered node) is a
-            // dispatched failure, not a success.
-            if (!focusLanded(dom, focusBefore)) {
+            // browser ignored (an unrendered or inert node) is a dispatched
+            // failure, not a success.
+            if (!focusAndReadBack(dom)) {
               const failure = createActionFailure(
                 id,
                 'UB-ACTION-FAILED',

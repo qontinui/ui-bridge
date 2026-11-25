@@ -735,7 +735,10 @@ whether focus landed. After `element.focus()`,
 focus counts as taken when the focused element (descending into open shadow
 roots) is the target or inside it in the flat tree, so a focusable wrapper that
 forwards focus to an inner input succeeds, as does one whose `<slot>` takes the
-light-DOM input that received focus. When it did not land, the action fails with `UB-ACTION-FAILED` and
+light-DOM input that received focus. Focus also counts as taken when a
+`focusin` reached the target during the call, even if the target's own focus
+handling then moved focus on: a focus trap or roving container that hands
+focus straight back to the descendant that already held it succeeds. When it did not land, the action fails with `UB-ACTION-FAILED` and
 `failureDetails.context.reason: "focus_not_taken"`, and the HTTP arm fires no
 synthetic `focus` event.
 

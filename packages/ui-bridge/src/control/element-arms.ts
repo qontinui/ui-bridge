@@ -160,7 +160,7 @@ export function setValueArm(element: HTMLElement): ArmOutcome<{ apply: (value: s
  * `focus`: a node `focus()` can move focus to ({@link focusable}). Checked
  * BEFORE `focus()` is called, so a node that cannot take focus gets the typed
  * element-kind refusal, naming the verb, rather than a dispatched
- * `focus_not_taken`. The read-back after the call (`focusLanded`) still
+ * `focus_not_taken`. The read-back after the call (`focusAndReadBack`) still
  * decides whether a focusable node actually took it.
  */
 export function focusArm(element: HTMLElement): ArmOutcome<Record<never, never>> {

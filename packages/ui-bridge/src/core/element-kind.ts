@@ -626,7 +626,7 @@ export function resolveOwnerForm(element: Element): HTMLFormElement | null {
  *
  * A custom element (a hyphenated tag) whose shadow root cannot be read — a
  * CLOSED root, which may delegate focus — reads as focusable: that is UNKNOWN,
- * not "cannot take focus", and the dispatchers' read-back (`focusLanded`
+ * not "cannot take focus", and the dispatchers' read-back (`focusAndReadBack`
  * in `core/composed-tree`) still reports a focus that did not land. Whether
  * the node is rendered, `inert` or `disabled` is state, checked by the
  * dispatchers' gate, not here.

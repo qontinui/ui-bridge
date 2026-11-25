@@ -654,6 +654,30 @@ describe('captureStateVariations', () => {
     }
   });
 
+  it('a previous focus inside an open shadow root comes back after reading a light-DOM element', async () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const shadow = host.attachShadow({ mode: 'open' });
+    const previous = document.createElement('input');
+    shadow.appendChild(previous);
+    const target = document.createElement('button');
+    target.textContent = 'target';
+    document.body.appendChild(target);
+    try {
+      previous.focus();
+      expect(shadow.activeElement).toBe(previous);
+      const results = await captureStateVariations(target, ['focus', 'focus-visible']);
+      expect(results.find((r) => r.state === 'focus-visible')?.focused).toBe(true);
+      // The read descends the document's retargeted `activeElement` (the
+      // host) into the open root, so the restore refocuses the input itself.
+      expect(shadow.activeElement).toBe(previous);
+      expect(document.activeElement).toBe(host);
+    } finally {
+      host.remove();
+      target.remove();
+    }
+  });
+
   it('a non-focusable shadow host whose inner input has focus does not hold focus, and the input keeps it', async () => {
     const host = document.createElement('div');
     document.body.appendChild(host);
