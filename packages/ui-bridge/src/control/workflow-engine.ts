@@ -124,9 +124,13 @@ function failedActionResponse(
 ): ControlActionResponse | ComponentActionResponse | null {
   if (step.type !== 'element-action' && step.type !== 'component-action') return null;
   if (typeof result !== 'object' || result === null) {
+    const error = `${step.type} step resolved ${result === null ? 'null' : typeof result}, not an action response`;
     return {
       success: false,
-      error: `${step.type} step resolved ${result === null ? 'null' : typeof result}, not an action response`,
+      error,
+      failureDetails: buildActionFailureDetails('UB-ACTION-FAILED', error, {
+        context: { stepId: step.id, stepType: step.type },
+      }),
     } as ControlActionResponse;
   }
   const response = result as ControlActionResponse | ComponentActionResponse;

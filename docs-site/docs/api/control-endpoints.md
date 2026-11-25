@@ -736,11 +736,14 @@ focus counts as taken when the focused element (descending into open shadow
 roots) is the target or inside it in the flat tree, so a focusable wrapper that
 forwards focus to an inner input succeeds, as does one whose `<slot>` takes the
 light-DOM input that received focus. Focus also counts as taken when a
-`focusin` reached the target during the call, even if the target's own focus
-handling then moved focus on: a focus trap or roving container that hands
-focus straight back to the descendant that already held it succeeds. When it did not land, the action fails with `UB-ACTION-FAILED` and
-`failureDetails.context.reason: "focus_not_taken"`, and the HTTP arm fires no
-synthetic `focus` event.
+`focusin` reached the target during the call and focus is still at the target
+or inside it afterwards: a focus trap or roving container that hands focus
+straight back to the descendant that already held it succeeds, while a focus
+that a document-level modal trap pulls back OUT of the target does not. When it
+did not land, the action fails with `UB-ACTION-FAILED` and
+`failureDetails.context.reason: "focus_not_taken"`. Neither arm dispatches a
+synthetic `focus` or `blur` event: the real `focus()` / `blur()` call fires the
+page's handlers exactly once.
 
 The read-back judges where focus ended up, not whether the page meant to move
 it. A page whose own focus handling forwards focus to a DESCENDANT of the

@@ -416,21 +416,6 @@ describe('focus reads back whether it landed, on both arms', () => {
     }
   );
 
-  it('HTTP: a focus that lands still fires the synthetic focus event', async () => {
-    const input = document.createElement('input');
-    document.body.appendChild(input);
-    getGlobalRegistry().registerElement('lands', input, { type: 'input', label: 'l' });
-    const focusEvents: Event[] = [];
-    input.addEventListener('focus', (e) => focusEvents.push(e));
-    const res = await http('lands', 'focus');
-    expect(res.success).toBe(true);
-    expect(document.activeElement).toBe(input);
-    // jsdom's native focus() fires a trusted focus event of its own
-    // (measured under jsdom 23.2.0: isTrusted true); the executor's synthetic
-    // one is the untrusted event, exactly once.
-    expect(focusEvents.filter((e) => !e.isTrusted)).toHaveLength(1);
-  });
-
   /**
    * A focusable wrapper inside an open shadow tree whose `<slot>` takes a
    * light-DOM input, and whose own `focus()` forwards to that input.
@@ -504,6 +489,66 @@ describe('focus reads back whether it landed, on both arms', () => {
       expect(res.failureDetails?.context?.refusal).toBe('element-kind');
       expect(res.error).toContain('focus is not supported on <span>');
       expect(focusCalls).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(['http', 'relay'] as const)(
+    '%s: a link without an href is served without focus and refused by kind',
+    async (arm) => {
+      const link = document.createElement('a');
+      link.textContent = 'not a link yet';
+      document.body.appendChild(link);
+      const focusCalls = vi.spyOn(link, 'focus');
+      getGlobalRegistry().registerElement('bare-link', link, { type: 'link', label: 'l' });
+      expect(getGlobalRegistry().getElement('bare-link')?.actions).not.toContain('focus');
+      const res =
+        arm === 'http' ? await http('bare-link', 'focus') : await relay('bare-link', 'focus');
+      expect(res.success).toBe(false);
+      expect(res.failureDetails?.context?.refusal).toBe('element-kind');
+      expect(focusCalls).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(['http', 'relay'] as const)(
+    '%s: a focus a document-level modal trap pulls back out of the target is focus_not_taken',
+    async (arm) => {
+      const dialogInput = document.createElement('input');
+      const background = document.createElement('button');
+      document.body.append(dialogInput, background);
+      dialogInput.focus();
+      const trap = (e: FocusEvent): void => {
+        if (e.target !== dialogInput) dialogInput.focus();
+      };
+      document.addEventListener('focusin', trap);
+      getGlobalRegistry().registerElement('background', background, { type: 'button', label: 'b' });
+      try {
+        const res =
+          arm === 'http' ? await http('background', 'focus') : await relay('background', 'focus');
+        expect(res.success).toBe(false);
+        expect(res.failureDetails?.context?.reason).toBe('focus_not_taken');
+        expect(document.activeElement).toBe(dialogInput);
+      } finally {
+        document.removeEventListener('focusin', trap);
+      }
+    }
+  );
+
+  it.each(['http', 'relay'] as const)(
+    '%s: a landed focus fires the page focus handler once, with no bubbling synthetic event',
+    async (arm) => {
+      const wrapper = document.createElement('div');
+      const input = document.createElement('input');
+      wrapper.appendChild(input);
+      document.body.appendChild(wrapper);
+      let ownFocus = 0;
+      let bubbledToWrapper = 0;
+      input.addEventListener('focus', () => (ownFocus += 1));
+      wrapper.addEventListener('focus', () => (bubbledToWrapper += 1));
+      getGlobalRegistry().registerElement('once', input, { type: 'input', label: 'o' });
+      const res = arm === 'http' ? await http('once', 'focus') : await relay('once', 'focus');
+      expect(res.success).toBe(true);
+      expect(ownFocus).toBe(1);
+      expect(bubbledToWrapper).toBe(0);
     }
   );
 
@@ -690,12 +735,18 @@ describe('focusable', () => {
     expect(focusable(tabbed)).toBe(true);
   });
 
-  it('an undefined hyphenated tag is not focusable; a defined custom element with no readable root is UNKNOWN, so advertised', () => {
-    const undefinedTag = document.createElement('x-not-registered-anywhere');
-    expect(focusable(undefinedTag)).toBe(false);
-    if (!customElements.get('x-focusable-probe')) {
-      customElements.define('x-focusable-probe', class extends HTMLElement {});
-    }
-    expect(focusable(document.createElement('x-focusable-probe'))).toBe(true);
+  it('a custom element with no readable root, defined or not, is UNKNOWN, so advertised', () => {
+    // An undefined host can still carry a closed delegatesFocus root.
+    const undefinedHost = document.createElement('x-not-registered-anywhere');
+    undefinedHost.attachShadow({ mode: 'closed', delegatesFocus: true });
+    expect(focusable(undefinedHost)).toBe(true);
+    expect(focusable(document.createElement('x-plain-light-dom'))).toBe(true);
+    expect(focusable(document.createElement('div'))).toBe(false);
+  });
+
+  it('an SVG link with only xlink:href is focusable', () => {
+    const svgLink = document.createElementNS('http://www.w3.org/2000/svg', 'a');
+    svgLink.setAttributeNS('http://www.w3.org/1999/xlink', 'xlink:href', '#x');
+    expect(focusable(svgLink)).toBe(true);
   });
 });
