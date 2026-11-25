@@ -248,7 +248,8 @@ describe('Phase 1 — WorkflowStepResult.failureDetails', () => {
         success: false,
         error: '',
         failureDetails: buildActionFailureDetails('UB-ELEM-DISABLED', 'locked', {
-          context: { disabledReason: 'native' },
+          // stepId/stepType here must LOSE to the step's own: the engine's win.
+          context: { disabledReason: 'native', stepId: 'executor-id', stepType: 'executor-type' },
         }),
       },
       error: 'locked',
