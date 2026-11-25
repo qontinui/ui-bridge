@@ -619,13 +619,17 @@ that read only a single-id `aria-labelledby` and ignored a wrapping `<label>`,
 name (and `resolveAccessibleName` gained HTML-AAM's last-resort `placeholder`
 rung, `nameSource: 'placeholder'`, for a text-like input or textarea). The
 executor's `find()` rows (`POST /control/find`, `discover()`) now carry the same
-canonical name: an unregistered row's `label` (capped at 200 code points) and
-its `accessibleName` equal its `state.accessibleName` and the fallback row's
-`label` for the same node. Both used to come from two private chains that cut
+canonical name: every interactive row's `accessibleName` (scanned, registered
+or not) is its `state.accessibleName`, and an unregistered row's `label` (capped
+at 200 code points; a registered row keeps its registry label) equals it and the
+fallback row's `label` for the same node. Content and media rows are unchanged. Both used to come from two private chains that cut
 text at 50 characters, kept raw whitespace and missed a wrapping `<label>`,
 `alt` and the derived rung (and, for `label`, `<label for>`). A
 content-redacted unregistered executor row's `label` now reads `[REDACTED]`
-rather than being absent. Executor ids are unchanged. Fallback
+rather than being absent, so a case-insensitive `label` / `text` filter for
+`redacted` (or `exact_text: '[REDACTED]'`) now matches such rows, as it already
+did on the fallback arm; it reveals which nodes are redacted, never their
+content. Executor ids are unchanged. Fallback
 ids are unchanged, except for an element whose id was a slug of redacted text
 (it was inside a redaction boundary, or labelled by an `aria-labelledby` target
 touching one): those now read `dom-<type>-<index>`. A non-redacted element whose
