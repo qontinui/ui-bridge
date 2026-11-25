@@ -20,7 +20,7 @@ import {
 import { truncateCodePoints } from '../core/text';
 import type { ElementState, ElementType, StandardAction } from '../core/types';
 import { inferActions, inferElementType } from '../core/element-kind';
-import { getElementState } from '../core/element-state';
+import { getElementState, withVisibilityPass } from '../core/element-state';
 import {
   canonicalLabelFromName,
   computeVisibleText,
@@ -341,71 +341,73 @@ export function scanDOMForInteractiveElementsWithRefs(
 
   const elements: DOMFallbackElementWithRef[] = [];
 
-  walkInteractive(container, (el, id, verdict) => {
-    const type = inferElementType(el);
-    // ONE canonical read per element (plan
-    // `2026-11-23-ui-bridge-element-state-collapse-follow-ups`, D1). This path
-    // used to build its own `offsetParent` + size `visible`, with no viewport or
-    // occlusion arm — a second algorithm behind the same field name.
-    const state = getElementState(el);
-    const rect = state.rect;
+  withVisibilityPass(() =>
+    walkInteractive(container, (el, id, verdict) => {
+      const type = inferElementType(el);
+      // ONE canonical read per element (plan
+      // `2026-11-23-ui-bridge-element-state-collapse-follow-ups`, D1). This path
+      // used to build its own `offsetParent` + size `visible`, with no viewport or
+      // occlusion arm — a second algorithm behind the same field name.
+      const state = getElementState(el);
+      const rect = state.rect;
 
-    // §4.6 F5: this is the ONLY place the DOM-fallback path still holds the live
-    // `element` ref — `scanDOMForInteractiveElements` drops it right after. The
-    // landed `materializeElements` gate keyed on `el.element instanceof
-    // HTMLElement`, which is ALWAYS false once the ref is dropped, so it
-    // redacted nothing here. Scrub AT THE SOURCE instead: `materializeElements`
-    // then consumes already-safe data. CONTENT axis for text/label/aria-label,
-    // VALUE axis for the entered value. `verdict` is the walk's one read.
+      // §4.6 F5: this is the ONLY place the DOM-fallback path still holds the live
+      // `element` ref — `scanDOMForInteractiveElements` drops it right after. The
+      // landed `materializeElements` gate keyed on `el.element instanceof
+      // HTMLElement`, which is ALWAYS false once the ref is dropped, so it
+      // redacted nothing here. Scrub AT THE SOURCE instead: `materializeElements`
+      // then consumes already-safe data. CONTENT axis for text/label/aria-label,
+      // VALUE axis for the entered value. `verdict` is the walk's one read.
 
-    elements.push({
-      id,
-      type,
-      label: fallbackLabelFromState(state, verdict),
-      actions: inferActions(type, el),
-      // The snapshot path drops the live ref and `materializeElements` reads
-      // THIS field, so it must carry the same verdict as `state.visible`.
-      visible: state.visible,
-      tagName: el.tagName.toLowerCase(),
-      state: {
-        // The canonical (already §4.6-scrubbed) text, capped at 500 code points
-        // with the sentinel-safe cut, the same value render-log/dom-capture.ts
-        // converges on. For an element with text it equals the old capped
-        // scrubbed read. For an element with none it is the canonical fallback,
-        // the scrubbed `aria-label` or `title` (the sentinel inside a redaction
-        // boundary), where the old read gave "".
-        textContent: truncateKeepingSentinel(state.textContent ?? '', 500),
-        value: readScrubbedOwnValue(el, verdict),
-        checked: state.checked,
+      elements.push({
+        id,
+        type,
+        label: fallbackLabelFromState(state, verdict),
+        actions: inferActions(type, el),
+        // The snapshot path drops the live ref and `materializeElements` reads
+        // THIS field, so it must carry the same verdict as `state.visible`.
         visible: state.visible,
-        visibilityReason: state.visibilityReason,
-        occludedBy: state.occludedBy,
-        occludedPct: state.occludedPct,
-        enabled: state.enabled,
-        disabled: state.disabled,
-        ariaDisabled: state.ariaDisabled,
-        ariaBusy: state.ariaBusy,
-        focused: state.focused,
-        rect: {
-          x: Math.round(rect.x),
-          y: Math.round(rect.y),
-          width: Math.round(rect.width),
-          height: Math.round(rect.height),
-          top: Math.round(rect.top),
-          right: Math.round(rect.right),
-          bottom: Math.round(rect.bottom),
-          left: Math.round(rect.left),
+        tagName: el.tagName.toLowerCase(),
+        state: {
+          // The canonical (already §4.6-scrubbed) text, capped at 500 code points
+          // with the sentinel-safe cut, the same value render-log/dom-capture.ts
+          // converges on. For an element with text it equals the old capped
+          // scrubbed read. For an element with none it is the canonical fallback,
+          // the scrubbed `aria-label` or `title` (the sentinel inside a redaction
+          // boundary), where the old read gave "".
+          textContent: truncateKeepingSentinel(state.textContent ?? '', 500),
+          value: readScrubbedOwnValue(el, verdict),
+          checked: state.checked,
+          visible: state.visible,
+          visibilityReason: state.visibilityReason,
+          occludedBy: state.occludedBy,
+          occludedPct: state.occludedPct,
+          enabled: state.enabled,
+          disabled: state.disabled,
+          ariaDisabled: state.ariaDisabled,
+          ariaBusy: state.ariaBusy,
+          focused: state.focused,
+          rect: {
+            x: Math.round(rect.x),
+            y: Math.round(rect.y),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+            top: Math.round(rect.top),
+            right: Math.round(rect.right),
+            bottom: Math.round(rect.bottom),
+            left: Math.round(rect.left),
+          },
         },
-      },
-      identifiers: {
-        testId: el.getAttribute('data-testid') ?? undefined,
-        ariaLabel: verdict.content ? REDACTED_VALUE : (readAriaLabelAttr(el) ?? undefined),
-        htmlId: el.id || undefined,
-      },
-      _domFallback: true,
-      element: el,
-    });
-  });
+        identifiers: {
+          testId: el.getAttribute('data-testid') ?? undefined,
+          ariaLabel: verdict.content ? REDACTED_VALUE : (readAriaLabelAttr(el) ?? undefined),
+          htmlId: el.id || undefined,
+        },
+        _domFallback: true,
+        element: el,
+      });
+    })
+  );
 
   return elements;
 }

@@ -621,6 +621,13 @@ the action render check and the `clickable` condition stay opacity-blind. The
 snapshot row's top-level `visible` is a bounding-box hint and is unchanged; read
 `state.visible`.
 
+`effective-opacity` is read over the whole ancestor chain, not just the part the
+hover forces. If an unrelated ancestor is mid-fade (an entrance animation, a
+tooltip fading) across the hold, the release can report `effective-opacity`
+drift on a child that the hover did nothing to, or a reveal can be listed for the
+same reason. A `drift` on `effective-opacity` alone with no matching page
+change is that case; hover again once the page is idle.
+
 `restore` is `verified` only when every element in `checked` passed: each
 previously registered revealed element (and the target) reads its pre-hover
 values again, and each `appeared` element stopped drawing again (display `none`,
