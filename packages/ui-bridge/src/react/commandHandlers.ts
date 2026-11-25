@@ -34,7 +34,7 @@ import {
   type ElementProjectionRequest,
 } from '../core/element-projection';
 import { pageSentinelState, resolvePageSentinel } from '../core/page-sentinel';
-import { focusLanded } from '../core/composed-tree';
+import { focusLanded, snapshotFocus } from '../core/composed-tree';
 import { truncateCodePoints } from '../core/text';
 import { withoutInspectorPanelRecords } from '../core/inspector-panel';
 import {
@@ -2184,12 +2184,13 @@ export async function executeCommand(
             dispatchRealClick(dom);
             break;
           }
-          case 'focus':
+          case 'focus': {
+            const focusBefore = snapshotFocus(dom);
             dom.focus();
             // Read back, as the executor's `performFocus` does: a `focus()` the
             // browser ignored (a non-focusable or unrendered node) is a
             // dispatched failure, not a success.
-            if (!focusLanded(dom)) {
+            if (!focusLanded(dom, focusBefore)) {
               const failure = createActionFailure(
                 id,
                 'UB-ACTION-FAILED',
@@ -2205,6 +2206,7 @@ export async function executeCommand(
               });
             }
             break;
+          }
           case 'blur':
             dom.blur();
             break;

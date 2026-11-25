@@ -27,7 +27,7 @@ import { serializeElementCustomActions } from '../core/element-actions';
 // It reads the LIVE element, not the registry's action overlay: a wait must
 // observe fields change, and the overlay freezes the ones an action wrote.
 import { getElementState, isRenderedForAction } from '../core/element-state';
-import { focusLanded } from '../core/composed-tree';
+import { focusLanded, snapshotFocus } from '../core/composed-tree';
 import type {
   WaitOptions,
   ElementState,
@@ -3548,12 +3548,13 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   private performFocus(element: HTMLElement): void {
+    const before = snapshotFocus(element);
     element.focus();
     // Read back: a browser silently ignores `focus()` on a node that cannot
     // take it (not focusable, or not rendered). Reporting success then is a
     // false green, and a synthetic `focus` event would tell the page's own
     // handlers focus arrived when it did not — so neither happens.
-    if (!focusLanded(element)) throw new FocusNotTakenError();
+    if (!focusLanded(element, before)) throw new FocusNotTakenError();
     element.dispatchEvent(new FocusEvent('focus', { bubbles: true }));
   }
 

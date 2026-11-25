@@ -639,7 +639,8 @@ export function readDisabledSignals(el: Element): {
  * not; an `<option>` whose parent `<optgroup>` is disabled is disabled too.
  *
  * The optgroup rule is read directly as well as through the selector, because
- * not every selector engine applies it (jsdom's does not). A selector engine
+ * not every selector engine applies it: under jsdom 23.2.0 an `<option>` in an
+ * `<optgroup disabled>` matches neither `:disabled` nor `.disabled`. A selector engine
  * that cannot evaluate the pseudo-class (a degraded DOM shim) throws; that is
  * no evidence of `disabled`, so it reads `false`.
  */
