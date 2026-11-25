@@ -223,6 +223,31 @@ describe('the HTTP executor refuses a non-click action on an unrendered element'
     expect(getElementState(free)).toMatchObject({ disabled: false, enabled: true });
   });
 
+  it.each(['http', 'relay'] as const)(
+    '%s: a click on an <option> under an <optgroup disabled> is refused as disabled',
+    async (arm) => {
+      const select = document.createElement('select');
+      const group = document.createElement('optgroup');
+      group.disabled = true;
+      const option = document.createElement('option');
+      option.value = 'x';
+      option.textContent = 'x';
+      group.appendChild(option);
+      select.appendChild(group);
+      document.body.appendChild(select);
+      const clicks = vi.fn();
+      option.addEventListener('click', clicks);
+      getGlobalRegistry().registerElement('og-option', option, { type: 'button', label: 'o' });
+      const res = arm === 'http' ? await http('og-option', 'click') : await relay('og-option', 'click');
+      expect(res.success).toBe(false);
+      expect(res.failureDetails?.errorCode).toBe(
+        arm === 'http' ? 'UB-ELEM-DISABLED' : 'ELEMENT_NOT_ENABLED'
+      );
+      if (arm === 'http') expect(res.failureDetails?.disabledReason).toBe('native');
+      expect(clicks).not.toHaveBeenCalled();
+    }
+  );
+
   it('aria-disabled does not block a non-click action (native disabled only, as on the relay)', async () => {
     const input = document.createElement('input');
     input.setAttribute('aria-disabled', 'true');
@@ -313,8 +338,9 @@ describe('focus reads back whether it landed, on both arms', () => {
     const res = await http('lands', 'focus');
     expect(res.success).toBe(true);
     expect(document.activeElement).toBe(input);
-    // jsdom's native focus() fires a trusted focus event of its own; the
-    // executor's synthetic one is the untrusted event, exactly once.
+    // jsdom's native focus() fires a trusted focus event of its own
+    // (measured under jsdom 23.2.0: isTrusted true); the executor's synthetic
+    // one is the untrusted event, exactly once.
     expect(focusEvents.filter((e) => !e.isTrusted)).toHaveLength(1);
   });
 
@@ -344,6 +370,29 @@ describe('focus reads back whether it landed, on both arms', () => {
       expect(res.success).toBe(true);
       expect(document.activeElement).toBe(light);
       expect(light.assignedSlot).not.toBeNull();
+    }
+  );
+
+  it.each(['http', 'relay'] as const)(
+    '%s: focus() on a non-focusable container whose child ALREADY holds focus is focus_not_taken',
+    async (arm) => {
+      const container = document.createElement('div');
+      const child = document.createElement('input');
+      container.appendChild(child);
+      document.body.appendChild(container);
+      child.focus();
+      expect(document.activeElement).toBe(child);
+      const synthetic: Event[] = [];
+      container.addEventListener('focus', (e) => {
+        if (!e.isTrusted) synthetic.push(e);
+      });
+      getGlobalRegistry().registerElement('container', container, { type: 'custom', label: 'c' });
+      const res =
+        arm === 'http' ? await http('container', 'focus') : await relay('container', 'focus');
+      expect(res.success).toBe(false);
+      expect(res.failureDetails?.context).toMatchObject({ action: 'focus', reason: 'focus_not_taken' });
+      expect(synthetic).toHaveLength(0);
+      expect(document.activeElement).toBe(child);
     }
   );
 
