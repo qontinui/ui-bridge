@@ -29,9 +29,10 @@
  *    `display: none` (inline, or the `hidden` attribute's UA rule), an
  *    effective opacity — the product of the element's and every ancestor's —
  *    below 0.1, or an unslotted light child of an open shadow host hides it.
- *    A reveal or hide of an ancestor is seen by the next poll. Each node's
- *    style is read at most once per pass (a per-pass memo), and never
- *    across passes.
+ *    A reveal or hide of an ancestor is seen by the next poll. Each
+ *    ancestor's style is read at most once per pass (a per-pass memo), and
+ *    never across passes; a match the scan captures or parks has its own
+ *    style read once in that scan (V12).
  *
  * Plans: 2026-11-23-ui-bridge-toast-capture-churn-and-reread-cost (Phase 1);
  * 2026-11-24-ui-bridge-toast-capture-rekey-churn-and-empty-element-parking
@@ -40,7 +41,7 @@
  * 2026-11-25-ui-bridge-toast-capture-tracks-hidden-matches-until-shown
  * (Phase 1: H1-H11, H3b; C5 amended);
  * 2026-11-25-ui-bridge-toast-capture-sees-ancestor-display-and-opacity
- * (Phase 1: V1-V9, V1b; review round 1: V10, V11).
+ * (Phase 1: V1-V9, V1b; review round 1: V10, V11; review round 2: V12).
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -1445,6 +1446,11 @@ describe('ToastCapture churn budget and re-read gate', () => {
 
       parent.style.opacity = '0.05';
       await vi.advanceTimersByTimeAsync(500);
+      // The poll dismissed it — asserted before any public read, which would
+      // reconcile on its own.
+      expect(events.filter((e) => e.action === 'dismissed' && e.toast.id === 'bar')).toHaveLength(
+        1
+      );
       expect(capture.getActive()).toEqual([]);
 
       parent.style.opacity = '';
@@ -1495,6 +1501,27 @@ describe('ToastCapture churn budget and re-read gate', () => {
       await vi.advanceTimersByTimeAsync(500);
 
       expect(appearedFor('contents').map((e) => e.toast.message)).toEqual(['Boxless']);
+    });
+
+    // V12
+    it('a scan reads the own style of a new match once, whether it captures or parks it', async () => {
+      install({ pollInterval: 500 });
+      await flushAndScan(); // t = 50 ms; the first poll is at 500 ms
+
+      const style = vi.spyOn(globalThis, 'getComputedStyle');
+      const captured = addStatus('fresh', 'Fresh');
+      const empty = addEmptyStatus('empty');
+      await flushAndScan(); // the debounced scan only: t = 100 ms
+      const ownReads = (el: Element) => style.mock.calls.filter((c) => c[0] === el).length;
+      const readsOfCaptured = ownReads(captured);
+      const readsOfEmpty = ownReads(empty);
+      style.mockRestore();
+
+      expect(appearedFor('fresh')).toHaveLength(1);
+      // The scan's verdict seeds the tracking it starts (captureToast's and
+      // the empty park's), so neither repeats the getComputedStyle.
+      expect(readsOfCaptured).toBe(1);
+      expect(readsOfEmpty).toBe(1);
     });
   });
 
