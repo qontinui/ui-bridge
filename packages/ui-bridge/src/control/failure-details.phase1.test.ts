@@ -247,7 +247,9 @@ describe('Phase 1 — WorkflowStepResult.failureDetails', () => {
       response: {
         success: false,
         error: '',
-        failureDetails: buildActionFailureDetails('UB-ELEM-DISABLED', 'locked'),
+        failureDetails: buildActionFailureDetails('UB-ELEM-DISABLED', 'locked', {
+          context: { disabledReason: 'native' },
+        }),
       },
       error: 'locked',
       code: 'UB-ELEM-DISABLED',
@@ -274,9 +276,32 @@ describe('Phase 1 — WorkflowStepResult.failureDetails', () => {
       expect(run.error).toBe(error);
       expect(step.failureDetails?.errorCode).toBe(code);
       expect(step.failureDetails?.context).toMatchObject({ stepId: 'r1', stepType: 'element-action' });
+      if (response.failureDetails) {
+        expect(step.failureDetails?.context).toMatchObject({ disabledReason: 'native' });
+      }
     } finally {
       input.remove();
     }
+  });
+
+  it('a returned component-action failure with no details is classified and carries the step', async () => {
+    const returning = {
+      ...executor,
+      executeComponentAction: async () => ({ success: false, error: 'Component c not found' }),
+    } as unknown as DefaultActionExecutor;
+    const returningEngine = new DefaultWorkflowEngine(registry, returning);
+    registry.registerWorkflow({
+      id: 'wf-returned-component',
+      name: 'Returned component failure',
+      steps: [{ id: 'c1', type: 'component-action', target: 'c', action: 'go' }],
+    });
+    const run = await returningEngine.run('wf-returned-component');
+    const [step] = run.steps;
+    expect(run.status).toBe('failed');
+    expect(step.success).toBe(false);
+    expect(step.error).toBe('Component c not found');
+    expect(step.failureDetails?.errorCode).toBe('UB-ELEM-NOT-FOUND');
+    expect(step.failureDetails?.context).toMatchObject({ stepId: 'c1', stepType: 'component-action' });
   });
 
   it('a missing-target wait step classifies via failureDetails', async () => {

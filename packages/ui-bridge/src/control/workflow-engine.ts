@@ -142,8 +142,10 @@ function failedActionResponse(
   return {
     ...response,
     error,
-    // Classified like the throw arm, so the same message gets the same code
-    // whether the executor threw it or returned it.
+    // Executor-supplied details keep their own code and gain the step's id
+    // and type (which win over a same-named key the executor set). Without
+    // them, the message is classified like the throw arm, so the same message
+    // gets the same code whether the executor threw it or returned it.
     failureDetails: response.failureDetails
       ? {
           ...response.failureDetails,
