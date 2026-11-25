@@ -247,6 +247,10 @@ Conditions:
   forces the real CSS `:hover` state (the target and its ancestors), reports
   what it revealed under `forcedHover`, and holds it until `unhover`, the next
   `hover`, a completed write-class action such as the `click`, or `holdMs`.
+  A non-click action (`type`, `focus`, `setValue`, a custom action, …) on a
+  node that fails the render check is refused on both arms too, as
+  `ELEMENT_NOT_VISIBLE` / `UB-ELEM-NOT-VISIBLE`; only `unhover` and a page-level
+  `scroll` are exempt.
 - `text-matches` — element exists AND its label/aria-label/title/textContent
   contains `text_match` (pass as a sibling field).
 

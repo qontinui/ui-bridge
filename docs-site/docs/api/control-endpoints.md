@@ -673,13 +673,30 @@ because its select is. The server
 it never re-ranks Central Target Registry selectors, emits `ctr:*` events or
 prunes the discovery cache.
 
-On the React relay, the `executeElementAction` dispatch gate runs this render
-check before every action on a registered element, not only clicks (`unhover`
-is exempt, and a page-level `scroll` takes no element). So a relay `type`, `focus` or
-`setValue` on a node whose computed visibility is `collapse` (including one
-inside a collapsed table row) is now refused, as one on a `visibility: hidden`
-node already was. The HTTP click pre-check gates click-like actions only, so
-over HTTP those non-click actions still dispatch.
+Both arms run this render check before every element action, not only clicks:
+the React relay's `executeElementAction` dispatch gate and the HTTP executor's
+pre-dispatch gate refuse any action on an unrendered node with
+`UB-ELEM-NOT-VISIBLE` (`visibilityReason: hidden`), custom actions included.
+Exactly two actions are exempt on both: `unhover`, which releases the page's
+single forced hover and whose element is often the one that release hides, and
+a page-level `scroll` (an id of `document`, `body` or `window`), which scrolls
+the page rather than an element. So a `type`, `focus` or `setValue` on a node
+inside a `display: none` subtree, or one whose computed visibility is
+`hidden` or `collapse` (including one inside a collapsed table row), is
+refused over HTTP and over the relay alike. Both arms also refuse a non-click
+action on a natively `disabled` control (`UB-ELEM-DISABLED` over HTTP,
+`disabledReason: native`); click-like actions keep the fuller click refusal
+(`disabled`, `aria-disabled`, `pointer-events: none`). The HTTP executor adds
+its click-only reads on top: an explicit zero inline size (`no-layout`) and an
+inline `-9999px` offset (`off-screen`).
+
+`focus` reports whether focus landed, on both arms. After `element.focus()`,
+focus counts as taken when the focused element (descending into open shadow
+roots) is the target or inside it, so a wrapper that forwards focus to an
+inner input succeeds. When it did not land, as on a node that is not
+focusable, the action fails with `UB-ACTION-FAILED` and
+`failureDetails.context.reason: "focus_not_taken"`, and the HTTP arm fires no
+synthetic `focus` event.
 
 ## Diagnostics
 
