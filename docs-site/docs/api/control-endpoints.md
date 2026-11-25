@@ -630,7 +630,9 @@ content-redacted unregistered executor row's `label` now reads `[REDACTED]`
 rather than being absent, so a case-insensitive `label` / `text` filter for
 `redacted` (or `exact_text: '[REDACTED]'`) now matches such rows, as it already
 did on the fallback arm; it reveals which nodes are redacted, never their
-content. Executor ids are unchanged. Fallback
+content. A NAMED content-redacted executor row's `accessibleName` (and
+`state.accessibleName`) likewise now reads `[REDACTED]` where it was absent; a
+nameless redacted row's `accessibleName` stays absent. Executor ids are unchanged. Fallback
 ids are unchanged, except for an element whose id was a slug of redacted text
 (it was inside a redaction boundary, or labelled by an `aria-labelledby` target
 touching one): those now read `dom-<type>-<index>`. A non-redacted element whose
