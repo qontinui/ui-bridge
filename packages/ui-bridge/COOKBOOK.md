@@ -251,6 +251,12 @@ Conditions:
   node that fails the render check is refused on both arms too, as
   `ELEMENT_NOT_VISIBLE` / `UB-ELEM-NOT-VISIBLE`; only `unhover` and a page-level
   `scroll` are exempt.
+  In-process callers of the SDK's action executor get the same refusals:
+  `useUIElement().trigger`, workflow element-action steps and the
+  natural-language executor all go through it. So an action on an unrendered
+  node, such as a `type` or `setValue` on an `<input type="hidden">`, no longer
+  writes the value: `trigger` and the natural-language executor throw, and a
+  workflow element-action step fails.
 - `text-matches` — element exists AND its label/aria-label/title/textContent
   contains `text_match` (pass as a sibling field).
 
