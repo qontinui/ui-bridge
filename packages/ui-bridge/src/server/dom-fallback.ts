@@ -22,6 +22,7 @@ import type { ElementState, ElementType, StandardAction } from '../core/types';
 import { inferActions, inferElementType } from '../core/element-kind';
 import { getElementState } from '../core/element-state';
 import {
+  canonicalLabelFromName,
   computeVisibleText,
   readAriaLabelAttr,
   readAriaLabelledbyAttr,
@@ -111,19 +112,6 @@ function fallbackIdText(el: HTMLElement): string | null {
   return text.length > 200 ? truncateCodePoints(text, 200) + '…' : text;
 }
 
-/** The fallback label's cap: 200 code points, then `…` (the cap the old chain applied). */
-const LABEL_MAX_CODE_POINTS = 200;
-
-/**
- * The cut never splits a `REDACTED_VALUE` sentinel the name carries (a
- * boundary inside the named subtree): a sentinel the cut would split is
- * dropped whole, as the scan's `textContent` cap does.
- */
-function capLabel(name: string): string {
-  const cut = truncateKeepingSentinel(name, LABEL_MAX_CODE_POINTS);
-  return cut === name ? name : cut + '…';
-}
-
 /**
  * The DOM-fallback `label`: the element's CANONICAL accessible name
  * (`core/a11y` `resolveAccessibleName`, the one name algorithm the package
@@ -131,20 +119,22 @@ function capLabel(name: string): string {
  * points, **with** the §4.6 CONTENT scrub applied — exactly what the scan
  * below writes into `DOMFallbackElement.label`. It includes the `derived`
  * rung (a `data-testid` or icon token) because `state.accessibleName` does;
- * `state.nameSource` says which rung produced it.
+ * `state.nameSource` says which rung produced it. The rule itself is
+ * `core/a11y` `canonicalLabelFromName`, which the action executor's `find()`
+ * rows use too, so the two arms' labels agree by construction.
  *
  * Exported so the injected registry seeder can hand the registry a
  * re-derivation closure (`registerElement({ labelSource })`). Without that,
  * `RegisteredElement.label` stays frozen at the value scraped on the FIRST
  * discovery pass while the same snapshot's `ariaLabel`/`accessibleName` fields
- * are re-derived live — the stale-label defect. One definition here so the
+ * are re-derived live — the stale-label defect. One definition so the
  * refresh can never drift from the initial scrape.
  */
 export function computeDomFallbackLabel(
   el: HTMLElement,
   verdict: RedactionVerdict = verdictOf(el)
 ): string {
-  return verdict.content ? REDACTED_VALUE : capLabel(resolveAccessibleName(el).name ?? '');
+  return canonicalLabelFromName(resolveAccessibleName(el).name, verdict);
 }
 
 /**
@@ -155,7 +145,7 @@ export function computeDomFallbackLabel(
  * element. Same answer by construction.
  */
 function fallbackLabelFromState(state: ElementState, verdict: RedactionVerdict): string {
-  return verdict.content ? REDACTED_VALUE : capLabel(state.accessibleName ?? '');
+  return canonicalLabelFromName(state.accessibleName, verdict);
 }
 
 /**
