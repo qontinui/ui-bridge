@@ -29,6 +29,7 @@ import {
   checkableInput,
   clearControl,
   disclosureDetails,
+  focusable,
   formattedValueInput,
   hasClickToggledState,
   hasExpandedState,
@@ -88,7 +89,7 @@ export function textEntryArm(
 }
 
 /**
- * `type`: append the text to a text field or a hidden `<input>`, or — on a date, time or colour
+ * `type`: append the text to a text field, or — on a date, time or colour
  * `<input>`, whose value the browser sanitizes whole — make the text its whole
  * value. `clearFirst` empties a text field before appending (`clear: true`).
  */
@@ -97,11 +98,7 @@ export function typeArm(
 ): ArmOutcome<{ apply: (text: string, clearFirst: boolean) => void }> {
   const control = typeControl(element);
   if (!control) {
-    return refused(
-      'type',
-      element,
-      `${TEXT_ENTRY_TARGETS}, ${FORMATTED_VALUE_TARGETS}, or a hidden <input>`
-    );
+    return refused('type', element, `${TEXT_ENTRY_TARGETS} or ${FORMATTED_VALUE_TARGETS}`);
   }
   const whole = formattedValueInput(control) !== null;
   return {
@@ -125,7 +122,7 @@ export function clearArm(element: HTMLElement): ArmOutcome<{ apply: () => void }
     return refused(
       'clear',
       element,
-      `${TEXT_ENTRY_TARGETS}, ${FORMATTED_VALUE_TARGETS}, or a hidden or file <input>`
+      `${TEXT_ENTRY_TARGETS}, ${FORMATTED_VALUE_TARGETS}, or a file <input>`
     );
   }
   return {
@@ -155,8 +152,26 @@ export function setValueArm(element: HTMLElement): ArmOutcome<{ apply: (value: s
   return refused(
     'setValue',
     element,
-    `${TEXT_ENTRY_TARGETS}, a range, colour, date, time or hidden <input>, or a <select>`
+    `${TEXT_ENTRY_TARGETS}, a range, colour, date or time <input>, or a <select>`
   );
+}
+
+/**
+ * `focus`: a node `focus()` can move focus to ({@link focusable}). Checked
+ * BEFORE `focus()` is called, so a node that cannot take focus gets the typed
+ * element-kind refusal, naming the verb, rather than a dispatched
+ * `focus_not_taken`. The read-back after the call (`focusLanded`) still
+ * decides whether a focusable node actually took it.
+ */
+export function focusArm(element: HTMLElement): ArmOutcome<Record<never, never>> {
+  return focusable(element)
+    ? { ok: true }
+    : refused(
+        'focus',
+        element,
+        'a focusable element: a link, a form control, an element carrying tabindex, ' +
+          'a contenteditable editing host, or a shadow host that delegates focus'
+      );
 }
 
 /** `select`: a native `<select>`, or a combobox driven through its popup. */

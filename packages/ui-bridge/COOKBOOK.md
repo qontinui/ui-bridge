@@ -304,9 +304,9 @@ element-action or component-action step whose action resolves
 found) is a FAILED step: it reports `success: false` with the action's
 `error` and `failureDetails` (the full response stays in `result`), the run's
 `error` is that step's, and the run stops there instead of continuing to the
-next step. An `<input type="hidden">` still advertises `type`,
-`clear` and `setValue`, and all three are refused on it because it is not
-rendered; narrowing what such an element advertises is a tracked follow-up.
+next step. An `<input type="hidden">` advertises no verb, since every verb is
+refused on it as not rendered, and `focus` is advertised only on a node that
+can take focus (refused with the element-kind refusal elsewhere).
 
 ---
 

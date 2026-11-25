@@ -68,10 +68,11 @@ const ACTION_ORDER: Record<StandardAction, number> = {
 
 /**
  * What both dispatchers perform on ANY element: the pointer verbs (click-like
- * ones pre-check visibility and `disabled`, which is state, not kind), focus,
+ * ones pre-check visibility and `disabled`, which is state, not kind), blur,
  * scrolling, drag, and keyboard input. `sendKeys` is on every kind: keyboard
  * input to a canvas, a dialog or a terminal pane is a documented use, and the
- * runner gates it on this list.
+ * runner gates it on this list. `focus` is not here: only a focusable node
+ * takes it, which is its structure ({@link focusable}), not its kind.
  */
 const EVERY_ELEMENT: readonly StandardAction[] = [
   'click',
@@ -80,7 +81,6 @@ const EVERY_ELEMENT: readonly StandardAction[] = [
   'rightClick',
   'middleClick',
   'sendKeys',
-  'focus',
   'blur',
   'hover',
   'unhover',
@@ -151,8 +151,17 @@ export function isTypedWithKeys(type: string | undefined): boolean {
  * The verbs an element of kind `type` advertises: its kind's row plus what its
  * own structure grants, in canonical order. `type` is the kind the element is
  * REGISTERED as, which a caller may have declared rather than had inferred.
+ *
+ * A hidden `<input>` advertises nothing: it has no rendering, so both
+ * dispatchers refuse every verb on it for visibility (state, checked before
+ * kind), and a verb advertised there could never succeed.
+ *
+ * Structure is live state (a `tabindex` added after mount, an owner form), so
+ * a registration that did not declare its `actions` re-reads this on every
+ * read of the row (`core/registry.ts` `registerElement`).
  */
 export function inferActions(type: ElementType, element: Element): StandardAction[] {
+  if (element instanceof HTMLInputElement && element.type === 'hidden') return [];
   // A declared `type` arrives from callers' code, so a string outside the union
   // (or one naming an Object.prototype member) reads as an untyped element.
   const row = Object.prototype.hasOwnProperty.call(ELEMENT_KIND_ACTIONS, type)
@@ -411,17 +420,12 @@ const FORMATTED_VALUE_INPUT_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * `<input>` types `setValue` writes a whole value into: a range position or a
- * hidden value, plus the formatted ones above. A range takes no `type` or
- * `clear` (its value is a number the browser clamps: typed characters write a
- * wrong value, and an empty one snaps back to the midpoint); a hidden input
- * takes both ({@link hiddenInput}).
+ * `<input>` types `setValue` writes a whole value into: a range position, plus
+ * the formatted ones above. A range takes no `type` or `clear` (its value is a
+ * number the browser clamps: typed characters write a wrong value, and an
+ * empty one snaps back to the midpoint).
  */
-const VALUE_INPUT_TYPES: ReadonlySet<string> = new Set([
-  'range',
-  'hidden',
-  ...FORMATTED_VALUE_INPUT_TYPES,
-]);
+const VALUE_INPUT_TYPES: ReadonlySet<string> = new Set(['range', ...FORMATTED_VALUE_INPUT_TYPES]);
 
 /**
  * The text field `autocomplete` (and `sendKeys`' value editing) writes to: a
@@ -446,23 +450,12 @@ export function formattedValueInput(element: Element): HTMLInputElement | null {
 }
 
 /**
- * A hidden `<input>`. Its value is a plain string with no sanitization, so
- * `type` appends to it and `clear` empties it, as the base executor did. It
- * has no rendering, so a dispatcher that refuses invisible elements (the
- * relay) refuses every verb on it, which is state, not kind.
- */
-export function hiddenInput(element: Element): HTMLInputElement | null {
-  return element instanceof HTMLInputElement && element.type === 'hidden' ? element : null;
-}
-
-/**
- * The field `type` writes to: a text field ({@link textEntryControl}) or a
- * hidden `<input>` ({@link hiddenInput}), which the typed text is appended
- * to, or a date, time or colour `<input>` ({@link formattedValueInput}),
- * whose whole value the typed text becomes.
+ * The field `type` writes to: a text field ({@link textEntryControl}), which
+ * the typed text is appended to, or a date, time or colour `<input>`
+ * ({@link formattedValueInput}), whose whole value the typed text becomes.
  */
 export function typeControl(element: Element): HTMLInputElement | HTMLTextAreaElement | null {
-  return textEntryControl(element) ?? formattedValueInput(element) ?? hiddenInput(element);
+  return textEntryControl(element) ?? formattedValueInput(element);
 }
 
 /** A file `<input>`. */
@@ -481,8 +474,8 @@ export function clearControl(element: Element): HTMLInputElement | HTMLTextAreaE
 
 /**
  * The field `setValue` writes a whole value into: a text field
- * ({@link textEntryControl}) or a value `<input>` (range, colour, date, time,
- * hidden). A `<select>` takes `setValue` too, through its own arm. A file
+ * ({@link textEntryControl}) or a value `<input>` (range, colour, date,
+ * time). A `<select>` takes `setValue` too, through its own arm. A file
  * `<input>` does not: its value is a file list, never a string.
  */
 export function valueControl(element: Element): HTMLInputElement | HTMLTextAreaElement | null {
@@ -625,12 +618,40 @@ export function resolveOwnerForm(element: Element): HTMLFormElement | null {
 }
 
 /**
+ * Whether a browser moves focus to `element` on `element.focus()`, as far as
+ * its structure says: it carries a `tabindex` (any value, `-1` included:
+ * script focus takes it), is natively focusable (`tabIndex >= 0`: a link with
+ * an `href`, a form control, …), is an editing host (`contenteditable`), or is
+ * a shadow host whose open shadow root delegates focus.
+ *
+ * A custom element (a hyphenated tag) whose shadow root cannot be read — a
+ * CLOSED root, which may delegate focus — reads as focusable: that is UNKNOWN,
+ * not "cannot take focus", and the dispatchers' read-back (`focusLanded`
+ * in `core/composed-tree`) still reports a focus that did not land. Whether
+ * the node is rendered, `inert` or `disabled` is state, checked by the
+ * dispatchers' gate, not here.
+ *
+ * `focus` is advertised exactly where this holds, and both dispatchers refuse
+ * it with the element-kind refusal where it does not
+ * (`control/element-arms.ts` `focusArm`).
+ */
+export function focusable(element: Element): boolean {
+  if (element.hasAttribute('tabindex') || isContentEditable(element)) return true;
+  const tabIndex = (element as Partial<HTMLElement>).tabIndex;
+  if (typeof tabIndex === 'number' && tabIndex >= 0) return true;
+  const root = element.shadowRoot;
+  if (root) return root.delegatesFocus === true;
+  return element.localName.includes('-');
+}
+
+/**
  * What THIS node performs because of the HTML element it is and the state it
  * carries, whatever kind it was inferred or declared as. Each line is the
  * predicate of one dispatcher arm (`control/element-arms.ts`).
  */
 export function structuralActions(element: Element): StandardAction[] {
   const verbs: StandardAction[] = [];
+  if (focusable(element)) verbs.push('focus');
   if (textEntryControl(element)) verbs.push(...TEXT_ENTRY_VERBS);
   else if (typeControl(element)) verbs.push('type', 'clear', 'setValue');
   else if (valueControl(element)) verbs.push('setValue');

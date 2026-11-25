@@ -206,6 +206,7 @@ import {
   checkArm,
   clearArm,
   clickTargetArm,
+  focusArm,
   formOwnerArm,
   selectArm,
   setValueArm,
@@ -3582,6 +3583,8 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   private performFocus(element: HTMLElement): void {
+    const arm = focusArm(element);
+    if (!arm.ok) throw new ElementKindRefusalError(arm);
     const before = snapshotFocus(element);
     element.focus();
     // Read back: a browser silently ignores `focus()` on a node that cannot

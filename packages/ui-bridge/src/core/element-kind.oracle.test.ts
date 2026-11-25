@@ -33,7 +33,8 @@
  * branch on (`aria-expanded`), the role-on-a-native-tag spellings component
  * libraries render, and media registered through the media scanner. Hidden
  * inputs are not enumerated: they have no rendering, so both dispatchers
- * refuse every verb on them for visibility, which is state, not kind.
+ * refuse every verb on them for visibility, which is state checked before
+ * kind; they advertise nothing, and their own block below holds that.
  *
  * It replaces `registry.action-advertisement.test.ts`, which pinned the
  * registry's table alone.
@@ -458,42 +459,24 @@ function viaDomFallback(fixture: Fixture, target: HTMLElement): Advertisement {
 interface Outcome {
   success: boolean;
   refusal?: unknown;
-  /** `failureDetails.context.reason` — `focus_not_taken` for an unlanded focus. */
-  reason?: unknown;
+  /** `failureDetails.errorCode`. */
+  code?: unknown;
   error?: string;
 }
 
 interface DispatchResponse {
   success?: boolean;
   error?: string;
-  failureDetails?: { context?: { refusal?: unknown; reason?: unknown } };
+  failureDetails?: { errorCode?: unknown; context?: { refusal?: unknown } };
 }
 
 function outcomeOf(res: DispatchResponse): Outcome {
   return {
     success: res.success === true,
     refusal: res.failureDetails?.context?.refusal,
-    reason: res.failureDetails?.context?.reason,
+    code: res.failureDetails?.errorCode,
     error: res.error,
   };
-}
-
-/**
- * Whether a browser moves focus to `el` on `el.focus()` at all: natively
- * focusable (its `tabIndex` defaults to 0), given a `tabindex`, or an editing
- * host (`contenteditable`, whose `tabIndex` jsdom reports as -1). `focus` is
- * advertised on every element, and both dispatchers read back whether it
- * landed (`core/composed-tree` `focusLanded`): on a node that cannot take
- * focus the verb fails LOUDLY with `focus_not_taken` instead of reporting a
- * no-op as success. Focusability is that node's state (a `tabindex`, a
- * `disabled`, its rendering), not its kind, so the oracle holds the loud
- * failure there rather than a success.
- */
-function takesFocus(el: HTMLElement): boolean {
-  const editable = el.getAttribute('contenteditable');
-  return (
-    el.hasAttribute('tabindex') || el.tabIndex >= 0 || (editable !== null && editable !== 'false')
-  );
 }
 
 const emptyBridge: BridgeAccess = {
@@ -550,14 +533,7 @@ async function violations(fixture: Fixture, via: Dispatcher): Promise<string[]> 
     const advertised = registered.actions.includes(verb);
     const outcome = await dispatch(via, verb);
     await releaseForcedPseudoState('explicit');
-    if (verb === 'focus' && advertised && !takesFocus(target)) {
-      if (outcome.success || outcome.reason !== 'focus_not_taken') {
-        found.push(
-          `focus on a node that cannot take focus must fail with focus_not_taken, but ${via} ` +
-            (outcome.success ? 'reported success' : `failed it otherwise: ${outcome.error}`)
-        );
-      }
-    } else if (advertised && !outcome.success) {
+    if (advertised && !outcome.success) {
       found.push(`advertises ${verb}, but ${via} failed it: ${outcome.error}`);
     } else if (!advertised && (outcome.success || outcome.refusal !== 'element-kind')) {
       found.push(
@@ -881,44 +857,45 @@ describe('toggle on click-toggled state: the framework handler runs on both disp
 
 /**
  * A hidden `<input>` is not an oracle fixture: it has no rendering, so BOTH
- * dispatchers refuse every verb on it for visibility (state, not kind) — the
- * pre-dispatch gate the relay and the executor share (plan
+ * dispatchers refuse every verb on it for visibility (state, checked before
+ * kind) — the pre-dispatch gate the relay and the executor share (plan
  * `2026-11-25-ui-bridge-http-executor-refuses-non-click-actions-on-unrendered-elements`).
- * Until then the executor alone appended to and cleared one, reporting what
- * the relay refused.
+ * So it advertises nothing: a verb advertised there could never succeed (plan
+ * `2026-11-25-ui-bridge-advertised-verbs-disabled-mutating-only-and-workflow-step-failures`,
+ * D1). `unhover` is the one verb neither gate refuses — it releases the page's
+ * forced hover whichever element it names — so it is not driven here.
  */
-describe('a hidden input is refused for visibility on both dispatchers', () => {
+describe('a hidden input advertises nothing and is refused for visibility on both dispatchers', () => {
   async function onHidden(
     via: Dispatcher,
     value: string,
-    verb: StandardAction,
-    params: Record<string, unknown>
+    verb: StandardAction
   ): Promise<{ outcome: Outcome; target: HTMLInputElement }> {
     getGlobalRegistry().clear();
     host.innerHTML = `<input type="hidden" value="${value}" ${T}>`;
     const target = host.querySelector(`[${T}]`) as HTMLInputElement;
     getGlobalRegistry().registerElement('oracle-target', target);
-    return { outcome: await dispatch(via, verb, params), target };
+    return { outcome: await dispatch(via, verb), target };
   }
 
-  it('advertises type, clear and setValue, and not autocomplete', () => {
+  it('advertises no verb on any path that registers it', () => {
     host.innerHTML = `<input type="hidden" ${T}>`;
     const el = host.querySelector(`[${T}]`) as HTMLElement;
-    const actions = new UIBridgeRegistry().registerElement('h', el).actions;
-    expect(actions).toEqual(expect.arrayContaining(['type', 'clear', 'setValue']));
-    expect(actions).not.toContain('autocomplete');
+    expect(new UIBridgeRegistry().registerElement('h', el).actions).toEqual([]);
+    expect(new UIBridgeRegistry().registerElement('h', el, { type: 'input' }).actions).toEqual([]);
   });
 
   describe.each(['executor', 'relay'] as const)('through the %s', (via) => {
-    it.each([
-      ['type', { text: '-en' }],
-      ['clear', {}],
-      ['setValue', { value: 'abc' }],
-    ] as const)('%s is refused and leaves the value alone', async (verb, params) => {
-      const { outcome, target } = await onHidden(via, 'tok', verb, { ...params });
-      expect(outcome.success).toBe(false);
-      expect(outcome.error).toMatch(/not visible/);
-      expect(target.value).toBe('tok');
-    });
+    it.each(VERBS.filter((verb) => verb !== 'unhover'))(
+      '%s is refused as not visible and leaves the value alone',
+      async (verb) => {
+        const { outcome, target } = await onHidden(via, 'tok', verb);
+        expect(outcome.success).toBe(false);
+        expect(outcome.code).toBe(
+          via === 'executor' ? 'UB-ELEM-NOT-VISIBLE' : 'ELEMENT_NOT_VISIBLE'
+        );
+        expect(target.value).toBe('tok');
+      }
+    );
   });
 });

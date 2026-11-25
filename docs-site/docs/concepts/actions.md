@@ -23,7 +23,7 @@ fallback.
 | `click`, `doubleClick`, `rightClick`, `middleClick` | Pointer clicks (refused while the element is hidden or disabled) |
 | `hoverClick`                                        | Force the CSS `:hover` state, then click                         |
 | `hover`, `unhover`                                  | Force / release the CSS `:hover` state                           |
-| `focus`, `blur`                                     | Focus / remove focus                                             |
+| `blur`                                              | Remove focus                                                     |
 | `scroll`, `scrollIntoView`                          | Scroll the element's container / bring the element on screen     |
 | `sendKeys`                                          | Key events to the element: a canvas, a terminal pane, an editor  |
 | `drag`                                              | Drag to a position or onto another element                       |
@@ -33,7 +33,8 @@ fallback.
 | Element                                                                                                                                       | Adds                                        |
 | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
 | Text `<input>` (text, search, email, url, tel, password, number), `<textarea>`                                                                | `type`, `clear`, `setValue`, `autocomplete` |
-| Date, time, datetime-local, month, week, colour or hidden `<input>`                                                                           | `type`, `clear`, `setValue`                 |
+| A focusable element: natively (a link, a form control), through `tabindex`, a contenteditable, or a shadow host that delegates focus          | `focus`                                     |
+| Date, time, datetime-local, month, week or colour `<input>`                                                                                   | `type`, `clear`, `setValue`                 |
 | Range `<input>`                                                                                                                               | `setValue`                                  |
 | File `<input>`                                                                                                                                | `clear`                                     |
 | `<select>`                                                                                                                                    | `select`, `setValue`                        |
@@ -50,9 +51,14 @@ the value verbs: `sendKeys` is how it is typed into. A date, time or colour
 `<input>` holds one formatted value the browser sanitizes whole, so `type`
 writes the typed text as that whole value (`type "10:30"` sets a time input to
 10:30) and `clear` empties it — a colour, which cannot be empty, returns to
-`#000000`. A hidden `<input>` is appended to and cleared like a text field
-(through the HTTP executor; the relay refuses every verb on an invisible
-element). `clear` on a file `<input>` empties its selection; nothing can type
+`#000000`. A hidden `<input>` advertises no verb at all: it is never rendered,
+so both dispatchers refuse every verb on it as not visible. `focus` is
+advertised only where `focus()` can move focus, and refused with the
+element-kind refusal elsewhere (a `<span>`, a `<div>` without `tabindex`, a
+canvas). Because a `tabindex` can be added after the element mounts, a
+registration that did not declare its `actions` re-reads its list every time
+the row is served. A custom element whose shadow root cannot be read (a
+closed root may delegate focus) keeps `focus`. `clear` on a file `<input>` empties its selection; nothing can type
 a value into one. A radio, `role="radio"` or `role="menuitemradio"` only
 selects — clicking a checked one changes nothing — so it takes `check`, never
 `toggle`.

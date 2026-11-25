@@ -1177,7 +1177,13 @@ export class UIBridgeRegistry {
     // `core/element-kind`: the ONE inferrer and verb table every producer reads,
     // so a node registered here advertises what it does on every other path.
     const type = options.type ?? inferElementType(element);
-    const actions = options.actions ?? inferActions(type, element);
+    // A declared list is served as declared. An inferred one is re-inferred on
+    // every read (the `actions` accessor below), because the verbs follow the
+    // node's live structure: a `tabindex` added after mount (a roving tabindex,
+    // a late-enabled widget) makes `focus` dispatch, and the runner refuses any
+    // verb a row does not advertise before the SDK sees it. Frozen at
+    // registration, the row would lose a verb that works.
+    let declaredActions = options.actions;
 
     // Resolve the owning window. Default ("main") elements leave the
     // serialized `windowLabel` undefined so single-window snapshots are
@@ -1253,7 +1259,12 @@ export class UIBridgeRegistry {
       element,
       type,
       label: options.label,
-      actions,
+      get actions(): StandardAction[] {
+        return declaredActions ?? inferActions(registered.type, element);
+      },
+      set actions(value: StandardAction[]) {
+        declaredActions = value;
+      },
       customActions: options.customActions,
       getState: computeState,
       getIdentifier: () => createElementIdentifier(element),
@@ -1475,7 +1486,6 @@ export class UIBridgeRegistry {
     const registered = this.registerElement(id, element, {
       type,
       label: options.label,
-      actions: inferActions(type, element),
       category: 'media',
       mediaMetadata: options.mediaMetadata,
       origin: options.origin ?? 'auto',

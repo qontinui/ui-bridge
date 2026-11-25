@@ -240,7 +240,8 @@ describe('the HTTP executor refuses a non-click action on an unrendered element'
       const clicks = vi.fn();
       option.addEventListener('click', clicks);
       getGlobalRegistry().registerElement('og-option', option, { type: 'button', label: 'o' });
-      const res = arm === 'http' ? await http('og-option', 'click') : await relay('og-option', 'click');
+      const res =
+        arm === 'http' ? await http('og-option', 'click') : await relay('og-option', 'click');
       expect(res.success).toBe(false);
       expect(res.failureDetails?.errorCode).toBe(
         arm === 'http' ? 'UB-ELEM-DISABLED' : 'ELEMENT_NOT_ENABLED'
@@ -378,7 +379,10 @@ describe('focus reads back whether it landed, on both arms', () => {
     const res = await http('inert-http', 'focus');
     expect(res.success).toBe(false);
     expect(res.failureDetails?.errorCode).toBe('UB-ACTION-FAILED');
-    expect(res.failureDetails?.context).toMatchObject({ action: 'focus', reason: 'focus_not_taken' });
+    expect(res.failureDetails?.context).toMatchObject({
+      action: 'focus',
+      reason: 'focus_not_taken',
+    });
     expect(focusEvents).toHaveLength(0);
     expect(document.activeElement).not.toBe(input);
   });
@@ -388,14 +392,18 @@ describe('focus reads back whether it landed, on both arms', () => {
     const res = await relay('inert-relay', 'focus');
     expect(res.success).toBe(false);
     expect(res.failureDetails?.errorCode).toBe('UB-ACTION-FAILED');
-    expect(res.failureDetails?.context).toMatchObject({ action: 'focus', reason: 'focus_not_taken' });
+    expect(res.failureDetails?.context).toMatchObject({
+      action: 'focus',
+      reason: 'focus_not_taken',
+    });
     expect(document.activeElement).not.toBe(input);
   });
 
   it.each(['http', 'relay'] as const)(
-    '%s: a focus a wrapper forwards to its inner input counts as taken',
+    '%s: a focus a focusable wrapper forwards to its inner input counts as taken',
     async (arm) => {
       const wrapper = document.createElement('div');
+      wrapper.tabIndex = -1;
       const inner = document.createElement('input');
       wrapper.appendChild(inner);
       document.body.appendChild(wrapper);
@@ -423,8 +431,8 @@ describe('focus reads back whether it landed, on both arms', () => {
   });
 
   /**
-   * A wrapper inside an open shadow tree whose `<slot>` takes a light-DOM
-   * input, and whose own `focus()` forwards to that input.
+   * A focusable wrapper inside an open shadow tree whose `<slot>` takes a
+   * light-DOM input, and whose own `focus()` forwards to that input.
    */
   function slottedWrapper(id: string): { wrap: HTMLElement; light: HTMLInputElement } {
     const host = document.createElement('div');
@@ -432,6 +440,7 @@ describe('focus reads back whether it landed, on both arms', () => {
     host.appendChild(light);
     document.body.appendChild(host);
     const wrap = document.createElement('div');
+    wrap.tabIndex = -1;
     wrap.appendChild(document.createElement('slot'));
     host.attachShadow({ mode: 'open' }).appendChild(wrap);
     wrap.focus = () => light.focus();
@@ -452,9 +461,11 @@ describe('focus reads back whether it landed, on both arms', () => {
   );
 
   it.each(['http', 'relay'] as const)(
-    '%s: focus() on a non-focusable container whose child ALREADY holds focus is focus_not_taken',
+    '%s: a focus() that does nothing on a focusable container whose child ALREADY holds focus is focus_not_taken',
     async (arm) => {
       const container = document.createElement('div');
+      container.tabIndex = -1;
+      container.focus = () => {};
       const child = document.createElement('input');
       container.appendChild(child);
       document.body.appendChild(container);
@@ -468,11 +479,66 @@ describe('focus reads back whether it landed, on both arms', () => {
       const res =
         arm === 'http' ? await http('container', 'focus') : await relay('container', 'focus');
       expect(res.success).toBe(false);
-      expect(res.failureDetails?.context).toMatchObject({ action: 'focus', reason: 'focus_not_taken' });
+      expect(res.failureDetails?.context).toMatchObject({
+        action: 'focus',
+        reason: 'focus_not_taken',
+      });
       expect(synthetic).toHaveLength(0);
       expect(document.activeElement).toBe(child);
     }
   );
+
+  it.each(['http', 'relay'] as const)(
+    '%s: focus on a node that cannot take focus is refused by kind before focus() is called',
+    async (arm) => {
+      const span = document.createElement('span');
+      span.textContent = 'status';
+      document.body.appendChild(span);
+      const focusCalls = vi.spyOn(span, 'focus');
+      getGlobalRegistry().registerElement('plain-span', span, { type: 'generic', label: 's' });
+      expect(getGlobalRegistry().getElement('plain-span')?.actions).not.toContain('focus');
+      const res =
+        arm === 'http' ? await http('plain-span', 'focus') : await relay('plain-span', 'focus');
+      expect(res.success).toBe(false);
+      expect(res.failureDetails?.context?.refusal).toBe('element-kind');
+      expect(res.error).toContain('focus is not supported on <span>');
+      expect(focusCalls).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(['http', 'relay'] as const)(
+    '%s: a tabindex added after registration makes focus advertised on the served row, and it succeeds',
+    async (arm) => {
+      const item = document.createElement('div');
+      item.textContent = 'row';
+      document.body.appendChild(item);
+      const registry = getGlobalRegistry();
+      registry.registerElement('late-tabindex', item, { type: 'generic', label: 'row' });
+      const served = (): string[] =>
+        registry.createSnapshot().elements.find((e) => e.id === 'late-tabindex')?.actions ?? [];
+      expect(served()).not.toContain('focus');
+
+      item.setAttribute('tabindex', '-1');
+
+      expect(served()).toContain('focus');
+      expect(registry.getElement('late-tabindex')?.actions).toContain('focus');
+      const res =
+        arm === 'http'
+          ? await http('late-tabindex', 'focus')
+          : await relay('late-tabindex', 'focus');
+      expect(res.success).toBe(true);
+      expect(document.activeElement).toBe(item);
+    }
+  );
+
+  it('a declared actions list is served as declared, whatever the node gains later', () => {
+    const item = document.createElement('div');
+    document.body.appendChild(item);
+    const registry = getGlobalRegistry();
+    registry.registerElement('declared', item, { type: 'generic', label: 'd', actions: ['click'] });
+    item.setAttribute('tabindex', '0');
+    expect(registry.getElement('declared')?.actions).toEqual(['click']);
+  });
 
   /** An input inside a CLOSED shadow root, registered directly. */
   function inputInClosedShadow(id: string): { host: HTMLElement; inner: HTMLInputElement } {
