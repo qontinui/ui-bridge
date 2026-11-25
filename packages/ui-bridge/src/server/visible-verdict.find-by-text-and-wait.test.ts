@@ -695,28 +695,6 @@ describe('render-check refusals agree on every arm: an <option> (own style, optg
     await refusedEverywhere('collapse-row');
   });
 
-  it('a non-click action on a collapsed control: the relay gate refuses it, the HTTP arm (click-like gate only) dispatches it', async () => {
-    const table = document.createElement('table');
-    const row = table.insertRow();
-    row.style.visibility = 'collapse';
-    const input = document.createElement('input');
-    row.insertCell().appendChild(input);
-    document.body.append(table);
-    getGlobalRegistry().registerElement('collapse-focus', input, { type: 'input', label: 'f' });
-    const relay = (await executeCommand(
-      'executeElementAction',
-      { id: 'collapse-focus', request: { action: 'focus' } },
-      emptyBridge
-    )) as { success: boolean; error?: string };
-    expect(relay.success).toBe(false);
-    expect(relay.error).toContain('not visible');
-    const http = (await createActionExecutor(getGlobalRegistry()).executeAction('collapse-focus', {
-      action: 'focus',
-    })) as { success: boolean; failureDetails?: { errorCode?: string } };
-    expect(http.failureDetails?.errorCode).not.toBe('UB-ELEM-NOT-VISIBLE');
-    expect(http.success).toBe(true);
-  });
-
   it('a visibility:collapse option is refused on every arm', async () => {
     const option = optionIn(document.body, 'opt-vc');
     option.style.visibility = 'collapse';
@@ -746,5 +724,36 @@ describe('render-check refusals agree on every arm: an <option> (own style, optg
     document.body.appendChild(details);
     Object.defineProperty(inside, 'checkVisibility', { configurable: true, value: () => false });
     expect(getClickVisibilityReason(inside)).toBe('hidden');
+  });
+});
+
+/**
+ * Where the relay and HTTP gates deliberately DIFFER: the relay dispatch gate
+ * runs the render check before every action on a registered element (except
+ * unhover); the HTTP pre-check gates click-like actions only.
+ */
+describe('relay and HTTP render gates deliberately differ on non-click actions', () => {
+  it('a non-click action on a collapsed control: the relay gate refuses it, the HTTP arm (click-like gate only) dispatches it', async () => {
+    const table = document.createElement('table');
+    const row = table.insertRow();
+    row.style.visibility = 'collapse';
+    const input = document.createElement('input');
+    row.insertCell().appendChild(input);
+    document.body.append(table);
+    getGlobalRegistry().registerElement('collapse-focus', input, { type: 'input', label: 'f' });
+    const relay = (await executeCommand(
+      'executeElementAction',
+      { id: 'collapse-focus', request: { action: 'focus' } },
+      emptyBridge
+    )) as { success: boolean; error?: string };
+    expect(relay.success).toBe(false);
+    expect(relay.error).toContain('not visible');
+    const http = (await createActionExecutor(getGlobalRegistry()).executeAction('collapse-focus', {
+      action: 'focus',
+    })) as { success: boolean; failureDetails?: { errorCode?: string } };
+    expect(http.failureDetails?.errorCode).not.toBe('UB-ELEM-NOT-VISIBLE');
+    expect(http.success).toBe(true);
+    // The focus actually moved (jsdom does not check rendering for focus).
+    expect(document.activeElement).toBe(input);
   });
 });
