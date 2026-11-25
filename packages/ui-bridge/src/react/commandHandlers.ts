@@ -101,6 +101,7 @@ import {
   clearArm,
   formOwnerArm,
   clickTargetArm,
+  focusArm,
   selectArm,
   setValueArm,
   textEntryArm,
@@ -2196,6 +2197,8 @@ export async function executeCommand(
             break;
           }
           case 'focus': {
+            const arm = focusArm(dom);
+            if (!arm.ok) return refuse(createKindRefusalFailure(id, 'focus', arm, startTime));
             const focusBefore = snapshotFocus(dom);
             dom.focus();
             // Read back, as the executor's `performFocus` does: a `focus()` the

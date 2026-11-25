@@ -395,9 +395,13 @@ If an action returns `success: false` with `error: "... requires a 'X' parameter
 > [Actions](../concepts/actions.md)). So an auto-registered `<input>` advertises
 > `setValue`, `sendKeys` and `autocomplete`, a `<form>` (or a control a form
 > owns) `submit` and `reset`, a `role="switch"` `toggle`, and every element —
-> a canvas included — `sendKeys`. A date, time, colour or hidden `<input>`
+> a canvas included — `sendKeys`. A date, time or colour `<input>`
 > keeps `type`, `clear` and `setValue` (`type "10:30"` sets a time input), and a
-> file `<input>` keeps `clear`. `select` is listed only on a node that opens a
+> file `<input>` keeps `clear`. A hidden `<input>` advertises nothing (it is
+> never rendered, so every verb is refused on it as not visible), and `focus`
+> is listed only on a focusable node (natively, through `tabindex`, a
+> contenteditable, or a shadow host that delegates focus), recomputed each time
+> the row is served for a registration that did not declare its `actions`. `select` is listed only on a node that opens a
 > listbox (`role="combobox"`, `aria-haspopup="listbox"`, or an `aria-haspopup`
 > whose `aria-controls` / `aria-owns` is a listbox), not on every
 > `aria-expanded` trigger: an accordion button `toggle`s. A toggle button

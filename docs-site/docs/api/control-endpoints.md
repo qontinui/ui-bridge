@@ -728,12 +728,16 @@ everyday case). Click-like actions keep the fuller click refusal (`disabled`,
 its click-only reads on top: an explicit zero inline size (`no-layout`) and an
 inline `-9999px` offset (`off-screen`).
 
-`focus` reports whether focus landed, on both arms. After `element.focus()`,
+`focus` is refused before `element.focus()` is called on a node that cannot
+take focus (no `tabindex`, not natively focusable, not an editing host, not a
+shadow host that delegates focus), on both arms, with `UB-ACTION-FAILED` and
+the element-kind refusal (`failureDetails.context.refusal: "element-kind"`);
+such a node does not advertise `focus`. On a focusable node, `focus` reports
+whether focus landed. After `element.focus()`,
 focus counts as taken when the focused element (descending into open shadow
-roots) is the target or inside it in the flat tree, so a wrapper that forwards
-focus to an inner input succeeds, as does one whose `<slot>` takes the
-light-DOM input that received focus. When it did not land, as on a node that is not
-focusable, the action fails with `UB-ACTION-FAILED` and
+roots) is the target or inside it in the flat tree, so a focusable wrapper that
+forwards focus to an inner input succeeds, as does one whose `<slot>` takes the
+light-DOM input that received focus. When it did not land, the action fails with `UB-ACTION-FAILED` and
 `failureDetails.context.reason: "focus_not_taken"`, and the HTTP arm fires no
 synthetic `focus` event.
 

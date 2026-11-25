@@ -33,7 +33,7 @@ import {
   computeVisibleText,
 } from '../core/a11y';
 import type { ElementLogLevel } from '../core/types';
-import { inferActions, inferElementType } from '../core/element-kind';
+import { inferElementType } from '../core/element-kind';
 import type { ContentDiscoveryOptions } from './content-discovery';
 import {
   CONTENT_SELECTORS,
@@ -864,13 +864,12 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
 
       // The one inferrer and verb table (`core/element-kind`): a `<details>`
       // is a `disclosure`, which toggles, like every other path reports it.
+      // `actions` is left to the registry, which re-infers it on every read.
       const type = inferElementType(element);
-      const actions = inferActions(type, element);
       const label = getAccessibleLabel(element);
 
       const registered = bridge.registry.registerElement(id, element, {
         type,
-        actions,
         label,
         // `label` is scraped from the DOM once, here. This callback never runs
         // again for `element` (the `registeredElementsRef` guard at the top of
