@@ -91,6 +91,7 @@ describe('RecordingSessionManager', () => {
     const long = 'x'.repeat(300);
     const got = await recordTyped(`<input id="target" aria-label="${long}">`);
     expect(got.label).toBe('x'.repeat(200) + '…');
+    expect(got.param).toBe('x'.repeat(200));
   });
 
   it('keeps the secret out of a name labelled through a redaction boundary', async () => {

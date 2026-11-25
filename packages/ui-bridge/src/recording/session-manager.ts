@@ -453,6 +453,8 @@ export class RecordingSessionManager {
     // §4.6: this scrapes aria-label / <label> text / placeholder — the exact
     // content a boundary hides. Gate here so neither the stored `label` NOR the
     // derived `suggestedParamName` smuggles the secret out.
+    // (Deliberately explicit, though canonicalLabelFromName would also return the
+    // sentinel for a redacted verdict: this gate must stay visible and first.)
     if (isContentRedacted(el)) return REDACTED_VALUE;
     // One definition of "what is this control called": the canonical accessible
     // name every find arm reads (aria-labelledby, aria-label, <label>, title,
