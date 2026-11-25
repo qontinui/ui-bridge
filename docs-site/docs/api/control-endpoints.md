@@ -622,7 +622,8 @@ executor's `find()` rows (`POST /control/find`, `discover()`) now carry the same
 canonical name: every interactive row's `accessibleName` (scanned, registered
 or not) is its `state.accessibleName`, and an unregistered row's `label` (capped
 at 200 code points; a registered row keeps its registry label) equals it and the
-fallback row's `label` for the same node. Content and media rows are unchanged. Both used to come from two private chains that cut
+fallback row's `label` for the same node; a nameless, non-redacted unregistered
+row has no `label` (the fallback row's is `''`). Content and media rows are unchanged. Both used to come from two private chains that cut
 text at 50 characters, kept raw whitespace and missed a wrapping `<label>`,
 `alt` and the derived rung (and, for `label`, `<label for>`). A
 content-redacted unregistered executor row's `label` now reads `[REDACTED]`
