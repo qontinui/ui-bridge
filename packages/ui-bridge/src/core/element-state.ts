@@ -36,7 +36,7 @@ import {
   resolveAccessibleName,
 } from './a11y';
 import { classList } from './class-name';
-import { composedAncestry } from './composed-tree';
+import { composedAncestry, effectiveOpacity } from './composed-tree';
 import {
   verdictOf,
   elementRedaction,
@@ -434,7 +434,8 @@ export function getElementState(element: HTMLElement): ElementState {
     );
   }
 
-  // Opacity hidden detection
+  // Opacity hidden detection: the element's OWN opacity only. An ancestor at
+  // opacity 0 makes `visible` false (computeVisibilityVerdict) but not this.
   const opacityVal = parseFloat(computedStyle.opacity);
   if (opacityVal === 0) {
     state.opacityHidden = true;
@@ -653,6 +654,12 @@ function computeVisibilityVerdict(
   if (style.display === 'none') return { visible: false, reason: 'hidden' };
   if (style.visibility === 'hidden') return { visible: false, reason: 'hidden' };
   if (parseFloat(style.opacity) === 0) return { visible: false, reason: 'hidden' };
+  // An ancestor at `opacity: 0` paints this element's whole subtree away: the
+  // control's own opacity still reads 1 (a `group-hover:opacity-100` reveal's
+  // container). The product over the paint-parent chain, so one 0 hides it.
+  if (effectiveOpacity(element, element.ownerDocument?.defaultView ?? window) === 0) {
+    return { visible: false, reason: 'hidden' };
+  }
   if (!inViewport) return { visible: false, reason: 'off-screen' };
 
   // Hit-test: what the compositor actually painted at each sample point. Two

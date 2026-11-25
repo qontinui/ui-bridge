@@ -602,6 +602,25 @@ following `click` accepts. It stays registered after the release, reporting
   not before the hover, so a control that already drew at rest may be listed
   as `appeared`).
 
+**A reveal through an ancestor's opacity is reported too.** A control inside an
+`opacity-0` container (a `group-hover:opacity-100` toolbar wrapper) keeps its
+OWN four computed values, so they cannot show the reveal. Each `changes` entry
+may therefore carry a fifth, derived property, `effective-opacity`: the product
+of `opacity` over the element's paint-parent chain (shadow roots and slots
+crossed; a top-layer element is exempt from its ancestors' opacity), rounded to
+4 decimals. A control that is already registered and is revealed this way reports
+`appeared: false` with `before: '0'`, `after: '1'`; `before: null` is the
+`appeared: true` shape only. A newly registered control that still draws nothing
+through an ancestor is not listed, and the release verifies `effective-opacity`
+like the other values (`drift` names it). The same product makes the canonical
+`state.visible` false (`visibilityReason: 'hidden'`) for such a control, so
+`find` with `include_hidden: false`, `waitFor visible` and the action `visible`
+wait no longer call it visible while it paints nothing. `opacityHidden` still
+means the element's OWN opacity is 0, discovery still admits on own opacity, and
+the action render check and the `clickable` condition stay opacity-blind. The
+snapshot row's top-level `visible` is a bounding-box hint and is unchanged; read
+`state.visible`.
+
 `restore` is `verified` only when every element in `checked` passed: each
 previously registered revealed element (and the target) reads its pre-hover
 values again, and each `appeared` element stopped drawing again (display `none`,

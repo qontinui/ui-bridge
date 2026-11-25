@@ -39,7 +39,10 @@
  *     `settled: 'frame-only'`.
  *  4. REPORT what changed: `revealed` lists the registered elements whose
  *     computed `opacity`, `visibility`, `display` or `pointer-events` changed
- *     between before-apply and after-settle, with both values and a bbox.
+ *     between before-apply and after-settle, with both values and a bbox. A
+ *     fifth derived key, `effective-opacity` (the product of `opacity` up the
+ *     paint-parent chain, Phase 5d), makes a control inside an `opacity-0`
+ *     container visible to the report though its own four values never change.
  *
  * REGISTERING WHAT THE HOVER REVEALS (Phase 5a). Discovery admits only an
  * element that draws, so a control hidden by its OWN `opacity-0` / `hidden` /
@@ -99,7 +102,7 @@
  */
 
 import { readRunningAnimations } from '../core/running-animations';
-import { composedAncestry, shadowRootOf } from '../core/composed-tree';
+import { composedAncestry, effectiveOpacity, shadowRootOf } from '../core/composed-tree';
 import { standardActionEffect } from '../core/action-effect';
 
 // ============================================================================
@@ -132,13 +135,24 @@ export type ForcedPseudoReleaseReason =
 /** The four computed properties a reveal is judged on. */
 export const REVEAL_PROPERTIES = ['opacity', 'visibility', 'display', 'pointer-events'] as const;
 export type RevealProperty = (typeof REVEAL_PROPERTIES)[number];
-export type RevealValues = Record<RevealProperty, string>;
+/**
+ * The fifth, derived key of a reveal (Phase 5d): the product of `opacity` over
+ * the element's paint-parent chain (`core/composed-tree.ts` `effectiveOpacity`),
+ * so a control inside an `opacity-0` container that the hover fades in is seen
+ * though its own four computed values never change. It is a derived value, not
+ * a CSS property: {@link REVEAL_PROPERTIES} stays the four.
+ */
+export const EFFECTIVE_OPACITY_KEY = 'effective-opacity' as const;
+export type RevealKey = RevealProperty | typeof EFFECTIVE_OPACITY_KEY;
+/** Every key a reveal is read, reported and verified on. */
+const REVEAL_KEYS: readonly RevealKey[] = [...REVEAL_PROPERTIES, EFFECTIVE_OPACITY_KEY];
+export type RevealValues = Record<RevealKey, string>;
 
 /** The settle verdict: `true` every started animation finished, `false` the wait timed out, `'frame-only'` the platform cannot list animations. */
 export type ForcedPseudoSettle = boolean | 'frame-only';
 
 export interface ForcedPseudoChange {
-  property: RevealProperty;
+  property: RevealKey;
   /** `null` when the element was not registered before the apply. */
   before: string | null;
   after: string;
@@ -240,7 +254,7 @@ export interface ForcedPseudoReport {
 
 export interface ForcedPseudoDrift {
   id: string;
-  property: RevealProperty;
+  property: RevealKey;
   /** `null` for an element that appeared during the hold: it had no before-apply value. */
   before: string | null;
   after: string;
@@ -854,7 +868,12 @@ function scanSheets(
 // Style reads, settle
 // ============================================================================
 
-function readRevealValues(el: Element): RevealValues | null {
+/**
+ * `memo` is the effective-opacity cache of ONE pass (the before reads, the
+ * after reads, or one verification): a pass reads every registered element
+ * against the same moment of style, so passes never share one.
+ */
+function readRevealValues(el: Element, memo?: Map<Element, number>): RevealValues | null {
   try {
     const view = el.ownerDocument?.defaultView ?? globalThis;
     const cs = view.getComputedStyle(el);
@@ -863,6 +882,7 @@ function readRevealValues(el: Element): RevealValues | null {
       visibility: cs.visibility,
       display: cs.display,
       'pointer-events': cs.pointerEvents,
+      [EFFECTIVE_OPACITY_KEY]: String(effectiveOpacity(el, view, memo)),
     };
   } catch {
     return null;
@@ -1157,6 +1177,7 @@ function rescanVerdict(baseline: RescanOutcome, postSettle: RescanOutcome): Resc
 function drawsNothing(element: Element, values: RevealValues): boolean {
   if (values.display === 'none' || values.visibility === 'hidden') return true;
   if (parseFloat(values.opacity) === 0) return true;
+  if (parseFloat(values[EFFECTIVE_OPACITY_KEY]) === 0) return true;
   const rect = element.getBoundingClientRect();
   return rect.width === 0 || rect.height === 0;
 }
@@ -1168,6 +1189,7 @@ function verifyEntries(entries: VerifyEntry[]): {
 } {
   const drift: ForcedPseudoDrift[] = [];
   const checked: ForcedPseudoCheck[] = [];
+  const memo = new Map<Element, number>();
   for (const entry of entries) {
     const appeared = entry.before === null;
     if (!entry.element.isConnected) {
@@ -1175,7 +1197,7 @@ function verifyEntries(entries: VerifyEntry[]): {
       checked.push({ id: entry.id, appeared, verdict: 'disconnected' });
       continue;
     }
-    const after = readRevealValues(entry.element);
+    const after = readRevealValues(entry.element, memo);
     if (!after) {
       checked.push({ id: entry.id, appeared, verdict: 'unreadable' });
       continue;
@@ -1186,12 +1208,12 @@ function verifyEntries(entries: VerifyEntry[]): {
       // does, every property is reported against its absent before value, the
       // same shape the apply reported it in.
       if (!drawsNothing(entry.element, after)) {
-        for (const property of REVEAL_PROPERTIES) {
+        for (const property of REVEAL_KEYS) {
           found.push({ id: entry.id, property, before: null, after: after[property] });
         }
       }
     } else {
-      for (const property of REVEAL_PROPERTIES) {
+      for (const property of REVEAL_KEYS) {
         if (after[property] !== entry.before[property]) {
           found.push({
             id: entry.id,
@@ -1279,11 +1301,12 @@ async function applyNow(
 
   // Before: every registered element's four properties, and the target's.
   const before = new Map<Element, { id: string; values: RevealValues }>();
+  const beforeMemo = new Map<Element, number>();
   for (const { id, element } of registeredElements(options.registry)) {
-    const values = readRevealValues(element);
+    const values = readRevealValues(element, beforeMemo);
     if (values) before.set(element, { id, values });
   }
-  const targetBefore = readRevealValues(target);
+  const targetBefore = readRevealValues(target, beforeMemo);
   const preexisting = runningAnimationSet(doc);
 
   const scanStart = now();
@@ -1348,13 +1371,14 @@ async function applyNow(
   const revealed: ForcedPseudoRevealed[] = [];
   const verify: VerifyEntry[] = [];
   let targetId = fingerprint(target);
+  const afterMemo = new Map<Element, number>();
   for (const { id, element } of registeredElements(options.registry)) {
     if (element === target) targetId = id;
-    const after = readRevealValues(element);
+    const after = readRevealValues(element, afterMemo);
     if (!after) continue;
     const prior = before.get(element);
     const changes: ForcedPseudoChange[] = [];
-    for (const property of REVEAL_PROPERTIES) {
+    for (const property of REVEAL_KEYS) {
       const was = prior ? prior.values[property] : null;
       if (was !== after[property]) {
         changes.push({ property, before: was, after: after[property] });
@@ -1364,7 +1388,10 @@ async function applyNow(
     const appeared = !prior;
     if (
       appeared &&
-      (after.display === 'none' || after.visibility === 'hidden' || parseFloat(after.opacity) === 0)
+      (after.display === 'none' ||
+        after.visibility === 'hidden' ||
+        parseFloat(after.opacity) === 0 ||
+        parseFloat(after[EFFECTIVE_OPACITY_KEY]) === 0)
     ) {
       continue;
     }

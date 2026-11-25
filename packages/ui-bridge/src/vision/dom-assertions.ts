@@ -207,6 +207,12 @@ import { parseColor, type RGBA } from '../specs/color-utils';
 import { computeVisibleText, isInteractionBlocked, readInteractionBlockers } from '../core/a11y';
 import { classList } from '../core/class-name';
 import {
+  composedParent,
+  effectiveOpacity as effectiveOpacityOf,
+  inTopLayer,
+  paintParent,
+} from '../core/composed-tree';
+import {
   hasRedactionBoundaryBelow,
   REDACTED_VALUE,
   scrubContentByVerdict,
@@ -406,45 +412,10 @@ function envelope(
 // DOM helpers
 // ============================================================================
 
-/** The parent in the flat (composed) tree: the slot of a slotted node, the host past a shadow root. */
-function composedParent(el: Element): Element | null {
-  const slot = (el as Element & { assignedSlot?: Element | null }).assignedSlot;
-  if (slot) return slot;
-  if (el.parentElement) return el.parentElement;
-  const root = el.parentNode as (Node & { host?: Element }) | null;
-  return root && root.host instanceof Element ? root.host : null;
-}
-
 /** `ancestor` is `el` or one of its composed-tree ancestors. */
 function containsComposed(ancestor: Element, el: Element): boolean {
   for (let x: Element | null = el; x; x = composedParent(x)) if (x === ancestor) return true;
   return false;
-}
-
-/**
- * Whether `el` is drawn in the top layer — an open popover, a modal dialog,
- * a fullscreen element — which lifts it out of its ancestors' transforms,
- * opacity, filters and clips, though not out of their zoom, which it
- * inherits.
- */
-function inTopLayer(el: Element): boolean {
-  const is = (state: string): boolean => {
-    try {
-      return el.matches(state);
-    } catch {
-      return false;
-    }
-  };
-  return (
-    (el.hasAttribute('popover') && is(':popover-open')) ||
-    (el.localName === 'dialog' && is(':modal')) ||
-    (document.fullscreenElement != null && is(':fullscreen'))
-  );
-}
-
-/** The element `el` is painted inside: its composed parent, or none in the top layer. */
-function paintParent(el: Element): Element | null {
-  return inTopLayer(el) ? null : composedParent(el);
 }
 
 /** A border box in viewport CSS pixels, or undefined when the element generates no box. */
@@ -1912,14 +1883,11 @@ class TabMeasurement {
 
   /** The product of `opacity` from `el` up its composed ancestry, to the top layer. */
   private effectiveOpacity(el: Element): number {
-    let product = 1;
-    for (let a: Element | null = el; a; a = paintParent(a)) {
-      const o = Number(this.style(a).opacity);
-      if (Number.isFinite(o)) product *= o;
-      if (product === 0) return 0;
-    }
-    return product;
+    return effectiveOpacityOf(el, window, this.opacityMemo);
   }
+
+  /** One pass's shared memo for {@link effectiveOpacity}. */
+  private readonly opacityMemo = new Map<Element, number>();
 
   /**
    * The first rendered run of text inside `el` and the element that owns it,
