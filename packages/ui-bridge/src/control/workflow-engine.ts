@@ -123,6 +123,12 @@ function failedActionResponse(
   result: unknown
 ): ControlActionResponse | ComponentActionResponse | null {
   if (step.type !== 'element-action' && step.type !== 'component-action') return null;
+  if (typeof result !== 'object' || result === null) {
+    return {
+      success: false,
+      error: `${step.type} step resolved ${result === null ? 'null' : typeof result}, not an action response`,
+    } as ControlActionResponse;
+  }
   const response = result as ControlActionResponse | ComponentActionResponse;
   return response.success ? null : response;
 }
