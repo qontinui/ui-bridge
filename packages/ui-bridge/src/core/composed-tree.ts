@@ -83,6 +83,18 @@ export function paintParent(el: Element): Element | null {
   return inTopLayer(el) ? null : composedParent(el);
 }
 
+/** How {@link effectiveOpacity} reads a style and rounds. */
+export interface EffectiveOpacityOptions {
+  /** Reads an element's style; default `view.getComputedStyle`. Lets a caller keep its own style cache. */
+  readStyle?: (el: Element) => { opacity: string };
+  /**
+   * Legacy exact mode: `Number()` parsing (an empty string reads 0), a
+   * non-finite value skipped, the product returned unrounded and never memoised.
+   * Default: `parseFloat`, NaN counts as 1, rounded to 4 decimals.
+   */
+  raw?: boolean;
+}
+
 /**
  * The product of `opacity` from `el` up its paint-parent chain (shadow and
  * slot aware; a top-layer element is exempt from its ancestors' opacity),
@@ -96,8 +108,19 @@ export function paintParent(el: Element): Element | null {
 export function effectiveOpacity(
   el: Element,
   view: Pick<Window, 'getComputedStyle'>,
-  memo?: Map<Element, number>
+  memo?: Map<Element, number>,
+  options: EffectiveOpacityOptions = {}
 ): number {
+  const read = options.readStyle ?? ((e: Element) => view.getComputedStyle(e));
+  if (options.raw) {
+    let product = 1;
+    for (let a: Element | null = el; a; a = paintParent(a)) {
+      const o = Number(read(a).opacity);
+      if (Number.isFinite(o)) product *= o;
+      if (product === 0) return 0;
+    }
+    return product;
+  }
   const chain: Element[] = [];
   let base = 1;
   for (let a: Element | null = el; a; a = paintParent(a)) {
@@ -110,7 +133,7 @@ export function effectiveOpacity(
   }
   let product = base;
   for (let i = chain.length - 1; i >= 0; i--) {
-    const parsed = parseFloat(view.getComputedStyle(chain[i]).opacity);
+    const parsed = parseFloat(read(chain[i]).opacity);
     if (!Number.isNaN(parsed)) product *= parsed;
     memo?.set(chain[i], product);
   }

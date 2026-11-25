@@ -1883,11 +1883,12 @@ class TabMeasurement {
 
   /** The product of `opacity` from `el` up its composed ancestry, to the top layer. */
   private effectiveOpacity(el: Element): number {
-    return effectiveOpacityOf(el, window, this.opacityMemo);
+    // Exact prior semantics: Number() parsing, unrounded, through this.style.
+    return effectiveOpacityOf(el, window, undefined, {
+      raw: true,
+      readStyle: (e) => this.style(e),
+    });
   }
-
-  /** One pass's shared memo for {@link effectiveOpacity}. */
-  private readonly opacityMemo = new Map<Element, number>();
 
   /**
    * The first rendered run of text inside `el` and the element that owns it,

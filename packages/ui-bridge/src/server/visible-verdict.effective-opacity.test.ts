@@ -16,14 +16,19 @@
  * stubbed as in `visible-verdict.find-by-text-and-wait.test.ts`.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { findByTextPrimitive } from './page-primitives';
 import { createHandlers, type RegistryLike } from './handlers';
 import { executeCommand, type BridgeAccess } from '../react/commandHandlers';
 import { getGlobalRegistry, resetGlobalRegistry } from '../core/registry';
 import { createActionExecutor } from '../control/action-executor';
 import { applyCanonicalFindFilter } from '../core/find-filter';
-import { getElementState, isRenderedForAction, readElementVisibility } from '../core/element-state';
+import {
+  getElementState,
+  isRenderedForAction,
+  readElementVisibility,
+  withVisibilityPass,
+} from '../core/element-state';
 import { buildVisibilityReport } from './visibility-report';
 
 interface Box {
@@ -293,5 +298,44 @@ describe('what the verdict leaves alone', () => {
       elements: [{ id: 'faded', occludedBy: state.occludedBy, occludedPct: state.occludedPct }],
     });
     expect(report.occlusions).toEqual([]);
+  });
+});
+
+describe('the verdict is cheap across a pass', () => {
+  it('a visibility pass reads each ancestor once; without one it re-walks per element; own opacity is not re-read', () => {
+    const host = document.createElement('div');
+    host.style.opacity = '0.5';
+    document.body.appendChild(host);
+    place(host, 0, 300, 400, 400);
+    const kids = Array.from({ length: 10 }, (_, i) => {
+      const b = document.createElement('button');
+      b.textContent = `k${i}`;
+      host.appendChild(b);
+      return place(b, 0, 300 + i * 30, 80, 24);
+    });
+    const spy = vi.spyOn(window, 'getComputedStyle');
+    const countFor = (run: () => void): number => {
+      spy.mockClear();
+      run();
+      return spy.mock.calls.length;
+    };
+    const unscoped = countFor(() => kids.forEach((k) => readElementVisibility(k)));
+    const scoped = countFor(() =>
+      withVisibilityPass(() => kids.forEach((k) => readElementVisibility(k)))
+    );
+    spy.mockRestore();
+    // Per kid: one layout read of its own style. Ancestors (host, body, html): once per pass.
+    expect(scoped).toBe(kids.length + 3);
+    expect(unscoped).toBeGreaterThan(scoped);
+    expect(kids.every((k) => readElementVisibility(k).visible)).toBe(true);
+  });
+
+  it('a cheap own check short-circuits: an own opacity 0 never walks the ancestors', () => {
+    const spy = vi.spyOn(window, 'getComputedStyle');
+    spy.mockClear();
+    readElementVisibility(node('own'));
+    const n = spy.mock.calls.length;
+    spy.mockRestore();
+    expect(n).toBe(1);
   });
 });

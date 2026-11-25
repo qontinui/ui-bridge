@@ -48,7 +48,7 @@ import { readAriaLabelAttr, readTitleAttr, readPlaceholderAttr } from './a11y';
 // it into its own module (moved there, then extended with the §4.6 scrubs and
 // `ariaBusy`) so every DOM-reading builder can delegate to it rather than keep
 // a private copy.
-import { getElementState } from './element-state';
+import { getElementState, withVisibilityPass } from './element-state';
 import { createStableRef } from './stable-ref';
 import {
   answersToNamedType,
@@ -3048,7 +3048,9 @@ export class UIBridgeRegistry {
         : {}),
       ...(visibility !== undefined ? { visibility } : {}),
       registration: this.buildRegistrationMetadata(),
-      elements: this.getAllElements().map((el) => serializeRegisteredElement(el, options)),
+      elements: withVisibilityPass(() =>
+        this.getAllElements().map((el) => serializeRegisteredElement(el, options))
+      ),
       components: this.getAllComponents().map((comp) =>
         serializeRegisteredComponent(comp, options)
       ),
@@ -3097,9 +3099,12 @@ export class UIBridgeRegistry {
 
     for (let i = 0; i < allElements.length; i += batchSize) {
       const batch = allElements.slice(i, i + batchSize);
-      for (const el of batch) {
-        elementSnapshots.push(serializeRegisteredElement(el, options));
-      }
+      // One pass per batch: the memo never spans the yield below.
+      withVisibilityPass(() => {
+        for (const el of batch) {
+          elementSnapshots.push(serializeRegisteredElement(el, options));
+        }
+      });
       // Yield to main thread between batches to keep UI responsive
       if (i + batchSize < allElements.length) {
         await new Promise((resolve) => setTimeout(resolve, 0));

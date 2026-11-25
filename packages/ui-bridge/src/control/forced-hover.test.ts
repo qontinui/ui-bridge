@@ -1041,12 +1041,13 @@ describe('forcePseudoState — a reveal through an ancestor opacity (Phase 5d, j
     ]);
   });
 
-  it('a child under a container the hover does not reveal is not reported', async () => {
+  it('a child under a container the hover does not reveal is not reported, while its revealed sibling is', async () => {
     setup();
     const report = await forcePseudoState(el('header'), 'hover', {
-      registry: registryOf(['header', 'stuckKid']),
+      registry: registryOf(['header', 'kid', 'stuckKid']),
     });
-    expect(report.revealed).toEqual([]);
+    // `#kid` reveals in the same pass; `#stuckKid` stays under `.stuck`.
+    expect(report.revealed.map((r) => r.id)).toEqual(['kid']);
   });
 
   it('a newly registered child is dropped while an ancestor still draws nothing, and kept (null -> 1) once it draws', async () => {

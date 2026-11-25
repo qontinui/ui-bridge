@@ -120,4 +120,20 @@ describe('effectiveOpacity', () => {
     effectiveOpacity(leaves[0], window, new Map());
     expect(spy.mock.calls.length).toBeGreaterThan(0);
   });
+
+  it('raw mode keeps the legacy semantics: unrounded, an empty string reads 0, and the style reader is used', () => {
+    const [a, b] = chain('', '');
+    const values = new Map<Element, string>([
+      [a, '0.00001'],
+      [b, '0.5'],
+    ]);
+    const readStyle = (e: Element) => ({ opacity: values.get(e) ?? '1' });
+    expect(effectiveOpacity(b, window, undefined, { raw: true, readStyle })).toBe(0.000005);
+    expect(effectiveOpacity(b, window, undefined, { readStyle })).toBe(0);
+    values.set(a, '');
+    // Number('') is 0: the legacy read counts an empty opacity as fully transparent.
+    expect(effectiveOpacity(b, window, undefined, { raw: true, readStyle })).toBe(0);
+    // Default mode: parseFloat('') is NaN, which counts as 1.
+    expect(effectiveOpacity(b, window, undefined, { readStyle })).toBe(0.5);
+  });
 });
