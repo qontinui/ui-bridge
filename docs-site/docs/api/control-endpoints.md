@@ -685,8 +685,11 @@ inside a `display: none` subtree, or one whose computed visibility is
 `hidden` or `collapse` (including one inside a collapsed table row), is
 refused over HTTP and over the relay alike. Both arms also refuse a non-click
 action on a natively `disabled` control (`UB-ELEM-DISABLED` over HTTP,
-`disabledReason: native`); click-like actions keep the fuller click refusal
-(`disabled`, `aria-disabled`, `pointer-events: none`). The HTTP executor adds
+`disabledReason: native`), and that covers every non-click verb except
+`unhover`, the non-mutating ones included: a `scroll`, `scrollIntoView`,
+`hover` or `blur` on a natively `disabled` control is refused too, on both
+arms. Click-like actions keep the fuller click refusal (`disabled`,
+`aria-disabled`, `pointer-events: none`). The HTTP executor adds
 its click-only reads on top: an explicit zero inline size (`no-layout`) and an
 inline `-9999px` offset (`off-screen`).
 
@@ -697,6 +700,14 @@ inner input succeeds. When it did not land, as on a node that is not
 focusable, the action fails with `UB-ACTION-FAILED` and
 `failureDetails.context.reason: "focus_not_taken"`, and the HTTP arm fires no
 synthetic `focus` event.
+
+The read-back judges where focus ended up, not whether the page meant to move
+it. A page whose own focus handling forwards focus to a DESCENDANT of the
+target (a wrapper focusing its inner input) reports success; one that forwards
+it OUTSIDE the target's subtree (for example a combobox that moves focus into
+an input rendered in a portal) reports `focus_not_taken`, because the target
+and everything inside it are left unfocused. Target the element that ends up
+holding focus, or treat that failure as expected for such a control.
 
 ## Diagnostics
 
