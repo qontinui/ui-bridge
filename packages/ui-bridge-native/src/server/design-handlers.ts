@@ -711,7 +711,10 @@ export function createDesignHandlers(
       // The shape the audit route's guide check (the web transports'
       // `guideOf`) requires: an object with a `rules` array, refused with
       // its message rather than stored and failing later in the validator.
-      if (!(isObject(body.guide) && Array.isArray(body.guide.rules))) {
+      // Checked through its own binding so `body.guide` keeps its `unknown`
+      // type and the store below casts from `unknown`, as before the check.
+      const guide: unknown = body.guide;
+      if (!(isObject(guide) && Array.isArray(guide.rules))) {
         return error(
           '/design/style-guide/load: guide must be a style guide object with a rules array',
           'INVALID_REQUEST'
