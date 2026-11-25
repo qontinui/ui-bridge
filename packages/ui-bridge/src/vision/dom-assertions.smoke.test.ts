@@ -3354,10 +3354,61 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     // about 1.8 s over its faster empty request. The median rejects one
     // sample caught by a load spike on a shared host; a host on which a
     // typical request of the largest batch misses the budget still fails.
-    const largestRuns: Awaited<ReturnType<typeof timed>>[] = [];
-    for (let i = 0; i < 3; i++) largestRuns.push(await timed(largestBatch));
-    const samples = largestRuns.map((r) => r.ms).sort((a, b) => a - b);
+    //
+    // The median does not reject SUSTAINED contention. CI run 45537056336
+    // (main at 75c84e5cf, runner actions-runner-org-7) read 7926/9009/10252 ms,
+    // every part of the request about twice its usual cost, while the same
+    // commit read 3723/3775/3894 ms on its merge candidate (run 45535827946)
+    // and passing runs that day sat at medians of 4217-5283 ms with the
+    // settle. So each sample is bracketed by a fixed, code-independent CPU
+    // workload run on the same renderer thread, immediately before and after
+    // it. The median of the three samples' calibration times against
+    // CALIBRATION_QUIET_MS is how much slower than a quiet host this thread
+    // ran. CALIBRATION_QUIET_MS is what that workload read on an idle core of
+    // the self-hosted pool's host (nawa, Playwright chromium-1254,
+    // 2026-11-25: 129-135 ms); every run logs its own, so a drift is visible.
+    //
+    // The raw median is the gate, and on a quiet host it is the only one.
+    // Only when it misses AND that median factor is at least CONTENDED is the
+    // raw median divided by the factor, capped at MAX_CONTENTION, and gated
+    // instead. That is a deliberate narrowing: on a contended CI host the test
+    // certifies the code against the 8 s budget on a quiet host, not the wall
+    // clock a contended tab would see. A regression in the vision code slows
+    // the batch and not the calibration, so it still fails on a quiet host,
+    // and on a contended one once it exceeds the contention slack. The loop
+    // is integer-only, so it under-reads memory-bound contention: the rescale
+    // errs toward failing.
+    const CALIBRATION_QUIET_MS = 130;
+    const CONTENDED = 1.5;
+    const MAX_CONTENTION = 2;
+    const calibratedTimed = (assertions: unknown[]) =>
+      page.evaluate(
+        (request) => {
+          const calibrate = (): number => {
+            const t0 = performance.now();
+            let h = 0;
+            for (let i = 0; i < 20_000_000; i++) h = (h * 31 + i) | 0;
+            // Kept live so the loop cannot be elided.
+            (window as unknown as { __calibration: number }).__calibration = h;
+            return performance.now() - t0;
+          };
+          const before = calibrate();
+          const t0 = performance.now();
+          const res = window.VA.run(request) as VisionAssertResponse;
+          const ms = performance.now() - t0;
+          const after = calibrate();
+          return { res, ms, calibrationMs: (before + after) / 2 };
+        },
+        { assertions }
+      );
+    const largestRuns: Awaited<ReturnType<typeof calibratedTimed>>[] = [];
+    for (let i = 0; i < 3; i++) largestRuns.push(await calibratedTimed(largestBatch));
+    const byMs = [...largestRuns].sort((a, b) => a.ms - b.ms);
+    const samples = byMs.map((r) => r.ms);
     const median = samples[1];
+    const calibrations = largestRuns.map((r) => r.calibrationMs).sort((a, b) => a - b);
+    const factor = Math.min(MAX_CONTENTION, Math.max(1, calibrations[1] / CALIBRATION_QUIET_MS));
+    const contended = factor >= CONTENDED;
 
     // Every result is a verdict but the five kinds the tab does not implement:
     // the time is the time to measure, not to give up.
@@ -3370,15 +3421,23 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('vision assertions in the tab (real Chrom
     expect(fixedRun.res.snapshotAttribution.state).toBe('attributed');
 
     const largest = median + 500;
+    const largestQuiet = median / factor + 500;
+    const rescale = largest >= 8_000 && contended;
+    const gated = rescale ? largestQuiet : largest;
     console.info(
       `[vision timing] fixed ${fixedRun.ms.toFixed(0)} ms, 500 mixed ${mixedRun.ms.toFixed(0)} ms, ` +
         `500 contrast ${contrastRun.ms.toFixed(0)} ms; ${MAX_VISION_ASSERTIONS} contrast ` +
         `${samples.map((ms) => ms.toFixed(0)).join('/')} ms, median ${largest.toFixed(0)} ms ` +
-        `with the 500 ms settle`
+        `with the 500 ms settle; calibration ` +
+        `${calibrations.map((ms) => ms.toFixed(0)).join('/')} ms against ` +
+        `${CALIBRATION_QUIET_MS} ms quiet, factor ${factor.toFixed(2)}; gated ` +
+        `${rescale ? 'rescaled' : 'raw'} ${gated.toFixed(0)} ms`
     );
     // The largest batch the validator admits, at its costliest kind, plus the
-    // tab's 500 ms settle wait, inside the relay's 8 s.
-    expect(largest).toBeLessThan(8_000);
+    // tab's 500 ms settle wait, inside the relay's 8 s: as measured, or, when
+    // that misses on a host the calibration shows contended, rescaled to a
+    // quiet one.
+    expect(gated).toBeLessThan(8_000);
     await page.close();
   }, 120_000);
 
