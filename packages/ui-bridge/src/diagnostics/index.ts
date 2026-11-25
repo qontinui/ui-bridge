@@ -276,15 +276,20 @@ export function mapInternalErrorCode(
  * `{ readonly code }` convention the SDK's error classes already use), which
  * is mapped through {@link mapInternalErrorCode} with NO message argument, so
  * rewording a message cannot change the code. A value with no code is
- * `UB-UNKNOWN-ERROR`. The one typed arm that is not a `code`: a fetch failure
- * is a `TypeError` the platform throws (`Failed to fetch`, `fetch failed`,
- * `NetworkError …`) with no code to carry, and it is `UB-NET-ERROR`.
+ * `UB-UNKNOWN-ERROR`. The one arm that is not a `code`: a fetch failure is a
+ * `TypeError` the platform throws with no code to carry, so it is recognised by
+ * the platform's own exact strings (`Failed to fetch`, `fetch failed`,
+ * `NetworkError when attempting to fetch resource.`) and is `UB-NET-ERROR`.
+ * Any other `TypeError` is not a network failure.
  *
  * Shared by both transports' thrown-error arms (the relay client's
  * `runCommand` and the direct server's control-action handler).
  */
+/** The messages browsers and Node give a `fetch` that failed to reach the network. */
+const FETCH_FAILURE_MESSAGE = /^(?:Failed to fetch|fetch failed|NetworkError\b.*)$/;
+
 export function codeOfThrown(e: unknown): UiBridgeErrorCode {
-  if (e instanceof TypeError && /fetch|network/i.test(e.message)) return 'UB-NET-ERROR';
+  if (e instanceof TypeError && FETCH_FAILURE_MESSAGE.test(e.message)) return 'UB-NET-ERROR';
   const code = (e as { code?: unknown } | null | undefined)?.code;
   return typeof code === 'string' && code !== '' ? mapInternalErrorCode(code) : 'UB-UNKNOWN-ERROR';
 }

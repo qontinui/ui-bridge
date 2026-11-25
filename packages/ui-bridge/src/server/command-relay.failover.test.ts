@@ -134,7 +134,7 @@ function tabsOn(relay: CommandRelay) {
           void relay.rejectCommand(commandId, message, tabId, undefined, {
             success: false,
             error: message,
-            failureDetails: { errorCode: 'UNKNOWN_COMMAND', message, timestamp: 1 },
+            failureDetails: { errorCode: 'UB-UNSUPPORTED-ACTION', message, timestamp: 1 },
             durationMs: 0,
             timestamp: 1,
           });
