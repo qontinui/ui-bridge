@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { codeOfThrown } from './index';
+import { codeOfThrown, mapInternalErrorCode } from './index';
 
 const coded = (message: string, code: string) => Object.assign(new Error(message), { code });
 
@@ -70,6 +70,24 @@ describe('codeOfThrown', () => {
   ])('a TypeError that is not a fetch failure (%s) is not a network error', (message) => {
     expect(codeOfThrown(new TypeError(message))).toBe('UB-UNKNOWN-ERROR');
   });
+
+  it('a TimeoutError by NAME is a timeout, whatever its message says', () => {
+    expect(codeOfThrown(new DOMException('signal timed out', 'TimeoutError'))).toBe(
+      'UB-ACTION-TIMEOUT'
+    );
+    expect(codeOfThrown(Object.assign(new Error('reworded'), { name: 'TimeoutError' }))).toBe(
+      'UB-ACTION-TIMEOUT'
+    );
+    expect(codeOfThrown(new Error('timeout'))).toBe('UB-UNKNOWN-ERROR');
+  });
+
+  it.each(['constructor', 'toString', '__proto__', 'hasOwnProperty'])(
+    'a code naming an Object.prototype member (%s) does not resolve through the prototype',
+    (code) => {
+      expect(codeOfThrown(coded('x', code))).toBe('UB-UNKNOWN-ERROR');
+      expect(mapInternalErrorCode(code)).toBe('UB-UNKNOWN-ERROR');
+    }
+  );
 
   it('a non-string code (a DOMException numeric code) is UB-UNKNOWN-ERROR', () => {
     expect(codeOfThrown(new DOMException('gone', 'NotFoundError'))).toBe('UB-UNKNOWN-ERROR');
