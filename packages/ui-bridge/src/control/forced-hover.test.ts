@@ -718,7 +718,10 @@ describe('forcePseudoState — the discovery rescan (Phase 5a, jsdom)', () => {
       expect.objectContaining({
         id: 'late',
         appeared: false,
-        changes: [{ property: 'opacity', before: '0', after: '1' }],
+        changes: [
+          { property: 'opacity', before: '0', after: '1' },
+          { property: 'effective-opacity', before: '0', after: '1' },
+        ],
       }),
     ]);
   });
@@ -931,7 +934,10 @@ describe('forcePseudoState — the discovery rescan (Phase 5a, jsdom)', () => {
       expect.objectContaining({
         id: 'late',
         appeared: false,
-        changes: [{ property: 'opacity', before: '0', after: '1' }],
+        changes: [
+          { property: 'opacity', before: '0', after: '1' },
+          { property: 'effective-opacity', before: '0', after: '1' },
+        ],
       }),
     ]);
     expect(plain).toMatchObject({
@@ -955,5 +961,185 @@ describe('forcePseudoState — the discovery rescan (Phase 5a, jsdom)', () => {
     // A registry from an SDK copy that predates the method.
     const older = revealSourceOf({ getAllElements: () => [] });
     expect(older.rescan).toBeUndefined();
+  });
+});
+
+describe('forcePseudoState — a reveal through an ancestor opacity (Phase 5d, jsdom)', () => {
+  let style: HTMLStyleElement | null = null;
+  let root: HTMLDivElement | null = null;
+
+  // `#kid` has its OWN opacity at 1; its container `.fade` is at `opacity: 0`
+  // until the group is hovered. `#stuckKid` is in a container the hover never
+  // reveals. `#nestedKid` sits under `.fade` and a half-opacity inner wrapper.
+  function setup(kids = 1): void {
+    style = document.createElement('style');
+    style.textContent = `.fade { opacity: 0; } .group:hover .fade { opacity: 1; } .stuck { opacity: 0; }`;
+    document.head.appendChild(style);
+    root = document.createElement('div');
+    const extra = Array.from(
+      { length: kids - 1 },
+      (_, i) => `<button id="kid${i + 2}">k</button>`
+    ).join('');
+    root.innerHTML =
+      `<div class="group" id="g"><span id="header">h</span>` +
+      `<div class="fade" id="fade"><button id="kid">k</button>${extra}` +
+      `<div id="half" style="opacity: 0.5"><button id="nestedKid">n</button></div></div>` +
+      `<div class="stuck" id="stuck"><button id="stuckKid">s</button></div></div>`;
+    document.body.appendChild(root);
+  }
+
+  const el = (id: string): HTMLElement => document.getElementById(id)!;
+  const registryOf = (ids: string[]): ForcedPseudoElementSource => ({
+    getAllElements: () => ids.map((id) => ({ id, element: el(id) })),
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await __resetForcedPseudoStateForTest();
+    style?.remove();
+    root?.remove();
+    style = null;
+    root = null;
+  });
+
+  it('a registered child whose container fades in is revealed through effective-opacity alone (appeared: false)', async () => {
+    setup();
+    // jsdom serves an unset opacity as ''; the child's own value never reads 0.
+    expect(getComputedStyle(el('kid')).opacity).not.toBe('0');
+    const report = await forcePseudoState(el('header'), 'hover', {
+      registry: registryOf(['header', 'kid']),
+    });
+    expect(report.revealed).toEqual([
+      expect.objectContaining({
+        id: 'kid',
+        appeared: false,
+        // Its own four computed values never change.
+        changes: [{ property: 'effective-opacity', before: '0', after: '1' }],
+      }),
+    ]);
+    const release = await releaseForcedPseudoState('explicit');
+    expect(release.restore).toBe('verified');
+    expect(release.drift).toEqual([]);
+    expect(release.checked).toEqual(
+      expect.arrayContaining([
+        { id: 'kid', appeared: false, verdict: 'pass' },
+        { id: 'header', appeared: false, verdict: 'pass' },
+      ])
+    );
+  });
+
+  it('the value is the PRODUCT over the chain: 0 -> 0.5 under a half-opacity wrapper', async () => {
+    setup();
+    const report = await forcePseudoState(el('header'), 'hover', {
+      registry: registryOf(['header', 'nestedKid']),
+    });
+    expect(report.revealed).toEqual([
+      expect.objectContaining({
+        id: 'nestedKid',
+        changes: [{ property: 'effective-opacity', before: '0', after: '0.5' }],
+      }),
+    ]);
+  });
+
+  it('a child under a container the hover does not reveal is not reported', async () => {
+    setup();
+    const report = await forcePseudoState(el('header'), 'hover', {
+      registry: registryOf(['header', 'stuckKid']),
+    });
+    expect(report.revealed).toEqual([]);
+  });
+
+  it('a newly registered child is dropped while an ancestor still draws nothing, and kept (null -> 1) once it draws', async () => {
+    setup();
+    const registered = new Map<string, Element>([['header', el('header')]]);
+    let calls = 0;
+    const report = await forcePseudoState(el('header'), 'hover', {
+      registry: {
+        getAllElements: () => Array.from(registered, ([id, element]) => ({ id, element })),
+        rescan: () => {
+          calls += 1;
+          if (calls === 2) {
+            registered.set('kid', el('kid'));
+            registered.set('stuckKid', el('stuckKid'));
+          }
+          return { rescanners: 1 };
+        },
+      },
+    });
+    // `#stuckKid`'s own opacity is 1 but its container paints nothing.
+    expect(report.revealed.map((r) => r.id)).toEqual(['kid']);
+    expect(report.revealed[0]).toMatchObject({
+      appeared: true,
+      changes: expect.arrayContaining([
+        { property: 'effective-opacity', before: null, after: '1' },
+      ]),
+    });
+    const release = await releaseForcedPseudoState('explicit');
+    expect(release.restore).toBe('verified');
+    expect(release.checked).toEqual(
+      expect.arrayContaining([{ id: 'kid', appeared: true, verdict: 'pass' }])
+    );
+  });
+
+  it('release verifies effective-opacity: a container pinned open during the hold is restored_with_drift', async () => {
+    setup();
+    await forcePseudoState(el('header'), 'hover', { registry: registryOf(['header', 'kid']) });
+    // The page pins the container open for good: the child draws after release.
+    el('fade').style.opacity = '1';
+    const release = await releaseForcedPseudoState('explicit');
+    expect(release.restore).toBe('restored_with_drift');
+    expect(release.drift).toEqual([
+      { id: 'kid', property: 'effective-opacity', before: '0', after: '1' },
+    ]);
+    expect(release.checked).toEqual(
+      expect.arrayContaining([{ id: 'kid', appeared: false, verdict: 'drift' }])
+    );
+  });
+
+  it('an appeared child still drawing through its ancestor after release is drift on effective-opacity', async () => {
+    setup();
+    const registered = new Map<string, Element>([['header', el('header')]]);
+    let calls = 0;
+    await forcePseudoState(el('header'), 'hover', {
+      registry: {
+        getAllElements: () => Array.from(registered, ([id, element]) => ({ id, element })),
+        rescan: () => {
+          calls += 1;
+          if (calls === 2) registered.set('kid', el('kid'));
+          return { rescanners: 1 };
+        },
+      },
+    });
+    el('fade').style.opacity = '1';
+    el('kid').getBoundingClientRect = () => new DOMRect(0, 0, 40, 20);
+    const release = await releaseForcedPseudoState('explicit');
+    expect(release.restore).toBe('restored_with_drift');
+    expect(release.drift).toEqual(
+      expect.arrayContaining([
+        { id: 'kid', property: 'effective-opacity', before: null, after: '1' },
+      ])
+    );
+  });
+
+  it('getComputedStyle cost grows with registered elements, not with registered x ancestors (one memo per pass)', async () => {
+    const countFor = async (kids: number): Promise<number> => {
+      setup(kids);
+      const ids = ['header', 'kid', ...Array.from({ length: kids - 1 }, (_, i) => `kid${i + 2}`)];
+      const spy = vi.spyOn(window, 'getComputedStyle');
+      await forcePseudoState(el('header'), 'hover', { registry: registryOf(ids) });
+      await releaseForcedPseudoState('explicit');
+      const n = spy.mock.calls.length;
+      spy.mockRestore();
+      await __resetForcedPseudoStateForTest();
+      style?.remove();
+      root?.remove();
+      return n;
+    };
+    const small = await countFor(2);
+    const large = await countFor(12);
+    const passes = 3; // before, after, verify: three separate memos
+    const perElementPerPass = 2; // its own style, and its own link in the chain
+    // Each extra child adds its own two reads per pass; its ancestors are cached.
+    expect(large - small).toBeLessThanOrEqual(10 * passes * perElementPerPass);
   });
 });

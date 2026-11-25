@@ -699,6 +699,13 @@ class ActionResponse(BaseModel):
     revealed). ``checked`` lists every element the release verified as
     ``{"id", "appeared", "verdict"}``, ``verdict`` being ``"pass"``,
     ``"drift"``, ``"disconnected"`` or ``"unreadable"``.
+
+    Each ``revealed[].changes[]`` entry (and each ``drift`` entry) names a
+    ``property``: ``opacity``, ``visibility``, ``display``, ``pointer-events``
+    or the derived ``"effective-opacity"``, the product of ``opacity`` over the
+    element's paint-parent chain (rounded to 4 decimals). It reports a control
+    revealed through an ancestor's opacity, whose own four values never change;
+    a registered one has ``appeared: False`` and ``before: "0"``, ``after: "1"``.
     """
 
     model_config = {"populate_by_name": True}

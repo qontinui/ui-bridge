@@ -158,6 +158,7 @@ beforeAll(async () => {
         export * from './control/forced-hover';
         export { UIBridgeRegistry, getGlobalRegistry } from './core/registry';
         export { DefaultActionExecutor } from './control/action-executor';
+        export { getElementState } from './core/element-state';
         export const registryOf = () => ({
           getAllElements: () => Array.from(document.querySelectorAll('[data-id]')).map((element) => ({
             id: element.getAttribute('data-id'),
@@ -662,7 +663,10 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('forcePseudoState (real Chromium)', () =>
     await page.addStyleTag({ content: `.b{opacity:.5}` });
     const rel = await page.evaluate(() => window.FH.releaseForcedPseudoState());
     expect(rel.restore).toBe('restored_with_drift');
-    expect(rel.drift).toEqual([{ id: 'b', property: 'opacity', before: '0', after: '0.5' }]);
+    expect(rel.drift).toEqual([
+      { id: 'b', property: 'opacity', before: '0', after: '0.5' },
+      { id: 'b', property: 'effective-opacity', before: '0', after: '0.5' },
+    ]);
     await page.close();
   }, 30_000);
 
@@ -684,7 +688,10 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('forcePseudoState (real Chromium)', () =>
     expect(r.revealed).toEqual([
       expect.objectContaining({
         id: 't',
-        changes: [{ property: 'opacity', before: '0', after: '1' }],
+        changes: [
+          { property: 'opacity', before: '0', after: '1' },
+          { property: 'effective-opacity', before: '0', after: '1' },
+        ],
       }),
     ]);
     const rel = await page.evaluate(() => window.FH.releaseForcedPseudoState());
@@ -904,5 +911,109 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)(
         await page.close();
       }, 30_000);
     }
+  }
+);
+
+/**
+ * Phase 5d: a reveal through an ANCESTOR's opacity. The control's own four
+ * computed values never change, so before the fifth `effective-opacity` key
+ * `revealed` stayed empty while the control went from drawing nothing to
+ * drawing. jsdom has no `:hover` and no transitions: Chromium only.
+ */
+const FADE_CSS = `
+  .fade { opacity: 0; }
+  .fade.tx { transition: opacity 150ms; }
+  .group:hover .fade { opacity: 1; }
+  .own { opacity: 0; }
+  .group:hover .own { opacity: 1; }
+  .stuck { opacity: 0; }
+`;
+
+describe.skipIf(!PLAYWRIGHT_AVAILABLE)(
+  'a reveal through an ancestor opacity (effective-opacity, real Chromium)',
+  () => {
+    for (const [variant, tx] of [
+      ['instant', ''],
+      ['transitioned (transition: opacity 150ms)', ' tx'],
+    ] as const) {
+      it(`${variant}: a registered child in an opacity-0 container is revealed with effective-opacity 0 -> 1, state.visible flips, release verifies`, async () => {
+        const page = await openPage(
+          `<div class="group" id="g"><span id="header" data-id="header">h</span>` +
+            `<div class="fade${tx}" id="fade"><button id="kid" data-id="kid">kid</button></div></div>`
+        );
+        await page.addStyleTag({ content: FADE_CSS });
+        await page.waitForFunction(() => document.getAnimations().length === 0);
+        const visible = (): Promise<boolean> =>
+          page.evaluate(() => window.FH.getElementState(document.getElementById('kid')).visible);
+        expect(await visible()).toBe(false);
+
+        const r = await page.evaluate(() =>
+          window.FH.forcePseudoState(document.getElementById('header'), 'hover', {
+            registry: window.FH.registryOf(),
+          })
+        );
+        expect(r.settled).toBe(true);
+        expect(r.revealed).toEqual([
+          expect.objectContaining({
+            id: 'kid',
+            appeared: false,
+            // Its own opacity, visibility, display and pointer-events never change.
+            changes: [{ property: 'effective-opacity', before: '0', after: '1' }],
+          }),
+        ]);
+        expect(await visible()).toBe(true);
+
+        const rel = await page.evaluate(() => window.FH.releaseForcedPseudoState());
+        expect(rel).toMatchObject({ released: true, restore: 'verified', drift: [] });
+        expect(rel.checked).toEqual(
+          expect.arrayContaining([{ id: 'kid', appeared: false, verdict: 'pass' }])
+        );
+        expect(await visible()).toBe(false);
+        await page.close();
+      }, 30_000);
+    }
+
+    it('own-hidden control inside an opacity-0 container: appeared, with opacity and effective-opacity both null -> 1; one under a container the hover never reveals is dropped', async () => {
+      const page = await openPage(
+        `<div class="group" id="g"><span id="header" data-id="header">h</span>` +
+          `<div class="fade" id="fade"><button id="own" class="own">own</button></div>` +
+          `<div class="stuck" id="stuck"><button id="stuckKid">s</button></div></div>`
+      );
+      await page.addStyleTag({ content: FADE_CSS });
+      const r = await page.evaluate(() => {
+        const registered = new Map<string, Element>([
+          ['header', document.getElementById('header')!],
+        ]);
+        let calls = 0;
+        return window.FH.forcePseudoState(document.getElementById('header'), 'hover', {
+          registry: {
+            getAllElements: () => Array.from(registered, ([id, element]) => ({ id, element })),
+            rescan: () => {
+              calls += 1;
+              // A discovery that admits hidden elements: it registers both on the post-settle call.
+              if (calls === 2) {
+                registered.set('own', document.getElementById('own')!);
+                registered.set('stuckKid', document.getElementById('stuckKid')!);
+              }
+              return { rescanners: 1 };
+            },
+          },
+        });
+      });
+      expect(r.revealed.map((x: { id: string }) => x.id)).toEqual(['own']);
+      expect(r.revealed[0]).toMatchObject({ appeared: true });
+      expect(r.revealed[0].changes).toEqual(
+        expect.arrayContaining([
+          { property: 'opacity', before: null, after: '1' },
+          { property: 'effective-opacity', before: null, after: '1' },
+        ])
+      );
+      const rel = await page.evaluate(() => window.FH.releaseForcedPseudoState());
+      expect(rel).toMatchObject({ restore: 'verified', drift: [] });
+      expect(rel.checked).toEqual(
+        expect.arrayContaining([{ id: 'own', appeared: true, verdict: 'pass' }])
+      );
+      await page.close();
+    }, 30_000);
   }
 );
