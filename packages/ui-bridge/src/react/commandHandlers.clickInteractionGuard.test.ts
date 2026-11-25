@@ -150,7 +150,7 @@ describe('relay click-like pre-check agrees with ElementState.enabled', () => {
       } else {
         expect(result.failureDetails?.errorCode).toBe('ELEMENT_NOT_ENABLED');
         // Every refusal names its signal, native `disabled` included.
-        expect(result.error).toMatch(/aria-disabled=true|disabled property|pointer-events:none/);
+        expect(result.error).toMatch(/aria-disabled=true|natively disabled|pointer-events:none/);
         // A native-disabled element is dispatched no click by the browser
         // itself; the others would fire the handler if the relay let them.
         expect(clicked).toBe(false);
