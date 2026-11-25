@@ -103,4 +103,30 @@ describe('RecordingSessionManager', () => {
     expect(got.param).not.toContain('secret');
     expect(got.label).toContain('[REDACTED]');
   });
+
+  it('prefers aria-labelledby over aria-label when naming a typed input', async () => {
+    const got = await recordTyped(
+      '<span id="l1">Billing</span><input id="target" aria-label="Ignored" aria-labelledby="l1">'
+    );
+    expect(got).toEqual({ label: 'Billing', param: 'billing' });
+  });
+
+  it('prefers aria-label over a <label for> when naming a typed input', async () => {
+    const got = await recordTyped(
+      '<label for="target">Visible</label><input id="target" aria-label="Aria wins">'
+    );
+    expect(got).toEqual({ label: 'Aria wins', param: 'ariaWins' });
+  });
+
+  it('never splits a redaction sentinel that straddles the 200-code-point cap', async () => {
+    const got = await recordTyped(
+      '<span id="l1">' +
+        'x'.repeat(195) +
+        '<span data-bridge-redact="true">SECRET-4111</span> tail</span>' +
+        '<input id="target" aria-labelledby="l1">'
+    );
+    expect(got.label).not.toContain('SECRET-4111');
+    expect(got.label).not.toMatch(/\[RED(?!ACTED\])/);
+    expect(got.param).not.toContain('secret');
+  });
 });
