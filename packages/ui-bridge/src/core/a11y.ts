@@ -605,7 +605,10 @@ export function readInnerText(el: Element): string | undefined {
 }
 
 /**
- * The two INDEPENDENT disabled signals, unfolded.
+ * The two INDEPENDENT disabled signals, unfolded. `disabled` is native
+ * disabled as the browser applies it: the element's own `disabled` property,
+ * or `:disabled` inherited from a `<fieldset disabled>` (not for a control in
+ * that fieldset's first `<legend>`).
  *
  * `ElementState.enabled` folds these into one boolean, which loses the
  * distinction a driver needs: only `disabled` (the native IDL property) makes
@@ -621,9 +624,27 @@ export function readDisabledSignals(el: Element): {
   ariaDisabled: boolean;
 } {
   return {
-    disabled: 'disabled' in el && (el as unknown as HTMLInputElement).disabled === true,
+    disabled:
+      ('disabled' in el && (el as unknown as HTMLInputElement).disabled === true) ||
+      matchesDisabledPseudo(el),
     ariaDisabled: el.getAttribute('aria-disabled') === 'true',
   };
+}
+
+/**
+ * `:disabled` — native disabled as the browser applies it, which the element's
+ * own `.disabled` property does not carry: a control inside a
+ * `<fieldset disabled>` is disabled (and receives no input) though its own
+ * property reads `false`, while one inside that fieldset's first `<legend>` is
+ * not. A selector engine that cannot evaluate the pseudo-class (a degraded DOM
+ * shim) throws; that is no evidence of `disabled`, so it reads `false`.
+ */
+function matchesDisabledPseudo(el: Element): boolean {
+  try {
+    return typeof el.matches === 'function' && el.matches(':disabled');
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -648,7 +669,7 @@ export function readDisabledSignals(el: Element): {
  * `getComputedStyle` cost of a full-page snapshot.
  */
 export interface InteractionBlockers {
-  /** Native DOM `disabled` IDL property. See `readDisabledSignals`. */
+  /** Native disabled: the `disabled` property or inherited `:disabled`. See `readDisabledSignals`. */
   disabled: boolean;
   /** `aria-disabled="true"`. See `readDisabledSignals`. */
   ariaDisabled: boolean;
