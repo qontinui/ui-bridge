@@ -974,10 +974,14 @@ describe('ToastCapture churn budget and re-read gate', () => {
       expect(appeared()).toEqual([]);
 
       el.style.opacity = '1';
+      // No public read yet and no poll yet: nothing may have announced it.
+      expect(appeared()).toEqual([]);
       await vi.advanceTimersByTimeAsync(500);
 
-      expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['saved', 'Saved']]);
+      // The poll announced it — asserted BEFORE any public read, which would
+      // reconcile and announce on its own.
       expect(appearedFor('saved')).toHaveLength(1);
+      expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['saved', 'Saved']]);
     });
 
     // H2
@@ -1016,8 +1020,11 @@ describe('ToastCapture churn budget and re-read gate', () => {
       expect(appeared()).toEqual([]);
 
       el.style.visibility = '';
+      expect(appeared()).toEqual([]);
       await vi.advanceTimersByTimeAsync(500);
 
+      // Announced by the poll, asserted before any public read.
+      expect(appearedFor('bar')).toHaveLength(1);
       expect(capture.getActive().map((t) => [t.id, t.message])).toEqual([['bar', 'Connected']]);
     });
 
@@ -1047,7 +1054,13 @@ describe('ToastCapture churn budget and re-read gate', () => {
     it('a hidden toast with text costs one observer and no clone across scans, polls and reads', async () => {
       install({ pollInterval: 500 });
       const observe = vi.spyOn(MutationObserver.prototype, 'observe');
-      const el = addHiddenStatus('saved', 'Saved', { display: 'none' });
+      // Hidden through an ancestor's (inherited) visibility, not its own inline
+      // style, which isElementVisible answers without getComputedStyle — so
+      // each check reaches getComputedStyle, the cost this case pins.
+      const parent = document.createElement('div');
+      parent.style.visibility = 'hidden';
+      document.body.appendChild(parent);
+      const el = addStatus('saved', 'Saved', parent);
       await flushAndScan();
       const clone = vi.spyOn(el, 'cloneNode');
 
@@ -1055,7 +1068,12 @@ describe('ToastCapture churn budget and re-read gate', () => {
         document.body.appendChild(document.createElement('span'));
         await flushAndScan();
       }
+      const style = vi.spyOn(globalThis, 'getComputedStyle');
       await vi.advanceTimersByTimeAsync(5_000);
+      // The per-poll cost of a hidden match is its one visibility check: ten
+      // polls, ten getComputedStyle calls on it, and nothing else.
+      expect(style.mock.calls.filter((c) => c[0] === el)).toHaveLength(10);
+      style.mockRestore();
       for (let i = 0; i < 10; i++) capture.getActive();
 
       expect(observe.mock.calls.filter((c) => c[0] === el)).toHaveLength(1);
