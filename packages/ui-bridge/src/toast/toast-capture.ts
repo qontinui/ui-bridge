@@ -491,8 +491,17 @@ function isElementVisible(el: Element, memo?: VisibilityMemo | null): boolean {
   // (no box, so its opacity paints nothing), which only the computed style
   // can tell; so an inline one is decided there when computed style exists.
   let inlineFaded = false;
+  // A `display: none` or an own opacity below 0.1 hides every descendant too
+  // (an effective opacity only shrinks down the tree), so `el` is recorded as
+  // `0` for a nested match whose ancestor it is, sparing that match a second
+  // read of `el`'s style. `visibility: hidden` is NOT recorded: a descendant
+  // can set `visibility: visible` and show through.
+  const hidesSubtree = (): false => {
+    memo?.set(el, 0);
+    return false;
+  };
   if (htmlEl.style) {
-    if (htmlEl.style.display === 'none') return false;
+    if (htmlEl.style.display === 'none') return hidesSubtree();
     if (htmlEl.style.visibility === 'hidden') return false;
     const opacity = parseFloat(htmlEl.style.opacity);
     inlineFaded = !isNaN(opacity) && opacity < 0.1;
@@ -502,17 +511,17 @@ function isElementVisible(el: Element, memo?: VisibilityMemo | null): boolean {
   let ownFactor = 1;
   try {
     const computed = getComputedStyle(el);
-    if (computed.display === 'none') return false;
+    if (computed.display === 'none') return hidesSubtree();
     if (computed.visibility === 'hidden') return false;
     if (computed.display !== 'contents') {
-      if (inlineFaded) return false;
+      if (inlineFaded) return hidesSubtree();
       const computedOpacity = parseFloat(computed.opacity);
-      if (!isNaN(computedOpacity) && computedOpacity < 0.1) return false;
+      if (!isNaN(computedOpacity) && computedOpacity < 0.1) return hidesSubtree();
       ownFactor = opacityFactor(computed.opacity);
     }
   } catch {
     // getComputedStyle may throw in some environments
-    if (inlineFaded) return false;
+    if (inlineFaded) return hidesSubtree();
   }
   if (el.parentElement?.shadowRoot && !el.assignedSlot) {
     memo?.set(el, 0);
@@ -817,7 +826,8 @@ export class ToastCapture {
         continue;
       }
 
-      if (this.admitCapture(el, message, now)) this.captureToast(el, message, now);
+      // `el` was found visible above, in this pass.
+      if (this.admitCapture(el, message, now, true)) this.captureToast(el, message, now, true);
     }
   }
 
@@ -857,13 +867,13 @@ export class ToastCapture {
    *
    * Every caller asks `admitCapture` first, so the announcement budget has one
    * owner. The element's own observer is attached here if it has none, seeded
-   * visible: every caller has just found `el` visible in the same pass (the
+   * with `visible`, the verdict the caller computed for `el` in this pass (the
    * scan's `isElementVisible`, a reconcile's `trackedVisible`), so a second
-   * `getComputedStyle` would only repeat that verdict.
+   * `getComputedStyle` does not repeat it.
    */
-  private captureToast(el: Element, message: string, now: number): void {
+  private captureToast(el: Element, message: string, now: number, visible: boolean): void {
     this.parked.delete(el);
-    this.track(el, true);
+    this.track(el, visible);
 
     const id = this.resolveId(el, now);
     const level = inferLevel(el);
@@ -933,7 +943,8 @@ export class ToastCapture {
       this.untrack(el);
       return;
     }
-    const message = this.trackedVisible(el) ? this.readTracked(el, parkedMessage) : '';
+    const visible = this.trackedVisible(el);
+    const message = visible ? this.readTracked(el, parkedMessage) : '';
 
     const budget = this.budgets.get(el);
     if (budget?.suppressed) {
@@ -947,8 +958,8 @@ export class ToastCapture {
       // began, so even a text equal to an earlier announcement is not shown in
       // `active` until it is captured again.
       budget.suppressed = false;
-      if (message && this.admitCapture(el, message, now)) {
-        this.captureToast(el, message, now);
+      if (message && this.admitCapture(el, message, now, visible)) {
+        this.captureToast(el, message, now, visible);
       }
       return;
     }
@@ -959,8 +970,8 @@ export class ToastCapture {
       if (parkedMessage !== '') this.parked.set(el, '');
       return;
     }
-    if (message !== parkedMessage && this.admitCapture(el, message, now)) {
-      this.captureToast(el, message, now);
+    if (message !== parkedMessage && this.admitCapture(el, message, now, visible)) {
+      this.captureToast(el, message, now, visible);
     }
   }
 
@@ -972,13 +983,14 @@ export class ToastCapture {
    * `maxAnnouncementsPerWindow` captures within `announcementWindowMs` it
    * records `now` and admits the capture. Otherwise — or while the budget is
    * already suppressed — it withholds it: `el` is suppressed and parked with
-   * the withheld text. Callers pass an element with no entry in `active` (the
+   * the withheld text, its tracking seeded with `visible` (the caller's
+   * verdict for `el` in this pass). Callers pass an element with no entry in `active` (the
    * active reconcile dismisses the old entry before asking; the scan skips
    * active elements; a parked element has none), so no withheld word of `el`
    * is left in `active`; a gone predecessor's entry is the next reconcile's
    * (see the header comment).
    */
-  private admitCapture(el: Element, message: string, now: number): boolean {
+  private admitCapture(el: Element, message: string, now: number, visible: boolean): boolean {
     const budget = this.budgets.getOrCreate(el, stableKey(el), now);
     if (!budget.suppressed) {
       const windowMs = this.config.announcementWindowMs;
@@ -990,9 +1002,8 @@ export class ToastCapture {
       budget.suppressed = true;
     }
     budget.lastChangedAt = now;
-    // Seeded visible, like `captureToast`: every caller holds a visible verdict
-    // for `el` from this pass.
-    this.park(el, message, true);
+    // Seeded with the caller's verdict from this pass, like `captureToast`.
+    this.park(el, message, visible);
     return false;
   }
 
@@ -1066,7 +1077,8 @@ export class ToastCapture {
       // A changed text is a new announcement: the old one goes to `recent`.
       // Over the budget, `admitCapture` parks the element suppressed instead.
       this.dismissToast(id, now);
-      if (this.admitCapture(el, message, now)) this.captureToast(el, message, now);
+      // Visible: the hidden case returned above, on this pass's verdict.
+      if (this.admitCapture(el, message, now, true)) this.captureToast(el, message, now, true);
       return;
     }
 
