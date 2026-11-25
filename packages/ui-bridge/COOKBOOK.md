@@ -291,9 +291,11 @@ Native disabled includes `disabled` inherited from a `<fieldset disabled>`
 `<optgroup disabled>`. Only `unhover` and a page-level `scroll` are exempt.
 In-process callers of the SDK's action executor get both refusals too:
 `useUIElement().trigger`, workflow element-action steps and the
-natural-language executor all go through it, so `trigger` and the
-natural-language executor throw and a workflow element-action step fails
-instead of acting. An `<input type="hidden">` still advertises `type`,
+natural-language executor all go through it, so none of them acts on such a
+node. `trigger` and the natural-language executor throw. A workflow
+element-action step does not throw and is NOT marked failed: the step reports
+`success: true`, and the refusal (`success: false` with its
+`failureDetails`) is in the step's `result`, so check `result.success`. An `<input type="hidden">` still advertises `type`,
 `clear` and `setValue`, and all three are refused on it because it is not
 rendered; narrowing what such an element advertises is a tracked follow-up.
 
