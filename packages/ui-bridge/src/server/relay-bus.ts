@@ -107,11 +107,13 @@ export interface RelayBus {
   /** True if any instance holds `tabId` unexpired. */
   isTabKnown(tabId: string): Promise<boolean>;
   /**
-   * True if an instance OTHER than this one holds `tabId` unexpired. A stream
-   * sent its `rotate` frame asks it before delivering a bus command, so the
-   * instance its replacement landed on delivers it instead.
+   * True if an instance OTHER than this one holds `tabId` unexpired, false if
+   * none does, and null when the registry could not be read — unknown, which
+   * a caller deciding to hold a tab for its owner must not read as absent. A
+   * stream sent its `rotate` frame asks it before delivering a bus command,
+   * so the instance its replacement landed on delivers it instead.
    */
-  holdsElsewhere(tabId: string): Promise<boolean>;
+  holdsElsewhere(tabId: string): Promise<boolean | null>;
 
   // --- Shared command registry (KV) --------------------------------------
   // Lets an instance that holds no pending command for a result ask "does
@@ -531,7 +533,7 @@ export class RedisRelayBus implements RelayBus {
     }
   }
 
-  async holdsElsewhere(tabId: string): Promise<boolean> {
+  async holdsElsewhere(tabId: string): Promise<boolean | null> {
     const key = `${TAB_HOLDERS_PREFIX}${tabId}`;
     const now = Date.now();
     try {
@@ -542,7 +544,7 @@ export class RedisRelayBus implements RelayBus {
       const ownLive = own !== null && Number(own) > now ? 1 : 0;
       return live - ownLive > 0;
     } catch {
-      return false;
+      return null;
     }
   }
 

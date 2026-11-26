@@ -40,6 +40,13 @@ export interface CommandStreamOptions {
   clientInstanceId?: string;
   /** The capabilities the client declared (`caps`). */
   caps?: readonly string[];
+  /**
+   * Whether another instance holds the tab's stream
+   * (`CommandRelay.isTabStreamedElsewhere`); null when that could not be
+   * read. Consulted only for a verified caller opening a tab another user's
+   * record names: absent or null with a bus configured, the tab is held.
+   */
+  streamedElsewhere?: boolean | null;
 }
 
 /** A command stream the relay opened (`CommandRelay.openCommandStream`). */

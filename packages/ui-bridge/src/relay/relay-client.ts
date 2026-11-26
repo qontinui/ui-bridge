@@ -19,7 +19,8 @@
  *   3. POST      `{basePath}/commands`   — result envelope, naming the stream
  *                the command arrived on; a repeat delivery is answered too
  *                while the command's outcome is kept (`command-dedupe.ts`)
- *   4. POST      `{basePath}/heartbeat`  — every `heartbeatIntervalMs`
+ *   4. POST      `{basePath}/heartbeat`  — every `heartbeatIntervalMs`,
+ *                naming the current stream (`streamId`) once it has connected
  *
  * Stream lifecycle (plan
  * `2026-11-09-a-dead-relay-tab-stays-the-operators-primary-and-a-command-sent-during-a-stream-reopen-is-lost`,
@@ -510,6 +511,8 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
   // has been measured at 1-8s on a loaded dev server).
   let lastHeartbeatStartedAt = 0;
   let heartbeatInFlight = false;
+  /** Whether the current run of heartbeats has had its ownership claim refused. */
+  let ownershipRefused = false;
 
   const sendHeartbeat = async () => {
     if (heartbeatInFlight || isOpaqueOrigin()) return;
@@ -531,6 +534,11 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
       if (version !== undefined) body.version = version;
       const meta = resolveRegistrationMetadata(registrationMetadata);
       if (meta !== null) body.registrationMetadata = meta;
+      // Names the stream this page holds (the CURRENT one, from its own
+      // `connected` event), so the relay can tell its holder that the stream
+      // is bound to another identity.
+      const streamId = lifecycle.currentStreamId();
+      if (streamId !== undefined) body.streamId = streamId;
 
       const resp = await fetch(`${basePath}/heartbeat`, {
         method: 'POST',
@@ -542,8 +550,31 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
       if (resp.ok) {
         try {
           const data = await resp.json();
-          const tabRegistered = data?.tabRegistered ?? data?.data?.tabRegistered ?? null;
+          const payload = data?.data ?? data;
+          const tabRegistered = payload?.tabRegistered ?? null;
           if (tabRegistered === false) forceReconnect();
+          // A refused ownership claim leaves this tab unregistered, and a
+          // scoped caller cannot reach an unregistered tab. Report it once
+          // per run of refusals rather than failing silently on every beat.
+          // `STREAM_IDENTITY_CHANGED` says the stream this page holds is
+          // bound to an identity the page no longer has (a re-login):
+          // reopening it under the current one is the fix.
+          if (payload?.ownershipAssigned === false) {
+            const reason =
+              typeof payload.ownerChangeRejected === 'string'
+                ? payload.ownerChangeRejected
+                : 'unknown';
+            if (reason === 'STREAM_IDENTITY_CHANGED') forceReconnect();
+            if (!ownershipRefused) {
+              ownershipRefused = true;
+              onError(
+                `[UIBridge] Relay refused this tab's ownership claim (${reason}); ` +
+                  'scoped callers cannot reach the tab until it registers under the authenticated user.'
+              );
+            }
+          } else {
+            ownershipRefused = false;
+          }
         } catch {
           /* older server — no recovery payload */
         }
