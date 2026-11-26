@@ -36,7 +36,7 @@ import {
   resolveAccessibleName,
 } from './a11y';
 import { classList } from './class-name';
-import { composedAncestry } from './composed-tree';
+import { composedAncestry, effectiveOpacity, paintParent } from './composed-tree';
 import {
   verdictOf,
   elementRedaction,
@@ -144,6 +144,29 @@ interface LayoutReads {
   inViewport: boolean;
 }
 
+/**
+ * The effective-opacity memo of the synchronous visibility pass in progress,
+ * or undefined outside one. See {@link withVisibilityPass}.
+ */
+let activeOpacityMemo: Map<Element, number> | undefined;
+
+/**
+ * Run `fn` (SYNCHRONOUSLY: never across an await or a yield, because the memo
+ * holds one moment of style) as one visibility pass. Every visibility verdict
+ * read inside it shares one `Map<Element, number>` of ancestor opacity
+ * products, so a loop over N elements reads each ancestor's style once instead
+ * of N x depth times. Nested passes share the outermost one's memo.
+ */
+export function withVisibilityPass<T>(fn: () => T): T {
+  if (activeOpacityMemo) return fn();
+  activeOpacityMemo = new Map();
+  try {
+    return fn();
+  } finally {
+    activeOpacityMemo = undefined;
+  }
+}
+
 function readLayout(element: HTMLElement): LayoutReads {
   const rect = element.getBoundingClientRect();
   const computedStyle = window.getComputedStyle(element);
@@ -158,7 +181,13 @@ function readLayout(element: HTMLElement): LayoutReads {
 }
 
 function visibilityFields(element: HTMLElement, layout: LayoutReads): ElementVisibility {
-  const v = computeVisibilityVerdict(element, layout.rect, layout.computedStyle, layout.inViewport);
+  const v = computeVisibilityVerdict(
+    element,
+    layout.rect,
+    layout.computedStyle,
+    layout.inViewport,
+    activeOpacityMemo
+  );
   return {
     visible: v.visible,
     visibilityReason: v.reason,
@@ -434,7 +463,8 @@ export function getElementState(element: HTMLElement): ElementState {
     );
   }
 
-  // Opacity hidden detection
+  // Opacity hidden detection: the element's OWN opacity only. An ancestor at
+  // opacity 0 makes `visible` false (computeVisibilityVerdict) but not this.
   const opacityVal = parseFloat(computedStyle.opacity);
   if (opacityVal === 0) {
     state.opacityHidden = true;
@@ -647,12 +677,24 @@ function computeVisibilityVerdict(
   element: HTMLElement,
   rect: DOMRect,
   style: CSSStyleDeclaration,
-  inViewport: boolean
+  inViewport: boolean,
+  opacityMemo?: Map<Element, number>
 ): VisibilityVerdict {
   if (rect.width === 0 || rect.height === 0) return { visible: false, reason: 'no-layout' };
   if (style.display === 'none') return { visible: false, reason: 'hidden' };
   if (style.visibility === 'hidden') return { visible: false, reason: 'hidden' };
   if (parseFloat(style.opacity) === 0) return { visible: false, reason: 'hidden' };
+  // An ancestor at `opacity: 0` paints this element's whole subtree away: the
+  // control's own opacity still reads 1 (a `group-hover:opacity-100` reveal's
+  // container). Only after the cheap own checks above, and starting at the
+  // paint parent so the own opacity is not read twice.
+  const parent = paintParent(element);
+  if (
+    parent &&
+    effectiveOpacity(parent, element.ownerDocument?.defaultView ?? window, opacityMemo) === 0
+  ) {
+    return { visible: false, reason: 'hidden' };
+  }
   if (!inViewport) return { visible: false, reason: 'off-screen' };
 
   // Hit-test: what the compositor actually painted at each sample point. Two

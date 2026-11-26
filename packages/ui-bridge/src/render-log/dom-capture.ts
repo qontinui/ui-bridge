@@ -16,7 +16,7 @@ import {
 // The ONE `ElementState` reader (plan
 // `2026-11-08-ui-bridge-element-state-has-two-readers-and-no-aria-busy`, D1):
 // a captured element's `state` is the same state the registry snapshot reports.
-import { getElementState } from '../core/element-state';
+import { getElementState, withVisibilityPass } from '../core/element-state';
 import { createElementIdentifier, getBestIdentifier } from '../core/element-identifier';
 import { truncateCodePoints } from '../core/text';
 import { pageViewportContext } from '../control/page-scroll-container';
@@ -313,7 +313,7 @@ export function captureDOMSnapshot(options: CaptureOptions = {}): DOMSnapshot {
     }
   }
 
-  traverse(root, 0);
+  withVisibilityPass(() => traverse(root, 0));
 
   const endTime = performance.now();
 

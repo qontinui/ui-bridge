@@ -86,7 +86,7 @@ import {
 import { isMediaObservation, mediaFactsOf, unmeasuredMediaDimension } from './media-observation';
 import { hasNestedQuantifiers } from './param-schema';
 import { answersToNamedType, impliedAriaRole } from './element-kind';
-import { readElementVisibility } from './element-state';
+import { readElementVisibility, withVisibilityPass } from './element-state';
 import {
   scrubMediaMetadata,
   textExcludingBoundaries,
@@ -732,6 +732,16 @@ export function applyCanonicalFindFilter<T extends FindFilterableElement>(
   elements: readonly T[],
   criteria?: CanonicalFindCriteria | null,
   ctx: CanonicalFindContext = {}
+): T[] {
+  // One visibility pass over the whole synchronous filter: ancestor opacity is
+  // read once per element however many rows share it.
+  return withVisibilityPass(() => filterCanonical(elements, criteria, ctx));
+}
+
+function filterCanonical<T extends FindFilterableElement>(
+  elements: readonly T[],
+  criteria: CanonicalFindCriteria | null | undefined,
+  ctx: CanonicalFindContext
 ): T[] {
   // Every OUTPUT field is cleared before anything can refuse and set only once
   // the call has completed, so a reused context (refused calls included)

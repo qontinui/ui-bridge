@@ -48,6 +48,98 @@ export function composedAncestry(target: Element): Element[] {
   return chain;
 }
 
+/** The parent in the flat (composed) tree: the slot of a slotted node, the host past a shadow root. */
+export function composedParent(el: Element): Element | null {
+  const slot = (el as Element & { assignedSlot?: Element | null }).assignedSlot;
+  if (slot) return slot;
+  if (el.parentElement) return el.parentElement;
+  const root = el.parentNode as (Node & { host?: Element }) | null;
+  return root && root.host && root.host.nodeType === 1 ? root.host : null;
+}
+
+/**
+ * Whether `el` is drawn in the top layer: an open popover, a modal dialog, a
+ * fullscreen element. That lifts it out of its ancestors' transforms, opacity,
+ * filters and clips, though not out of their zoom, which it inherits.
+ */
+export function inTopLayer(el: Element): boolean {
+  const is = (state: string): boolean => {
+    try {
+      return el.matches(state);
+    } catch {
+      return false;
+    }
+  };
+  const doc = el.ownerDocument;
+  return (
+    (el.hasAttribute('popover') && is(':popover-open')) ||
+    (el.localName === 'dialog' && is(':modal')) ||
+    (doc?.fullscreenElement != null && is(':fullscreen'))
+  );
+}
+
+/** The element `el` is painted inside: its composed parent, or none in the top layer. */
+export function paintParent(el: Element): Element | null {
+  return inTopLayer(el) ? null : composedParent(el);
+}
+
+/** How {@link effectiveOpacity} reads a style and rounds. */
+export interface EffectiveOpacityOptions {
+  /** Reads an element's style; default `view.getComputedStyle`. Lets a caller keep its own style cache. */
+  readStyle?: (el: Element) => { opacity: string };
+  /**
+   * Legacy exact mode: `Number()` parsing (an empty string reads 0), a
+   * non-finite value skipped, the product returned unrounded and never memoised.
+   * Default: `parseFloat`, NaN counts as 1, rounded to 4 decimals.
+   */
+  raw?: boolean;
+}
+
+/**
+ * The product of `opacity` from `el` up its paint-parent chain (shadow and
+ * slot aware; a top-layer element is exempt from its ancestors' opacity),
+ * rounded to 4 decimals. An unparseable opacity counts as 1.
+ *
+ * `memo` caches the raw product per element and must be scoped to ONE pass
+ * (one moment of style): sharing it across passes serves stale values. With
+ * it, each element's computed style is read once however many registered
+ * elements share an ancestor.
+ */
+export function effectiveOpacity(
+  el: Element,
+  view: Pick<Window, 'getComputedStyle'>,
+  memo?: Map<Element, number>,
+  options: EffectiveOpacityOptions = {}
+): number {
+  const read = options.readStyle ?? ((e: Element) => view.getComputedStyle(e));
+  if (options.raw) {
+    let product = 1;
+    for (let a: Element | null = el; a; a = paintParent(a)) {
+      const o = Number(read(a).opacity);
+      if (Number.isFinite(o)) product *= o;
+      if (product === 0) return 0;
+    }
+    return product;
+  }
+  const chain: Element[] = [];
+  let base = 1;
+  for (let a: Element | null = el; a; a = paintParent(a)) {
+    const known = memo?.get(a);
+    if (known !== undefined) {
+      base = known;
+      break;
+    }
+    chain.push(a);
+  }
+  let product = base;
+  for (let i = chain.length - 1; i >= 0; i--) {
+    const parsed = parseFloat(read(chain[i]).opacity);
+    if (!Number.isNaN(parsed)) product *= parsed;
+    memo?.set(chain[i], product);
+  }
+  return Math.round(product * 10000) / 10000;
+}
+
 /**
  * The element that really holds focus within `root` (a document or a shadow
  * root): its `activeElement`, descended through each OPEN shadow root's own
