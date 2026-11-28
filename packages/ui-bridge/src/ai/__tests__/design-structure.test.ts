@@ -155,6 +155,11 @@ describe('collectStructure', () => {
     byId('main').append(strip, pane);
     Object.defineProperty(strip, 'scrollWidth', { configurable: true, value: 2400 });
     Object.defineProperty(strip, 'clientWidth', { configurable: true, value: 600 });
+    // The pane scrolls on both axes: a wide child forced its x scroll.
+    Object.defineProperty(pane, 'scrollWidth', { configurable: true, value: 1600 });
+    Object.defineProperty(pane, 'clientWidth', { configurable: true, value: 1280 });
+    Object.defineProperty(pane, 'scrollHeight', { configurable: true, value: 2400 });
+    Object.defineProperty(pane, 'clientHeight', { configurable: true, value: 800 });
     for (const [n, y] of [[card, 600], [item, 700]] as const) box(n, 0, y, 300, 40);
     const { structure } = collectStructure([
       { id: 'reg.card', element: card },

@@ -196,7 +196,8 @@ export function collectStructure(live: ReadonlyArray<{ id: string; element: HTML
     const idOf = new Map<Element, string>();
     for (const { id, element } of live) if (!idOf.has(element)) idOf.set(element, id);
 
-    const blockEls = findTextBlockElements(idOf);
+    const scan = textScan(idOf);
+    const blockEls = findTextBlockElements(idOf, scan);
     const groups = buildGroupIndex([...live.map((l) => l.element), ...blockEls], idOf);
 
     const structure = new Map<string, ElementStructure>();
@@ -204,10 +205,10 @@ export function collectStructure(live: ReadonlyArray<{ id: string; element: HTML
     for (const { id, element } of live) {
       if (structure.has(id)) continue;
       const tagName = element.tagName.toLowerCase();
-      const role = roleOf(element);
+      const role = scan.roleOf(element);
       const style = element.ownerDocument?.defaultView?.getComputedStyle(element);
       const verdict = renderVerdict(element, style);
-      const wantsText = isTextBearing(element);
+      const wantsText = scan.isTextBearing(element);
       const text = wantsText
         ? readScrubbedText(element, undefined, {
             normalizeWhitespace: true,
@@ -281,10 +282,12 @@ function ownTextLength(el: Element): number {
 /**
  * Unregistered, rendered elements carrying at least `TEXT_BLOCK_MIN_CHARS` of
  * their own text within the first `TEXT_BLOCK_SCREENS` screens, in document
- * order. An element inside a control, or inside a registered element that is
- * itself text-bearing (whose text already counts), is skipped.
+ * order. Skipped: an element inside a control; one inside, or wrapping, a
+ * registered text-bearing element (whose text already counts — a wrapper's own
+ * text is then not read at all, the trade against reading text twice); one
+ * inside a block already kept.
  */
-function findTextBlockElements(idOf: Map<Element, string>): Element[] {
+function findTextBlockElements(idOf: Map<Element, string>, scan: TextScan): Element[] {
   if (typeof document === 'undefined' || !document.body) return [];
   const limit = window.innerHeight * TEXT_BLOCK_SCREENS;
   const out: Element[] = [];
@@ -297,9 +300,9 @@ function findTextBlockElements(idOf: Map<Element, string>): Element[] {
     if (lastKept?.contains(el)) continue;
     if (idOf.has(el) || el.closest(NON_TEXT_BLOCK)) continue;
     if (ownTextLength(el) < TEXT_BLOCK_MIN_CHARS) continue;
-    if (registeredTextAncestor(el, idOf)) continue;
+    if (scan.insideRegisteredText(el)) continue;
     // Its text would include a registered text element's, read on its own.
-    if (containsRegisteredText(el, idOf)) continue;
+    if (scan.wrapsRegisteredText.has(el)) continue;
     const rect = el.getBoundingClientRect();
     if (rect.y >= limit || rect.width <= 2 || rect.height <= 2) continue;
     if (!renderVerdict(el, el.ownerDocument?.defaultView?.getComputedStyle(el)).visible) continue;
@@ -309,52 +312,63 @@ function findTextBlockElements(idOf: Map<Element, string>): Element[] {
   return out;
 }
 
-const roleMemo = new WeakMap<Element, string | undefined>();
-
-/** `computeRoleSafe`, computed once per element. */
-function roleOf(el: Element): string | undefined {
-  if (roleMemo.has(el)) return roleMemo.get(el);
-  const role = computeRoleSafe(el);
-  roleMemo.set(el, role);
-  return role;
+interface TextScan {
+  /** `computeRoleSafe`, computed once per element within one collection. */
+  roleOf(el: Element): string | undefined;
+  /** An element whose own text the metrics read: a text tag, or a text role. */
+  isTextBearing(el: Element): boolean;
+  /** A registered, text-bearing ancestor already reads this element's text. */
+  insideRegisteredText(el: Element): boolean;
+  /** Every ancestor of a registered, text-bearing element. */
+  wrapsRegisteredText: Set<Element>;
 }
 
-/** An element whose own text the metrics read: a text tag, or a text role. */
-function isTextBearing(el: Element): boolean {
-  if (TEXT_TAGS.has(el.tagName.toLowerCase())) return true;
-  const role = roleOf(el);
-  return role !== undefined && TEXT_ROLES.has(role);
-}
-
-/** A registered, text-bearing descendant already reads part of this element's text. */
-function containsRegisteredText(el: Element, idOf: Map<Element, string>): boolean {
-  for (const d of Array.from(el.querySelectorAll('*'))) {
-    if (idOf.has(d) && isTextBearing(d)) return true;
+/**
+ * Per-collection text helpers. The role memo lives for one collection only: a
+ * role depends on attributes and ancestry a framework may patch between
+ * reports.
+ */
+function textScan(idOf: Map<Element, string>): TextScan {
+  const roles = new Map<Element, string | undefined>();
+  const roleOf = (el: Element) => {
+    if (!roles.has(el)) roles.set(el, computeRoleSafe(el));
+    return roles.get(el);
+  };
+  const isTextBearing = (el: Element) => {
+    if (TEXT_TAGS.has(el.tagName.toLowerCase())) return true;
+    const role = roleOf(el);
+    return role !== undefined && TEXT_ROLES.has(role);
+  };
+  const registeredText = new Set<Element>();
+  for (const el of idOf.keys()) if (isTextBearing(el)) registeredText.add(el);
+  const wrapsRegisteredText = new Set<Element>();
+  for (const el of registeredText) {
+    for (let p = el.parentElement; p && !wrapsRegisteredText.has(p); p = p.parentElement) wrapsRegisteredText.add(p);
   }
-  return false;
-}
-
-/** A registered, text-bearing ancestor already reads this element's text. */
-function registeredTextAncestor(el: Element, idOf: Map<Element, string>): boolean {
-  for (let p = el.parentElement; p; p = p.parentElement) {
-    if (idOf.has(p) && isTextBearing(p)) return true;
-  }
-  return false;
+  const insideRegisteredText = (el: Element) => {
+    for (let p = el.parentElement; p; p = p.parentElement) if (registeredText.has(p)) return true;
+    return false;
+  };
+  return { roleOf, isTextBearing, insideRegisteredText, wrapsRegisteredText };
 }
 
 const CLIPS_X = new Set(['hidden', 'clip']);
 const SCROLLS_X = new Set(['auto', 'scroll', 'overlay']);
 
 /**
- * The element hides its x overflow, or actually scrolls on x. A computed
- * `auto` alone is not enough: CSS computes `overflow-x: auto` for any
- * `overflow-y: auto` pane, and an app shell's main scroll pane is not a
- * horizontal scroller.
+ * The element hides its x overflow, or is a horizontal scroller: it scrolls on
+ * x and not on y. A computed `auto` alone is not enough — CSS computes
+ * `overflow-x: auto` for any `overflow-y: auto` pane, and a wide child raises
+ * such a pane's `scrollWidth` too.
  */
 function scrollsOrClipsX(el: Element, view: Window): boolean {
-  const x = view.getComputedStyle(el).overflowX;
-  if (CLIPS_X.has(x)) return true;
-  return SCROLLS_X.has(x) && el.scrollWidth > el.clientWidth + 1;
+  const style = view.getComputedStyle(el);
+  if (CLIPS_X.has(style.overflowX)) return true;
+  if (!SCROLLS_X.has(style.overflowX) || el.scrollWidth <= el.clientWidth + 1) return false;
+  // Scrolls on x: a horizontal scroller when its y axis clips or does not
+  // scroll. A pane scrolling on both axes is a page's main pane whose wide
+  // child forced the x scroll, not a carousel.
+  return CLIPS_X.has(style.overflowY) || el.scrollHeight <= el.clientHeight + 1;
 }
 
 /**

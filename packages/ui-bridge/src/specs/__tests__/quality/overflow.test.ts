@@ -93,7 +93,8 @@ describe('contentOverflow', () => {
 
   it('a registered vertical scroll pane (computed overflow-x auto, no x scroll) does not exempt a child past the viewport', () => {
     const page = [
-      el('main', 'generic', { x: 0, y: 0, width: 1280, height: 800 }, { tagName: 'main', scrollHeight: 2400, clientHeight: 800 }, { overflow: 'auto' }),
+      // The wide child raises the pane's scrollWidth, as a browser reports it.
+      el('main', 'generic', { x: 0, y: 0, width: 1280, height: 800 }, { tagName: 'main', scrollWidth: 1600, clientWidth: 1280, scrollHeight: 2400, clientHeight: 800 }, { overflow: 'auto' }),
       el('wide', 'generic', { x: 0, y: 100, width: 1600, height: 200 }, { tagName: 'div', parentId: 'main' }),
     ];
     const kinds = contentOverflow(page, { ...DESKTOP, documentWidth: 1280 }).rawData?.kinds as Kinds;

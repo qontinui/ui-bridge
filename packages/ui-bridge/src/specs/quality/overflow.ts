@@ -59,16 +59,23 @@ function axisOverflow(el: ElementDesignData, axis: 'x' | 'y'): string {
 
 const clipsAxis = (el: ElementDesignData, axis: 'x' | 'y') => CLIPPING.has(axisOverflow(el, axis));
 /**
- * The element hides or scrolls its x overflow. A computed `auto` / `scroll` x
- * axis counts only when it actually scrolls on x: CSS computes `overflow-x:
- * auto` for any `overflow-y: auto` pane, and such a pane is not a horizontal
- * scroller.
+ * The element hides its x overflow, or is a horizontal scroller. A computed
+ * `auto` / `scroll` x axis counts only when the element scrolls on x and not
+ * on y: CSS computes `overflow-x: auto` for any `overflow-y: auto` pane, and a
+ * wide child raises that pane's `scrollWidth` too.
  */
 const scrollsOrClipsX = (el: ElementDesignData) => {
   if (clipsAxis(el, 'x')) return true;
   if (!SCROLLING.has(axisOverflow(el, 'x'))) return false;
   const s = el.structure;
-  return s !== undefined && s.scrollWidth > s.clientWidth + OVERFLOW_TOLERANCE_PX;
+  // Unmeasured: keep the container's word for it (the metric lists the
+  // containment as unmeasured).
+  if (!s) return true;
+  if (s.scrollWidth <= s.clientWidth + OVERFLOW_TOLERANCE_PX) return false;
+  // Scrolls on x: a horizontal scroller only when its y axis clips or does
+  // not scroll; a pane scrolling on both axes is a main pane a wide child
+  // forced sideways.
+  return clipsAxis(el, 'y') || s.scrollHeight <= s.clientHeight + OVERFLOW_TOLERANCE_PX;
 };
 
 function isPageRoot(el: ElementDesignData): boolean {
