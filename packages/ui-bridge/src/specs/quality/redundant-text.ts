@@ -141,14 +141,14 @@ export function redundantText(
 
   // Pairs, then clusters (union-find).
   const parent = units.map((_, i) => i);
-  const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  const rootOf = (i: number): number => (parent[i] === i ? i : (parent[i] = rootOf(parent[i])));
   const termsOf = new Map<number, Set<string>>();
   for (let i = 0; i < units.length; i++) {
     for (let j = i + 1; j < units.length; j++) {
       const shared = sharedStems(units[i].stems, units[j].stems);
       const smaller = Math.min(units[i].stems.length, units[j].stems.length);
       if (shared.length >= REDUNDANCY_MIN_SHARED && shared.length / smaller >= REDUNDANCY_PAIR_MIN) {
-        parent[find(i)] = find(j);
+        parent[rootOf(i)] = rootOf(j);
         for (const k of [i, j]) {
           const set = termsOf.get(k) ?? new Set<string>();
           for (const s of shared) set.add(s);
@@ -160,7 +160,7 @@ export function redundantText(
   const clusters = new Map<number, number[]>();
   units.forEach((_, i) => {
     if (!termsOf.has(i)) return;
-    const root = find(i);
+    const root = rootOf(i);
     clusters.set(root, [...(clusters.get(root) ?? []), i]);
   });
 
