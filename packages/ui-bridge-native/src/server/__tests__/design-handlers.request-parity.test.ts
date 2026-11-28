@@ -155,6 +155,34 @@ describe('native request refusals equal the shared parsers', () => {
     }
   );
 
+  const GUIDE_ROWS: Array<[string, unknown]> = [
+    ['guide: string', 'x'],
+    ['guide: number', 3],
+    ['guide: true', true],
+    ['guide: array', [{ rules: [] }]],
+    ['guide: no rules', {}],
+    ['guide: rules string', { rules: 'r' }],
+    ['guide: rules object', { rules: {} }],
+  ];
+
+  it.each(GUIDE_ROWS)(
+    '/design/style-guide/load %s matches the audit route guide refusal',
+    async (_name, guide) => {
+      // `guideOf` is private; the audit route is its oracle, and the load
+      // route differs only in the route prefix of the message.
+      const expected = sharedRefusal((b) => specs.designAuditOf([], b, null), { guide }).replace(
+        '/design/audit:',
+        '/design/style-guide/load:'
+      );
+      const res = await handlers.loadStyleGuide(ctx({ guide }));
+      expect(res).toMatchObject({ success: false, code: 'INVALID_REQUEST', error: expected });
+    }
+  );
+
+  it('/design/style-guide/load stores a guide with a rules array', async () => {
+    expect((await handlers.loadStyleGuide(ctx({ guide: { rules: [] } }))).success).toBe(true);
+  });
+
   it('native accepts what the shared parsers accept', async () => {
     const snapshot = { elementIds: [], includePseudoElements: true, limit: 5 };
     expect(() => specs.parseDesignSnapshotRequest(snapshot)).not.toThrow();
