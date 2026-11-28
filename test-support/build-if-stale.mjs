@@ -31,11 +31,17 @@
  * killed by its own pid (`taskkill /T /F /PID <pid>` on Windows, SIGKILL to its
  * process group elsewhere), never by image name, and setup throws; the error
  * carries the build's pid as `buildPid`. On POSIX the build runs detached (its
- * own process group), so while it runs, SIGINT, SIGTERM, SIGHUP and exit
- * handlers kill that group the same way; they are removed when it exits. A
- * signal is re-raised only when no other listener (such as vitest's own) is
- * left to handle it. On Windows the build is not detached, so Ctrl-C reaches it
- * directly.
+ * own process group), so while it runs, SIGINT, SIGTERM and SIGHUP handlers
+ * kill that group the same way. An `exit` handler kills the tree on every
+ * platform, so a vitest that exits mid-build does not leave the build running;
+ * on Windows Ctrl-C also reaches the (non-detached) build directly. All
+ * handlers are removed when the build exits, and no kill is sent after that, so
+ * a pid or process group the OS has since recycled is never signalled. When
+ * this module's handler was the only listener for a signal, the signal is
+ * re-raised so the process still terminates; when another listener (such as
+ * vitest's own) is registered, that listener decides how the process ends. A
+ * build ended by a signal that was not the timeout is reported as interrupted,
+ * not as failed.
  *
  * In CI the root `npm run build` runs first, so every step is a no-op there.
  */
@@ -146,7 +152,18 @@ export function staleReason(step) {
   return oldest < newest ? 'a build input is newer than its oldest output' : null;
 }
 
+/** True while the build's own process (the shell) has not exited. */
+function running(child) {
+  return child.exitCode === null && child.signalCode === null;
+}
+
+/**
+ * Kill the build's whole process tree by its own pid. A no-op once the shell
+ * has exited: its pid (and, on POSIX, its process group id) may then belong to
+ * an unrelated process.
+ */
 function killTree(child) {
+  if (!running(child)) return;
   if (process.platform === 'win32') {
     spawnSync('taskkill', ['/T', '/F', '/PID', String(child.pid)], { stdio: 'ignore' });
   } else {
@@ -174,19 +191,26 @@ function runBuild(step, timeoutMs) {
     const child = spawn(command, { cwd, shell: true, stdio: 'inherit', detached });
     const done = (error) => resolveRun({ pid: child.pid, error });
 
-    // POSIX only: a detached group outlives Ctrl-C, a hangup or a killed vitest
-    // unless it is killed here. When another listener (vitest's own) handles
-    // the signal, it decides how the process ends; only when ours was the sole
-    // listener is the signal re-raised, so the default termination still runs.
+    // POSIX only: a detached group outlives Ctrl-C or a hangup unless it is
+    // killed here. When another listener (vitest's own) handles the signal, it
+    // decides how the process ends; only when ours was the sole listener is the
+    // signal re-raised, so the default termination still runs.
+    // The signal this process received, so a build the handler SIGKILLed is
+    // reported as interrupted by that signal, not by the helper's own kill.
+    let received = null;
     const onSignal = (signal) => {
+      received = signal;
       killTree(child);
       if (process.listenerCount(signal) === 0) process.kill(process.pid, signal);
     };
+    // Every platform: a vitest that exits while the build runs takes the tree
+    // with it (on Windows through taskkill, which spawnSync runs synchronously,
+    // as an exit handler requires).
     const onExit = () => killTree(child);
     if (detached) {
       for (const signal of HANDLED_SIGNALS) process.once(signal, onSignal);
-      process.once('exit', onExit);
     }
+    process.once('exit', onExit);
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
@@ -209,8 +233,10 @@ function runBuild(step, timeoutMs) {
           `\`${command}\` did not finish within ${timeoutMs} ms; its process tree (pid ` +
             `${child.pid}) was killed. Set QONTINUI_TEST_BUILD_TIMEOUT_MS to allow longer.`
         );
+      } else if (signal !== null || received !== null) {
+        done(`\`${command}\` was interrupted by ${received ?? signal} before it finished`);
       } else if (code !== 0) {
-        done(`\`${command}\` failed (exit ${code ?? signal})`);
+        done(`\`${command}\` failed (exit ${code})`);
       } else {
         done(null);
       }

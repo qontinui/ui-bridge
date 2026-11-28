@@ -10,7 +10,10 @@ name: Publish to npm
 #   - ui-bridge
 #   - ui-bridge-cli-args (added 2026-07-18 — zero-dep leaf holding the shared
 #     CLI flag-guard primitives; the bottom of the build graph, so it builds
-#     FIRST. First publish needs its npm trusted-publisher OIDC policy set up.)
+#     FIRST. Only 0.1.0 is on npm; its later tag publishes failed with E404 on
+#     the PUT, consistent with no trusted-publisher (OIDC) policy for it. ui-bridge-headless and
+#     ui-bridge-wrapper keep it in devDependencies and tsup inlines it into
+#     their dist, so neither needs a current version on npm.)
 #   - ui-bridge-eslint-plugin
 #   - ui-bridge-wrapper
 #   - ui-bridge-headless
@@ -147,10 +150,10 @@ jobs:
         # npm workspaces uses filesystem-alphabetical order by default,
         # which doesn't respect internal dep graphs. The graph today:
         #   ui-bridge-cli-args         — leaf (zero deps; CLI flag-guard kit)
-        #   ui-bridge-headless         — imports cli-args types
+        #   ui-bridge-headless         — bundles cli-args (inlined from its dist)
         #   ui-bridge                  — imports headless types
         #   ui-bridge-server           — imports ui-bridge types
-        #   ui-bridge-wrapper          — imports headless types (dynamic) + cli-args
+        #   ui-bridge-wrapper          — imports headless types (dynamic); bundles cli-args
         # Other packages have no internal deps, so building the target
         # last is sufficient. Examples/e2e are intentionally not built
         # here — they're not publishable and have their own concerns.

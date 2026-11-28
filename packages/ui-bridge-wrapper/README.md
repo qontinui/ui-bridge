@@ -288,8 +288,8 @@ catches the first document request. The HAR and the video are complete once
 HAR, but a `ready()` that fails after the launch (an emulation refusal, an
 injected-runtime wait) can still leave a complete archive, so a missing file is
 not how to tell that `ready()` failed. A malformed value fails construction
-with `INVALID_CONFIG`, and a headless peer older than 0.8.0 (ui-bridge#381)
-ignores all four, so the transport then fails `ready()` with
+with `INVALID_CONFIG`, and a headless peer older than 0.8.1 (the four came in
+ui-bridge#381 as 0.8.0, which never reached npm) ignores all four, so the transport then fails `ready()` with
 `CONTEXT_OPTIONS_NOT_APPLIED` and closes the browser it opened.
 `serviceWorkers: 'allow'` alone is exempt, since it is Playwright's default.
 They have no CLI flags: `initRouter` is a function.
