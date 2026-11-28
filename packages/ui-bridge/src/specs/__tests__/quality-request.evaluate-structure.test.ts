@@ -57,8 +57,13 @@ describe('evaluateRegisteredQuality', () => {
     // The form starts 2010 px down, below the 768 px first screen: page length is not overflow.
     expect(metric('contentOverflow').score).toBe(100);
 
+    // The report's three categories, in their published order: redundant text,
+    // disproportionate space, primary action below the fold.
     const categories = metric('informationDensity').rawData?.categories as Record<string, { hits: Array<{ elementIds: string[] }> }>;
-    expect(categories.redundantText.hits[0].elementIds).toEqual(['sub', 'intro']);
-    expect(categories.primaryActionBelowFold.hits[0].elementIds).toEqual(['form#1', 'go', 'name']);
+    const [text, space, fold] = Object.values(categories);
+    expect(Object.keys(categories)).toHaveLength(3);
+    expect(text.hits[0].elementIds).toEqual(['sub', 'intro']);
+    expect(space.hits).toEqual([]);
+    expect(fold.hits[0].elementIds).toEqual(['form#1', 'go', 'name']);
   });
 });
