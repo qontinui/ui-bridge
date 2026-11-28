@@ -226,6 +226,14 @@ export const INTERNAL_CODE_TO_CANONICAL: Readonly<Record<string, UiBridgeErrorCo
   CDP_DISABLED: 'UB-ACTION-REJECTED',
   UNAUTHORIZED: 'UB-ACTION-REJECTED',
   INTERNAL_ERROR: 'UB-UNKNOWN-ERROR',
+  // A transport-level failure carried as a typed code (see `codeOfThrown`).
+  NETWORK_ERROR: 'UB-NET-ERROR',
+  // Node socket errors, which carry their cause as a string `code`.
+  ECONNREFUSED: 'UB-NET-ERROR',
+  ECONNRESET: 'UB-NET-ERROR',
+  ENOTFOUND: 'UB-NET-ERROR',
+  EAI_AGAIN: 'UB-NET-ERROR',
+  ETIMEDOUT: 'UB-ACTION-TIMEOUT',
 };
 
 export function mapInternalErrorCode(
@@ -234,11 +242,12 @@ export function mapInternalErrorCode(
 ): UiBridgeErrorCode {
   if (internalCode) {
     // Already canonical — pass through.
-    if ((DIAGNOSTICS as Record<string, unknown>)[internalCode]) {
+    if (Object.prototype.hasOwnProperty.call(DIAGNOSTICS, internalCode)) {
       return internalCode as UiBridgeErrorCode;
     }
-    const mapped = INTERNAL_CODE_TO_CANONICAL[internalCode];
-    if (mapped) return mapped;
+    if (Object.prototype.hasOwnProperty.call(INTERNAL_CODE_TO_CANONICAL, internalCode)) {
+      return INTERNAL_CODE_TO_CANONICAL[internalCode];
+    }
     // Generic `*_ERROR` convention → categorise by family below, else unknown.
     if (internalCode.endsWith('_ERROR')) {
       const m = (message ?? '').toLowerCase();
@@ -264,6 +273,37 @@ export function mapInternalErrorCode(
     return 'UB-NET-ERROR';
 
   return 'UB-UNKNOWN-ERROR';
+}
+
+/** The messages browsers and Node give a `fetch` that failed to reach the network. */
+const FETCH_FAILURE_MESSAGE = /^(?:Failed to fetch|fetch failed|NetworkError\b.*)$/;
+
+/**
+ * The canonical code of a thrown value, read from its TYPE and never from its
+ * message.
+ *
+ * A thrown error names its cause with a duck-typed `code` (the
+ * `{ readonly code }` convention the SDK's error classes already use), which
+ * is mapped through {@link mapInternalErrorCode} with NO message argument, so
+ * rewording a message cannot change the code. A value with no code is
+ * `UB-UNKNOWN-ERROR`. A thrown value whose `name` is `TimeoutError` (an
+ * `AbortSignal.timeout` `DOMException`) is `UB-ACTION-TIMEOUT`, by name and not
+ * by message. The one arm that is not a `code`: a fetch failure is a
+ * `TypeError` the platform throws with no code to carry, so it is recognised by
+ * the platform's own exact strings (`Failed to fetch`, `fetch failed`,
+ * `NetworkError when attempting to fetch resource.`) and is `UB-NET-ERROR`.
+ * Any other `TypeError` is not a network failure.
+ *
+ * Shared by both transports' thrown-error arms (the relay client's
+ * `runCommand` and the direct server's control-action handler).
+ */
+export function codeOfThrown(e: unknown): UiBridgeErrorCode {
+  if (e instanceof TypeError && FETCH_FAILURE_MESSAGE.test(e.message)) return 'UB-NET-ERROR';
+  if ((e as { name?: unknown } | null | undefined)?.name === 'TimeoutError') {
+    return 'UB-ACTION-TIMEOUT';
+  }
+  const code = (e as { code?: unknown } | null | undefined)?.code;
+  return typeof code === 'string' && code !== '' ? mapInternalErrorCode(code) : 'UB-UNKNOWN-ERROR';
 }
 
 /**

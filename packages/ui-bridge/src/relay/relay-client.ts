@@ -56,6 +56,7 @@
 import { registerRelayTrafficBase } from './relay-traffic';
 import { createCommandDedupe, dedupeKeyOf } from './command-dedupe';
 import { randomUuid } from './random-uuid';
+import { buildActionFailureDetails, codeOfThrown } from '../diagnostics';
 import { safeJsonStringify } from '../core/wire-json';
 import { STREAM_CAPABILITIES, createStreamLifecycle, type QueuedCommand } from './stream-lifecycle';
 
@@ -451,16 +452,12 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
       return { ok: !(resultObj && resultObj.success === false), result };
     } catch (e: unknown) {
       const errorMessage = e instanceof Error ? e.message : String(e);
-      let errorCode = 'UNKNOWN_ERROR';
-      if (errorMessage.includes('not found')) errorCode = 'ELEMENT_NOT_FOUND';
-      else if (errorMessage.includes('timeout')) errorCode = 'ACTION_TIMEOUT';
-      else if (errorMessage.includes('Unknown command')) errorCode = 'UNKNOWN_COMMAND';
       return {
         ok: false,
         result: {
           success: false,
           error: errorMessage,
-          failureDetails: { errorCode, message: errorMessage, timestamp: Date.now() },
+          failureDetails: buildActionFailureDetails(codeOfThrown(e), errorMessage),
           durationMs: 0,
           timestamp: Date.now(),
         },

@@ -16,6 +16,7 @@ import { diagnosePageHealth, SDK_PAGE_HEALTH_PRODUCER_ID } from './page-health';
 import { createHandlers, type RegistryLike } from './handlers';
 import { CommandRelay } from './command-relay';
 import { createRelayHandlers } from './relay-handlers';
+import { NoLiveAnswer } from './live-answer';
 import type { DiscoveredElement } from '../control';
 
 const T = Date.UTC(2026, 8, 30, 12, 0, 0);
@@ -434,7 +435,7 @@ describe('relay pageHealth handler', () => {
   });
 
   it('a relay that cannot reach the tab (and holds nothing cached) answers unknown{app_unreachable}', async () => {
-    vi.spyOn(relay, 'queueCommand').mockRejectedValue(new Error('no tab'));
+    vi.spyOn(relay, 'queueCommand').mockRejectedValue(new NoLiveAnswer('no tab', 'not_delivered'));
     const res = await createRelayHandlers(relay).pageHealth();
     expect(res.success).toBe(true);
     expect(res.data?.status).toBe('unknown');
@@ -446,7 +447,7 @@ describe('relay pageHealth handler', () => {
     const queue = vi
       .spyOn(relay, 'queueCommand')
       .mockResolvedValueOnce({ timestamp: T } as never)
-      .mockRejectedValueOnce(new Error('no tab'));
+      .mockRejectedValueOnce(new NoLiveAnswer('no tab', 'not_delivered'));
     const handlers = createRelayHandlers(relay);
     const first = await handlers.pageHealth();
     expect(first.data?.status).toBe('unknown');
@@ -467,11 +468,14 @@ describe('relay pageHealth handler', () => {
     const queue = vi
       .spyOn(relay, 'queueCommand')
       .mockResolvedValueOnce({ timestamp: T } as never)
-      .mockRejectedValueOnce(new Error('no tab'));
+      .mockRejectedValueOnce(new NoLiveAnswer('no tab', 'not_delivered'));
     const handlers = createRelayHandlers(relay);
     const snap = await handlers.getControlSnapshot();
-    expect(snap.success).toBe(true);
-    expect(snap._meta?.stale).toBe(true);
+    // Corrected by plan 2026-11-08-ui-bridge-relay-and-exec-mode-follow-ups-from-pr-329
+    // Phase 5 (D5): no live answer over a cache no tab ever filled is a failure,
+    // never an empty success.
+    expect(snap.success).toBe(false);
+    expect(snap.error).toMatch(/malformed control snapshot/);
     const health = await handlers.pageHealth();
     expect(queue).toHaveBeenCalledTimes(2);
     expect(health.data?.status).toBe('unknown');
@@ -494,7 +498,7 @@ describe('relay pageHealth handler', () => {
       .spyOn(relay, 'queueCommand')
       .mockResolvedValueOnce({ timestamp: T } as never)
       .mockResolvedValueOnce({ timestamp: T, elements: [], components: [], workflows: [] } as never)
-      .mockRejectedValueOnce(new Error('no tab'));
+      .mockRejectedValueOnce(new NoLiveAnswer('no tab', 'not_delivered'));
     const handlers = createRelayHandlers(relay);
     const malformed = await handlers.pageHealth();
     expect(malformed.data?.status === 'unknown' && malformed.data.unknown.code).toBe(

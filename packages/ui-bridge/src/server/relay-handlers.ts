@@ -18,10 +18,19 @@ import { buildComponentNotFoundError } from './handlers';
 import { describeInnerFailure } from './inner-failure';
 import {
   EVICTED_NO_ANSWER_CAUSE,
+  MALFORMED_SNAPSHOT_CAUSE,
+  NoLiveAnswer,
+  answerFromSnapshotCache,
   cacheFallbackMeta,
   isNoLiveAnswer,
   isTabReportedFailure,
+  liveRead,
   noLiveAnswerCause,
+  notDeliveredCause,
+  snapshotCacheAnswer,
+  type LiveRead,
+  type RefreshOutcome,
+  type SnapshotCacheScope,
 } from './live-answer';
 import { fitMediaOverrideBudget } from '../control/media-override-budget';
 import {
@@ -275,16 +284,6 @@ function captureRelayAnswer(response: APIResponse<unknown>): ComponentCaptureRes
   return componentCaptureRefusalEnvelope(refusal.reason, refusal.message);
 }
 
-/**
- * Is a relay command's `data` the browser's typed find refusal — an inner
- * `success: false` carrying the `refusal` the canonical filter raised?
- */
-function isRelayFindRefusal(result: unknown): boolean {
-  if (!readRelayInnerFailure(result)) return false;
-  const refusal = (result as Record<string, unknown>).refusal;
-  return typeof refusal === 'object' && refusal !== null && !Array.isArray(refusal);
-}
-
 /** The projection options a request named, quoted for a refusal's message. */
 function projectionOptionsOf(projection: ElementProjectionRequest): string {
   return [
@@ -533,18 +532,36 @@ export function createRelayHandlers(
    */
   interface CallerCache {
     controlSnapshot: ControlSnapshot;
-    semanticSnapshot: SemanticSnapshot | null;
-    /** The last ungrouped console-errors answer, served when the browser disconnects. */
-    consoleErrors: APIResponse<unknown> | null;
+    /**
+     * The last semantic snapshot a tab answered, and when it was read.
+     * Served, marked as the cache's with its age, only when a later read got
+     * no live answer.
+     */
+    semanticSnapshot: { data: SemanticSnapshot; readAt: number } | null;
+    /**
+     * The last ungrouped console-errors DATA a tab answered, and when it was
+     * read. Served, marked as the cache's (`cacheFallbackMeta`) with its age,
+     * only when a later read got no live answer.
+     */
+    consoleErrors: { data: unknown; readAt: number } | null;
+    /**
+     * Has a tab ever filled `controlSnapshot`? Until one has, it is the empty
+     * seed, and a read with no live answer has nothing to answer from (D5).
+     * Set at every write of `controlSnapshot`.
+     */
+    filled: boolean;
     /** When this cache was first known stale, or `null` while it is fresh. */
     staleSince: number | null;
     /**
      * Why the most recent refresh of this cache failed, or `null` after a good
      * one. See the note on refresh failures below.
      */
-    lastRefreshFailure: 'relay_failed' | 'malformed_response' | null;
-    /** The refresh in flight, shared by concurrent reads of this cache. */
-    inflightRefresh: Promise<void> | null;
+    lastRefreshFailure: 'relay_failed' | 'live_failure' | 'malformed_response' | null;
+    /**
+     * The refresh in flight, shared by concurrent reads of this cache: each
+     * of them sees the one outcome it reports.
+     */
+    inflightRefresh: Promise<RefreshOutcome> | null;
   }
 
   /** A caller and the cache its reads may use. */
@@ -574,6 +591,7 @@ export function createRelayHandlers(
       },
       semanticSnapshot: null,
       consoleErrors: null,
+      filled: false,
       staleSince: null,
       lastRefreshFailure: null,
       inflightRefresh: null,
@@ -644,7 +662,10 @@ export function createRelayHandlers(
     if (scope.cache.lastRefreshFailure === 'malformed_response') {
       return error(MALFORMED_SNAPSHOT_MESSAGE);
     }
-    if (scope.cache.lastRefreshFailure === 'relay_failed') {
+    if (
+      scope.cache.lastRefreshFailure === 'relay_failed' ||
+      scope.cache.lastRefreshFailure === 'live_failure'
+    ) {
       return relayErrorResponse<never>(scope.refreshError, ownedBy(scope.userId)?.ownerCheck);
     }
     return undefined;
@@ -762,29 +783,48 @@ export function createRelayHandlers(
   // into. Precedence (highest first): explicit `opts.ownerCheck` →
   // `opts.context.callerUserId` → payload-supplied `__callerUserId`
   // (`scopedCaller`).
-  async function relayCommand<T>(
-    action: string,
-    payload: unknown = {},
-    opts?: {
-      targetTabId?: string;
-      ownerCheck?: { userId: string };
-      context?: HandlerContext;
-    }
-  ): Promise<APIResponse<T>> {
+  type RelayDispatchOpts = {
+    targetTabId?: string;
+    ownerCheck?: { userId: string };
+    context?: HandlerContext;
+  };
+
+  /**
+   * Resolve a relayed command's routing: the payload with its routing fields
+   * stripped, the relay options (pin and owner scope), and the owner scope the
+   * failure envelope is built under. One resolution for `relayCommand` and
+   * `liveRelayRead`, so a read and a write route alike.
+   */
+  function relayDispatch(
+    payload: unknown,
+    opts: RelayDispatchOpts | undefined
+  ): {
+    cleaned: unknown;
+    relayOpts: { targetTabId?: string; ownerCheck?: { userId: string } } | undefined;
+    ownerCheck: { userId: string } | undefined;
+  } {
     const { targetTabId: payloadTabId, callerUserId, cleaned } = extractTabRouting(payload);
     const effectiveTabId = opts?.targetTabId || pinOf(payloadTabId, opts?.context);
     const scopedUserId = scopedCaller(callerUserId, opts?.context);
-    const effectiveOwnerCheck =
-      opts?.ownerCheck ?? (scopedUserId ? { userId: scopedUserId } : undefined);
-    const effectiveOpts =
-      effectiveTabId || effectiveOwnerCheck
+    const ownerCheck = opts?.ownerCheck ?? (scopedUserId ? { userId: scopedUserId } : undefined);
+    const relayOpts =
+      effectiveTabId || ownerCheck
         ? {
             ...(effectiveTabId ? { targetTabId: effectiveTabId } : {}),
-            ...(effectiveOwnerCheck ? { ownerCheck: effectiveOwnerCheck } : {}),
+            ...(ownerCheck ? { ownerCheck } : {}),
           }
         : undefined;
+    return { cleaned, relayOpts, ownerCheck };
+  }
+
+  async function relayCommand<T>(
+    action: string,
+    payload: unknown = {},
+    opts?: RelayDispatchOpts
+  ): Promise<APIResponse<T>> {
+    const { cleaned, relayOpts, ownerCheck } = relayDispatch(payload, opts);
     try {
-      const result = await relay.queueCommand<T>(action, cleaned, effectiveOpts);
+      const result = await relay.queueCommand<T>(action, cleaned, relayOpts);
       // An inner `success: false` is a FAILURE — it must never surface as an
       // outer success. See `readRelayInnerFailure`; the envelope keeps the
       // payload verbatim under `data` (`relayInnerFailureResponse`).
@@ -792,14 +832,52 @@ export function createRelayHandlers(
       if (innerFailure) return relayInnerFailureResponse<T>(innerFailure, result);
       return success(result);
     } catch (e) {
-      return relayErrorResponse<T>(e, effectiveOwnerCheck);
+      return relayErrorResponse<T>(e, ownerCheck);
     }
   }
 
+  /**
+   * A relay READ that asks the tab, answered by the one rule every such read
+   * follows (D5, `liveRead` in `./live-answer`): a live answer is the answer —
+   * a success through `onSuccess`, the tab's inner failure
+   * (`relayInnerFailureResponse`), or a live rejection (`relayErrorResponse`)
+   * — and only NO live answer comes back as `no_live_answer`, for the reader
+   * to answer from its cache (marked) or as a failure
+   * (`noLiveAnswerResponse`). Routes exactly as `relayCommand` does.
+   */
+  async function liveRelayRead<T>(
+    action: string,
+    payload: unknown,
+    opts: RelayDispatchOpts | undefined,
+    onSuccess: (result: unknown) => APIResponse<T> = (result) => success(result as T)
+  ): Promise<LiveRead<T>> {
+    const { cleaned, relayOpts, ownerCheck } = relayDispatch(payload, opts);
+    return liveRead<T>(action, relay.queueCommand(action, cleaned, relayOpts), {
+      resolved: (result) => {
+        const innerFailure = readRelayInnerFailure(result);
+        if (innerFailure) return relayInnerFailureResponse<T>(innerFailure, result);
+        return onSuccess(result);
+      },
+      rejected: (e) => relayErrorResponse<T>(e, ownerCheck),
+    });
+  }
+
+  /**
+   * The failure a read answers when there was no live answer and no cache may
+   * answer for the tab: the relay's own rejection, under the read's owner
+   * scope. Never an empty success (D5).
+   */
+  function noLiveAnswerResponse<T>(
+    live: Extract<LiveRead<unknown>, { kind: 'no_live_answer' }>,
+    ownerCheck: { userId: string } | undefined
+  ): APIResponse<T> {
+    return relayErrorResponse<T>(live.error, ownerCheck);
+  }
+
   // The failure envelope for a relayed command that REJECTED. Shared by
-  // `relayCommand` and the one handler that reads its live answer itself
-  // (`getElement`'s unpinned read), so a rejection answers the same envelope
-  // whichever path relayed it. `ownerCheck` is the dispatch's owner scope.
+  // `relayCommand` and `liveRelayRead`, so a rejection answers the same
+  // envelope whichever path relayed it. `ownerCheck` is the dispatch's owner
+  // scope.
   function relayErrorResponse<T>(
     e: unknown,
     ownerCheck: { userId: string } | undefined
@@ -1018,12 +1096,13 @@ export function createRelayHandlers(
   /*
    * Refresh failures (`CallerCache.lastRefreshFailure`): why the most recent
    * snapshot refresh failed, or `null` after a good one.
-   * A malformed answer and a relay failure both keep the previous snapshot
-   * (neither is ever cached), but they are different facts: the tab ANSWERED
-   * without a usable `elements` array versus the tab could not be reached.
-   * Over an empty cache page health reports them as `input_missing` and
-   * `app_unreachable`; over a populated one both are `stale_input`, and this
-   * field picks the detail text.
+   * A malformed answer, a failure the tab answered (`live_failure`) and no
+   * live answer (`relay_failed`) all keep the previous snapshot (none is ever
+   * cached), but they are different facts: the tab ANSWERED without a usable
+   * `elements` array, the tab answered with a failure, or the tab could not
+   * be reached. Over an empty cache page health reports them as
+   * `input_missing`, `producer_failed` and `app_unreachable`; over a
+   * populated one all are `stale_input`, and this field picks the detail text.
    *
    * Written at BOTH cache-write sites — `refreshSnapshotIfNeeded` and
    * `getControlSnapshot` — in every outcome (good → `null`, malformed, relay
@@ -1062,31 +1141,32 @@ export function createRelayHandlers(
   }
 
   /**
-   * Refresh the cached snapshot if the given Recency requirement is not satisfied.
+   * Refresh the cached snapshot if the given Recency requirement is not
+   * satisfied, and report what happened (`RefreshOutcome`), which the reader
+   * answers through (`answerFromSnapshotCache`).
    *
-   * - `Any` + non-empty → return cache immediately (no relay command)
+   * - `Any` + non-empty → `cached`, no relay command
    * - `Current` → always fetch fresh from the browser
    * - `MaxAge(ms)` → fetch only if cache is older than `ms`
+   *
+   * Concurrent callers share one fetch, and so its one outcome.
    */
   async function refreshSnapshotIfNeeded(
     scope: CallerScope,
     recency: RecencyType,
     isEmpty: boolean
-  ): Promise<void> {
+  ): Promise<RefreshOutcome> {
     const { cache } = scope;
     // Fast path: Recency.Any accepts any cached value as long as it's non-empty
-    if (recency.kind === 'any' && !isEmpty) return;
+    if (recency.kind === 'any' && !isEmpty) return { kind: 'cached' };
 
     const ageMs = Date.now() - cache.controlSnapshot.timestamp;
-    if (!isEmpty && isSatisfiedBy(recency, ageMs)) return;
+    if (!isEmpty && isSatisfiedBy(recency, ageMs)) return { kind: 'cached' };
 
     // Need to fetch — deduplicate concurrent refresh requests
-    if (cache.inflightRefresh) {
-      await cache.inflightRefresh;
-      return;
-    }
+    if (cache.inflightRefresh) return cache.inflightRefresh;
 
-    cache.inflightRefresh = (async () => {
+    cache.inflightRefresh = (async (): Promise<RefreshOutcome> => {
       try {
         // A scoped cache is filled from the caller's own tabs only, and a
         // pinned one from its tab only.
@@ -1102,25 +1182,57 @@ export function createRelayHandlers(
           warnMalformedSnapshot(result);
           cache.lastRefreshFailure = 'malformed_response';
           if (!cache.staleSince) cache.staleSince = Date.now();
-          return;
+          return { kind: 'malformed' };
         }
         cache.controlSnapshot = result;
+        cache.filled = true;
         cache.staleSince = null;
         cache.lastRefreshFailure = null;
+        return { kind: 'refreshed' };
       } catch (e) {
-        // A relay failure: keep the last good snapshot.
-        // Track when we first started returning stale data
-        cache.lastRefreshFailure = 'relay_failed';
+        // Keep the last good snapshot, and track when we first started
+        // returning stale data. A tab that ANSWERED with a failure is a live
+        // answer (`noLiveAnswerCause`): its readers answer that failure.
         scope.refreshError = e;
         if (!cache.staleSince) cache.staleSince = Date.now();
+        const cause = noLiveAnswerCause('getControlSnapshot', e);
+        if (cause === undefined) {
+          cache.lastRefreshFailure = 'live_failure';
+          return { kind: 'live_failure', error: e };
+        }
+        cache.lastRefreshFailure = 'relay_failed';
+        return { kind: 'no_live_answer', cause, error: e };
       }
     })();
 
     try {
-      await cache.inflightRefresh;
+      return await cache.inflightRefresh;
     } finally {
       cache.inflightRefresh = null;
     }
+  }
+
+  /**
+   * The message of the live failure a refresh got, for an answer's detail
+   * text: the outcome's own error (shared by every caller of one in-flight
+   * refresh), else the scope's last refresh rejection.
+   */
+  function refreshFailureMessage(outcome: RefreshOutcome, scope: CallerScope): string {
+    const e = outcome.kind === 'live_failure' ? outcome.error : scope.refreshError;
+    return e instanceof Error ? e.message : String(e);
+  }
+
+  /** A caller's cache as `answerFromSnapshotCache` reads it. */
+  function cacheView(scope: CallerScope): SnapshotCacheScope {
+    return {
+      staleMeta: () => staleMeta(scope),
+      liveFailure: (e) => relayErrorResponse<never>(e, ownedBy(scope.userId)?.ownerCheck),
+      filled: () => scope.cache.filled,
+      unfilled: (outcome) =>
+        outcome.kind === 'malformed'
+          ? error(MALFORMED_SNAPSHOT_MESSAGE)
+          : relayErrorResponse<never>(outcome.error, ownedBy(scope.userId)?.ownerCheck),
+    };
   }
 
   // Backward-compatible wrapper: resolves recency from options or uses default
@@ -1164,55 +1276,73 @@ export function createRelayHandlers(
       const { cleaned, callerUserId, targetTabId } = extractTabRouting(query ?? {});
       const effectiveUserId = scopedCaller(callerUserId, context);
       const pinned = pinOf(targetTabId, context);
-      // Try relaying to the browser first for live render log data
-      try {
-        const result = await relay.queueCommand(
-          'getRenderLog',
-          cleaned,
-          routedTo(effectiveUserId, pinned)
-        );
-        if (
-          result &&
-          typeof result === 'object' &&
-          'entries' in (result as Record<string, unknown>)
-        ) {
-          return success((result as Record<string, unknown>).entries as RenderLogEntry[]);
+      const routing = routedTo(effectiveUserId, pinned);
+      // The tab's own log first, and a live answer is the answer (D5): its
+      // `entries`, or its failure. A live answer WITHOUT `entries` is a
+      // malformed answer, a failure, never an empty list.
+      const live = await liveRelayRead<RenderLogEntry[]>(
+        'getRenderLog',
+        cleaned,
+        routing,
+        (result) => {
+          if (result && typeof result === 'object' && 'entries' in result) {
+            return success((result as { entries: RenderLogEntry[] }).entries);
+          }
+          return error(
+            'The tab answered getRenderLog without an `entries` list, so it reported no render log'
+          );
         }
-      } catch (err) {
-        // Relay failed. The server-side log below names no tab or user, so a
-        // scoped or pinned caller gets the failure rather than entries it
-        // cannot tell are its own tab's.
-        if (effectiveUserId || pinned !== undefined) {
-          return error((err as Error).message, 'COMMAND_FAILED');
-        }
+      );
+      if (live.kind === 'answer') return live.response;
+      // No live answer. The server-side log below names no tab or user, so a
+      // scoped or pinned caller gets the failure rather than entries it cannot
+      // tell are its own tab's.
+      if (effectiveUserId || pinned !== undefined) {
+        return noLiveAnswerResponse(live, routing?.ownerCheck);
       }
-      if (effectiveUserId || pinned !== undefined) return success([]);
       let results = [...renderLogEntries];
       if (query?.type) results = results.filter((e) => e.type === query.type);
       if (query?.since) results = results.filter((e) => e.timestamp >= query.since!);
       if (query?.until) results = results.filter((e) => e.timestamp <= query.until!);
       if (query?.limit) results = results.slice(-query.limit);
-      return success(results);
+      return success(
+        results,
+        cacheFallbackMeta('getRenderLog', live.cause, "the server's render log, which names no tab")
+      );
     },
 
     async clearRenderLog(context) {
       // The server-side log is shared and names no user: a scoped caller
       // clears only its own tabs' logs, below.
-      if (!context?.callerUserId && context?.targetTabId === undefined) renderLogEntries = [];
+      const unscoped = !context?.callerUserId && context?.targetTabId === undefined;
+      if (unscoped) renderLogEntries = [];
       // Also relay the clear to the browser so live render log entries are cleared.
       // Per-user tab scoping (§4.2): when invoked through the HTTP layer
       // with `X-Caller-User-Id`, the adapter passes the userId via `context`
       // so the live-relay leg dispatches only to the caller's tabs.
-      try {
-        await relay.queueCommand(
-          'clearRenderLog',
-          {},
-          routedTo(context?.callerUserId, context?.targetTabId)
-        );
-      } catch {
-        // Browser may be disconnected — server-side cache already cleared above
-      }
-      return success(undefined);
+      const routing = routedTo(context?.callerUserId, context?.targetTabId);
+      // The answer names the clear's EFFECT (D6): a success only when a tab
+      // confirmed it, the tab's failure when it reported one. With no live
+      // answer the browser's log was not established as cleared, so that is a
+      // failure. Every failure's `data.serverLogCleared` says whether the
+      // server-side log (cleared above, for an unscoped caller only) was; a
+      // tab's failure keeps its own verdict, code and payload beside it.
+      const live = await liveRelayRead<undefined>('clearRenderLog', {}, routing, () =>
+        success(undefined)
+      );
+      const failure =
+        live.kind === 'answer'
+          ? live.response
+          : noLiveAnswerResponse<undefined>(live, routing?.ownerCheck);
+      if (failure.success) return failure;
+      const payload: unknown = failure.data;
+      return {
+        ...failure,
+        data:
+          payload !== null && typeof payload === 'object' && !Array.isArray(payload)
+            ? { ...(payload as Record<string, unknown>), serverLogCleared: unscoped }
+            : { serverLogCleared: unscoped },
+      } as unknown as APIResponse<undefined>;
     },
 
     async captureSnapshot(context) {
@@ -1274,14 +1404,14 @@ export function createRelayHandlers(
 
       const scope = scopeOf(scopedCaller(callerUserId, context));
       const recency = resolveRecency(opts);
-      await refreshSnapshotIfNeeded(
+      const outcome = await refreshSnapshotIfNeeded(
         scope,
         recency,
         scope.cache.controlSnapshot.elements.length === 0
       );
-      const _meta = staleMeta(scope);
-
-      return success(applyFilters(scope.cache.controlSnapshot.elements), _meta);
+      return answerFromSnapshotCache(cacheView(scope), outcome, () =>
+        applyFilters(scope.cache.controlSnapshot.elements)
+      );
     },
 
     async rankElements(request, context) {
@@ -1291,7 +1421,7 @@ export function createRelayHandlers(
       // live relay call is needed. Respects the caller's recency hint
       // so a stale snapshot can be refreshed first.
       const recency = resolveRecency(request as { recency?: string } | undefined);
-      await refreshSnapshotIfNeeded(
+      const outcome = await refreshSnapshotIfNeeded(
         scope,
         recency,
         scope.cache.controlSnapshot.elements.length === 0
@@ -1299,12 +1429,13 @@ export function createRelayHandlers(
       const rankRefusal = pinnedRefreshRefusal(scope);
       if (rankRefusal) return rankRefusal;
       const query = (request ?? {}) as ElementQuery;
-      const matches = findElements(
-        scope.cache.controlSnapshot.elements as unknown as Parameters<typeof findElements>[0],
-        query
-      );
-      return success(
-        matches.map((m) => ({
+      // Which snapshot the ranking came from (`staleMeta`), and whether it
+      // was the cache's for want of a live one.
+      return answerFromSnapshotCache(cacheView(scope), outcome, () =>
+        findElements(
+          scope.cache.controlSnapshot.elements as unknown as Parameters<typeof findElements>[0],
+          query
+        ).map((m) => ({
           id: m.id,
           score: m.score,
           reasons: m.reasons,
@@ -1357,32 +1488,30 @@ export function createRelayHandlers(
       // `_meta.fallback` with the cause, the way `relayWithFallback` marks
       // its default.
       const liveOpts = effectiveUserId ? { ownerCheck: { userId: effectiveUserId } } : undefined;
-      let noLiveAnswer: string;
-      try {
-        const result = await relay.queueCommand('getElement', { id }, liveOpts);
-        const innerFailure = readRelayInnerFailure(result);
-        if (innerFailure) {
-          return relayInnerFailureResponse<ControlSnapshot['elements'][0]>(innerFailure, result);
-        }
-        return success(result) as APIResponse<ControlSnapshot['elements'][0]>;
-      } catch (e) {
-        const cause = noLiveAnswerCause('getElement', e);
-        if (cause === undefined) {
-          return relayErrorResponse<ControlSnapshot['elements'][0]>(e, liveOpts?.ownerCheck);
-        }
-        noLiveAnswer = cause;
-      }
+      const live = await liveRelayRead<ControlSnapshot['elements'][0]>(
+        'getElement',
+        { id },
+        liveOpts
+      );
+      if (live.kind === 'answer') return live.response;
       // Every answer from here on is the cache's, the not-found included.
-      const fallbackMeta = cacheFallbackMeta('getElement', noLiveAnswer);
+      const fallbackMeta = cacheFallbackMeta('getElement', live.cause);
       let element = scope.cache.controlSnapshot.elements.find((e) => e.id === id);
       if (!element) {
         // Refresh and retry — element may have been registered after the cached snapshot
         const recency = resolveRecency(options);
-        await refreshSnapshotIfNeeded(
+        const outcome = await refreshSnapshotIfNeeded(
           scope,
           recency.kind === 'any' ? Recency.Current : recency,
           true
         );
+        // A tab that answered the refresh with a failure is that failure, and
+        // a cache no tab ever filled holds no answer (as `find`'s cache arm).
+        const cacheAnswer = snapshotCacheAnswer(cacheView(scope), outcome, {
+          action: 'getElement',
+          cause: live.cause,
+        });
+        if (cacheAnswer.kind === 'failure') return cacheAnswer.response;
         element = scope.cache.controlSnapshot.elements.find((e) => e.id === id);
       }
       if (!element) {
@@ -1455,20 +1584,13 @@ export function createRelayHandlers(
       // (`noLiveAnswerCause`: no connected tab, a timeout, or a tab whose SDK
       // has no `getElementState` case), and its answer is marked
       // `_meta.fallback` with the cause.
-      let noLiveAnswer: string;
-      try {
-        const result = await relay.queueCommand('getElementState', payload, liveOpts);
-        const innerFailure = readRelayInnerFailure(result);
-        if (innerFailure) return relayInnerFailureResponse(innerFailure, result);
-        if (projection && !carriesProjection(result)) {
-          return projectionMissingFromLiveAnswer(`Element state for ${id}`, projection);
-        }
-        return success(result);
-      } catch (e) {
-        const cause = noLiveAnswerCause('getElementState', e);
-        if (cause === undefined) return relayErrorResponse(e, ownerCheck);
-        noLiveAnswer = cause;
-      }
+      const live = await liveRelayRead<unknown>('getElementState', payload, liveOpts, (result) =>
+        projection && !carriesProjection(result)
+          ? projectionMissingFromLiveAnswer(`Element state for ${id}`, projection)
+          : success(result)
+      );
+      if (live.kind === 'answer') return live.response;
+      const noLiveAnswer = live.cause;
       // The cached snapshot is serialized JSON: no node behind it to read a
       // projection from. Refused, typed — never answered with a state that
       // silently lacks the values asked for.
@@ -1587,35 +1709,42 @@ export function createRelayHandlers(
 
       const scope = scopeOf(scopedCaller(callerUserId, context));
       const recency = resolveRecency(cleaned as typeof options);
-      await refreshSnapshotIfNeeded(
+      const outcome = await refreshSnapshotIfNeeded(
         scope,
         recency,
         scope.cache.controlSnapshot.components.length === 0
       );
-      const _meta = staleMeta(scope);
       // F2 (Direction B): wrap the array in `{components: [...]}` so the
       // envelope is `{success: true, data: {components: [...]}}`, matching
       // every other rich endpoint convention and aligning with the runner's
       // direct `/ui-bridge/control/components` route.
-      return success({ components: scope.cache.controlSnapshot.components }, _meta);
+      return answerFromSnapshotCache(cacheView(scope), outcome, () => ({
+        components: scope.cache.controlSnapshot.components,
+      }));
     },
 
     async getComponent(id, options, context) {
       const scope = requestScope(options, context);
-      // Refresh snapshot before looking up — components mount/unmount with page navigation
-      // First try cached, then refresh if not found (avoids unnecessary refresh when cache is fresh)
-      let component = scope.cache.controlSnapshot.components.find((c) => c.id === id);
-      if (!component) {
-        const recency = resolveRecency(options);
-        await refreshSnapshotIfNeeded(
-          scope,
-          recency.kind === 'any' ? Recency.Current : recency,
-          true
-        );
-        const componentRefusal = pinnedRefreshRefusal(scope);
-        if (componentRefusal) return componentRefusal;
-        component = scope.cache.controlSnapshot.components.find((c) => c.id === id);
+      // Refresh under the caller's recency BEFORE the lookup, as
+      // `getComponents` does: components mount and unmount with page
+      // navigation, so a cached HIT can be as stale as a miss. A miss the
+      // cache satisfied without a fetch is retried live (a component may have
+      // mounted after the cached snapshot).
+      const recency = resolveRecency(options);
+      const lookup = () => scope.cache.controlSnapshot.components.find((c) => c.id === id);
+      let outcome = await refreshSnapshotIfNeeded(
+        scope,
+        recency,
+        scope.cache.controlSnapshot.components.length === 0
+      );
+      if (!lookup() && outcome.kind === 'cached') {
+        outcome = await refreshSnapshotIfNeeded(scope, Recency.Current, true);
       }
+      const componentRefusal = pinnedRefreshRefusal(scope);
+      if (componentRefusal) return componentRefusal;
+      const answer = snapshotCacheAnswer(cacheView(scope), outcome);
+      if (answer.kind === 'failure') return answer.response;
+      const component = lookup();
       if (!component) {
         const available = scope.cache.controlSnapshot.components.map((c) => c.id);
         // The cached snapshot may carry Phase-1.2 registration metadata
@@ -1631,13 +1760,18 @@ export function createRelayHandlers(
           enriched.registration?.byRoute,
           enriched.route
         );
-        return error(message, 'NOT_FOUND', [
-          'Use getControlSnapshot() to see all available components',
-          'Navigate to the page containing this component first',
-          'Components mount/unmount with page navigation — ensure the correct page is active',
-        ]);
+        return {
+          ...error(message, 'NOT_FOUND', [
+            'Use getControlSnapshot() to see all available components',
+            'Navigate to the page containing this component first',
+            'Components mount/unmount with page navigation — ensure the correct page is active',
+          ]),
+          // The not-found is the snapshot's too: which one, and whether it
+          // was the cache's for want of a live one.
+          _meta: answer.meta,
+        };
       }
-      return success(component);
+      return success(component, answer.meta);
     },
 
     async getComponentState(id, context) {
@@ -1722,39 +1856,50 @@ export function createRelayHandlers(
         if (isProjectionRequestError(err)) return error(`find ${err.message}`, err.code);
         throw err;
       }
-      const result = await relayCommand<FindResponse>('find', payload, {
-        targetTabId: targetTabId || undefined,
-        context,
-      });
-      if (result.success) {
-        // A live answer whose rows lack the projection asked for came from a
-        // tab whose SDK predates it — see `projectionMissingFromLiveAnswer`.
-        if (projection && anyRowLacksProjection(result.data)) {
-          return projectionMissingFromLiveAnswer('find', projection);
-        }
-        return result;
-      }
-      // The browser ANSWERED with a typed refusal (a request the canonical
-      // filter will not honour, carrying `refusal`): it would refuse it over
-      // the cache too, so that is the answer, and falling back would replace a
-      // precise failure with a guess. Any OTHER browser-side failure (a
-      // handler that threw, an unready page) still falls back to the cache,
-      // as every failure did before the canonical filter.
-      if (isRelayFindRefusal(result.data)) return result;
+      // The caller, as `relayCommand` resolves it: the verified context first.
+      const findCaller = scopedCaller(extractTabRouting(payload).callerUserId, context);
+      // A live answer is the answer (D5): the tab's find, its typed refusal
+      // (a request the canonical filter will not honour, carrying `refusal`),
+      // and any other failure it reported (a handler that threw, an unready
+      // page) alike. Only NO live answer reaches the cache below.
+      const live = await liveRelayRead<FindResponse>(
+        'find',
+        payload,
+        { targetTabId: targetTabId || undefined, context },
+        (result) =>
+          // A live answer whose rows lack the projection asked for came from a
+          // tab whose SDK predates it — see `projectionMissingFromLiveAnswer`.
+          projection && anyRowLacksProjection(result)
+            ? projectionMissingFromLiveAnswer('find', projection)
+            : success(result as FindResponse)
+      );
+      if (live.kind === 'answer') return live.response;
+      const noLiveAnswer = noLiveAnswerResponse<FindResponse>(
+        live,
+        findCaller ? { userId: findCaller } : undefined
+      );
       // P0 (plan 2026-06-12 item 1): a PINNED read must NEVER be answered from
       // the caller's snapshot cache — that cache is last-writer-wins across
       // ALL the caller's tabs, so serving it would silently return another
       // tab's elements as `success: true`. Propagate the routing/timeout
       // error envelope (TAB_NOT_FOUND / TAB_STALE / TIMEOUT / ...) instead.
-      if (pinnedTabId !== undefined) return result;
-      // Unpinned relay failure — fall back to filtering cached snapshot elements
-      const scope = scopeOf(scopedCaller(extractTabRouting(payload).callerUserId, context));
+      if (pinnedTabId !== undefined) return noLiveAnswer;
+      // Unpinned, no live answer — fall back to filtering cached snapshot elements
+      const scope = scopeOf(findCaller);
       const recency = parseRecency(recencyParam);
-      await refreshSnapshotIfNeeded(
+      const outcome = await refreshSnapshotIfNeeded(
         scope,
         recency,
         scope.cache.controlSnapshot.elements.length === 0
       );
+      // The answer is the cache's because `find` got no live answer: it is
+      // marked with that cause, whatever the refresh did; a tab that answered
+      // the refresh with a failure is that failure.
+      const cacheAnswer = snapshotCacheAnswer(cacheView(scope), outcome, {
+        action: 'find',
+        cause: live.cause,
+      });
+      if (cacheAnswer.kind === 'failure') return cacheAnswer.response;
       let filtered: Array<Record<string, unknown>>;
       let unevaluated: FindUnevaluated[] | undefined;
       try {
@@ -1767,14 +1912,10 @@ export function createRelayHandlers(
         // cache raises (a projection, `root` or `selector` over rows with no
         // DOM node, …) names that cause too, as `getElementState`'s does.
         if (isFindRefusalError(err)) {
-          return error(
-            `${err.message} (no live answer: ${result.error ?? 'the live find failed'})`,
-            err.code
-          );
+          return error(`${err.message} (no live answer: ${noLiveAnswer.error})`, err.code);
         }
         throw err;
       }
-      const _meta = staleMeta(scope);
       return success(
         {
           elements: filtered as unknown as FindResponse['elements'],
@@ -1797,7 +1938,7 @@ export function createRelayHandlers(
           // `FindResponse.unevaluated`.
           ...(unevaluated ? { unevaluated } : {}),
         },
-        _meta
+        cacheAnswer.meta
       ) as APIResponse<FindResponse>;
     },
 
@@ -1937,6 +2078,16 @@ export function createRelayHandlers(
       const hasListeners = relay.hasCommandListeners() || relay.getWebSocketClientCount() > 0;
 
       if (!hasListeners) {
+        // No browser connected, and no tab ever filled the cache: no answer.
+        if (!scope.cache.filled) {
+          return relayErrorResponse(
+            new NoLiveAnswer(
+              'SDK_DISCONNECTED: No browser connected to receive getControlSnapshot command.',
+              'not_delivered'
+            ),
+            ownedBy(effectiveUserId)?.ownerCheck
+          );
+        }
         // No browser connected — return cached snapshot with fallback screenshot
         const snapshot = { ...scope.cache.controlSnapshot, timestamp: Date.now() };
         if (screenshotFallbackUrl) {
@@ -1945,8 +2096,11 @@ export function createRelayHandlers(
             snapshot.fallbackScreenshot = fallback;
           }
         }
-        const _meta = staleMeta(scope);
-        return success(snapshot, _meta);
+        // The cache's answer for want of a live one: nothing could carry the read.
+        return success(snapshot, {
+          ...staleMeta(scope),
+          ...cacheFallbackMeta('getControlSnapshot', notDeliveredCause()),
+        });
       }
 
       // MaxAge path: skip relay command if cache is fresh enough
@@ -1958,54 +2112,77 @@ export function createRelayHandlers(
         }
       }
 
-      // `timeout` unless the tab answered but not with a snapshot.
-      let fallbackReason: FallbackScreenshot['reason'] = 'timeout';
+      // The cache answers only when there was no live snapshot: nothing
+      // answered (`noLiveAnswerCause`), or the tab answered a malformed one
+      // (never cached, the 2026-10-01 design). Either way it is marked
+      // `_meta.fallback` with the cause and carries the fallback screenshot.
+      // A tab that answered with a FAILURE is that failure.
+      let fallbackReason: FallbackScreenshot['reason'];
+      let cause: string;
+      let noAnswerError: unknown;
       try {
         const result = await relay.queueCommand<unknown>(
           'getControlSnapshot',
           {},
           ownedBy(effectiveUserId)
         );
-        // A malformed answer is handled like a relay failure (the catch below):
-        // never cached, previous good snapshot returned and marked stale.
-        if (!isControlSnapshot(result)) {
-          warnMalformedSnapshot(result);
-          fallbackReason = 'malformed_response';
-          throw new Error('malformed control snapshot');
-        }
-        scope.cache.controlSnapshot = result;
-        scope.cache.staleSince = null;
-        scope.cache.lastRefreshFailure = null;
+        if (isControlSnapshot(result)) {
+          scope.cache.controlSnapshot = result;
+          scope.cache.filled = true;
+          scope.cache.staleSince = null;
+          scope.cache.lastRefreshFailure = null;
 
-        // If the snapshot came back empty (no elements, no components), the app
-        // may be in an error state — attach a fallback screenshot for context
-        const isEmpty = result.elements.length === 0 && result.components.length === 0;
-        if (isEmpty && screenshotFallbackUrl) {
-          const fallback = await fetchFallbackScreenshot(screenshotFallbackUrl, 'empty_response');
-          if (fallback) {
-            return success(
-              { ...result, fallbackScreenshot: fallback },
-              { stale: false, cacheAgeMs: 0 }
-            );
+          // If the snapshot came back empty (no elements, no components), the app
+          // may be in an error state — attach a fallback screenshot for context
+          const isEmpty = result.elements.length === 0 && result.components.length === 0;
+          if (isEmpty && screenshotFallbackUrl) {
+            const fallback = await fetchFallbackScreenshot(screenshotFallbackUrl, 'empty_response');
+            if (fallback) {
+              return success(
+                { ...result, fallbackScreenshot: fallback },
+                { stale: false, cacheAgeMs: 0 }
+              );
+            }
           }
-        }
 
-        return success(result, { stale: false, cacheAgeMs: 0 });
-      } catch (_e) {
-        // Command timed out or failed — return cached snapshot with fallback screenshot
-        scope.cache.lastRefreshFailure =
-          fallbackReason === 'malformed_response' ? 'malformed_response' : 'relay_failed';
+          return success(result, { stale: false, cacheAgeMs: 0 });
+        }
+        // A malformed answer: never cached, previous good snapshot returned
+        // and marked stale.
+        warnMalformedSnapshot(result);
+        scope.cache.lastRefreshFailure = 'malformed_response';
+        fallbackReason = 'malformed_response';
+        cause = MALFORMED_SNAPSHOT_CAUSE;
+      } catch (e) {
+        const noAnswer = noLiveAnswerCause('getControlSnapshot', e);
         if (!scope.cache.staleSince) scope.cache.staleSince = Date.now();
-        const snapshot = { ...scope.cache.controlSnapshot, timestamp: Date.now() };
-        if (screenshotFallbackUrl) {
-          const fallback = await fetchFallbackScreenshot(screenshotFallbackUrl, fallbackReason);
-          if (fallback) {
-            snapshot.fallbackScreenshot = fallback;
-          }
+        if (noAnswer === undefined) {
+          scope.cache.lastRefreshFailure = 'live_failure';
+          return relayErrorResponse(e, ownedBy(effectiveUserId)?.ownerCheck);
         }
-        const _meta = staleMeta(scope);
-        return success(snapshot, _meta);
+        scope.cache.lastRefreshFailure = 'relay_failed';
+        fallbackReason = 'timeout';
+        cause = noAnswer;
+        noAnswerError = e;
       }
+      if (!scope.cache.staleSince) scope.cache.staleSince = Date.now();
+      // No tab ever filled the cache: there is nothing to answer from.
+      if (!scope.cache.filled) {
+        return fallbackReason === 'malformed_response'
+          ? error(MALFORMED_SNAPSHOT_MESSAGE)
+          : relayErrorResponse(noAnswerError, ownedBy(effectiveUserId)?.ownerCheck);
+      }
+      const snapshot = { ...scope.cache.controlSnapshot, timestamp: Date.now() };
+      if (screenshotFallbackUrl) {
+        const fallback = await fetchFallbackScreenshot(screenshotFallbackUrl, fallbackReason);
+        if (fallback) {
+          snapshot.fallbackScreenshot = fallback;
+        }
+      }
+      return success(snapshot, {
+        ...staleMeta(scope),
+        ...cacheFallbackMeta('getControlSnapshot', cause),
+      });
     },
 
     // ========================================================================
@@ -2015,15 +2192,18 @@ export function createRelayHandlers(
     async getWorkflows(options, context) {
       const scope = requestScope(options, context);
       const recency = resolveRecency(options);
-      await refreshSnapshotIfNeeded(
+      const outcome = await refreshSnapshotIfNeeded(
         scope,
         recency,
         scope.cache.controlSnapshot.workflows.length === 0
       );
       const workflowsRefusal = pinnedRefreshRefusal(scope);
       if (workflowsRefusal) return workflowsRefusal;
-      const _meta = staleMeta(scope);
-      return success(scope.cache.controlSnapshot.workflows, _meta);
+      return answerFromSnapshotCache(
+        cacheView(scope),
+        outcome,
+        () => scope.cache.controlSnapshot.workflows
+      );
     },
 
     async runWorkflow(id, request, context) {
@@ -2088,32 +2268,36 @@ export function createRelayHandlers(
       const isGrouped = params?.group === true;
       const { cleaned } = extractTabRouting(params ?? {});
       const scope = requestScope(params, context);
-      try {
-        const result = await relay.queueCommand<ConsoleErrorsResult | GroupedResult>(
-          'getConsoleErrors',
-          cleaned,
-          routedTo(scope.userId, scope.tabId)
-        );
-        // Cache successful result for fallback when browser disconnects (ungrouped only)
-        if (!isGrouped && result && typeof result === 'object') {
-          scope.cache.consoleErrors = success(result as ConsoleErrorsResult);
+      const routing = routedTo(scope.userId, scope.tabId);
+      // A live answer is the answer (D5): the tab's errors, or its failure.
+      // A destroyed relay answers so, through `relayErrorResponse`.
+      const live = await liveRelayRead<ConsoleErrorsResult | GroupedResult>(
+        'getConsoleErrors',
+        cleaned,
+        routing,
+        (result) => {
+          // Keep the DATA and its read time (ungrouped only), for a later read
+          // that gets no live answer.
+          if (!isGrouped && result && typeof result === 'object') {
+            scope.cache.consoleErrors = { data: result, readAt: Date.now() };
+          }
+          return success(result as ConsoleErrorsResult | GroupedResult);
         }
-        return success(result as ConsoleErrorsResult | GroupedResult);
-      } catch (e) {
-        // A destroyed relay answers so, not "no errors" from a dying server.
-        if (isRelayDestroyed(e)) return relayDestroyedResponse((e as Error).message);
-        // A pinned tab that did not answer is its error, never "no errors".
-        if (scope.tabId !== undefined) {
-          return relayErrorResponse(e, ownedBy(scope.userId)?.ownerCheck);
-        }
-        // Relay failed — return cached data if available (ungrouped only)
-        if (!isGrouped && scope.cache.consoleErrors)
-          return scope.cache.consoleErrors as APIResponse<ConsoleErrorsResult>;
-        if (isGrouped) {
-          return success({ groups: [], totalErrors: 0, totalGroups: 0 } as GroupedResult);
-        }
-        return success({ errors: [], count: 0 } as ConsoleErrorsResult);
+      );
+      if (live.kind === 'answer') return live.response;
+      // No live answer: the last ungrouped read, marked as the cache's with its
+      // age. A pinned scope's cache is its own and empty, so a pinned tab that
+      // did not answer is its error. With nothing cached the answer is the
+      // failure — never `{ errors: [] }`, which reads as "no errors" from a
+      // relay that could not look.
+      const cached = scope.cache.consoleErrors;
+      if (!isGrouped && cached) {
+        return success(cached.data as ConsoleErrorsResult, {
+          ...cacheFallbackMeta('getConsoleErrors', live.cause, 'the last console-errors read'),
+          cacheAgeMs: Date.now() - cached.readAt,
+        });
       }
+      return noLiveAnswerResponse(live, routing?.ownerCheck);
     },
 
     async clearConsoleErrors(context) {
@@ -2163,22 +2347,27 @@ export function createRelayHandlers(
     async getSemanticSnapshot(options, context) {
       const { cleaned } = extractTabRouting(options ?? {});
       const scope = requestScope(options, context);
-      try {
-        const result = await relay.queueCommand<SemanticSnapshot>(
-          'getSemanticSnapshot',
-          cleaned,
-          routedTo(scope.userId, scope.tabId)
-        );
-        scope.cache.semanticSnapshot = result;
-        return success(result);
-      } catch (e) {
-        if (isRelayDestroyed(e)) return relayDestroyedResponse((e as Error).message);
-        if (scope.tabId !== undefined) {
-          return relayErrorResponse(e, ownedBy(scope.userId)?.ownerCheck);
+      const routing = routedTo(scope.userId, scope.tabId);
+      // A live answer is the answer (D5); the cache answers only when there
+      // was none, marked as the cache's. A pinned scope's cache is empty.
+      const live = await liveRelayRead<SemanticSnapshot>(
+        'getSemanticSnapshot',
+        cleaned,
+        routing,
+        (result) => {
+          scope.cache.semanticSnapshot = { data: result as SemanticSnapshot, readAt: Date.now() };
+          return success(result as SemanticSnapshot);
         }
-        if (scope.cache.semanticSnapshot) return success(scope.cache.semanticSnapshot);
-        return error((e as Error).message, 'COMMAND_FAILED');
+      );
+      if (live.kind === 'answer') return live.response;
+      const cachedSemantic = scope.cache.semanticSnapshot;
+      if (cachedSemantic) {
+        return success(cachedSemantic.data, {
+          ...cacheFallbackMeta('getSemanticSnapshot', live.cause, 'the last semantic snapshot'),
+          cacheAgeMs: Date.now() - cachedSemantic.readAt,
+        });
       }
+      return noLiveAnswerResponse(live, routing?.ownerCheck);
     },
 
     async getSemanticDiff(query, context) {
@@ -2775,13 +2964,16 @@ export function createRelayHandlers(
           return error(MALFORMED_SNAPSHOT_MESSAGE);
         }
         scope.cache.controlSnapshot = live.data;
+        scope.cache.filled = true;
         try {
           const errors = await relay.queueCommand<unknown>(
             'getConsoleErrors',
             {},
             routedTo(scope.userId, scope.tabId)
           );
-          if (errors && typeof errors === 'object') scope.cache.consoleErrors = success(errors);
+          if (errors && typeof errors === 'object') {
+            scope.cache.consoleErrors = { data: errors, readAt: Date.now() };
+          }
         } catch {
           // No answer: `hasErrors` stays false (its type has no unknown), and
           // the envelope says it was not measured — see `pinnedErrorsUnread`.
@@ -2811,16 +3003,15 @@ export function createRelayHandlers(
       // NOT trigger a fresh round-trip here — state-summary's contract is
       // "synthesize from what we already have", not "make extra calls".
       let hasErrors = false;
-      const cache = scope.cache.consoleErrors as APIResponse<{
-        count?: number;
-        errors?: unknown[];
-      }> | null;
-      if (cache?.success && cache.data) {
-        const count = cache.data.count;
+      const cached = scope.cache.consoleErrors?.data as
+        | { count?: number; errors?: unknown[] }
+        | undefined;
+      if (cached) {
+        const count = cached.count;
         if (typeof count === 'number') {
           hasErrors = count > 0;
-        } else if (Array.isArray(cache.data.errors)) {
-          hasErrors = cache.data.errors.length > 0;
+        } else if (Array.isArray(cached.errors)) {
+          hasErrors = cached.errors.length > 0;
         }
       }
 
@@ -2922,7 +3113,7 @@ export function createRelayHandlers(
         // same page. With the refresh, the same first call reports 25 and the
         // expected findings.
         const recency = resolveRecency(params);
-        await refreshSnapshotIfNeeded(
+        const outcome = await refreshSnapshotIfNeeded(
           scope,
           recency,
           scope.cache.controlSnapshot.elements.length === 0
@@ -2943,7 +3134,13 @@ export function createRelayHandlers(
           };
         }>;
 
-        return success(
+        // Report WHICH snapshot the finding came from. This endpoint's whole
+        // contract is that an UNKNOWN must not read as a PASS; a `clear`
+        // derived from a snapshot the relay could not refresh is exactly
+        // that trap, so the answer carries `stale` and, when the cache
+        // answered for want of a live snapshot, the fallback marker. A tab
+        // that answered the refresh with a failure is that failure.
+        return answerFromSnapshotCache(cacheView(scope), outcome, () =>
           buildVisibilityReport({
             elements: elements.map((el) => ({
               id: el.id,
@@ -2959,12 +3156,7 @@ export function createRelayHandlers(
             modalContext: snapshot?.modalStack,
             minRatio: params?.minRatio,
             includeExpected: params?.includeExpected,
-          }),
-          // Report WHICH snapshot the finding came from. This endpoint's whole
-          // contract is that an UNKNOWN must not read as a PASS; a `clear`
-          // derived from a snapshot the relay could not refresh is exactly
-          // that trap, and `stale` is the only thing that distinguishes it.
-          staleMeta(scope)
+          })
         );
       } catch (err) {
         return error((err as Error).message, 'VISIBILITY_ERROR');
@@ -2993,7 +3185,7 @@ export function createRelayHandlers(
         // A cache already marked stale (a DOM change event, or another call's
         // failed fetch) is refreshed too, so `stale_input` below means the
         // refresh this call made (or awaited) failed, not an older attempt's.
-        await refreshSnapshotIfNeeded(
+        const outcome = await refreshSnapshotIfNeeded(
           scope,
           resolveRecency(undefined),
           !Array.isArray(cachedElements) ||
@@ -3013,16 +3205,24 @@ export function createRelayHandlers(
           Array.isArray(raw.elements) &&
           raw.elements.length === 0
         ) {
+          const failure = scope.cache.lastRefreshFailure;
           return success(
-            scope.cache.lastRefreshFailure === 'malformed_response'
+            failure === 'malformed_response'
               ? pageHealthUnknown(
                   'input_missing',
                   `${MALFORMED_SNAPSHOT_MESSAGE}; the relay refused it and holds none cached`
                 )
-              : pageHealthUnknown(
-                  'app_unreachable',
-                  'the relay could not fetch a snapshot from the browser tab and holds none cached'
-                ),
+              : failure === 'live_failure'
+                ? // The tab ANSWERED, with a failure: it was reached, so this is
+                  // not `app_unreachable`; what produces the snapshot failed.
+                  pageHealthUnknown(
+                    'producer_failed',
+                    `the browser tab answered the snapshot read with a failure (${refreshFailureMessage(outcome, scope)}) and the relay holds none cached`
+                  )
+                : pageHealthUnknown(
+                    'app_unreachable',
+                    'the relay could not fetch a snapshot from the browser tab and holds none cached'
+                  ),
             staleMeta(scope)
           );
         }
@@ -3034,7 +3234,9 @@ export function createRelayHandlers(
               'stale_input',
               scope.cache.lastRefreshFailure === 'malformed_response'
                 ? `${MALFORMED_SNAPSHOT_MESSAGE}; the relay refused it, and the cached snapshot is stale`
-                : 'the relay could not refresh the snapshot from the browser tab; the cached one is stale',
+                : scope.cache.lastRefreshFailure === 'live_failure'
+                  ? `the browser tab answered the snapshot read with a failure (${refreshFailureMessage(outcome, scope)}); the cached snapshot is stale`
+                  : 'the relay could not refresh the snapshot from the browser tab; the cached one is stale',
               { observedAt: typeof raw.timestamp === 'number' ? raw.timestamp : null }
             ),
             staleMeta(scope)

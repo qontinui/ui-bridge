@@ -81,6 +81,7 @@ import {
   forcePseudoState,
   releaseHeldAfterDispatch,
   releaseForcedPseudoState,
+  revealSourceOf,
   type ForcedHoverActionReport,
   type ForcedPseudoReleaseReport,
 } from '../control/forced-hover';
@@ -233,6 +234,21 @@ import { VisionAssertRequestError } from '../vision/assertion-request';
 // ============================================================================
 // Types
 // ============================================================================
+
+/**
+ * A dispatcher refusal that names its cause with a `code`, so the relay's
+ * thrown-error arm (`codeOfThrown`) classifies it by type and never by
+ * wording. The message is the one a caller reads; reword it freely.
+ */
+class CommandDispatchError extends Error {
+  constructor(
+    message: string,
+    readonly code: 'UNSUPPORTED_ACTION' | 'ELEMENT_NOT_FOUND' | 'VALIDATION_ERROR'
+  ) {
+    super(message);
+    this.name = 'CommandDispatchError';
+  }
+}
 
 /** Registry interface for state management access */
 export interface RegistryAccess {
@@ -1803,7 +1819,7 @@ export async function executeCommand(
         // its read answers the projection off it (core/page-sentinel.ts).
         const page = resolvePageSentinel(payload.id, 'read');
         if (page) return pageSentinelState(payload.id as string, page, projection);
-        throw new Error(`Element ${payload.id} not found`);
+        throw new CommandDispatchError(`Element ${payload.id} not found`, 'ELEMENT_NOT_FOUND');
       }
       const state = el.getState();
       // Spread the full canonical `ElementState` so callers see every field
@@ -2123,7 +2139,9 @@ export async function executeCommand(
       // A missing or non-string verb never reaches this point: the payload
       // grammar at the top of this case refuses it as INVALID_REQUEST, so
       // `request.action` is a non-empty string from here on.
-      const revealSource = { getAllElements: () => registry.getAllElements() };
+      // The registry and its discovery rescan, shared by both relay arms
+      // (`hover`, `hoverClick`), exactly as the executor's `revealSource()`.
+      const revealSource = revealSourceOf(registry);
       try {
         // Custom-action precedence — a registered handler wins over a
         // same-named built-in. This is the SAME defect, and the same fix, as
@@ -3667,7 +3685,7 @@ export async function executeCommand(
         // the same false success a selector-only predicate produced before
         // its arm existed. Refuse it rather than answer with an arbitrary
         // element.
-        throw new Error(EMPTY_WAIT_PREDICATE_MESSAGE);
+        throw new CommandDispatchError(EMPTY_WAIT_PREDICATE_MESSAGE, 'VALIDATION_ERROR');
       }
       const requirement = req.requirement ?? 'registered';
       const pollMs = Math.min(
@@ -6316,6 +6334,6 @@ export async function executeCommand(
     // ======================================================================
 
     default:
-      throw new Error(`Unknown command action: ${action}`);
+      throw new CommandDispatchError(`Unknown command action: ${action}`, 'UNSUPPORTED_ACTION');
   }
 }

@@ -54,10 +54,17 @@ vi.mock('playwright', () => ({
 // vitest hoists vi.mock above this import, so the launcher binds the fake.
 import { launchHeadlessTab } from './launcher.js';
 
-/** A fake Playwright `ConsoleMessage`. */
+/** A fake Playwright `ConsoleMessage` with no source location. */
 const consoleMessage = (type: string, text: string) => ({
   type: () => type,
   text: () => text,
+});
+
+/** A fake Playwright `ConsoleMessage` whose `location()` names a URL. */
+const locatedConsoleMessage = (type: string, text: string, url: string) => ({
+  type: () => type,
+  text: () => text,
+  location: () => ({ url, line: 0, column: 0, lineNumber: 0, columnNumber: 0 }),
 });
 
 describe('launchHeadlessTab · console forwarding goes to stderr, never stdout', () => {
@@ -106,6 +113,59 @@ describe('launchHeadlessTab · console forwarding goes to stderr, never stdout',
 
     expect(written(stdout)).toEqual([]);
     expect(written(stderr)).toEqual(['[browser.pageerror] boom\n']);
+  });
+
+  it('a failed resource load names the resource URL from msg.location()', async () => {
+    const { page, emit } = makeFakePage();
+    fake.page = page;
+
+    await launchHeadlessTab({ url: 'http://app.local/', headless: true });
+    const failed = 'https://relay.example/ui-bridge/relay/poll?tab=abc';
+    emit(
+      'console',
+      locatedConsoleMessage(
+        'error',
+        'Failed to load resource: the server responded with a status of 429 (Too Many Requests)',
+        failed
+      )
+    );
+
+    expect(written(stdout)).toEqual([]);
+    expect(written(stderr)).toEqual([
+      `[browser.error] Failed to load resource: the server responded with a status of 429 (Too Many Requests) @ ${failed}\n`,
+    ]);
+  });
+
+  it('an ordinary located console.log is attributed to its script too', async () => {
+    const { page, emit } = makeFakePage();
+    fake.page = page;
+
+    await launchHeadlessTab({ url: 'http://app.local/', headless: true });
+    emit('console', locatedConsoleMessage('log', 'ready', 'http://app.local/main.js'));
+
+    expect(written(stderr)).toEqual(['[browser.log] ready @ http://app.local/main.js' + String.fromCharCode(10)]);
+  });
+
+  it('an empty, absent or throwing location adds no suffix', async () => {
+    const { page, emit } = makeFakePage();
+    fake.page = page;
+
+    await launchHeadlessTab({ url: 'http://app.local/', headless: true });
+    emit('console', locatedConsoleMessage('log', 'empty', ''));
+    emit('console', { type: () => 'log', text: () => 'absent', location: () => undefined });
+    emit('console', {
+      type: () => 'log',
+      text: () => 'throws',
+      location: () => {
+        throw new Error('no location');
+      },
+    });
+
+    expect(written(stderr)).toEqual([
+      '[browser.log] empty\n',
+      '[browser.log] absent\n',
+      '[browser.log] throws\n',
+    ]);
   });
 
   it('forwardConsole: false registers no console listener at all', async () => {

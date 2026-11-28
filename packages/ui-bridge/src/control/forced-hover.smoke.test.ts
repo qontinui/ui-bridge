@@ -13,6 +13,13 @@
  * `action-executor.ts` and `react/commandHandlers.ts` import) and injected
  * into each page. The Tailwind fixture CSS is real Tailwind v4.2.4 output in
  * both shapes it ships: see `__fixtures__/tailwind-v4-hover.ts`.
+ *
+ * Phase 5a: the bundle also carries real React, `UIBridgeProvider` and
+ * `AutoRegisterProvider`, so the last block proves the rescan handshake end to
+ * end — a control hidden by its OWN `opacity-0`, which discovery never
+ * registers at rest, is registered by the hover, reported as `appeared`, and
+ * clickable by its new id. jsdom has no `:hover` and no transitions, so there is
+ * no jsdom stand-in for this block.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -145,24 +152,59 @@ beforeAll(async () => {
   const out = await build({
     stdin: {
       contents: `
+        import { createRoot } from 'react-dom/client';
+        import { UIBridgeProvider } from './react/UIBridgeProvider';
+        import { AutoRegisterProvider } from './react/AutoRegisterProvider';
         export * from './control/forced-hover';
-        export { UIBridgeRegistry } from './core/registry';
+        export { UIBridgeRegistry, getGlobalRegistry } from './core/registry';
         export { DefaultActionExecutor } from './control/action-executor';
+        export { getElementState } from './core/element-state';
         export const registryOf = () => ({
           getAllElements: () => Array.from(document.querySelectorAll('[data-id]')).map((element) => ({
             id: element.getAttribute('data-id'),
             element,
           })),
         });
+
+        let scheduleClicks = 0;
+        export const scheduleClickCount = () => scheduleClicks;
+
+        // A queue row as qontinui-web's SortableQueueItem draws it: a visible
+        // drag handle, and an own-opacity-0 group-hover:opacity-100 button.
+        function QueueRow({ transition }) {
+          const reveal = 'opacity-0 group-hover:opacity-100' +
+            (transition ? ' transition-opacity duration-150' : '');
+          return (
+            <div className="group" id="row">
+              <button type="button" id="handle" aria-label="Drag to reorder">drag</button>
+              <span>Nightly build</span>
+              <button type="button" id="schedule" aria-label="Schedule" className={reveal}
+                onClick={() => { scheduleClicks += 1; }}>schedule</button>
+            </div>
+          );
+        }
+
+        /** Mount the row under the real providers: discovery is useAutoRegister's own. */
+        export function mountQueueRow(container, transition) {
+          scheduleClicks = 0;
+          createRoot(container).render(
+            <UIBridgeProvider>
+              <AutoRegisterProvider enabled>
+                <QueueRow transition={transition} />
+              </AutoRegisterProvider>
+            </UIBridgeProvider>
+          );
+        }
       `,
       resolveDir: SRC,
-      loader: 'ts',
+      loader: 'tsx',
     },
     bundle: true,
     format: 'iife',
     globalName: 'FH',
     platform: 'browser',
     target: 'chrome120',
+    jsx: 'automatic',
     write: false,
     logLevel: 'silent',
     define: { __SDK_VERSION__: '"smoke"', 'process.env.NODE_ENV': '"test"' },
@@ -621,7 +663,10 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('forcePseudoState (real Chromium)', () =>
     await page.addStyleTag({ content: `.b{opacity:.5}` });
     const rel = await page.evaluate(() => window.FH.releaseForcedPseudoState());
     expect(rel.restore).toBe('restored_with_drift');
-    expect(rel.drift).toEqual([{ id: 'b', property: 'opacity', before: '0', after: '0.5' }]);
+    expect(rel.drift).toEqual([
+      { id: 'b', property: 'opacity', before: '0', after: '0.5' },
+      { id: 'b', property: 'effective-opacity', before: '0', after: '0.5' },
+    ]);
     await page.close();
   }, 30_000);
 
@@ -643,7 +688,10 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('forcePseudoState (real Chromium)', () =>
     expect(r.revealed).toEqual([
       expect.objectContaining({
         id: 't',
-        changes: [{ property: 'opacity', before: '0', after: '1' }],
+        changes: [
+          { property: 'opacity', before: '0', after: '1' },
+          { property: 'effective-opacity', before: '0', after: '1' },
+        ],
       }),
     ]);
     const rel = await page.evaluate(() => window.FH.releaseForcedPseudoState());
@@ -697,3 +745,275 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('forcePseudoState (real Chromium)', () =>
     await page.close();
   }, 30_000);
 });
+
+/** `transition-opacity duration-150`: the fixture CSS ships `duration-200` only. */
+const DURATION_150_CSS = `.duration-150 { --tw-duration: 150ms; transition-duration: 150ms; }`;
+
+/**
+ * Open a page with the Tailwind build CSS, mount the queue row under real React
+ * providers, and wait until discovery has registered the drag handle. The CSS
+ * is in place BEFORE the mount, so the schedule button's first style is
+ * opacity 0 and no rest-state fade runs.
+ */
+async function openQueueRow(transition: boolean): Promise<Page> {
+  const page = await openPage(`<div id="app"></div>`);
+  await page.addStyleTag({ content: TAILWIND_V4_BUILD_CSS });
+  await page.addStyleTag({ content: DURATION_150_CSS });
+  await page.evaluate(
+    (t) => window.FH.mountQueueRow(document.getElementById('app'), t),
+    transition
+  );
+  await page.waitForFunction(
+    () => document.getElementById('handle')?.hasAttribute('data-ui-bridge-id') === true,
+    null,
+    { timeout: 10_000 }
+  );
+  await page.waitForFunction(() => document.getAnimations().length === 0);
+  return page;
+}
+
+/** The fixture's premise: at rest discovery has NOT registered the own-hidden button. */
+const scheduleRegistered = (page: Page): Promise<boolean> =>
+  page.evaluate(() => {
+    const schedule = document.getElementById('schedule');
+    return window.FH.getGlobalRegistry()
+      .getAllElements()
+      .some((entry: { element?: Element }) => entry.element === schedule);
+  });
+
+describe.skipIf(!PLAYWRIGHT_AVAILABLE)(
+  'a forced hover registers the controls it reveals (real Chromium, real React)',
+  () => {
+    for (const [variant, transition] of [
+      ['instant', false],
+      ['transition-opacity duration-150', true],
+    ] as const) {
+      it(`${variant}: hover reports the own-opacity-0 button with appeared: true`, async () => {
+        const page = await openQueueRow(transition);
+        expect(await scheduleRegistered(page)).toBe(false);
+        expect(await read(page, '#schedule')).toEqual({ opacity: '0', pe: 'auto' });
+
+        const out = await page.evaluate(async () => {
+          const executor = new window.FH.DefaultActionExecutor(window.FH.getGlobalRegistry());
+          const handleId = document.getElementById('handle')!.getAttribute('data-ui-bridge-id');
+          const hover = await executor.executeAction(handleId, { action: 'hover' });
+          return {
+            success: hover.success,
+            applied: hover.forcedHover?.applied,
+            scheduleId: document.getElementById('schedule')!.getAttribute('data-ui-bridge-id'),
+          };
+        });
+        expect(out.success).toBe(true);
+        expect(out.scheduleId).toBeTruthy();
+        expect(out.applied).toMatchObject({
+          complete: true,
+          unreadableSheets: 0,
+          settled: true,
+          revealedComplete: true,
+        });
+        expect(out.applied.rescanners).toBeGreaterThanOrEqual(1);
+        expect(out.applied.revealedIncompleteReason).toBeUndefined();
+        // The rescan cost, recorded as Phase 1 recorded the sheet walk's
+        // `scanMs`: both discovery rescans on a real React page, synchronous
+        // scan included. `revealedComplete: true` above already says each call
+        // came in under RESCAN_TIMEOUT_MS.
+        console.info(
+          `[forced-hover smoke] ${variant}: rescanMs=${out.applied.rescanMs} scanMs=${out.applied.scanMs}`
+        );
+        expect(Number.isFinite(out.applied.rescanMs)).toBe(true);
+        expect(out.applied.rescanMs).toBeGreaterThanOrEqual(0);
+        const entry = out.applied.revealed.find((r: { id: string }) => r.id === out.scheduleId);
+        expect(entry).toMatchObject({ appeared: true });
+        expect(entry.changes).toEqual(
+          expect.arrayContaining([{ property: 'opacity', before: null, after: '1' }])
+        );
+        expect(entry.rect.width).toBeGreaterThan(0);
+        // Only the control the hover revealed: the handle was registered at rest.
+        expect(out.applied.revealed.map((r: { id: string }) => r.id)).toEqual([out.scheduleId]);
+        expect(await read(page, '#schedule')).toEqual({ opacity: '1', pe: 'auto' });
+        await page.evaluate(() => window.FH.releaseForcedPseudoState());
+        await page.close();
+      }, 30_000);
+
+      it(`${variant}: hover, then click the revealed button by its new id: dispatched, released, verified`, async () => {
+        const page = await openQueueRow(transition);
+        expect(await scheduleRegistered(page)).toBe(false);
+        const out = await page.evaluate(async () => {
+          const executor = new window.FH.DefaultActionExecutor(window.FH.getGlobalRegistry());
+          const handleId = document.getElementById('handle')!.getAttribute('data-ui-bridge-id');
+          const hover = await executor.executeAction(handleId, { action: 'hover' });
+          const scheduleId = hover.forcedHover?.applied?.revealed?.[0]?.id;
+          const click = await executor.executeAction(scheduleId, { action: 'click' });
+          return {
+            scheduleId,
+            clickSuccess: click.success,
+            clickError: click.error,
+            clicks: window.FH.scheduleClickCount(),
+            released: click.forcedHover?.released,
+            held: window.FH.getForcedPseudoState(),
+            opacity: getComputedStyle(document.getElementById('schedule')!).opacity,
+          };
+        });
+        expect(out.scheduleId).toBeTruthy();
+        expect(out.clickError).toBeUndefined();
+        expect(out.clickSuccess).toBe(true);
+        expect(out.clicks).toBe(1);
+        expect(out.released).toMatchObject({
+          released: true,
+          reason: 'next-action',
+          restore: 'verified',
+          drift: [],
+        });
+        expect(out.released.checked).toEqual(
+          expect.arrayContaining([{ id: out.scheduleId, appeared: true, verdict: 'pass' }])
+        );
+        expect(out.held).toBeNull();
+        expect(out.opacity).toBe('0');
+        await page.close();
+      }, 30_000);
+
+      it(`${variant}: hover, then unhover: verified, and checked names the button`, async () => {
+        const page = await openQueueRow(transition);
+        expect(await scheduleRegistered(page)).toBe(false);
+        const out = await page.evaluate(async () => {
+          const registry = window.FH.getGlobalRegistry();
+          const executor = new window.FH.DefaultActionExecutor(registry);
+          const handleId = document.getElementById('handle')!.getAttribute('data-ui-bridge-id');
+          const hover = await executor.executeAction(handleId, { action: 'hover' });
+          const scheduleId = hover.forcedHover?.applied?.revealed?.[0]?.id;
+          const hoveredVisible = registry.getElement(scheduleId)?.getState().visible;
+          const unhover = await executor.executeAction(handleId, { action: 'unhover' });
+          return {
+            scheduleId,
+            hoveredVisible,
+            released: unhover.forcedHover?.released,
+            // It stays registered after release, reporting itself not visible.
+            stillRegistered: registry.getElement(scheduleId) !== undefined,
+            restVisible: registry.getElement(scheduleId)?.getState().visible,
+            held: window.FH.getForcedPseudoState(),
+          };
+        });
+        expect(out.scheduleId).toBeTruthy();
+        expect(out.hoveredVisible).toBe(true);
+        expect(out.released).toMatchObject({
+          released: true,
+          reason: 'explicit',
+          restore: 'verified',
+          drift: [],
+        });
+        expect(out.released.checked).toEqual(
+          expect.arrayContaining([{ id: out.scheduleId, appeared: true, verdict: 'pass' }])
+        );
+        expect(out.stillRegistered).toBe(true);
+        expect(out.restVisible).toBe(false);
+        expect(out.held).toBeNull();
+        expect(await read(page, '#schedule')).toEqual({ opacity: '0', pe: 'auto' });
+        await page.close();
+      }, 30_000);
+    }
+  }
+);
+
+/**
+ * Phase 5d: a reveal through an ANCESTOR's opacity. The control's own four
+ * computed values never change, so before the fifth `effective-opacity` key
+ * `revealed` stayed empty while the control went from drawing nothing to
+ * drawing. jsdom has no `:hover` and no transitions: Chromium only.
+ */
+const FADE_CSS = `
+  .fade { opacity: 0; }
+  .fade.tx { transition: opacity 150ms; }
+  .group:hover .fade { opacity: 1; }
+  .own { opacity: 0; }
+  .group:hover .own { opacity: 1; }
+  .stuck { opacity: 0; }
+`;
+
+describe.skipIf(!PLAYWRIGHT_AVAILABLE)(
+  'a reveal through an ancestor opacity (effective-opacity, real Chromium)',
+  () => {
+    for (const [variant, tx] of [
+      ['instant', ''],
+      ['transitioned (transition: opacity 150ms)', ' tx'],
+    ] as const) {
+      it(`${variant}: a registered child in an opacity-0 container is revealed with effective-opacity 0 -> 1, state.visible flips, release verifies`, async () => {
+        const page = await openPage(
+          `<div class="group" id="g"><span id="header" data-id="header">h</span>` +
+            `<div class="fade${tx}" id="fade"><button id="kid" data-id="kid">kid</button></div></div>`
+        );
+        await page.addStyleTag({ content: FADE_CSS });
+        await page.waitForFunction(() => document.getAnimations().length === 0);
+        const visible = (): Promise<boolean> =>
+          page.evaluate(() => window.FH.getElementState(document.getElementById('kid')).visible);
+        expect(await visible()).toBe(false);
+
+        const r = await page.evaluate(() =>
+          window.FH.forcePseudoState(document.getElementById('header'), 'hover', {
+            registry: window.FH.registryOf(),
+          })
+        );
+        expect(r.settled).toBe(true);
+        expect(r.revealed).toEqual([
+          expect.objectContaining({
+            id: 'kid',
+            appeared: false,
+            // Its own opacity, visibility, display and pointer-events never change.
+            changes: [{ property: 'effective-opacity', before: '0', after: '1' }],
+          }),
+        ]);
+        expect(await visible()).toBe(true);
+
+        const rel = await page.evaluate(() => window.FH.releaseForcedPseudoState());
+        expect(rel).toMatchObject({ released: true, restore: 'verified', drift: [] });
+        expect(rel.checked).toEqual(
+          expect.arrayContaining([{ id: 'kid', appeared: false, verdict: 'pass' }])
+        );
+        expect(await visible()).toBe(false);
+        await page.close();
+      }, 30_000);
+    }
+
+    it('own-hidden control inside an opacity-0 container: appeared, with opacity and effective-opacity both null -> 1; one under a container the hover never reveals is dropped', async () => {
+      const page = await openPage(
+        `<div class="group" id="g"><span id="header" data-id="header">h</span>` +
+          `<div class="fade" id="fade"><button id="own" class="own">own</button></div>` +
+          `<div class="stuck" id="stuck"><button id="stuckKid">s</button></div></div>`
+      );
+      await page.addStyleTag({ content: FADE_CSS });
+      const r = await page.evaluate(() => {
+        const registered = new Map<string, Element>([
+          ['header', document.getElementById('header')!],
+        ]);
+        let calls = 0;
+        return window.FH.forcePseudoState(document.getElementById('header'), 'hover', {
+          registry: {
+            getAllElements: () => Array.from(registered, ([id, element]) => ({ id, element })),
+            rescan: () => {
+              calls += 1;
+              // A discovery that admits hidden elements: it registers both on the post-settle call.
+              if (calls === 2) {
+                registered.set('own', document.getElementById('own')!);
+                registered.set('stuckKid', document.getElementById('stuckKid')!);
+              }
+              return { rescanners: 1 };
+            },
+          },
+        });
+      });
+      expect(r.revealed.map((x: { id: string }) => x.id)).toEqual(['own']);
+      expect(r.revealed[0]).toMatchObject({ appeared: true });
+      expect(r.revealed[0].changes).toEqual(
+        expect.arrayContaining([
+          { property: 'opacity', before: null, after: '1' },
+          { property: 'effective-opacity', before: null, after: '1' },
+        ])
+      );
+      const rel = await page.evaluate(() => window.FH.releaseForcedPseudoState());
+      expect(rel).toMatchObject({ restore: 'verified', drift: [] });
+      expect(rel.checked).toEqual(
+        expect.arrayContaining([{ id: 'own', appeared: true, verdict: 'pass' }])
+      );
+      await page.close();
+    }, 30_000);
+  }
+);

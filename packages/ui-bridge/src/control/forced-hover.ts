@@ -3,7 +3,7 @@
  * `:active`) appearance from page script, then take it out again and prove the
  * page is back.
  *
- * Plan 2026-10-22-ui-bridge-hover-forces-the-css-hover-state, Phases 1-2.
+ * Plan 2026-10-22-ui-bridge-hover-forces-the-css-hover-state, Phases 1-2 and 5a.
  *
  * WHY. A synthetic `mouseenter`/`mouseover` never sets the browser's `:hover`
  * flag; that flag follows the real pointer's hit-test and nothing else. So a
@@ -39,7 +39,22 @@
  *     `settled: 'frame-only'`.
  *  4. REPORT what changed: `revealed` lists the registered elements whose
  *     computed `opacity`, `visibility`, `display` or `pointer-events` changed
- *     between before-apply and after-settle, with both values and a bbox.
+ *     between before-apply and after-settle, with both values and a bbox. A
+ *     fifth derived key, `effective-opacity` (the product of `opacity` up the
+ *     paint-parent chain, Phase 5d), makes a control inside an `opacity-0`
+ *     container visible to the report though its own four values never change.
+ *
+ * REGISTERING WHAT THE HOVER REVEALS (Phase 5a). Discovery admits only an
+ * element that draws, so a control hidden by its OWN `opacity-0` / `hidden` /
+ * `invisible` is not in the registry at rest, and a pure-CSS reveal changes no
+ * attribute discovery watches. Such a control could never reach `revealed` and
+ * had no id to click. A source with a `rescan` closes that: it is called once
+ * before the `before` snapshot (so everything admissible at rest is in the
+ * baseline and is never reported as revealed) and once after the settle (so
+ * what the forced state made admissible is registered, and reported with
+ * `appeared: true`). Each call is judged against {@link RESCAN_TIMEOUT_MS}, and
+ * the report says whether both completed in time (`revealedComplete`). An appeared element
+ * is verified on release too: it must stop drawing again, or be gone.
  *
  * GUARANTEES (the same standard as `control/media-override.ts`):
  *
@@ -56,8 +71,10 @@
  *    bubbling; `pointerleave`/`mouseleave` on every marked element), waits for
  *    the resulting transitions, and then VERIFIES AGAINST WHAT RENDERS: each
  *    revealed element's four properties (and the target's) must read their
- *    before-apply values. Anything else is `restored_with_drift`, naming the
- *    element and property, and never `verified`.
+ *    before-apply values, and each element that appeared during the hold must
+ *    stop drawing again. Anything else is `restored_with_drift`, naming the
+ *    element and property, and never `verified`. `checked` lists every element
+ *    the verdict was judged on.
  *  - A scan that throws part-way restores every selector it already rewrote.
  *  - Completeness is honest. A sheet whose `cssRules` throws (cross-origin) is
  *    counted in `unreadableSheets` and never skipped silently; `complete` is
@@ -85,7 +102,7 @@
  */
 
 import { readRunningAnimations } from '../core/running-animations';
-import { composedAncestry, shadowRootOf } from '../core/composed-tree';
+import { composedAncestry, effectiveOpacity, shadowRootOf } from '../core/composed-tree';
 import { standardActionEffect } from '../core/action-effect';
 
 // ============================================================================
@@ -118,13 +135,24 @@ export type ForcedPseudoReleaseReason =
 /** The four computed properties a reveal is judged on. */
 export const REVEAL_PROPERTIES = ['opacity', 'visibility', 'display', 'pointer-events'] as const;
 export type RevealProperty = (typeof REVEAL_PROPERTIES)[number];
-export type RevealValues = Record<RevealProperty, string>;
+/**
+ * The fifth, derived key of a reveal (Phase 5d): the product of `opacity` over
+ * the element's paint-parent chain (`core/composed-tree.ts` `effectiveOpacity`),
+ * so a control inside an `opacity-0` container that the hover fades in is seen
+ * though its own four computed values never change. It is a derived value, not
+ * a CSS property: {@link REVEAL_PROPERTIES} stays the four.
+ */
+export const EFFECTIVE_OPACITY_KEY = 'effective-opacity' as const;
+export type RevealKey = RevealProperty | typeof EFFECTIVE_OPACITY_KEY;
+/** Every key a reveal is read, reported and verified on. */
+const REVEAL_KEYS: readonly RevealKey[] = [...REVEAL_PROPERTIES, EFFECTIVE_OPACITY_KEY];
+export type RevealValues = Record<RevealKey, string>;
 
 /** The settle verdict: `true` every started animation finished, `false` the wait timed out, `'frame-only'` the platform cannot list animations. */
 export type ForcedPseudoSettle = boolean | 'frame-only';
 
 export interface ForcedPseudoChange {
-  property: RevealProperty;
+  property: RevealKey;
   /** `null` when the element was not registered before the apply. */
   before: string | null;
   after: string;
@@ -133,11 +161,35 @@ export interface ForcedPseudoChange {
 export interface ForcedPseudoRevealed {
   /** The registered bridge element id. */
   id: string;
-  /** True when the element was not registered before the apply (a JS-rendered reveal). */
+  /**
+   * True when the element was not registered at the `before` snapshot: the
+   * post-settle rescan registered a control the forced state made visible, or
+   * discovery registered a JS-rendered reveal during the settle. Its `changes`
+   * then carry `before: null`. A later hover of the same control reports it with
+   * real `before` values and `appeared: false`, because it stays registered.
+   */
   appeared: boolean;
   changes: ForcedPseudoChange[];
   rect: { x: number; y: number; width: number; height: number };
 }
+
+/**
+ * Why `revealed` may be wrong about what the forced state revealed.
+ * `rescan-threw`: a rescan call threw or rejected, so the registry may not hold
+ * every admissible element. `rescan-timeout`: a call took longer than
+ * {@link RESCAN_TIMEOUT_MS}, synchronous scan included (its registrations may
+ * have landed, but late), or never settled. `no-rescanner`: no discovery ran
+ * after the settle (the source has no `rescan`, or no rescanner is installed on
+ * the registry), so a control hidden by its own style at rest cannot be in
+ * `revealed`. `no-baseline-rescanner`: discovery ran after the settle but not
+ * before the `before` snapshot, so an element that already drew at rest may be
+ * reported as appeared (and later as drift).
+ */
+export type ForcedPseudoRevealIncompleteReason =
+  | 'rescan-threw'
+  | 'rescan-timeout'
+  | 'no-rescanner'
+  | 'no-baseline-rescanner';
 
 /** What an apply did. */
 export interface ForcedPseudoReport {
@@ -168,20 +220,65 @@ export interface ForcedPseudoReport {
   settleMs: number;
   /** Time spent walking the stylesheets. */
   scanMs: number;
+  /**
+   * Time spent in the two discovery rescans (baseline and post-settle),
+   * synchronous scan included. Each call is judged against
+   * {@link RESCAN_TIMEOUT_MS}; `0` when the source has no `rescan`.
+   */
+  rescanMs: number;
   /** The effective hold, after the default and ceiling are applied. */
   holdMs: number;
   /** Epoch ms at which the TTL releases the hold by itself. */
   expiresAt: number;
   revealed: ForcedPseudoRevealed[];
+  /**
+   * The discovery rescanners the registry ran for `revealed` (the post-settle
+   * call's count; the baseline call's when the post-settle call returned none).
+   * `0` means no discovery ran, and is never read as a clean answer: it makes
+   * `revealedComplete` false with `no-rescanner`.
+   */
+  rescanners: number;
+  /**
+   * True only when both rescan calls (baseline and post-settle) returned
+   * without throwing, each within {@link RESCAN_TIMEOUT_MS}, AND each ran at
+   * least one rescanner. Otherwise `revealed` may miss a control the hover
+   * revealed, or report one that drew at rest: see `revealedIncompleteReason`.
+   * Independent of `complete`, which is about the stylesheets.
+   */
+  revealedComplete: boolean;
+  /** Present exactly when `revealedComplete` is false. */
+  revealedIncompleteReason?: ForcedPseudoRevealIncompleteReason;
   /** The previous hold this apply released first, when there was one. */
   replaced?: ForcedPseudoReleaseReport;
 }
 
 export interface ForcedPseudoDrift {
   id: string;
-  property: RevealProperty;
-  before: string;
+  property: RevealKey;
+  /** `null` for an element that appeared during the hold: it had no before-apply value. */
+  before: string | null;
   after: string;
+}
+
+/**
+ * One element the release verified, and the verdict.
+ *  - `pass`: a previously registered element reads its before-apply values
+ *    again, or an appeared element has stopped drawing again (display `none`,
+ *    visibility `hidden`, opacity 0 or a zero-size box).
+ *  - `drift`: it did not (see `drift` for the properties).
+ *  - `disconnected`: it left the document, so it draws nothing.
+ *  - `unreadable`: its computed style could not be read, so it was NOT
+ *    verified; the restore is then not `verified` either.
+ *
+ * A `next-action` release can drift because of the action itself: a click that
+ * schedules an item may remove the button's `opacity-0` for good. That is the
+ * app's state, not a leaked hover, and it is reported the same way.
+ */
+export interface ForcedPseudoCheck {
+  id: string;
+  /** True for an element registered during the hold (it had no before-apply values). */
+  appeared: boolean;
+  verdict: 'pass' | 'drift' | 'disconnected' | 'unreadable';
 }
 
 /** A rewritten selector the app changed during the hold: left as the app set it. */
@@ -210,13 +307,18 @@ export interface ForcedPseudoReleaseReport {
   /** How long the state was held. */
   heldMs?: number;
   /**
-   * `verified`: every revealed element (and the target) reads its
-   * before-apply values again, and no selector drifted.
-   * `restored_with_drift`: at least one did not (see `drift`, `selectorDrift`).
+   * `verified`: every element in `checked` passed or is disconnected — each
+   * previously registered revealed element (and the target) reads its
+   * before-apply values again, and each appeared element stopped drawing — and
+   * no selector drifted.
+   * `restored_with_drift`: at least one did not (see `drift`, `selectorDrift`,
+   * `checked`).
    * `nothing_held`: there was nothing to release.
    */
   restore: 'verified' | 'restored_with_drift' | 'nothing_held';
   drift: ForcedPseudoDrift[];
+  /** Every element the release verified, with its verdict: what `restore` was judged on. */
+  checked: ForcedPseudoCheck[];
 }
 
 /** The `forcedHover` field of an action response. */
@@ -230,6 +332,34 @@ export interface ForcedHoverActionReport {
 /** Where `revealed` reads the bridge's registered elements from. Kept structural so this module stays registry-agnostic. */
 export interface ForcedPseudoElementSource {
   getAllElements(): Iterable<{ id: string; element?: Element | null }>;
+  /**
+   * Register every element the source's discovery would admit right now, and
+   * report how many rescanners ran. Called before the `before` snapshot and
+   * after the settle, each call judged against {@link RESCAN_TIMEOUT_MS}; never
+   * on release. Without it, `revealed` covers only what was already registered and
+   * the report says `revealedComplete: false` (`no-rescanner`).
+   */
+  rescan?(): { rescanners: number } | Promise<{ rescanners: number }>;
+}
+
+/** The registry surface {@link revealSourceOf} adapts. */
+export interface ForcedPseudoRevealRegistry {
+  getAllElements(): Iterable<{ id: string; element?: Element | null }>;
+  /** Optional, so a registry from an SDK copy that predates it degrades to `no-rescanner`. */
+  requestDiscoveryRescan?(): Promise<{ rescanners: number }>;
+}
+
+/**
+ * The reveal source for a bridge registry: its elements, and its discovery
+ * rescan (`UIBridgeRegistry.requestDiscoveryRescan`) when it has one. The one
+ * adapter both the executor and the relay pass to {@link forcePseudoState}.
+ */
+export function revealSourceOf(registry: ForcedPseudoRevealRegistry): ForcedPseudoElementSource {
+  const source: ForcedPseudoElementSource = { getAllElements: () => registry.getAllElements() };
+  if (typeof registry.requestDiscoveryRescan === 'function') {
+    source.rescan = () => registry.requestDiscoveryRescan!();
+  }
+  return source;
 }
 
 export interface ForcePseudoStateOptions {
@@ -290,6 +420,12 @@ export const DEFAULT_SETTLE_TIMEOUT_MS = 1_500;
 export const MAX_SETTLE_TIMEOUT_MS = 5_000;
 /** Bound on a single frame wait: rAF is paused in an occluded or minimized window. */
 const FRAME_WAIT_CAP_MS = 100;
+/**
+ * Budget for each {@link ForcedPseudoElementSource.rescan} call, measured from
+ * before the call (synchronous scan included). A slower call is reported as
+ * `rescan-timeout`; a promise still pending at the budget is abandoned.
+ */
+export const RESCAN_TIMEOUT_MS = 250;
 
 /** The attribute the rewritten selectors accept and the marked chain carries. */
 export function pseudoStateAttribute(state: ForcedPseudoStateName): string {
@@ -386,7 +522,8 @@ interface RewrittenRule {
 interface VerifyEntry {
   id: string;
   element: Element;
-  before: RevealValues;
+  /** `null` for an element that appeared during the hold: it must stop drawing again. */
+  before: RevealValues | null;
 }
 
 interface Hold {
@@ -434,6 +571,9 @@ interface ForcedPseudoGlobal {
 /**
  * The shape of the shared state object. Bump it whenever
  * {@link ForcedPseudoGlobal} or {@link Hold} changes shape.
+ *
+ * v5: a `verify` entry's `before` may be `null` (an element that appeared
+ * during the hold). A v4 copy releasing a v5 hold would dereference it.
  */
 export const FORCED_PSEUDO_STATE_VERSION = 5;
 
@@ -728,7 +868,12 @@ function scanSheets(
 // Style reads, settle
 // ============================================================================
 
-function readRevealValues(el: Element): RevealValues | null {
+/**
+ * `memo` is the effective-opacity cache of ONE pass (the before reads, the
+ * after reads, or one verification): a pass reads every registered element
+ * against the same moment of style, so passes never share one.
+ */
+function readRevealValues(el: Element, memo?: Map<Element, number>): RevealValues | null {
   try {
     const view = el.ownerDocument?.defaultView ?? globalThis;
     const cs = view.getComputedStyle(el);
@@ -737,6 +882,7 @@ function readRevealValues(el: Element): RevealValues | null {
       visibility: cs.visibility,
       display: cs.display,
       'pointer-events': cs.pointerEvents,
+      [EFFECTIVE_OPACITY_KEY]: String(effectiveOpacity(el, view, memo)),
     };
   } catch {
     return null;
@@ -893,22 +1039,10 @@ async function releaseHold(
   void readRevealValues(current.target);
   const { settled } = await settleAfter(current.doc, preexisting, current.settleTimeoutMs);
 
-  const drift: ForcedPseudoDrift[] = [];
-  for (const entry of current.verify) {
-    if (!entry.element.isConnected) continue; // unmounted: it draws nothing, so it cannot drift
-    const after = readRevealValues(entry.element);
-    if (!after) continue;
-    for (const property of REVEAL_PROPERTIES) {
-      if (after[property] !== entry.before[property]) {
-        drift.push({
-          id: entry.id,
-          property,
-          before: entry.before[property],
-          after: after[property],
-        });
-      }
-    }
-  }
+  // Verification reads the element references the apply recorded, never the
+  // registry, so no rescan runs here.
+  const { drift, checked } = verifyEntries(current.verify);
+  const unverified = checked.some((c) => c.verdict === 'drift' || c.verdict === 'unreadable');
 
   return {
     released: true,
@@ -921,8 +1055,9 @@ async function releaseHold(
     unmarkedElements,
     settled,
     heldMs: Date.now() - current.appliedAt,
-    restore: drift.length > 0 || selectorDrift.length > 0 ? 'restored_with_drift' : 'verified',
+    restore: unverified || selectorDrift.length > 0 ? 'restored_with_drift' : 'verified',
     drift,
+    checked,
   };
 }
 
@@ -936,6 +1071,7 @@ function nothingHeld(reason: ForcedPseudoReleaseReason): ForcedPseudoReleaseRepo
     unmarkedElements: 0,
     restore: 'nothing_held',
     drift: [],
+    checked: [],
   };
 }
 
@@ -954,6 +1090,144 @@ function registeredElements(
     return out;
   }
   return out;
+}
+
+/** What one {@link ForcedPseudoElementSource.rescan} call did. */
+interface RescanOutcome {
+  /** Rescanners the call reported running; `null` when it never returned a count. */
+  rescanners: number | null;
+  failure?: 'rescan-threw' | 'rescan-timeout';
+  /** Wall time of the call, synchronous part included. */
+  ms: number;
+}
+
+/**
+ * Call the source's `rescan` against the {@link RESCAN_TIMEOUT_MS} budget.
+ * The clock starts BEFORE the call, so a discovery whose scan is synchronous
+ * (`UIBridgeRegistry.requestDiscoveryRescan` registers everything before it
+ * returns an already-settled promise) is measured as well as one that is slow
+ * to settle. A call past the budget is `rescan-timeout` even when it returned:
+ * its registrations landed, but late. A promise still pending at the budget is
+ * abandoned there. Never throws: a throw or a rejection is reported, so a
+ * broken discovery can make `revealed` incomplete but can never fail the hover.
+ */
+async function runRescan(source: ForcedPseudoElementSource | undefined): Promise<RescanOutcome> {
+  if (!source || typeof source.rescan !== 'function') return { rescanners: 0, ms: 0 };
+  const start = now();
+  let pending: { rescanners: number } | Promise<{ rescanners: number }>;
+  try {
+    pending = source.rescan();
+  } catch {
+    return { rescanners: null, failure: 'rescan-threw', ms: now() - start };
+  }
+  // What is left of the budget after the synchronous part. A zero-delay timer
+  // is a macrotask, so an already-settled promise still wins the race and its
+  // count is kept; the elapsed check below then reports it as late.
+  const remainingMs = Math.max(0, RESCAN_TIMEOUT_MS - (now() - start));
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timedOut = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), remainingMs);
+  });
+  try {
+    const result = await Promise.race([Promise.resolve(pending), timedOut]);
+    const ms = now() - start;
+    if (result === 'timeout') return { rescanners: null, failure: 'rescan-timeout', ms };
+    const count = result?.rescanners;
+    const rescanners = typeof count === 'number' && Number.isFinite(count) ? count : 0;
+    if (ms > RESCAN_TIMEOUT_MS) return { rescanners, failure: 'rescan-timeout', ms };
+    return { rescanners, ms };
+  } catch {
+    return { rescanners: null, failure: 'rescan-threw', ms: now() - start };
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
+}
+
+/** The report fields the two rescan calls decide. */
+type RescanFields = Pick<
+  ForcedPseudoReport,
+  'rescanners' | 'rescanMs' | 'revealedComplete' | 'revealedIncompleteReason'
+>;
+
+/** The report's rescan fields, from the baseline and post-settle calls. */
+function rescanVerdict(baseline: RescanOutcome, postSettle: RescanOutcome): RescanFields {
+  const rescanners = postSettle.rescanners ?? baseline.rescanners ?? 0;
+  const rescanMs = baseline.ms + postSettle.ms;
+  const incomplete = (reason: ForcedPseudoRevealIncompleteReason): RescanFields => ({
+    rescanners,
+    rescanMs,
+    revealedComplete: false,
+    revealedIncompleteReason: reason,
+  });
+  const failure = baseline.failure ?? postSettle.failure;
+  if (failure) return incomplete(failure);
+  // No discovery ran for `revealed`: a control hidden at rest cannot be in it.
+  if (rescanners === 0) return incomplete('no-rescanner');
+  // Discovery ran after the settle but not for the baseline (a rescanner was
+  // installed in between): an element that already drew at rest may be
+  // reported as appeared, and as drift on release.
+  if (baseline.rescanners === 0) return incomplete('no-baseline-rescanner');
+  return { rescanners, rescanMs, revealedComplete: true };
+}
+
+/**
+ * The discovery visibility test (`useAutoRegister`'s `isElementVisible`): an
+ * element that fails it is not drawn, and discovery would not admit it.
+ */
+function drawsNothing(element: Element, values: RevealValues): boolean {
+  if (values.display === 'none' || values.visibility === 'hidden') return true;
+  if (parseFloat(values.opacity) === 0) return true;
+  if (parseFloat(values[EFFECTIVE_OPACITY_KEY]) === 0) return true;
+  const rect = element.getBoundingClientRect();
+  return rect.width === 0 || rect.height === 0;
+}
+
+/** Verify each entry against what renders now; see {@link ForcedPseudoCheck}. */
+function verifyEntries(entries: VerifyEntry[]): {
+  drift: ForcedPseudoDrift[];
+  checked: ForcedPseudoCheck[];
+} {
+  const drift: ForcedPseudoDrift[] = [];
+  const checked: ForcedPseudoCheck[] = [];
+  const memo = new Map<Element, number>();
+  for (const entry of entries) {
+    const appeared = entry.before === null;
+    if (!entry.element.isConnected) {
+      // Unmounted: it draws nothing, so it cannot drift.
+      checked.push({ id: entry.id, appeared, verdict: 'disconnected' });
+      continue;
+    }
+    const after = readRevealValues(entry.element, memo);
+    if (!after) {
+      checked.push({ id: entry.id, appeared, verdict: 'unreadable' });
+      continue;
+    }
+    const found: ForcedPseudoDrift[] = [];
+    if (entry.before === null) {
+      // Appeared during the hold: back at rest it must not draw. When it still
+      // does, every property is reported against its absent before value, the
+      // same shape the apply reported it in.
+      if (!drawsNothing(entry.element, after)) {
+        for (const property of REVEAL_KEYS) {
+          found.push({ id: entry.id, property, before: null, after: after[property] });
+        }
+      }
+    } else {
+      for (const property of REVEAL_KEYS) {
+        if (after[property] !== entry.before[property]) {
+          found.push({
+            id: entry.id,
+            property,
+            before: entry.before[property],
+            after: after[property],
+          });
+        }
+      }
+    }
+    drift.push(...found);
+    checked.push({ id: entry.id, appeared, verdict: found.length > 0 ? 'drift' : 'pass' });
+  }
+  return { drift, checked };
 }
 
 /**
@@ -1019,13 +1293,20 @@ async function applyNow(
   const attribute = pseudoStateAttribute(state);
   const doc = target.ownerDocument;
 
+  // Baseline rescan, after any replaced release: register everything discovery
+  // admits at rest, so an element that draws now but was never registered (one
+  // that faded in on mount and read opacity 0 when its mutation was scanned)
+  // is in the baseline, and is not reported as revealed and then as drift.
+  const baselineRescan = await runRescan(options.registry);
+
   // Before: every registered element's four properties, and the target's.
   const before = new Map<Element, { id: string; values: RevealValues }>();
+  const beforeMemo = new Map<Element, number>();
   for (const { id, element } of registeredElements(options.registry)) {
-    const values = readRevealValues(element);
+    const values = readRevealValues(element, beforeMemo);
     if (values) before.set(element, { id, values });
   }
-  const targetBefore = readRevealValues(target);
+  const targetBefore = readRevealValues(target, beforeMemo);
   const preexisting = runningAnimationSet(doc);
 
   const scanStart = now();
@@ -1081,16 +1362,23 @@ async function applyNow(
   void readRevealValues(target);
   const { settled, settleMs } = await settleAfter(doc, preexisting, settleTimeoutMs);
 
+  // Post-settle rescan: the forced state is now fully applied, so a control it
+  // revealed (own `opacity-0` -> `group-hover:opacity-100`, `hidden` ->
+  // `group-hover:block`) passes discovery's visibility test and is registered
+  // here. It was not in `before`, so it is reported with `appeared: true`.
+  const postSettleRescan = await runRescan(options.registry);
+
   const revealed: ForcedPseudoRevealed[] = [];
   const verify: VerifyEntry[] = [];
   let targetId = fingerprint(target);
+  const afterMemo = new Map<Element, number>();
   for (const { id, element } of registeredElements(options.registry)) {
     if (element === target) targetId = id;
-    const after = readRevealValues(element);
+    const after = readRevealValues(element, afterMemo);
     if (!after) continue;
     const prior = before.get(element);
     const changes: ForcedPseudoChange[] = [];
-    for (const property of REVEAL_PROPERTIES) {
+    for (const property of REVEAL_KEYS) {
       const was = prior ? prior.values[property] : null;
       if (was !== after[property]) {
         changes.push({ property, before: was, after: after[property] });
@@ -1100,7 +1388,10 @@ async function applyNow(
     const appeared = !prior;
     if (
       appeared &&
-      (after.display === 'none' || after.visibility === 'hidden' || parseFloat(after.opacity) === 0)
+      (after.display === 'none' ||
+        after.visibility === 'hidden' ||
+        parseFloat(after.opacity) === 0 ||
+        parseFloat(after[EFFECTIVE_OPACITY_KEY]) === 0)
     ) {
       continue;
     }
@@ -1112,7 +1403,9 @@ async function applyNow(
       changes,
       rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
     });
-    if (prior && element !== target) verify.push({ id, element, before: prior.values });
+    // An appeared element joins the verify with no before values: on release
+    // it must stop drawing again (or be gone), or the restore is drift.
+    if (element !== target) verify.push({ id, element, before: prior ? prior.values : null });
   }
   if (targetBefore) verify.push({ id: targetId, element: target, before: targetBefore });
   current.verify = verify;
@@ -1136,6 +1429,7 @@ async function applyNow(
     holdMs,
     expiresAt: current.expiresAt,
     revealed,
+    ...rescanVerdict(baselineRescan, postSettleRescan),
     ...(replaced ? { replaced } : {}),
   };
   current.report = report;
