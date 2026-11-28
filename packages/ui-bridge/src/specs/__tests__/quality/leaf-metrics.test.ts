@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { containerEfficiency, horizontalBalance, viewportUtilization } from '../../quality-metrics';
+import { containerEfficiency, horizontalBalance, localDensityBalance, verticalBalance, viewportUtilization } from '../../quality-metrics';
 import { DESKTOP, el } from './fixtures';
 
 const CARD = { backgroundColor: 'rgb(245, 245, 245)', paddingTop: '16px', borderRadius: '8px' };
@@ -47,6 +47,38 @@ describe('horizontalBalance reads rendered leaves', () => {
       el('ghost', 'generic', { x: 680, y: 0, width: 600, height: 600 }, { tagName: 'div', visible: false, hiddenReason: 'hidden' }),
     ];
     expect(horizontalBalance(page, DESKTOP).score).toBe(100);
+  });
+});
+
+describe('verticalBalance reads the visible leaves', () => {
+  it('a hidden element and content below the first screen do not move the balance', () => {
+    const page = [
+      el('top', 'paragraph', { x: 0, y: 100, width: 400, height: 100 }, { tagName: 'p' }),
+      el('bottom', 'paragraph', { x: 0, y: 600, width: 400, height: 100 }, { tagName: 'p' }),
+      el('ghost', 'generic', { x: 0, y: 420, width: 1280, height: 300 }, { tagName: 'div', visible: false, hiddenReason: 'hidden' }),
+      el('far-below', 'paragraph', { x: 0, y: 2000, width: 1280, height: 900 }, { tagName: 'p' }),
+    ];
+    const result = verticalBalance(page, DESKTOP);
+    expect(result.rawData?.ratio).toBe(1);
+    expect(result.score).toBe(100);
+  });
+});
+
+describe('localDensityBalance reads the visible leaves', () => {
+  it('a hidden element covering one quadrant does not unbalance the grid', () => {
+    // Four 320 x 200 leaves, one in each quadrant. A hidden 640 x 400 block
+    // over one quadrant would otherwise fill its cells.
+    const quads = [
+      [160, 100],
+      [800, 100],
+      [160, 500],
+      [800, 500],
+    ].map(([x, y], i) => el(`q${i}`, 'paragraph', { x, y, width: 320, height: 200 }, { tagName: 'p' }));
+    const ghost = el('ghost', 'generic', { x: 0, y: 0, width: 640, height: 400 }, { tagName: 'div', visible: false, hiddenReason: 'hidden' });
+    const withGhost = localDensityBalance([...quads, ghost], DESKTOP);
+    const without = localDensityBalance(quads, DESKTOP);
+    expect(withGhost.rawData?.cv).toBe(without.rawData?.cv);
+    expect(withGhost.rawData?.leafCount).toBe(4);
   });
 });
 

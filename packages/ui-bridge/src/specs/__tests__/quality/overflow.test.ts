@@ -75,6 +75,21 @@ describe('contentOverflow', () => {
     expect((r?.unmeasured as Array<{ input: string }>).map((u) => u.input)).toContain('textTruncationRecovery');
   });
 
+  it('does not charge a vertical scroll pane (overflow-x hidden, overflow-y auto) or the children scrolled in it', () => {
+    const page = [
+      el('pane', 'generic', { x: 0, y: 0, width: 300, height: 400 }, { tagName: 'aside', scrollHeight: 1600, clientHeight: 400 }, { overflow: 'hidden auto' }),
+      el('pane.item', 'generic', { x: 0, y: 500, width: 300, height: 40 }, { tagName: 'li', parentId: 'pane' }),
+    ];
+    const result = contentOverflow(page, { ...DESKTOP, documentWidth: 1280 });
+    expect(result.score).toBe(100);
+  });
+
+  it('does not count an element inside an unregistered horizontal scroller', () => {
+    const page = [el('card', 'generic', { x: 1200, y: 0, width: 300, height: 200 }, { tagName: 'div', insideHorizontalScroller: true })];
+    const kinds = contentOverflow(page, { ...DESKTOP, documentWidth: 1280 }).rawData?.kinds as Kinds;
+    expect(kinds.pastViewportX.elementIds).toEqual([]);
+  });
+
   it('reports a child drawn past a container that clips it', () => {
     const page = [
       el('card', 'generic', { x: 0, y: 0, width: 300, height: 200 }, { tagName: 'div' }, { overflow: 'hidden' }),
@@ -90,6 +105,7 @@ describe('contentOverflow', () => {
     expect(result.score).toBe(90);
     expect((result.rawData?.unmeasured as Array<{ input: string }>).map((u) => u.input)).toEqual([
       'pageHorizontalScroll',
+      'pastViewportX.scrollContainment',
       'clippedContent',
       'childPastClippingParent',
     ]);

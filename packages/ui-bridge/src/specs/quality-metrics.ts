@@ -14,7 +14,7 @@ import { contentOverflow } from './quality/overflow';
 import { informationDensity } from './quality/information-density';
 import { elementDensity, whitespaceRatio } from './quality/coverage';
 import { isInteractive } from './quality/functional-groups';
-import { clip, isRendered, renderedLeaves, unionArea } from './quality/geometry';
+import { clip, isRendered, renderedLeaves, unionArea, visibleLeaves } from './quality/geometry';
 
 export { contentOverflow, informationDensity, elementDensity, whitespaceRatio };
 import {
@@ -269,8 +269,9 @@ export const viewportUtilization: MetricFunction = (allElements, viewport) => {
 // ============================================================================
 
 export const localDensityBalance: MetricFunction = (allElements, viewport) => {
-  // Rendered leaves only: nested containers and hidden elements carry no weight of their own.
-  const elements = renderedLeaves(allElements);
+  // Rendered leaves, clipped to the viewport: nested containers, hidden elements
+  // and content below the first screen carry no weight of their own.
+  const elements = visibleLeaves(allElements, viewport);
   if (elements.length < 4)
     return makeResult('localDensityBalance', 'Local Density Balance', 'density', 100, []);
 
@@ -332,8 +333,9 @@ export const localDensityBalance: MetricFunction = (allElements, viewport) => {
 };
 
 export const horizontalBalance: MetricFunction = (allElements, viewport) => {
-  // Rendered leaves only: nested containers and hidden elements carry no weight of their own.
-  const elements = renderedLeaves(allElements);
+  // Rendered leaves, clipped to the viewport: nested containers, hidden elements
+  // and content below the first screen carry no weight of their own.
+  const elements = visibleLeaves(allElements, viewport);
   if (elements.length === 0)
     return makeResult('horizontalBalance', 'Horizontal Balance', 'density', 100, []);
 
@@ -377,8 +379,9 @@ export const horizontalBalance: MetricFunction = (allElements, viewport) => {
 };
 
 export const verticalBalance: MetricFunction = (allElements, viewport) => {
-  // Rendered leaves only: nested containers and hidden elements carry no weight of their own.
-  const elements = renderedLeaves(allElements);
+  // Rendered leaves, clipped to the viewport: nested containers, hidden elements
+  // and content below the first screen carry no weight of their own.
+  const elements = visibleLeaves(allElements, viewport);
   if (elements.length === 0)
     return makeResult('verticalBalance', 'Vertical Balance', 'density', 100, []);
 

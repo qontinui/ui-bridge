@@ -60,12 +60,22 @@ export function combineComponents(scores: Record<Component, number | null>): num
 }
 
 export const informationDensity: MetricFunction = (elements, viewport, page) => {
-  const haveStructure = elements.some((el) => el.structure);
+  const haveStructure = elements.length > 0 && elements.every((el) => el.structure);
+  const registered = new Set(elements.map((el) => el.elementId));
+  /** Split a hit's ids into registered element ids and synthetic region ids. */
+  const split = <T extends { elementIds: string[] }>(hit: T) => ({
+    ...hit,
+    elementIds: hit.elementIds.filter((id) => registered.has(id)),
+    regionIds: hit.elementIds.filter((id) => !registered.has(id)),
+  });
   const rendered = elements.filter(isRendered);
   const groups = collectGroups(rendered);
-  const redundant = redundantText(elements, viewport, page?.textBlocks);
-  const space = disproportionateSpace(groups, viewport, haveStructure);
-  const fold = primaryActionBelowFold(rendered, groups, viewport, haveStructure);
+  const redundantRaw = redundantText(elements, viewport, page?.textBlocks);
+  const spaceRaw = disproportionateSpace(groups, viewport, haveStructure);
+  const foldRaw = primaryActionBelowFold(rendered, groups, viewport, haveStructure);
+  const redundant = { ...redundantRaw, hits: redundantRaw.hits.map(split) };
+  const space = { ...spaceRaw, hits: spaceRaw.hits.map(split) };
+  const fold = { ...foldRaw, hits: foldRaw.hits.map(split) };
 
   const unmeasured: Array<{ input: string; reason: string }> = [];
   if (redundant.score === null)
@@ -90,6 +100,7 @@ export const informationDensity: MetricFunction = (elements, viewport, page) => 
       message: `Redundant text: ${h.reason}`,
       recommendation: 'Say it once: drop or merge the copy that restates the heading and the labels.',
       elementIds: h.elementIds,
+      regionIds: h.regionIds,
     });
   }
   for (const h of space.hits) {
@@ -101,6 +112,7 @@ export const informationDensity: MetricFunction = (elements, viewport, page) => 
           ? 'Compact the controls (one row, a toolbar, a disclosure) so the primary content reaches the first screen.'
           : 'Put the controls side by side, or move a sort into the table headers.',
       elementIds: h.elementIds,
+      regionIds: h.regionIds,
     });
   }
   for (const h of fold.hits) {
@@ -110,6 +122,7 @@ export const informationDensity: MetricFunction = (elements, viewport, page) => 
       recommendation:
         'Bring the action onto the first screen (a header button that opens the form, or the form above the list).',
       elementIds: h.elementIds,
+      regionIds: h.regionIds,
     });
   }
 

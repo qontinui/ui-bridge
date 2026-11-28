@@ -31,7 +31,8 @@ describe('informationDensity: primary action below the fold', () => {
     expect(c.hits).toHaveLength(1);
     const hit = c.hits[0] as Hit;
     expect(hit.kind).toBe('form');
-    expect(hit.elementIds).toEqual(['form#2', 'editor.create-submit', 'editor.create-name', 'editor.create-reference']);
+    expect(hit.elementIds).toEqual(['editor.create-submit', 'editor.create-name', 'editor.create-reference']);
+    expect((hit as Hit & { regionIds: string[] }).regionIds).toEqual(['form#2']);
     // The first member starts at 1220 px: (1220 - 800) / 800 screens below.
     expect(hit.screensBelow).toBe(0.53);
     expect(c.score).toBe(60);

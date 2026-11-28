@@ -107,6 +107,30 @@ describe('collectStructure', () => {
     expect(textBlocks.some((b) => b.text.includes('Kontonummer'))).toBe(false);
   });
 
+  it('reads a nested unregistered text block once, as part of its outer block', () => {
+    const outer = document.createElement('div');
+    outer.innerHTML = 'Lieferungen der letzten Woche <span>und die Summen je Auftrag</span>';
+    byId('main').appendChild(outer);
+    box(outer, 0, 400, 600, 30);
+    box(outer.querySelector('span')!, 0, 400, 300, 30);
+    const { textBlocks } = collectStructure([{ id: 'reg.main', element: byId('main') }]);
+    const hits = textBlocks.filter((b) => b.text.includes('Summen je Auftrag'));
+    expect(hits).toHaveLength(1);
+    expect(hits[0].tagName).toBe('div');
+  });
+
+  it('does not re-read the text of a registered element with a text role', () => {
+    const heading = document.createElement('div');
+    heading.setAttribute('role', 'heading');
+    heading.innerHTML = '<span>Offene Auftraege dieser Woche</span>';
+    byId('main').appendChild(heading);
+    box(heading, 0, 440, 600, 30);
+    box(heading.querySelector('span')!, 0, 440, 300, 30);
+    const { structure, textBlocks } = collectStructure([{ id: 'reg.heading', element: heading }]);
+    expect(structure.get('reg.heading')?.text).toBe('Offene Auftraege dieser Woche');
+    expect(textBlocks.some((b) => b.text.includes('Offene Auftraege'))).toBe(false);
+  });
+
   it('reads a one-pixel box as visually hidden, not as content', () => {
     box(byId('col'), 0, 0, 1, 1);
     const { structure } = collectStructure([{ id: 'reg.col', element: byId('col') }]);

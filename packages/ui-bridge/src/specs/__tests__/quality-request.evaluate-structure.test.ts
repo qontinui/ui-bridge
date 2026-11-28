@@ -50,8 +50,9 @@ describe('evaluateRegisteredQuality', () => {
     const report = evaluateRegisteredQuality(sources, { viewport: { width: 1024, height: 768 } }, null);
     const metric = (id: string) => report.metrics.find((m) => m.metricId === id)!;
 
-    // Summing every box read 1.57 viewports here; the union of the rendered leaves is 0.08.
-    expect(metric('elementDensity').rawData?.coverage).toBeLessThanOrEqual(1);
+    // Summing every box read 1.79 viewports here; the union of the rendered
+    // leaves (sub, intro, row) is (600*24*2 + 1024*30) / (1024*768) = 0.0757.
+    expect(metric('elementDensity').rawData?.coverage).toBeCloseTo(0.0757, 4);
     expect(metric('elementDensity').rawData?.leafBy).toBe('parentId');
 
     // The form starts 2010 px down, below the 768 px first screen: page length is not overflow.
@@ -59,11 +60,12 @@ describe('evaluateRegisteredQuality', () => {
 
     // The report's three categories, in their published order: redundant text,
     // disproportionate space, primary action below the fold.
-    const categories = metric('informationDensity').rawData?.categories as Record<string, { hits: Array<{ elementIds: string[] }> }>;
+    const categories = metric('informationDensity').rawData?.categories as Record<string, { hits: Array<{ elementIds: string[]; regionIds: string[] }> }>;
     const [text, space, fold] = Object.values(categories);
     expect(Object.keys(categories)).toHaveLength(3);
     expect(text.hits[0].elementIds).toEqual(['sub', 'intro']);
     expect(space.hits).toEqual([]);
-    expect(fold.hits[0].elementIds).toEqual(['form#1', 'go', 'name']);
+    expect(fold.hits[0].elementIds).toEqual(['go', 'name']);
+    expect(fold.hits[0].regionIds).toEqual(['form#1']);
   });
 });

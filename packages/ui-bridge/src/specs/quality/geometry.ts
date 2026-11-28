@@ -24,11 +24,6 @@ export interface Rect {
  */
 export type ExclusionReason = 'hidden' | 'no-layout' | 'clipped' | 'detached';
 
-function parseNumber(value: string | undefined): number {
-  const n = parseFloat(value ?? '');
-  return isNaN(n) ? NaN : n;
-}
-
 /**
  * Why the element is not rendered, or null when it is. The collected
  * structure (`/design/evaluate`) carries the canonical verdict, which sees
@@ -40,7 +35,7 @@ export function exclusionReason(el: ElementDesignData): ExclusionReason | null {
   const s = el.styles;
   if (s?.display === 'none' || s?.visibility === 'hidden' || s?.visibility === 'collapse')
     return 'hidden';
-  if (parseNumber(s?.opacity) === 0) return 'hidden';
+  if (parseFloat(s?.opacity ?? '') === 0) return 'hidden';
   if (!(el.rect.width > 0) || !(el.rect.height > 0)) return 'no-layout';
   return null;
 }
@@ -73,7 +68,9 @@ export function renderedLeaves(elements: readonly ElementDesignData[]): ElementD
   const containers = new Set<string>();
   if (haveStructure) {
     const renderedIds = new Set(rendered.map((el) => el.elementId));
-    const parentOf = new Map(rendered.map((el) => [el.elementId, el.structure?.parentId]));
+    // The parent chain runs through EVERY element, so a hidden middle parent
+    // does not cut a rendered grandparent off from its rendered descendants.
+    const parentOf = new Map(elements.map((el) => [el.elementId, el.structure?.parentId]));
     for (const el of rendered) {
       // Every rendered ancestor of a rendered element is a container.
       let parent = parentOf.get(el.elementId);
@@ -106,6 +103,7 @@ export function clip(rect: Rect, to: Rect): Rect | null {
   const y1 = Math.max(rect.y, to.y);
   const x2 = Math.min(rect.x + rect.width, to.x + to.width);
   const y2 = Math.min(rect.y + rect.height, to.y + to.height);
+  if (!Number.isFinite(x1 + y1 + x2 + y2)) return null;
   if (x2 <= x1 || y2 <= y1) return null;
   return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
 }
@@ -169,4 +167,21 @@ export function firstScreenHeight(rect: Rect, viewport: ViewportDimensions): num
 /** The rect starts at or below the end of the first screen. */
 export function entirelyBelowFirstScreen(rect: Rect, viewport: ViewportDimensions): boolean {
   return documentTop(rect, viewport) >= viewport.height;
+}
+
+/**
+ * The rendered leaves that reach the viewport, each with its rect clipped to
+ * it: what a reader of the first screen actually sees, for the balance metrics.
+ */
+export function visibleLeaves(
+  elements: readonly ElementDesignData[],
+  viewport: ViewportDimensions
+): ElementDesignData[] {
+  const vp = viewportRect(viewport);
+  const out: ElementDesignData[] = [];
+  for (const el of renderedLeaves(elements)) {
+    const r = clip(el.rect, vp);
+    if (r) out.push({ ...el, rect: r });
+  }
+  return out;
 }

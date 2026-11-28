@@ -32,10 +32,11 @@ describe('informationDensity: disproportionate space for one function', () => {
     const c = space(orderListPage());
     expect(c.hits.map((h) => h.kind)).toEqual(['stacked-singletons', 'out-of-proportion']);
     for (const h of c.hits) {
+      // Registered controls in elementIds; the groups (no registered element) in regionIds.
       expect(h.elementIds).toEqual([
-        'search#1', 'list.controls', 'list.search', 'list.filter-status', 'list.sort',
-        'list.search-submit', 'list.controls-apply',
+        'list.search', 'list.filter-status', 'list.sort', 'list.search-submit', 'list.controls-apply',
       ]);
+      expect(h.regionIds).toEqual(['search#1', 'list.controls']);
     }
     expect(c.score).toBe(40);
   });
@@ -43,7 +44,8 @@ describe('informationDensity: disproportionate space for one function', () => {
   it('flags rows that would fit side by side, and nothing else, on a compact layout', () => {
     const c = space(compactControls());
     expect(c.hits.map((h) => h.kind)).toEqual(['mergeable-rows']);
-    expect(c.hits[0].elementIds).toEqual(['search#1', 'filters', 'q', 'q-go', 'status', 'sort', 'apply']);
+    expect(c.hits[0].elementIds).toEqual(['q', 'q-go', 'status', 'sort', 'apply']);
+    expect(c.hits[0].regionIds).toEqual(['search#1', 'filters']);
     expect(c.score).toBe(80);
   });
 

@@ -100,7 +100,10 @@ function rectOf(el: Element): { x: number; y: number; width: number; height: num
 }
 
 /** Rendered, from the canonical verdict: off-screen and partly occluded count as rendered. */
-function renderVerdict(el: HTMLElement): {
+function renderVerdict(
+  el: HTMLElement,
+  style: CSSStyleDeclaration | undefined
+): {
   visible: boolean;
   hiddenReason?: QualityHiddenReason;
   occludedPct?: number;
@@ -113,7 +116,7 @@ function renderVerdict(el: HTMLElement): {
   // visually-hidden pattern (a skip link, screen-reader-only table headers).
   if (v.visibilityReason === 'clipped' && (v.clippedPct ?? 0) >= 100 && !v.clipScrollable)
     return { visible: false, hiddenReason: 'clipped' };
-  if (isVisuallyHidden(el)) return { visible: false, hiddenReason: 'clipped' };
+  if (isVisuallyHidden(el, style)) return { visible: false, hiddenReason: 'clipped' };
   return { visible: true, occludedPct: v.occludedPct };
 }
 
@@ -123,10 +126,9 @@ function renderVerdict(el: HTMLElement): {
  * `clip-path: inset(50%)` / `inset(100%)`. The element stays in the
  * accessibility tree and paints nothing, so it is not page content.
  */
-function isVisuallyHidden(el: HTMLElement): boolean {
+function isVisuallyHidden(el: HTMLElement, style: CSSStyleDeclaration | undefined): boolean {
   const r = el.getBoundingClientRect();
   if (r.width <= VISUALLY_HIDDEN_MAX_PX || r.height <= VISUALLY_HIDDEN_MAX_PX) return true;
-  const style = el.ownerDocument?.defaultView?.getComputedStyle(el);
   if (!style) return false;
   const clip = style.clip.replace(/\s|,/g, '');
   if (clip === 'rect(0px0px0px0px)' || clip === 'rect(0000)') return true;
@@ -198,12 +200,14 @@ export function collectStructure(live: ReadonlyArray<{ id: string; element: HTML
     const groups = buildGroupIndex([...live.map((l) => l.element), ...blockEls], idOf);
 
     const structure = new Map<string, ElementStructure>();
+    const scrollerMemo = new Map<Element, boolean>();
     for (const { id, element } of live) {
       if (structure.has(id)) continue;
       const tagName = element.tagName.toLowerCase();
       const role = computeRoleSafe(element);
-      const verdict = renderVerdict(element);
-      const wantsText = TEXT_TAGS.has(tagName) || (role !== undefined && TEXT_ROLES.has(role));
+      const style = element.ownerDocument?.defaultView?.getComputedStyle(element);
+      const verdict = renderVerdict(element, style);
+      const wantsText = isTextBearing(element);
       const text = wantsText
         ? readScrubbedText(element, undefined, {
             normalizeWhitespace: true,
@@ -221,7 +225,8 @@ export function collectStructure(live: ReadonlyArray<{ id: string; element: HTML
         clientWidth: element.clientWidth,
         scrollHeight: element.scrollHeight,
         clientHeight: element.clientHeight,
-        textOverflow: element.ownerDocument?.defaultView?.getComputedStyle(element).textOverflow || undefined,
+        textOverflow: style?.textOverflow || undefined,
+        insideHorizontalScroller: insideHorizontalScroller(element, scrollerMemo),
         fullValueRecovery: {
           title: readTitleAttr(element) !== null,
           ariaLabel: readAriaLabelAttr(element) !== null,
@@ -284,27 +289,57 @@ function findTextBlockElements(idOf: Map<Element, string>): Element[] {
   const limit = window.innerHeight * TEXT_BLOCK_SCREENS;
   const out: Element[] = [];
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+  let lastKept: Element | null = null;
   for (let node = walker.nextNode(); node && out.length < TEXT_BLOCK_CAP; node = walker.nextNode()) {
     const el = node as HTMLElement;
+    // A block's text already includes every descendant's (document order puts
+    // descendants right after their ancestor).
+    if (lastKept?.contains(el)) continue;
     if (idOf.has(el) || el.closest(NON_TEXT_BLOCK)) continue;
     if (ownTextLength(el) < TEXT_BLOCK_MIN_CHARS) continue;
-    const textAncestor = registeredTextAncestor(el, idOf);
-    if (textAncestor) continue;
+    if (registeredTextAncestor(el, idOf)) continue;
     const rect = el.getBoundingClientRect();
     if (rect.y >= limit || rect.width <= 2 || rect.height <= 2) continue;
-    if (!renderVerdict(el).visible) continue;
+    if (!renderVerdict(el, el.ownerDocument?.defaultView?.getComputedStyle(el)).visible) continue;
     out.push(el);
+    lastKept = el;
   }
   return out;
 }
 
+/** An element whose own text the metrics read: a text tag, or a text role. */
+function isTextBearing(el: Element): boolean {
+  if (TEXT_TAGS.has(el.tagName.toLowerCase())) return true;
+  const role = computeRoleSafe(el);
+  return role !== undefined && TEXT_ROLES.has(role);
+}
+
+/** A registered, text-bearing ancestor already reads this element's text. */
 function registeredTextAncestor(el: Element, idOf: Map<Element, string>): boolean {
   for (let p = el.parentElement; p; p = p.parentElement) {
-    if (!idOf.has(p)) continue;
-    const tag = p.tagName.toLowerCase();
-    if (TEXT_TAGS.has(tag)) return true;
+    if (idOf.has(p) && isTextBearing(p)) return true;
   }
   return false;
+}
+
+const HORIZONTAL_SCROLL = new Set(['auto', 'scroll', 'hidden', 'clip', 'overlay']);
+
+/**
+ * Some ancestor below the page root scrolls or clips horizontally (a carousel,
+ * a wide-table wrapper), registered or not: content past the viewport edge
+ * inside it is not page overflow.
+ */
+function insideHorizontalScroller(el: Element, memo: Map<Element, boolean>): boolean {
+  const view = el.ownerDocument?.defaultView;
+  if (!view) return false;
+  const doc = el.ownerDocument;
+  const p = el.parentElement;
+  if (!p || p === doc.body || p === doc.documentElement) return false;
+  const known = memo.get(p);
+  if (known !== undefined) return known;
+  const answer = HORIZONTAL_SCROLL.has(view.getComputedStyle(p).overflowX) || insideHorizontalScroller(p, memo);
+  memo.set(p, answer);
+  return answer;
 }
 
 /**

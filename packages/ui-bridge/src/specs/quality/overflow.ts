@@ -45,20 +45,20 @@ const ID_CAP = 20;
 const CLIPPING = new Set(['hidden', 'clip']);
 const SCROLLING = new Set(['auto', 'scroll', 'hidden', 'clip', 'overlay']);
 
-function overflowValues(el: ElementDesignData): string[] {
-  return (el.styles?.overflow ?? '')
-    .split(/\s+/)
-    .map((v) => v.trim())
-    .filter(Boolean);
+/**
+ * The computed overflow on one axis. `overflowX` / `overflowY` are read when
+ * collected; otherwise the shorthand (`"hidden auto"` is x then y; one value is
+ * both).
+ */
+function axisOverflow(el: ElementDesignData, axis: 'x' | 'y'): string {
+  const own = axis === 'x' ? el.styles?.overflowX : el.styles?.overflowY;
+  if (own) return own;
+  const parts = (el.styles?.overflow ?? '').trim().split(/\s+/).filter(Boolean);
+  return (axis === 'x' ? parts[0] : (parts[1] ?? parts[0])) ?? '';
 }
 
-function clips(el: ElementDesignData): boolean {
-  return overflowValues(el).some((v) => CLIPPING.has(v));
-}
-
-function scrollsOrClips(el: ElementDesignData): boolean {
-  return overflowValues(el).some((v) => SCROLLING.has(v));
-}
+const clipsAxis = (el: ElementDesignData, axis: 'x' | 'y') => CLIPPING.has(axisOverflow(el, axis));
+const scrollsOrClipsX = (el: ElementDesignData) => SCROLLING.has(axisOverflow(el, 'x'));
 
 function isPageRoot(el: ElementDesignData): boolean {
   const tag = el.structure?.tagName;
@@ -85,7 +85,7 @@ export const contentOverflow: MetricFunction = (elements, viewport) => {
       seen.add(parent);
       const p = byId.get(parent);
       if (!p) return false;
-      if (!isPageRoot(p) && scrollsOrClips(p)) return true;
+      if (!isPageRoot(p) && scrollsOrClipsX(p)) return true;
       parent = p.structure?.parentId;
     }
     return false;
@@ -101,8 +101,13 @@ export const contentOverflow: MetricFunction = (elements, viewport) => {
     horizontalScrollPx !== null && horizontalScrollPx > OVERFLOW_TOLERANCE_PX;
 
   // 2. Elements past the viewport's left or right edge.
+  if (!haveStructure)
+    unmeasured.push({
+      input: 'pastViewportX.scrollContainment',
+      reason: 'no structure: an element inside a horizontal scroller cannot be told apart',
+    });
   const pastViewportX = rendered.filter((el) => {
-    if (isPageRoot(el) || insideScroller(el)) return false;
+    if (isPageRoot(el) || el.structure?.insideHorizontalScroller || insideScroller(el)) return false;
     return (
       el.rect.x < -OVERFLOW_TOLERANCE_PX ||
       el.rect.x + el.rect.width > viewport.width + OVERFLOW_TOLERANCE_PX
@@ -115,10 +120,10 @@ export const contentOverflow: MetricFunction = (elements, viewport) => {
   const clipped = haveStructure
     ? rendered.filter((el) => {
         const s = el.structure!;
-        if (isPageRoot(el) || !clips(el)) return false;
+        if (isPageRoot(el)) return false;
         return (
-          s.scrollWidth > s.clientWidth + OVERFLOW_TOLERANCE_PX ||
-          s.scrollHeight > s.clientHeight + OVERFLOW_TOLERANCE_PX
+          (clipsAxis(el, 'x') && s.scrollWidth > s.clientWidth + OVERFLOW_TOLERANCE_PX) ||
+          (clipsAxis(el, 'y') && s.scrollHeight > s.clientHeight + OVERFLOW_TOLERANCE_PX)
         );
       })
     : [];
@@ -134,16 +139,14 @@ export const contentOverflow: MetricFunction = (elements, viewport) => {
   const pastParent = haveStructure
     ? rendered.filter((el) => {
         const parent = el.structure?.parentId ? byId.get(el.structure.parentId) : undefined;
-        if (!parent || !isRendered(parent) || isPageRoot(parent) || !clips(parent)) return false;
+        if (!parent || !isRendered(parent) || isPageRoot(parent)) return false;
         const t = OVERFLOW_TOLERANCE_PX + 1;
         const p = parent.rect;
         const r = el.rect;
-        return (
-          r.x < p.x - t ||
-          r.y < p.y - t ||
-          r.x + r.width > p.x + p.width + t ||
-          r.y + r.height > p.y + p.height + t
-        );
+        const pastX = r.x < p.x - t || r.x + r.width > p.x + p.width + t;
+        const pastY = r.y < p.y - t || r.y + r.height > p.y + p.height + t;
+        // Only an axis that CLIPS hides the excess; a scrolling axis shows it on scroll.
+        return (clipsAxis(parent, 'x') && pastX) || (clipsAxis(parent, 'y') && pastY);
       })
     : [];
 

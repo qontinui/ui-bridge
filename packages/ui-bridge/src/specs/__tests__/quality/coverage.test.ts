@@ -99,6 +99,24 @@ describe('elementDensity counts covered pixels once', () => {
     expect(r?.coverage).toBe(0.5);
   });
 
+  it('keeps a rendered container a container when a hidden middle parent sits between it and a visible leaf', () => {
+    // card > (hidden) wrapper > visible leaf: the card must not count as a leaf.
+    const page = [
+      el('card', 'generic', { x: 0, y: 0, width: 1280, height: 800 }, { tagName: 'div' }),
+      el('wrapper', 'generic', { x: 0, y: 0, width: 640, height: 400 }, { tagName: 'div', parentId: 'card', visible: false, hiddenReason: 'hidden' }),
+      el('leaf', 'paragraph', { x: 0, y: 0, width: 640, height: 400 }, { tagName: 'p', parentId: 'wrapper' }),
+    ];
+    expect(elementDensity(page, DESKTOP).rawData?.coverage).toBe(0.25);
+  });
+
+  it('ignores a leaf whose rect is not a number', () => {
+    const page = [
+      el('ok', 'paragraph', { x: 0, y: 0, width: 640, height: 800 }),
+      el('nan', 'paragraph', { x: NaN, y: 0, width: 100, height: 100 }),
+    ];
+    expect(elementDensity(page, DESKTOP).rawData?.coverage).toBe(0.5);
+  });
+
   it('handles zero, one and many leaves', () => {
     expect(elementDensity([], DESKTOP).rawData?.coverage).toBe(0);
     expect(elementDensity([el('one', 'paragraph', { x: 0, y: 0, width: 640, height: 800 })], DESKTOP).rawData?.coverage).toBe(0.5);

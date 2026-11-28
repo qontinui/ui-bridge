@@ -137,7 +137,7 @@ export function redundantText(
     add(HEADING_TAGS.has(b.tagName) ? 'heading' : 'prose', b.id, b.text, b.rect, b.id);
   }
 
-  if (!sawText) return { score: null, hits: [], unitsCompared: 0, firstViewportTextChars: 0 };
+  if (!sawText || H <= 0) return { score: null, hits: [], unitsCompared: 0, firstViewportTextChars: 0 };
 
   // Pairs, then clusters (union-find).
   const parent = units.map((_, i) => i);

@@ -3606,6 +3606,8 @@ export interface ElementStructure {
   clientHeight: number;
   /** Computed `text-overflow` (`clip`, `ellipsis`, ...). */
   textOverflow?: string;
+  /** An ancestor below the page root scrolls or clips horizontally, registered or not. */
+  insideHorizontalScroller?: boolean;
   /**
    * Whether a truncated value has a way back to its full form, by attribute
    * PRESENCE only (no text is read): a `title`, an `aria-label`, or an

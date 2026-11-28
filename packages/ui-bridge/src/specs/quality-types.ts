@@ -85,7 +85,16 @@ export interface MetricFinding {
   severity: MetricFindingSeverity;
   message: string;
   recommendation?: string;
+  /** Registered element ids the finding is about. */
   elementIds?: string[];
+  /**
+   * Regions the finding is about that no registered element carries: a
+   * functional group's key (its registered id when it has one, else
+   * `<kind>#<n>`) or an unregistered text block (`dom:<tag>.<class>#<n>`). Keys
+   * are stable within one report only — `<kind>#<n>` is numbered over the
+   * evaluated batch. The matching `rawData` hit carries each one's rect.
+   */
+  regionIds?: string[];
 }
 
 export interface MetricResult {

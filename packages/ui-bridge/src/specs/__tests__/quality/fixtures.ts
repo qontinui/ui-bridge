@@ -138,7 +138,7 @@ export function orderListPage(): ElementDesignData[] {
 
 type Category = {
   score: number | null;
-  hits: Array<{ elementIds: string[]; reason: string; kind?: string; sharedTerms?: string[] }>;
+  hits: Array<{ elementIds: string[]; regionIds: string[]; reason: string; kind?: string; sharedTerms?: string[] }>;
 };
 
 /** One category of an `informationDensity` result's `rawData`. */

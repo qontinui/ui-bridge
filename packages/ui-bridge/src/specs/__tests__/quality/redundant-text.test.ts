@@ -83,7 +83,8 @@ describe('informationDensity: redundant text', () => {
       ],
     });
     expect(c.hits).toHaveLength(1);
-    expect(c.hits[0].elementIds).toEqual(['dom:span.page-context#1', 'intro']);
+    expect(c.hits[0].elementIds).toEqual(['intro']);
+    expect(c.hits[0].regionIds).toEqual(['dom:span.page-context#1']);
   });
 
   it('is null when no element carries text, and the metric is null when nothing was measured', () => {
