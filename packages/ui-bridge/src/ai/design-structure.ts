@@ -18,7 +18,7 @@
 
 import type { ElementStructure, QualityGroupKind, QualityHiddenReason } from '../core/types';
 import { computeAriaLabel, computeRoleSafe, readAriaLabelAttr, readTitleAttr } from '../core/a11y';
-import { isMainPane } from '../specs/quality/overflow';
+import { isGridElement, isMainPane } from '../specs/quality/overflow';
 import { readScrubbedText, scrubContent } from '../core/redaction';
 import { readElementVisibility, withVisibilityPass } from '../core/element-state';
 import { pageViewportContext } from '../control/page-scroll-container';
@@ -372,7 +372,15 @@ function scrollsOrClipsX(el: Element, view: Window, vp: ViewportDimensions): boo
   // viewport; a grid wrapper or a carousel scrolling on both axes is still a
   // scroller.
   if (CLIPS_X.has(style.overflowY) || el.scrollHeight <= el.clientHeight + 1) return true;
-  return !isMainPane(el.clientWidth, el.clientHeight, vp.width, vp.height);
+  const holdsGrid = Array.from(el.children).some((c) =>
+    isGridElement(c.tagName.toLowerCase(), c.getAttribute('role') ?? undefined)
+  );
+  const landmark = el.tagName.toLowerCase() === 'main' || el.getAttribute('role') === 'main';
+  return !isMainPane(
+    { landmark, holdsGrid, clientWidth: el.clientWidth, clientHeight: el.clientHeight },
+    vp.width,
+    vp.height
+  );
 }
 
 /**

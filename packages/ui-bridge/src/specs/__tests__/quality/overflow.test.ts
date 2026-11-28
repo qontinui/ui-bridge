@@ -110,6 +110,17 @@ describe('contentOverflow', () => {
     expect(kinds.pastViewportX.elementIds).toEqual(['wide']);
   });
 
+  it('a tall grid wrapper beside a sidebar contains its wide table; the main landmark does not', () => {
+    const wrapper = (tagName: string) => [
+      el('pane', 'generic', { x: 288, y: 0, width: 992, height: 800 }, { tagName, scrollWidth: 1400, clientWidth: 992, scrollHeight: 2400, clientHeight: 800 }, { overflow: 'auto' }),
+      el('pane.table', 'generic', { x: 288, y: 0, width: 1400, height: 2400 }, { tagName: 'table', role: 'table', parentId: 'pane' }),
+    ];
+    const past = (tagName: string) =>
+      (contentOverflow(wrapper(tagName), { ...DESKTOP, documentWidth: 1280 }).rawData?.kinds as Kinds).pastViewportX.elementIds;
+    expect(past('div')).toEqual([]);
+    expect(past('main')).toEqual(['pane.table']);
+  });
+
   it('a small grid wrapper scrolling on both axes still contains its wide table', () => {
     const page = [
       el('grid', 'generic', { x: 800, y: 100, width: 400, height: 300 }, { tagName: 'div', scrollWidth: 1200, clientWidth: 400, scrollHeight: 900, clientHeight: 300 }, { overflow: 'auto' }),

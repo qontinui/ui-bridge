@@ -59,16 +59,38 @@ function axisOverflow(el: ElementDesignData, axis: 'x' | 'y'): string {
 
 const clipsAxis = (el: ElementDesignData, axis: 'x' | 'y') => CLIPPING.has(axisOverflow(el, axis));
 /**
- * A client box this large relative to the viewport is the page's main scroll
- * pane, not a contained scroller. Tunable.
+ * Size shares for an unlabelled main pane. Width is loose (a main pane beside
+ * a sidebar is ~0.75 of the viewport); height separates it from a short grid
+ * wrapper or carousel. Tunable.
  */
-// Width is loose (a main pane beside a sidebar is ~0.75 of the viewport);
-// height decides: a grid wrapper or a carousel is short, a main pane is tall.
 export const MAIN_PANE_MIN_WIDTH_SHARE = 0.55;
 export const MAIN_PANE_MIN_HEIGHT_SHARE = 0.6;
 
-export function isMainPane(clientWidth: number, clientHeight: number, vw: number, vh: number): boolean {
-  return clientWidth >= MAIN_PANE_MIN_WIDTH_SHARE * vw && clientHeight >= MAIN_PANE_MIN_HEIGHT_SHARE * vh;
+/** What tells a page's main scroll pane from a contained scroller that scrolls on both axes. */
+export interface MainPaneSignals {
+  /** A `<main>` element or `role="main"`. */
+  landmark: boolean;
+  /** Directly holds a table or grid: a grid wrapper, however large. */
+  holdsGrid: boolean;
+  clientWidth: number;
+  clientHeight: number;
+}
+
+/**
+ * A main pane is the main landmark, or — unlabelled — a container that holds
+ * no table or grid directly and fills most of the viewport.
+ */
+export function isMainPane(s: MainPaneSignals, vw: number, vh: number): boolean {
+  if (s.landmark) return true;
+  if (s.holdsGrid) return false;
+  return s.clientWidth >= MAIN_PANE_MIN_WIDTH_SHARE * vw && s.clientHeight >= MAIN_PANE_MIN_HEIGHT_SHARE * vh;
+}
+
+const GRID_ROLES = new Set(['table', 'grid', 'treegrid']);
+
+/** A table or grid element, by tag or role. */
+export function isGridElement(tagName: string | undefined, role: string | undefined): boolean {
+  return tagName === 'table' || (role !== undefined && GRID_ROLES.has(role));
 }
 
 /**
@@ -77,7 +99,7 @@ export function isMainPane(clientWidth: number, clientHeight: number, vw: number
  * not the page's main pane: CSS computes `overflow-x: auto` for any
  * `overflow-y: auto` pane, and a wide child raises that pane's `scrollWidth`.
  */
-const scrollsOrClipsX = (el: ElementDesignData, viewport: ViewportDimensions) => {
+const scrollsOrClipsX = (el: ElementDesignData, viewport: ViewportDimensions, gridParents: Set<string>) => {
   if (clipsAxis(el, 'x')) return true;
   if (!SCROLLING.has(axisOverflow(el, 'x'))) return false;
   const s = el.structure;
@@ -89,7 +111,17 @@ const scrollsOrClipsX = (el: ElementDesignData, viewport: ViewportDimensions) =>
   // wide child forced it sideways) only when it fills most of the viewport; a
   // grid wrapper or a carousel scrolling on both axes is still a scroller.
   if (clipsAxis(el, 'y') || s.scrollHeight <= s.clientHeight + OVERFLOW_TOLERANCE_PX) return true;
-  return !isMainPane(s.clientWidth, s.clientHeight, viewport.width, viewport.height);
+  const main = isMainPane(
+    {
+      landmark: s.tagName === 'main' || s.role === 'main',
+      holdsGrid: gridParents.has(el.elementId),
+      clientWidth: s.clientWidth,
+      clientHeight: s.clientHeight,
+    },
+    viewport.width,
+    viewport.height
+  );
+  return !main;
 };
 
 function isPageRoot(el: ElementDesignData): boolean {
@@ -105,6 +137,11 @@ function recoverable(el: ElementDesignData): boolean | null {
 
 export const contentOverflow: MetricFunction = (elements, viewport) => {
   const byId = new Map(elements.map((el) => [el.elementId, el]));
+  const gridParents = new Set(
+    elements
+      .filter((el) => isGridElement(el.structure?.tagName, el.structure?.role) && el.structure?.parentId)
+      .map((el) => el.structure!.parentId!)
+  );
   const rendered = elements.filter(isRendered);
   const haveStructure = rendered.length > 0 && rendered.every((el) => el.structure);
   const unmeasured: Array<{ input: string; reason: string }> = [];
@@ -117,7 +154,7 @@ export const contentOverflow: MetricFunction = (elements, viewport) => {
       seen.add(parent);
       const p = byId.get(parent);
       if (!p) return false;
-      if (!isPageRoot(p) && scrollsOrClipsX(p, viewport)) return true;
+      if (!isPageRoot(p) && scrollsOrClipsX(p, viewport, gridParents)) return true;
       parent = p.structure?.parentId;
     }
     return false;
