@@ -58,7 +58,18 @@ function axisOverflow(el: ElementDesignData, axis: 'x' | 'y'): string {
 }
 
 const clipsAxis = (el: ElementDesignData, axis: 'x' | 'y') => CLIPPING.has(axisOverflow(el, axis));
-const scrollsOrClipsX = (el: ElementDesignData) => SCROLLING.has(axisOverflow(el, 'x'));
+/**
+ * The element hides or scrolls its x overflow. A computed `auto` / `scroll` x
+ * axis counts only when it actually scrolls on x: CSS computes `overflow-x:
+ * auto` for any `overflow-y: auto` pane, and such a pane is not a horizontal
+ * scroller.
+ */
+const scrollsOrClipsX = (el: ElementDesignData) => {
+  if (clipsAxis(el, 'x')) return true;
+  if (!SCROLLING.has(axisOverflow(el, 'x'))) return false;
+  const s = el.structure;
+  return s !== undefined && s.scrollWidth > s.clientWidth + OVERFLOW_TOLERANCE_PX;
+};
 
 function isPageRoot(el: ElementDesignData): boolean {
   const tag = el.structure?.tagName;

@@ -60,7 +60,8 @@ export function combineComponents(scores: Record<Component, number | null>): num
 }
 
 export const informationDensity: MetricFunction = (elements, viewport, page) => {
-  const haveStructure = elements.length > 0 && elements.every((el) => el.structure);
+  const rendered = elements.filter(isRendered);
+  const haveStructure = rendered.length > 0 && rendered.every((el) => el.structure);
   const registered = new Set(elements.map((el) => el.elementId));
   /** Split a hit's ids into registered element ids and synthetic region ids. */
   const split = <T extends { elementIds: string[] }>(hit: T) => ({
@@ -68,7 +69,6 @@ export const informationDensity: MetricFunction = (elements, viewport, page) => 
     elementIds: hit.elementIds.filter((id) => registered.has(id)),
     regionIds: hit.elementIds.filter((id) => !registered.has(id)),
   });
-  const rendered = elements.filter(isRendered);
   const groups = collectGroups(rendered);
   const redundantRaw = redundantText(elements, viewport, page?.textBlocks);
   const spaceRaw = disproportionateSpace(groups, viewport, haveStructure);

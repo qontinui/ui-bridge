@@ -131,6 +131,39 @@ describe('collectStructure', () => {
     expect(textBlocks.some((b) => b.text.includes('Offene Auftraege'))).toBe(false);
   });
 
+  it('does not read a block that wraps a registered text element', () => {
+    const wrap = document.createElement('div');
+    wrap.innerHTML = 'Hinweis zu den Lieferungen: <p>Lieferungen und Summen je Auftrag</p>';
+    byId('main').appendChild(wrap);
+    const p = wrap.querySelector('p')!;
+    box(wrap, 0, 480, 600, 60);
+    box(p, 0, 510, 600, 30);
+    const { textBlocks } = collectStructure([{ id: 'reg.note', element: p }]);
+    expect(textBlocks.some((b) => b.text.includes('Summen je Auftrag'))).toBe(false);
+  });
+
+  it('marks an element inside an unregistered horizontal scroller, and not one inside a vertical pane', () => {
+    const strip = document.createElement('div');
+    strip.style.overflowX = 'auto';
+    const card = document.createElement('div');
+    strip.appendChild(card);
+    const pane = document.createElement('div');
+    pane.style.overflowY = 'auto';
+    pane.style.overflowX = 'auto';
+    const item = document.createElement('div');
+    pane.appendChild(item);
+    byId('main').append(strip, pane);
+    Object.defineProperty(strip, 'scrollWidth', { configurable: true, value: 2400 });
+    Object.defineProperty(strip, 'clientWidth', { configurable: true, value: 600 });
+    for (const [n, y] of [[card, 600], [item, 700]] as const) box(n, 0, y, 300, 40);
+    const { structure } = collectStructure([
+      { id: 'reg.card', element: card },
+      { id: 'reg.item', element: item },
+    ]);
+    expect(structure.get('reg.card')?.insideHorizontalScroller).toBe(true);
+    expect(structure.get('reg.item')?.insideHorizontalScroller).toBe(false);
+  });
+
   it('reads a one-pixel box as visually hidden, not as content', () => {
     box(byId('col'), 0, 0, 1, 1);
     const { structure } = collectStructure([{ id: 'reg.col', element: byId('col') }]);

@@ -204,7 +204,7 @@ export function collectStructure(live: ReadonlyArray<{ id: string; element: HTML
     for (const { id, element } of live) {
       if (structure.has(id)) continue;
       const tagName = element.tagName.toLowerCase();
-      const role = computeRoleSafe(element);
+      const role = roleOf(element);
       const style = element.ownerDocument?.defaultView?.getComputedStyle(element);
       const verdict = renderVerdict(element, style);
       const wantsText = isTextBearing(element);
@@ -298,6 +298,8 @@ function findTextBlockElements(idOf: Map<Element, string>): Element[] {
     if (idOf.has(el) || el.closest(NON_TEXT_BLOCK)) continue;
     if (ownTextLength(el) < TEXT_BLOCK_MIN_CHARS) continue;
     if (registeredTextAncestor(el, idOf)) continue;
+    // Its text would include a registered text element's, read on its own.
+    if (containsRegisteredText(el, idOf)) continue;
     const rect = el.getBoundingClientRect();
     if (rect.y >= limit || rect.width <= 2 || rect.height <= 2) continue;
     if (!renderVerdict(el, el.ownerDocument?.defaultView?.getComputedStyle(el)).visible) continue;
@@ -307,11 +309,29 @@ function findTextBlockElements(idOf: Map<Element, string>): Element[] {
   return out;
 }
 
+const roleMemo = new WeakMap<Element, string | undefined>();
+
+/** `computeRoleSafe`, computed once per element. */
+function roleOf(el: Element): string | undefined {
+  if (roleMemo.has(el)) return roleMemo.get(el);
+  const role = computeRoleSafe(el);
+  roleMemo.set(el, role);
+  return role;
+}
+
 /** An element whose own text the metrics read: a text tag, or a text role. */
 function isTextBearing(el: Element): boolean {
   if (TEXT_TAGS.has(el.tagName.toLowerCase())) return true;
-  const role = computeRoleSafe(el);
+  const role = roleOf(el);
   return role !== undefined && TEXT_ROLES.has(role);
+}
+
+/** A registered, text-bearing descendant already reads part of this element's text. */
+function containsRegisteredText(el: Element, idOf: Map<Element, string>): boolean {
+  for (const d of Array.from(el.querySelectorAll('*'))) {
+    if (idOf.has(d) && isTextBearing(d)) return true;
+  }
+  return false;
 }
 
 /** A registered, text-bearing ancestor already reads this element's text. */
@@ -322,7 +342,20 @@ function registeredTextAncestor(el: Element, idOf: Map<Element, string>): boolea
   return false;
 }
 
-const HORIZONTAL_SCROLL = new Set(['auto', 'scroll', 'hidden', 'clip', 'overlay']);
+const CLIPS_X = new Set(['hidden', 'clip']);
+const SCROLLS_X = new Set(['auto', 'scroll', 'overlay']);
+
+/**
+ * The element hides its x overflow, or actually scrolls on x. A computed
+ * `auto` alone is not enough: CSS computes `overflow-x: auto` for any
+ * `overflow-y: auto` pane, and an app shell's main scroll pane is not a
+ * horizontal scroller.
+ */
+function scrollsOrClipsX(el: Element, view: Window): boolean {
+  const x = view.getComputedStyle(el).overflowX;
+  if (CLIPS_X.has(x)) return true;
+  return SCROLLS_X.has(x) && el.scrollWidth > el.clientWidth + 1;
+}
 
 /**
  * Some ancestor below the page root scrolls or clips horizontally (a carousel,
@@ -337,7 +370,7 @@ function insideHorizontalScroller(el: Element, memo: Map<Element, boolean>): boo
   if (!p || p === doc.body || p === doc.documentElement) return false;
   const known = memo.get(p);
   if (known !== undefined) return known;
-  const answer = HORIZONTAL_SCROLL.has(view.getComputedStyle(p).overflowX) || insideHorizontalScroller(p, memo);
+  const answer = scrollsOrClipsX(p, view) || insideHorizontalScroller(p, memo);
   memo.set(p, answer);
   return answer;
 }

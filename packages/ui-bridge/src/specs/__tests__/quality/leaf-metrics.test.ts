@@ -65,7 +65,7 @@ describe('verticalBalance reads the visible leaves', () => {
 });
 
 describe('localDensityBalance reads the visible leaves', () => {
-  it('a hidden element covering one quadrant does not unbalance the grid', () => {
+  it('a hidden element over one quadrant and a leaf below the first screen do not unbalance the grid', () => {
     // Four 320 x 200 leaves, one in each quadrant. A hidden 640 x 400 block
     // over one quadrant would otherwise fill its cells.
     const quads = [
@@ -75,7 +75,8 @@ describe('localDensityBalance reads the visible leaves', () => {
       [800, 500],
     ].map(([x, y], i) => el(`q${i}`, 'paragraph', { x, y, width: 320, height: 200 }, { tagName: 'p' }));
     const ghost = el('ghost', 'generic', { x: 0, y: 0, width: 640, height: 400 }, { tagName: 'div', visible: false, hiddenReason: 'hidden' });
-    const withGhost = localDensityBalance([...quads, ghost], DESKTOP);
+    const farBelow = el('far-below', 'paragraph', { x: 0, y: 1200, width: 640, height: 400 }, { tagName: 'p' });
+    const withGhost = localDensityBalance([...quads, ghost, farBelow], DESKTOP);
     const without = localDensityBalance(quads, DESKTOP);
     expect(withGhost.rawData?.cv).toBe(without.rawData?.cv);
     expect(withGhost.rawData?.leafCount).toBe(4);

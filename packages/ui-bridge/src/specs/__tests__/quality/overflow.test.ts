@@ -45,7 +45,7 @@ describe('contentOverflow', () => {
 
   it('does not count an element inside a horizontally scrolling container', () => {
     const page = [
-      el('scroller', 'generic', { x: 0, y: 0, width: 1280, height: 200 }, { tagName: 'div' }, { overflow: 'auto' }),
+      el('scroller', 'generic', { x: 0, y: 0, width: 1280, height: 200 }, { tagName: 'div', scrollWidth: 2000, clientWidth: 1280 }, { overflow: 'auto' }),
       el('wide-table', 'generic', { x: 0, y: 0, width: 2000, height: 200 }, { tagName: 'table', parentId: 'scroller' }),
     ];
     const kinds = contentOverflow(page, { ...DESKTOP, documentWidth: 1280 }).rawData?.kinds as Kinds;
@@ -82,6 +82,22 @@ describe('contentOverflow', () => {
     ];
     const result = contentOverflow(page, { ...DESKTOP, documentWidth: 1280 });
     expect(result.score).toBe(100);
+  });
+
+  it('does not charge a horizontal scroller whose vertical axis clips (overflow: auto hidden)', () => {
+    const page = [
+      el('strip', 'generic', { x: 0, y: 0, width: 600, height: 200 }, { tagName: 'div', scrollWidth: 2400, clientWidth: 600 }, { overflow: 'auto hidden' }),
+    ];
+    expect(contentOverflow(page, { ...DESKTOP, documentWidth: 1280 }).score).toBe(100);
+  });
+
+  it('a registered vertical scroll pane (computed overflow-x auto, no x scroll) does not exempt a child past the viewport', () => {
+    const page = [
+      el('main', 'generic', { x: 0, y: 0, width: 1280, height: 800 }, { tagName: 'main', scrollHeight: 2400, clientHeight: 800 }, { overflow: 'auto' }),
+      el('wide', 'generic', { x: 0, y: 100, width: 1600, height: 200 }, { tagName: 'div', parentId: 'main' }),
+    ];
+    const kinds = contentOverflow(page, { ...DESKTOP, documentWidth: 1280 }).rawData?.kinds as Kinds;
+    expect(kinds.pastViewportX.elementIds).toEqual(['wide']);
   });
 
   it('does not count an element inside an unregistered horizontal scroller', () => {
