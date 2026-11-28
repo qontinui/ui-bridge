@@ -18,6 +18,7 @@
 
 import type { ElementStructure, QualityGroupKind, QualityHiddenReason } from '../core/types';
 import { computeAriaLabel, computeRoleSafe, readAriaLabelAttr, readTitleAttr } from '../core/a11y';
+import { isMainPane } from '../specs/quality/overflow';
 import { readScrubbedText, scrubContent } from '../core/redaction';
 import { readElementVisibility, withVisibilityPass } from '../core/element-state';
 import { pageViewportContext } from '../control/page-scroll-container';
@@ -357,18 +358,20 @@ const SCROLLS_X = new Set(['auto', 'scroll', 'overlay']);
 
 /**
  * The element hides its x overflow, or is a horizontal scroller: it scrolls on
- * x and not on y. A computed `auto` alone is not enough — CSS computes
- * `overflow-x: auto` for any `overflow-y: auto` pane, and a wide child raises
- * such a pane's `scrollWidth` too.
+ * x and is not the page's main pane. A computed `auto` alone is not enough —
+ * CSS computes `overflow-x: auto` for any `overflow-y: auto` pane, and a wide
+ * child raises such a pane's `scrollWidth` too.
  */
 function scrollsOrClipsX(el: Element, view: Window): boolean {
   const style = view.getComputedStyle(el);
   if (CLIPS_X.has(style.overflowX)) return true;
   if (!SCROLLS_X.has(style.overflowX) || el.scrollWidth <= el.clientWidth + 1) return false;
-  // Scrolls on x: a horizontal scroller when its y axis clips or does not
-  // scroll. A pane scrolling on both axes is a page's main pane whose wide
-  // child forced the x scroll, not a carousel.
-  return CLIPS_X.has(style.overflowY) || el.scrollHeight <= el.clientHeight + 1;
+  // Scrolls on x. A container scrolling on both axes is a page's main pane
+  // (a wide child forced it sideways) only when it fills most of the
+  // viewport; a grid wrapper or a carousel scrolling on both axes is still a
+  // scroller.
+  if (CLIPS_X.has(style.overflowY) || el.scrollHeight <= el.clientHeight + 1) return true;
+  return !isMainPane(el.clientWidth, el.clientHeight, view.innerWidth, view.innerHeight);
 }
 
 /**

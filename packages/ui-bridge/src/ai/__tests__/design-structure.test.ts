@@ -169,6 +169,20 @@ describe('collectStructure', () => {
     expect(structure.get('reg.item')?.insideHorizontalScroller).toBe(false);
   });
 
+  it('marks an element inside a small grid wrapper that scrolls on both axes', () => {
+    const grid = document.createElement('div');
+    grid.style.overflowX = 'auto';
+    grid.style.overflowY = 'auto';
+    const cell = document.createElement('div');
+    grid.appendChild(cell);
+    byId('main').append(grid);
+    for (const [k, v] of Object.entries({ scrollWidth: 1200, clientWidth: 400, scrollHeight: 900, clientHeight: 300 }))
+      Object.defineProperty(grid, k, { configurable: true, value: v });
+    box(cell, 0, 760, 300, 40);
+    const { structure } = collectStructure([{ id: 'reg.cell', element: cell }]);
+    expect(structure.get('reg.cell')?.insideHorizontalScroller).toBe(true);
+  });
+
   it('reads a one-pixel box as visually hidden, not as content', () => {
     box(byId('col'), 0, 0, 1, 1);
     const { structure } = collectStructure([{ id: 'reg.col', element: byId('col') }]);

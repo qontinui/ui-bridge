@@ -101,6 +101,15 @@ describe('contentOverflow', () => {
     expect(kinds.pastViewportX.elementIds).toEqual(['wide']);
   });
 
+  it('a small grid wrapper scrolling on both axes still contains its wide table', () => {
+    const page = [
+      el('grid', 'generic', { x: 800, y: 100, width: 400, height: 300 }, { tagName: 'div', scrollWidth: 1200, clientWidth: 400, scrollHeight: 900, clientHeight: 300 }, { overflow: 'auto' }),
+      el('grid.table', 'generic', { x: 800, y: 100, width: 1200, height: 900 }, { tagName: 'table', parentId: 'grid' }),
+    ];
+    const kinds = contentOverflow(page, { ...DESKTOP, documentWidth: 1280 }).rawData?.kinds as Kinds;
+    expect(kinds.pastViewportX.elementIds).toEqual([]);
+  });
+
   it('does not count an element inside an unregistered horizontal scroller', () => {
     const page = [el('card', 'generic', { x: 1200, y: 0, width: 300, height: 200 }, { tagName: 'div', insideHorizontalScroller: true })];
     const kinds = contentOverflow(page, { ...DESKTOP, documentWidth: 1280 }).rawData?.kinds as Kinds;
