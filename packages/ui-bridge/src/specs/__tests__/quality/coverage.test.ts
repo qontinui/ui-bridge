@@ -69,6 +69,15 @@ describe('elementDensity counts covered pixels once', () => {
     expect(elementDensity(twins, DESKTOP).rawData?.coverage).toBe(0.25);
   });
 
+  it('counts the overlap of two sibling leaves once', () => {
+    // 0..800 and 400..1200 wide, 400 tall: the union is 1200 x 400 = 480,000 px², not 640,000.
+    const page = [
+      el('a', 'paragraph', { x: 0, y: 0, width: 800, height: 400 }, { tagName: 'p' }),
+      el('b', 'paragraph', { x: 400, y: 0, width: 800, height: 400 }, { tagName: 'p' }),
+    ];
+    expect(elementDensity(page, DESKTOP).rawData?.coverage).toBe(0.46875);
+  });
+
   it('clips an element half off the right edge to the viewport', () => {
     const half = [el('wide', 'paragraph', { x: 1080, y: 0, width: 400, height: 800 })];
     expect(elementDensity(half, DESKTOP).rawData?.coverage).toBe(0.15625);
