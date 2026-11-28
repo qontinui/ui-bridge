@@ -5,7 +5,7 @@
  * Metrics measure density, spacing, color, typography, and cross-element consistency.
  */
 
-import type { ElementDesignData } from '../core/types';
+import type { ElementDesignData, ElementStructure } from '../core/types';
 
 // ============================================================================
 // Viewport
@@ -14,6 +14,16 @@ import type { ElementDesignData } from '../core/types';
 export interface ViewportDimensions {
   width: number;
   height: number;
+  /**
+   * The page's scrollable extent and scroll offset, when measured
+   * (`/design/evaluate` reads them from the live document). Absent, the
+   * structural metrics read the first screen as rect `y` in `[0, height)` and
+   * report horizontal page scroll as not measured.
+   */
+  documentWidth?: number;
+  documentHeight?: number;
+  scrollX?: number;
+  scrollY?: number;
 }
 
 // ============================================================================
@@ -80,7 +90,8 @@ export interface MetricFinding {
 
 export interface MetricResult {
   metricId: QualityMetricId;
-  score: number; // 0-100
+  /** 0-100; null when the metric is disabled, or could not measure what it names (`rawData.unmeasured`). */
+  score: number | null;
   label: string;
   category: QualityMetricCategory;
   enabled: boolean;
@@ -172,9 +183,34 @@ export interface SnapshotDiffReport {
 // Metric Function Signature
 // ============================================================================
 
+/**
+ * A visible run of text on the page that no registered element carries — a
+ * subtitle in a `<span>`, an intro in an untagged `<div>`. Read in the page
+ * (scrubbed) so the redundant-text check sees what a reader sees, not only
+ * what the registry holds. `id` is synthetic (`dom:<tag>.<class>#<n>`, in
+ * document order) and `rect` is viewport-relative, so a finding still maps to
+ * a region of the frame.
+ */
+export interface QualityTextBlock {
+  id: string;
+  tagName: string;
+  text: string;
+  rect: { x: number; y: number; width: number; height: number };
+  /** The nearest registered ancestor, when one exists. */
+  parentId?: string;
+  group?: ElementStructure['group'];
+}
+
+/** Page-level data beside the registered elements (`/design/evaluate` collects it). */
+export interface QualityPageData {
+  /** Unregistered text blocks within the first two screens. Absent: not collected. */
+  textBlocks?: QualityTextBlock[];
+}
+
 export type MetricFunction = (
   elements: ElementDesignData[],
-  viewport: ViewportDimensions
+  viewport: ViewportDimensions,
+  page?: QualityPageData
 ) => MetricResult;
 
 // ============================================================================

@@ -1,0 +1,136 @@
+/**
+ * `/design/evaluate`'s structure read (`ai/design-structure.ts`): the nearest
+ * REGISTERED ancestor, the functional group (registered or not), redaction,
+ * control types, unregistered text blocks, and that no other design route
+ * returns the new fields.
+ *
+ * jsdom lays nothing out, so each element is given a box
+ * (`getBoundingClientRect`) — the one input a browser would compute.
+ */
+
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { collectStructure } from '../design-structure';
+import { collectDesignBatch, collectDesignData, evaluateRegisteredQuality } from '../../specs/quality-request';
+
+function box(el: Element, x: number, y: number, width: number, height: number): void {
+  (el as HTMLElement).getBoundingClientRect = () => new DOMRect(x, y, width, height);
+}
+
+let root: HTMLElement;
+
+beforeEach(() => {
+  root = document.createElement('div');
+  root.innerHTML = `
+    <main id="main">
+      <span class="page-context">Ihre Aufträge mit Lieferungen und Summen.</span>
+      <section aria-label="Liste">
+        <div class="wrapper">
+          <p id="intro">Ihre Aufträge und die Lieferungen je Auftrag.</p>
+        </div>
+        <form id="create">
+          <div class="row"><input id="name" type="text"></div>
+          <button id="go" type="submit">Anlegen</button>
+        </form>
+        <table id="tbl"><tr><th id="col">Auftragsname</th></tr></table>
+        <p id="secret" data-bridge-redact="true">Kontonummer und Lieferadresse</p>
+      </section>
+    </main>`;
+  document.body.appendChild(root);
+  let y = 0;
+  for (const node of Array.from(root.querySelectorAll('*'))) {
+    box(node, 0, y, 600, 30);
+    y += 32;
+  }
+});
+
+afterEach(() => {
+  root.remove();
+});
+
+const byId = (id: string) => document.getElementById(id) as HTMLElement;
+
+describe('collectStructure', () => {
+  it('gives the nearest registered ancestor across an unregistered wrapper', () => {
+    const live = [
+      { id: 'reg.main', element: byId('main') },
+      { id: 'reg.intro', element: byId('intro') },
+    ];
+    const { structure } = collectStructure(live);
+    expect(structure.get('reg.intro')?.parentId).toBe('reg.main');
+    expect(structure.get('reg.main')?.parentId).toBeUndefined();
+  });
+
+  it('finds an unregistered form and table as the functional group', () => {
+    const live = [
+      { id: 'reg.name', element: byId('name') },
+      { id: 'reg.go', element: byId('go') },
+      { id: 'reg.col', element: byId('col') },
+    ];
+    const { structure } = collectStructure(live);
+    expect(structure.get('reg.name')?.group).toMatchObject({ key: 'form#1', kind: 'form', label: 'Liste' });
+    expect(structure.get('reg.go')?.group?.key).toBe('form#1');
+    expect(structure.get('reg.col')?.group).toMatchObject({ key: 'table#1', kind: 'table' });
+  });
+
+  it('keys a registered group by its registered id', () => {
+    const live = [
+      { id: 'reg.form', element: byId('create') },
+      { id: 'reg.name', element: byId('name') },
+    ];
+    expect(collectStructure(live).structure.get('reg.name')?.group?.key).toBe('reg.form');
+  });
+
+  it('reads the control type of a submit button and text only for text-bearing elements', () => {
+    const live = [
+      { id: 'reg.go', element: byId('go') },
+      { id: 'reg.intro', element: byId('intro') },
+      { id: 'reg.name', element: byId('name') },
+    ];
+    const { structure } = collectStructure(live);
+    expect(structure.get('reg.go')?.controlType).toBe('submit');
+    expect(structure.get('reg.go')?.text).toBe('Anlegen');
+    expect(structure.get('reg.intro')?.text).toBe('Ihre Aufträge und die Lieferungen je Auftrag.');
+    expect(structure.get('reg.name')?.text).toBeUndefined();
+  });
+
+  it('reads a redaction boundary as the sentinel, never its text', () => {
+    const { structure } = collectStructure([{ id: 'reg.secret', element: byId('secret') }]);
+    expect(structure.get('reg.secret')?.text).toBe('[REDACTED]');
+  });
+
+  it('collects an unregistered text block under a synthetic id', () => {
+    const { textBlocks } = collectStructure([{ id: 'reg.intro', element: byId('intro') }]);
+    const block = textBlocks.find((b) => b.tagName === 'span');
+    expect(block).toMatchObject({ id: 'dom:span.page-context#1', text: 'Ihre Aufträge mit Lieferungen und Summen.' });
+    // The registered paragraph is not a block of its own, and neither is the redacted one's text.
+    expect(textBlocks.some((b) => b.text.includes('Ihre Aufträge und die Lieferungen'))).toBe(false);
+    expect(textBlocks.some((b) => b.text.includes('Kontonummer'))).toBe(false);
+  });
+
+  it('reads a one-pixel box as visually hidden, not as content', () => {
+    box(byId('col'), 0, 0, 1, 1);
+    const { structure } = collectStructure([{ id: 'reg.col', element: byId('col') }]);
+    expect(structure.get('reg.col')).toMatchObject({ visible: false, hiddenReason: 'clipped' });
+  });
+});
+
+describe('structure reaches only /design/evaluate', () => {
+  const sources = () => [
+    { id: 'reg.intro', element: byId('intro'), type: 'paragraph' },
+    { id: 'reg.name', element: byId('name'), type: 'input' },
+  ];
+
+  it('is absent from design data collected for the other routes', () => {
+    for (const data of collectDesignData(sources(), undefined, { customProperties: false })) {
+      expect(data).not.toHaveProperty('structure');
+    }
+    expect(collectDesignBatch(sources(), undefined, { customProperties: false })).not.toHaveProperty('textBlocks');
+  });
+
+  it('is collected for /design/evaluate, whose report carries no element payload', () => {
+    const report = evaluateRegisteredQuality(sources(), {}, null);
+    expect(report).not.toHaveProperty('elements');
+    const density = report.metrics.find((m) => m.metricId === 'informationDensity');
+    expect(density?.rawData).toHaveProperty('categories');
+  });
+});

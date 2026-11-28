@@ -8,7 +8,15 @@
 
 import type { ElementDesignData, TokenAttribution } from '../core/types';
 import { answersToNamedType } from '../core/element-kind';
-import type { QualityMetricId, MetricResult, MetricFinding, MetricFunction } from './quality-types';
+import type { MetricFinding, MetricFunction, QualityMetricId } from './quality-types';
+import { makeResult } from './quality/metric-result';
+import { contentOverflow } from './quality/overflow';
+import { informationDensity } from './quality/information-density';
+import { elementDensity, whitespaceRatio } from './quality/coverage';
+import { isInteractive } from './quality/functional-groups';
+import { clip, isRendered, renderedLeaves, unionArea } from './quality/geometry';
+
+export { contentOverflow, informationDensity, elementDensity, whitespaceRatio };
 import {
   parseColor,
   rgbToHsl,
@@ -38,53 +46,10 @@ function coefficientOfVariation(values: number[]): number {
   return Math.sqrt(variance) / Math.abs(mean);
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}
-
 function elementArea(el: ElementDesignData): number {
   return el.rect.width * el.rect.height;
 }
 
-function isInteractive(el: ElementDesignData): boolean {
-  const t = el.type.toLowerCase();
-  return (
-    t === 'button' ||
-    // An ARIA textbox and a combobox/listbox, as their native twins; a range
-    // <input> is the `slider` kind.
-    answersToNamedType(t, 'input') ||
-    answersToNamedType(t, 'select') ||
-    t === 'slider' ||
-    t === 'textarea' ||
-    t === 'link' ||
-    t === 'a' ||
-    t === 'checkbox' ||
-    t === 'radio' ||
-    t === 'switch' ||
-    t === 'pressable' ||
-    t === 'touchable'
-  );
-}
-
-function makeResult(
-  metricId: QualityMetricId,
-  label: string,
-  category: MetricResult['category'],
-  score: number,
-  findings: MetricFinding[],
-  rawData?: Record<string, unknown>
-): MetricResult {
-  return {
-    metricId,
-    score: Math.round(clamp(score, 0, 100)),
-    label,
-    category,
-    enabled: true,
-    weight: 0, // set by evaluator from context
-    findings,
-    rawData,
-  };
-}
 
 // ============================================================================
 // UX Helpers
@@ -144,35 +109,6 @@ function rectContains(
 // UX (5 metrics)
 // ============================================================================
 
-export const contentOverflow: MetricFunction = (elements, viewport) => {
-  if (elements.length === 0)
-    return makeResult('contentOverflow', 'Content Overflow', 'ux', 100, []);
-
-  const maxBottom = Math.max(...elements.map((el) => el.rect.y + el.rect.height));
-  const overflowPx = maxBottom - viewport.height;
-
-  if (overflowPx <= 0) return makeResult('contentOverflow', 'Content Overflow', 'ux', 100, []);
-
-  // Degrade linearly: 1 viewport of overflow → score 0
-  const overflowRatio = overflowPx / viewport.height;
-  const score = Math.max(0, 100 - overflowRatio * 100);
-  const findings: MetricFinding[] = [
-    {
-      severity: overflowRatio > 0.5 ? 'error' : 'warning',
-      message: `Content extends ${Math.round(overflowPx)}px (${(overflowRatio * 100).toFixed(0)}%) below the viewport.`,
-      recommendation:
-        'Reduce content height, use more compact layouts, or prioritize above-fold content.',
-    },
-  ];
-
-  return makeResult('contentOverflow', 'Content Overflow', 'ux', score, findings, {
-    overflowPx,
-    overflowRatio,
-    maxBottom,
-    viewportHeight: viewport.height,
-  });
-};
-
 export const aboveFoldRatio: MetricFunction = (elements, viewport) => {
   const contentElements = elements.filter(isContentBearing);
   if (contentElements.length === 0)
@@ -200,79 +136,52 @@ export const aboveFoldRatio: MetricFunction = (elements, viewport) => {
 };
 
 /**
- * The share of registered-element area that content-typed elements cover:
- * the summed rect area of the elements `isContentBearing` accepts, divided by
- * the summed rect area of all registered elements. It scores 100 from a share
- * of 30 %, reads no text, and does not use the viewport.
- *
- * Despite its id, this is not a measure of information density: it cannot say
- * which values a reader came for, whether they are on the first screen, or how
- * many scrolls and interactions reaching them costs. That question is answered
- * by the density tool (planned: `ui-bridge-density` in
- * `@qontinui/ui-bridge-headless`, and the `@qontinui/ui-bridge/density`
- * subpath), which reports reach per role against declared asks.
- *
- * The id `informationDensity` is kept: it is part of the evaluator's report
- * contract. Renaming it is recorded as plan-library follow-up edge
- * 1df890f7-d2b3-4566-86f6-339198475f7b on plan
- * 2026-11-23-ui-bridge-measures-information-density-as-reach-per-role-and-plans-the-change.
+ * The share of each visible container that its DIRECT rendered children cover
+ * (the union of their rects, so overlapping children count once). Direct means
+ * by `parentId` when structure was collected, else the smallest rendered
+ * container whose rect holds the child. Until 2026-11 it summed every
+ * geometrically contained element, grandchildren and hidden ones included.
  */
-export const informationDensity: MetricFunction = (elements, _viewport) => {
-  const contentElements = elements.filter(isContentBearing);
-  if (contentElements.length === 0 || elements.length === 0)
-    return makeResult('informationDensity', 'Information Density', 'ux', 100, []);
-
-  const contentArea = contentElements.reduce((sum, el) => sum + elementArea(el), 0);
-  const totalArea = elements.reduce((sum, el) => sum + elementArea(el), 0);
-
-  if (totalArea === 0)
-    return makeResult('informationDensity', 'Information Density', 'ux', 100, []);
-
-  const ratio = contentArea / totalArea;
-  const findings: MetricFinding[] = [];
-
-  // Ideal: >= 0.3 content ratio (at least 30% of element area is content)
-  let score: number;
-  if (ratio >= 0.3) {
-    score = 100;
-  } else {
-    score = (ratio / 0.3) * 100;
-    findings.push({
-      severity: ratio < 0.15 ? 'error' : 'warning',
-      message: `Only ${(ratio * 100).toFixed(0)}% of element area contains content. Too much chrome/decoration.`,
-      recommendation: 'Reduce container padding, decorative elements, or oversized headers.',
-    });
-  }
-
-  return makeResult('informationDensity', 'Information Density', 'ux', score, findings, {
-    contentArea,
-    totalArea,
-    ratio,
-    contentElementCount: contentElements.length,
-  });
-};
-
 export const containerEfficiency: MetricFunction = (elements, _viewport) => {
-  const containers = elements.filter(isContainerElement);
+  const rendered = elements.filter(isRendered);
+  const containers = rendered.filter(isContainerElement);
   if (containers.length === 0)
     return makeResult('containerEfficiency', 'Container Efficiency', 'ux', 100, []);
+
+  const containerIds = new Set(containers.map((c) => c.elementId));
+  const haveStructure = rendered.every((el) => el.structure);
+  const parentOf = (el: ElementDesignData): string | undefined => {
+    if (haveStructure) {
+      const p = el.structure?.parentId;
+      return p && containerIds.has(p) ? p : undefined;
+    }
+    let best: ElementDesignData | undefined;
+    for (const c of containers) {
+      if (c === el || !rectContains(c.rect, el.rect)) continue;
+      if (rectContains(el.rect, c.rect)) continue; // the same box
+      if (!best || elementArea(c) < elementArea(best)) best = c;
+    }
+    return best?.elementId;
+  };
+  const childrenOf = new Map<string, ElementDesignData[]>();
+  for (const el of rendered) {
+    const p = parentOf(el);
+    if (p) childrenOf.set(p, [...(childrenOf.get(p) ?? []), el]);
+  }
 
   const efficiencies: number[] = [];
   const inefficientContainers: string[] = [];
 
   for (const container of containers) {
-    // Find children that are geometrically contained
-    const children = elements.filter(
-      (el) => el.elementId !== container.elementId && rectContains(container.rect, el.rect)
-    );
-
+    const children = childrenOf.get(container.elementId) ?? [];
     if (children.length === 0) continue;
 
-    const childArea = children.reduce((sum, el) => sum + elementArea(el), 0);
     const containerArea = elementArea(container);
     if (containerArea === 0) continue;
-
-    const efficiency = Math.min(1, childArea / containerArea);
+    const inside = children
+      .map((c) => clip(c.rect, container.rect))
+      .filter((r): r is NonNullable<typeof r> => r !== null);
+    const efficiency = Math.min(1, unionArea(inside) / containerArea);
     efficiencies.push(efficiency);
 
     if (efficiency < 0.2) {
@@ -304,7 +213,10 @@ export const containerEfficiency: MetricFunction = (elements, _viewport) => {
   });
 };
 
-export const viewportUtilization: MetricFunction = (elements, viewport) => {
+export const viewportUtilization: MetricFunction = (allElements, viewport) => {
+  // The bounding box of the rendered leaves: a hidden element, or a container
+  // larger than its content, does not use the viewport.
+  const elements = renderedLeaves(allElements);
   if (elements.length === 0)
     return makeResult('viewportUtilization', 'Viewport Utilization', 'ux', 100, []);
 
@@ -348,6 +260,7 @@ export const viewportUtilization: MetricFunction = (elements, viewport) => {
     heightRatio,
     utilization,
     boundingBox: { minX, minY, maxX, maxY },
+    leafCount: elements.length,
   });
 };
 
@@ -355,70 +268,9 @@ export const viewportUtilization: MetricFunction = (elements, viewport) => {
 // Density & Layout (6 metrics)
 // ============================================================================
 
-export const elementDensity: MetricFunction = (elements, viewport) => {
-  const viewportArea = viewport.width * viewport.height;
-  if (viewportArea === 0)
-    return makeResult('elementDensity', 'Element Density', 'density', 100, []);
-
-  const totalElementArea = elements.reduce((sum, el) => sum + elementArea(el), 0);
-  const coverage = totalElementArea / viewportArea;
-  const findings: MetricFinding[] = [];
-
-  // Ideal range: 30-70% coverage
-  let score: number;
-  if (coverage >= 0.3 && coverage <= 0.7) {
-    score = 100;
-  } else if (coverage < 0.3) {
-    score = (coverage / 0.3) * 100;
-    findings.push({
-      severity: 'warning',
-      message: `Low element density (${(coverage * 100).toFixed(1)}%). Page may feel empty.`,
-      recommendation: 'Consider adding content or reducing whitespace.',
-    });
-  } else {
-    score = Math.max(0, 100 - ((coverage - 0.7) / 0.3) * 100);
-    findings.push({
-      severity: 'warning',
-      message: `High element density (${(coverage * 100).toFixed(1)}%). Page may feel cluttered.`,
-      recommendation: 'Consider reducing content density or increasing spacing.',
-    });
-  }
-
-  return makeResult('elementDensity', 'Element Density', 'density', score, findings, { coverage });
-};
-
-export const whitespaceRatio: MetricFunction = (elements, viewport) => {
-  const viewportArea = viewport.width * viewport.height;
-  if (viewportArea === 0)
-    return makeResult('whitespaceRatio', 'Whitespace Ratio', 'density', 100, []);
-
-  const totalElementArea = elements.reduce((sum, el) => sum + elementArea(el), 0);
-  const ratio = 1 - Math.min(1, totalElementArea / viewportArea);
-  const findings: MetricFinding[] = [];
-
-  let score: number;
-  if (ratio >= 0.25 && ratio <= 0.75) {
-    score = 100;
-  } else if (ratio < 0.25) {
-    score = (ratio / 0.25) * 100;
-    findings.push({
-      severity: 'warning',
-      message: `Very low whitespace (${(ratio * 100).toFixed(1)}%). UI feels cramped.`,
-      recommendation: 'Increase padding and margins between elements.',
-    });
-  } else {
-    score = Math.max(0, 100 - ((ratio - 0.75) / 0.25) * 100);
-    findings.push({
-      severity: 'info',
-      message: `Very high whitespace (${(ratio * 100).toFixed(1)}%). Page may feel sparse.`,
-      recommendation: 'Consider whether the empty space serves a purpose.',
-    });
-  }
-
-  return makeResult('whitespaceRatio', 'Whitespace Ratio', 'density', score, findings, { ratio });
-};
-
-export const localDensityBalance: MetricFunction = (elements, viewport) => {
+export const localDensityBalance: MetricFunction = (allElements, viewport) => {
+  // Rendered leaves only: nested containers and hidden elements carry no weight of their own.
+  const elements = renderedLeaves(allElements);
   if (elements.length < 4)
     return makeResult('localDensityBalance', 'Local Density Balance', 'density', 100, []);
 
@@ -475,10 +327,13 @@ export const localDensityBalance: MetricFunction = (elements, viewport) => {
   return makeResult('localDensityBalance', 'Local Density Balance', 'density', score, findings, {
     cv,
     gridDensities: densities,
+    leafCount: elements.length,
   });
 };
 
-export const horizontalBalance: MetricFunction = (elements, viewport) => {
+export const horizontalBalance: MetricFunction = (allElements, viewport) => {
+  // Rendered leaves only: nested containers and hidden elements carry no weight of their own.
+  const elements = renderedLeaves(allElements);
   if (elements.length === 0)
     return makeResult('horizontalBalance', 'Horizontal Balance', 'density', 100, []);
 
@@ -517,10 +372,13 @@ export const horizontalBalance: MetricFunction = (elements, viewport) => {
     ratio,
     leftArea,
     rightArea,
+    leafCount: elements.length,
   });
 };
 
-export const verticalBalance: MetricFunction = (elements, viewport) => {
+export const verticalBalance: MetricFunction = (allElements, viewport) => {
+  // Rendered leaves only: nested containers and hidden elements carry no weight of their own.
+  const elements = renderedLeaves(allElements);
   if (elements.length === 0)
     return makeResult('verticalBalance', 'Vertical Balance', 'density', 100, []);
 
@@ -558,6 +416,7 @@ export const verticalBalance: MetricFunction = (elements, viewport) => {
     ratio,
     topArea,
     bottomArea,
+    leafCount: elements.length,
   });
 };
 

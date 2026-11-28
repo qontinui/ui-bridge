@@ -129,24 +129,24 @@ describe('contentOverflow', () => {
     expect(result.score).toBe(100);
   });
 
-  it('degrades score when content overflows by 50%', () => {
+  // Vertical page length is not overflow: a page taller than the viewport
+  // scrolls (coord caveat 7ac36d9e). The overflow kinds are tested in
+  // quality-metrics.structural.test.ts.
+  it('does not penalise content that continues below the viewport', () => {
     const elements = [
       makeElement('a', 'heading', { x: 0, y: 0, width: 400, height: 50 }),
-      makeElement('b', 'paragraph', { x: 0, y: 800, width: 400, height: 400 }), // extends to y=1200
+      makeElement('b', 'paragraph', { x: 0, y: 800, width: 400, height: 800 }), // extends to y=1600
     ];
     const result = contentOverflow(elements, DEFAULT_VIEWPORT);
-    expect(result.score).toBe(50);
-    expect(result.findings).toHaveLength(1);
-    expect(result.findings[0].severity).toBe('warning');
+    expect(result.score).toBe(100);
+    expect(result.findings).toHaveLength(0);
   });
 
-  it('returns 0 when content overflows by full viewport height', () => {
-    const elements = [
-      makeElement('a', 'paragraph', { x: 0, y: 800, width: 400, height: 800 }), // extends to y=1600
-    ];
+  it('degrades the score for an element wider than the viewport', () => {
+    const elements = [makeElement('a', 'paragraph', { x: 0, y: 0, width: 1500, height: 40 })];
     const result = contentOverflow(elements, DEFAULT_VIEWPORT);
-    expect(result.score).toBe(0);
-    expect(result.findings[0].severity).toBe('error');
+    expect(result.score).toBe(90);
+    expect(result.findings[0].elementIds).toEqual(['a']);
   });
 
   it('has category "ux"', () => {
@@ -202,32 +202,20 @@ describe('aboveFoldRatio', () => {
 // informationDensity
 // ============================================================================
 
+// The three categories are tested in quality-metrics.structural.test.ts.
 describe('informationDensity', () => {
-  it('returns 100 when content elements dominate', () => {
+  it('reports not measured (null), never 100, for design data without structure', () => {
     const elements = [
-      makeContentElement('a', 'heading', { x: 0, y: 0, width: 400, height: 50 }), // 20000
-      makeContentElement('b', 'paragraph', { x: 0, y: 60, width: 400, height: 200 }), // 80000
-      makeElement('c', 'generic', { x: 0, y: 270, width: 400, height: 30 }), // 12000 (chrome)
+      makeContentElement('a', 'heading', { x: 0, y: 0, width: 400, height: 50 }),
+      makeElement('c', 'generic', { x: 0, y: 270, width: 400, height: 30 }),
     ];
     const result = informationDensity(elements, DEFAULT_VIEWPORT);
-    expect(result.score).toBe(100); // 100000/112000 > 0.3
+    expect(result.score).toBeNull();
+    expect(Array.isArray(result.rawData?.unmeasured)).toBe(true);
   });
 
-  it('returns low score when mostly chrome', () => {
-    const elements = [
-      makeContentElement('a', 'label', { x: 10, y: 10, width: 100, height: 20 }), // 2000
-      makeElement('b', 'generic', { x: 0, y: 0, width: 800, height: 600 }), // 480000 (chrome)
-      makeElement('c', 'generic', { x: 0, y: 600, width: 800, height: 200 }), // 160000 (chrome)
-    ];
-    const result = informationDensity(elements, DEFAULT_VIEWPORT);
-    // ratio = 2000 / 642000 ≈ 0.003
-    expect(result.score).toBeLessThan(10);
-    expect(result.findings[0].severity).toBe('error');
-  });
-
-  it('returns 100 for empty elements', () => {
-    const result = informationDensity([], DEFAULT_VIEWPORT);
-    expect(result.score).toBe(100);
+  it('reports not measured for no elements', () => {
+    expect(informationDensity([], DEFAULT_VIEWPORT).score).toBeNull();
   });
 });
 
@@ -335,7 +323,9 @@ describe('evaluateQuality report', () => {
     const enabled = report.metrics.filter((m) => m.enabled);
     expect(enabled.length).toBeGreaterThan(0);
     for (const m of enabled) {
-      expect(typeof m.score).toBe('number');
+      // A score, or null with the reason it could not be measured.
+      if (m.score === null) expect(Array.isArray(m.rawData?.unmeasured)).toBe(true);
+      else expect(typeof m.score).toBe('number');
       expect(m.weight).toBeGreaterThan(0);
       expect(Array.isArray(m.findings)).toBe(true);
     }
@@ -398,9 +388,9 @@ describe('admin dashboard scenario', () => {
     const ceResult = containerEfficiency(elements, viewport);
     expect(ceResult.score).toBeLessThan(50);
 
-    // Content overflow should detect below-fold content
+    // A table below the fold is not overflow: the page scrolls.
     const coResult = contentOverflow(elements, viewport);
-    expect(coResult.score).toBeLessThan(100);
+    expect(coResult.score).toBe(100);
 
     // Above-fold ratio should be partial
     const afResult = aboveFoldRatio(elements, viewport);

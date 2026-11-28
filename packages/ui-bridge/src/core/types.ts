@@ -3548,6 +3548,88 @@ export interface ElementDesignData {
     width: number;
     height: number;
   };
+  /**
+   * The element's place in the page, read only for `/design/evaluate` (the
+   * structural quality metrics read it; `collectDesignData` with
+   * `structure: true`). Absent on every other design route, and on design data
+   * a caller built by hand — a metric that needs it then reports what it could
+   * not measure instead of a score it did not earn.
+   */
+  structure?: ElementStructure;
+}
+
+/** The kind of functional group an element belongs to (`ElementStructure.group`). */
+export type QualityGroupKind =
+  | 'search'
+  | 'form'
+  | 'table'
+  | 'toolbar'
+  | 'dialog'
+  | 'nav'
+  | 'region';
+
+/**
+ * Why an element is not rendered (`ElementStructure.hiddenReason`): the
+ * canonical visibility verdict's `hidden` (display none, visibility hidden,
+ * opacity 0 on it or an ancestor) and `no-layout` (no box), plus `clipped` for
+ * an element an ancestor's overflow clips away entirely with no scroll to
+ * bring it back (the visually-hidden pattern), and `detached`.
+ */
+export type QualityHiddenReason = 'hidden' | 'no-layout' | 'clipped' | 'detached';
+
+/**
+ * Structure the quality metrics read beside an element's rect and styles:
+ * whether it is rendered, its nearest registered ancestor, its scroll extent,
+ * its scrubbed text (text-bearing elements only), and the functional group
+ * (form, search, table, ...) it sits in. All rects are viewport-relative, as
+ * `ElementDesignData.rect` is.
+ */
+export interface ElementStructure {
+  /** Lower-case tag name. */
+  tagName: string;
+  /** Computed ARIA role, when one resolves. */
+  role?: string;
+  /** The nearest ancestor that is also in the evaluated batch. */
+  parentId?: string;
+  /**
+   * False when the element is not rendered (see `hiddenReason`). An element
+   * that is rendered but outside the viewport is `true`: off-screen is a
+   * position, not a visibility.
+   */
+  visible: boolean;
+  hiddenReason?: QualityHiddenReason;
+  /** Share of the element another element paints over, 0-100 (in-viewport elements only). */
+  occludedPct?: number;
+  scrollWidth: number;
+  clientWidth: number;
+  scrollHeight: number;
+  clientHeight: number;
+  /** Computed `text-overflow` (`clip`, `ellipsis`, ...). */
+  textOverflow?: string;
+  /**
+   * Whether a truncated value has a way back to its full form, by attribute
+   * PRESENCE only (no text is read): a `title`, an `aria-label`, or an
+   * enclosing `<abbr>`.
+   */
+  fullValueRecovery?: { title: boolean; ariaLabel: boolean; abbr: boolean };
+  /**
+   * Whitespace-normalised text, read through the redaction-safe reader
+   * (`readScrubbedText`) and capped; only for text-bearing elements (headings,
+   * paragraphs, labels, header cells, captions, buttons, links, selects). The redaction
+   * sentinel when the element is inside a redaction boundary.
+   */
+  text?: string;
+  /** The `type` attribute of a `button` or `input`. */
+  controlType?: string;
+  /** The nearest functional group ancestor (or the element itself). */
+  group?: {
+    /** The group element's registered id, else `<kind>#<n>` in document order. */
+    key: string;
+    kind: QualityGroupKind;
+    rect: { x: number; y: number; width: number; height: number };
+    /** The group's accessible label, or its labelled section's, scrubbed. */
+    label?: string;
+  };
 }
 
 /**

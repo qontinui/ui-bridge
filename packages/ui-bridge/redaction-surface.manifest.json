@@ -16,6 +16,7 @@
   "projectionModules": [
     "packages/ui-bridge/src/adapters/formik.ts",
     "packages/ui-bridge/src/adapters/react-hook-form.ts",
+    "packages/ui-bridge/src/ai/design-structure.ts",
     "packages/ui-bridge/src/ai/search-engine.ts",
     "packages/ui-bridge/src/ai/semantic-snapshot.ts",
     "packages/ui-bridge/src/control/action-executor.ts",

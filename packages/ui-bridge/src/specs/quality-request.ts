@@ -41,10 +41,13 @@ import {
 import { evaluateQuality, isMetricEnabled, qualityContextProblem } from './quality-evaluator';
 import { BUILT_IN_CONTEXTS, getContext } from './quality-contexts';
 import { CUSTOM_PROPERTY_METRICS } from './quality-metrics';
+import { collectStructure, measuredViewport } from '../ai/design-structure';
 import { createBaseline, diffSnapshots } from './quality-diff';
 import type {
   QualityContext,
   QualityEvaluationReport,
+  QualityMetricId,
+  QualityTextBlock,
   SnapshotBaseline,
   SnapshotDiffReport,
   ViewportDimensions,
@@ -246,6 +249,12 @@ export interface DesignCollectOptions {
   includePseudoElements?: boolean;
   /** Attribute design properties to tokens (probes the page); default `true`. */
   attributeTokens?: boolean;
+  /**
+   * Add `structure` to each element (visibility, nearest registered ancestor,
+   * scroll extent, scrubbed text of text-bearing elements, functional group);
+   * default `false`. Only `/design/evaluate` reads it.
+   */
+  structure?: boolean;
 }
 
 /**
@@ -274,7 +283,7 @@ export function collectDesignBatch(
   elements: readonly QualityElementSource[],
   elementIds?: readonly string[],
   options: DesignCollectOptions = {}
-): { elements: ElementDesignData[] } & ReportedTokens {
+): { elements: ElementDesignData[]; textBlocks?: QualityTextBlock[] } & ReportedTokens {
   const wanted = elementIds ? new Set(elementIds) : null;
   const live: Array<QualityElementSource & { element: HTMLElement }> = [];
   for (const el of elements) {
@@ -290,18 +299,22 @@ export function collectDesignBatch(
           live.map((el) => el.element)
         );
   try {
-    const designData = live.map((el) =>
-      getElementDesignData(el.element, {
+    const structure = options.structure ? collectStructure(live) : null;
+    const designData = live.map((el) => {
+      const data = getElementDesignData(el.element, {
         elementId: el.id,
         label: el.label,
         type: el.type,
         customProperties,
         includePseudoElements: options.includePseudoElements,
         attributeTokens: options.attributeTokens,
-      })
-    );
+      });
+      const s = structure?.structure.get(el.id);
+      return s ? { ...data, structure: s } : data;
+    });
     return {
       elements: designData,
+      ...(structure ? { textBlocks: structure.textBlocks } : {}),
       // After the elements: the scopes they sit in are registered as they are read.
       ...(customProperties ? reportedTokensOf(customProperties.tokens) : noReportedTokens()),
     };
@@ -313,6 +326,19 @@ export function collectDesignBatch(
 function windowViewport(): ViewportDimensions {
   return { width: window.innerWidth, height: window.innerHeight };
 }
+
+/** The metrics that read `ElementDesignData.structure`. */
+const STRUCTURE_METRICS: readonly QualityMetricId[] = [
+  'elementDensity',
+  'whitespaceRatio',
+  'contentOverflow',
+  'informationDensity',
+  'containerEfficiency',
+  'viewportUtilization',
+  'localDensityBalance',
+  'horizontalBalance',
+  'verticalBalance',
+];
 
 /**
  * Answer `/design/evaluate`: the 28 metrics as values, under the requested
@@ -326,10 +352,15 @@ export function evaluateRegisteredQuality(
   styleGuide: Pick<StyleGuideConfig, 'qualityContexts'> | null | undefined
 ): QualityEvaluationReport {
   const { elementIds, viewport, context } = parseEvaluateRequest(request, styleGuide);
-  const designData = collectDesignData(elements, elementIds, {
+  const batch = collectDesignBatch(elements, elementIds, {
     customProperties: CUSTOM_PROPERTY_METRICS.some((id) => isMetricEnabled(context, id)),
+    structure: STRUCTURE_METRICS.some((id) => isMetricEnabled(context, id)),
   });
-  return evaluateQuality(designData, viewport ?? windowViewport(), context);
+  // A caller-supplied viewport is a hypothetical one: the document's measured
+  // extent belongs to the window's, so it is attached only then.
+  return evaluateQuality(batch.elements, viewport ?? measuredViewport(), context, {
+    textBlocks: batch.textBlocks,
+  });
 }
 
 /**

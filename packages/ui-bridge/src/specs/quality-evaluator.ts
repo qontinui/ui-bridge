@@ -13,6 +13,7 @@ import type {
   QualityEvaluationReport,
   MetricResult,
   MetricFinding,
+  QualityPageData,
 } from './quality-types';
 import { METRIC_FUNCTIONS } from './quality-metrics';
 import { getContext, BUILT_IN_CONTEXTS } from './quality-contexts';
@@ -122,7 +123,8 @@ export function isMetricEnabled(context: QualityContext, metricId: QualityMetric
 export function evaluateQuality(
   elements: ElementDesignData[],
   viewport: ViewportDimensions,
-  context?: QualityContext | string
+  context?: QualityContext | string,
+  page?: QualityPageData
 ): QualityEvaluationReport {
   const startTime = Date.now();
   const ctx = resolveContext(context);
@@ -137,9 +139,11 @@ export function evaluateQuality(
     const weight = config?.weight ?? 0.045;
 
     if (!enabled) {
+      // A disabled metric is not run, so it has no score: null, never a 0
+      // that reads like a measurement.
       metricResults.push({
         metricId,
-        score: 0,
+        score: null,
         label: metricId,
         category: getCategoryForMetric(metricId),
         enabled: false,
@@ -150,18 +154,19 @@ export function evaluateQuality(
     }
 
     const fn = METRIC_FUNCTIONS[metricId];
-    const result = fn(elements, viewport);
+    const result = fn(elements, viewport, page);
 
     // Apply context weight
     result.weight = weight;
     result.enabled = true;
 
     // Apply threshold-based severity to findings
-    if (config?.thresholds) {
+    if (config?.thresholds && result.score !== null) {
+      const score = result.score;
       for (const finding of result.findings) {
-        if (result.score < config.thresholds.warning) {
+        if (score < config.thresholds.warning) {
           finding.severity = 'error';
-        } else if (result.score < config.thresholds.good) {
+        } else if (score < config.thresholds.good) {
           finding.severity = finding.severity === 'error' ? 'error' : 'warning';
         }
       }

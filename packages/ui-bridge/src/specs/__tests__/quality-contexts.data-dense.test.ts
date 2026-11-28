@@ -106,6 +106,8 @@ function expectAreaMetricsDisabled(report: QualityEvaluationReport): void {
     expect(result.enabled, id).toBe(false);
     expect(result.weight, id).toBe(0);
     expect(result.findings, id).toEqual([]);
+    // Not run, so no score: null, never a 0 that reads like a measurement.
+    expect(result.score, id).toBeNull();
   }
   const recommendations = report.topIssues.map((f) => f.recommendation);
   expect(recommendations).not.toContain(REDUCE_DENSITY);

@@ -374,6 +374,10 @@ export default tseslint.config(
           // `vision/assert`'s in-tab evaluator: element text reaches a result
           // detail only through scrubContentByVerdict.
           'packages/ui-bridge/src/vision/dom-assertions.ts',
+          // `/design/evaluate`'s structure read: element text reaches the
+          // quality metrics only through readScrubbedText (plan
+          // 2026-11-28-ui-bridge-quality-metrics-measure-the-visible-union-real-overflow-and-structural-density).
+          'packages/ui-bridge/src/ai/design-structure.ts',
         ],
         // redaction-surface:projection-modules:end
         // redaction-surface:projection-module-ignores:start
