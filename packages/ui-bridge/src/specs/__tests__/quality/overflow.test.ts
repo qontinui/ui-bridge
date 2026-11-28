@@ -112,13 +112,16 @@ describe('contentOverflow', () => {
 
   it('a tall grid wrapper beside a sidebar contains its wide table; the main landmark does not', () => {
     const wrapper = (tagName: string) => [
-      el('pane', 'generic', { x: 288, y: 0, width: 992, height: 800 }, { tagName, scrollWidth: 1400, clientWidth: 992, scrollHeight: 2400, clientHeight: 800 }, { overflow: 'auto' }),
+      el('pane', 'generic', { x: 288, y: 0, width: 992, height: 800 }, { tagName, holdsGridDirectly: tagName !== 'section', scrollWidth: 1400, clientWidth: 992, scrollHeight: 2400, clientHeight: 800 }, { overflow: 'auto' }),
       el('pane.table', 'generic', { x: 288, y: 0, width: 1400, height: 2400 }, { tagName: 'table', role: 'table', parentId: 'pane' }),
     ];
     const past = (tagName: string) =>
       (contentOverflow(wrapper(tagName), { ...DESKTOP, documentWidth: 1280 }).rawData?.kinds as Kinds).pastViewportX.elementIds;
     expect(past('div')).toEqual([]);
     expect(past('main')).toEqual(['pane.table']);
+    // The table is registered under the pane but sits inside an unregistered
+    // card: the pane does not hold it directly, so it is a main pane by size.
+    expect(past('section')).toEqual(['pane.table']);
   });
 
   it('a small grid wrapper scrolling on both axes still contains its wide table', () => {

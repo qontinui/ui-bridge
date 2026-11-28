@@ -3608,6 +3608,8 @@ export interface ElementStructure {
   textOverflow?: string;
   /** An ancestor below the page root scrolls or clips horizontally, registered or not. */
   insideHorizontalScroller?: boolean;
+  /** A direct DOM child is a table or grid (tag `table`, role table/grid/treegrid), registered or not. */
+  holdsGridDirectly?: boolean;
   /**
    * Whether a truncated value has a way back to its full form, by attribute
    * PRESENCE only (no text is read): a `title`, an `aria-label`, or an

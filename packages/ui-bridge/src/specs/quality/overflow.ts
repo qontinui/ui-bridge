@@ -99,7 +99,7 @@ export function isGridElement(tagName: string | undefined, role: string | undefi
  * not the page's main pane: CSS computes `overflow-x: auto` for any
  * `overflow-y: auto` pane, and a wide child raises that pane's `scrollWidth`.
  */
-const scrollsOrClipsX = (el: ElementDesignData, viewport: ViewportDimensions, gridParents: Set<string>) => {
+const scrollsOrClipsX = (el: ElementDesignData, viewport: ViewportDimensions) => {
   if (clipsAxis(el, 'x')) return true;
   if (!SCROLLING.has(axisOverflow(el, 'x'))) return false;
   const s = el.structure;
@@ -114,7 +114,7 @@ const scrollsOrClipsX = (el: ElementDesignData, viewport: ViewportDimensions, gr
   const main = isMainPane(
     {
       landmark: s.tagName === 'main' || s.role === 'main',
-      holdsGrid: gridParents.has(el.elementId),
+      holdsGrid: s.holdsGridDirectly === true,
       clientWidth: s.clientWidth,
       clientHeight: s.clientHeight,
     },
@@ -137,11 +137,6 @@ function recoverable(el: ElementDesignData): boolean | null {
 
 export const contentOverflow: MetricFunction = (elements, viewport) => {
   const byId = new Map(elements.map((el) => [el.elementId, el]));
-  const gridParents = new Set(
-    elements
-      .filter((el) => isGridElement(el.structure?.tagName, el.structure?.role) && el.structure?.parentId)
-      .map((el) => el.structure!.parentId!)
-  );
   const rendered = elements.filter(isRendered);
   const haveStructure = rendered.length > 0 && rendered.every((el) => el.structure);
   const unmeasured: Array<{ input: string; reason: string }> = [];
@@ -154,7 +149,7 @@ export const contentOverflow: MetricFunction = (elements, viewport) => {
       seen.add(parent);
       const p = byId.get(parent);
       if (!p) return false;
-      if (!isPageRoot(p) && scrollsOrClipsX(p, viewport, gridParents)) return true;
+      if (!isPageRoot(p) && scrollsOrClipsX(p, viewport)) return true;
       parent = p.structure?.parentId;
     }
     return false;

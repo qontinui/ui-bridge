@@ -169,6 +169,24 @@ describe('collectStructure', () => {
     expect(structure.get('reg.item')?.insideHorizontalScroller).toBe(false);
   });
 
+  it('records whether an element holds a table directly, not through a wrapper', () => {
+    const direct = document.createElement('div');
+    direct.appendChild(document.createElement('table'));
+    const wrapped = document.createElement('div');
+    const card = document.createElement('section');
+    card.appendChild(document.createElement('table'));
+    wrapped.appendChild(card);
+    byId('main').append(direct, wrapped);
+    box(direct, 0, 600, 300, 40);
+    box(wrapped, 0, 650, 300, 40);
+    const { structure } = collectStructure([
+      { id: 'reg.direct', element: direct },
+      { id: 'reg.wrapped', element: wrapped },
+    ]);
+    expect(structure.get('reg.direct')?.holdsGridDirectly).toBe(true);
+    expect(structure.get('reg.wrapped')?.holdsGridDirectly).toBe(false);
+  });
+
   it('marks an element inside a small grid wrapper that scrolls on both axes', () => {
     const grid = document.createElement('div');
     grid.style.overflowX = 'auto';

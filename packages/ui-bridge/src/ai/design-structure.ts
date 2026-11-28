@@ -230,6 +230,7 @@ export function collectStructure(live: ReadonlyArray<{ id: string; element: HTML
         clientHeight: element.clientHeight,
         textOverflow: style?.textOverflow || undefined,
         insideHorizontalScroller: insideHorizontalScroller(element, scrollerMemo, vp),
+        holdsGridDirectly: holdsGridDirectly(element),
         fullValueRecovery: {
           title: readTitleAttr(element) !== null,
           ariaLabel: readAriaLabelAttr(element) !== null,
@@ -372,14 +373,19 @@ function scrollsOrClipsX(el: Element, view: Window, vp: ViewportDimensions): boo
   // viewport; a grid wrapper or a carousel scrolling on both axes is still a
   // scroller.
   if (CLIPS_X.has(style.overflowY) || el.scrollHeight <= el.clientHeight + 1) return true;
-  const holdsGrid = Array.from(el.children).some((c) =>
-    isGridElement(c.tagName.toLowerCase(), c.getAttribute('role') ?? undefined)
-  );
+  const holdsGrid = holdsGridDirectly(el);
   const landmark = el.tagName.toLowerCase() === 'main' || el.getAttribute('role') === 'main';
   return !isMainPane(
     { landmark, holdsGrid, clientWidth: el.clientWidth, clientHeight: el.clientHeight },
     vp.width,
     vp.height
+  );
+}
+
+/** A direct DOM child is a table or grid, registered or not. */
+function holdsGridDirectly(el: Element): boolean {
+  return Array.from(el.children).some((c) =>
+    isGridElement(c.tagName.toLowerCase(), c.getAttribute('role') ?? undefined)
   );
 }
 
