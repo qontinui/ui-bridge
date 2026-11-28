@@ -101,6 +101,15 @@ describe('contentOverflow', () => {
     expect(kinds.pastViewportX.elementIds).toEqual(['wide']);
   });
 
+  it('a main pane beside a sidebar (0.77 of the viewport wide) is still a main pane', () => {
+    const page = [
+      el('main', 'generic', { x: 288, y: 0, width: 992, height: 800 }, { tagName: 'main', scrollWidth: 1400, clientWidth: 992, scrollHeight: 2400, clientHeight: 800 }, { overflow: 'auto' }),
+      el('wide', 'generic', { x: 288, y: 100, width: 1400, height: 200 }, { tagName: 'div', parentId: 'main' }),
+    ];
+    const kinds = contentOverflow(page, { ...DESKTOP, documentWidth: 1280 }).rawData?.kinds as Kinds;
+    expect(kinds.pastViewportX.elementIds).toEqual(['wide']);
+  });
+
   it('a small grid wrapper scrolling on both axes still contains its wide table', () => {
     const page = [
       el('grid', 'generic', { x: 800, y: 100, width: 400, height: 300 }, { tagName: 'div', scrollWidth: 1200, clientWidth: 400, scrollHeight: 900, clientHeight: 300 }, { overflow: 'auto' }),

@@ -62,7 +62,9 @@ const clipsAxis = (el: ElementDesignData, axis: 'x' | 'y') => CLIPPING.has(axisO
  * A client box this large relative to the viewport is the page's main scroll
  * pane, not a contained scroller. Tunable.
  */
-export const MAIN_PANE_MIN_WIDTH_SHARE = 0.8;
+// Width is loose (a main pane beside a sidebar is ~0.75 of the viewport);
+// height decides: a grid wrapper or a carousel is short, a main pane is tall.
+export const MAIN_PANE_MIN_WIDTH_SHARE = 0.55;
 export const MAIN_PANE_MIN_HEIGHT_SHARE = 0.6;
 
 export function isMainPane(clientWidth: number, clientHeight: number, vw: number, vh: number): boolean {

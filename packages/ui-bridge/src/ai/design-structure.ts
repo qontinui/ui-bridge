@@ -203,6 +203,7 @@ export function collectStructure(live: ReadonlyArray<{ id: string; element: HTML
 
     const structure = new Map<string, ElementStructure>();
     const scrollerMemo = new Map<Element, boolean>();
+    const vp = measuredViewport();
     for (const { id, element } of live) {
       if (structure.has(id)) continue;
       const tagName = element.tagName.toLowerCase();
@@ -228,7 +229,7 @@ export function collectStructure(live: ReadonlyArray<{ id: string; element: HTML
         scrollHeight: element.scrollHeight,
         clientHeight: element.clientHeight,
         textOverflow: style?.textOverflow || undefined,
-        insideHorizontalScroller: insideHorizontalScroller(element, scrollerMemo),
+        insideHorizontalScroller: insideHorizontalScroller(element, scrollerMemo, vp),
         fullValueRecovery: {
           title: readTitleAttr(element) !== null,
           ariaLabel: readAriaLabelAttr(element) !== null,
@@ -362,7 +363,7 @@ const SCROLLS_X = new Set(['auto', 'scroll', 'overlay']);
  * CSS computes `overflow-x: auto` for any `overflow-y: auto` pane, and a wide
  * child raises such a pane's `scrollWidth` too.
  */
-function scrollsOrClipsX(el: Element, view: Window): boolean {
+function scrollsOrClipsX(el: Element, view: Window, vp: ViewportDimensions): boolean {
   const style = view.getComputedStyle(el);
   if (CLIPS_X.has(style.overflowX)) return true;
   if (!SCROLLS_X.has(style.overflowX) || el.scrollWidth <= el.clientWidth + 1) return false;
@@ -371,7 +372,7 @@ function scrollsOrClipsX(el: Element, view: Window): boolean {
   // viewport; a grid wrapper or a carousel scrolling on both axes is still a
   // scroller.
   if (CLIPS_X.has(style.overflowY) || el.scrollHeight <= el.clientHeight + 1) return true;
-  return !isMainPane(el.clientWidth, el.clientHeight, view.innerWidth, view.innerHeight);
+  return !isMainPane(el.clientWidth, el.clientHeight, vp.width, vp.height);
 }
 
 /**
@@ -379,7 +380,11 @@ function scrollsOrClipsX(el: Element, view: Window): boolean {
  * a wide-table wrapper), registered or not: content past the viewport edge
  * inside it is not page overflow.
  */
-function insideHorizontalScroller(el: Element, memo: Map<Element, boolean>): boolean {
+function insideHorizontalScroller(
+  el: Element,
+  memo: Map<Element, boolean>,
+  vp: ViewportDimensions
+): boolean {
   const view = el.ownerDocument?.defaultView;
   if (!view) return false;
   const doc = el.ownerDocument;
@@ -387,7 +392,7 @@ function insideHorizontalScroller(el: Element, memo: Map<Element, boolean>): boo
   if (!p || p === doc.body || p === doc.documentElement) return false;
   const known = memo.get(p);
   if (known !== undefined) return known;
-  const answer = scrollsOrClipsX(p, view) || insideHorizontalScroller(p, memo);
+  const answer = scrollsOrClipsX(p, view, vp) || insideHorizontalScroller(p, memo, vp);
   memo.set(p, answer);
   return answer;
 }
